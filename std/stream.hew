@@ -68,12 +68,30 @@ pub type Sink<T> {
 /// backpressured contract as `bytes_pipe()`.
 /// Returns a `(Sink<string>, Stream<string>)` pair for writing and reading.
 pub fn pipe(capacity: i64) -> (Sink<string>, Stream<string>) {
+    match try_pipe(capacity) {
+        Ok(pair) => pair,
+        Err(err) => panic(err),
+    }
+}
+
+/// Try to create a bounded in-memory string pipe.
+pub fn try_pipe(capacity: i64) -> Result<(Sink<string>, Stream<string>), string> {
+    if capacity < 0 {
+        return Err(f"stream.pipe: invalid capacity {capacity} (must be >= 0)");
+    }
     unsafe {
         let pair = hew_stream_channel(capacity as i64);
+        if !hew_stream_pair_is_valid(pair) {
+            let detail = hew_stream_last_error();
+            if detail == "" {
+                return Err("stream.pipe: stream allocation failed");
+            }
+            return Err(detail);
+        }
         let sink = hew_stream_pair_sink(pair);
         let input = hew_stream_pair_stream(pair);
         hew_stream_pair_free(pair);
-        (sink, input)
+        Ok((sink, input))
     }
 }
 
@@ -82,12 +100,30 @@ pub fn pipe(capacity: i64) -> (Sink<string>, Stream<string>) {
 /// This is the canonical first-class Stream/Sink foundation for binary items.
 /// Returns a `(Sink<bytes>, Stream<bytes>)` pair for writing and reading.
 pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
+    match try_bytes_pipe(capacity) {
+        Ok(pair) => pair,
+        Err(err) => panic(err),
+    }
+}
+
+/// Try to create a bounded in-memory bytes pipe.
+pub fn try_bytes_pipe(capacity: i64) -> Result<(Sink<bytes>, Stream<bytes>), string> {
+    if capacity < 0 {
+        return Err(f"stream.bytes_pipe: invalid capacity {capacity} (must be >= 0)");
+    }
     unsafe {
         let pair = hew_stream_channel(capacity as i64);
+        if !hew_stream_pair_is_valid(pair) {
+            let detail = hew_stream_last_error();
+            if detail == "" {
+                return Err("stream.bytes_pipe: stream allocation failed");
+            }
+            return Err(detail);
+        }
         let sink = hew_stream_pair_sink_bytes(pair);
         let input = hew_stream_pair_stream_bytes(pair);
         hew_stream_pair_free(pair);
-        (sink, input)
+        Ok((sink, input))
     }
 }
 
@@ -214,6 +250,7 @@ pub type StreamPair {
 
 extern "C" {
     fn hew_stream_channel(capacity: i64) -> StreamPair;
+    fn hew_stream_pair_is_valid(pair: StreamPair) -> bool;
     fn hew_stream_pair_sink(pair: StreamPair) -> Sink<string>;
     fn hew_stream_pair_stream(pair: StreamPair) -> Stream<string>;
     fn hew_stream_pair_free(pair: StreamPair);

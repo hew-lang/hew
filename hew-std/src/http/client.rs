@@ -118,18 +118,18 @@ pub struct HewHttpResponse {
     pub body_allocation_failed: bool,
 }
 
-/// Collect all response headers into a heap-allocated `Vec<(String, String)>`.
-fn capture_headers(map: &ureq::http::HeaderMap) -> *mut Vec<(String, String)> {
-    let pairs: Vec<(String, String)> = map
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|v| (name.to_string(), v.to_string()))
-        })
-        .collect();
-    Box::into_raw(Box::new(pairs))
+/// Collect all response headers without silently dropping non-UTF-8 values.
+fn capture_headers(map: &ureq::http::HeaderMap) -> Result<*mut Vec<(String, String)>, String> {
+    let mut pairs = Vec::with_capacity(map.len());
+    for (name, value) in map {
+        let value = value.to_str().map_err(|_| {
+            format!(
+                "response header `{name}` contains bytes that cannot be represented as a Hew string"
+            )
+        })?;
+        pairs.push((name.to_string(), value.to_string()));
+    }
+    Ok(Box::into_raw(Box::new(pairs)))
 }
 
 /// Build a [`HewHttpResponse`] from a Rust string body and captured headers.
@@ -272,7 +272,10 @@ fn make_agent() -> ureq::Agent {
 /// error response.
 fn finish_response(mut resp: ureq::http::Response<ureq::Body>) -> *mut HewHttpResponse {
     let status = resp.status().as_u16();
-    let headers = capture_headers(resp.headers());
+    let headers = match capture_headers(resp.headers()) {
+        Ok(headers) => headers,
+        Err(message) => return error_response(&message),
+    };
     match resp.body_mut().read_to_string() {
         Ok(body) => build_response(i32::from(status), &body, headers),
         Err(e) => {
@@ -869,6 +872,33 @@ mod tests {
     use super::*;
     use std::ffi::CString;
     use std::ptr;
+
+    #[test]
+    fn capture_headers_rejects_non_utf8_value_instead_of_dropping_it() {
+        let mut headers = ureq::http::HeaderMap::new();
+        headers.insert(
+            ureq::http::HeaderName::from_static("x-opaque"),
+            ureq::http::HeaderValue::from_bytes(&[0x80]).unwrap(),
+        );
+        let err = capture_headers(&headers).unwrap_err();
+        assert_eq!(
+            err,
+            "response header `x-opaque` contains bytes that cannot be represented as a Hew string"
+        );
+    }
+
+    #[test]
+    fn capture_headers_preserves_valid_values() {
+        let mut headers = ureq::http::HeaderMap::new();
+        headers.insert(
+            ureq::http::HeaderName::from_static("x-test"),
+            ureq::http::HeaderValue::from_static("present"),
+        );
+        let pairs = capture_headers(&headers).unwrap();
+        // SAFETY: capture_headers allocated this Vec with Box::into_raw.
+        let pairs = unsafe { Box::from_raw(pairs) };
+        assert_eq!(pairs.as_slice(), &[("x-test".into(), "present".into())]);
+    }
 
     /// Read a response and free it; returns `(status_code, body_string)`.
     ///

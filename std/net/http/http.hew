@@ -188,24 +188,36 @@ impl RequestMethods for Request {
     }
     /// Send a full HTTP response with status, content-type, and body.
     fn respond(req: Request, status: i64, content_type: string, body: string) -> i64 {
+        if !valid_response_status(status) {
+            return -1;
+        }
         unsafe {
             hew_http_respond_bridge(req.handle, status as i32, content_type, body) as i64
         } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a plain-text HTTP response.
     fn respond_text(req: Request, status: i64, body: string) -> i64 {
+        if !valid_response_status(status) {
+            return -1;
+        }
         unsafe {
             hew_http_respond_text(req.handle, status as i32, body) as i64
         } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
     fn respond_json(req: Request, status: i64, json: string) -> i64 {
+        if !valid_response_status(status) {
+            return -1;
+        }
         unsafe {
             hew_http_respond_json(req.handle, status as i32, json) as i64
         } // INTERNAL-ABI: C ABI status is i32
     }
     /// Begin a streaming response and return a `Sink` for chunked output.
     fn respond_stream(req: Request, status: i64, content_type: string) -> Sink<string> {
+        if !valid_response_status(status) {
+            panic(f"http.respond_stream: invalid status {status} (must be 100..=599)");
+        }
         unsafe {
             hew_http_respond_stream(req.handle, status as i32, content_type)
         } // INTERNAL-ABI: C ABI status is i32
@@ -216,9 +228,13 @@ impl RequestMethods for Request {
         //   directly to preserve the i32 truncation the FFI signature requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond(status, content_type, body);
-        let n = unsafe {
-            hew_http_respond_bridge(req.handle, status as i32, content_type, body)
-        } as i64;
+        let n = if valid_response_status(status) {
+            unsafe {
+                hew_http_respond_bridge(req.handle, status as i32, content_type, body)
+            } as i64
+        } else {
+            -1
+        };
         if n < 0 {
             Err(net.net_error_from_errno(0))
         } else {
@@ -231,9 +247,13 @@ impl RequestMethods for Request {
         //   directly to preserve the i32 truncation the FFI signature requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond_text(status, body);
-        let n = unsafe {
-            hew_http_respond_text(req.handle, status as i32, body)
-        } as i64;
+        let n = if valid_response_status(status) {
+            unsafe {
+                hew_http_respond_text(req.handle, status as i32, body)
+            } as i64
+        } else {
+            -1
+        };
         if n < 0 {
             Err(net.net_error_from_errno(0))
         } else {
@@ -246,9 +266,13 @@ impl RequestMethods for Request {
         //   directly to preserve the i32 truncation the FFI signature requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond_json(status, json);
-        let n = unsafe {
-            hew_http_respond_json(req.handle, status as i32, json)
-        } as i64;
+        let n = if valid_response_status(status) {
+            unsafe {
+                hew_http_respond_json(req.handle, status as i32, json)
+            } as i64
+        } else {
+            -1
+        };
         if n < 0 {
             Err(net.net_error_from_errno(0))
         } else {
@@ -257,23 +281,31 @@ impl RequestMethods for Request {
     }
     /// Begin a streaming response; returns Err(NetError::Other(0)) on failure.
     fn try_respond_stream(req: Request, status: i64, content_type: string) -> Result<Sink<string>, net.NetError> {
-        let sink = unsafe {
-            hew_http_respond_stream(req.handle, status as i32, content_type)
-        };
-        // HTTP has no errno channel; the runtime sets a message via set_last_error
-        // on the two failure paths (null req, already-responded).  The errno side-
-        // channel is always 0 here, so Other(0) is the correct classification.
-        if unsafe {
-            hew_sink_is_valid(sink)
-        } {
-            Ok(sink)
+        if valid_response_status(status) {
+            let sink = unsafe {
+                hew_http_respond_stream(req.handle, status as i32, content_type)
+            };
+            // HTTP has no errno channel; the runtime sets a message via set_last_error
+            // on the two failure paths (null req, already-responded).  The errno side-
+            // channel is always 0 here, so Other(0) is the correct classification.
+            if unsafe {
+                hew_sink_is_valid(sink)
+            } {
+                Ok(sink)
+            } else {
+                let _ = unsafe {
+                    hew_stream_last_error()
+                }; // consume the error message
+                Err(net.net_error_from_errno(0))
+            }
         } else {
-            let _ = unsafe {
-                hew_stream_last_error()
-            }; // consume the error message
             Err(net.net_error_from_errno(0))
         }
     }
+}
+
+fn valid_response_status(status: i64) -> bool {
+    status >= 100 && status <= 599
 }
 
 impl Request {

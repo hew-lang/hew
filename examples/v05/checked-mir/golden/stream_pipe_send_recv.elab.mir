@@ -982,75 +982,255 @@ fn fs$is_dir -> bool
 
 fn stream$pipe -> (Sink<string>, Stream<string>)
   statements:
-    use BindingId(71) capacity site=SiteId(530) ty=i64 intent=Read
-    bind BindingId(72) pair site=SiteId(528) ty=StreamPair
-    use BindingId(72) pair site=SiteId(533) ty=StreamPair intent=Read
-    bind BindingId(73) sink site=SiteId(532) ty=Sink<string>
-    use BindingId(72) pair site=SiteId(536) ty=StreamPair intent=Read
-    bind BindingId(74) input site=SiteId(535) ty=Stream<string>
-    use BindingId(72) pair site=SiteId(539) ty=StreamPair intent=Read
-    eval site=SiteId(538) ty=()
-    use BindingId(73) sink site=SiteId(542) ty=Sink<string> intent=Read
-    use BindingId(74) input site=SiteId(543) ty=Stream<string> intent=Read
-    agg_alias BindingId(73) sink site=SiteId(542) ty=Sink<string>
-    agg_alias BindingId(74) input site=SiteId(543) ty=Stream<string>
+    use BindingId(71) capacity site=SiteId(529) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(528) ty=Result<(Sink<string>, Stream<string>), string>
     return site=Some(SiteId(527)) ty=(Sink<string>, Stream<string>)
-    drop BindingId(74) input ty=Stream<string>
-    drop BindingId(73) sink ty=Sink<string>
+    bind BindingId(72) pair site=SiteId(531) ty=(Sink<string>, Stream<string>)
+    use BindingId(72) pair site=SiteId(531) ty=(Sink<string>, Stream<string>) intent=Read
+    bind BindingId(73) err site=SiteId(532) ty=string
+    use BindingId(73) err site=SiteId(533) ty=string intent=Read
+    drop BindingId(73) err ty=string
+    drop BindingId(72) pair ty=(Sink<string>, Stream<string>)
+    drop BindingId(4294967231) __hew_call_scrutinee ty=Result<(Sink<string>, Stream<string>), string>
   drop_plans:
-    call[bb0 hew_stream_channel -> bb1] ->
+    call[bb0 stream$try_pipe -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
-    call[bb1 hew_stream_pair_sink -> bb2] ->
+    branch[bb1: bb3/bb6] ->
       (none)
-    call[bb2 hew_stream_pair_stream -> bb3] ->
+    return[bb2] ->
       (none)
-    call[bb3 hew_stream_pair_free -> bb4] ->
+    goto[bb3->bb2] ->
       (none)
-    return[bb4] ->
+    cancel[bb3] ->
+      (none)
+    call[bb4 panic -> bb7] ->
+      (none)
+    panic[bb5] ->
+      (none)
+    branch[bb6: bb4/bb5] ->
+      (none)
+    goto[bb7->bb2] ->
+      (none)
+    cancel[bb7] ->
+      (none)
+
+fn stream$try_pipe -> Result<(Sink<string>, Stream<string>), string>
+  statements:
+    use BindingId(74) capacity site=SiteId(536) ty=i64 intent=Read
+    use BindingId(74) capacity site=SiteId(541) ty=i64 intent=Read
+    eval site=SiteId(550) ty=()
+    use BindingId(74) capacity site=SiteId(554) ty=i64 intent=Read
+    return site=Some(SiteId(538)) ty=Result<(Sink<string>, Stream<string>), string>
+    bind BindingId(75) pair site=SiteId(552) ty=StreamPair
+    use BindingId(75) pair site=SiteId(558) ty=StreamPair intent=Read
+    eval site=SiteId(572) ty=()
+    use BindingId(75) pair site=SiteId(574) ty=StreamPair intent=Read
+    bind BindingId(76) detail site=SiteId(560) ty=string
+    use BindingId(76) detail site=SiteId(563) ty=string intent=Read
+    return site=Some(SiteId(565)) ty=Result<(Sink<string>, Stream<string>), string>
+    eval site=SiteId(568) ty=()
+    use BindingId(76) detail site=SiteId(570) ty=string intent=Read
+    agg_alias BindingId(76) detail site=SiteId(570) ty=string
+    return site=Some(SiteId(569)) ty=Result<(Sink<string>, Stream<string>), string>
+    bind BindingId(77) sink site=SiteId(573) ty=Sink<string>
+    use BindingId(75) pair site=SiteId(577) ty=StreamPair intent=Read
+    bind BindingId(78) input site=SiteId(576) ty=Stream<string>
+    use BindingId(75) pair site=SiteId(580) ty=StreamPair intent=Read
+    eval site=SiteId(579) ty=()
+    use BindingId(77) sink site=SiteId(584) ty=Sink<string> intent=Read
+    use BindingId(78) input site=SiteId(585) ty=Stream<string> intent=Read
+    agg_alias BindingId(77) sink site=SiteId(584) ty=Sink<string>
+    agg_alias BindingId(78) input site=SiteId(585) ty=Stream<string>
+    return site=Some(SiteId(551)) ty=Result<(Sink<string>, Stream<string>), string>
+    drop BindingId(78) input ty=Stream<string>
+    drop BindingId(77) sink ty=Sink<string>
+    drop BindingId(76) detail ty=string
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 to_string_i64 -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    call[bb3 hew_stream_channel -> bb8] ->
+      (none)
+    call[bb4 string_concat -> bb5] ->
+      (none)
+    call[bb5 string_concat -> bb6] ->
+      (none)
+    return[bb6] ->
+      (none)
+    goto[bb7->bb3] ->
+      (none)
+    cancel[bb7] ->
+      (none)
+    call[bb8 hew_stream_pair_is_valid -> bb9] ->
+      (none)
+    branch[bb9: bb10/bb11] ->
+      (none)
+    call[bb10 hew_stream_last_error -> bb13] ->
+      (none)
+    goto[bb11->bb12] ->
+      (none)
+    call[bb12 hew_stream_pair_sink -> bb19] ->
+      (none)
+    branch[bb13: bb14/bb15] ->
+      (none)
+    return[bb14] ->
+      (none)
+    goto[bb15->bb16] ->
+      (none)
+    return[bb16] ->
+      (none)
+    goto[bb17->bb16] ->
+      (none)
+    cancel[bb17] ->
+      (none)
+    goto[bb18->bb12] ->
+      (none)
+    cancel[bb18] ->
+      (none)
+    call[bb19 hew_stream_pair_stream -> bb20] ->
+      (none)
+    call[bb20 hew_stream_pair_free -> bb21] ->
+      (none)
+    return[bb21] ->
       (none)
 
 fn stream$bytes_pipe -> (Sink<bytes>, Stream<bytes>)
   statements:
-    use BindingId(75) capacity site=SiteId(547) ty=i64 intent=Read
-    bind BindingId(76) pair site=SiteId(545) ty=StreamPair
-    use BindingId(76) pair site=SiteId(550) ty=StreamPair intent=Read
-    bind BindingId(77) sink site=SiteId(549) ty=Sink<bytes>
-    use BindingId(76) pair site=SiteId(553) ty=StreamPair intent=Read
-    bind BindingId(78) input site=SiteId(552) ty=Stream<bytes>
-    use BindingId(76) pair site=SiteId(556) ty=StreamPair intent=Read
-    eval site=SiteId(555) ty=()
-    use BindingId(77) sink site=SiteId(559) ty=Sink<bytes> intent=Read
-    use BindingId(78) input site=SiteId(560) ty=Stream<bytes> intent=Read
-    agg_alias BindingId(77) sink site=SiteId(559) ty=Sink<bytes>
-    agg_alias BindingId(78) input site=SiteId(560) ty=Stream<bytes>
-    return site=Some(SiteId(544)) ty=(Sink<bytes>, Stream<bytes>)
-    drop BindingId(78) input ty=Stream<bytes>
-    drop BindingId(77) sink ty=Sink<bytes>
+    use BindingId(79) capacity site=SiteId(588) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(587) ty=Result<(Sink<bytes>, Stream<bytes>), string>
+    return site=Some(SiteId(586)) ty=(Sink<bytes>, Stream<bytes>)
+    bind BindingId(80) pair site=SiteId(590) ty=(Sink<bytes>, Stream<bytes>)
+    use BindingId(80) pair site=SiteId(590) ty=(Sink<bytes>, Stream<bytes>) intent=Read
+    bind BindingId(81) err site=SiteId(591) ty=string
+    use BindingId(81) err site=SiteId(592) ty=string intent=Read
+    drop BindingId(81) err ty=string
+    drop BindingId(80) pair ty=(Sink<bytes>, Stream<bytes>)
+    drop BindingId(4294967231) __hew_call_scrutinee ty=Result<(Sink<bytes>, Stream<bytes>), string>
   drop_plans:
-    call[bb0 hew_stream_channel -> bb1] ->
+    call[bb0 stream$try_bytes_pipe -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
-    call[bb1 hew_stream_pair_sink_bytes -> bb2] ->
+    branch[bb1: bb3/bb6] ->
       (none)
-    call[bb2 hew_stream_pair_stream_bytes -> bb3] ->
+    return[bb2] ->
       (none)
-    call[bb3 hew_stream_pair_free -> bb4] ->
+    goto[bb3->bb2] ->
       (none)
-    return[bb4] ->
+    cancel[bb3] ->
+      (none)
+    call[bb4 panic -> bb7] ->
+      (none)
+    panic[bb5] ->
+      (none)
+    branch[bb6: bb4/bb5] ->
+      (none)
+    goto[bb7->bb2] ->
+      (none)
+    cancel[bb7] ->
+      (none)
+
+fn stream$try_bytes_pipe -> Result<(Sink<bytes>, Stream<bytes>), string>
+  statements:
+    use BindingId(82) capacity site=SiteId(595) ty=i64 intent=Read
+    use BindingId(82) capacity site=SiteId(600) ty=i64 intent=Read
+    eval site=SiteId(609) ty=()
+    use BindingId(82) capacity site=SiteId(613) ty=i64 intent=Read
+    return site=Some(SiteId(597)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
+    bind BindingId(83) pair site=SiteId(611) ty=StreamPair
+    use BindingId(83) pair site=SiteId(617) ty=StreamPair intent=Read
+    eval site=SiteId(631) ty=()
+    use BindingId(83) pair site=SiteId(633) ty=StreamPair intent=Read
+    bind BindingId(84) detail site=SiteId(619) ty=string
+    use BindingId(84) detail site=SiteId(622) ty=string intent=Read
+    return site=Some(SiteId(624)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
+    eval site=SiteId(627) ty=()
+    use BindingId(84) detail site=SiteId(629) ty=string intent=Read
+    agg_alias BindingId(84) detail site=SiteId(629) ty=string
+    return site=Some(SiteId(628)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
+    bind BindingId(85) sink site=SiteId(632) ty=Sink<bytes>
+    use BindingId(83) pair site=SiteId(636) ty=StreamPair intent=Read
+    bind BindingId(86) input site=SiteId(635) ty=Stream<bytes>
+    use BindingId(83) pair site=SiteId(639) ty=StreamPair intent=Read
+    eval site=SiteId(638) ty=()
+    use BindingId(85) sink site=SiteId(643) ty=Sink<bytes> intent=Read
+    use BindingId(86) input site=SiteId(644) ty=Stream<bytes> intent=Read
+    agg_alias BindingId(85) sink site=SiteId(643) ty=Sink<bytes>
+    agg_alias BindingId(86) input site=SiteId(644) ty=Stream<bytes>
+    return site=Some(SiteId(610)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
+    drop BindingId(86) input ty=Stream<bytes>
+    drop BindingId(85) sink ty=Sink<bytes>
+    drop BindingId(84) detail ty=string
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 to_string_i64 -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    call[bb3 hew_stream_channel -> bb8] ->
+      (none)
+    call[bb4 string_concat -> bb5] ->
+      (none)
+    call[bb5 string_concat -> bb6] ->
+      (none)
+    return[bb6] ->
+      (none)
+    goto[bb7->bb3] ->
+      (none)
+    cancel[bb7] ->
+      (none)
+    call[bb8 hew_stream_pair_is_valid -> bb9] ->
+      (none)
+    branch[bb9: bb10/bb11] ->
+      (none)
+    call[bb10 hew_stream_last_error -> bb13] ->
+      (none)
+    goto[bb11->bb12] ->
+      (none)
+    call[bb12 hew_stream_pair_sink_bytes -> bb19] ->
+      (none)
+    branch[bb13: bb14/bb15] ->
+      (none)
+    return[bb14] ->
+      (none)
+    goto[bb15->bb16] ->
+      (none)
+    return[bb16] ->
+      (none)
+    goto[bb17->bb16] ->
+      (none)
+    cancel[bb17] ->
+      (none)
+    goto[bb18->bb12] ->
+      (none)
+    cancel[bb18] ->
+      (none)
+    call[bb19 hew_stream_pair_stream_bytes -> bb20] ->
+      (none)
+    call[bb20 hew_stream_pair_free -> bb21] ->
+      (none)
+    return[bb21] ->
       (none)
 
 fn stream$from_file -> Result<Stream<string>, string>
   statements:
-    use BindingId(79) path site=SiteId(563) ty=string intent=Read
-    bind BindingId(80) s site=SiteId(562) ty=Stream<string>
-    use BindingId(80) s site=SiteId(567) ty=Stream<string> intent=Read
-    use BindingId(80) s site=SiteId(571) ty=Stream<string> intent=Read
-    agg_alias BindingId(80) s site=SiteId(571) ty=Stream<string>
-    return site=Some(SiteId(561)) ty=Result<Stream<string>, string>
-    drop BindingId(80) s ty=Stream<string>
+    use BindingId(87) path site=SiteId(647) ty=string intent=Read
+    bind BindingId(88) s site=SiteId(646) ty=Stream<string>
+    use BindingId(88) s site=SiteId(651) ty=Stream<string> intent=Read
+    use BindingId(88) s site=SiteId(655) ty=Stream<string> intent=Read
+    agg_alias BindingId(88) s site=SiteId(655) ty=Stream<string>
+    return site=Some(SiteId(645)) ty=Result<Stream<string>, string>
+    drop BindingId(88) s ty=Stream<string>
   drop_plans:
     call[bb0 hew_stream_from_file_read -> bb1] ->
       (none)
@@ -1073,18 +1253,18 @@ fn stream$from_file -> Result<Stream<string>, string>
 
 fn stream$try_from_file -> Result<Stream<string>, fs.IoError>
   statements:
-    use BindingId(81) path site=SiteId(578) ty=string intent=Read
-    bind BindingId(82) s site=SiteId(577) ty=Stream<string>
-    use BindingId(82) s site=SiteId(582) ty=Stream<string> intent=Read
-    use BindingId(82) s site=SiteId(586) ty=Stream<string> intent=Read
-    agg_alias BindingId(82) s site=SiteId(586) ty=Stream<string>
-    return site=Some(SiteId(576)) ty=Result<Stream<string>, fs.IoError>
-    bind BindingId(83) kind site=SiteId(588) ty=i64
-    bind BindingId(84) errno site=SiteId(591) ty=i32
-    eval site=SiteId(593) ty=string
-    use BindingId(83) kind site=SiteId(597) ty=i64 intent=Read
-    use BindingId(84) errno site=SiteId(599) ty=i32 intent=Read
-    drop BindingId(82) s ty=Stream<string>
+    use BindingId(89) path site=SiteId(662) ty=string intent=Read
+    bind BindingId(90) s site=SiteId(661) ty=Stream<string>
+    use BindingId(90) s site=SiteId(666) ty=Stream<string> intent=Read
+    use BindingId(90) s site=SiteId(670) ty=Stream<string> intent=Read
+    agg_alias BindingId(90) s site=SiteId(670) ty=Stream<string>
+    return site=Some(SiteId(660)) ty=Result<Stream<string>, fs.IoError>
+    bind BindingId(91) kind site=SiteId(672) ty=i64
+    bind BindingId(92) errno site=SiteId(675) ty=i32
+    eval site=SiteId(677) ty=string
+    use BindingId(91) kind site=SiteId(681) ty=i64 intent=Read
+    use BindingId(92) errno site=SiteId(683) ty=i32 intent=Read
+    drop BindingId(90) s ty=Stream<string>
   drop_plans:
     call[bb0 hew_stream_from_file_read -> bb1] ->
       (none)
@@ -1113,13 +1293,13 @@ fn stream$try_from_file -> Result<Stream<string>, fs.IoError>
 
 fn stream$to_file -> Result<Sink<string>, string>
   statements:
-    use BindingId(85) path site=SiteId(603) ty=string intent=Read
-    bind BindingId(86) s site=SiteId(602) ty=Sink<string>
-    use BindingId(86) s site=SiteId(607) ty=Sink<string> intent=Read
-    use BindingId(86) s site=SiteId(611) ty=Sink<string> intent=Read
-    agg_alias BindingId(86) s site=SiteId(611) ty=Sink<string>
-    return site=Some(SiteId(601)) ty=Result<Sink<string>, string>
-    drop BindingId(86) s ty=Sink<string>
+    use BindingId(93) path site=SiteId(687) ty=string intent=Read
+    bind BindingId(94) s site=SiteId(686) ty=Sink<string>
+    use BindingId(94) s site=SiteId(691) ty=Sink<string> intent=Read
+    use BindingId(94) s site=SiteId(695) ty=Sink<string> intent=Read
+    agg_alias BindingId(94) s site=SiteId(695) ty=Sink<string>
+    return site=Some(SiteId(685)) ty=Result<Sink<string>, string>
+    drop BindingId(94) s ty=Sink<string>
   drop_plans:
     call[bb0 hew_stream_from_file_write -> bb1] ->
       (none)
@@ -1142,18 +1322,18 @@ fn stream$to_file -> Result<Sink<string>, string>
 
 fn stream$try_to_file -> Result<Sink<string>, fs.IoError>
   statements:
-    use BindingId(87) path site=SiteId(618) ty=string intent=Read
-    bind BindingId(88) s site=SiteId(617) ty=Sink<string>
-    use BindingId(88) s site=SiteId(622) ty=Sink<string> intent=Read
-    use BindingId(88) s site=SiteId(626) ty=Sink<string> intent=Read
-    agg_alias BindingId(88) s site=SiteId(626) ty=Sink<string>
-    return site=Some(SiteId(616)) ty=Result<Sink<string>, fs.IoError>
-    bind BindingId(89) kind site=SiteId(628) ty=i64
-    bind BindingId(90) errno site=SiteId(631) ty=i32
-    eval site=SiteId(633) ty=string
-    use BindingId(89) kind site=SiteId(637) ty=i64 intent=Read
-    use BindingId(90) errno site=SiteId(639) ty=i32 intent=Read
-    drop BindingId(88) s ty=Sink<string>
+    use BindingId(95) path site=SiteId(702) ty=string intent=Read
+    bind BindingId(96) s site=SiteId(701) ty=Sink<string>
+    use BindingId(96) s site=SiteId(706) ty=Sink<string> intent=Read
+    use BindingId(96) s site=SiteId(710) ty=Sink<string> intent=Read
+    agg_alias BindingId(96) s site=SiteId(710) ty=Sink<string>
+    return site=Some(SiteId(700)) ty=Result<Sink<string>, fs.IoError>
+    bind BindingId(97) kind site=SiteId(712) ty=i64
+    bind BindingId(98) errno site=SiteId(715) ty=i32
+    eval site=SiteId(717) ty=string
+    use BindingId(97) kind site=SiteId(721) ty=i64 intent=Read
+    use BindingId(98) errno site=SiteId(723) ty=i32 intent=Read
+    drop BindingId(96) s ty=Sink<string>
   drop_plans:
     call[bb0 hew_stream_from_file_write -> bb1] ->
       (none)
@@ -1182,9 +1362,9 @@ fn stream$try_to_file -> Result<Sink<string>, fs.IoError>
 
 fn stream$forward -> ()
   statements:
-    use BindingId(91) source site=SiteId(643) ty=Stream<string> intent=Read
-    use BindingId(92) dest site=SiteId(644) ty=Sink<string> intent=Read
-    eval site=SiteId(641) ty=()
+    use BindingId(99) source site=SiteId(727) ty=Stream<string> intent=Read
+    use BindingId(100) dest site=SiteId(728) ty=Sink<string> intent=Read
+    eval site=SiteId(725) ty=()
   drop_plans:
     call[bb0 hew_stream_pipe -> bb1] ->
       (none)
@@ -1195,8 +1375,8 @@ fn stream$forward -> ()
 
 fn i8::fmt -> string
   statements:
-    use BindingId(101) val site=SiteId(716) ty=i8 intent=Read
-    return site=Some(SiteId(714)) ty=string
+    use BindingId(109) val site=SiteId(800) ty=i8 intent=Read
+    return site=Some(SiteId(798)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -1207,8 +1387,8 @@ fn i8::fmt -> string
 
 fn i16::fmt -> string
   statements:
-    use BindingId(102) val site=SiteId(720) ty=i16 intent=Read
-    return site=Some(SiteId(718)) ty=string
+    use BindingId(110) val site=SiteId(804) ty=i16 intent=Read
+    return site=Some(SiteId(802)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -1219,8 +1399,8 @@ fn i16::fmt -> string
 
 fn i32::fmt -> string
   statements:
-    use BindingId(103) val site=SiteId(723) ty=i32 intent=Read
-    return site=Some(SiteId(722)) ty=string
+    use BindingId(111) val site=SiteId(807) ty=i32 intent=Read
+    return site=Some(SiteId(806)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -1231,8 +1411,8 @@ fn i32::fmt -> string
 
 fn i64::fmt -> string
   statements:
-    use BindingId(104) val site=SiteId(726) ty=i64 intent=Read
-    return site=Some(SiteId(725)) ty=string
+    use BindingId(112) val site=SiteId(810) ty=i64 intent=Read
+    return site=Some(SiteId(809)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)
@@ -1243,8 +1423,8 @@ fn i64::fmt -> string
 
 fn u8::fmt -> string
   statements:
-    use BindingId(105) val site=SiteId(729) ty=u8 intent=Read
-    return site=Some(SiteId(728)) ty=string
+    use BindingId(113) val site=SiteId(813) ty=u8 intent=Read
+    return site=Some(SiteId(812)) ty=string
   drop_plans:
     call[bb0 to_string_u8 -> bb1] ->
       (none)
@@ -1255,8 +1435,8 @@ fn u8::fmt -> string
 
 fn u16::fmt -> string
   statements:
-    use BindingId(106) val site=SiteId(732) ty=u16 intent=Read
-    return site=Some(SiteId(731)) ty=string
+    use BindingId(114) val site=SiteId(816) ty=u16 intent=Read
+    return site=Some(SiteId(815)) ty=string
   drop_plans:
     call[bb0 to_string_u16 -> bb1] ->
       (none)
@@ -1267,8 +1447,8 @@ fn u16::fmt -> string
 
 fn u32::fmt -> string
   statements:
-    use BindingId(107) val site=SiteId(735) ty=u32 intent=Read
-    return site=Some(SiteId(734)) ty=string
+    use BindingId(115) val site=SiteId(819) ty=u32 intent=Read
+    return site=Some(SiteId(818)) ty=string
   drop_plans:
     call[bb0 to_string_u32 -> bb1] ->
       (none)
@@ -1279,8 +1459,8 @@ fn u32::fmt -> string
 
 fn u64::fmt -> string
   statements:
-    use BindingId(108) val site=SiteId(738) ty=u64 intent=Read
-    return site=Some(SiteId(737)) ty=string
+    use BindingId(116) val site=SiteId(822) ty=u64 intent=Read
+    return site=Some(SiteId(821)) ty=string
   drop_plans:
     call[bb0 to_string_u64 -> bb1] ->
       (none)
@@ -1291,8 +1471,8 @@ fn u64::fmt -> string
 
 fn isize::fmt -> string
   statements:
-    use BindingId(109) val site=SiteId(742) ty=isize intent=Read
-    return site=Some(SiteId(740)) ty=string
+    use BindingId(117) val site=SiteId(826) ty=isize intent=Read
+    return site=Some(SiteId(824)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)
@@ -1303,8 +1483,8 @@ fn isize::fmt -> string
 
 fn usize::fmt -> string
   statements:
-    use BindingId(110) val site=SiteId(746) ty=usize intent=Read
-    return site=Some(SiteId(744)) ty=string
+    use BindingId(118) val site=SiteId(830) ty=usize intent=Read
+    return site=Some(SiteId(828)) ty=string
   drop_plans:
     call[bb0 to_string_u64 -> bb1] ->
       (none)
@@ -1315,8 +1495,8 @@ fn usize::fmt -> string
 
 fn bool::fmt -> string
   statements:
-    use BindingId(111) val site=SiteId(749) ty=bool intent=Read
-    return site=Some(SiteId(748)) ty=string
+    use BindingId(119) val site=SiteId(833) ty=bool intent=Read
+    return site=Some(SiteId(832)) ty=string
   drop_plans:
     call[bb0 to_string_bool -> bb1] ->
       (none)
@@ -1327,8 +1507,8 @@ fn bool::fmt -> string
 
 fn char::fmt -> string
   statements:
-    use BindingId(112) val site=SiteId(752) ty=char intent=Read
-    return site=Some(SiteId(751)) ty=string
+    use BindingId(120) val site=SiteId(836) ty=char intent=Read
+    return site=Some(SiteId(835)) ty=string
   drop_plans:
     call[bb0 to_string_char -> bb1] ->
       (none)
@@ -1339,8 +1519,8 @@ fn char::fmt -> string
 
 fn f64::fmt -> string
   statements:
-    use BindingId(113) val site=SiteId(755) ty=f64 intent=Read
-    return site=Some(SiteId(754)) ty=string
+    use BindingId(121) val site=SiteId(839) ty=f64 intent=Read
+    return site=Some(SiteId(838)) ty=string
   drop_plans:
     call[bb0 to_string_f64 -> bb1] ->
       (none)
@@ -1351,8 +1531,8 @@ fn f64::fmt -> string
 
 fn f32::fmt -> string
   statements:
-    use BindingId(114) val site=SiteId(759) ty=f32 intent=Read
-    return site=Some(SiteId(757)) ty=string
+    use BindingId(122) val site=SiteId(843) ty=f32 intent=Read
+    return site=Some(SiteId(841)) ty=string
   drop_plans:
     call[bb0 to_string_f64 -> bb1] ->
       (none)
@@ -1363,16 +1543,16 @@ fn f32::fmt -> string
 
 fn string::fmt -> string
   statements:
-    use BindingId(115) val site=SiteId(761) ty=string intent=Read
-    return site=Some(SiteId(761)) ty=string
+    use BindingId(123) val site=SiteId(845) ty=string intent=Read
+    return site=Some(SiteId(845)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
 fn duration::from_nanos -> duration
   statements:
-    use BindingId(116) n site=SiteId(763) ty=i64 intent=Read
-    return site=Some(SiteId(762)) ty=duration
+    use BindingId(124) n site=SiteId(847) ty=i64 intent=Read
+    return site=Some(SiteId(846)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1383,8 +1563,8 @@ fn duration::from_nanos -> duration
 
 fn duration::from_micros -> duration
   statements:
-    use BindingId(117) n site=SiteId(766) ty=i64 intent=Read
-    return site=Some(SiteId(765)) ty=duration
+    use BindingId(125) n site=SiteId(850) ty=i64 intent=Read
+    return site=Some(SiteId(849)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1395,8 +1575,8 @@ fn duration::from_micros -> duration
 
 fn duration::from_millis -> duration
   statements:
-    use BindingId(118) n site=SiteId(769) ty=i64 intent=Read
-    return site=Some(SiteId(768)) ty=duration
+    use BindingId(126) n site=SiteId(853) ty=i64 intent=Read
+    return site=Some(SiteId(852)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1407,8 +1587,8 @@ fn duration::from_millis -> duration
 
 fn duration::from_secs -> duration
   statements:
-    use BindingId(119) n site=SiteId(772) ty=i64 intent=Read
-    return site=Some(SiteId(771)) ty=duration
+    use BindingId(127) n site=SiteId(856) ty=i64 intent=Read
+    return site=Some(SiteId(855)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1419,8 +1599,8 @@ fn duration::from_secs -> duration
 
 fn duration::fmt -> string
   statements:
-    use BindingId(120) val site=SiteId(777) ty=duration intent=Read
-    return site=Some(SiteId(774)) ty=string
+    use BindingId(128) val site=SiteId(861) ty=duration intent=Read
+    return site=Some(SiteId(858)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)

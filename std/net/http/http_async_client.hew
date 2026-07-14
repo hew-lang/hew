@@ -183,10 +183,7 @@ pub fn split_address(url_str: string) -> (string, string) {
     let scheme = scheme_of(url_str);
     let after_scheme = strip_scheme(url_str);
     // The authority runs up to the first '/' (the path), '?' (query), or end.
-    let (authority, path) = match after_scheme.find("/") {
-        Some(slash) => (after_scheme.slice(0, slash), after_scheme.slice(slash, after_scheme.len())),
-        None => (after_scheme, "/"),
-    };
+    let (authority, path) = split_authority_path(after_scheme);
     let addr = authority_with_port(authority, scheme);
     (addr, path)
 }
@@ -194,13 +191,45 @@ pub fn split_address(url_str: string) -> (string, string) {
 /// Return the host component of `url_str` for the `Host:` header (no port).
 pub fn host_of(url_str: string) -> string {
     let after_scheme = strip_scheme(url_str);
-    let authority = match after_scheme.find("/") {
-        Some(slash) => after_scheme.slice(0, slash),
-        None => after_scheme,
+    let (authority, _) = split_authority_path(after_scheme);
+    if authority.starts_with("[") {
+        match authority.find("]") {
+            Some(end) => authority.slice(0, end + 1),
+            None => authority,
+        }
+    } else {
+        match authority.find(":") {
+            Some(colon) => authority.slice(0, colon),
+            None => authority,
+        }
+    }
+}
+
+fn split_authority_path(after_scheme: string) -> (string, string) {
+    let slash = after_scheme.find("/");
+    let query = after_scheme.find("?");
+    let end = match slash {
+        Some(s) => match query {
+            Some(q) => if s < q {
+                Some(s)
+            } else {
+                Some(q)
+            },
+            None => Some(s),
+        },
+        None => query,
     };
-    match authority.find(":") {
-        Some(colon) => authority.slice(0, colon),
-        None => authority,
+    match end {
+        Some(i) => {
+            let authority = after_scheme.slice(0, i);
+            let suffix = after_scheme.slice(i, after_scheme.len());
+            if suffix.starts_with("?") {
+                (authority, "/" + suffix)
+            } else {
+                (authority, suffix)
+            }
+        },
+        None => (after_scheme, "/"),
     }
 }
 
@@ -232,9 +261,22 @@ fn strip_scheme(url_str: string) -> string {
 /// Ensure an authority carries an explicit port, appending the scheme default
 /// when absent (so `net.connect` always receives `host:port`).
 fn authority_with_port(authority: string, scheme: string) -> string {
-    match authority.find(":") {
-        Some(_) => authority,
-        None => f"{authority}:{default_port(scheme)}",
+    if authority.starts_with("[") {
+        match authority.find("]") {
+            Some(end) => {
+                if end + 1 < authority.len() && authority.slice(end + 1, end + 2) == ":" {
+                    authority
+                } else {
+                    f"{authority}:{default_port(scheme)}"
+                }
+            },
+            None => f"{authority}:{default_port(scheme)}",
+        }
+    } else {
+        match authority.find(":") {
+            Some(_) => authority,
+            None => f"{authority}:{default_port(scheme)}",
+        }
     }
 }
 

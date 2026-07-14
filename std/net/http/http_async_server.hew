@@ -282,6 +282,9 @@ pub fn response_json(status: i64, json: string) -> string {
 /// such a value is rejected and an empty string is returned (the acceptor writes
 /// nothing and closes) rather than emitting an attacker-controlled header.
 pub fn build_response(status: i64, content_type: string, body: string) -> string {
+    if status < 100 || status > 599 {
+        return "";
+    }
     if has_control_char(content_type) {
         return "";
     }

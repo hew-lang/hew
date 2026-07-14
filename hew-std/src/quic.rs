@@ -1477,17 +1477,17 @@ pub unsafe extern "C" fn hew_quic_stream_recv_timeout(
 // per function. Cleared at the start of every `_hew` call so stale state
 // from another stream cannot leak across calls.
 std::thread_local! {
-    static LAST_RECV_TIMED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LAST_RECV_STATUS: std::cell::Cell<c_int> = const { std::cell::Cell::new(0) };
 }
 
-fn set_last_recv_timed_out(v: bool) {
-    LAST_RECV_TIMED_OUT.with(|c| c.set(v));
+fn set_last_recv_status(status: c_int) {
+    LAST_RECV_STATUS.with(|cell| cell.set(status));
 }
 
 #[no_mangle]
 /// Hew-friendly `recv_timeout`: returns a `BytesTriple` (empty on timeout or
-/// error). Hew callers query [`hew_quic_stream_last_recv_timed_out`] to
-/// distinguish a timeout from an EOF/error outcome.
+/// error). Hew callers query [`hew_quic_stream_last_recv_status`] to
+/// distinguish success/EOF (`0`), transport error (`-1`), and timeout (`-2`).
 ///
 /// # Safety
 ///
@@ -1496,17 +1496,20 @@ pub unsafe extern "C" fn hew_quic_stream_recv_timeout_hew(
     stream: *mut HewQuicStream,
     deadline_ms: i32,
 ) -> BytesTriple {
-    set_last_recv_timed_out(false);
+    set_last_recv_status(0);
     let mut out = empty_bytes_triple();
     // SAFETY: forwarded contract. `&raw mut out` is a valid writable slot.
     let status = unsafe { hew_quic_stream_recv_timeout(stream, deadline_ms, &raw mut out) };
     match status {
         0 => out,
         -2 => {
-            set_last_recv_timed_out(true);
+            set_last_recv_status(-2);
             empty_bytes_triple()
         }
-        _ => empty_bytes_triple(),
+        _ => {
+            set_last_recv_status(-1);
+            empty_bytes_triple()
+        }
     }
 }
 
@@ -1534,7 +1537,15 @@ pub unsafe extern "C" fn hew_quic_stream_recv_timeout_hew_raw(
 /// `hew_quic_stream_send_timeout_hew` call on this thread observed a
 /// deadline expiry. The value is reset at the start of every `_hew` call.
 pub extern "C" fn hew_quic_stream_last_recv_timed_out() -> i32 {
-    LAST_RECV_TIMED_OUT.with(|c| i32::from(c.get()))
+    i32::from(LAST_RECV_STATUS.with(std::cell::Cell::get) == -2)
+}
+
+/// Return the status from the last Hew-friendly timed receive on this thread.
+///
+/// `0` means data or EOF, `-1` means transport failure, and `-2` means timeout.
+#[no_mangle]
+pub extern "C" fn hew_quic_stream_last_recv_status() -> c_int {
+    LAST_RECV_STATUS.with(std::cell::Cell::get)
 }
 
 #[no_mangle]
@@ -1615,7 +1626,14 @@ pub unsafe extern "C" fn hew_quic_stream_stop(
         let _ = stream.events.push(EVENT_ERROR);
         return -1;
     };
-    let code = quinn::VarInt::try_from(error_code.unsigned_abs()).unwrap_or(quinn::VarInt::MAX);
+    let code = match quic_application_error_code(error_code) {
+        Ok(code) => code,
+        Err(message) => {
+            update_stream(stream, |state| state.last_error = message);
+            let _ = stream.events.push(EVENT_ERROR);
+            return -1;
+        }
+    };
     match send.reset(code) {
         Ok(()) => {
             update_stream(stream, |state| {
@@ -1631,6 +1649,15 @@ pub unsafe extern "C" fn hew_quic_stream_stop(
             -1
         }
     }
+}
+
+fn quic_application_error_code(error_code: i64) -> Result<quinn::VarInt, String> {
+    let code = u64::try_from(error_code).map_err(|_| {
+        format!("invalid QUIC application error code {error_code}: expected 0..=2^62-1")
+    })?;
+    quinn::VarInt::try_from(code).map_err(|_| {
+        format!("invalid QUIC application error code {error_code}: expected 0..=2^62-1")
+    })
 }
 
 #[no_mangle]
@@ -1794,6 +1821,30 @@ mod tests {
     use std::thread;
 
     use hew_runtime::bytes::hew_bytes_drop;
+
+    #[test]
+    fn timed_receive_transport_failure_has_distinct_status() {
+        // SAFETY: null streams are explicitly rejected by the ABI.
+        let payload = unsafe { hew_quic_stream_recv_timeout_hew(std::ptr::null_mut(), 10) };
+        assert_eq!(payload.len, 0);
+        assert_eq!(hew_quic_stream_last_recv_status(), -1);
+        assert_eq!(hew_quic_stream_last_recv_timed_out(), 0);
+    }
+
+    #[test]
+    fn invalid_application_error_codes_are_rejected_exactly() {
+        assert_eq!(
+            quic_application_error_code(-7).unwrap_err(),
+            "invalid QUIC application error code -7: expected 0..=2^62-1"
+        );
+        assert_eq!(
+            quic_application_error_code(i64::MAX).unwrap_err(),
+            format!(
+                "invalid QUIC application error code {}: expected 0..=2^62-1",
+                i64::MAX
+            )
+        );
+    }
 
     unsafe fn take_event_kind(event: *mut HewQuicEvent) -> i32 {
         assert!(!event.is_null(), "event pointer must not be null");

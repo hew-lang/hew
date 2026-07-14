@@ -596,11 +596,13 @@ pub fn stream_recv_timeout(strm: QUICStream, deadline_ms: i64) -> Result<bytes, 
     let payload: bytes = unsafe {
         hew_quic_stream_recv_timeout_hew(strm, deadline_ms as i32)
     };
-    let timed_out: i32 = unsafe { // INTERNAL-ABI: 1=timeout, 0=ok-or-error; thread-local sentinel
-        hew_quic_stream_last_recv_timed_out()
+    let status: i32 = unsafe { // INTERNAL-ABI: 0=ok-or-EOF, -1=transport error, -2=timeout
+        hew_quic_stream_last_recv_status()
     };
-    if timed_out == 1 {
+    if status == -2 {
         Err(net.net_error_timed_out())
+    } else if status < 0 {
+        Err(net.net_error_from_errno(0))
     } else {
         Ok(payload)
     }
@@ -707,6 +709,7 @@ extern "C" {
     fn hew_quic_stream_send_timeout_hew(stream: QUICStream, data: bytes, deadline_ms: i32) -> i32; // INTERNAL-ABI: 0=ok, -1=error, -2=timeout
     fn hew_quic_stream_recv_timeout_hew(stream: QUICStream, deadline_ms: i32) -> bytes;
     fn hew_quic_stream_last_recv_timed_out() -> i32; // INTERNAL-ABI: thread-local timeout sentinel; 1=timeout, 0=ok-or-error
+    fn hew_quic_stream_last_recv_status() -> i32; // INTERNAL-ABI: thread-local status; 0=ok-or-EOF, -1=transport error, -2=timeout
     fn hew_quic_stream_finish(stream: QUICStream) -> i32;
     fn hew_quic_stream_stop(stream: QUICStream, error_code: i64) -> i32;
     fn hew_quic_stream_close(stream: QUICStream) -> i32;

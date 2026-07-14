@@ -870,7 +870,18 @@ unsafe fn rc_drop_env(env_ptr: *const c_void) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair {
     use crate::channel_core::ChannelCore;
-    let cap = usize::try_from(capacity.max(1)).unwrap_or(1);
+    if capacity < 0 {
+        set_last_error(format!(
+            "hew_stream_channel: invalid capacity {capacity} (must be >= 0)"
+        ));
+        return ptr::null_mut();
+    }
+    let Ok(cap) = usize::try_from(capacity.max(1)) else {
+        set_last_error(format!(
+            "hew_stream_channel: capacity {capacity} exceeds platform maximum"
+        ));
+        return ptr::null_mut();
+    };
     let core = Arc::new(ChannelCore::new(cap));
     // Borrow the allocation address before the Arc clones move; the address is
     // stable and stays valid while either handle (each holding an Arc clone)
@@ -905,6 +916,12 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
         sink: sink_ptr,
         stream: stream_ptr,
     }))
+}
+
+/// Return whether `pair` is a valid stream-pair handle.
+#[no_mangle]
+pub const extern "C" fn hew_stream_pair_is_valid(pair: *const HewStreamPair) -> bool {
+    !pair.is_null()
 }
 
 /// Channel-sink callback: blocking write (default callers). Suspending callers
@@ -2857,6 +2874,18 @@ mod tests {
         assert!(!pair.is_null());
         // SAFETY: pair was just created.
         unsafe { hew_stream_pair_free(pair) };
+    }
+
+    #[test]
+    fn channel_negative_capacity_returns_invalid_pair_with_exact_error() {
+        let _ = hew_cabi::sink::take_last_error();
+        // SAFETY: negative capacity is explicitly validated.
+        let pair = unsafe { hew_stream_channel(-1) };
+        assert!(!hew_stream_pair_is_valid(pair));
+        assert_eq!(
+            hew_cabi::sink::take_last_error().as_deref(),
+            Some("hew_stream_channel: invalid capacity -1 (must be >= 0)")
+        );
     }
 
     #[test]

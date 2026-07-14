@@ -44,6 +44,206 @@ impl Checker {
             .then(|| qualified.clone())
     }
 
+    /// The owner-qualified canonical identity a `Ty::Named` NAME denotes, for
+    /// nominal-equality comparison at the unification boundary — or `None` when
+    /// the name is already at its canonical identity and must be left as written.
+    ///
+    /// This mirrors the `resolved_name` cascade in
+    /// `resolve_type_expr_tracking_holes` (a root-local declaration keeps its
+    /// bare identity; a single-publisher bare name qualifies to its owner; an
+    /// otherwise-unambiguous `known_types` suffix match qualifies to that
+    /// carrier) but is READ-ONLY: it never reports the qualified-by-default
+    /// scope error, because the caller is comparing two ALREADY-resolved types,
+    /// not resolving a fresh reference.
+    ///
+    /// Why the checker canonicalizes here instead of trusting a context-free
+    /// suffix compare (issue #2651): a bare name and a module-qualified name
+    /// sharing a final segment may name the SAME definition (a prelude stdlib
+    /// type reached bare — `MonitorError` ↔ `link_monitor.MonitorError` — or a
+    /// single-publisher import) or DIFFERENT ones (a root-local `Widget` vs an
+    /// imported `widgeti8.Widget`). Only the checker's resolution tables can
+    /// tell them apart; mapping both compared names to this identity before an
+    /// EXACT compare accepts the former and rejects the latter.
+    pub(super) fn canonical_nominal_name(&self, name: &str) -> Option<String> {
+        // An explicit module-qualified spelling is already an identity.
+        if name.contains('.') {
+            return None;
+        }
+        // A root-local / current-module declaration keeps its bare identity: it
+        // is a DISTINCT nominal type from any imported `owner.Name` sharing the
+        // bare spelling.
+        if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
+            return None;
+        }
+        // Exactly one module published this bare name → its owner-qualified
+        // source identity (single-publisher user imports).
+        if let Some(qualified) = self.published_bare_type_qualified(name) {
+            return Some(qualified);
+        }
+        // Otherwise qualify to a UNIQUE registered owner: a module-qualified
+        // `type_defs` / `known_types` key whose final segment matches and whose
+        // module prefix is a known import. This recovers the owner of a bare
+        // name that arrived from another module's frame — e.g. a callee's return
+        // type `Result<Vec<Box>, _>` spelled bare in the defining module
+        // `nestbox`, compared in the importer against `nestbox.Box`, or a prelude
+        // stdlib type reached bare (`MonitorError` → `link_monitor.MonitorError`).
+        // Ambiguous (>1 owner) or none → leave bare and let the exact / builtin
+        // compare fail closed (a genuinely ambiguous bare reference is a
+        // resolution error, not something to silently pick a winner for).
+        let mut owners: Vec<&String> = self
+            .type_defs
+            .keys()
+            .chain(self.known_types.iter())
+            .filter(|qualified| {
+                qualified
+                    .rsplit_once('.')
+                    .is_some_and(|(module, short)| short == name && self.modules.contains(module))
+            })
+            .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        match owners.as_slice() {
+            [only] => Some((*only).clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether comparing `a` and `b` under the permissive suffix rule
+    /// (`Ty::names_match_qualified`, used inside `unify`) would ACCEPT a pairing
+    /// that owner-qualified nominal identity REJECTS — i.e. the specific
+    /// bare↔qualified nominal collision issue #2651 is about.
+    ///
+    /// Returns `true` only when the two types are structurally identical under
+    /// the suffix rule (so `unify` would accept them) but NOT under the strict
+    /// owner-qualified identity — the signature of a root-local type conflated
+    /// with an unrelated import (`Widget` vs `widgeti8.Widget`). A same-def
+    /// alias (`Box` vs `nestbox.Box`, a prelude `MonitorError` vs
+    /// `link_monitor.MonitorError`, a builtin handle `HashSet` vs
+    /// `collections.HashSet`) is strictly equal and so is NOT flagged; a genuine
+    /// structural mismatch is not suffix-equal and so is left for `unify` to
+    /// report (preserving its coercion-recovery paths).
+    ///
+    /// This is a READ-ONLY comparison: it rewrites no stored name and binds no
+    /// inference variable, so it cannot leak a canonical spelling downstream.
+    /// The caller guarantees both types are fully concrete.
+    pub(super) fn nominal_owner_conflict(&self, a: &Ty, b: &Ty) -> bool {
+        self.nominal_structural_eq(a, b, false) && !self.nominal_structural_eq(a, b, true)
+    }
+
+    /// The strict owner-qualified identity a concrete `Ty::Named` name denotes
+    /// for the #2651 collision check. Prefers the resolved canonical owner
+    /// (`canonical_nominal_name`); otherwise strips a redundant *current-module*
+    /// self-qualifier so a type referenced both bare (`Lifecycle`) and through
+    /// its OWN module (`lifecycle.Lifecycle`) — the same definition — compares
+    /// equal, while a foreign-owner qualifier (`widgeti8.Widget`) is preserved
+    /// and stays distinct from a root-local bare `Widget`.
+    fn strict_nominal_identity(&self, name: &str) -> String {
+        if let Some(qualified) = self.canonical_nominal_name(name) {
+            return qualified;
+        }
+        if let Some((module, short)) = name.rsplit_once('.') {
+            let current = self.current_module.as_deref();
+            let current_short = current.map(|m| m.rsplit_once('.').map_or(m, |(_, s)| s));
+            if current == Some(module) || current_short == Some(module) {
+                return short.to_string();
+            }
+        }
+        name.to_string()
+    }
+
+    /// Structural equality of two concrete types, comparing each `Ty::Named`
+    /// either by the permissive suffix rule (`strict == false`) or by
+    /// owner-qualified definition identity (`strict == true`). Non-nominal
+    /// leaves compare exactly; unhandled composite variants fall back to exact
+    /// equality (conservative — a difference there is never reported as a
+    /// #2651 owner conflict).
+    fn nominal_structural_eq(&self, a: &Ty, b: &Ty, strict: bool) -> bool {
+        match (a, b) {
+            (
+                Ty::Named {
+                    name: an, args: aa, ..
+                },
+                Ty::Named {
+                    name: bn, args: ba, ..
+                },
+            ) => {
+                let names_ok = if strict {
+                    let ca = self.strict_nominal_identity(an);
+                    let cb = self.strict_nominal_identity(bn);
+                    ca == cb || Self::builtin_suffix_alias(&ca, &cb)
+                } else {
+                    Ty::names_match_qualified(an, bn)
+                };
+                names_ok
+                    && aa.len() == ba.len()
+                    && aa
+                        .iter()
+                        .zip(ba.iter())
+                        .all(|(x, y)| self.nominal_structural_eq(x, y, strict))
+            }
+            (Ty::Tuple(x), Ty::Tuple(y)) => {
+                x.len() == y.len()
+                    && x.iter()
+                        .zip(y.iter())
+                        .all(|(p, q)| self.nominal_structural_eq(p, q, strict))
+            }
+            (Ty::Array(e1, n1), Ty::Array(e2, n2)) => {
+                n1 == n2 && self.nominal_structural_eq(e1, e2, strict)
+            }
+            (Ty::Slice(e1), Ty::Slice(e2)) => self.nominal_structural_eq(e1, e2, strict),
+            (
+                Ty::Function {
+                    params: p1,
+                    ret: r1,
+                },
+                Ty::Function {
+                    params: p2,
+                    ret: r2,
+                },
+            ) => {
+                p1.len() == p2.len()
+                    && p1
+                        .iter()
+                        .zip(p2.iter())
+                        .all(|(x, y)| self.nominal_structural_eq(x, y, strict))
+                    && self.nominal_structural_eq(r1, r2, strict)
+            }
+            (
+                Ty::Pointer {
+                    is_mutable: m1,
+                    pointee: p1,
+                },
+                Ty::Pointer {
+                    is_mutable: m2,
+                    pointee: p2,
+                },
+            ) => m1 == m2 && self.nominal_structural_eq(p1, p2, strict),
+            (Ty::Borrow { pointee: p1 }, Ty::Borrow { pointee: p2 }) => {
+                self.nominal_structural_eq(p1, p2, strict)
+            }
+            (Ty::Task(i1), Ty::Task(i2)) => self.nominal_structural_eq(i1, i2, strict),
+            _ => a == b,
+        }
+    }
+
+    /// Whether two owner-qualified names are the SAME builtin handle spelled
+    /// bare vs through its stdlib carrier (`HashSet` ↔ `collections.HashSet`,
+    /// `Sender` ↔ `channel.Sender`) — the one bare↔qualified equivalence that is
+    /// sound for a compiler-known builtin regardless of module keying.
+    fn builtin_suffix_alias(a: &str, b: &str) -> bool {
+        if a == b {
+            return true;
+        }
+        let a_qualified = a.contains('.');
+        let b_qualified = b.contains('.');
+        if a_qualified == b_qualified {
+            return false;
+        }
+        let a_bare = a.rsplit_once('.').map_or(a, |(_, bare)| bare);
+        let b_bare = b.rsplit_once('.').map_or(b, |(_, bare)| bare);
+        a_bare == b_bare && crate::lookup_builtin_type(a_bare).is_some()
+    }
+
     /// Fail closed on a bare TYPE reference whose qualified-by-default scope is
     /// ill-formed: more than one imported module *published* the bare name
     /// (ambiguous), or one or more modules export it but none published it (not

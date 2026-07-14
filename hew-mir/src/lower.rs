@@ -8859,6 +8859,28 @@ fn lower_function(
             diagnostics.push(diag);
         }
     }
+    // #2654 fail-closed gate: the actor-state sibling of the record overwrite arm
+    // above. An `ActorStateFieldStore` (`self.dq = src`) over a field whose drop
+    // runs a real close (`Resource`, or a leaking `IoHandle`) has no
+    // release-before-store in codegen, so the old handle leaks and the actor's
+    // shutdown drop double-owns the new one. Reuse the actor's authoritative
+    // per-field classification (`state_field_clone_kinds`) so the refusal fences
+    // exactly the kinds whose drop it names. Runs for actor-handler builds only
+    // (the sole functions with a `current_actor_name` + populated layout).
+    if let Some(layout) = current_actor_name.and_then(|name| actor_layouts.get(name)) {
+        if let Some(kinds) = layout.state_field_clone_kinds.as_deref() {
+            for check in detect_actor_state_resource_overwrite(
+                &raw.blocks,
+                kinds,
+                &layout.state_field_names,
+                &layout.state_field_tys,
+            ) {
+                if let Some(diag) = check_to_diagnostic(&check) {
+                    diagnostics.push(diag);
+                }
+            }
+        }
+    }
 
     LoweredFunction {
         thir,
@@ -47499,6 +47521,123 @@ fn detect_opaque_resource_field_misuse(
                 }
                 _ => {}
             }
+        }
+    }
+    findings
+}
+
+/// True when overwriting an actor-state field of this classified kind would
+/// silently leak the previous handle — the exact #2654 hazard.
+///
+/// The gated kinds are those whose scope-exit / actor-shutdown drop runs a real
+/// close AND whose `ActorStateFieldStore` has NO release-before-store today:
+///
+///   - [`StateFieldCloneKind::Resource`] — a user `#[resource] #[opaque]` handle
+///     whose `close(self)` runs once in `__hew_state_drop_<A>`; the store's
+///     `lower_actor_state_field_store` no-release arm groups it with the other
+///     opaque kinds and emits a bare `store` (the leak this gate fences).
+///   - [`StateFieldCloneKind::IoHandle`] with a pointer-backed handle whose drop
+///     actually frees/closes (`Stream`→`hew_stream_close`, `Sink`→`hew_sink_close`,
+///     `Generator`→`hew_gen_coro_destroy`, `CancellationToken`→
+///     `hew_cancel_token_release`). Same no-release store arm; the descriptor /
+///     coroutine frame / refcount of the OLD handle leaks on overwrite.
+///
+/// NOT gated (no leak on overwrite, so no refusal):
+///
+///   - kinds with an existing release-before-store — `String`/`Bytes`/`Vec`/
+///     `HashMap`/`HashSet` go through `emit_state_field_old_value_release`'s
+///     pointer-inequality guard, which releases the old payload before the store;
+///   - `IoHandle::Connection` — its state-level drop is a no-op (the fd is torn
+///     down by the runtime's actor-teardown, not the state drop), so overwriting
+///     the slot leaks nothing;
+///   - no-close `OpaqueHandle` (e.g. `json.Value`) and `BitCopy` — no owned
+///     resource to leak.
+fn actor_state_kind_leaks_on_overwrite(kind: &crate::state_clone::StateFieldCloneKind) -> bool {
+    use crate::state_clone::{IoHandleKind, StateFieldCloneKind};
+    matches!(
+        kind,
+        StateFieldCloneKind::Resource { .. }
+            | StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Stream
+                    | IoHandleKind::Sink
+                    | IoHandleKind::Generator
+                    | IoHandleKind::CancellationToken,
+            }
+    )
+}
+
+/// #2654 fail-closed gate: refuse an in-place overwrite of an actor-state field
+/// (`self.dq = src`, lowering to `Instr::ActorStateFieldStore`) whose classified
+/// kind leaks the previous handle on overwrite.
+///
+/// This is the actor-state sibling of the record `RecordFieldStore` overwrite arm
+/// in [`detect_opaque_resource_field_misuse`]: the SAME exactly-once-close
+/// invariant, the SAME fail-closed posture (LESSONS boundary-fail-closed,
+/// raii-null-after-move, lifecycle-symmetry). Codegen's actor-state store has no
+/// release-before-store for these kinds (`lower_actor_state_field_store`
+/// no-release arm; `emit_overwrite_neutralize_leaves` null-the-slot arms), so the
+/// old handle's `close` never runs (leak) while the actor's shutdown drop
+/// (`__hew_state_drop_<A>`) double-owns the freshly-stored handle. A safe
+/// release-before-store is deferred to RAII-2 (retain-to-compare + source-slot
+/// null-after-move); until then the operation is refused, exactly as the
+/// structurally identical record store already is on HEAD.
+///
+/// Reuses the authoritative per-field classification
+/// ([`ActorLayout::state_field_clone_kinds`]) — the same vector the drop-body
+/// synthesis and clone/drop registration consume — so the gate cannot drift from
+/// the exact kinds whose drop it fences.
+///
+/// Overwrite only: actor-state resource *extraction* (`let x = self.dq`, giving
+/// `x` independent drop authority) is a distinct latent concern, out of scope for
+/// #2654 — this gate never inspects `ActorStateFieldLoad`.
+fn detect_actor_state_resource_overwrite(
+    blocks: &[BasicBlock],
+    state_field_clone_kinds: &[crate::state_clone::StateFieldCloneKind],
+    state_field_names: &[String],
+    state_field_tys: &[ResolvedTy],
+) -> Vec<MirCheck> {
+    if state_field_clone_kinds.is_empty() {
+        return Vec::new();
+    }
+    let mut findings = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let Instr::ActorStateFieldStore { field_offset, .. } = instr else {
+                continue;
+            };
+            let idx = field_offset.0;
+            let Some(kind) = state_field_clone_kinds.get(idx as usize) else {
+                continue;
+            };
+            if !actor_state_kind_leaks_on_overwrite(kind) || !seen.insert(idx) {
+                continue;
+            }
+            // Name the violation by the mutated state field; fall back to the
+            // rendered handle type when the layout carries no name (mirrors the
+            // record gate's `name_for`).
+            let name = state_field_names
+                .get(idx as usize)
+                .filter(|n| !n.is_empty())
+                .cloned()
+                .unwrap_or_else(|| {
+                    state_field_tys
+                        .get(idx as usize)
+                        .map_or_else(|| format!("field{idx}"), render_owned_handle_ty)
+                });
+            let handle_ty = state_field_tys
+                .get(idx as usize)
+                .map_or_else(|| name.clone(), render_owned_handle_ty);
+            findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
+                // No source-level `BindingId` for an actor-state field; the
+                // field offset is a stable synthetic id (dedup is by offset
+                // above, and `check_to_diagnostic` ignores the binding).
+                binding: BindingId(idx),
+                name,
+                handle_ty,
+                overwrite: true,
+                owner: AggregateOwner::ActorState,
+            });
         }
     }
     findings

@@ -36,6 +36,7 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -204,6 +205,9 @@ pub struct HewConnMgr {
     // native-only: ConnectionActor reader threads do not exist on WASM
     /// Active connections (protected by [`PoisonSafe`] for concurrent add/remove).
     connections: PoisonSafe<Vec<ConnectionActor>>,
+    /// Optional caller-supplied peer identity expectations, consumed exactly
+    /// once by `hew_connmgr_add` after the protocol handshake.
+    expected_peer_ids: PoisonSafe<HashMap<c_int, u16>>,
     /// Transport used for I/O operations.
     pub(crate) transport: *mut HewTransport,
     /// Callback for routing inbound messages to local actors.
@@ -308,12 +312,17 @@ impl Drop for ReaderLifecycleGuard {
 struct ReconnectSettings {
     target_addr: String,
     max_retries: u32,
+    /// Pinned peer `NodeId` from the original `<node_id>@addr` connect target,
+    /// if any. Replayed via `hew_connmgr_expect_peer` on every reconnect
+    /// attempt so the pin survives repeated drops, not just the first one.
+    expected_node_id: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
 struct ReconnectPlan {
     target_addr: String,
     max_retries: u32,
+    expected_node_id: Option<u16>,
 }
 
 /// Inbound message routing callback.
@@ -513,6 +522,12 @@ fn publish_connection_established(
     let published = if mgr.cluster.is_null() {
         true
     } else {
+        // The handshake is the first point where a bare-address dial learns the
+        // peer's real node identity. Admit that authenticated identity before
+        // publishing the connection so SWIM, routing, and registry gossip all
+        // use the same NodeId instead of a caller-side placeholder.
+        // SAFETY: cluster is owned by the live manager.
+        unsafe { (&*mgr.cluster).admit_handshake_peer(peer_node_id) };
         // SAFETY: pointer validity is checked by the callee.
         unsafe {
             crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
@@ -590,6 +605,7 @@ fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
         Some(ReconnectPlan {
             target_addr: reconnect.target_addr.clone(),
             max_retries: reconnect.max_retries.max(1),
+            expected_node_id: reconnect.expected_node_id,
         })
     })
 }
@@ -650,6 +666,92 @@ fn spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan: ReconnectP
     }
 }
 
+/// Outcome of a single [`reconnect_attempt`].
+#[derive(Debug, PartialEq, Eq)]
+enum ReconnectAttemptOutcome {
+    /// The reconnected connection was installed and reconnect was re-armed.
+    Installed,
+    /// The attempt reached `hew_connmgr_expect_peer`/`hew_connmgr_add` and
+    /// was rejected there (e.g. a pinned-identity mismatch). The specific
+    /// reason is already in `hew_last_error` — set by whichever of those two
+    /// calls rejected the attempt.
+    Rejected,
+    /// The attempt failed before reaching the identity gate (invalid
+    /// address, transport connect failure).
+    TransportError,
+}
+
+/// Runs one reconnect attempt: connect, replay the pinned peer identity
+/// (`plan.expected_node_id`) if any, install via `hew_connmgr_add`, and
+/// re-arm reconnect on success.
+///
+/// Extracted from the retry loop so both the worker and tests can drive the
+/// exact install sequence deterministically and same-thread. Bare-address
+/// reconnects (`plan.expected_node_id.is_none()`) skip straight to
+/// `hew_connmgr_add`, unchanged from before this pin was threaded through.
+fn reconnect_attempt(
+    mgr_ptr: *mut HewConnMgr,
+    plan: &ReconnectPlan,
+    dropped_conn_id: c_int,
+    attempt: u32,
+) -> ReconnectAttemptOutcome {
+    let Ok(target_addr) = std::ffi::CString::new(plan.target_addr.as_str()) else {
+        set_last_error(format!(
+            "hew_connmgr_reconnect: invalid reconnect address for dropped conn {dropped_conn_id}"
+        ));
+        return ReconnectAttemptOutcome::TransportError;
+    };
+    // SAFETY: mgr_ptr was checked non-null and remains valid for the connection lifetime.
+    let new_conn_id = match unsafe { connect_addr(mgr_ptr, &target_addr) } {
+        Ok(new_conn_id) => new_conn_id,
+        Err(err) => {
+            set_last_error(format!(
+                "hew_connmgr_reconnect: attempt {attempt}/{} failed for dropped conn {dropped_conn_id}, addr={}: {err}",
+                plan.max_retries, plan.target_addr
+            ));
+            return ReconnectAttemptOutcome::TransportError;
+        }
+    };
+
+    if let Some(expected) = plan.expected_node_id {
+        // SAFETY: mgr_ptr is valid (connect_addr above already dereferenced
+        // it), and new_conn_id was just returned by this manager's transport
+        // and is not yet tracked by the manager.
+        if unsafe { hew_connmgr_expect_peer(mgr_ptr, new_conn_id, expected) } != 0 {
+            // hew_connmgr_expect_peer does not take ownership on failure, and
+            // hew_connmgr_add is never reached on this path, so this call
+            // owns closing the transport connection.
+            // SAFETY: mgr_ptr is valid; new_conn_id is not yet installed, so
+            // no reader thread is racing this close.
+            unsafe { close_transport_conn((&*mgr_ptr).transport, new_conn_id) };
+            return ReconnectAttemptOutcome::Rejected;
+        }
+    }
+
+    // SAFETY: manager pointer is valid until shutdown and join in free.
+    if unsafe { hew_connmgr_add(mgr_ptr, new_conn_id) } != 0 {
+        // hew_connmgr_add owns conn_id cleanup on failure (closes the
+        // transport connection on all failure paths, including a
+        // pinned-identity mismatch) and has already recorded the specific
+        // rejection reason via set_last_error.
+        return ReconnectAttemptOutcome::Rejected;
+    }
+
+    let retries = i32::try_from(plan.max_retries).unwrap_or(i32::MAX);
+    // SAFETY: manager and conn_id are valid after successful add.
+    let _ = unsafe {
+        hew_connmgr_configure_reconnect(
+            mgr_ptr,
+            new_conn_id,
+            target_addr.as_ptr(),
+            1,
+            retries,
+            plan.expected_node_id.map_or(0, i32::from),
+        )
+    };
+    ReconnectAttemptOutcome::Installed
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "FFI callback signature requires owned values"
@@ -675,44 +777,10 @@ fn reconnect_worker_loop(
             return;
         }
 
-        let Ok(target_addr) = std::ffi::CString::new(plan.target_addr.as_str()) else {
-            set_last_error(format!(
-                "hew_connmgr_reconnect: invalid reconnect address for dropped conn {dropped_conn_id}"
-            ));
+        if reconnect_attempt(mgr_ptr, &plan, dropped_conn_id, attempt)
+            == ReconnectAttemptOutcome::Installed
+        {
             return;
-        };
-        // SAFETY: mgr_ptr was checked non-null and remains valid for the connection lifetime.
-        let connect_result = unsafe { connect_addr(mgr_ptr, &target_addr) };
-        match connect_result {
-            Ok(new_conn_id) => {
-                // SAFETY: manager pointer is valid until shutdown and join in free.
-                if unsafe { hew_connmgr_add(mgr_ptr, new_conn_id) } == 0 {
-                    let retries = i32::try_from(plan.max_retries).unwrap_or(i32::MAX);
-                    // SAFETY: manager and conn_id are valid after successful add.
-                    let _ = unsafe {
-                        hew_connmgr_configure_reconnect(
-                            mgr_ptr,
-                            new_conn_id,
-                            target_addr.as_ptr(),
-                            1,
-                            retries,
-                        )
-                    };
-                    return;
-                }
-                // hew_connmgr_add owns conn_id cleanup on failure (closes the
-                // transport connection on all failure paths), so no close here.
-                set_last_error(format!(
-                    "hew_connmgr_reconnect: failed to install reconnected conn on attempt {attempt}/{}, addr={}",
-                    plan.max_retries, plan.target_addr
-                ));
-            }
-            Err(err) => {
-                set_last_error(format!(
-                    "hew_connmgr_reconnect: attempt {attempt}/{} failed for dropped conn {dropped_conn_id}, addr={}: {err}",
-                    plan.max_retries, plan.target_addr
-                ));
-            }
         }
 
         base_backoff_ms = base_backoff_ms
@@ -790,6 +858,12 @@ fn version_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
 
 fn schema_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
     local.schema_hash == peer.schema_hash
+}
+
+fn peer_identity_compatible(local_node_id: u16, peer_node_id: u16, expected: Option<u16>) -> bool {
+    peer_node_id != 0
+        && peer_node_id != local_node_id
+        && expected.is_none_or(|expected| expected == peer_node_id)
 }
 
 unsafe fn send_frame(transport: *mut HewTransport, conn_id: c_int, payload: &[u8]) -> bool {
@@ -1352,7 +1426,7 @@ fn flush_registry_gossip_to_connection(mgr: &HewConnMgr, conn_id: c_int, peer_fe
 /// Returns `0` if the connection is not active or is not registered. SWIM
 /// uses this to cross-check a frame's claimed `from_node` against the identity
 /// established during the handshake.
-fn peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
+pub(crate) fn peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
     mgr.connections.access(|conns| {
         conns
             .iter()
@@ -1926,6 +2000,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
     cabi_guard!(transport.is_null(), std::ptr::null_mut());
     let mgr = Box::new(HewConnMgr {
         connections: PoisonSafe::new(Vec::with_capacity(16)),
+        expected_peer_ids: PoisonSafe::new(HashMap::new()),
         transport,
         inbound_router: router,
         routing_table,
@@ -1941,6 +2016,27 @@ pub unsafe extern "C" fn hew_connmgr_new(
         local_node_id,
     });
     Box::into_raw(mgr)
+}
+
+/// Bind an outbound transport connection to an expected peer `NodeId`.
+///
+/// The expectation is consumed by the next [`hew_connmgr_add`] for `conn_id`.
+/// A handshake claiming a different `NodeId` is rejected before the connection is
+/// installed or published.
+pub(crate) unsafe fn hew_connmgr_expect_peer(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    expected_node_id: u16,
+) -> c_int {
+    if mgr.is_null() || conn_id == HEW_CONN_INVALID || expected_node_id == 0 {
+        set_last_error("hew_connmgr_expect_peer: invalid manager, connection, or node id");
+        return -1;
+    }
+    // SAFETY: caller guarantees mgr is valid.
+    unsafe { &*mgr }
+        .expected_peer_ids
+        .access(|expected| expected.insert(conn_id, expected_node_id));
+    0
 }
 
 /// Destroy a connection manager, closing all connections.
@@ -2102,6 +2198,12 @@ pub unsafe extern "C" fn hew_connmgr_set_reconnect_policy(
 ///
 /// Passing `enabled=0` disables reconnect for `conn_id`.
 ///
+/// `expected_node_id` is the pinned peer `NodeId` from a `<node_id>@addr`
+/// connect target, or `0` if the connect target was a bare address. `0` is
+/// reserved (never a valid assigned node id, consistent with
+/// [`hew_connmgr_expect_peer`]) and means "no pin" here: reconnects for this
+/// connection stay permissive, matching the original bare-address dial.
+///
 /// # Safety
 ///
 /// - `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
@@ -2113,6 +2215,7 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
     target_addr: *const c_char,
     enabled: c_int,
     max_retries: c_int,
+    expected_node_id: c_int,
 ) -> c_int {
     if mgr.is_null() {
         set_last_error("hew_connmgr_configure_reconnect: manager is null");
@@ -2159,6 +2262,7 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
         conn.reconnect = Some(ReconnectSettings {
             target_addr: target_owned.clone().unwrap_or_default(),
             max_retries: retries,
+            expected_node_id: u16::try_from(expected_node_id).ok().filter(|&v| v != 0),
         });
         0
     })
@@ -2195,6 +2299,9 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let mgr_ptr = mgr;
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
+    let expected_peer_node_id = mgr
+        .expected_peer_ids
+        .access(|expected| expected.remove(&conn_id));
 
     if mgr.reconnect_shutdown.load(Ordering::Acquire) {
         // SAFETY: conn_id came from the transport and is not yet tracked by the manager.
@@ -2252,6 +2359,27 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         unsafe { close_transport_conn(mgr.transport, conn_id) };
         return -1;
     };
+    if !peer_identity_compatible(mgr.local_node_id, peer_hs.node_id, expected_peer_node_id) {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        if peer_hs.node_id == 0 {
+            set_last_error(format!(
+                "hew_connmgr_add: peer handshake used reserved node id 0 for conn {conn_id}"
+            ));
+        } else if peer_hs.node_id == mgr.local_node_id {
+            set_last_error(format!(
+                "hew_connmgr_add: peer node id {} collides with local node id for conn {conn_id}",
+                peer_hs.node_id
+            ));
+        } else {
+            set_last_error(format!(
+                "hew_connmgr_add: peer node id {} does not match expected node id {} for conn {conn_id}",
+                peer_hs.node_id,
+                expected_peer_node_id.unwrap_or(0)
+            ));
+        }
+        return -1;
+    }
 
     #[cfg(feature = "encryption")]
     let skip_noise = {
@@ -3042,6 +3170,7 @@ mod tests {
 
         let mgr = HewConnMgr {
             connections: PoisonSafe::new(vec![active, draining]),
+            expected_peer_ids: PoisonSafe::new(HashMap::new()),
             transport: std::ptr::null_mut(),
             inbound_router: None,
             routing_table: std::ptr::null_mut(),
@@ -3085,6 +3214,235 @@ mod tests {
     }
 
     #[test]
+    fn peer_identity_validation_rejects_reserved_colliding_and_unexpected_ids() {
+        assert!(peer_identity_compatible(10, 20, None));
+        assert!(peer_identity_compatible(10, 20, Some(20)));
+        assert!(!peer_identity_compatible(10, 0, None));
+        assert!(!peer_identity_compatible(10, 10, None));
+        assert!(!peer_identity_compatible(10, 20, Some(21)));
+    }
+
+    #[test]
+    fn reconnect_plan_threads_expected_peer_identity() {
+        let mut pinned = ConnectionActor::new(30);
+        pinned.reconnect = Some(ReconnectSettings {
+            target_addr: "127.0.0.1:1".into(),
+            max_retries: 3,
+            expected_node_id: Some(7),
+        });
+        let mut bare = ConnectionActor::new(31);
+        bare.reconnect = Some(ReconnectSettings {
+            target_addr: "127.0.0.1:1".into(),
+            max_retries: 3,
+            expected_node_id: None,
+        });
+        let mgr = HewConnMgr {
+            connections: PoisonSafe::new(vec![pinned, bare]),
+            expected_peer_ids: PoisonSafe::new(HashMap::new()),
+            transport: std::ptr::null_mut(),
+            inbound_router: None,
+            routing_table: std::ptr::null_mut(),
+            cluster: std::ptr::null_mut(),
+            reconnect_enabled: AtomicBool::new(true),
+            reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
+            reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+            inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
+            inbound_ask_active: Arc::new(AtomicUsize::new(0)),
+            reconnect_workers: PoisonSafe::new(Vec::new()),
+            reader_lifecycle: Arc::new(ReaderLifecycle::default()),
+            next_publication_token: AtomicU64::new(1),
+            local_node_id: 1,
+        };
+
+        assert_eq!(
+            reconnect_plan(&mgr, 30)
+                .expect("pinned connection should have a reconnect plan")
+                .expected_node_id,
+            Some(7),
+            "a pinned <node_id>@addr target must thread its expected_node_id into the plan"
+        );
+        assert_eq!(
+            reconnect_plan(&mgr, 31)
+                .expect("bare-address connection should have a reconnect plan")
+                .expected_node_id,
+            None,
+            "a bare-address target must remain unpinned in the plan"
+        );
+    }
+
+    /// Drives [`reconnect_attempt`] same-thread against a stub transport whose
+    /// peer handshake always claims `node_id == 20`, so the result depends
+    /// entirely on whether `expected_node_id` was replayed into
+    /// `hew_connmgr_expect_peer` before `hew_connmgr_add`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages a full stub-transport connmgr install in one place"
+    )]
+    fn run_reconnect_attempt_replay_case(
+        expected_node_id: Option<u16>,
+    ) -> (ReconnectAttemptOutcome, Vec<c_int>, c_int, String) {
+        unsafe extern "C" fn stub_connect(
+            _impl_ptr: *mut std::ffi::c_void,
+            _addr: *const c_char,
+        ) -> c_int {
+            91
+        }
+
+        unsafe extern "C" fn stub_send(
+            _impl_ptr: *mut std::ffi::c_void,
+            _conn_id: c_int,
+            _data: *const std::ffi::c_void,
+            len: usize,
+        ) -> c_int {
+            #[expect(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                reason = "test payload length fits c_int"
+            )]
+            {
+                len as c_int
+            }
+        }
+
+        unsafe extern "C" fn stub_recv(
+            _impl_ptr: *mut std::ffi::c_void,
+            _conn_id: c_int,
+            buf: *mut std::ffi::c_void,
+            len: usize,
+        ) -> c_int {
+            let peer_hs = local_handshake(20, [0u8; NOISE_STATIC_PUBKEY_LEN]);
+            let encoded = peer_hs.serialize();
+            if len != encoded.len() {
+                // A read past the initial handshake (e.g. a post-identity-gate
+                // Noise handshake message under the `encryption` feature) is
+                // not modeled by this stub: fail it explicitly so the caller
+                // sees a transport/upgrade failure, never a length mismatch
+                // on a buffer this stub does not own.
+                return -1;
+            }
+            // SAFETY: buf is valid for len bytes; len matches encoded's length above.
+            unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), buf.cast::<u8>(), len) };
+            #[expect(
+                clippy::cast_possible_wrap,
+                clippy::cast_possible_truncation,
+                reason = "test payload length fits c_int"
+            )]
+            {
+                len as c_int
+            }
+        }
+
+        unsafe extern "C" fn stub_close(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+            // SAFETY: test installs a Mutex<Vec<c_int>> as the transport impl payload.
+            let closed = unsafe { &*(impl_ptr.cast::<Mutex<Vec<c_int>>>()) };
+            closed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(conn_id);
+        }
+
+        let closed = Box::into_raw(Box::new(Mutex::new(Vec::<c_int>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: Some(stub_connect),
+            listen: None,
+            accept: None,
+            send: Some(stub_send),
+            recv: Some(stub_recv),
+            close_conn: Some(stub_close),
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: closed.cast::<std::ffi::c_void>(),
+        });
+        let transport_ptr = Box::into_raw(transport);
+
+        // SAFETY: transport_ptr remains valid for the lifetime of the manager in this test.
+        let mgr = unsafe {
+            hew_connmgr_new(
+                transport_ptr,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+            )
+        };
+        assert!(!mgr.is_null());
+
+        crate::hew_clear_error();
+        let plan = ReconnectPlan {
+            target_addr: "127.0.0.1:1".into(),
+            max_retries: 3,
+            expected_node_id,
+        };
+        let outcome = reconnect_attempt(mgr, &plan, 10, 1);
+        // SAFETY: mgr remains valid until the free call below.
+        let count = unsafe { hew_connmgr_count(mgr) };
+        let error_message = {
+            let ptr = crate::hew_last_error();
+            if ptr.is_null() {
+                String::new()
+            } else {
+                // SAFETY: hew_last_error returns either null or a valid,
+                // NUL-terminated C string owned by this thread's LAST_ERROR.
+                unsafe { std::ffi::CStr::from_ptr(ptr) }
+                    .to_str()
+                    .expect("hew_last_error must be valid UTF-8")
+                    .to_owned()
+            }
+        };
+
+        // SAFETY: test-owned pointers remain valid until this cleanup completes.
+        let closed_ids = unsafe {
+            hew_connmgr_free(mgr);
+            let closed_ids = Box::from_raw(closed)
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            drop(Box::from_raw(transport_ptr));
+            closed_ids
+        };
+        drop(ops);
+
+        (outcome, closed_ids, count, error_message)
+    }
+
+    #[test]
+    fn reconnect_attempt_replays_pin_and_rejects_changed_identity() {
+        // Case A: pinned reconnect must replay the pin and reject the id-20
+        // peer as a changed identity — the exact discriminator that proves
+        // Slice 2 actually calls hew_connmgr_expect_peer before add: without
+        // the replay, `expected` would be None and this peer would pass.
+        let (outcome, closed_ids, count, error_message) =
+            run_reconnect_attempt_replay_case(Some(7));
+        assert_eq!(
+            outcome,
+            ReconnectAttemptOutcome::Rejected,
+            "a reconnect pinned to node 7 must reject a peer claiming node 20"
+        );
+        assert_eq!(
+            count, 0,
+            "a rejected reconnect attempt must not install a connection"
+        );
+        assert_eq!(
+            closed_ids,
+            vec![91],
+            "the rejected reconnect's transport connection must be closed"
+        );
+        assert!(
+            error_message.contains("does not match expected node id 7"),
+            "rejection must surface the identity-gate error, got: {error_message}"
+        );
+
+        // Case B: a bare-address reconnect (no pin) must stay permissive for
+        // the same id-20 peer — the identity gate must not fire at all.
+        let (_, _, _, error_message) = run_reconnect_attempt_replay_case(None);
+        assert!(
+            !error_message.contains("does not match expected node id"),
+            "an unpinned reconnect must not reject on identity, got: {error_message}"
+        );
+    }
+
+    #[test]
     fn link_controls_from_wrong_authenticated_peer_are_rejected() {
         let _guard = crate::runtime_test_guard();
         let mut peer = ConnectionActor::new(10);
@@ -3092,6 +3450,7 @@ mod tests {
         peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
         let mgr = HewConnMgr {
             connections: PoisonSafe::new(vec![peer]),
+            expected_peer_ids: PoisonSafe::new(HashMap::new()),
             transport: std::ptr::null_mut(),
             inbound_router: None,
             routing_table: std::ptr::null_mut(),

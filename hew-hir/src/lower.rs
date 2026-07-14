@@ -411,7 +411,8 @@ const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
 /// Surface it through the same builtin-enum path so
 /// `Err(LinkError::AlreadyLinked)` / `Err(LinkError::TargetDead)` match arms
 /// resolve via `machine_ctor_registry`. Variant order matches
-/// `hew_types::builtin_enums::LINK_ERROR_VARIANTS`: AlreadyLinked=0, TargetDead=1.
+/// `hew_types::builtin_enums::LINK_ERROR_VARIANTS`: AlreadyLinked=0,
+/// TargetDead=1, followed by the cross-node setup failures.
 const SYNTHETIC_LINK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1004);
 pub(crate) const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
 /// Sentinel `ItemId` for the synthetic `HashMapIter<K, V>` record — the
@@ -573,8 +574,11 @@ const BUILTIN_ENUM_VARIANT_BARE_NAMES: &[&str] = &[
     "Closed",
     "NodeRoutingNotWired",
     "NodeNotRunning",
+    "NoCurrentActor",
+    "InvalidTarget",
     "RoutingFailed",
     "EncodeFailed",
+    "EncodeFailure",
     "SendFailed",
     "Timeout",
     "ConnectionDropped",
@@ -657,8 +661,18 @@ const ASK_ERROR_VARIANTS: &[&str] = &[
 const ASK_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 22];
 const TIMEOUT_ERROR_VARIANTS: &[&str] = &["Timeout"];
 const TIMEOUT_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 1];
-const LINK_ERROR_VARIANTS: &[&str] = &["AlreadyLinked", "TargetDead"];
-const LINK_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 2];
+const LINK_ERROR_VARIANTS: &[&str] = &[
+    "AlreadyLinked",
+    "TargetDead",
+    "NodeNotRunning",
+    "NoCurrentActor",
+    "InvalidTarget",
+    "Partition",
+    "StaleRef",
+    "EncodeFailure",
+    "LocalShutdown",
+];
+const LINK_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 9];
 const CRASH_ACTION_VARIANTS: &[&str] = &["Restart", "Escalate", "Kill"];
 const CRASH_ACTION_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 3];
 const CRASH_KIND_VARIANTS: &[&str] = &["Crashed", "HeapExceeded", "PartitionDetected"];

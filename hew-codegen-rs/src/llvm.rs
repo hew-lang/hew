@@ -2474,10 +2474,9 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // supported on wasm32 (basic actors — spawn/send/receive/ask — are).
         "hew_actor_demonitor" => ctx.void_type().fn_type(&[i64_ty.into()], false),
         // hew_node_monitor(target_pid: i64) -> i64
-        // (`hew-runtime/src/dist_monitor.rs`). Registers a distributed monitor
-        // for a remote actor (resolving the current node internally) and returns
-        // the ref_id. codegen-offset-mirror-drift: must match the runtime
-        // `#[no_mangle]` signature.
+        // (`hew-runtime/src/hew_node.rs`). Positive returns are ref ids; negative
+        // returns encode MonitorError as `-(variant + 1)`.
+        // codegen-offset-mirror-drift: must match the runtime signature.
         "hew_node_monitor" => i64_ty.fn_type(&[i64_ty.into()], false),
         // hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64
         // (`hew-runtime/src/dist_monitor.rs`). Blocks until the monitor's terminal
@@ -2488,9 +2487,9 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64
         // (`hew-runtime/src/hew_node.rs`). Establishes a cross-node link: the
         // calling actor links the remote actor `target_pid` with the
-        // `PartitionPolicy` discriminant `policy_tag`. Returns the link ref_id
-        // (non-zero) on a successful registration, 0 on failure (no runtime,
-        // local target, no route). The local actor is resolved internally (like
+        // `PartitionPolicy` discriminant `policy_tag`. Positive returns are
+        // internal link ref ids; negative returns encode LinkError as
+        // `-(variant + 1)`. The local actor is resolved internally (like
         // hew_node_monitor / hew_actor_self), so no node/self argument.
         // codegen-offset-mirror-drift: must match the runtime `#[no_mangle]`
         // signature.

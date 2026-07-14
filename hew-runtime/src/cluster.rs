@@ -1062,6 +1062,28 @@ impl HewCluster {
         }
     }
 
+    /// Admit a previously unknown peer whose `NodeId` was learned from the
+    /// connection protocol handshake.
+    ///
+    /// Existing members are left untouched so a bare reconnect cannot resurrect
+    /// a DEAD/LEFT peer without the strictly-higher incarnation required by the
+    /// gossip admission gate.
+    pub(crate) fn admit_handshake_peer(&self, node_id: u16) {
+        if node_id == 0 || node_id == self.config.local_node_id {
+            return;
+        }
+        let unknown = {
+            let members = self.members.lock_or_recover();
+            !members.iter().any(|member| member.node_id == node_id)
+        };
+        if unknown {
+            // A concurrent connection may admit the same peer between this
+            // check and `upsert_member`; equal-incarnation ALIVE upserts are
+            // idempotent under the member-table lock.
+            self.upsert_member(node_id, MEMBER_ALIVE, 1, &[]);
+        }
+    }
+
     /// Seed a member directly into the table without running the transition
     /// dispatch fan-outs. Used by cross-module tests that need the membership
     /// table to resolve a live incarnation for a node without also triggering the
@@ -2461,6 +2483,19 @@ mod tests {
             local_node_id: node_id,
             ..ClusterConfig::default()
         }
+    }
+
+    #[test]
+    fn handshake_admission_adds_unknown_peer_without_resurrecting_known_dead_peer() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.admit_handshake_peer(2);
+        assert_eq!(cluster.member_state(2), MEMBER_ALIVE);
+        assert_eq!(cluster.member_incarnation(2), Some(1));
+
+        cluster.upsert_member(3, MEMBER_DEAD, 7, &[]);
+        cluster.admit_handshake_peer(3);
+        assert_eq!(cluster.member_state(3), MEMBER_DEAD);
+        assert_eq!(cluster.member_incarnation(3), Some(7));
     }
 
     #[cfg(feature = "profiler")]

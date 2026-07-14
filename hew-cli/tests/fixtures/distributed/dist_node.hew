@@ -26,7 +26,7 @@
 //   - "FAIL <scenario> <detail>"  on any mismatch; main returns non-zero
 import std::os;
 
-import std::link_monitor;
+import std::link_monitor::{ MonitorError };
 
 // Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
 // the Stopped terminal state from within its own handler. `stop(self)` is not a
@@ -38,7 +38,13 @@ import std::link_monitor;
 // Hew surface, so the server calls the runtime api directly.
 extern "C" {
     fn hew_actor_self_stop();
+    fn hew_actor_self_id() -> i64;
     fn hew_node_api_unregister(name: string) -> i32;
+    fn hew_node_api_lookup(name: string) -> i64;
+    fn hew_pid_local_node() -> u16;
+    fn hew_pid_node(pid: i64) -> u16;
+    fn hew_pid_serial(pid: i64) -> u64;
+    fn hew_pid_incarnation(pid: i64) -> u32;
 }
 
 // `record` is Serializable — required for RemotePid messaging across the wire.
@@ -153,6 +159,49 @@ impl ActorMsg for WireProbe {
     type Reply = WireResult;
 }
 
+record DistIdentity {
+    packed: i64,
+    node_id: u16,
+    serial: u64,
+    incarnation: u32,
+}
+
+enum IdentityReq {
+    Inspect;
+}
+
+enum IdentityResp {
+    Value(DistIdentity);
+}
+
+actor IdentityProbe {
+    receive fn handle(_req: IdentityReq) -> IdentityResp {
+        let packed = unsafe {
+            hew_actor_self_id()
+        };
+        let node_id = unsafe {
+            hew_pid_local_node()
+        };
+        let serial = unsafe {
+            hew_pid_serial(packed)
+        };
+        let incarnation = unsafe {
+            hew_pid_incarnation(packed)
+        };
+        IdentityResp::Value(DistIdentity {
+            packed: packed,
+            node_id: node_id,
+            serial: serial,
+            incarnation: incarnation,
+        })
+    }
+}
+
+impl ActorMsg for IdentityProbe {
+    type Msg = IdentityReq;
+    type Reply = IdentityResp;
+}
+
 // ── Cross-node link ───────────────────────────────────────────────────────────
 //
 // The link scenarios prove the OTP "linked processes die together" semantic
@@ -180,7 +229,6 @@ impl ActorMsg for WireProbe {
 // HEW_LINK_PROBE), so the death survives the actor's free. A `CrashLinked`
 // cascade records Crashed (5); a survivor never reaches terminal (sentinel).
 extern "C" {
-    fn hew_actor_self_id() -> i64;
     fn hew_link_probe_terminal_state(actor_id: i64) -> i64;
 }
 
@@ -317,6 +365,25 @@ fn lookup_wire_with_retry(name: string) -> Result<RemotePid<WireProbe>, LookupEr
     }
 }
 
+fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, LookupError> {
+    var attempts: i64 = 0;
+    loop {
+        let found: Result<RemotePid<IdentityProbe>, LookupError> = Node::lookup(name);
+        match found {
+            Result::Ok(pid) => {
+                return Ok(pid);
+            },
+            Result::Err(e) => {
+                attempts = attempts + 1;
+                if attempts >= 50 {
+                    return Err(e);
+                }
+                sleep(100ms);
+            },
+        }
+    }
+}
+
 fn run_server(port: string, scenario: string) {
     let addr = f"127.0.0.1:{port}";
     Node::set_transport("tcp");
@@ -328,6 +395,8 @@ fn run_server(port: string, scenario: string) {
     // remote target. Registering both keeps run_server scenario-independent.
     let wp = spawn WireProbe(calls: 0);
     Node::register("wire", wp);
+    let identity = spawn IdentityProbe;
+    Node::register("identity", identity);
 
     // Readiness signal: emitted ONLY after the actors are registered, so the
     // harness never launches the client against a half-started node.
@@ -500,37 +569,123 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
     0
 }
 
+// Scenario: identity_location
+//
+// Proves the runtime identity tuple across two OS processes. Registry gossip
+// yields a packed remote pid whose `(node_id, serial)` location exactly matches
+// the actor's self-reported identity, whose registration incarnation is the
+// fresh value 0, and whose node is a live SWIM member distinct from this client.
+fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
+    let raw = unsafe {
+        hew_node_api_lookup("identity")
+    };
+    if raw == 0 {
+        println("FAIL identity_location raw-lookup-zero");
+        return 2;
+    }
+    let local_node = unsafe {
+        hew_pid_local_node()
+    };
+    let remote_node = unsafe {
+        hew_pid_node(raw)
+    };
+    let remote_serial = unsafe {
+        hew_pid_serial(raw)
+    };
+    let remote_incarnation = unsafe {
+        hew_pid_incarnation(raw)
+    };
+    let member_state = unsafe {
+        hew_dist_member_state(remote_node)
+    };
+    if local_node == 0 || remote_node == 0 || local_node == remote_node {
+        println("FAIL identity_location node-ids-not-distinct");
+        return 3;
+    }
+    if remote_serial == 0 {
+        println("FAIL identity_location serial-zero");
+        return 4;
+    }
+    if remote_incarnation != 0 {
+        println(f"FAIL identity_location client-incarnation={remote_incarnation}");
+        return 5;
+    }
+    if member_state != 0 {
+        println(f"FAIL identity_location member-state={member_state}");
+        return 6;
+    }
+    let inspected = identity.ask(IdentityReq::Inspect, 5000);
+    match inspected {
+        Result::Err(_) => {
+            println("FAIL identity_location inspect-ask-error");
+            return 7;
+        },
+        Result::Ok(resp) => {
+            match resp {
+                IdentityResp::Value(actual) => {
+                    if actual.packed != raw {
+                        println("FAIL identity_location packed-mismatch");
+                        return 8;
+                    }
+                    if actual.node_id != remote_node {
+                        println("FAIL identity_location node-mismatch");
+                        return 9;
+                    }
+                    if actual.serial != remote_serial {
+                        println("FAIL identity_location serial-mismatch");
+                        return 10;
+                    }
+                    if actual.incarnation != remote_incarnation {
+                        println("FAIL identity_location incarnation-mismatch");
+                        return 11;
+                    }
+                },
+            }
+        },
+    }
+    println(f"PASS identity_location local={local_node} remote={remote_node} serial={remote_serial} incarnation={remote_incarnation} state={member_state}");
+    0
+}
+
 // Scenario: remote_monitor_clean_exit
 //
 // The client monitors the remote KeyValue actor, then tells it to stop. The
 // monitor must deliver exactly one DOWN carrying the clean-exit reason (6).
 fn scenario_remote_monitor_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
-    let m: MonitorRef = monitor(kv);
-    let send_stop = kv.send(KvReq::StopSelf);
-    match send_stop {
+    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
+    match setup {
         Result::Err(_) => {
-            println("FAIL remote_monitor_clean_exit stop-send-error");
-            return 2;
+            println("FAIL remote_monitor_clean_exit setup-error");
+            1
         },
-        Result::Ok(_) => {},
+        Result::Ok(m) => {
+            let send_stop = kv.send(KvReq::StopSelf);
+            match send_stop {
+                Result::Err(_) => {
+                    println("FAIL remote_monitor_clean_exit stop-send-error");
+                    return 2;
+                },
+                Result::Ok(_) => {},
+            }
+            let reason = m.recv_down(10000);
+            if reason == 6 {
+                println(f"PASS remote_monitor_clean_exit reason={reason}");
+            } else {
+                println(f"FAIL remote_monitor_clean_exit reason={reason}");
+                return 3;
+            }
+            // Negative guard for exactly-once: a second recv must time out (-2),
+            // proving no duplicate DOWN was delivered for the same registration.
+            let dup = m.recv_down(1000);
+            if dup == -2 {
+                println("PASS remote_monitor_clean_exit no-dup");
+            } else {
+                println(f"FAIL remote_monitor_clean_exit dup-reason={dup}");
+                return 4;
+            }
+            0
+        },
     }
-    let reason = m.recv_down(10000);
-    if reason == 6 {
-        println(f"PASS remote_monitor_clean_exit reason={reason}");
-    } else {
-        println(f"FAIL remote_monitor_clean_exit reason={reason}");
-        return 3;
-    }
-    // Negative guard for exactly-once: a second recv must time out (-2), proving
-    // no duplicate DOWN was delivered for the same registration.
-    let dup = m.recv_down(1000);
-    if dup == -2 {
-        println("PASS remote_monitor_clean_exit no-dup");
-    } else {
-        println(f"FAIL remote_monitor_clean_exit dup-reason={dup}");
-        return 4;
-    }
-    0
 }
 
 // Scenario: remote_monitor_crash
@@ -538,30 +693,38 @@ fn scenario_remote_monitor_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
 // The client monitors the remote KeyValue actor, then tells it to crash. The
 // monitor must deliver exactly one DOWN carrying the crash reason (5).
 fn scenario_remote_monitor_crash(kv: RemotePid<KeyValue>) -> i64 {
-    let m: MonitorRef = monitor(kv);
-    let send_crash = kv.send(KvReq::CrashSelf);
-    match send_crash {
+    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
+    match setup {
         Result::Err(_) => {
-            println("FAIL remote_monitor_crash crash-send-error");
-            return 2;
+            println("FAIL remote_monitor_crash setup-error");
+            1
         },
-        Result::Ok(_) => {},
+        Result::Ok(m) => {
+            let send_crash = kv.send(KvReq::CrashSelf);
+            match send_crash {
+                Result::Err(_) => {
+                    println("FAIL remote_monitor_crash crash-send-error");
+                    return 2;
+                },
+                Result::Ok(_) => {},
+            }
+            let reason = m.recv_down(10000);
+            if reason == 5 {
+                println(f"PASS remote_monitor_crash reason={reason}");
+            } else {
+                println(f"FAIL remote_monitor_crash reason={reason}");
+                return 3;
+            }
+            let dup = m.recv_down(1000);
+            if dup == -2 {
+                println("PASS remote_monitor_crash no-dup");
+            } else {
+                println(f"FAIL remote_monitor_crash dup-reason={dup}");
+                return 4;
+            }
+            0
+        },
     }
-    let reason = m.recv_down(10000);
-    if reason == 5 {
-        println(f"PASS remote_monitor_crash reason={reason}");
-    } else {
-        println(f"FAIL remote_monitor_crash reason={reason}");
-        return 3;
-    }
-    let dup = m.recv_down(1000);
-    if dup == -2 {
-        println("PASS remote_monitor_crash no-dup");
-    } else {
-        println(f"FAIL remote_monitor_crash dup-reason={dup}");
-        return 4;
-    }
-    0
 }
 
 // Scenario: remote_monitor_conn_drop
@@ -571,25 +734,66 @@ fn scenario_remote_monitor_crash(kv: RemotePid<KeyValue>) -> i64 {
 // sentinel (-1) for the connection-drop / partition cause — distinct from the
 // clean-exit and crash reasons.
 fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
-    let m: MonitorRef = monitor(kv);
-    // Signal readiness so the harness knows the monitor is registered before it
-    // kills the server. The actor stays alive; only the connection drops.
-    println("READY_DROP remote_monitor_conn_drop");
-    let reason = m.recv_down(30000);
-    if reason == -1 {
-        println(f"PASS remote_monitor_conn_drop reason={reason}");
-    } else {
-        println(f"FAIL remote_monitor_conn_drop reason={reason}");
-        return 3;
+    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
+    match setup {
+        Result::Err(_) => {
+            println("FAIL remote_monitor_conn_drop setup-error");
+            1
+        },
+        Result::Ok(m) => {
+            // Signal readiness so the harness knows the monitor is registered
+            // before it kills the server. The actor stays alive; only the
+            // connection drops.
+            println("READY_DROP remote_monitor_conn_drop");
+            let reason = m.recv_down(30000);
+            if reason == -1 {
+                println(f"PASS remote_monitor_conn_drop reason={reason}");
+            } else {
+                println(f"FAIL remote_monitor_conn_drop reason={reason}");
+                return 3;
+            }
+            let dup = m.recv_down(1000);
+            if dup == -2 {
+                println("PASS remote_monitor_conn_drop no-dup");
+            } else {
+                println(f"FAIL remote_monitor_conn_drop dup-reason={dup}");
+                return 4;
+            }
+            0
+        },
     }
-    let dup = m.recv_down(1000);
-    if dup == -2 {
-        println("PASS remote_monitor_conn_drop no-dup");
-    } else {
-        println(f"FAIL remote_monitor_conn_drop dup-reason={dup}");
-        return 4;
+}
+
+// Scenario: remote_monitor_setup_after_drop
+//
+// The harness kills the server after READY_DROP. Once route teardown reaches the
+// client, monitor(RemotePid) must return Err(MonitorError::Partition) rather than
+// a zero-valued or inert MonitorRef.
+fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
+    println("READY_DROP remote_monitor_setup_after_drop");
+    var attempts: i64 = 0;
+    loop {
+        let setup: Result<MonitorRef, MonitorError> = monitor(kv);
+        match setup {
+            Result::Err(MonitorError::Partition) => {
+                println("PASS remote_monitor_setup_after_drop error=Partition");
+                return 0;
+            },
+            Result::Err(_) => {
+                println("FAIL remote_monitor_setup_after_drop wrong-error");
+                return 2;
+            },
+            Result::Ok(monitor_ref) => {
+                monitor_ref.close();
+                attempts = attempts + 1;
+                if attempts >= 100 {
+                    println("FAIL remote_monitor_setup_after_drop never-failed");
+                    return 3;
+                }
+                sleep(100ms);
+            },
+        }
     }
-    0
 }
 
 // Scenario: partition_ask
@@ -839,18 +1043,23 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
 
 fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
     // Register a monitor on the server's long-lived actor.
-    let m: MonitorRef = monitor(kv);
-    // Signal readiness so the harness knows CTRL_MONITOR_REQ has been sent.
-    // The server then confirms receipt (READY_SERVER_WATCHER_REGISTERED) before
-    // the harness kills this process, closing the registration race.
-    println("READY_CLIENT_WATCHER monitor_watcher_node_death");
-    // Block until this process is killed (SIGKILL from harness). The generous
-    // timeout keeps `m` alive and in scope so MonitorRef's Drop does not send
-    // CTRL_DEMONITOR before the harness kill arrives.
-    let down_reason = m.recv_down(120000);
-    // On a real kill this line is never reached. Return the down reason to
-    // keep `m` alive until here and suppress the unused-value warning.
-    down_reason
+    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
+    match setup {
+        Result::Err(_) => {
+            println("FAIL monitor_watcher_node_death setup-error");
+            1
+        },
+        Result::Ok(m) => {
+            // Signal readiness so the harness knows CTRL_MONITOR_REQ has been sent.
+            // The server then confirms receipt (READY_SERVER_WATCHER_REGISTERED)
+            // before the harness kills this process, closing the registration race.
+            println("READY_CLIENT_WATCHER monitor_watcher_node_death");
+            // Block until this process is killed (SIGKILL from harness). The
+            // generous timeout keeps the Result owner alive and in scope so its
+            // MonitorRef payload does not demonitor before the harness kill arrives.
+            m.recv_down(120000)
+        },
+    }
 }
 
 // ── Cross-node link scenarios ────────────────────────────────────────────────
@@ -1038,19 +1247,24 @@ fn scenario_server_monitor_close_reclaim() {
 }
 
 fn scenario_client_monitor_close_reclaim(kv: RemotePid<KeyValue>) -> i64 {
-    let m: MonitorRef = monitor(kv);
-    // Signal the watch is live so the server records the target-side entry and
-    // confirms (READY_SERVER_WATCHER_REGISTERED) before we close, closing the
-    // registration race.
-    println("READY_CLIENT_WATCHER cross_node_monitor_close_reclaim");
-    // Give the server time to record the target-side entry before we demonitor.
-    sleep(800ms);
-    // Close the monitor: must route cross-node (send CTRL_DEMONITOR to the peer
-    // + reclaim the local watcher entry), not hit the local table and no-op.
-    m.close();
-    // Stay alive briefly so the CTRL_DEMONITOR is delivered before shutdown.
-    sleep(800ms);
-    0
+    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
+    match setup {
+        Result::Err(_) => {
+            println("FAIL cross_node_monitor_close_reclaim setup-error");
+            1
+        },
+        Result::Ok(m) => {
+            // Signal the watch is live so the server records the target-side
+            // entry and confirms before the explicit close sends CTRL_DEMONITOR.
+            println("READY_CLIENT_WATCHER cross_node_monitor_close_reclaim");
+            sleep(800ms);
+            m.close();
+            // Keep the node alive after the close so the control frame is
+            // delivered before Node::shutdown tears down the connection.
+            sleep(800ms);
+            0
+        },
+    }
 }
 
 // Scenario: quarantine_rejoin
@@ -1150,6 +1364,17 @@ fn run_client(port: string, scenario: string) -> i64 {
         // Membership-gate scenario: driven entirely through injected gossip on the
         // local cluster, so it needs no remote actor lookup.
         scenario_quarantine_rejoin()
+    } else if scenario == "identity_location" {
+        let found_identity = lookup_identity_with_retry("identity");
+        match found_identity {
+            Result::Err(_) => {
+                println(f"FAIL {scenario} lookup-unresolved");
+                1
+            },
+            Result::Ok(identity) => {
+                scenario_identity_location(identity)
+            },
+        }
     } else if scenario == "wire_cbor" {
         let found_wire = lookup_wire_with_retry("wire");
         match found_wire {
@@ -1181,32 +1406,36 @@ fn run_client(port: string, scenario: string) -> i64 {
                             if scenario == "remote_monitor_conn_drop" {
                                 scenario_remote_monitor_conn_drop(kv)
                             } else {
-                                if scenario == "partition_ask" {
-                                    scenario_partition_ask(kv)
+                                if scenario == "remote_monitor_setup_after_drop" {
+                                    scenario_remote_monitor_setup_after_drop(kv)
                                 } else {
-                                    if scenario == "stale_ref" {
-                                        scenario_stale_ref(kv)
+                                    if scenario == "partition_ask" {
+                                        scenario_partition_ask(kv)
                                     } else {
-                                        if scenario == "monitor_watcher_node_death" {
-                                            scenario_client_watcher_node_death(kv)
+                                        if scenario == "stale_ref" {
+                                            scenario_stale_ref(kv)
                                         } else {
-                                            if scenario == "link_remote_clean_exit" {
-                                                scenario_link_remote_clean_exit(kv)
+                                            if scenario == "monitor_watcher_node_death" {
+                                                scenario_client_watcher_node_death(kv)
                                             } else {
-                                                if scenario == "link_remote_crash" {
-                                                    scenario_link_remote_crash(kv)
+                                                if scenario == "link_remote_clean_exit" {
+                                                    scenario_link_remote_clean_exit(kv)
                                                 } else {
-                                                    if scenario == "link_remote_partition" {
-                                                        scenario_link_remote_partition(kv)
+                                                    if scenario == "link_remote_crash" {
+                                                        scenario_link_remote_crash(kv)
                                                     } else {
-                                                        if scenario == "link_remote_non_crashlinked" {
-                                                            scenario_link_remote_non_crashlinked(kv)
+                                                        if scenario == "link_remote_partition" {
+                                                            scenario_link_remote_partition(kv)
                                                         } else {
-                                                            if scenario == "cross_node_monitor_close_reclaim" {
-                                                                scenario_client_monitor_close_reclaim(kv)
+                                                            if scenario == "link_remote_non_crashlinked" {
+                                                                scenario_link_remote_non_crashlinked(kv)
                                                             } else {
-                                                                println(f"FAIL {scenario} unknown-scenario");
-                                                                90
+                                                                if scenario == "cross_node_monitor_close_reclaim" {
+                                                                    scenario_client_monitor_close_reclaim(kv)
+                                                                } else {
+                                                                    println(f"FAIL {scenario} unknown-scenario");
+                                                                    90
+                                                                }
                                                             }
                                                         }
                                                     }

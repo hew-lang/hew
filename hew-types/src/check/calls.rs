@@ -1166,8 +1166,10 @@ impl Checker {
             // `monitor(LocalPid<T>)` form stays on the generic `fn_sigs` path
             // below (registered with a `LocalPid` receiver). When the argument
             // resolves to a `RemotePid<T>`, accept it here and return
-            // `MonitorRef` — the MIR lowering branches on the argument's
-            // resolved type to route a remote receiver to the node monitor ABI
+            // `Result<MonitorRef, MonitorError>` — remote setup can fail before
+            // a registration exists, so it must not manufacture a zero-valued
+            // handle. The MIR lowering branches on the argument's resolved type
+            // to route a remote receiver to the node monitor ABI
             // (`hew_node_monitor`) instead of the in-process `hew_actor_monitor`.
             // The cross-node LINK form is `link_remote(RemotePid<T>,
             // PartitionPolicy)` — its own builtin, routed via the generic
@@ -1178,7 +1180,7 @@ impl Checker {
                 let arg_ty = self.synthesize(expr, sp);
                 let resolved = self.subst.resolve(&arg_ty);
                 if resolved.as_remote_pid().is_some() {
-                    let result_ty = Ty::monitor_ref();
+                    let result_ty = Ty::result(Ty::monitor_ref(), Ty::monitor_error());
                     self.record_type(span, &result_ty);
                     return result_ty;
                 }

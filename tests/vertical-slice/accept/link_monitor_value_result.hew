@@ -39,6 +39,9 @@ fn main() -> i64 {
         Err(LinkError::TargetDead) => {
             exit(3);
         },
+        Err(_) => {
+            exit(4);
+        },
     }
     // monitor() in value position: constructs MonitorRef { ref_id: i64 }.
     // The value is move-only (#[resource]); constructing it without NYI and

@@ -969,10 +969,16 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStreamPair {
-    use crate::transport::{tcp_clone_stream, tcp_release_conn};
+    use crate::transport::{tcp_clone_stream, tcp_full_close_conn, tcp_release_conn};
 
     // Clone the read fd.
     let Some(read_stream) = tcp_clone_stream(conn) else {
+        // Consumed-on-call contract: `conn` is dead-by-move at the source level
+        // on every return path, so the runtime is its sole releaser. No clone
+        // survives here — fully close and release the original entry (removes
+        // the table slot and closes the fd) before returning the null pair.
+        // Without this the socket + table slot leak on an ordinary failure.
+        tcp_full_close_conn(conn);
         set_last_error_with_errno(
             format!("hew_tcp_stream_from_conn: invalid connection handle {conn}"),
             9, // EBADF
@@ -982,7 +988,11 @@ pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStream
 
     // Clone the write fd.
     let Some(write_stream) = tcp_clone_stream(conn) else {
-        // read_stream RAII drops its clone here.
+        // `read_stream` is a live dup of the socket and RAII-drops on return
+        // (closing its own dup fd). Full-close the original table entry: a
+        // distinct fd, so no double-close. Both fds are released and the table
+        // slot is freed — the consumed connection is not stranded.
+        tcp_full_close_conn(conn);
         set_last_error_with_errno(
             format!("hew_tcp_stream_from_conn: could not clone write fd for handle {conn}"),
             9, // EBADF

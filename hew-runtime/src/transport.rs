@@ -2736,19 +2736,52 @@ pub extern "C" fn hew_tcp_detach(conn: c_int) {
     crate::reactor::reactor_detach_conn(conn);
 }
 
+/// Fully close a TCP *connection* handle: detach it from the active-mode
+/// reactor, remove its table entry, and `shutdown(Both)` the socket before the
+/// stored `TcpStream` drops (closing the fd). Returns `true` if a connection
+/// entry was present and removed, `false` if `handle` is not a live connection.
+///
+/// This is the shared connection-close body used by [`hew_tcp_close`] (its
+/// connection branch) and by the clone-failure early-returns in
+/// `hew_tcp_stream_from_conn`. Factoring it here keeps a single close path so a
+/// *consumed* connection is released on every return path of the stream bridge,
+/// not only on full success.
+///
+/// Unlike [`tcp_release_conn`] (remove-without-shutdown, which keeps the socket
+/// alive for the two clones the success path just made) this fully tears the
+/// connection down. On the clone-failure paths there is no surviving clone that
+/// shares this fd — either no clone was made (first-clone failure) or the one
+/// live clone (`read_stream` on second-clone failure) is a distinct dup'd fd
+/// that RAII-drops independently — so `shutdown(Both)` here is safe and closes
+/// exactly the original fd.
+pub(crate) fn tcp_full_close_conn(handle: c_int) -> bool {
+    // Detach from the active-mode reactor first so the reactor stops polling a
+    // fd we are about to close (reactor-fd ownership: unregister before close).
+    // No-op on the bridge failure path (that path never attached to the
+    // reactor); kept for symmetry with `hew_tcp_close` and robustness if the
+    // call graph ever changes.
+    crate::reactor::reactor_detach_conn(handle);
+    TCP_API_STATE.access(|state| {
+        if let Some(stream) = state.streams.remove(&handle) {
+            let _ = stream.shutdown(Shutdown::Both);
+            true
+        } else {
+            false
+        }
+    })
+}
+
 /// Close either a TCP connection handle or listener handle.
 ///
 /// Returns 0 on success, -1 if handle is unknown.
 #[no_mangle]
 pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
-    // Detach from the active-mode reactor first so the reactor stops polling a
-    // fd we are about to close (reactor-fd ownership: unregister before close).
-    crate::reactor::reactor_detach_conn(handle);
+    // Connection branch: detach from the reactor, remove, and shutdown.
+    if tcp_full_close_conn(handle) {
+        return 0;
+    }
+    // Otherwise it may be a listener handle.
     TCP_API_STATE.access(|state| {
-        if let Some(stream) = state.streams.remove(&handle) {
-            let _ = stream.shutdown(Shutdown::Both);
-            return 0;
-        }
         if state.listeners.remove(&handle).is_some() {
             return 0;
         }

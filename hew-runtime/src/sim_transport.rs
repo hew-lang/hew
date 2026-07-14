@@ -266,6 +266,132 @@ struct ConnTable {
     listeners: HashMap<String, VecDeque<c_int>>,
 }
 
+/// Test-only proof that a `recv` loop has reached its real parked wait
+/// — the `cv.wait_timeout` / `cv.wait_while` registration in the
+/// `Empty` arm of `sim_recv`'s loop — before a test proceeds to
+/// destroy the transport. Gated on `cfg(test)`: the `sim-transport`
+/// feature build used outside `cargo test` allocates and touches none
+/// of this, so recv-loop production behavior is unchanged; production
+/// keeps its original per-call, throwaway `Mutex::new(())` "yielder".
+///
+/// This reuses the *same mutex* the recv loop passes into
+/// `cv.wait_timeout` / `cv.wait_while` (`state`, shared per-instance
+/// instead of per-call) rather than a side-channel flag notified
+/// before the loop actually waits. That distinction matters:
+/// `Condvar::wait*` unlocks its mutex only as it atomically registers
+/// the calling thread as a waiter — no other implementation is
+/// possible without risking a lost wakeup. So once a test thread has
+/// itself acquired `state` after observing `parked == true`, the recv
+/// loop is *provably* already registered on `cv` (not merely
+/// scheduled, and not merely past a table/partition check) — the
+/// mutex could not have been released any other way. A prior version
+/// of this handshake set a side-channel flag immediately before the
+/// recv loop took its own fresh lock; that left a window where a test
+/// could observe the flag, destroy the transport, and have
+/// `shutdown`'s `notify_all` fire before the recv loop's
+/// `cv.wait_timeout` call began — a lost wakeup papered over by the
+/// loop's 5ms self-timeout, falsely passing the test on the very
+/// pre-notify schedule it was meant to rule out.
+///
+/// Registration alone is still not sufficient proof of a *destroy*
+/// wake: a bounded `cv.wait_timeout` can resolve via its own watchdog
+/// on the very cycle a test thread is racing to destroy the
+/// transport, and merely *delaying* when the recv loop is allowed to
+/// act on that resolution (e.g. by a test thread holding the shared
+/// mutex across the destroy call) does not change *why* the wait
+/// resolved — it only changes when the loop finds out. A prior
+/// version of this handshake tried to prove a destroy wake that way
+/// and was rightly rejected: the recv loop's own watchdog could still
+/// have fired first, with the delayed reacquire only coincidentally
+/// observing a destroy-side flag that had *since* been set — proving
+/// ordering of observation, not causality of wake.
+///
+/// The only implementation that actually proves the wake was
+/// destroy-caused is to remove the watchdog from the equation
+/// entirely for this proof: `strict_destroy_wake`, once set, makes
+/// the recv loop block on `cv.wait_while(state, |s| !s.destroyed)` —
+/// unbounded, re-checking the predicate under `state`'s lock on every
+/// wake (real or spurious) — and `destroyed` is a predicate *only*
+/// `shutdown()` can ever set, under this same lock, immediately
+/// before calling `cv.notify_all()`. In this mode there is no other
+/// exit from the wait: no fuse to race, no stale flag to
+/// misattribute, no schedule under which the recv loop can resume for
+/// any reason other than a genuine destroy-side notify.
+#[cfg(test)]
+struct ParkHandshake {
+    /// Doubles as the recv loop's `cv.wait_timeout` / `cv.wait_while`
+    /// mutex in test builds — the same mutex `cv` is paired with, so a
+    /// test thread proves genuine registration by acquiring it only
+    /// once the recv loop has released it into the wait.
+    state: Mutex<ParkState>,
+    /// Separate from `cv` — used only to wake a test thread blocked
+    /// waiting for `state.parked` to flip, never touched by
+    /// production wake paths (`send` / `close_conn` / `shutdown` /
+    /// `Drop`).
+    parked_cv: Condvar,
+    /// Opt-in: false by default, preserving the bounded
+    /// `cv.wait_timeout` path every other `cfg(test)` test in this
+    /// module relies on. `destroy_wakes_blocked_recv` sets this before
+    /// spawning its recv thread to switch that one test's recv loop
+    /// onto the unbounded, predicate-only `cv.wait_while` path.
+    strict_destroy_wake: AtomicBool,
+}
+
+/// Shared predicate state guarded by [`ParkHandshake::state`].
+#[cfg(test)]
+#[derive(Default)]
+struct ParkState {
+    /// `true` for the span of exactly one parking attempt: set
+    /// immediately before the recv loop hands this guard to
+    /// `cv.wait_timeout` / `cv.wait_while`, reset to `false`
+    /// immediately after that call returns (whatever the cause) so the
+    /// flag never outlives the attempt it describes ("reset it per
+    /// receive").
+    parked: bool,
+    /// The *only* destroy-side predicate transition, and the *only*
+    /// exit condition `cv.wait_while` accepts in strict mode:
+    /// `shutdown()` (`cfg(test)` only) sets this to `true`, under
+    /// `state`'s lock, immediately before calling `cv.notify_all()`.
+    /// Never reset — `shutdown` is terminal.
+    destroyed: bool,
+}
+
+#[cfg(test)]
+impl ParkHandshake {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ParkState::default()),
+            parked_cv: Condvar::new(),
+            strict_destroy_wake: AtomicBool::new(false),
+        }
+    }
+
+    /// Block until the recv loop has locked `state`, set `parked`,
+    /// and (by the time this returns) necessarily released `state`
+    /// into `cv.wait_timeout` / `cv.wait_while` — the only path by
+    /// which this call can regain the lock once the flag is observed
+    /// true. Returns the held guard so the caller can choose exactly
+    /// when to release it, or `None` on timeout.
+    fn wait_until_parked(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Option<std::sync::MutexGuard<'_, ParkState>> {
+        let guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (guard, timed_out) = self
+            .parked_cv
+            .wait_timeout_while(guard, timeout, |s| !s.parked)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if timed_out.timed_out() {
+            None
+        } else {
+            Some(guard)
+        }
+    }
+}
+
 /// Internal heavy state for a `SimTransport`. Held behind an `Arc`
 /// inside an [`ImplShell`]; reclaimed when the last `Arc` clone is
 /// dropped (i.e. after `sim_destroy` has tombstoned the shell *and*
@@ -285,6 +411,9 @@ struct SimTransportState {
     // ships an invariant that requires it (HEW-DIST-SPEC §14 invariants 5/6).
     _min_delay_ms: u64,
     _max_delay_ms: u64,
+    /// Test-only recv-park proof — see [`ParkHandshake`].
+    #[cfg(test)]
+    recv_park: ParkHandshake,
 }
 
 impl SimTransportState {
@@ -299,6 +428,8 @@ impl SimTransportState {
             rng: Mutex::new(SmallRng::seed_from_u64(cfg.seed)),
             _min_delay_ms: cfg.min_delay_ms,
             _max_delay_ms: cfg.max_delay_ms,
+            #[cfg(test)]
+            recv_park: ParkHandshake::new(),
         }
     }
 
@@ -333,6 +464,24 @@ impl SimTransportState {
             t.conns.clear();
             t.listeners.clear();
         });
+        // The only destroy-side predicate transition a test can
+        // observe — see `ParkHandshake`. Stamped under `recv_park.state`
+        // immediately before the wake so `strict_destroy_wake` mode's
+        // `cv.wait_while(state, |s| !s.destroyed)` has a predicate to
+        // resolve on. The test thread must have already released this
+        // lock (it only ever holds it transiently, to prove
+        // registration) — by the time `shutdown` runs, the recv loop
+        // is either genuinely parked in the wait or not yet started, so
+        // this cannot deadlock.
+        #[cfg(test)]
+        {
+            let mut state = self
+                .recv_park
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.destroyed = true;
+        }
         self.cv.notify_all();
     }
 }
@@ -620,6 +769,15 @@ unsafe extern "C" fn sim_recv(
     //
     // For the slice-2 invariants, the test driver always sends before
     // recv'ing, so the loop body usually finds a frame on the first pass.
+    //
+    // The `#[cfg(not(test))]` throwaway mutex below is production's only
+    // path: a fresh, unshared `Mutex<()>` exists solely to satisfy
+    // `Condvar::wait_timeout`'s API (it guards no real data — the actual
+    // wake conditions live in `partition` / `table`). `cfg(test)` builds
+    // use the per-instance `recv_park` handshake instead so a test can
+    // deterministically prove this loop reached its real parked wait —
+    // see [`ParkHandshake`].
+    #[cfg(not(test))]
     let yielder = Mutex::new(());
     loop {
         if st.partition.load(Ordering::Acquire) {
@@ -688,16 +846,64 @@ unsafe extern "C" fn sim_recv(
                 // Park briefly with a bounded timeout. `notify_all` from
                 // `send` / `close_conn` / `Drop` / partition setter wakes us
                 // immediately; the timeout only matters as a deadlock fuse.
-                let guard = yielder
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let _ = st
-                    .cv
-                    .wait_timeout(guard, std::time::Duration::from_millis(5))
-                    .unwrap_or_else(|e| {
-                        let (g, t) = e.into_inner();
-                        (g, t)
-                    });
+                //
+                // `cfg(test)` builds lock+flag+release the *shared*
+                // `recv_park.state` mutex into `cv.wait_timeout` (or, in
+                // `strict_destroy_wake` mode, `cv.wait_while`) instead of
+                // a fresh per-call mutex, so a test thread can prove real
+                // registration on `cv` by successfully acquiring that
+                // same mutex after observing the flag — see
+                // [`ParkHandshake`]. Production (`cfg(not(test))`) is
+                // byte-for-byte the original throwaway-mutex path.
+                #[cfg(test)]
+                {
+                    let mut guard = st
+                        .recv_park
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.parked = true;
+                    st.recv_park.parked_cv.notify_all();
+                    if st.recv_park.strict_destroy_wake.load(Ordering::Acquire) {
+                        // Regression mode (`destroy_wakes_blocked_recv`
+                        // only): block until `shutdown()` sets
+                        // `destroyed` under this same lock and calls
+                        // `cv.notify_all()`. No timeout, no other exit —
+                        // `wait_while` re-checks the predicate under the
+                        // lock on every real or spurious wake, so the
+                        // only way this call can ever return is a
+                        // genuine destroy-side notify.
+                        guard = st
+                            .cv
+                            .wait_while(guard, |s| !s.destroyed)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    } else {
+                        let (next_guard, _) = st
+                            .cv
+                            .wait_timeout(guard, std::time::Duration::from_millis(5))
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard = next_guard;
+                    }
+                    // Reset per receive: this attempt's parked window has
+                    // ended (whatever caused the wait to return), so the
+                    // flag must not read as a currently-active park on
+                    // the next Empty-arm visit.
+                    guard.parked = false;
+                    drop(guard);
+                }
+                #[cfg(not(test))]
+                {
+                    let guard = yielder
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let _ = st
+                        .cv
+                        .wait_timeout(guard, std::time::Duration::from_millis(5))
+                        .unwrap_or_else(|e| {
+                            let (g, t) = e.into_inner();
+                            (g, t)
+                        });
+                }
             }
         }
     }
@@ -1689,10 +1895,21 @@ mod tests {
     /// `shutdown()` call inside `sim_destroy`, the parked thread
     /// would keep the heavy state alive until its own watchdog
     /// timer fired.
+    ///
+    /// This test opts the recv loop into `strict_destroy_wake` mode
+    /// (see [`ParkHandshake`]): the loop blocks on
+    /// `cv.wait_while(state, |s| !s.destroyed)` with no timeout, and
+    /// `destroyed` is a predicate only `shutdown()` can ever set,
+    /// under the same lock `cv` is paired with, immediately before
+    /// `cv.notify_all()`. There is no fuse to race and no stale flag
+    /// to misattribute — the only way the recv loop can ever resume is
+    /// a genuine destroy-side notify, so the deterministic outcome
+    /// (`Partitioned`, since `shutdown` sets `partition` before
+    /// touching anything else) is itself the proof. Every other test
+    /// in this module keeps the default bounded `cv.wait_timeout`
+    /// path untouched.
     #[test]
     fn destroy_wakes_blocked_recv() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc as StdArc;
         use std::thread;
         use std::time::{Duration, Instant};
 
@@ -1704,11 +1921,26 @@ mod tests {
             let t = sim_transport_new(SimConfig::default());
             let (_client, server) = make_pair(t, "sim://destroy-wake:0");
             let t_addr = t as usize;
-            let started = StdArc::new(AtomicBool::new(false));
-            let started_clone = StdArc::clone(&started);
+
+            // `shell_state` only clones the Arc — it does not touch
+            // `sim_destroy`'s take-and-shutdown sequence (that only
+            // drops the shell's own reference) — so this clone is safe
+            // to hold just long enough to opt this transport's recv
+            // loop into strict mode and drive the park handshake; it
+            // does not change what the destroy path observes.
+            let state = shell_state((*t).r#impl).expect("transport must be live");
+
+            // Opt-in, *before* spawning the recv thread: this
+            // transport's recv loop will block on the unbounded
+            // `cv.wait_while` predicate path instead of the default
+            // bounded `cv.wait_timeout` fuse every other test relies
+            // on — see `ParkHandshake::strict_destroy_wake`.
+            state
+                .recv_park
+                .strict_destroy_wake
+                .store(true, Ordering::Release);
 
             let recv_handle = thread::spawn(move || {
-                started_clone.store(true, Ordering::Release);
                 let mut buf = [0u8; 32];
                 let t_local = t_addr as *mut HewTransport;
                 #[allow(unused_unsafe, reason = "explicit unsafe block at the FFI call site")]
@@ -1719,17 +1951,35 @@ mod tests {
                 }
             });
 
-            // Wait for the recv thread to enter the FFI loop.
-            let deadline = Instant::now() + Duration::from_secs(1);
-            while !started.load(Ordering::Acquire) {
-                assert!(Instant::now() <= deadline, "recv thread never started");
-                thread::sleep(Duration::from_millis(1));
-            }
-            thread::sleep(Duration::from_millis(20));
+            // Block until *this test thread* has itself acquired
+            // `recv_park.state` after observing `parked == true`.
+            // `Condvar::wait_timeout_while` only ever unlocks its mutex
+            // as part of atomically registering the calling thread as
+            // a waiter on `parked_cv` — that is the only way this lock
+            // could become available to us once the flag reads true.
+            // Symmetrically, the recv loop can only have released
+            // `state` (so we can reacquire it) by handing it into
+            // `cv.wait_while` — the *same* mutex `destroyed` is guarded
+            // by. So a successful, non-timing-out return here proves
+            // the recv loop is already blocked inside `cv.wait_while`,
+            // not merely scheduled and not merely past a
+            // table/partition check.
+            let park_guard = state
+                .recv_park
+                .wait_until_parked(Duration::from_secs(1))
+                .expect("recv loop never registered on cv within 1s of starting");
 
-            // Free the transport — this must wake the parked recv
-            // via `shutdown()` (partition + notify_all) so it exits
-            // promptly, dropping its `Arc` clone.
+            // Release before destroying: the recv loop is *already*
+            // parked inside `cv.wait_while` at this point (proven
+            // above) — it is not waiting on `state` itself, so there is
+            // no window in which dropping this guard could let the
+            // recv loop race ahead and resolve for any reason other
+            // than `shutdown()`'s predicate flip. `shutdown()` needs
+            // this exact lock to stamp `destroyed`, so it must be
+            // released first.
+            drop(park_guard);
+            drop(state);
+
             sim_transport_free(t);
 
             let join_deadline = Instant::now() + Duration::from_secs(5);
@@ -1744,12 +1994,20 @@ mod tests {
                 thread::sleep(Duration::from_millis(5));
             }
             let outcome = recv_handle.join().expect("recv thread panicked");
-            // After destroy the partition flag is set and the conn
-            // table is cleared; whichever the recv loop sees first
-            // surfaces as Partitioned.
+
+            // In strict mode there is exactly one possible outcome:
+            // `shutdown()` sets `partition` before it touches anything
+            // else, and the only way the recv loop's `cv.wait_while`
+            // can ever return is `shutdown()` having already stamped
+            // `destroyed` and called `notify_all` — no self-timeout, no
+            // spurious wake, no stale-flag misattribution is possible.
+            // A widened Partitioned-or-InvalidConn accept is no longer
+            // needed: the predicate design itself rules out every
+            // schedule this test exists to catch (#1945).
             assert!(
                 matches!(outcome, SimRecvOutcome::Partitioned),
-                "expected Partitioned wake from destroy, got {outcome:?}"
+                "expected a destroy wake (Partitioned) proven by the strict \
+                 destroyed predicate, got {outcome:?}"
             );
         }
     }

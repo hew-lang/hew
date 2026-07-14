@@ -312,12 +312,17 @@ impl Drop for ReaderLifecycleGuard {
 struct ReconnectSettings {
     target_addr: String,
     max_retries: u32,
+    /// Pinned peer `NodeId` from the original `<node_id>@addr` connect target,
+    /// if any. Replayed via `hew_connmgr_expect_peer` on every reconnect
+    /// attempt so the pin survives repeated drops, not just the first one.
+    expected_node_id: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
 struct ReconnectPlan {
     target_addr: String,
     max_retries: u32,
+    expected_node_id: Option<u16>,
 }
 
 /// Inbound message routing callback.
@@ -600,6 +605,7 @@ fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
         Some(ReconnectPlan {
             target_addr: reconnect.target_addr.clone(),
             max_retries: reconnect.max_retries.max(1),
+            expected_node_id: reconnect.expected_node_id,
         })
     })
 }
@@ -706,6 +712,7 @@ fn reconnect_worker_loop(
                             target_addr.as_ptr(),
                             1,
                             retries,
+                            plan.expected_node_id.map_or(0, i32::from),
                         )
                     };
                     return;
@@ -2140,6 +2147,12 @@ pub unsafe extern "C" fn hew_connmgr_set_reconnect_policy(
 ///
 /// Passing `enabled=0` disables reconnect for `conn_id`.
 ///
+/// `expected_node_id` is the pinned peer `NodeId` from a `<node_id>@addr`
+/// connect target, or `0` if the connect target was a bare address. `0` is
+/// reserved (never a valid assigned node id, consistent with
+/// [`hew_connmgr_expect_peer`]) and means "no pin" here: reconnects for this
+/// connection stay permissive, matching the original bare-address dial.
+///
 /// # Safety
 ///
 /// - `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
@@ -2151,6 +2164,7 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
     target_addr: *const c_char,
     enabled: c_int,
     max_retries: c_int,
+    expected_node_id: c_int,
 ) -> c_int {
     if mgr.is_null() {
         set_last_error("hew_connmgr_configure_reconnect: manager is null");
@@ -2197,6 +2211,7 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
         conn.reconnect = Some(ReconnectSettings {
             target_addr: target_owned.clone().unwrap_or_default(),
             max_retries: retries,
+            expected_node_id: u16::try_from(expected_node_id).ok().filter(|&v| v != 0),
         });
         0
     })

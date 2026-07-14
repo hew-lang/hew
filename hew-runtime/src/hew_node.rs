@@ -3842,6 +3842,7 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
             target_addr.as_ptr(),
             1,
             0,
+            expected_peer_node_id.map_or(0, i32::from),
         )
     };
 

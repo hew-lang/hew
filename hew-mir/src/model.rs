@@ -4170,6 +4170,24 @@ pub enum Instr {
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
+    /// Neutralize (null) an enum/machine payload slot whose heap ownership has
+    /// just been TRANSFERRED to a new owner by a projected-payload move-out
+    /// (`#2523`). A `match` arm binder over an enum/machine payload is a
+    /// byte-copy ALIAS of the scrutinee's payload slot; when that binder is
+    /// moved into a new owner (`var w = v`), the new owner becomes the sole
+    /// release authority for the storage. This instruction nulls the source
+    /// `place` so the scrutinee's own (null-tolerant) drop spine no-ops on the
+    /// transferred slot — no double-free at the scrutinee's scope exit and no
+    /// use-after-free on a re-match (the checker separately rejects the re-read
+    /// as a use-after-move; see `AggregateAlias` on the scrutinee).
+    ///
+    /// `place` is always a `Place::MachineVariant`/`Place::EnumVariant`
+    /// projection (the provenance is recorded strictly for those two shapes at
+    /// the destructure site). Codegen lowers a scalar single-pointer payload to
+    /// a direct null store and an aggregate payload by nulling every heap leaf
+    /// (`emit_overwrite_neutralize_*`), so every release symbol the scrutinee's
+    /// drop later calls is a null-tolerant no-op.
+    NeutralizePayloadSlot { place: Place },
     /// Increment the refcount of a `bytes` value before a genuine co-owner is
     /// minted. This marker is emitted only by the MIR bytes ownership prover;
     /// codegen must not infer the retain from the LLVM storage type.
@@ -6162,11 +6180,26 @@ pub enum MirStatement {
     /// Modelling it as a `Use { Consume }` instead would suppress the source
     /// drop and break that machinery (it would silently turn the W3.053
     /// fail-closed double-free refusals into leaks).
+    ///
+    /// `partial_projection` (#2523) distinguishes two shapes that both alias a
+    /// binding into "an aggregate":
+    ///   * `false` — a whole owned value placed into a fresh aggregate field
+    ///     (the B1 case above). Placing the SAME binding twice (`(t, t)`) is a
+    ///     use-after-move double-free, so a repeat on an already-aliased binding
+    ///     is FLAGGED.
+    ///   * `true` — the scrutinee of a `match` whose OWNED projected payload is
+    ///     moved out (`match b { V(x, y) => { let wx = x; let wy = y; } }`). The
+    ///     mark records "the aggregate `b` has had a projection moved out; `b`
+    ///     must not be re-read". Each independent field move re-emits it, so on
+    ///     a partial-projection mark a repeat on an already-aliased binding is a
+    ///     NO-OP (idempotent), not a double-placement — the two fields are
+    ///     distinct sub-objects, not the same handle placed twice.
     AggregateAlias {
         binding: BindingId,
         name: String,
         site: SiteId,
         ty: ResolvedTy,
+        partial_projection: bool,
     },
     Return {
         site: Option<SiteId>,
@@ -6185,6 +6218,36 @@ pub struct MirDiagnostic {
     pub note: String,
 }
 
+/// #2523 — which unneutralizable scrutinee source shape forced a
+/// projected-payload move-out to be rejected fail-closed. Drives the precise
+/// user-facing message + help note (see `ProjectedPayloadMoveFromReadablePlace`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectedPayloadRejectReason {
+    /// A re-readable place scrutinee (`match h.b`, `match pair.0`,
+    /// `match arr[i]`, `match self.field`) or a wrapper hiding one
+    /// (`match { h.b }`): the match copies the place into a temp, leaving the
+    /// origin storage live and re-readable.
+    ReadablePlace,
+    /// A closure-captured binding (`match b` inside a closure that captures
+    /// `b`): the binding is read from the closure environment by byte-copy
+    /// (`ClosureEnvFieldLoad`), NOT moved into the temp, so the captured copy
+    /// survives the move and double-frees when the environment drops.
+    CapturedBinding,
+    /// A nested-pattern binder (`match x { Outer(Inner(v)) => … }`): the nested
+    /// payload is loaded into a transient copy by the predicate phase, so
+    /// neutralizing that transient cannot reach the outer value's real nested
+    /// storage (double-free / leak at the outer value's drop).
+    NestedDestructure,
+    /// A projected payload consumed INSIDE a match-arm guard that can fall
+    /// through (`match x { V(v) if cond(consume v) => …, _ => … }`): the
+    /// move-out's `NeutralizePayloadSlot` (null store) runs while lowering the
+    /// guard, BEFORE the guard outcome is known. A false guard falls through to
+    /// a later arm that re-destructures the now-null payload — a null-fault /
+    /// abort at runtime. Path-sensitive neutralization keyed on the guard
+    /// outcome is not expressible here, so the consume is rejected fail-closed.
+    GuardedConsume,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MirDiagnosticKind {
     UseAfterConsume {
@@ -6192,6 +6255,22 @@ pub enum MirDiagnosticKind {
         name: String,
         consumed_at: SiteId,
         used_at: SiteId,
+    },
+    /// #2523 — a heap-owning enum/machine payload is moved out of a scrutinee
+    /// whose original storage the move cannot safely neutralize, so the moved-
+    /// from source keeps a dangling pointer the new owner later frees (use-
+    /// after-free on a re-read, double-free / leak at the source's drop). The
+    /// move-out is rejected fail-closed before codegen. `reason` records which
+    /// unneutralizable source shape was hit (a re-readable place / wrapper, a
+    /// closure-captured binding read by copy, or a nested-pattern binder
+    /// extracted through a temporary copy). Sound move-outs come only from a
+    /// binding that OWNS the scrutinee (`match b`) or an ephemeral producer
+    /// (`match f()`).
+    ProjectedPayloadMoveFromReadablePlace {
+        binding: BindingId,
+        name: String,
+        site: SiteId,
+        reason: ProjectedPayloadRejectReason,
     },
     /// A binding is read before any initialising `let` for it appears.
     /// Surfaced from `MirCheck::InitialisedBeforeUse` in commit 2.

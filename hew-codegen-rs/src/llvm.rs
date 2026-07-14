@@ -13989,6 +13989,50 @@ fn emit_overwrite_collect_enum<'ctx>(
     Ok(cap)
 }
 
+/// #2523 — neutralize (null) an enum/machine payload slot whose heap ownership
+/// was TRANSFERRED out by a projected-payload move-out (`Instr::NeutralizePayloadSlot`).
+///
+/// `place` is always a `Place::MachineVariant`/`Place::EnumVariant` field. The
+/// projected-payload binder holds a byte-copy of this slot; once it is moved
+/// into a new owner, the new owner is the sole release authority, so the source
+/// slot must be nulled before the scrutinee's own drop can reach it.
+///
+/// Storing a zeroinitializer of the FIELD's LLVM type nulls every heap leaf of
+/// the moved field in a single store: a scalar single-pointer payload (`Vec<T>`
+/// / `HashMap` / `string`) becomes a null pointer directly, and an aggregate
+/// payload (a tuple/record field) has every leaf pointer nulled at once. The
+/// GEP addresses ONLY this field of the variant struct, so the enum tag and any
+/// sibling payload fields (an unmoved binder of the same variant) are untouched.
+/// After this store the scrutinee's composite drop reaches null leaves and every
+/// release symbol it calls (`hew_vec_free`, `hew_string_drop`, `hew_bytes_drop`,
+/// the collection frees) is null-tolerant and no-ops — no double-free, and the
+/// move-out's new owner performs the one and only free.
+///
+/// DIVERGENCE from the plan's "reuse `emit_overwrite_neutralize_leaves`/`_enum`":
+/// those helpers null only the OLD leaves that reappear in a NEW value (the
+/// overwrite-release alias case). A projected-payload move-out transfers the
+/// WHOLE field and has no "new value" to match against, so the correct operation
+/// is an unconditional null of every leaf of the moved field — a direct
+/// zeroinitializer store, which subsumes the plan's "scalar direct null store"
+/// and covers aggregate fields with the same guarantee.
+fn lower_neutralize_payload_slot(fn_ctx: &FnCtx<'_, '_>, place: Place) -> CodegenResult<()> {
+    let (field_ptr, field_ty) = place_pointer(fn_ctx, place)?;
+    let zero: BasicValueEnum = match field_ty {
+        BasicTypeEnum::PointerType(t) => t.const_null().into(),
+        BasicTypeEnum::IntType(t) => t.const_zero().into(),
+        BasicTypeEnum::FloatType(t) => t.const_zero().into(),
+        BasicTypeEnum::StructType(t) => t.const_zero().into(),
+        BasicTypeEnum::ArrayType(t) => t.const_zero().into(),
+        BasicTypeEnum::VectorType(t) => t.const_zero().into(),
+        BasicTypeEnum::ScalableVectorType(t) => t.const_zero().into(),
+    };
+    fn_ctx
+        .builder
+        .build_store(field_ptr, zero)
+        .llvm_ctx("neutralize payload slot store")?;
+    Ok(())
+}
+
 /// NEUTRALISE step for one owned heap-leaf slot of the OLD value: null the
 /// slot iff its pointer matches ANY collected new-leaf slot (branch-free
 /// compare chain + `select`). A null old leaf trivially "matches" a null
@@ -18569,6 +18613,10 @@ fn lower_instruction(
         }
         Instr::ActorStateFieldStore { field_offset, src } => {
             lower_actor_state_field_store(fn_ctx, *field_offset, *src)?;
+            let _ = ctx;
+        }
+        Instr::NeutralizePayloadSlot { place } => {
+            lower_neutralize_payload_slot(fn_ctx, *place)?;
             let _ = ctx;
         }
         Instr::TupleFieldLoad {

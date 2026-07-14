@@ -35,9 +35,9 @@ use crate::model::{
     CoalesceKeyKind, CoalesceKeyPlan, DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop,
     ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness,
     IrPipeline, JoinBranch, LambdaCapture, MirCheck, MirConst, MirConstValue, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, PointerWidth, RawMirFunction, SelectArm, SelectArmKind,
-    SourceOrigin, SpawnEnvFieldOwnership, Strategy, SuspendKind, Terminator, ThirFunction,
-    TraitObjectStorage, TrapKind,
+    MirDiagnosticKind, MirStatement, Place, PointerWidth, ProjectedPayloadRejectReason,
+    RawMirFunction, SelectArm, SelectArmKind, SourceOrigin, SpawnEnvFieldOwnership, Strategy,
+    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::LayoutClass;
@@ -9551,7 +9551,79 @@ struct StreamProducerPumpCtx {
     yield_ty: ResolvedTy,
 }
 
+/// #2523 — provenance for a `match`-arm binder projected out of an enum/machine
+/// payload (`lower_match_enum_tag`). The binder's storage is a byte-copy ALIAS
+/// of the scrutinee's payload slot; when the binder is moved into a new owner
+/// its heap ownership transfers, and the source slot must be neutralized so the
+/// scrutinee's own drop no-ops on it. Recorded strictly for
+/// `Place::MachineVariant`/`Place::EnumVariant` sources at the destructure site.
+#[derive(Debug, Clone)]
+struct ProjectedPayloadProvenance {
+    /// The interior projection the binder aliases; nulled by
+    /// `Instr::NeutralizePayloadSlot` at the binder's move-out.
+    source_place: Place,
+    /// The binder's own name, used to author the fail-closed diagnostic when
+    /// the scrutinee is a re-readable place (see [`ProjectedPayloadOrigin`]).
+    binder_name: String,
+    /// How the scrutinee was materialised — decides whether a projected-payload
+    /// move-out is soundly neutralizable at the temp, needs a consume-mark, or
+    /// must be rejected fail-closed.
+    origin: ProjectedPayloadOrigin,
+}
+
+/// #2523 — classification of a projected-payload binder's scrutinee, which
+/// decides how a move-out of the (heap-owning) binder is made sound.
+///
+/// The match lowers the scrutinee into a temp before destructuring. Whether
+/// nulling that temp (`Instr::NeutralizePayloadSlot`) actually neutralizes the
+/// payload's *sole surviving owner* depends on how the scrutinee reached the
+/// temp:
+#[derive(Debug, Clone)]
+enum ProjectedPayloadOrigin {
+    /// The scrutinee is a bare owning binding (`match b { … }`): the match
+    /// MOVES it into the temp, so the temp is the sole live copy. Neutralize
+    /// the temp AND consume-mark the binding (via `MirStatement::AggregateAlias`)
+    /// so a later re-read is a compile-time use-after-move rather than a read of
+    /// the nulled slot.
+    OwnedBinding(ProjectedScrutinee),
+    /// The scrutinee is an ephemeral producer (`match f() { … }`,
+    /// `match Box::Full(x) { … }`): the temp is a fresh, sole-owner value with
+    /// no re-readable origin, so neutralizing the temp transfers ownership
+    /// soundly with no consume-mark needed.
+    EphemeralTemp,
+    /// The FAIL-CLOSED default (#2523 F1/F1b/F2): the scrutinee is anything NOT
+    /// proven a fresh sole owner — a re-readable *place* projection (`match h.b`,
+    /// `match pair.0`, `match arr[i]`, `match self.field`), a `Block`/`If`/
+    /// `Scope` wrapper whose value is a sub-expression (`match { h.b }`), a
+    /// closure-CAPTURED binding (read from the env by copy, not moved into the
+    /// temp), a NESTED-pattern binder (extracted through a transient copy the
+    /// move cannot neutralize), or any un-enumerated / future HIR shape. The
+    /// move-out is REJECTED before codegen; `reason` selects the precise
+    /// diagnostic. Rejecting a wrapper-hidden but otherwise-safe producer is
+    /// acceptable — the safe default is to reject rather than risk aliasing.
+    /// Borrow-only matches never reach this arm (they do not consume the binder).
+    Reject(ProjectedPayloadRejectReason),
+}
+
+/// The re-readable scrutinee binding behind a [`ProjectedPayloadOrigin::OwnedBinding`],
+/// consume-marked (via `MirStatement::AggregateAlias`) at the binder's move-out
+/// so the checker rejects a later re-read as a use-after-move.
+#[derive(Debug, Clone)]
+struct ProjectedScrutinee {
+    binding: BindingId,
+    name: String,
+    ty: ResolvedTy,
+}
+
 #[derive(Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Builder is the MIR-lowering state accumulator; each bool is an \
+              independent, orthogonal lowering-mode flag (e.g. the \
+              fallthrough-match-guard scope) that distinct call sites set and \
+              query on their own — collapsing them into an enum would force a \
+              single active-mode invariant the lowering does not have"
+)]
 struct Builder {
     /// Checker-authority stream for the *current* basic block. Drained
     /// into a `BasicBlock` when the cursor moves (`finish_current_block`)
@@ -10389,6 +10461,21 @@ struct Builder {
     /// record/string locals are released through the `elaborate` allow-set
     /// prover (`CowValue` arm), not `owned_locals` / this flag.
     overwrite_guard_flags: HashMap<BindingId, Place>,
+    /// #2523: provenance for projected enum/machine payload binders, keyed on
+    /// the binder's `BindingId`. Populated in `lower_match_enum_tag`'s binder
+    /// loop for `MachineVariant`/`EnumVariant` sources; consulted at the
+    /// binder's `Consume`-intent move-out to emit `NeutralizePayloadSlot` for
+    /// the source slot and `AggregateAlias` for the scrutinee.
+    projected_payload_provenance: HashMap<BindingId, ProjectedPayloadProvenance>,
+    /// Set while lowering a match-arm guard expression that
+    /// can fall through to a later arm. A projected heap-payload binder consumed
+    /// with this flag set is rejected fail-closed (`GuardedConsume`): its
+    /// `NeutralizePayloadSlot` would run before the guard outcome is known, so a
+    /// false guard would fall through to a later arm re-destructuring the
+    /// now-null payload (null-fault / abort). Borrow-only guards never reach the
+    /// consume hook and are unaffected. Saved/restored around each guard lowering
+    /// so nested guards compose.
+    in_fallthrough_match_guard: bool,
     /// #2418: runtime drop-flags for an owned collection local (owned-element
     /// `Vec`, plain `Vec`, `HashMap`/`HashSet` handle) that the pre-pass saw
     /// genuinely consumed (`intent=Consume`, a move-out such as `let ys = xs`)
@@ -14769,6 +14856,10 @@ impl Builder {
         // Goto the continuation, where subsequent statements lower with the
         // binders live.
         self.start_block(bind_bb);
+        // #2523 — classify the scrutinee once for the whole let-else so every
+        // heap-owning payload binder routes its move-out through the shared
+        // default-deny consume policy (see `classify_scrutinee_origin`).
+        let scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
         let mut nested_binding_jobs: Vec<(u32, u32, hew_hir::HirMatchArmBinding)> = Vec::new();
         for pvp in payload_variant_predicates {
             // A failed nested check routes to the else block, same as a
@@ -14797,7 +14888,8 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if self.binding_seeds_drop_elaboration(&binding_ty) {
+            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
@@ -14815,6 +14907,19 @@ impl Builder {
             });
             // Escape: insert into binding_locals and never restore.
             self.binding_locals.insert(binding.binding, dest);
+            // #2523 — record provenance for a heap-owning TOP-LEVEL let-else
+            // payload binder so its move-out routes through default-deny.
+            self.record_projected_payload_provenance(
+                binding.binding,
+                &binding.name,
+                Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                },
+                scrutinee_origin.clone(),
+                keep_for_drop_elab,
+            );
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
@@ -14825,7 +14930,8 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if self.binding_seeds_drop_elaboration(&binding_ty) {
+            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
@@ -14842,6 +14948,19 @@ impl Builder {
                 },
             });
             self.binding_locals.insert(binding.binding, dest);
+            // #2523 F2 — nested let-else binder bound from a transient predicate
+            // copy; reject a heap-owning move-out fail-closed.
+            self.record_projected_payload_provenance(
+                binding.binding,
+                &binding.name,
+                Place::MachineVariant {
+                    local: src_local,
+                    variant_idx: src_variant_idx,
+                    field_idx: binding.field_idx,
+                },
+                ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::NestedDestructure),
+                keep_for_drop_elab,
+            );
         }
         // Aggregate-payload destructure (`Ok((n, s))`): the prelude `Let`
         // statements project the synthetic `__payload_*` temp into the leaf
@@ -15459,6 +15578,129 @@ impl Builder {
                             });
                         } else {
                             self.mark_binding_moved(*id);
+                        }
+                        // #2523 — a heap-owning projected enum/machine payload
+                        // binder is being moved into a new owner. Its storage is
+                        // a byte-copy ALIAS of the scrutinee's payload slot.
+                        // Whether the copy in the destination local can safely
+                        // become the SOLE owner depends on how the scrutinee
+                        // reached the match temp (`ProjectedPayloadOrigin`):
+                        //   * OwnedBinding — the match moved the binding into the
+                        //     temp, so nulling the temp transfers ownership; the
+                        //     scrutinee's null-tolerant drop no-ops, and marking
+                        //     the binding consumed (`AggregateAlias`) turns a
+                        //     later re-read into a compile-time use-after-move.
+                        //   * EphemeralTemp — the temp is a fresh sole-owner value
+                        //     (`match f()`), so nulling it transfers ownership
+                        //     with no re-readable origin to consume-mark.
+                        //   * ReadablePlace — the scrutinee was COPIED from a
+                        //     re-readable place (`match h.b`, `match pair.0`); the
+                        //     origin field's storage stays live and the temp-null
+                        //     cannot reach it, so a move-out would leave the field
+                        //     dangling (use-after-free / double-free). No sound
+                        //     physical neutralization of the origin is expressible
+                        //     here, so REJECT the move-out fail-closed before
+                        //     codegen (F1). Fires on every consume branch above,
+                        //     independent of the binder's own drop-flag tracking.
+                        if let Some(provenance) = self.projected_payload_provenance.get(id).cloned()
+                        {
+                            // A projected heap-payload consumed
+                            // inside a fallthrough-capable match-arm guard is
+                            // unsound: the neutralize (null store) runs before the
+                            // guard outcome is known, so a false guard falls
+                            // through to a later arm that re-destructures the
+                            // now-null payload (null-fault / abort). Override the
+                            // origin to reject fail-closed (unless it already
+                            // rejects for a more specific reason). Borrow-only
+                            // guards never reach this hook, so they stay valid.
+                            let origin = if self.in_fallthrough_match_guard
+                                && !matches!(provenance.origin, ProjectedPayloadOrigin::Reject(_))
+                            {
+                                ProjectedPayloadOrigin::Reject(
+                                    ProjectedPayloadRejectReason::GuardedConsume,
+                                )
+                            } else {
+                                provenance.origin
+                            };
+                            match origin {
+                                ProjectedPayloadOrigin::OwnedBinding(scrutinee) => {
+                                    self.push_instr(Instr::NeutralizePayloadSlot {
+                                        place: provenance.source_place,
+                                    });
+                                    // #2523 F2 — a PARTIAL-PROJECTION consume-mark:
+                                    // the owned scrutinee had one payload field
+                                    // moved out. Marks `b` re-read-forbidding
+                                    // (`AliasedIntoAggregate`) without the whole-
+                                    // value `(t, t)` double-placement check, so a
+                                    // second independent field move of the SAME
+                                    // scrutinee (`V(x, y) => let wx = x; let wy = y;`)
+                                    // is idempotent, not a false use-after-consume.
+                                    self.statements.push(MirStatement::AggregateAlias {
+                                        binding: scrutinee.binding,
+                                        name: scrutinee.name,
+                                        site: expr.site,
+                                        ty: scrutinee.ty,
+                                        partial_projection: true,
+                                    });
+                                }
+                                ProjectedPayloadOrigin::EphemeralTemp => {
+                                    self.push_instr(Instr::NeutralizePayloadSlot {
+                                        place: provenance.source_place,
+                                    });
+                                }
+                                ProjectedPayloadOrigin::Reject(reason) => {
+                                    // Do NOT emit the unsound temp-neutralize —
+                                    // its source cannot be safely neutralized, so
+                                    // reject the move-out fail-closed (F1/F1b/F2).
+                                    let note = match reason {
+                                        ProjectedPayloadRejectReason::ReadablePlace => {
+                                            "the matched place keeps ownership of the \
+                                             payload, so moving it out would leave the \
+                                             field's storage dangling (use-after-free on \
+                                             re-read, double-free at the place's drop); \
+                                             match an owned value instead"
+                                        }
+                                        ProjectedPayloadRejectReason::CapturedBinding => {
+                                            "the matched binding is captured by this \
+                                             closure and read from the closure environment \
+                                             by copy, so moving the payload out would leave \
+                                             the captured copy dangling (double-free when \
+                                             the environment drops); move the value into \
+                                             the closure and match it there, or match an \
+                                             owned value the closure does not capture"
+                                        }
+                                        ProjectedPayloadRejectReason::NestedDestructure => {
+                                            "the payload is extracted from a nested pattern \
+                                             through a temporary copy the move cannot \
+                                             neutralize, so moving it out would leave the \
+                                             outer value's storage dangling (double-free / \
+                                             leak at the outer value's drop); bind the \
+                                             nested value first, then match that owned \
+                                             binding in a separate step"
+                                        }
+                                        ProjectedPayloadRejectReason::GuardedConsume => {
+                                            "the payload is consumed inside a match-arm \
+                                             guard that can fall through, so the move-out \
+                                             would run before the guard result is known; a \
+                                             false guard would then fall through to a later \
+                                             arm that re-reads the now-moved payload \
+                                             (null-fault at runtime); consume the payload in \
+                                             the arm body instead of the guard, or match an \
+                                             owned value in a separate step after the guard"
+                                        }
+                                    };
+                                    self.diagnostics.push(MirDiagnostic {
+                                        kind:
+                                            MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace {
+                                                binding: *id,
+                                                name: provenance.binder_name,
+                                                site: expr.site,
+                                                reason,
+                                            },
+                                        note: note.to_string(),
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -19801,6 +20043,29 @@ impl Builder {
         ) && hir_expr_contains_synthetic_vec_string_index(scrutinee)
     }
 
+    /// #2523 provenance-skip predicate: true when the match scrutinee is the
+    /// `for x in <vec>` desugar's synthetic `Option<T>` next-producer for ANY
+    /// element type (`Vec<string>`, `Vec<(string, string)>`, `Vec<Person>`, …).
+    /// Each `Some(x)` payload is a FRESH, solely-owned per-frame element the
+    /// iteration handed the body — never a projection of a re-readable
+    /// aggregate that retains the bits — so its move-out (`let (k, val) = pair`,
+    /// `return pair`) is a legitimate ownership transfer that must NOT route
+    /// through the default-deny consume hook. The narrower
+    /// `is_vec_string_iter_next_scrutinee` still drives the `string`-specific
+    /// per-iteration release disposition; this one only gates the provenance
+    /// skip so no element type is falsely rejected as a re-readable-place move.
+    fn is_vec_iter_next_scrutinee(&self, scrutinee: &HirExpr) -> bool {
+        matches!(
+            &self.subst_ty(&scrutinee.ty),
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin: None,
+                ..
+            } if name == "Option" && args.len() == 1
+        ) && hir_expr_contains_synthetic_vec_index(scrutinee)
+    }
+
     /// True when the match scrutinee is a generator `.next()` consumption node
     /// (`HirExprKind::GeneratorNext`) — either a source-level `g.next()` or the
     /// `for x in gen()` desugar's synthetic next-call. The yielded value bound by
@@ -21192,7 +21457,7 @@ impl Builder {
 
             // Guard check: failure branches to the next arm.
             if let Some(guard) = &arm.guard {
-                let guard_place = self.lower_value(guard);
+                let guard_place = self.lower_match_arm_guard(guard);
                 if let Some(guard_local) = guard_place {
                     let body_entry_bb = self.alloc_block();
                     self.finish_current_block(Terminator::Branch {
@@ -22237,7 +22502,7 @@ impl Builder {
             // Guard check (applies to literal and catch-all arms alike):
             // failure falls through to the next arm.
             if let Some(guard) = &arm.guard {
-                if let Some(guard_local) = self.lower_value(guard) {
+                if let Some(guard_local) = self.lower_match_arm_guard(guard) {
                     let body_entry_bb = self.alloc_block();
                     self.finish_current_block(Terminator::Branch {
                         cond: guard_local,
@@ -22916,6 +23181,175 @@ impl Builder {
     ///   (subsequent lowering continues here; result is result_local)
     /// ```
     ///
+    /// #2523 (F1b) — is `kind` a *provably ephemeral* scrutinee producer: a
+    /// shape that constructs a brand-new value or returns one by value from a
+    /// call/await/effect, so the match temp is a fresh SOLE owner with no
+    /// re-readable aliasing origin?
+    ///
+    /// A projected-payload move-out is sound only when nulling the match temp
+    /// neutralizes the payload's sole surviving owner. That holds for a bare
+    /// owning binding (moved into the temp — handled separately as
+    /// [`ProjectedPayloadOrigin::OwnedBinding`]) and for the fresh value
+    /// producers allowlisted here. It FAILS for a place projection
+    /// (`match h.b`, `match pair.0`, `match arr[i]`, machine-field access): the
+    /// match COPIES the place into the temp, so the origin keeps a live alias
+    /// the temp-null cannot reach (silent use-after-free / double-free).
+    ///
+    /// This predicate is the **fail-closed allowlist**: the classifier defaults
+    /// every shape NOT proven here (place projections, `Block`/`If`/`Scope`
+    /// wrappers whose value is a sub-expression, and any un-enumerated or future
+    /// shape) to [`ProjectedPayloadOrigin::ReadablePlace`], which rejects the
+    /// move-out before codegen. Rejecting a wrapper-hidden but otherwise-safe
+    /// producer (e.g. `match { mk() }`) is acceptable — the safe default is to
+    /// reject rather than risk aliasing. Wrappers are deliberately NOT peeled:
+    /// tracing a `Block`/`If` tail to guess ephemerality would reintroduce the
+    /// fail-open surface F1b closes (`match { h.b }` byte-copy-aliases `h`).
+    ///
+    /// Every arm is a value-producing rvalue that either builds a new aggregate
+    /// (`StructInit`, `TupleLiteral`, `MachineVariantCtor`, `Literal`) or moves
+    /// a value out by return/receive (`Call`, method calls, `ask`/`recv`/await
+    /// and machine effect nodes). None denote existing storage or a borrowed
+    /// view, so the produced temp is always a fresh sole owner. Shapes with any
+    /// aliasing risk (`Index`/`Slice` views, `FieldAccess`/`TupleIndex` places,
+    /// `ContextReader`, `RegexLiteralRef`, `ActorSelf`, `CoerceToDynTrait`,
+    /// `Yield`, wrappers, control flow) are intentionally omitted → rejected.
+    fn hir_scrutinee_is_ephemeral_producer(kind: &HirExprKind) -> bool {
+        matches!(
+            kind,
+            // Fresh scalar/aggregate literals and pure-value operators.
+            HirExprKind::Literal { .. }
+                | HirExprKind::Binary { .. }
+                | HirExprKind::Unary { .. }
+                | HirExprKind::NumericCast { .. }
+                | HirExprKind::SaturatingWidthCast { .. }
+                | HirExprKind::TryWidthCast { .. }
+                | HirExprKind::TupleLiteral { .. }
+                | HirExprKind::StructInit { .. }
+                | HirExprKind::MachineVariantCtor { .. }
+                | HirExprKind::IdentityCompare { .. }
+                | HirExprKind::CancellationTokenIsCancelled { .. }
+                // Calls return an owned value by value (Hew has no reference
+                // returns) — the result temp is a fresh sole owner.
+                | HirExprKind::Call { .. }
+                | HirExprKind::CallDynMethod { .. }
+                | HirExprKind::CallTraitMethodStatic { .. }
+                | HirExprKind::VarSelfMethodCall { .. }
+                | HirExprKind::ResolvedImplCall { .. }
+                | HirExprKind::NumericMethod { .. }
+                | HirExprKind::RecordCloneCall { .. }
+                // Spawns/closures/generators produce fresh handles or objects.
+                | HirExprKind::Spawn { .. }
+                | HirExprKind::SpawnedCall { .. }
+                | HirExprKind::SpawnLambdaActor { .. }
+                | HirExprKind::Closure { .. }
+                | HirExprKind::GenBlock { .. }
+                | HirExprKind::ActorGenStream { .. }
+                // ask/recv/await and machine effects MOVE a value out of the
+                // mailbox/channel/generator/machine — ownership transfers to the
+                // receiver, so the result is a fresh sole owner.
+                | HirExprKind::ActorAsk { .. }
+                | HirExprKind::RemoteActorAsk { .. }
+                | HirExprKind::AwaitTask { .. }
+                | HirExprKind::AwaitRestart { .. }
+                | HirExprKind::ConnAwaitRead { .. }
+                | HirExprKind::ListenerAwaitAccept { .. }
+                | HirExprKind::ChannelRecvAwait { .. }
+                | HirExprKind::StreamRecvAwait { .. }
+                | HirExprKind::GeneratorNext { .. }
+                | HirExprKind::Select { .. }
+                | HirExprKind::Join { .. }
+                | HirExprKind::WireCodec { .. }
+                | HirExprKind::MachineEmit { .. }
+                | HirExprKind::MachineStep { .. }
+                | HirExprKind::MachineTakeEmits { .. }
+        )
+    }
+
+    /// #2523 — classify a match/while-let/let-else/if-let scrutinee for the
+    /// projected-payload move-out policy. FAIL-CLOSED: only a scrutinee *proven*
+    /// a fresh sole owner takes the temp-neutralize consume path; everything
+    /// else is rejected before codegen. Shared by every top-level payload
+    /// binding loop so no destructuring construct bypasses default-deny.
+    ///
+    ///   * `OwnedBinding` — a bare owning `BindingRef` that is NOT captured by a
+    ///     closure. The match MOVES it into the temp, so nulling the temp
+    ///     transfers ownership and consume-marking the binding turns a re-read
+    ///     into a compile-time use-after-move.
+    ///   * `EphemeralTemp` — a proven fresh value producer (call / constructor /
+    ///     literal / await): the temp is a fresh sole owner, neutralize only.
+    ///   * `Reject(CapturedBinding)` — a closure-captured binding (F2): it is
+    ///     read from the closure environment by BYTE-COPY (`ClosureEnvFieldLoad`,
+    ///     see `capture_env_sources`), NOT moved into the temp, so the captured
+    ///     copy survives the move and double-frees when the env drops.
+    ///   * `Reject(ReadablePlace)` — a place projection or wrapper, or any
+    ///     un-enumerated shape (default-deny).
+    fn classify_scrutinee_origin(&self, scrutinee: &HirExpr) -> ProjectedPayloadOrigin {
+        match &scrutinee.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                name,
+            } => {
+                if self.capture_env_sources.contains_key(id) {
+                    // F2 — captured binding: env-copy origin the neutralize
+                    // cannot reach. Reject rather than double-free.
+                    ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::CapturedBinding)
+                } else {
+                    ProjectedPayloadOrigin::OwnedBinding(ProjectedScrutinee {
+                        binding: *id,
+                        name: name.clone(),
+                        ty: self.subst_ty(&scrutinee.ty),
+                    })
+                }
+            }
+            other if Self::hir_scrutinee_is_ephemeral_producer(other) => {
+                ProjectedPayloadOrigin::EphemeralTemp
+            }
+            _ => ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::ReadablePlace),
+        }
+    }
+
+    /// Lower a match-arm GUARD expression with the
+    /// fallthrough-guard flag set, so any projected heap-payload consumed inside
+    /// it is rejected fail-closed (`GuardedConsume`) rather than emitting a
+    /// `NeutralizePayloadSlot` that would run before the guard outcome is known.
+    /// The flag is saved/restored so nested guards compose and the arm BODY
+    /// (where a consume IS committed once the arm is taken) is unaffected.
+    /// Borrow-only guards never reach the consume hook, so they stay valid.
+    fn lower_match_arm_guard(&mut self, guard: &HirExpr) -> Option<Place> {
+        let prev = self.in_fallthrough_match_guard;
+        self.in_fallthrough_match_guard = true;
+        let result = self.lower_value(guard);
+        self.in_fallthrough_match_guard = prev;
+        result
+    }
+
+    /// #2523 — record the interior-alias provenance for a heap-owning projected
+    /// payload binder so its `Consume`-intent move-out routes through the
+    /// default-deny consume hook (`lower_value`'s `Use { Consume }` arm). Gated
+    /// on `keep_for_drop_elab`: a bit-copy payload (`i64`) owns no heap, so there
+    /// is nothing to neutralize, double-free, or reject. Shared by every
+    /// top-level AND nested payload binding loop so no destructure path bypasses
+    /// the policy.
+    fn record_projected_payload_provenance(
+        &mut self,
+        binding_id: BindingId,
+        binder_name: &str,
+        source_place: Place,
+        origin: ProjectedPayloadOrigin,
+        keep_for_drop_elab: bool,
+    ) {
+        if keep_for_drop_elab {
+            self.projected_payload_provenance.insert(
+                binding_id,
+                ProjectedPayloadProvenance {
+                    source_place,
+                    binder_name: binder_name.to_string(),
+                    origin,
+                },
+            );
+        }
+    }
+
     /// Returns the result `Place::Local` that every arm body's value is
     /// moved into. For a Unit-valued match the result local is allocated
     /// but never read by codegen.
@@ -22987,6 +23421,11 @@ impl Builder {
         let vec_string_iter_next_scrutinee = self.is_vec_string_iter_next_scrutinee(scrutinee);
         let generator_next_scrutinee = Self::is_generator_next_scrutinee(scrutinee);
         let recv_next_scrutinee = Self::is_recv_next_scrutinee(scrutinee);
+        // #2523 — element-type-agnostic fresh-owned vec-element iteration
+        // (`for pair in v` over `Vec<(string, string)>`, `Vec<Person>`, …).
+        // Gates ONLY the provenance skip below; disposition still keys off the
+        // narrower string/generator/recv markers.
+        let vec_iter_next_scrutinee = self.is_vec_iter_next_scrutinee(scrutinee);
 
         // Lower the scrutinee in the entry block. A failure propagates
         // via `?`; the half-built match leaves no dangling block.
@@ -23009,7 +23448,13 @@ impl Builder {
             }
         };
 
-        // A from-call enum-composite scrutinee (`match f() { … }`) gets a
+        // #2523 — classify the scrutinee so a projected-payload move-out is
+        // made sound the right way (see `classify_scrutinee_origin`). FAIL-CLOSED:
+        // only a bare owning (non-captured) binding or a proven-ephemeral
+        // producer takes the temp-neutralize consume path; a place, a wrapper, a
+        // closure-captured binding, or any un-enumerated shape is REJECTED.
+        let scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
+
         // synthetic owned binding over its temp so the arm-destructured
         // payload is released on every exit edge — most importantly the loop
         // back-edge, where each iteration previously leaked one payload
@@ -23101,7 +23546,7 @@ impl Builder {
             );
 
             if let Some(guard) = &wildcard.guard {
-                let guard_place = self.lower_value(guard);
+                let guard_place = self.lower_match_arm_guard(guard);
                 if let Some(guard_local) = guard_place {
                     let body_bb = self.alloc_block();
                     self.finish_current_block(Terminator::Branch {
@@ -23216,6 +23661,7 @@ impl Builder {
             );
             let arm_is_vec_iter_some = vec_string_iter_next_scrutinee && arm_is_some;
             let arm_is_generator_some = generator_next_scrutinee && arm_is_some;
+            let arm_is_fresh_owned_vec_iter_some = vec_iter_next_scrutinee && arm_is_some;
             // Recv-call scrutinee `Some` arm: the runtime hands the consumer a
             // FRESH, solely-owned heap value per frame (an `alloc_cstring_data`
             // block for `string`, a fresh `Bytes` header for `bytes`). The
@@ -23264,6 +23710,37 @@ impl Builder {
                 });
                 let previous = self.binding_locals.insert(binding.binding, dest);
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
+                // #2523 — record provenance for a heap-owning TOP-LEVEL projected
+                // payload binder so its `Consume`-intent move-out routes through
+                // the default-deny consume hook.
+                //
+                // EXCEPTION — the vec-string-iter / generator / recv `Some(x)`
+                // arms carry a FRESH, solely-owned per-frame payload (the
+                // synthetic `Option` shell holds a value the runtime just
+                // handed the consumer: `hew_vec_get_str`'s refcount-bumped
+                // owner, a coro yield, a received frame). Its release is already
+                // owned by the arm's own `Disposition::BodyEndReleased` +
+                // escape-suppression discipline (registered below). It is NOT a
+                // projection of a re-readable aggregate that retains the bits,
+                // so a move-out (`return line`, store to a longer-lived owner)
+                // is a legitimate ownership transfer, not a dangling-source
+                // hazard. Routing it through default-deny would falsely reject
+                // that transfer as a re-readable-place move-out. Skip it.
+                let is_fresh_owned_frame_payload =
+                    arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some;
+                if !is_fresh_owned_frame_payload {
+                    self.record_projected_payload_provenance(
+                        binding.binding,
+                        &binding.name,
+                        Place::MachineVariant {
+                            local: scrutinee_local,
+                            variant_idx,
+                            field_idx: binding.field_idx,
+                        },
+                        scrutinee_origin.clone(),
+                        keep_for_drop_elab,
+                    );
+                }
                 if arm_is_vec_iter_some && matches!(binding_ty, ResolvedTy::String) {
                     // `hew_vec_get_str` returns a FRESH, solely-owned retained
                     // owner (refcount bump via `hew_string_clone` — NOT a borrow
@@ -23415,14 +23892,29 @@ impl Builder {
                 });
                 let previous = self.binding_locals.insert(binding.binding, dest);
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
+                // #2523 F2 — a NESTED-pattern payload binder is bound from a
+                // TRANSIENT copy the predicate phase loaded (`src_local`), NOT
+                // from the outer value's real storage. Nulling that transient
+                // cannot reach the outer value's nested slot, so a heap-owning
+                // move-out would leave it dangling (double-free / leak). Record
+                // provenance with the `NestedDestructure` reject reason so the
+                // move-out is rejected fail-closed; a borrow-only nested binder
+                // never hits the consume hook and is unaffected.
+                self.record_projected_payload_provenance(
+                    binding.binding,
+                    &binding.name,
+                    Place::MachineVariant {
+                        local: src_local,
+                        variant_idx: src_variant_idx,
+                        field_idx: binding.field_idx,
+                    },
+                    ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::NestedDestructure),
+                    keep_for_drop_elab,
+                );
             }
-
-            // Guard check: evaluate the guard expression and branch. Placed
-            // after payload bindings so guard expressions may reference the
-            // arm's own constructor-payload bindings (e.g. `Some(n) if n > 0`).
             // Failure falls through to `fallthrough_bb` (re-try next arm).
             if let Some(guard) = &arm.guard {
-                let guard_place = self.lower_value(guard);
+                let guard_place = self.lower_match_arm_guard(guard);
                 if let Some(guard_local) = guard_place {
                     let body_entry_bb = self.alloc_block();
                     self.finish_current_block(Terminator::Branch {
@@ -23924,6 +24416,12 @@ impl Builder {
 
         let mut overwritten_bindings =
             Vec::with_capacity(bindings.len() + nested_binding_jobs.len());
+        // #2523 — classify the while-let scrutinee once so every heap-owning
+        // payload binder routes its move-out through the shared default-deny
+        // consume policy. The loop back-edge re-reads the scrutinee every
+        // iteration, so an owning-binding move-out MUST become a compile-time
+        // use-after-move (the canonical #2523 shape).
+        let scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
             self.statements.push(MirStatement::Bind {
@@ -23933,7 +24431,8 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if self.binding_seeds_drop_elaboration(&binding_ty) {
+            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
@@ -23954,6 +24453,19 @@ impl Builder {
                 self.transient_local_scopes.insert(local, body.scope);
             }
             overwritten_bindings.push((binding.binding, previous));
+            // #2523 — record provenance for a heap-owning TOP-LEVEL while-let
+            // payload binder so its move-out routes through default-deny.
+            self.record_projected_payload_provenance(
+                binding.binding,
+                &binding.name,
+                Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                },
+                scrutinee_origin.clone(),
+                keep_for_drop_elab,
+            );
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
@@ -23964,7 +24476,8 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if self.binding_seeds_drop_elaboration(&binding_ty) {
+            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
@@ -23985,6 +24498,19 @@ impl Builder {
                 self.transient_local_scopes.insert(local, body.scope);
             }
             overwritten_bindings.push((binding.binding, previous));
+            // #2523 F2 — nested while-let binder bound from a transient predicate
+            // copy; reject a heap-owning move-out fail-closed.
+            self.record_projected_payload_provenance(
+                binding.binding,
+                &binding.name,
+                Place::MachineVariant {
+                    local: src_local,
+                    variant_idx: src_variant_idx,
+                    field_idx: binding.field_idx,
+                },
+                ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::NestedDestructure),
+                keep_for_drop_elab,
+            );
         }
 
         self.active_scopes.push(body.scope);
@@ -24192,6 +24718,10 @@ impl Builder {
 
         let mut overwritten_bindings =
             Vec::with_capacity(bindings.len() + nested_binding_jobs.len());
+        // #2523 — classify the if-let scrutinee once so every heap-owning
+        // payload binder routes its move-out through the shared default-deny
+        // consume policy.
+        let scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
             self.statements.push(MirStatement::Bind {
@@ -24201,7 +24731,8 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if self.binding_seeds_drop_elaboration(&binding_ty) {
+            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
@@ -24219,6 +24750,19 @@ impl Builder {
             });
             let previous = self.binding_locals.insert(binding.binding, dest);
             overwritten_bindings.push((binding.binding, previous));
+            // #2523 — record provenance for a heap-owning TOP-LEVEL if-let
+            // payload binder so its move-out routes through default-deny.
+            self.record_projected_payload_provenance(
+                binding.binding,
+                &binding.name,
+                Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                },
+                scrutinee_origin.clone(),
+                keep_for_drop_elab,
+            );
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
@@ -24229,7 +24773,8 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            if self.binding_seeds_drop_elaboration(&binding_ty) {
+            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
@@ -24247,6 +24792,19 @@ impl Builder {
             });
             let previous = self.binding_locals.insert(binding.binding, dest);
             overwritten_bindings.push((binding.binding, previous));
+            // #2523 F2 — nested if-let binder bound from a transient predicate
+            // copy; reject a heap-owning move-out fail-closed.
+            self.record_projected_payload_provenance(
+                binding.binding,
+                &binding.name,
+                Place::MachineVariant {
+                    local: src_local,
+                    variant_idx: src_variant_idx,
+                    field_idx: binding.field_idx,
+                },
+                ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::NestedDestructure),
+                keep_for_drop_elab,
+            );
         }
 
         self.active_scopes.push(body.scope);
@@ -35388,6 +35946,9 @@ impl Builder {
             name: name.clone(),
             site: operand.site,
             ty,
+            // Whole-value placement into a fresh aggregate: `(t, t)` double
+            // placement IS a use-after-move, so keep the strict check.
+            partial_projection: false,
         });
     }
 
@@ -35974,6 +36535,8 @@ impl Builder {
                     name,
                     site: operand.site,
                     ty,
+                    // Whole-value closure-pair placement: strict `(t, t)` check.
+                    partial_projection: false,
                 });
             }
             ClosurePairIngress::Borrowed { name } => {
@@ -36602,7 +37165,6 @@ fn elaborate(
         &builder.collection_drop_flags,
     );
 
-    // Value-class capstone — owned-aggregate-record scope-exit drop allow-set.
     // A by-value owned record (RC-4 bytes field / RC-6 string field / G12
     // Vec/HashMap/HashSet field) earns the tag-aware `DropKind::RecordInPlace`
     // (the recursive per-field `__hew_record_drop_inplace_<R>` thunk) ONLY when
@@ -37819,6 +38381,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::RecordFieldStore { record, src, .. } => vec![*record, *src],
         Instr::ActorStateFieldLoad { dest, .. } => vec![*dest],
         Instr::ActorStateFieldStore { src, .. } => vec![*src],
+        Instr::NeutralizePayloadSlot { place } => vec![*place],
         Instr::TupleFieldLoad { tuple, dest, .. } => vec![*tuple, *dest],
         Instr::TupleConstruct { elements, dest } => {
             let mut places = Vec::with_capacity(elements.len() + 1);
@@ -38617,7 +39180,9 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::DurationLit { .. }
         // A field load out of the hidden actor-state pointer reads no
         // operand `Place` — the source is the implicit context arg.
-        | Instr::ActorStateFieldLoad { .. } => Vec::new(),
+        | Instr::ActorStateFieldLoad { .. }
+        // A payload-slot neutralize stores a constant null — no source operand.
+        | Instr::NeutralizePayloadSlot { .. } => Vec::new(),
         // Binary arithmetic / comparison: both operands are sources, the
         // dest (and any overflow-flag dest) is a write.
         Instr::IntAdd { lhs, rhs, .. }
@@ -38968,6 +39533,49 @@ fn hir_stmt_is_synthetic_vec_string_index(stmt: &HirStmt) -> bool {
     )
 }
 
+/// Element-type-AGNOSTIC companion to
+/// [`hir_expr_contains_synthetic_vec_string_index`]: true when the scrutinee
+/// carries the `for x in <vec>` desugar's synthetic `let __hew_iter_value_N =
+/// <vec>[i]` binding for ANY element type (owned tuple / record / enum, not
+/// just `string`). Used SOLELY by the #2523 provenance-skip decision: every
+/// such element is a FRESH, solely-owned per-frame value the iteration handed
+/// the body, never a projection of a re-readable aggregate that retains the
+/// bits, so a move-out (`let (k, val) = pair`, `return pair`) is a legitimate
+/// ownership transfer that must not route through default-deny. The
+/// string-specific disposition logic keeps its own narrower detector.
+fn hir_expr_contains_synthetic_vec_index(expr: &HirExpr) -> bool {
+    match &expr.kind {
+        HirExprKind::Block(block) => {
+            block.statements.iter().any(hir_stmt_is_synthetic_vec_index)
+                || block
+                    .tail
+                    .as_deref()
+                    .is_some_and(hir_expr_contains_synthetic_vec_index)
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            hir_expr_contains_synthetic_vec_index(condition)
+                || hir_expr_contains_synthetic_vec_index(then_expr)
+                || else_expr
+                    .as_deref()
+                    .is_some_and(hir_expr_contains_synthetic_vec_index)
+        }
+        _ => false,
+    }
+}
+
+fn hir_stmt_is_synthetic_vec_index(stmt: &HirStmt) -> bool {
+    matches!(
+        &stmt.kind,
+        HirStmtKind::Let(binding, Some(value))
+            if binding.name.starts_with("__hew_iter_value_")
+                && matches!(value.kind, HirExprKind::Index { .. })
+    )
+}
+
 fn place_refs_local(place: Place, local: u32) -> bool {
     base_local(place) == Some(local)
 }
@@ -39182,7 +39790,10 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         // transfer ownership of any local out of the frame.
         | Instr::RecordCloneInplace { .. }
         // EnumCloneInplace has the same non-consuming-read semantics.
-        | Instr::EnumCloneInplace { .. } => false,
+        | Instr::EnumCloneInplace { .. }
+        // A payload-slot neutralize nulls the scrutinee's transferred slot; it
+        // does not hand any local out of the body.
+        | Instr::NeutralizePayloadSlot { .. } => false,
     }
 }
 
@@ -39453,7 +40064,10 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::RecordCloneInplace { .. }
         // EnumCloneInplace allocates a fresh enum clone with the same
         // non-aliasing guarantee (tag-dispatched payload deep-clone).
-        | Instr::EnumCloneInplace { .. } => None,
+        | Instr::EnumCloneInplace { .. }
+        // A payload-slot neutralize writes a constant null — it produces no
+        // interior-alias dest (it retires one).
+        | Instr::NeutralizePayloadSlot { .. } => None,
     }
 }
 
@@ -40057,6 +40671,20 @@ fn compute_projection_alias_taint(
     exempt_seed_locals: &HashSet<u32>,
     locals: &[ResolvedTy],
 ) -> HashSet<u32> {
+    // #2523 — projection slots whose heap ownership was TRANSFERRED to a new
+    // owner by a projected-payload move-out. The `Move` that copies such a slot
+    // into the new owner's local is followed by an `Instr::NeutralizePayloadSlot`
+    // that nulls the source, so the destination local is the SOLE owner, not a
+    // parent-interior alias — it must NOT be tainted (that would suppress its
+    // scope-exit drop and leak the transferred buffer, the very #2523 leak).
+    let neutralized_sources: HashSet<Place> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot { place } => Some(*place),
+            _ => None,
+        })
+        .collect();
     let mut tainted: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
@@ -40073,7 +40701,10 @@ fn compute_projection_alias_taint(
                 }
             }
             if let Instr::Move { dest, src } = instr {
-                if place_is_interior_projection(*src) {
+                // An interior-projection move whose source is neutralized
+                // transfers ownership (#2523): the dest is the sole owner, not an
+                // alias. Skip the taint seed so its drop is admitted exactly once.
+                if place_is_interior_projection(*src) && !neutralized_sources.contains(src) {
                     if let Some(dl) = base_local(*dest) {
                         tainted.insert(dl);
                     }
@@ -48034,9 +48665,30 @@ fn dedup_whole_value_handoff(
         return;
     }
     let mut move_edges: Vec<(u32, u32)> = Vec::new();
+    // #2523 — an interior-projection move whose source slot is NEUTRALIZED
+    // (`Instr::NeutralizePayloadSlot`) is an ownership TRANSFER, not a
+    // shared-bits alias: the destination becomes the sole owner and the source
+    // field is nulled, so the two locals do NOT overlap. Such edges must be
+    // excluded from the hand-off/fan-out move graph. Otherwise two payload
+    // fields moved out of the SAME aggregate (`V(x, y) => var wx = x; var wy = y;`)
+    // collapse to `base_local(scrutinee)` and land in one undirected component,
+    // and the fan-out collapse below wrongly strips BOTH their scope-exit drops
+    // (leaking the reassigned owners — the #2523 two-field leak). This mirrors
+    // the identical neutralized-source exclusion in `compute_projection_alias_taint`.
+    let neutralized_sources: HashSet<Place> = blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot { place } => Some(*place),
+            _ => None,
+        })
+        .collect();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Move { dest, src } = instr {
+                if place_is_interior_projection(*src) && neutralized_sources.contains(src) {
+                    continue;
+                }
                 if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
                     if sl != dl {
                         move_edges.push((sl, dl));

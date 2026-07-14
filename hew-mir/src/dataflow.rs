@@ -277,6 +277,7 @@ fn transfer_block(
                 binding,
                 name,
                 site,
+                partial_projection,
                 ..
             } => {
                 match state.get(binding).copied() {
@@ -284,8 +285,17 @@ fn transfer_block(
                     // (`(t, t)` / `(h, ..., h)`): the second placement is a
                     // use-after-move — both aggregate fields would free the one
                     // handle. Flag it and anchor at the first placement.
+                    //
+                    // A PARTIAL-PROJECTION mark (#2523) is exempt: it records
+                    // that an owned aggregate had a *projection* moved out, and
+                    // each independent field move (`V(x, y) => let wx = x;
+                    // let wy = y;`) re-emits it. The fields are distinct sub-
+                    // objects, not the same handle placed twice, so a repeat on
+                    // an already-aliased binding is an idempotent no-op — the
+                    // binding is already in the re-read-forbidding state.
                     Some(BindingState::AliasedIntoAggregate(prev_site)) => {
-                        if use_after_consume_seen.insert((*binding, *site)) {
+                        if !*partial_projection && use_after_consume_seen.insert((*binding, *site))
+                        {
                             checks.push(MirCheck::UseAfterConsume {
                                 binding: *binding,
                                 name: name.clone(),
@@ -642,6 +652,9 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             (vec![*record, *src], vec![])
         }
         Instr::ActorStateFieldStore { src, .. } => (vec![*src], vec![]),
+        // The neutralize references the scrutinee's payload slot (keeping the
+        // base local live through the null store) and defines no new SSA value.
+        Instr::NeutralizePayloadSlot { place } => (vec![*place], vec![]),
         // Closure-env write-back (#1′): reads the env pointer (to GEP into it)
         // and the stored value. The env stays Live — only the field bytes are
         // overwritten through the pointer, opaque to the MIR lattice — so the

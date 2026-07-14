@@ -869,6 +869,9 @@ fn render_instr(instr: &Instr) -> String {
                 render_place(src)
             )
         }
+        Instr::NeutralizePayloadSlot { place } => {
+            format!("neutralize_payload {}", render_place(place))
+        }
 
         // Actor spawn
         Instr::SpawnActor {
@@ -1290,6 +1293,11 @@ fn render_mir_statement(stmt: &MirStatement) -> String {
             name,
             site,
             ty,
+            // `partial_projection` is a checker-only discriminator (#2523); it
+            // is deliberately NOT rendered so the checked-MIR golden corpus
+            // stays byte-stable (the elaborated single-owner drop shape it
+            // influences is unchanged).
+            partial_projection: _,
         } => format!(
             "agg_alias {:?} {name} site={:?} ty={}",
             binding,
@@ -1481,6 +1489,15 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             used_at,
         } => format!(
             "UseAfterConsume {binding:?} {name} consumed={consumed_at:?} used={used_at:?}"
+        ),
+        MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace {
+            binding,
+            name,
+            site,
+            reason,
+        } => format!(
+            "ProjectedPayloadMoveFromReadablePlace {binding:?} {name} moved={site:?} \
+             reason={reason:?}"
         ),
         MirDiagnosticKind::InitialisedBeforeUse {
             binding,

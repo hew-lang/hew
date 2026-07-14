@@ -6,18 +6,18 @@
 //! overwrite gate (`raii1_record_resource_field_leak_oracle.rs`); the two now
 //! obey the same exactly-once-close invariant.
 //!
-//! ## Background (the asymmetry this closes)
+//! ## Parity with the record store
 //!
-//! Before this lane, `h.dq = src` on a plain record was fail-closed rejected
-//! ("overwriting an owned handle field … the previous handle would leak …
-//! rebuild the whole record"), but the structurally identical `self.dq = src`
-//! on actor state compiled silently and leaked: the emitted `Keeper__recv__…`
-//! IR was a bare `store ptr … , ptr …` with no old-value load and no `Dq::close`
-//! (the single close lived only in `__hew_state_drop_Keeper`), so every overwrite
-//! dropped one `hew_deque_new` box on the floor (`leaks --atExit` reported ~500
-//! ROOT LEAKs on the original repro). This oracle pins the refusal so the leak
-//! cannot reappear, and pins the working (never-reassigned) path so the refusal
-//! did not break exactly-once close.
+//! The plain-record store `h.dq = src` is fail-closed rejected ("overwriting an
+//! owned handle field … the previous handle would leak … rebuild the whole
+//! record"). The structurally identical `self.dq = src` on actor state must be
+//! rejected the same way: with no release-before-store, its emitted
+//! `Keeper__recv__…` IR would be a bare `store ptr … , ptr …` with no old-value
+//! load and no `Dq::close` (the single close lives only in
+//! `__hew_state_drop_Keeper`), so every overwrite would drop one `hew_deque_new`
+//! box on the floor — one `leaks --atExit` ROOT LEAK per overwrite. This oracle
+//! pins the refusal so the leak cannot appear, and pins the working
+//! (never-reassigned) path so the refusal does not break exactly-once close.
 //!
 //! ## What each oracle pins
 //!

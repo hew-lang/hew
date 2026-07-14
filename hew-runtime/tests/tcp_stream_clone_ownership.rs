@@ -177,10 +177,17 @@ fn repeated_clone_failure_does_not_leak_fds() {
 
     let before = open_fd_count();
 
-    for _ in 0..N {
+    for i in 0..N {
         let (conn, peer) = make_bridge_pair();
-        // Alternate which clone fails so both branches are exercised in bulk.
-        force_next_clone_failures(true, false);
+        // Alternate which clone fails by iteration parity so both failure
+        // branches are exercised in bulk: even ⇒ first-clone failure (no clone
+        // survives), odd ⇒ second-clone (partial) failure (the live `read_stream`
+        // dup must not strand an fd). Both must leave a flat slope.
+        if i % 2 == 0 {
+            force_next_clone_failures(true, false);
+        } else {
+            force_next_clone_failures(false, true);
+        }
         // SAFETY: conn is valid; forced clone failure.
         let pair = unsafe { hew_tcp_stream_from_conn(conn) };
         assert!(pair.is_null(), "each conversion must fail and return null");

@@ -34,21 +34,20 @@ const EVENT_STREAM_OPENED: i32 = 2;
 const EVENT_STREAM_CLOSED: i32 = 3;
 const EVENT_ERROR: i32 = -1;
 
-std::thread_local! {
-    static LAST_CONSTRUCTOR_ERROR: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 fn set_constructor_last_error(msg: impl Into<String>) {
-    LAST_CONSTRUCTOR_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Quic,
+        msg,
+    );
 }
 
 fn clear_constructor_last_error() {
-    LAST_CONSTRUCTOR_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_error(hew_runtime::parse_error_slot::ErrorSlotKind::Quic);
 }
 
 fn get_constructor_last_error() -> String {
-    LAST_CONSTRUCTOR_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+    hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Quic)
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Default)]
@@ -2415,6 +2414,62 @@ mod tests {
         assert!(unsafe { take_string(hew_quic_last_error()) }.is_empty());
         // SAFETY: ep was just created.
         unsafe { hew_quic_endpoint_close(ep) };
+    }
+
+    /// A QUIC constructor error recorded for a given actor ID on one OS
+    /// thread must remain readable for that same actor ID on a different OS
+    /// thread — the scenario when an actor is parked mid-construct and
+    /// resumed on another scheduler worker.
+    ///
+    /// Drives the actor-keyed slot directly via the `__*_for_actor` test
+    /// helpers (the same internal path `set_constructor_last_error` takes
+    /// when `hew_actor_current_id()` returns this actor ID), since a unit
+    /// test cannot inject actor context without a running scheduler.
+    ///
+    /// With the predecessor `thread_local!` this would have been empty on
+    /// thread B; with the actor-keyed slot it is not. Scoped to the
+    /// constructor slot only — the per-endpoint `state.last_error` mechanism
+    /// is untouched and out of scope for this lane.
+    ///
+    /// Run 3× to satisfy the flake gate.
+    #[test]
+    fn quic_constructor_error_visible_across_worker_threads_regression_2659() {
+        for run in 0..3_u32 {
+            const ACTOR_ID: u64 = 780_001;
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let barrier2 = barrier.clone();
+
+            let handle = thread::spawn(move || {
+                // Simulate: actor ACTOR_ID resumes on thread B.
+                barrier2.wait();
+                hew_runtime::parse_error_slot::__get_error_for_actor(
+                    ACTOR_ID,
+                    hew_runtime::parse_error_slot::ErrorSlotKind::Quic,
+                )
+            });
+
+            // Thread A: write a constructor error as if actor ACTOR_ID hit a
+            // failed hew_quic_new_client/_server call.
+            hew_runtime::parse_error_slot::__set_error_for_actor(
+                ACTOR_ID,
+                hew_runtime::parse_error_slot::ErrorSlotKind::Quic,
+                "hew_quic_new_server: actor-migration regression",
+            );
+            barrier.wait();
+
+            let result = handle.join().expect("thread B panicked");
+            assert_eq!(
+                result.as_deref(),
+                Some("hew_quic_new_server: actor-migration regression"),
+                "run {run}: QUIC constructor error written on thread A must be visible on thread B for same actor"
+            );
+
+            hew_runtime::parse_error_slot::__clear_error_for_actor(
+                ACTOR_ID,
+                hew_runtime::parse_error_slot::ErrorSlotKind::Quic,
+            );
+        }
     }
 
     #[test]

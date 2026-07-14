@@ -115,6 +115,23 @@ impl Verifier {
                     // uniqueness in S-A; children-list resolution and
                     // wired_to validation are S-B's job.
                     self.node(sup.node, sup.span.clone());
+                    // Register each child's declaration site and every
+                    // init-arg/pool-count expression's real site. Without
+                    // this, MIR diagnostics that carry a supervisor child's
+                    // site (a missing required field, an unknown field name)
+                    // key into `collect_site_spans` with an ID the table
+                    // never claims — silently rendering with no location, or
+                    // worse, numerically colliding with an unrelated site
+                    // that IS registered and rendering a wrong caret.
+                    for child in &sup.children {
+                        self.site(child.site, child.span.clone());
+                        for (_, arg) in &child.init_args {
+                            self.expr(arg);
+                        }
+                        if let Some(pool_count) = &child.pool_count {
+                            self.expr(pool_count);
+                        }
+                    }
                 }
                 HirItem::Impl(block) => {
                     // V0b: impl-block metadata only contributes its own

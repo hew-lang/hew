@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
-use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator};
+use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Place, Terminator};
 use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
 /// Lower a Hew source program to MIR, asserting no parse or HIR diagnostics.
@@ -693,5 +693,258 @@ fn owned_collection_config_field_init_arg_is_walled_at_checker() {
         "an owned `Vec` config init arg must stay walled until its clone-in-thunk codegen lands; \
          errors: {:#?}",
         tc_output.errors
+    );
+}
+
+/// A supervisor `child` init arg naming a field the actor does not declare
+/// reports exactly one `InvalidActorSpawnArgument` for the bad field — the
+/// fail-open guard for the S4 delete: removing the supervisor-loop's redundant
+/// unknown-field check must not drop the only diagnostic for this mistake, and
+/// the correct `InvalidActorSpawnArgument` (already fired by the direct-spawn
+/// validator the synthesized child spawn routes through) must remain the sole
+/// report.
+#[test]
+fn supervisor_child_unknown_field_reports_exactly_one_invalid_actor_spawn_argument() {
+    let pipeline = lower_module_from_source(
+        r"
+        actor Worker {
+            let id: i64;
+            receive fn work(x: i64) -> i64 { x }
+        }
+
+        supervisor WorkerPool {
+            strategy: one_for_one;
+            intensity: 5 within 10s;
+            child w1: Worker(idx: 1)
+        }
+        ",
+    );
+
+    let invalid_matches: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::InvalidActorSpawnArgument { actor, argument, .. }
+                    if actor == "Worker" && argument == "idx"
+            )
+        })
+        .collect();
+    assert_eq!(
+        invalid_matches.len(),
+        1,
+        "supervisor child unknown field must report exactly one \
+         InvalidActorSpawnArgument for the bad field; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|diag| matches!(&diag.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "an unknown supervisor child init-arg field name is a fully-understood user error and \
+         must never surface as NotYetImplemented; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// A supervisor `child` missing a required actor state field (no init block,
+/// no declared default) reports `MissingActorSpawnArgument` — a user error the
+/// compiler fully understands — never `NotYetImplemented`.
+#[test]
+fn supervisor_child_missing_required_field_reports_missing_actor_spawn_argument() {
+    let pipeline = lower_module_from_source(
+        r"
+        actor Worker {
+            let id: i64;
+            receive fn work(x: i64) -> i64 { x }
+        }
+
+        supervisor WorkerPool {
+            strategy: one_for_one;
+            intensity: 5 within 10s;
+            child w1: Worker()
+        }
+        ",
+    );
+
+    assert!(
+        pipeline.diagnostics.iter().any(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::MissingActorSpawnArgument { actor, field, .. }
+                    if actor == "Worker" && field == "id"
+            )
+        }),
+        "supervisor child missing a required state field must report \
+         MissingActorSpawnArgument; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    let missing_matches: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::MissingActorSpawnArgument { actor, field, .. }
+                    if actor == "Worker" && field == "id"
+            )
+        })
+        .collect();
+    assert_eq!(
+        missing_matches.len(),
+        1,
+        "supervisor child missing a required state field must report exactly one \
+         MissingActorSpawnArgument — the post-loop layout pass and the synthesized \
+         spawn used to both independently diagnose the same field; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|diag| matches!(&diag.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "a missing supervisor child field is a fully-understood user error and must never \
+         surface as NotYetImplemented; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// A config-backed supervisor child (any init arg reads `config.field`) is
+/// entirely skipped by the synthesized-spawn machinery — the codegen init
+/// thunk builds its real spawn from `SupervisorChildLayout` instead. Before
+/// this fix, that skip ran BEFORE any field-name validation, so an unknown
+/// field name on such a child passed silently: the (now-deleted)
+/// supervisor-loop guard used to catch it, and the synthesized spawn never
+/// even ran on a config-backed child to catch it either. This is the
+/// fail-open regression the S4 delete introduced for config children
+/// specifically.
+///
+/// An unknown arg name must report EXACTLY ONE diagnostic total — not the
+/// `InvalidActorSpawnArgument` plus a cascaded `MissingActorSpawnArgument` for
+/// the field the bad name was presumably meant to supply. Name validation
+/// runs before missing-field planning and skips that planning entirely once
+/// an invalid name is found, so `capacity` never gets flagged as missing
+/// alongside `bogus` being flagged as invalid.
+#[test]
+fn supervisor_config_child_unknown_field_reports_invalid_actor_spawn_argument() {
+    let pipeline = lower_module_from_source(
+        r"
+        record AppConfig { size: i64 }
+
+        actor Cache {
+            var capacity: i64;
+            init(capacity: i64) {
+                capacity = capacity;
+            }
+            receive fn get_cap() -> i64 { capacity }
+        }
+
+        supervisor App(config: AppConfig) {
+            strategy: one_for_one;
+            child cache: Cache(bogus: config.size)
+        }
+        ",
+    );
+
+    let relevant_matches: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::InvalidActorSpawnArgument { actor, .. }
+                    if actor == "Cache"
+            ) || matches!(
+                &diag.kind,
+                MirDiagnosticKind::MissingActorSpawnArgument { actor, .. }
+                    if actor == "Cache"
+            )
+        })
+        .collect();
+    assert_eq!(
+        relevant_matches.len(),
+        1,
+        "an unknown field name on a config-backed supervisor child must report exactly \
+         one diagnostic total — InvalidActorSpawnArgument for the bad name, and NO \
+         cascaded MissingActorSpawnArgument for the field it was meant to supply; \
+         diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        matches!(
+            &relevant_matches[0].kind,
+            MirDiagnosticKind::InvalidActorSpawnArgument { argument, .. } if argument == "bogus"
+        ),
+        "the one diagnostic must be InvalidActorSpawnArgument for `bogus`; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|diag| matches!(&diag.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "an unknown field name is a fully-understood user error and must never surface as \
+         NotYetImplemented; diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// A config-backed child that supplies one required field with a VALID name
+/// but omits another required field entirely must still report
+/// `MissingActorSpawnArgument` for the omitted field — name validation must
+/// not blanket-suppress genuine missing-field diagnostics for config
+/// children, only the cascade from an actually-invalid name.
+#[test]
+fn supervisor_config_child_valid_arg_missing_other_field_reports_missing_actor_spawn_argument() {
+    let pipeline = lower_module_from_source(
+        r"
+        record AppConfig { size: i64 }
+
+        actor Cache {
+            var capacity: i64;
+            var ttl: i64;
+            init(capacity: i64, ttl: i64) {
+                capacity = capacity;
+                ttl = ttl;
+            }
+            receive fn get_cap() -> i64 { capacity }
+        }
+
+        supervisor App(config: AppConfig) {
+            strategy: one_for_one;
+            child cache: Cache(capacity: config.size)
+        }
+        ",
+    );
+
+    let missing_matches: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            matches!(
+                &diag.kind,
+                MirDiagnosticKind::MissingActorSpawnArgument { actor, field, .. }
+                    if actor == "Cache" && field == "ttl"
+            )
+        })
+        .collect();
+    assert_eq!(
+        missing_matches.len(),
+        1,
+        "a config-backed child supplying `capacity` with a valid name but omitting `ttl` \
+         must still report exactly one MissingActorSpawnArgument for `ttl`; \
+         diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        !pipeline.diagnostics.iter().any(|diag| matches!(
+            &diag.kind,
+            MirDiagnosticKind::InvalidActorSpawnArgument { .. }
+        )),
+        "the supplied `capacity` name is valid; no InvalidActorSpawnArgument should fire; \
+         diagnostics: {:#?}",
+        pipeline.diagnostics
     );
 }

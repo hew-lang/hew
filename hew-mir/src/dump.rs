@@ -1550,6 +1550,9 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             argument,
             site,
         } => format!("InvalidActorSpawnArgument {actor}.{argument} site={site:?}"),
+        MirDiagnosticKind::MissingActorSpawnArgument { actor, field, site } => {
+            format!("MissingActorSpawnArgument {actor}.{field} site={site:?}")
+        }
         MirDiagnosticKind::ActorHandlerSymbolCollision {
             symbol,
             existing,

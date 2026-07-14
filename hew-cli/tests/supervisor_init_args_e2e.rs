@@ -683,3 +683,71 @@ fn main() {
          got stdout: {stdout}"
     );
 }
+
+/// A supervisor child's `MissingActorSpawnArgument` diagnostic must carry the
+/// real source location of the *child declaration* — never a sentinel
+/// `SiteId(0)` and never a numeric collision with an unrelated site. Before
+/// this fix, supervisor children were never registered in the verifier's
+/// site-span table, so the diagnostic either rendered with no location or
+/// (worse) aliased whatever site happened to claim the same numeric ID —
+/// observed live pointing at an unrelated `receive fn`'s parameter.
+///
+/// The fixture places the child declaration on a distinct line from the
+/// unrelated actor receive handler's parameter (`x`) so a collision would be
+/// unambiguous: `--format=json`'s `span.start_line` must match the child
+/// declaration's line, not the receive handler's.
+#[test]
+fn supervisor_missing_field_diagnostic_points_at_child_declaration() {
+    require_codegen();
+
+    let source = r"actor Worker {
+    let id: i64;
+    receive fn work(x: i64) -> i64 { x }
+}
+
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w1: Worker;
+}
+";
+
+    let (_dir, path) = write_fixture(source);
+
+    let output = Command::new(hew_binary())
+        .args(["check", "--format=json", path.to_str().unwrap()])
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "a stateful child with no init args must be a compile error"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+        panic!("stdout must be a parseable JSON array; parse error: {error}\nstdout:\n{stdout}")
+    });
+    let diagnostics = diagnostics
+        .as_array()
+        .unwrap_or_else(|| panic!("top-level JSON must be an array; got:\n{stdout}"));
+
+    let missing = diagnostics
+        .iter()
+        .find(|d| d["code"] == "MissingActorSpawnArgument")
+        .unwrap_or_else(|| {
+            panic!("expected a MissingActorSpawnArgument diagnostic; got: {diagnostics:#?}")
+        });
+
+    // `child w1: Worker;` is on source line 9 (1-based). The unrelated
+    // `receive fn work(x: i64)` parameter that a SiteId collision previously
+    // rendered a caret on lives on line 3 — asserting an exact match (not
+    // merely "not line 3") pins the fix to the real declaration rather than
+    // any other incidentally-different line.
+    assert_eq!(
+        missing["span"]["start_line"], 9,
+        "MissingActorSpawnArgument must carry the child declaration's real \
+         source line, not a sentinel or an unrelated colliding site; \
+         diagnostic: {missing:#?}"
+    );
+}

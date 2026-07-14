@@ -451,6 +451,8 @@ fn supervisor_child_layout_mirrors_cycle_capable_actor_metadata() {
             init_args: Vec::new(),
             pool_count: None,
             shutdown: None,
+            site: ids.site(),
+            span: 0..0,
         }],
         span: 0..0,
     };

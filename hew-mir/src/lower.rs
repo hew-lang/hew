@@ -31682,6 +31682,7 @@ impl Builder {
             // win, then jumps into this body block — the Bind here
             // mirrors that runtime initialisation in the MIR
             // statement stream.
+            let mut arm_binding: Option<(BindingId, Place)> = None;
             if let (Some(binding_id), Some(binding_name)) =
                 (arm.binding_id, arm.binding_name.as_ref())
             {
@@ -31723,9 +31724,22 @@ impl Builder {
                 // TaskAwait, and ChannelRecv uniformly; AfterTimer arms
                 // bind nothing and fall outside this block.
                 self.register_owned_local(binding_id, binding_name.clone(), ty_of_place);
+                arm_binding = Some((binding_id, binding_place));
             }
             let body_value = self.lower_value(&arm.body);
             if let Some(src) = body_value {
+                // Direct escape (`=> r`): the arm body's value IS the arm
+                // binding's own slot, and the Move below transfers it into
+                // the select result. Mark the binding consumed so its
+                // scope-exit drop is suppressed and the destination
+                // (`let x = select { ... }`) is the sole owner — otherwise
+                // two owned locals alias one heap pointer and the drop
+                // provers fail closed to a leak on both.
+                if let Some((binding_id, binding_place)) = arm_binding {
+                    if src == binding_place {
+                        self.mark_binding_moved(binding_id);
+                    }
+                }
                 self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
@@ -41106,6 +41120,27 @@ fn derive_cow_fresh_borrowed_owner(
         if let Some(dest) = fresh_string_producer_term_dest(&block.terminator) {
             if let Some(l) = base_local(dest) {
                 fresh.insert(l);
+            }
+        }
+        // A select terminator's value-bearing arm binding slot is a fresh
+        // producer too: the winning edge materialises a fresh owned value
+        // into the slot (an ask reply the reply channel hands over — the
+        // consumed leg the channel destructor does NOT reap — or a channel
+        // item popped by `try_recv`, which the queue neither clones nor
+        // drops). The same +1 ownership shape as a fresh producer call.
+        // Gated on the slot's declared type being a leaf `string`, matching
+        // the leaf-string-only admission below.
+        if let Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } =
+            &block.terminator
+        {
+            for arm in arms {
+                if let Some(binding) = arm.binding {
+                    if let Some(l) = base_local(binding) {
+                        if matches!(locals.get(l as usize), Some(ResolvedTy::String)) {
+                            fresh.insert(l);
+                        }
+                    }
+                }
             }
         }
     }

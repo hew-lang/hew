@@ -185,6 +185,56 @@ fn forwarder_discarded_statement_rejects() {
     assert!(!any_owner_minted(&p));
 }
 
+#[test]
+fn forwarder_over_fresh_ctor_arg_rejects_interim() {
+    // `match forwarder(fresh_ctor())` — the callee summary is `{PARAM}`, so the
+    // interim PARAM-present gate REJECTS even though the argument is inline-fresh.
+    // This is the documented interim over-reject: the arg-scan rescue (ParamsOnly
+    // + every heap arg fresh → ADMIT) lands with the trusted-root work. Pinning
+    // the interim reject makes the later flip to ADMIT an explicit, reviewed
+    // behaviour change rather than a silent one.
+    let src = format!(
+        "{FORWARDER}\n\
+         fn fresh_ctor() -> Result<string, string> {{ Ok(\"x\") }}\n\
+         fn use_it() -> i64 {{\n\
+            match passthru(fresh_ctor()) {{ Ok(_) => 1, Err(_) => 0 }}\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "interim: a PARAM forwarder over an inline-fresh arg rejects (arg-scan rescue is deferred): {:#?}",
+        p.diagnostics
+    );
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn forwarder_reused_in_loop_rejects() {
+    // The #2648 loop-back-edge repro: a PARAM forwarder scrutinee inside a loop
+    // body would mint one owner per back-edge over the same forwarded buffer.
+    // The preflight rejects it before lowering — one diagnostic, no owner mint.
+    let src = format!(
+        "{FORWARDER}\n\
+         fn use_it(r: Result<string, string>) {{\n\
+            var i = 0;\n\
+            while i < 2 {{\n\
+                match passthru(r) {{ Ok(_) => {{}}, Err(_) => {{}} }}\n\
+                i = i + 1;\n\
+            }}\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "a forwarder scrutinee reused across a loop back-edge rejects: {:#?}",
+        p.diagnostics
+    );
+    assert!(!any_owner_minted(&p));
+}
+
 // ---------------------------------------------------------------------------
 // Fresh producer + interim LegacyModuleCall → ADMIT, owner minted as today
 // ---------------------------------------------------------------------------
@@ -388,5 +438,40 @@ fn opaque_only_module_fn_move_out_admits_and_mints_owner() {
     assert!(
         any_owner_minted(&p),
         "the interim LegacyModuleCall path mints the owner byte-for-byte as today"
+    );
+}
+
+#[test]
+fn method_call_forwarder_move_out_rejects_with_no_owner_or_neutralize() {
+    // A user METHOD that forwards a by-value heap parameter
+    // (`fn forward(self, x) -> T { x }`) used as a match scrutinee whose payload
+    // is moved out. The method-call scrutinee resolves through the same
+    // return-provenance authority (summary `{PARAM}`), so the preflight rejects
+    // it before lowering — exactly one diagnostic, no owner mint, no neutralize.
+    let src = r"
+        type Holder { tag: i64; }
+        impl Holder {
+            fn forward(self, x: Result<string, string>) -> Result<string, string> { x }
+        }
+        fn sink(s: string) -> i64 { 1 }
+        fn use_it(h: Holder, r: Result<string, string>) -> i64 {
+            match h.forward(r) { Ok(inner) => sink(inner), Err(_) => 0 }
+        }
+    ";
+    let p = pipeline(src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "a method-call forwarder scrutinee must reject: {:#?}",
+        p.diagnostics
+    );
+    assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
+    assert!(
+        !any_owner_minted(&p),
+        "a rejected method-call forwarder must mint NO owner"
+    );
+    assert!(
+        !any_neutralize(&p),
+        "a rejected method-call forwarder must emit NO NeutralizePayloadSlot"
     );
 }

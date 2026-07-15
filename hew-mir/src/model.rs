@@ -6363,6 +6363,18 @@ pub enum ProjectedPayloadRejectReason {
     /// abort at runtime. Path-sensitive neutralization keyed on the guard
     /// outcome is not expressible here, so the consume is rejected fail-closed.
     GuardedConsume,
+    /// #2648 (S3, the #2523 twin gate) — a call/method/aggregate/`Binary`
+    /// scrutinee whose produced value MAY ALIAS caller-visible storage rather
+    /// than being a fresh sole owner: a call forwarding one of its by-value heap
+    /// parameters (`match passthru(h.b)`), an aggregate constructed over a
+    /// re-readable heap place operand (`match (Foo { b: h.b })`), a borrowed
+    /// collection getter (`hew_vec_get_owned`/`_ptr`, a `Vec<Vec<T>>` `.get`), or
+    /// a non-string heap `Binary`. Moving the projected payload out of such a
+    /// scrutinee would leave the aliased storage dangling (use-after-free on a
+    /// re-read, double-free at the source's drop), so the move-out is rejected
+    /// fail-closed before codegen. Construct the value fresh at the scrutinee, or
+    /// bind the call result to a `let` and match the binding.
+    AliasesCallerStorage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

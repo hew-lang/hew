@@ -2625,15 +2625,27 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
             set_last_error("hew_connmgr_add: invalid noise pattern");
             return -1;
         };
-        let builder = snow::Builder::new(pattern);
-        let Ok(keypair) = builder.generate_keypair() else {
-            // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-            set_last_error("hew_connmgr_add: failed to generate noise keypair");
-            return -1;
-        };
-        local_noise_pubkey.copy_from_slice(&keypair.public);
-        Zeroizing::new(keypair.private)
+        if let Some(identity) = mgr.auth.noise_identity() {
+            // Stable per-node Noise identity (issue #2652, D1): present the same
+            // static key on every connection and across restarts so peers can
+            // pin it via `Node::allow_peer`. Retires per-connection keypair
+            // churn, which made a node's Noise public key unbindable.
+            local_noise_pubkey.copy_from_slice(&identity.public());
+            Zeroizing::new(identity.private().to_vec())
+        } else {
+            // No stable identity loaded (unconfigured / loopback-dev node): fall
+            // back to an ephemeral keypair. Such a node is `Unverified`
+            // (delivery-only); no peer pins its key, so churn is harmless.
+            let builder = snow::Builder::new(pattern);
+            let Ok(keypair) = builder.generate_keypair() else {
+                // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
+                unsafe { close_transport_conn(mgr.transport, conn_id) };
+                set_last_error("hew_connmgr_add: failed to generate noise keypair");
+                return -1;
+            };
+            local_noise_pubkey.copy_from_slice(&keypair.public);
+            Zeroizing::new(keypair.private)
+        }
     };
 
     let local_hs = local_handshake(mgr.local_node_id, local_noise_pubkey);
@@ -2763,7 +2775,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
             ));
             return -1;
         };
-        if !crate::encryption::hew_allowlist_check_active_peer(&peer_static_pubkey) {
+        if posture == Posture::Strict && !mgr.auth.noise_pubkey_allowlisted(&peer_static_pubkey) {
+            // Per-node Noise pre-gate (issue #2652, D14): under strict posture
+            // the peer's stable Noise static key must be bound in THIS node's
+            // snapshot (via `allow_peer`) — not a process-global allowlist.
+            // `authorize` below then binds the key to the *claimed* NodeId; this
+            // pre-gate rejects an entirely unknown key early, before a claim is
+            // reserved. Under `Unverified` posture (loopback dev / opt-out)
+            // delivery is allowed without a binding.
             // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
             unsafe { close_transport_conn(mgr.transport, conn_id) };
             set_last_error(format!(

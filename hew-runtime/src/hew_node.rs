@@ -4518,10 +4518,12 @@ fn node_peer_auth_setup_failed(msg: impl Into<String>) {
 }
 
 /// `Node::load_keys(path)` — Load (or, if absent, mint-and-persist) this node's
-/// stable mesh TLS identity from `path`. Must be called **before**
-/// `Node::start` so the listener presents the loaded key. Peers pin the
-/// resulting SPKI via `Node::allow_peer`; persisting the key keeps that SPKI
-/// stable across restarts. Native quic-mesh only.
+/// stable transport identity from `path`, selected by the pinned transport: a
+/// mesh TLS identity (SPKI) on quic-mesh, a stable Noise static keypair on
+/// tcp-noise. Must be called **before** `Node::start` so the listener/handshake
+/// presents the loaded key. Peers pin the resulting public credential via
+/// `Node::allow_peer`; persisting the key keeps that credential stable across
+/// restarts. Native only (plain quic has no pinnable peer identity).
 ///
 /// Returns `0` on success, `-1` on a null/invalid path or key I/O failure
 /// (error string available via `hew_last_error`). Never fabricates an identity.
@@ -4539,55 +4541,100 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
         node_peer_auth_setup_failed("Node::load_keys: invalid path argument");
         return -1;
     };
-    #[cfg(feature = "quic")]
-    {
-        match crate::quic_mesh::mesh_identity_load_or_create(std::path::Path::new(p)) {
-            Ok(material) => {
-                // Stage the loaded stable mesh identity into the Building config
-                // so the frozen snapshot (and the listener via `install_auth`)
-                // present this key across restarts (D14 — no process-global
-                // identity override). Rejected once the public lifecycle owns
-                // the state (Starting/Running).
-                let mut guard = PEER_AUTH_STATE
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let ConfigState::Building(cfg) = &mut guard.state else {
-                    drop(guard);
-                    node_peer_auth_setup_failed(
-                        "Node::load_keys: peer auth config is locked while the public node \
-                         lifecycle is active (Starting/Running)",
-                    );
-                    return -1;
-                };
-                cfg.mesh_identity = Some(material);
-                // Early transport pin (D1/D14 handoff): loading a stable mesh
-                // identity commits this node to the transport the operator has
-                // selected, so `Node::identity_key()` can export the pinned
-                // credential *before* `Node::start` freezes the snapshot. The
-                // pin is idempotent with the authoritative pin in
-                // `merge_start_env_into_config`; a mismatch cannot occur because
-                // both read `transport_selection_from_env`.
-                if cfg.transport.is_none() {
-                    if let Ok(selection) = transport_selection_from_env() {
-                        cfg.transport = Some(selection.as_peer_transport());
+    // Transport-selected identity (issue #2652, D1): load the identity whose
+    // credential the pinned transport interprets — a mesh TLS identity on
+    // quic-mesh, a stable Noise static keypair on tcp-noise. Reading the
+    // selection here also pins it early into the Building config so
+    // `Node::identity_key()` can export the pinned credential before start.
+    let selection = match transport_selection_from_env() {
+        Ok(s) => s,
+        Err(err) => {
+            node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
+            return -1;
+        }
+    };
+    match selection {
+        TransportSelection::Tcp => {
+            #[cfg(feature = "encryption")]
+            {
+                match crate::encryption::noise_identity_load_or_create(std::path::Path::new(p)) {
+                    Ok(identity) => stage_loaded_identity(
+                        |cfg| cfg.noise_identity = Some(identity),
+                        PeerTransport::Tcp,
+                    ),
+                    Err(err) => {
+                        node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
+                        -1
                     }
                 }
-                0
             }
-            Err(err) => {
-                node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
+            #[cfg(not(feature = "encryption"))]
+            {
+                let _ = p;
+                node_peer_auth_setup_failed(
+                    "Node::load_keys: tcp-noise identity requires the hew-runtime encryption \
+                     feature (peer auth unavailable)",
+                );
                 -1
             }
         }
+        #[cfg(feature = "quic")]
+        TransportSelection::QuicMesh => {
+            match crate::quic_mesh::mesh_identity_load_or_create(std::path::Path::new(p)) {
+                Ok(material) => stage_loaded_identity(
+                    |cfg| cfg.mesh_identity = Some(material),
+                    PeerTransport::QuicMesh,
+                ),
+                Err(err) => {
+                    node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
+                    -1
+                }
+            }
+        }
+        #[cfg(feature = "quic")]
+        TransportSelection::Quic => {
+            let _ = p;
+            node_peer_auth_setup_failed(
+                "Node::load_keys: plain quic transport has no pinnable peer identity \
+                 (use quic-mesh or tcp-noise)",
+            );
+            -1
+        }
     }
-    #[cfg(not(feature = "quic"))]
-    {
-        let _ = p;
+}
+
+/// Stage a freshly loaded stable identity into the pre-start `Building` config
+/// and pin the transport selection (issue #2652, D1/D14). The identity is
+/// frozen into the per-node snapshot at `Node::start` and presented by the
+/// listener (mesh via `install_auth`) / handshake (Noise). Rejected once the
+/// public node lifecycle owns the state (`Starting`/`Running`) so a load never
+/// races a running node. Returns `0` on success, `-1` after marking the
+/// peer-auth setup failed when the config is locked.
+#[cfg(any(feature = "quic", feature = "encryption"))]
+fn stage_loaded_identity(
+    apply: impl FnOnce(&mut crate::peer_binding::PeerAuthConfig),
+    selection: PeerTransport,
+) -> c_int {
+    let mut guard = PEER_AUTH_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ConfigState::Building(cfg) = &mut guard.state else {
+        drop(guard);
         node_peer_auth_setup_failed(
-            "Node::load_keys: quic-mesh transport not built (peer auth unavailable)",
+            "Node::load_keys: peer auth config is locked while the public node \
+             lifecycle is active (Starting/Running)",
         );
-        -1
+        return -1;
+    };
+    apply(cfg);
+    // Early transport pin: loading a stable identity commits this node to the
+    // operator's selected transport, so `identity_key()` can export the pinned
+    // credential before `Node::start` freezes the snapshot. Idempotent with the
+    // authoritative pin in `merge_start_env_into_config` (both read the env).
+    if cfg.transport.is_none() {
+        cfg.transport = Some(selection);
     }
+    0
 }
 
 /// `Node::allow_peer(node_id, credential_hex)` — bind a peer's authenticated

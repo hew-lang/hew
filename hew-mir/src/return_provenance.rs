@@ -45,7 +45,9 @@
 
 use std::collections::HashMap;
 
-use hew_hir::{HirBlock, HirExpr, HirExprKind, HirFn, ResolvedRef};
+use std::collections::HashSet;
+
+use hew_hir::{BindingId, HirBlock, HirExpr, HirExprKind, HirFn, ResolvedRef};
 use hew_types::ResolvedTy;
 
 // ---------------------------------------------------------------------------
@@ -1049,6 +1051,595 @@ fn method_is_non_mutating(emitted_symbol: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Local binding-provenance sub-analysis [F2] — the BindingRef-to-local resolver
+// ---------------------------------------------------------------------------
+
+/// One source contributing bits to a local binding.
+enum DefSource<'f> {
+    /// A whole-value definition (a `let`/`var` init, a `var` whole-assign RHS, or
+    /// a pattern binder's scrutinee) — bits = `return_alias_bits(expr)`.
+    Value(&'f HirExpr),
+    /// A fail-closed definition (a projection-store `var`, an unmodelled binding
+    /// form) → `{OPAQUE}`.
+    Opaque,
+}
+
+#[derive(Default)]
+struct LocalDefs<'f> {
+    /// param heap-ness: id → true when the param owns heap (a `PARAM` alias root).
+    params: HashMap<BindingId, bool>,
+    /// per-binding contributing sources.
+    defs: HashMap<BindingId, Vec<DefSource<'f>>>,
+    /// alias edges (`let y = x` / `var y = x` whole) to union into one class.
+    alias_edges: Vec<(BindingId, BindingId)>,
+    /// bindings tainted `{OPAQUE}` by a mutation channel (their whole alias class
+    /// is poisoned).
+    tainted: HashSet<BindingId>,
+}
+
+/// Per-function local binding-provenance with MANDATORY alias closure [F2].
+///
+/// A by-value heap param is a `PARAM` alias root; a local's bits flow from its
+/// definition(s); a binding whose alias class is mutated (a projection-store, a
+/// mutating method, or a value passed to a not-proven-pure callee) is poisoned to
+/// `{OPAQUE}` across the WHOLE class — `let y = x; y.f = p; return x` must reject
+/// through `x` even though the store names `y`.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "consumed with the pipeline's default-hasher summary maps"
+)]
+pub fn compute_local_binding_provenance(
+    f: &HirFn,
+    provenance: &HashMap<hew_hir::ItemId, AliasBits>,
+    extern_table: &ExternContractTable,
+    may_mutate: &HashMap<hew_hir::ItemId, bool>,
+) -> HashMap<BindingId, AliasBits> {
+    let mut collector = LocalDefs::default();
+    for p in &f.params {
+        collector.params.insert(p.id, !ty_is_scalar_non_heap(&p.ty));
+    }
+    let mut ctx = DefCollector {
+        defs: &mut collector,
+        may_mutate,
+    };
+    ctx.collect_block(&f.body);
+
+    // Union-find over alias classes.
+    let mut uf = UnionFind::default();
+    for &id in collector.params.keys() {
+        uf.make(id);
+    }
+    for id in collector.defs.keys() {
+        uf.make(*id);
+    }
+    for &(a, b) in &collector.alias_edges {
+        uf.make(a);
+        uf.make(b);
+        uf.union(a, b);
+    }
+    // A class is poisoned if ANY member is tainted.
+    let mut poisoned_roots: HashSet<BindingId> = HashSet::new();
+    for &t in &collector.tainted {
+        uf.make(t);
+        poisoned_roots.insert(uf.find(t));
+    }
+
+    // Fixpoint over binding bits (monotone union from the optimistic ∅ / PARAM
+    // seeds). Terminates: bits only grow over a finite 2-bit set.
+    let mut bits: HashMap<BindingId, AliasBits> = HashMap::new();
+    for (&id, &heap) in &collector.params {
+        bits.insert(
+            id,
+            if heap {
+                AliasBits::PARAM
+            } else {
+                AliasBits::EMPTY
+            },
+        );
+    }
+    for id in collector.defs.keys() {
+        bits.entry(*id).or_insert(AliasBits::EMPTY);
+    }
+    loop {
+        let mut changed = false;
+        for (&id, sources) in &collector.defs {
+            let policy = PrecisePolicy {
+                provenance,
+                extern_table,
+                local_bits: &bits,
+            };
+            let mut new_bits = *bits.get(&id).unwrap_or(&AliasBits::EMPTY);
+            for src in sources {
+                new_bits |= match src {
+                    DefSource::Value(e) => return_alias_bits(e, &policy),
+                    DefSource::Opaque => AliasBits::OPAQUE,
+                };
+            }
+            if new_bits != bits[&id] {
+                bits.insert(id, new_bits);
+                changed = true;
+            }
+        }
+        // Poison whole classes and propagate class unions.
+        let ids: Vec<BindingId> = bits.keys().copied().collect();
+        for id in ids {
+            let root = uf.find(id);
+            if poisoned_roots.contains(&root) && !bits[&id].is_opaque() {
+                let v = bits[&id] | AliasBits::OPAQUE;
+                bits.insert(id, v);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    bits
+}
+
+/// A minimal union-find over `BindingId`s for the alias closure.
+#[derive(Default)]
+struct UnionFind {
+    parent: HashMap<BindingId, BindingId>,
+}
+
+impl UnionFind {
+    fn make(&mut self, id: BindingId) {
+        self.parent.entry(id).or_insert(id);
+    }
+
+    fn find(&mut self, id: BindingId) -> BindingId {
+        let p = *self.parent.get(&id).unwrap_or(&id);
+        if p == id {
+            return id;
+        }
+        let root = self.find(p);
+        self.parent.insert(id, root);
+        root
+    }
+
+    fn union(&mut self, a: BindingId, b: BindingId) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra != rb {
+            self.parent.insert(ra, rb);
+        }
+    }
+}
+
+struct DefCollector<'a, 'f> {
+    defs: &'a mut LocalDefs<'f>,
+    may_mutate: &'a HashMap<hew_hir::ItemId, bool>,
+}
+
+impl<'f> DefCollector<'_, 'f> {
+    #[allow(
+        clippy::match_same_arms,
+        reason = "statement arms mirror the sealed HirStmtKind surface exhaustively"
+    )]
+    fn collect_block(&mut self, block: &'f HirBlock) {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                hew_hir::HirStmtKind::Let(binding, Some(init)) => {
+                    // `let y = <BindingRef x>` unions y and x (an alias).
+                    if let Some(root) = binding_ref_local(init) {
+                        self.defs.alias_edges.push((binding.id, root));
+                    }
+                    self.defs
+                        .defs
+                        .entry(binding.id)
+                        .or_default()
+                        .push(DefSource::Value(init));
+                    self.collect_expr(init);
+                }
+                hew_hir::HirStmtKind::Let(binding, None) => {
+                    self.defs.defs.entry(binding.id).or_default();
+                }
+                hew_hir::HirStmtKind::Assign { target, value } => {
+                    if is_projection_place(target) {
+                        // A projection-store into a local `x.f = …` fail-closes x
+                        // AND taints its class (an alias smuggle the whole-value
+                        // walk cannot see).
+                        if let Some(root) = place_root_binding(target) {
+                            self.defs
+                                .defs
+                                .entry(root)
+                                .or_default()
+                                .push(DefSource::Opaque);
+                            self.defs.tainted.insert(root);
+                        }
+                    } else if let Some(root) = binding_ref_local(target) {
+                        // A whole `var x = value` contributes the value's bits.
+                        if let Some(rhs_root) = binding_ref_local(value) {
+                            self.defs.alias_edges.push((root, rhs_root));
+                        }
+                        self.defs
+                            .defs
+                            .entry(root)
+                            .or_default()
+                            .push(DefSource::Value(value));
+                    }
+                    self.collect_expr(value);
+                }
+                hew_hir::HirStmtKind::Expr(e) => self.collect_expr(e),
+                hew_hir::HirStmtKind::Return(Some(e)) => self.collect_expr(e),
+                hew_hir::HirStmtKind::Return(None) => {}
+                hew_hir::HirStmtKind::Defer { body, .. } => self.collect_expr(body),
+                hew_hir::HirStmtKind::LetElse {
+                    scrutinee,
+                    bindings,
+                    success_prelude,
+                    else_body,
+                    ..
+                } => {
+                    for b in bindings {
+                        self.defs
+                            .defs
+                            .entry(b.binding)
+                            .or_default()
+                            .push(DefSource::Value(scrutinee));
+                    }
+                    self.collect_expr(scrutinee);
+                    for s in success_prelude {
+                        if let hew_hir::HirStmtKind::Let(binding, Some(v)) = &s.kind {
+                            self.defs
+                                .defs
+                                .entry(binding.id)
+                                .or_default()
+                                .push(DefSource::Value(v));
+                            self.collect_expr(v);
+                        }
+                    }
+                    self.collect_block(else_body);
+                }
+            }
+        }
+        if let Some(tail) = &block.tail {
+            self.collect_expr(tail);
+        }
+    }
+
+    /// Walk an expression, recording pattern binders (Match/IfLet/WhileLet) and
+    /// the taint channels (mutating methods, may-mutate call args), and recursing.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::match_same_arms,
+        reason = "the collector mirrors the sealed HirExprKind surface exhaustively"
+    )]
+    fn collect_expr(&mut self, expr: &'f HirExpr) {
+        match &expr.kind {
+            HirExprKind::Match {
+                scrutinee, arms, ..
+            } => {
+                for arm in arms {
+                    for b in &arm.bindings {
+                        self.defs
+                            .defs
+                            .entry(b.binding)
+                            .or_default()
+                            .push(DefSource::Value(scrutinee));
+                    }
+                    self.collect_expr(&arm.body);
+                    if let Some(guard) = &arm.guard {
+                        self.collect_expr(guard);
+                    }
+                }
+                self.collect_expr(scrutinee);
+            }
+            HirExprKind::IfLet {
+                scrutinee,
+                bindings,
+                body,
+                else_body,
+                ..
+            } => {
+                for b in bindings {
+                    self.defs
+                        .defs
+                        .entry(b.binding)
+                        .or_default()
+                        .push(DefSource::Value(scrutinee));
+                }
+                self.collect_expr(scrutinee);
+                self.collect_block(body);
+                if let Some(else_body) = else_body {
+                    self.collect_block(else_body);
+                }
+            }
+            HirExprKind::WhileLet {
+                scrutinee,
+                bindings,
+                body,
+                ..
+            } => {
+                for b in bindings {
+                    self.defs
+                        .defs
+                        .entry(b.binding)
+                        .or_default()
+                        .push(DefSource::Value(scrutinee));
+                }
+                self.collect_expr(scrutinee);
+                self.collect_block(body);
+            }
+            // Mutating-method taint: a mutating/storing method on a local
+            // receiver poisons its class.
+            HirExprKind::ResolvedImplCall {
+                receiver,
+                target_symbol,
+                args,
+                ..
+            } => {
+                if let Some(root) = place_root_binding(receiver) {
+                    if !method_is_non_mutating(target_symbol) {
+                        self.defs.tainted.insert(root);
+                    }
+                }
+                self.collect_expr(receiver);
+                for a in args {
+                    self.collect_expr(a);
+                }
+            }
+            HirExprKind::VarSelfMethodCall { receiver, args, .. }
+            | HirExprKind::CallDynMethod { receiver, args, .. }
+            | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+                if let Some(root) = place_root_binding(receiver) {
+                    self.defs.tainted.insert(root);
+                }
+                self.collect_expr(receiver);
+                for a in args {
+                    self.collect_expr(a);
+                }
+            }
+            HirExprKind::NumericMethod { receiver, arg, .. } => {
+                self.collect_expr(receiver);
+                self.collect_expr(arg);
+            }
+            // Caller-side call-argument taint: an argument reaching a heap local,
+            // passed to a not-proven-pure direct callee, poisons that local's
+            // class.
+            HirExprKind::Call { callee, args } => {
+                let pure = callee_is_proven_pure_item(callee, self.may_mutate);
+                for a in args {
+                    if !pure {
+                        let mut r = Reachable::default();
+                        reachable_bindings(a, &mut r);
+                        for b in r.bindings {
+                            self.defs.tainted.insert(b);
+                        }
+                    }
+                    self.collect_expr(a);
+                }
+                self.collect_expr(callee);
+            }
+            HirExprKind::Block(block) => self.collect_block(block),
+            HirExprKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                self.collect_expr(then_expr);
+                if let Some(e) = else_expr.as_deref() {
+                    self.collect_expr(e);
+                }
+            }
+            HirExprKind::StructInit { fields, base, .. } => {
+                for (_, v) in fields {
+                    self.collect_expr(v);
+                }
+                if let Some(base) = base.as_deref() {
+                    self.collect_expr(base);
+                }
+            }
+            HirExprKind::TupleLiteral { elements } => {
+                for e in elements {
+                    self.collect_expr(e);
+                }
+            }
+            HirExprKind::Binary { left, right, .. } => {
+                self.collect_expr(left);
+                self.collect_expr(right);
+            }
+            HirExprKind::Unary { operand, .. } => self.collect_expr(operand),
+            HirExprKind::FieldAccess { object, .. } => self.collect_expr(object),
+            HirExprKind::TupleIndex { tuple, .. } => self.collect_expr(tuple),
+            HirExprKind::Index { container, index } => {
+                self.collect_expr(container);
+                self.collect_expr(index);
+            }
+            HirExprKind::Return { value } => {
+                if let Some(v) = value.as_deref() {
+                    self.collect_expr(v);
+                }
+            }
+            // Leaves and unmodelled forms need no binder/taint recording here.
+            _ => {}
+        }
+    }
+}
+
+/// The local binding id a value expression refers to directly (a bare
+/// `BindingRef` to a `Binding`), or `None`.
+fn binding_ref_local(expr: &HirExpr) -> Option<BindingId> {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => Some(*id),
+        _ => None,
+    }
+}
+
+/// Whether a direct-call callee is a resolved module item proven
+/// `!may_mutate_heap_param` (or an owned-return extern/constructor with no
+/// analysable body). Everything else (indirect/closure/unresolved) is NOT proven
+/// pure.
+fn callee_is_proven_pure_item(
+    callee: &HirExpr,
+    may_mutate: &HashMap<hew_hir::ItemId, bool>,
+) -> bool {
+    if let HirExprKind::BindingRef {
+        resolved: ResolvedRef::Item(id),
+        ..
+    } = &callee.kind
+    {
+        !may_mutate.get(id).copied().unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Precise policy + the module return-provenance fixpoint [Sol-3]
+// ---------------------------------------------------------------------------
+
+/// The Precise `LeafPolicy`: consumes the module provenance table (for the
+/// three-way `Call` resolution), the audited extern table, and the CURRENT
+/// function's local binding-provenance.
+///
+/// # Method-leaf note (S1)
+///
+/// The method leaf reads `method_return_provenance(target_symbol)` — the HIR
+/// PLACEHOLDER symbol. This is SOUND (a placeholder for a borrowed getter is
+/// `{OPAQUE}`, a placeholder for an owned getter is ALSO `{OPAQUE}`, never
+/// wrongly Fresh), but conservative: the owned-value `Vec::get` (emitted
+/// `hew_vec_get_clone`) reads `{OPAQUE}` until the wiring site (S2) supplies the
+/// emitted-symbol resolver that reproduces lowering's owned-element-class
+/// decision. It never admits a receiver alias.
+#[derive(Debug)]
+pub struct PrecisePolicy<'a> {
+    /// The module return-provenance summary (being computed — read for the
+    /// three-way `Call` resolution).
+    pub provenance: &'a HashMap<hew_hir::ItemId, AliasBits>,
+    /// The audited extern owned-return contract table.
+    pub extern_table: &'a ExternContractTable,
+    /// The CURRENT function's local binding-provenance.
+    pub local_bits: &'a HashMap<BindingId, AliasBits>,
+}
+
+impl LeafPolicy for PrecisePolicy<'_> {
+    fn classify_call(&self, callee: &HirExpr) -> CallClass {
+        // A non-item callee (closure value, fn-pointer param, dynamic dispatch,
+        // const, builtin) can hand back a captured heap param → Opaque.
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Item(id),
+            ..
+        } = &callee.kind
+        else {
+            return CallClass::Opaque;
+        };
+        // Clause 1: a resolved module fn → its summary (with arg substitution).
+        if let Some(bits) = self.provenance.get(id) {
+            if bits.is_fresh() {
+                CallClass::Fresh
+            } else if bits.is_params_only() {
+                CallClass::ParamSubst
+            } else {
+                CallClass::Opaque
+            }
+        // Clauses 2+3: an extern (scalar row → Fresh; heap/omitted → Opaque) or an
+        // unknown/missing item (absent from the table → Opaque). Never
+        // `unwrap_or(true)`.
+        } else if self.extern_table.provenance_of(*id).is_fresh() {
+            CallClass::Fresh
+        } else {
+            CallClass::Opaque
+        }
+    }
+
+    fn leaf_bits(&self, expr: &HirExpr) -> AliasBits {
+        // Type short-circuit: a value owning no heap cannot alias a heap param.
+        if ty_is_scalar_non_heap(&expr.ty) {
+            return AliasBits::EMPTY;
+        }
+        match &expr.kind {
+            // `a + b` on strings lowers to a fresh-allocating `hew_string_concat`
+            // whose result aliases neither operand → ∅. Any other heap `Binary`
+            // fails closed.
+            HirExprKind::Binary { .. } => {
+                if matches!(expr.ty, ResolvedTy::String) {
+                    AliasBits::EMPTY
+                } else {
+                    AliasBits::OPAQUE
+                }
+            }
+            // A method call → the emitted-symbol contract (S1: keyed on the
+            // placeholder `target_symbol`, sound-but-conservative — see the type
+            // doc).
+            HirExprKind::ResolvedImplCall { target_symbol, .. } => {
+                method_return_provenance(target_symbol)
+            }
+            // A binding reference to a tracked local reads its computed bits; a
+            // by-value param not in the local map is `{PARAM}`.
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => self.local_bits.get(id).copied().unwrap_or(AliasBits::PARAM),
+            // Other method calls (no emitted-symbol contract here), a non-local
+            // BindingRef (a module item/const/builtin), and every unmodelled form
+            // fail closed.
+            _ => AliasBits::OPAQUE,
+        }
+    }
+}
+
+/// The module return-provenance summary: `ItemId → ReturnProvenance`, a monotone
+/// least-fixpoint over the three-state lattice that starts every function at `∅`
+/// and grows by union to stability.
+///
+/// Each pass, for every function, recomputes its local binding-provenance under
+/// the current module table, then unions the bits of every value-bearing return
+/// path (`return_alias_bits` under [`PrecisePolicy`]). Bits only grow over a
+/// finite 2-bit set → terminates; start-empty is sound because every real alias
+/// source is injected by a non-recursive transfer (a bare param → `{PARAM}`, an
+/// opaque leaf → `{OPAQUE}`) and propagated by union.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "built once over the pipeline's default-hasher origin_fns map"
+)]
+pub fn compute_call_scrutinee_return_provenance(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    extern_table: &ExternContractTable,
+    may_mutate: &HashMap<hew_hir::ItemId, bool>,
+) -> HashMap<hew_hir::ItemId, ReturnProvenance> {
+    let mut provenance: HashMap<hew_hir::ItemId, AliasBits> =
+        fns.keys().map(|&id| (id, AliasBits::EMPTY)).collect();
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            let local_bits =
+                compute_local_binding_provenance(f, &provenance, extern_table, may_mutate);
+            let policy = PrecisePolicy {
+                provenance: &provenance,
+                extern_table,
+                local_bits: &local_bits,
+            };
+            let mut return_values: Vec<&HirExpr> = Vec::new();
+            crate::lower::collect_return_values_in_block(&f.body, &mut return_values);
+            if let Some(tail) = &f.body.tail {
+                if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+                    return_values.push(tail);
+                }
+            }
+            let mut bits = provenance[&id];
+            for e in &return_values {
+                bits |= return_alias_bits(e, &policy);
+            }
+            if bits != provenance[&id] {
+                provenance.insert(id, bits);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    provenance
+}
+
+// ---------------------------------------------------------------------------
 // Module-map helpers
 // ---------------------------------------------------------------------------
 
@@ -1374,6 +1965,140 @@ mod tests {
         assert!(
             params.iter().all(|p| r.bindings.contains(p)),
             "the returned `a` reaches the heap param binding"
+        );
+    }
+
+    // -- The module return-provenance fixpoint [Sol-3] --
+
+    fn provenance_of_source(
+        source: &str,
+    ) -> (hew_hir::HirModule, HashMap<hew_hir::ItemId, AliasBits>) {
+        let module = lower_source(source);
+        let origin_fns = origin_fns_of(&module);
+        let extern_table = build_extern_contract_table(&module);
+        let may_mutate = compute_may_mutate_heap_param(&origin_fns);
+        let prov =
+            compute_call_scrutinee_return_provenance(&origin_fns, &extern_table, &may_mutate);
+        (module, prov)
+    }
+
+    #[test]
+    fn fresh_producer_scc_converges_to_fresh() {
+        let (m, prov) = provenance_of_source(
+            r#"
+            fn make() -> string { "hello" }
+            fn wrap() -> string { make() }
+            "#,
+        );
+        assert!(prov[&fn_id(&m, "make")].is_fresh());
+        assert!(
+            prov[&fn_id(&m, "wrap")].is_fresh(),
+            "a chain of fresh producers is Fresh"
+        );
+    }
+
+    #[test]
+    fn forwarder_scc_converges_to_params_only() {
+        let (m, prov) = provenance_of_source(
+            r"
+            fn a(flag: bool, x: Vec<i64>) -> Vec<i64> { if flag { x } else { b(x) } }
+            fn b(x: Vec<i64>) -> Vec<i64> { a(true, x) }
+            fn passthru(x: Vec<i64>) -> Vec<i64> { x }
+            ",
+        );
+        assert!(
+            prov[&fn_id(&m, "passthru")].is_params_only(),
+            "an identity forwarder returns a param borrow → ParamsOnly, not Fresh"
+        );
+        assert!(
+            prov[&fn_id(&m, "a")].is_params_only(),
+            "the mutually-recursive forwarder SCC converges to ParamsOnly"
+        );
+        assert!(prov[&fn_id(&m, "b")].is_params_only());
+    }
+
+    #[test]
+    fn var_string_concat_composition_is_fresh() {
+        // Models template's `var out` + `out = out + seg` — every whole-assign is
+        // a fresh string concat, so `out` stays ∅ and the return is Fresh.
+        let (m, prov) = provenance_of_source(
+            r#"
+            fn build(seg: string) -> string {
+                var out = "";
+                out = out + seg;
+                out
+            }
+            "#,
+        );
+        assert!(
+            prov[&fn_id(&m, "build")].is_fresh(),
+            "string-concat var composition returns a fresh owner"
+        );
+    }
+
+    #[test]
+    fn returned_match_binder_over_fresh_scrutinee_is_fresh() {
+        let (m, prov) = provenance_of_source(
+            r#"
+            fn produce() -> Result<string, string> { Ok("x") }
+            fn unwrap_or_default() -> string {
+                match produce() { Ok(v) => v, Err(e) => e }
+            }
+            "#,
+        );
+        assert!(
+            prov[&fn_id(&m, "unwrap_or_default")].is_fresh(),
+            "a binder over a fresh call scrutinee is Fresh"
+        );
+    }
+
+    #[test]
+    fn helper_mediated_mutation_makes_the_return_opaque() {
+        // caller returns a heap param it passed to a param-mutating helper → the
+        // returned value now holds a smuggled alias → NOT Fresh (rejects).
+        let (m, prov) = provenance_of_source(
+            r"
+            fn helper(x: Vec<i64>, v: i64) { x.push(v); }
+            fn caller(h: Vec<i64>, v: i64) -> Vec<i64> { helper(h, v); h }
+            ",
+        );
+        assert!(
+            !prov[&fn_id(&m, "caller")].is_fresh(),
+            "a heap param mutated via a helper then returned must not be Fresh"
+        );
+        assert!(prov[&fn_id(&m, "caller")].is_opaque());
+    }
+
+    #[test]
+    fn aliased_mutation_return_is_opaque() {
+        // `let y = x; y.push(v); return x` — the store names y but x aliases it;
+        // alias closure must poison x too.
+        let (m, prov) = provenance_of_source(
+            r"
+            fn f(x: Vec<i64>, v: i64) -> Vec<i64> {
+                let y = x;
+                y.push(v);
+                x
+            }
+            ",
+        );
+        assert!(
+            prov[&fn_id(&m, "f")].is_opaque(),
+            "a mutation through an alias must poison the whole alias class"
+        );
+    }
+
+    #[test]
+    fn global_const_return_is_opaque_not_wrongly_fresh() {
+        let (m, prov) = provenance_of_source(
+            r#"
+            const GLOBAL: string = "g";
+            fn leak() -> string { GLOBAL }
+            "#,
+        );
+        assert!(
+            prov[&fn_id(&m, "leak")].is_opaque(),
+            "returning a module global is Opaque, never wrongly Fresh (the boolean+arg-scan hole)"
         );
     }
 

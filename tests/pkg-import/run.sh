@@ -316,6 +316,32 @@ fixtures=(
   # shape (real drop glue) and one all-scalar shape (no glue, still keyed).
   closure_capture_imported_record
   closure_capture_imported_flat_record
+  # Issue #2651 accept side: legal bare/qualified alias of the SAME imported
+  # definition. `import hew::widgeti8::{ Widget }` opts the bare name in, so
+  # `Widget` and `widgeti8.Widget` denote ONE definition; a value of the
+  # qualified spelling must satisfy a bare-typed parameter and vice versa. The
+  # owner-qualified identity gate resolves the single-publisher bare name to its
+  # owner and finds the two spellings identical, so it does NOT fire — the legal
+  # alias is preserved. Prints bare=7 then qual=7.
+  bare_import_alias_accept
+  # Issue #2651 accept side: a module that references its OWN type both bare and
+  # through its own module qualifier. `selfqualtype.roundtrip()` passes a bare
+  # `Meter` into a `selfqualtype.Meter` parameter, forcing the checker to compare
+  # bare `Meter` against `selfqualtype.Meter` with the current module set to
+  # `selfqualtype`. The owner-identity gate strips the redundant current-module
+  # self-qualifier so the two spellings of one definition compare equal; without
+  # that carve-out the pairing false-rejects. Prints 3. (This is the type-level
+  # equivalent of the generic-machine self-qualified transition — e.g. the stdlib
+  # `Lifecycle<T>` machine — reached deterministically without machine plumbing.)
+  self_qualified_type_identity
+  # Issue #2651 accept side: a legal callee-frame bare alias reaching the unique
+  # registered-owner scan. `framealias.make()` returns its result spelled bare
+  # (`Widget`) in the callee frame; the local `read` parameter is typed with the
+  # module-qualified `framealias.Widget`. Under a plain (non-opt-in) import the
+  # bare name is not a published bare binding, so the gate qualifies it through
+  # the UNIQUE registered-owner scan over `type_defs`/`known_types`
+  # (→ `framealias.Widget`) and ACCEPTS the owner-identical pairing. Prints 11.
+  callee_frame_bare_alias_accept
 )
 
 for fixture in "${fixtures[@]}"; do
@@ -358,7 +384,38 @@ if grep -q "D10 violation" <<<"${reject_out}"; then
 fi
 echo "PASS ${reject_fixture}"
 
-# Reject fixture: cross-module same-bare-name trait-signature mismatch. The
+# Reject fixtures (issue #2651): a root-local type conflated with an imported
+# same-bare-name type. A root-local `type Widget` keeps its own bare identity and
+# is DISTINCT from any imported `owner.Widget`; passing the local value where the
+# import is required must be rejected at the type boundary with a nominal
+# type-mismatch, NOT accepted by the context-free suffix compare and left to trip
+# the downstream `E_CODEGEN_FRONT` LLVM-verify fail-closed. Two variants:
+#   - divergent layout (`widgeti8.Widget` i8 vs local i64): the headline case
+#     that previously reached codegen.
+#   - same layout (`widgeti64.Widget` i64 vs local i64): proves the gate rejects
+#     on DEFINITION IDENTITY, not on a layout heuristic that would accept it.
+for nominal_reject in \
+  local_shadow_import_divergent_reject \
+  local_shadow_import_same_layout_reject; do
+  nominal_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${nominal_reject}.hew" 2>&1)" && {
+    echo "FAIL ${nominal_reject}: hew check unexpectedly succeeded (local/import nominal collision slipped the gate)" >&2
+    echo "${nominal_out}" >&2
+    exit 1
+  }
+  if ! grep -q "type mismatch: expected" <<<"${nominal_out}"; then
+    echo "FAIL ${nominal_reject}: expected a nominal type-mismatch diagnostic" >&2
+    echo "${nominal_out}" >&2
+    exit 1
+  fi
+  if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${nominal_out}"; then
+    echo "FAIL ${nominal_reject}: local/import collision fell through to codegen-front/D10 instead of a type-mismatch" >&2
+    echo "${nominal_out}" >&2
+    exit 1
+  fi
+  echo "PASS ${nominal_reject}"
+done
+
+
 # trait `Closable` (from `hew::closableerr`) requires `close` to return
 # `closableerr.CloseError`; this impl returns the DISTINCT
 # `closableerr2.CloseError` (a different type from a different module that

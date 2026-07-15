@@ -1,0 +1,6 @@
+[package]
+name = "hew::selfqualtype"
+version = "0.1.0"
+description = "Self-qualified type-identity fixture: a module that references its own type both bare and through its own module qualifier"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

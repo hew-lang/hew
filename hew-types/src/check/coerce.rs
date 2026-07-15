@@ -331,6 +331,45 @@ impl Checker {
         self.subst.resolve(then_ty)
     }
 
+    /// Reject the issue #2651 nominal collision at the type boundary: a
+    /// root-local type conflated with an unrelated import (`Widget` vs
+    /// `widgeti8.Widget`) is structurally equal under the permissive suffix rule
+    /// `unify` uses, yet names two DISTINCT definitions. Detect it compare-only —
+    /// no name is rewritten and no variable is bound, so nothing leaks into a
+    /// `Subst` binding or the downstream checker→HIR/MIR name handoff (the
+    /// record-layout registry keeps single-module references bare on purpose).
+    /// Fire only when both sides are fully concrete after substitution, so an
+    /// already-bound generic `T` inferred to a callee-frame type is seen as the
+    /// type it denotes. A genuine same-def alias (`Box` ↔ `nestbox.Box`, prelude
+    /// `MonitorError` ↔ `link_monitor.MonitorError`, builtin `HashSet` ↔
+    /// `collections.HashSet`) is owner-identical and passes straight through to
+    /// `unify`; a real structural mismatch is not suffix-equal and is left for
+    /// `unify` to report (preserving its coercion-recovery paths). Returns `true`
+    /// (and reports the mismatch) exactly when it intercepts the collision.
+    fn reject_nominal_owner_conflict(&mut self, expected: &Ty, actual: &Ty, span: &Span) -> bool {
+        let expected_resolved = self.subst.resolve(expected);
+        let actual_resolved = self.subst.resolve(actual);
+        if expected_resolved.has_inference_var()
+            || actual_resolved.has_inference_var()
+            || !self.nominal_owner_conflict(&expected_resolved, &actual_resolved)
+        {
+            return false;
+        }
+        self.report_error(
+            TypeErrorKind::Mismatch {
+                expected: expected_resolved.user_facing().to_string(),
+                actual: actual_resolved.user_facing().to_string(),
+            },
+            span,
+            format!(
+                "type mismatch: expected `{}`, found `{}`",
+                expected_resolved.user_facing(),
+                actual_resolved.user_facing()
+            ),
+        );
+        true
+    }
+
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
         // Re-project any `Ty::AssocType` carriers whose `base` has become
         // concrete via prior substitution. Carriers with still-abstract
@@ -339,6 +378,11 @@ impl Checker {
         let actual_projected = self.project_assoc_types(actual);
         let expected = &expected_projected;
         let actual = &actual_projected;
+        // Reject the issue #2651 nominal collision at the type boundary before
+        // unification would silently accept it; see `reject_nominal_owner_conflict`.
+        if self.reject_nominal_owner_conflict(expected, actual, span) {
+            return;
+        }
         // Snapshot substitution so partial bindings are rolled back on failure
         let snapshot = self.subst.snapshot();
         if let Err(_e) = unify(&mut self.subst, expected, actual) {

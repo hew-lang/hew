@@ -1,0 +1,32 @@
+//! Self-qualified type-identity fixture (issue #2651 accept side).
+//!
+//! Module `selfqualtype` references its OWN type `Meter` under two spellings:
+//! the bare name (`build`'s return type) and the module-qualified name
+//! (`read`'s parameter type, `selfqualtype.Meter`). Both name the SAME
+//! definition. When `roundtrip` passes `build()`'s bare `Meter` into `read`'s
+//! `selfqualtype.Meter` parameter, the checker compares bare `Meter` against
+//! `selfqualtype.Meter` with the current module set to `selfqualtype`.
+//!
+//! The owner-identity gate must accept this self-qualified alias: the strict
+//! comparison strips the redundant current-module self-qualifier so the two
+//! spellings compare equal. Without that carve-out the pairing false-rejects
+//! with `type mismatch: expected selfqualtype.Meter, found Meter`.
+
+pub type Meter {
+    v: i64;
+}
+
+/// Return type spelled BARE in this module's frame.
+pub fn build() -> Meter {
+    Meter { v: 3 }
+}
+
+/// Parameter typed through this module's OWN qualifier.
+pub fn read(m: selfqualtype.Meter) -> i64 {
+    m.v
+}
+
+/// Cross the bare return into the self-qualified parameter, in module context.
+pub fn roundtrip() -> i64 {
+    read(build())
+}

@@ -764,19 +764,22 @@ impl Ty {
         }
     }
 
-    /// Whether two type-name spellings refer to the same nominal type for the
-    /// purposes of unification and constructor/variant resolution.
+    /// Whether two type-name spellings are candidates for the same nominal type
+    /// under the permissive suffix rule used inside `unify`.
     ///
     /// Two distinct module-qualified names never match — module identity is
     /// authoritative (`a.Reply` ≠ `b.Reply`). A bare name matches a qualified
-    /// name with the same final segment only when at most one side is
-    /// qualified: this is the same-module bare↔qualified equivalence (a type's
-    /// own bare spelling and its `{module}.{name}` alias resolve to one def, and
-    /// builtin handles such as `HashSet`/`Sender` match their qualified
-    /// stdlib-carrier spelling). Cross-module bare references that could have
-    /// matched the *wrong* module's qualified type are rejected upstream at
-    /// resolution under qualified-by-default, so a bare name reaching this
-    /// comparison has already been validated to a single owning module.
+    /// name with the same final segment when at most one side is qualified.
+    ///
+    /// This rule is deliberately permissive: it accepts a bare name that
+    /// arrived from another module's frame (a callee's bare return type, a
+    /// prelude stdlib type, a builtin handle) against its qualified spelling.
+    /// It CANNOT, on its own, tell a same-def alias from a cross-owner
+    /// collision — a root-local `Widget` and an imported `widgeti8.Widget` share
+    /// a final segment yet are DISTINCT nominal types (issue #2651). That
+    /// discrimination requires the checker's resolution tables and is enforced
+    /// by `nominal_owner_conflict` at the `expect_type` boundary BEFORE this
+    /// permissive rule is reached; see `canonical_nominal_name`.
     #[must_use]
     pub fn names_match_qualified(a: &str, b: &str) -> bool {
         if a == b {

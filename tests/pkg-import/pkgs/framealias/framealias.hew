@@ -1,0 +1,23 @@
+//! Callee-frame bare-alias fixture (issue #2651 accept side).
+//!
+//! Exports a record `Widget` and a factory `make` whose return type is spelled
+//! BARE (`Widget`) in this module's own frame. An importer that plain-imports
+//! this package holds the value as the module-qualified `framealias.Widget`.
+//! The bare `Widget` from the callee frame and the qualified `framealias.Widget`
+//! at the use site are the SAME definition, so the owner-identity gate must
+//! accept the pairing.
+//!
+//! This exercises the legal-alias resolution path: a plain (non-opt-in) import
+//! does not publish the bare name, so `published_bare_type_qualified` yields
+//! nothing and the bare `Widget` is qualified through the UNIQUE registered
+//! owner scan over `type_defs`/`known_types` (→ `framealias.Widget`). The gate
+//! must not false-reject a callee-frame bare alias that reaches that fallback.
+
+pub type Widget {
+    tag: i64;
+}
+
+/// Return type is bare `Widget` in this module's frame.
+pub fn make() -> Widget {
+    Widget { tag: 11 }
+}

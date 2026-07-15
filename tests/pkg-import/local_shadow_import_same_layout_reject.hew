@@ -1,0 +1,30 @@
+// Reject fixture: root-local type conflated with a SAME-layout import (issue
+// #2651, identity — not layout). A root-local `type Widget { v: i64 }` shadows
+// the bare name; the package `hew::widgeti64` exports a `Widget { v: i64 }` with
+// an IDENTICAL field layout. The two types are byte-for-byte compatible, yet
+// they are still DISTINCT nominal definitions.
+//
+// This fixture proves the gate rejects on DEFINITION IDENTITY, not on a layout
+// heuristic: even though a divergent-layout conflation is the only variant that
+// trips a downstream codegen fail-closed, a same-layout conflation must ALSO be
+// rejected at the type boundary — a root-local `Widget` is not interchangeable
+// with an imported `widgeti64.Widget` regardless of coincident layout. A
+// layout-keyed check would wrongly accept this; the owner-qualified identity
+// gate rejects it.
+//
+// Harness verb: hew check (expected to FAIL). Asserts a nominal type-mismatch
+// diagnostic AND the absence of any `E_CODEGEN_FRONT` / `D10` fall-through.
+import hew::widgeti64;
+
+type Widget {
+    v: i64;
+}
+
+fn take_imported(w: widgeti64.Widget) -> i64 {
+    w.v
+}
+
+fn main() {
+    let local = Widget { v: 1000 };
+    println(f"{take_imported(local)}");
+}

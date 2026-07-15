@@ -318,7 +318,7 @@ fn foo(w: Weird) -> i64 {
     }
 
     #[test]
-    fn record_match_omitted_field_fails_closed_until_rest_patterns() {
+    fn record_match_omitted_field_without_rest_fails_closed() {
         let output = check_source(
             r"
 type Point {
@@ -336,11 +336,104 @@ fn foo(p: Point) -> i64 {
             output.errors.iter().any(|error| {
                 error.kind == TypeErrorKind::InvalidOperation
                     && error.message.contains("omits field(s) y")
-                    && error.message.contains("rest patterns")
+                    && error.message.contains("add `..`")
             }),
-            "expected omitted-field rest-pattern diagnostic, got: {:#?}",
+            "expected omitted-field diagnostic, got: {:#?}",
             output.errors
         );
+        assert!(
+            output.pattern_plans.is_empty(),
+            "invalid record pattern must not publish a plan"
+        );
+    }
+
+    #[test]
+    fn record_match_rest_builds_full_declaration_order_plan() {
+        let source = r"
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn foo(p: Point) -> i64 {
+    match p {
+        Point { x, .. } => x,
+    }
+}";
+        let output = check_source(source);
+        assert!(
+            output.errors.is_empty(),
+            "rest pattern should check cleanly: {:#?}",
+            output.errors
+        );
+        assert_eq!(output.pattern_plans.len(), 1);
+        let plan = output.pattern_plans.values().next().unwrap();
+        assert_eq!(plan.fields.len(), 2);
+        assert_eq!(plan.fields[0].name, "x");
+        assert_eq!(plan.fields[0].decl_idx, 0);
+        assert_eq!(plan.fields[0].sub, PlanSub::Binding("x".to_string()));
+        assert_eq!(plan.fields[1].name, "y");
+        assert_eq!(plan.fields[1].decl_idx, 1);
+        assert_eq!(plan.fields[1].sub, PlanSub::Wildcard);
+        let rest_start = source.find("..").unwrap();
+        assert_eq!(plan.fields[1].span, rest_start..rest_start + 2);
+    }
+
+    #[test]
+    fn record_rest_unknown_or_duplicate_fields_publish_no_plan() {
+        for (source, expected) in [
+            (
+                r"
+type Point { x: i64, y: i64 }
+fn foo(p: Point) -> i64 {
+    match p { Point { z, .. } => 0 }
+}",
+                "no field `z`",
+            ),
+            (
+                r"
+type Point { x: i64, y: i64 }
+fn foo(p: Point) -> i64 {
+    match p { Point { x, x, .. } => x }
+}",
+                "duplicate field `x`",
+            ),
+        ] {
+            let output = check_source(source);
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "expected `{expected}`, got {:#?}",
+                output.errors
+            );
+            assert!(
+                output.pattern_plans.is_empty(),
+                "invalid pattern must not publish a plan"
+            );
+        }
+    }
+
+    #[test]
+    fn record_shorthand_rest_builds_wildcard_plan() {
+        let output = check_source(
+            r"
+type Point { x: i64, y: i64 }
+fn foo(p: Point) -> i64 {
+    let { x, .. } = p;
+    x
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "shorthand rest should check cleanly: {:#?}",
+            output.errors
+        );
+        let plan = output.pattern_plans.values().next().unwrap();
+        assert_eq!(plan.fields.len(), 2);
+        assert_eq!(plan.fields[0].sub, PlanSub::Binding("x".to_string()));
+        assert_eq!(plan.fields[1].sub, PlanSub::Wildcard);
     }
 
     #[test]

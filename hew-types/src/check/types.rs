@@ -5,7 +5,9 @@ use crate::module_registry::ModuleRegistry;
 use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
-use hew_parser::ast::{NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility};
+use hew_parser::ast::{
+    Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
+};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -454,6 +456,10 @@ pub struct TypeCheckOutput {
     /// WHEN-OBSOLETE: never; this table is the checker's authoritative
     /// output for match semantics downstream.
     pub pattern_resolutions: HashMap<SpanKey, ArmResolution>,
+    /// Canonical declaration-order field plans for every accepted record-shaped
+    /// pattern. Omitted fields under `..` are materialised as wildcard entries,
+    /// so downstream consumers never need to distinguish rest syntax from `_`.
+    pub pattern_plans: HashMap<SpanKey, PatternPlan>,
     /// Compiler-recognised lang-item registry built from `#[lang_item("…")]`
     /// attributes on traits and trait methods during trait registration.
     /// HIR lowering consults this table to discover the trait/method names
@@ -941,6 +947,31 @@ pub enum PatternKind {
     Regex { captures: Vec<(String, u32)> },
 }
 
+/// Canonical checker classification of one record-pattern field.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanSub {
+    Binding(String),
+    Wildcard,
+    Literal(Literal),
+    Nested(SpanKey),
+}
+
+/// One declaration-order field in a [`PatternPlan`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanField {
+    pub name: String,
+    pub decl_idx: u32,
+    pub ty: Ty,
+    pub sub: PlanSub,
+    pub span: Span,
+}
+
+/// Checker-authored normal form for a record-shaped pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternPlan {
+    pub fields: Vec<PlanField>,
+}
+
 /// Checker-resolved identity of the matched enum variant.
 ///
 /// Keyed by the arm's pattern span and consumed by match-arm HIR lowering to
@@ -1108,6 +1139,7 @@ impl Default for TypeCheckOutput {
             actor_protocol_descriptors: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            pattern_plans: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
@@ -2901,6 +2933,11 @@ pub struct Checker {
     /// records its env delta into `pattern_bound_names`; nested sub-pattern
     /// binds are already part of that single delta.
     pub(super) bind_pattern_recording: bool,
+    /// Record-pattern normal forms accumulated while checking.
+    pub(super) pending_pattern_plans: HashMap<SpanKey, PatternPlan>,
+    /// Invalid record patterns never publish a plan; this set prevents recovery
+    /// binding from re-running the same field diagnostics.
+    pub(super) invalid_pattern_plan_spans: HashSet<SpanKey>,
     /// Whether we are currently inside an actor receive function body.
     /// Used to warn about blocking calls that can starve the scheduler.
     pub(super) in_receive_fn: bool,
@@ -3344,6 +3381,8 @@ impl Checker {
             in_for_binding: false,
             pattern_bound_names: HashMap::new(),
             bind_pattern_recording: false,
+            pending_pattern_plans: HashMap::new(),
+            invalid_pattern_plan_spans: HashSet::new(),
             in_receive_fn: false,
             in_actor_handler_context: false,
             in_lambda_actor_body: false,

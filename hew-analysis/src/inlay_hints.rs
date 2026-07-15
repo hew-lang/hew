@@ -699,6 +699,7 @@ mod tests {
             listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
+            pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),

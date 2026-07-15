@@ -361,7 +361,7 @@ impl Checker {
                         .zip(elem_tys)
                         .all(|((sub, _), ty)| self.is_project_irrefutable_for_ty(sub, ty))
             }
-            Pattern::Struct { fields, .. } => {
+            Pattern::Struct { fields, rest, .. } => {
                 let resolved = self.project_assoc_types(&self.subst.resolve(project_ty));
                 let Some(type_name) = resolved.type_name() else {
                     return false;
@@ -369,7 +369,7 @@ impl Checker {
                 let Some(td) = self.lookup_type_def(type_name) else {
                     return false;
                 };
-                if !td.variants.is_empty() || fields.len() != td.fields.len() {
+                if !td.variants.is_empty() || (rest.is_none() && fields.len() != td.fields.len()) {
                     return false;
                 }
                 fields.iter().all(|field| {
@@ -554,6 +554,306 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "building the canonical plan keeps validation, declaration ordering, and subpattern classification in one authority"
+    )]
+    fn prepare_record_pattern_plan(&mut self, pattern: &Pattern, ty: &Ty, span: &Span) {
+        let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+        if self.pending_pattern_plans.contains_key(&key)
+            || self.invalid_pattern_plan_spans.contains(&key)
+        {
+            return;
+        }
+
+        let (pattern_name, fields, rest) = match pattern {
+            Pattern::Struct {
+                name, fields, rest, ..
+            } => (name.as_str(), fields.as_slice(), rest.as_ref()),
+            Pattern::RecordShorthand { fields, rest } => {
+                ("record shorthand", fields.as_slice(), rest.as_ref())
+            }
+            _ => return,
+        };
+
+        let resolved = self.project_assoc_types(&self.subst.resolve(ty));
+        let Some(type_name) = resolved.type_name() else {
+            return;
+        };
+        let Some(td) = self.lookup_type_def(type_name) else {
+            return;
+        };
+        let type_args = if let Ty::Named { args, .. } = &resolved {
+            args.clone()
+        } else {
+            vec![]
+        };
+        let short_name = pattern_name.rsplit("::").next().unwrap_or(pattern_name);
+        let (canonical_fields, requires_rest_for_omission): (Vec<(String, Ty)>, bool) =
+            match pattern {
+                Pattern::Struct { .. } => {
+                    if let Some(VariantDef::Struct(variant_fields)) = td.variants.get(short_name) {
+                        (
+                            variant_fields
+                                .iter()
+                                .map(|(name, field_ty)| {
+                                    (
+                                        name.clone(),
+                                        substitute_pattern_field_ty(
+                                            field_ty,
+                                            &td.type_params,
+                                            &type_args,
+                                        ),
+                                    )
+                                })
+                                .collect(),
+                            false,
+                        )
+                    } else {
+                        let order = if td.field_order.is_empty() {
+                            let mut names: Vec<String> = td.fields.keys().cloned().collect();
+                            names.sort();
+                            names
+                        } else {
+                            td.field_order.clone()
+                        };
+                        (
+                            order
+                                .into_iter()
+                                .filter_map(|name| {
+                                    td.fields.get(&name).map(|field_ty| {
+                                        (
+                                            name,
+                                            substitute_pattern_field_ty(
+                                                field_ty,
+                                                &td.type_params,
+                                                &type_args,
+                                            ),
+                                        )
+                                    })
+                                })
+                                .collect(),
+                            true,
+                        )
+                    }
+                }
+                Pattern::RecordShorthand { .. } => {
+                    let order = if td.field_order.is_empty() {
+                        let mut names: Vec<String> = td.fields.keys().cloned().collect();
+                        names.sort();
+                        names
+                    } else {
+                        td.field_order.clone()
+                    };
+                    (
+                        order
+                            .into_iter()
+                            .filter_map(|name| {
+                                td.fields.get(&name).map(|field_ty| {
+                                    (
+                                        name,
+                                        substitute_pattern_field_ty(
+                                            field_ty,
+                                            &td.type_params,
+                                            &type_args,
+                                        ),
+                                    )
+                                })
+                            })
+                            .collect(),
+                        true,
+                    )
+                }
+                _ => unreachable!(),
+            };
+
+        if canonical_fields.is_empty() && !fields.is_empty() {
+            return;
+        }
+
+        let canonical_names: HashSet<&str> = canonical_fields
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let mut seen = HashSet::new();
+        let mut invalid = false;
+        for field in fields {
+            if !seen.insert(field.name.as_str()) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!("duplicate field `{}` in record pattern", field.name),
+                );
+                invalid = true;
+                continue;
+            }
+            if !canonical_names.contains(field.name.as_str()) {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedField,
+                    span,
+                    format!(
+                        "no field `{}` in record pattern `{pattern_name}`",
+                        field.name
+                    ),
+                    crate::error::find_similar(
+                        &field.name,
+                        canonical_fields.iter().map(|(name, _)| name.as_str()),
+                    ),
+                );
+                invalid = true;
+            }
+        }
+
+        let specified: HashSet<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+        let missing: Vec<&str> = canonical_fields
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .filter(|name| !specified.contains(name))
+            .collect();
+        if requires_rest_for_omission && rest.is_none() && !missing.is_empty() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "record pattern `{pattern_name}` omits field(s) {}; add `..` to ignore them",
+                    missing.join(", ")
+                ),
+            );
+            invalid = true;
+        }
+
+        if invalid {
+            self.invalid_pattern_plan_spans.insert(key);
+            return;
+        }
+
+        let listed: HashMap<&str, &hew_parser::ast::PatternField> = fields
+            .iter()
+            .map(|field| (field.name.as_str(), field))
+            .collect();
+        let plan_fields = canonical_fields
+            .into_iter()
+            .enumerate()
+            .map(|(decl_idx, (name, field_ty))| {
+                let (sub, field_span) = if let Some(field) = listed.get(name.as_str()) {
+                    match &field.pattern {
+                        None => (PlanSub::Binding(field.name.clone()), span.clone()),
+                        Some((Pattern::Wildcard, sub_span)) => {
+                            (PlanSub::Wildcard, sub_span.clone())
+                        }
+                        Some((Pattern::Literal(literal), sub_span)) => {
+                            (PlanSub::Literal(literal.clone()), sub_span.clone())
+                        }
+                        Some((Pattern::Identifier(binding), sub_span)) => {
+                            let resolved_field =
+                                self.project_assoc_types(&self.subst.resolve(&field_ty));
+                            if binding.contains("::")
+                                || self
+                                    .resolve_variant_match(binding, &resolved_field, binding)
+                                    .is_some()
+                            {
+                                (
+                                    PlanSub::Nested(super::types::SpanKey::in_module(
+                                        sub_span,
+                                        self.current_module_idx,
+                                    )),
+                                    sub_span.clone(),
+                                )
+                            } else {
+                                (PlanSub::Binding(binding.clone()), sub_span.clone())
+                            }
+                        }
+                        Some((_, sub_span)) => (
+                            PlanSub::Nested(super::types::SpanKey::in_module(
+                                sub_span,
+                                self.current_module_idx,
+                            )),
+                            sub_span.clone(),
+                        ),
+                    }
+                } else {
+                    (
+                        PlanSub::Wildcard,
+                        rest.cloned().unwrap_or_else(|| span.clone()),
+                    )
+                };
+                PlanField {
+                    name,
+                    decl_idx: u32::try_from(decl_idx).expect("record field count exceeds u32"),
+                    ty: field_ty,
+                    sub,
+                    span: field_span,
+                }
+            })
+            .collect();
+        self.pending_pattern_plans.insert(
+            key,
+            PatternPlan {
+                fields: plan_fields,
+            },
+        );
+    }
+
+    fn bind_record_pattern_plan(
+        &mut self,
+        pattern: &Pattern,
+        plan: &PatternPlan,
+        is_mutable: bool,
+        span: &Span,
+    ) {
+        let (Pattern::Struct {
+            fields: source_fields,
+            ..
+        }
+        | Pattern::RecordShorthand {
+            fields: source_fields,
+            ..
+        }) = pattern
+        else {
+            return;
+        };
+        for field in &plan.fields {
+            match &field.sub {
+                PlanSub::Binding(name) => {
+                    self.check_shadowing(name, &field.span);
+                    self.env.define_with_span(
+                        name.clone(),
+                        field.ty.clone(),
+                        is_mutable,
+                        field.span.clone(),
+                    );
+                }
+                PlanSub::Wildcard => {}
+                PlanSub::Literal(literal) => {
+                    self.bind_pattern(
+                        &Pattern::Literal(literal.clone()),
+                        &field.ty,
+                        is_mutable,
+                        &field.span,
+                    );
+                }
+                PlanSub::Nested(_) => {
+                    if let Some((subpattern, sub_span)) = source_fields
+                        .iter()
+                        .find(|source| source.name == field.name)
+                        .and_then(|source| source.pattern.as_ref())
+                    {
+                        self.bind_pattern(subpattern, &field.ty, is_mutable, sub_span);
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "internal pattern plan for field `{}` has no source subpattern",
+                                field.name
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Pattern binding — the single authority on which pattern identifiers are
     /// binders (introduce a name) versus constructors (introduce none). Every
     /// consumer that needs that decision routes through the env delta this
@@ -575,6 +875,7 @@ impl Checker {
         is_mutable: bool,
         span: &Span,
     ) {
+        self.prepare_record_pattern_plan(pattern, ty, span);
         if self.bind_pattern_recording {
             // Nested sub-pattern: its binders belong to the top-level delta
             // already being recorded by an enclosing call.
@@ -759,6 +1060,15 @@ impl Checker {
                 if self.reject_machine_event_pattern_outside_transition(ty, span) {
                     return;
                 }
+                let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+                if self.invalid_pattern_plan_spans.contains(&key) {
+                    self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                    return;
+                }
+                if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
+                    self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
+                    return;
+                }
                 // Bind field patterns to field types
                 let type_name_opt = ty.type_name();
                 if let Some(type_name) = type_name_opt {
@@ -876,6 +1186,15 @@ impl Checker {
             // Use the scrutinee's type directly to look up field types, identical to
             // the `Pattern::Struct` fields-only path but without the variant-name check.
             Pattern::RecordShorthand { fields, .. } => {
+                let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+                if self.invalid_pattern_plan_spans.contains(&key) {
+                    self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                    return;
+                }
+                if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
+                    self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
+                    return;
+                }
                 let type_name_opt = ty.type_name();
                 if let Some(type_name) = type_name_opt {
                     if let Some(td) = self.lookup_type_def(type_name) {
@@ -1540,37 +1859,13 @@ impl Checker {
                         }
                     }
                 }
-                // Compute field_idx using declaration order. For plain records,
-                // missing fields require `..`; because rest patterns are deferred
-                // in this stage, fail closed instead of implicitly widening.
+                // Compute field_idx using declaration order. Missing-field
+                // validation and rest erasure are owned by PatternPlan.
                 let ordered_field_names: Vec<String> = field_order.unwrap_or_else(|| {
                     let mut names: Vec<String> = field_tys.keys().cloned().collect();
                     names.sort();
                     names
                 });
-                if !is_enum_variant {
-                    let has_unknown_field =
-                        fields.iter().any(|pf| !field_tys.contains_key(&pf.name));
-                    if !has_unknown_field {
-                        let specified: HashSet<&str> =
-                            fields.iter().map(|pf| pf.name.as_str()).collect();
-                        let missing: Vec<String> = ordered_field_names
-                            .iter()
-                            .filter(|field_name| !specified.contains(field_name.as_str()))
-                            .cloned()
-                            .collect();
-                        if !missing.is_empty() {
-                            self.report_error(
-                                crate::error::TypeErrorKind::InvalidOperation,
-                                pattern_span,
-                                format!(
-                                    "record pattern `{name}` omits field(s) {}; rest patterns (`..`) are not yet supported",
-                                    missing.join(", ")
-                                ),
-                            );
-                        }
-                    }
-                }
                 let payload_bindings: Vec<PayloadBinding> = fields
                     .iter()
                     .filter_map(|pf| {

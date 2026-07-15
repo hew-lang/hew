@@ -867,6 +867,66 @@ pub(crate) unsafe fn hew_transport_tcp_bound_port(transport: *mut HewTransport) 
         .map(|addr| addr.port())
 }
 
+/// Classify a connection's remote endpoint for per-connection posture
+/// selection (issue #2652).
+///
+/// Dispatched by ops-identity (mirroring `hew_transport_is_quic_mesh`'s
+/// `std::ptr::eq(t.ops, …_OPS)`), never a vtable change:
+/// - TCP ops ⇒ the stored socket's `peer_addr()` loopback classification.
+/// - quic-mesh ops ⇒ the live `PeerConn::remote_address()` classification
+///   (dispatched inside `hew-runtime/src/quic_mesh.rs`).
+/// - plain-quic / any other / stub / null ⇒ [`RemoteIpClass::Unknown`], which
+///   the admission path treats as strict, fail-closed.
+///
+/// # Safety
+///
+/// `transport` must be null or a valid pointer for the duration of this call.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn hew_transport_conn_remote_ip_class(
+    transport: *mut HewTransport,
+    conn_id: c_int,
+) -> crate::peer_binding::RemoteIpClass {
+    use crate::peer_binding::RemoteIpClass;
+    if transport.is_null() {
+        return RemoteIpClass::Unknown;
+    }
+    // SAFETY: caller guarantees `transport` is valid for this call.
+    let t = unsafe { &*transport };
+    if std::ptr::eq(t.ops, &raw const TCP_OPS) && !t.r#impl.is_null() {
+        // SAFETY: the TCP ops check guarantees the impl pointer is a TcpTransport.
+        let tcp = unsafe { &*t.r#impl.cast::<TcpTransport>() };
+        return match tcp.get_conn(conn_id) {
+            Ok(Some(sock)) => sock
+                .peer_addr()
+                .ok()
+                .and_then(|addr| addr.as_socket())
+                .map_or(RemoteIpClass::Unknown, classify_remote_socket_addr),
+            _ => RemoteIpClass::Unknown,
+        };
+    }
+    #[cfg(feature = "quic")]
+    {
+        // SAFETY: `transport` is valid per the caller contract.
+        if unsafe { crate::quic_mesh::hew_transport_is_quic_mesh(transport) } {
+            // SAFETY: the mesh ops check inside the accessor guards the impl cast.
+            return unsafe {
+                crate::quic_mesh::hew_quic_mesh_transport_conn_remote_ip_class(transport, conn_id)
+            };
+        }
+    }
+    RemoteIpClass::Unknown
+}
+
+/// Classify a resolved socket address as loopback vs routable.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn classify_remote_socket_addr(addr: SocketAddr) -> crate::peer_binding::RemoteIpClass {
+    if addr.ip().is_loopback() {
+        crate::peer_binding::RemoteIpClass::Loopback
+    } else {
+        crate::peer_binding::RemoteIpClass::NonLoopback
+    }
+}
+
 /// Create a new TCP transport.
 ///
 /// # Safety
@@ -1876,6 +1936,89 @@ mod tests {
     use std::ffi::CString;
     use std::io;
     use std::sync::{Arc, Mutex, PoisonError};
+
+    #[test]
+    fn remote_ip_class_classifies_loopback_and_routable() {
+        use crate::peer_binding::RemoteIpClass;
+        let loopback_v4: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let loopback_v6: SocketAddr = "[::1]:9".parse().unwrap();
+        let routable_v4: SocketAddr = "203.0.113.7:9".parse().unwrap();
+        let routable_v6: SocketAddr = "[2001:db8::1]:9".parse().unwrap();
+        assert_eq!(
+            classify_remote_socket_addr(loopback_v4),
+            RemoteIpClass::Loopback
+        );
+        assert_eq!(
+            classify_remote_socket_addr(loopback_v6),
+            RemoteIpClass::Loopback
+        );
+        assert_eq!(
+            classify_remote_socket_addr(routable_v4),
+            RemoteIpClass::NonLoopback
+        );
+        assert_eq!(
+            classify_remote_socket_addr(routable_v6),
+            RemoteIpClass::NonLoopback
+        );
+    }
+
+    #[test]
+    fn remote_ip_class_unknown_for_null_and_stub_transport() {
+        use crate::peer_binding::RemoteIpClass;
+        // Null transport ⇒ Unknown (strict, fail-closed).
+        // SAFETY: the accessor is null-safe.
+        let null_class = unsafe { hew_transport_conn_remote_ip_class(std::ptr::null_mut(), 0) };
+        assert_eq!(null_class, RemoteIpClass::Unknown);
+        // A stub transport with a foreign ops table ⇒ Unknown (neither TCP nor
+        // quic-mesh ops identity matches).
+        let ops = Box::new(HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let mut transport = HewTransport {
+            ops: &raw const *ops,
+            r#impl: std::ptr::null_mut(),
+        };
+        // SAFETY: transport is a valid stack value for the duration of the call.
+        let stub_class = unsafe { hew_transport_conn_remote_ip_class(&raw mut transport, 3) };
+        assert_eq!(stub_class, RemoteIpClass::Unknown);
+        drop(ops);
+    }
+
+    #[test]
+    fn remote_ip_class_reads_tcp_peer_addr_as_loopback() {
+        use crate::peer_binding::RemoteIpClass;
+        // A real TCP transport with an accepted loopback connection classifies
+        // the endpoint as Loopback via the stored socket's peer_addr.
+        // SAFETY: constructors return owned transport pointers.
+        let server = unsafe { hew_transport_tcp_new() };
+        assert!(!server.is_null());
+        let addr = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: server + addr valid for this listen call.
+        let listen_rc =
+            unsafe { ((*(*server).ops).listen.unwrap())((*server).r#impl, addr.as_ptr()) };
+        assert_eq!(listen_rc, 0);
+        // SAFETY: server is a bound TCP transport.
+        let port = unsafe { hew_transport_tcp_bound_port(server) }.expect("bound port");
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("client connect");
+        // SAFETY: server valid; accept the inbound connection. A positive timeout
+        // makes accept wait for the just-dialed client rather than racing it.
+        let conn_id = unsafe { ((*(*server).ops).accept.unwrap())((*server).r#impl, 2000) };
+        assert!(conn_id >= 0, "accept should yield a conn id");
+        // SAFETY: server + conn_id valid; classify the accepted endpoint.
+        let class = unsafe { hew_transport_conn_remote_ip_class(server, conn_id) };
+        assert_eq!(class, RemoteIpClass::Loopback);
+        drop(client);
+        // SAFETY: server was created by hew_transport_tcp_new; destroy it.
+        unsafe { ((*(*server).ops).destroy.unwrap())((*server).r#impl) };
+        // SAFETY: reclaim the transport box allocated by hew_transport_tcp_new.
+        drop(unsafe { Box::from_raw(server) });
+    }
 
     fn run_in_isolated_test_process(test_name: &str, env_key: &str, body: impl FnOnce()) {
         if std::env::var_os(env_key).is_some() {

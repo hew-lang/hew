@@ -33,6 +33,31 @@ ad-hoc per-shape heap walkers.
   (`std::link_monitor`) have been migrated to the `#[resource]` close model.
   (#1986)
 
+### Security — distributed peer identity (breaking)
+
+- **Authenticated `NodeId` ↔ credential binding.** In `Strict` (non-loopback /
+  configured) distributed mode, a peer is admitted only when its authenticated
+  transport credential — the Noise static public key on TCP, or the pinned
+  certificate SPKI on quic-mesh — is bound in advance to the exact `NodeId` it
+  claims in its handshake. An admitted key can therefore claim only the `NodeId`
+  it is bound to; a mismatched, unbound, or credential-less `Strict` connection
+  is rejected at admission (fail-closed) before the peer becomes routable or
+  gains any cluster/registry/reply authority. The handshake `NodeId` is the
+  operator-pinned `HEW_NODE_ID` (never PID-derived), and a node whose explicit id
+  contradicts its bound strict identity is refused before it binds a listener.
+  `Unverified` (loopback-dev / opt-out) connections are delivery-only across
+  **both** the control and data planes: they neither inject nor receive registry
+  gossip or SWIM/cluster membership, may not drive monitor/link control, and an
+  inbound *ask* on such a connection is dropped with a diagnostic. Reply
+  completion additionally validates the originating connection. (#2652)
+- **`Node::allow_peer` now takes two arguments.** The signature changed from
+  `Node::allow_peer(node_id)` to `Node::allow_peer(node_id, credential_hex)`,
+  binding the peer's authenticated credential (lowercase-hex Noise pubkey on TCP,
+  cert SPKI on quic-mesh) to the `NodeId` it may claim. A malformed credential
+  fails closed. The new companion `Node::identity_key() -> String` returns this
+  node's stable public credential as lowercase hex (`""` before a stable identity
+  is loaded) for operators to pin via a peer's `allow_peer`. (#2652)
+
 ### Fixed — actor and machine correctness (correctness fence)
 
 - **Bounded mailboxes.** Codegen now honours a declared mailbox capacity and its

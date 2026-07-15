@@ -1,0 +1,916 @@
+//! Peer authentication authority: binds an authenticated peer credential
+//! (Noise static key on TCP, certificate SPKI on quic-mesh) to the `NodeId`
+//! that credential is permitted to claim.
+//!
+//! # Why this module exists
+//!
+//! Historically the distributed runtime authenticated a *key* against a flat
+//! process-global allowlist (`encryption::ACTIVE_ALLOWLIST`,
+//! `quic_mesh::ACTIVE_MESH_SPKI_ALLOWLIST`) and, *independently*, checked that a
+//! peer's self-declared handshake `NodeId` was numerically plausible
+//! (`connection::peer_identity_compatible`). Nothing bound the two: any admitted
+//! key could claim any `NodeId`. This module is the authority that closes that
+//! gap — it maps `NodeId -> {authenticated credential}` and returns a
+//! structured [`PeerAuthz`] verdict, never a bare bool.
+//!
+//! # Two authorities (never one process-global that governs all nodes)
+//!
+//! * [`PeerAuthSnapshot`] — the **per-node** frozen authority the connection
+//!   manager and transport consume. Each [`crate::hew_node::HewNode`] /
+//!   [`crate::connection::HewConnMgr`] owns its own; concurrent low-level nodes
+//!   never share one. Its identity material lives behind [`std::sync::Arc`], so
+//!   cloning is cheap and never duplicates secret bytes.
+//! * [`ConfigState`] (in [`PEER_AUTH_STATE`]) — the **public-API-only** staging
+//!   area where the singleton `Node::*` builtins accumulate config before a
+//!   public node exists, plus an owner-scoped lifecycle guard. No low-level
+//!   `hew_node_*` path consults it.
+//!
+//! This module is native-only (the distributed runtime requires OS threads) and
+//! feature-agnostic: it stores identity material as opaque bytes so it compiles
+//! under every native feature combination, including `--no-default-features`.
+//! The `encryption` / `quic` transport layers convert these byte containers to
+//! and from their `snow` / `rustls` types at the transport boundary.
+
+use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU16;
+use std::os::raw::c_int;
+use std::sync::{Arc, Mutex};
+
+use zeroize::Zeroizing;
+
+/// Length in bytes of a Noise static public/private key (X25519).
+pub const NOISE_KEY_LEN: usize = 32;
+
+/// Which transport a node's credentials are interpreted for.
+///
+/// Self-contained (mirrors the private `hew_node::TransportSelection`) so this
+/// module compiles regardless of the `quic` feature; the runtime rejects an
+/// unsupported selection at start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum TransportSelection {
+    /// TCP with optional Noise-XX encryption.
+    Tcp,
+    /// Plain QUIC (TLS 1.3, no peer-credential binding mechanism).
+    Quic,
+    /// QUIC mesh with mutual SPKI-pinned TLS.
+    QuicMesh,
+}
+
+/// An authenticated peer credential, keyed to the `NodeId` it may claim.
+///
+/// `NoiseKey` is a 32-byte X25519 static public key recovered from the Noise-XX
+/// handshake (`get_remote_static`); `Spki` is the DER `SubjectPublicKeyInfo`
+/// extracted from a quic-mesh peer's leaf certificate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PeerCredential {
+    /// Noise static public key (TCP transport).
+    NoiseKey([u8; NOISE_KEY_LEN]),
+    /// Certificate `SubjectPublicKeyInfo` (quic-mesh transport).
+    Spki(Vec<u8>),
+}
+
+/// `NodeId -> {authenticated credential}` — a set per `NodeId` so a rotation may
+/// overlap two bound credentials on one `NodeId` (only one live at a time; see
+/// the claim state machine).
+pub type PeerBindings = HashMap<u16, HashSet<PeerCredential>>;
+
+/// The posture a single connection is admitted under.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Posture {
+    /// Credential-bound admission is required; a missing/mismatched credential
+    /// is rejected fail-closed.
+    Strict,
+    /// Loopback-dev / explicit opt-out: delivery only, no authenticated
+    /// identity, no cluster/gossip/ask-routing authority.
+    Unverified,
+}
+
+/// Classification of a connection's remote endpoint, used to pick a posture
+/// per connection without a transport-vtable change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteIpClass {
+    /// The peer address is a loopback address (127.0.0.0/8, `::1`).
+    Loopback,
+    /// The peer address is a routable/non-loopback address.
+    NonLoopback,
+    /// The remote address could not be determined (plain-quic, stub, custom
+    /// transport) — treated as strict, fail-closed.
+    Unknown,
+}
+
+/// Structured authorization verdict — never a bare bool. Every non-`Authorized`
+/// / non-`Unverified` variant maps to a distinct diagnostic at the call site.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PeerAuthz {
+    /// Strict: the presented credential is bound to the claimed `NodeId`.
+    Authorized(u16),
+    /// The claimed `NodeId` has no bound credentials at all.
+    NoBindingForNode,
+    /// The presented credential is bound to a *different* `NodeId`.
+    CredentialBoundElsewhere {
+        /// The `NodeId` the credential is actually bound to.
+        bound: u16,
+    },
+    /// The claimed `NodeId` has bindings, but none match the presented credential.
+    CredentialMismatch,
+    /// The claimed `NodeId` is reserved (0) — structurally invalid.
+    InvalidNodeId,
+    /// Strict posture, but no credential was presented.
+    MissingCredential,
+    /// Loopback-dev / opt-out — delivery only; a `None` credential is legal.
+    Unverified,
+}
+
+/// Whether a `LiveClaim` is mid-admission (reserved) or established (published).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaimState {
+    /// An admission is in flight for this `NodeId`; a concurrent admission waits.
+    Reserved,
+    /// The connection is established and owns this `NodeId`'s routes/tokens.
+    Published,
+}
+
+/// The live owner of a `NodeId` on one connection manager.
+#[derive(Clone, Debug)]
+pub struct LiveClaim {
+    /// The authenticated credential owning this `NodeId`; `None` only under
+    /// `Unverified` posture.
+    pub credential: Option<PeerCredential>,
+    /// The transport connection id that holds this claim.
+    pub conn_id: c_int,
+    /// The publication token uniquely identifying this admission.
+    pub publication_token: u64,
+    /// Reserved (mid-admission) vs Published (established).
+    pub state: ClaimState,
+}
+
+/// A node's stable Noise static keypair (TCP transport identity).
+///
+/// Stored as opaque bytes behind an [`Arc`] so cloning a snapshot never
+/// duplicates the private key. The `encryption` layer converts the raw bytes to
+/// a `snow` keypair at handshake time.
+#[derive(Clone)]
+pub struct StableNoiseIdentity {
+    public: [u8; NOISE_KEY_LEN],
+    private: Arc<Zeroizing<[u8; NOISE_KEY_LEN]>>,
+}
+
+impl StableNoiseIdentity {
+    /// Construct from raw 32-byte public/private key material.
+    #[must_use]
+    pub fn from_raw(public: [u8; NOISE_KEY_LEN], private: [u8; NOISE_KEY_LEN]) -> Self {
+        Self {
+            public,
+            private: Arc::new(Zeroizing::new(private)),
+        }
+    }
+
+    /// The stable Noise static public key (the bindable peer identity).
+    #[must_use]
+    pub fn public(&self) -> [u8; NOISE_KEY_LEN] {
+        self.public
+    }
+
+    /// The stable Noise static private key.
+    #[must_use]
+    pub fn private(&self) -> [u8; NOISE_KEY_LEN] {
+        **self.private
+    }
+}
+
+impl std::fmt::Debug for StableNoiseIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print private key material.
+        f.debug_struct("StableNoiseIdentity")
+            .field("public", &hex_lower(&self.public))
+            .finish_non_exhaustive()
+    }
+}
+
+/// A node's stable mesh (quic-mesh) TLS identity material.
+///
+/// Stored as opaque DER bytes behind an [`Arc`]; the `quic_mesh` layer converts
+/// them to a rustls certificate/key pair at listener construction.
+#[derive(Clone)]
+pub struct MeshIdentityMaterial {
+    inner: Arc<MeshIdentityBytes>,
+}
+
+struct MeshIdentityBytes {
+    /// DER-encoded certificate chain (leaf first).
+    cert_chain_der: Vec<Vec<u8>>,
+    /// DER-encoded PKCS#8 private key.
+    private_key_der: Zeroizing<Vec<u8>>,
+    /// The local leaf certificate's `SubjectPublicKeyInfo` (the bindable id).
+    spki: Vec<u8>,
+}
+
+impl MeshIdentityMaterial {
+    /// Construct from DER material and the precomputed local leaf SPKI.
+    #[must_use]
+    pub fn from_der(cert_chain_der: Vec<Vec<u8>>, private_key_der: Vec<u8>, spki: Vec<u8>) -> Self {
+        Self {
+            inner: Arc::new(MeshIdentityBytes {
+                cert_chain_der,
+                private_key_der: Zeroizing::new(private_key_der),
+                spki,
+            }),
+        }
+    }
+
+    /// DER-encoded certificate chain (leaf first).
+    #[must_use]
+    pub fn cert_chain_der(&self) -> &[Vec<u8>] {
+        &self.inner.cert_chain_der
+    }
+
+    /// DER-encoded PKCS#8 private key.
+    #[must_use]
+    pub fn private_key_der(&self) -> &[u8] {
+        &self.inner.private_key_der
+    }
+
+    /// The local leaf certificate's `SubjectPublicKeyInfo`.
+    #[must_use]
+    pub fn spki(&self) -> &[u8] {
+        &self.inner.spki
+    }
+}
+
+impl std::fmt::Debug for MeshIdentityMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeshIdentityMaterial")
+            .field("spki", &hex_lower(&self.inner.spki))
+            .field("cert_chain_len", &self.inner.cert_chain_der.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Lowercase-hex encode a byte slice.
+#[must_use]
+pub fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// The mutable public-API staging config, accumulated by `Node::allow_peer` /
+/// `Node::load_keys` / `Node::set_transport` before a public node exists.
+///
+/// Frozen into a [`PeerAuthSnapshot`] via [`PeerAuthConfig::snapshot`] at start.
+#[derive(Clone, Debug, Default)]
+pub struct PeerAuthConfig {
+    /// Operator-pinned stable `NodeId` (`HEW_NODE_ID`), if configured.
+    pub node_id: Option<NonZeroU16>,
+    /// Explicit documented unverified opt-out (`HEW_DIST_UNVERIFIED`).
+    pub unverified_optout: bool,
+    /// Pinned transport selection (pinned at the first transport-sensitive op).
+    pub transport: Option<TransportSelection>,
+    /// `NodeId -> {credential}` bindings.
+    pub bindings: PeerBindings,
+    /// Stable Noise identity (TCP), populated by `load_keys`.
+    pub noise_identity: Option<StableNoiseIdentity>,
+    /// Stable mesh identity (quic-mesh), populated by `load_keys`.
+    pub mesh_identity: Option<MeshIdentityMaterial>,
+    /// Sticky fail-closed setup poison (a failed `load_keys` / `allow_peer`).
+    pub setup_error: Option<String>,
+}
+
+impl PeerAuthConfig {
+    /// The identity string `Node::identity_key` returns for this config: the
+    /// lowercase-hex of the stable credential for the pinned transport, or the
+    /// empty string when no stable identity has been loaded.
+    #[must_use]
+    pub fn identity_export_string(&self) -> String {
+        match self.transport {
+            Some(TransportSelection::QuicMesh) => self
+                .mesh_identity
+                .as_ref()
+                .map(|m| hex_lower(m.spki()))
+                .unwrap_or_default(),
+            // TCP (or unpinned) exports the Noise pubkey when present.
+            _ => self
+                .noise_identity
+                .as_ref()
+                .map(|n| hex_lower(&n.public()))
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Whether any transport-sensitive credential or stable identity has been
+    /// staged (issue #2652). Peer bindings (`allow_peer`) and stable identities
+    /// (`load_keys`) are interpreted under the pinned [`Self::transport`] — a
+    /// Noise pubkey vs a mesh SPKI — so once any is staged the transport MUST NOT
+    /// change: a later flip would silently reinterpret already-staged material.
+    /// `Node::set_transport` consults this to reject a post-staging transport
+    /// change (fail-closed) rather than corrupt the credential interpretation.
+    #[must_use]
+    pub fn has_staged_credentials(&self) -> bool {
+        !self.bindings.is_empty() || self.noise_identity.is_some() || self.mesh_identity.is_some()
+    }
+
+    /// Validate the *public* config before listen/allocation (D109 pre-listen).
+    ///
+    /// * strict-bound (`bindings` non-empty) requires a stable `node_id`;
+    /// * the unverified opt-out cannot coexist with configured bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed message on an invalid posture combination.
+    pub fn validate_public(&self) -> Result<(), String> {
+        if !self.bindings.is_empty() && self.node_id.is_none() {
+            return Err(
+                "Node::start: strict distributed mode requires HEW_NODE_ID (nonzero u16) \
+                 — refusing to bind (fail-closed)"
+                    .to_string(),
+            );
+        }
+        if self.unverified_optout && !self.bindings.is_empty() {
+            return Err(
+                "Node::start: HEW_DIST_UNVERIFIED cannot be combined with configured peer \
+                 bindings (fail-closed)"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Freeze this staging config into a per-node [`PeerAuthSnapshot`].
+    ///
+    /// The `transport` defaults to TCP when unpinned (mirrors
+    /// `transport_selection_from_env`'s default).
+    #[must_use]
+    pub fn snapshot(&self) -> PeerAuthSnapshot {
+        let mut mesh_spki_allowlist: HashSet<Vec<u8>> = HashSet::new();
+        for creds in self.bindings.values() {
+            for cred in creds {
+                if let PeerCredential::Spki(spki) = cred {
+                    mesh_spki_allowlist.insert(spki.clone());
+                }
+            }
+        }
+        PeerAuthSnapshot {
+            inner: Arc::new(SnapshotInner {
+                node_id: self.node_id,
+                unverified: self.unverified_optout,
+                transport: self.transport.unwrap_or(TransportSelection::Tcp),
+                bindings: self.bindings.clone(),
+                noise_identity: self.noise_identity.clone(),
+                mesh_identity: self.mesh_identity.clone(),
+                mesh_spki_allowlist,
+                setup_error: self.setup_error.clone(),
+            }),
+        }
+    }
+}
+
+/// The frozen, per-node authority the manager and transport consume.
+///
+/// Immutable once installed on a node; cloning shares the inner state (identity
+/// material behind [`Arc`]) so it is cheap and never duplicates secret bytes.
+#[derive(Clone)]
+pub struct PeerAuthSnapshot {
+    inner: Arc<SnapshotInner>,
+}
+
+struct SnapshotInner {
+    node_id: Option<NonZeroU16>,
+    unverified: bool,
+    transport: TransportSelection,
+    bindings: PeerBindings,
+    noise_identity: Option<StableNoiseIdentity>,
+    mesh_identity: Option<MeshIdentityMaterial>,
+    mesh_spki_allowlist: HashSet<Vec<u8>>,
+    setup_error: Option<String>,
+}
+
+impl PeerAuthSnapshot {
+    /// The low-level default posture: an *unconfigured* node.
+    ///
+    /// `node_id: None`, `unverified: false`, empty bindings/allowlist. This is
+    /// **not** a blanket `Unverified` pass — posture is decided per connection
+    /// (loopback ⇒ `Unverified` delivery-only; non-loopback / `Unknown` ⇒
+    /// strict-reject). An unconfigured node never authenticates or silently
+    /// accepts a non-loopback peer.
+    #[must_use]
+    pub fn unconfigured() -> Self {
+        Self {
+            inner: Arc::new(SnapshotInner {
+                node_id: None,
+                unverified: false,
+                transport: TransportSelection::Tcp,
+                bindings: PeerBindings::new(),
+                noise_identity: None,
+                mesh_identity: None,
+                mesh_spki_allowlist: HashSet::new(),
+                setup_error: None,
+            }),
+        }
+    }
+
+    /// The operator-pinned stable `NodeId`, if any.
+    #[must_use]
+    pub fn node_id(&self) -> Option<NonZeroU16> {
+        self.inner.node_id
+    }
+
+    /// Whether this snapshot is the explicit documented unverified opt-out.
+    #[must_use]
+    pub fn is_unverified_optout(&self) -> bool {
+        self.inner.unverified
+    }
+
+    /// The pinned transport selection.
+    #[must_use]
+    pub fn transport(&self) -> TransportSelection {
+        self.inner.transport
+    }
+
+    /// The stable Noise identity, if loaded.
+    #[must_use]
+    pub fn noise_identity(&self) -> Option<&StableNoiseIdentity> {
+        self.inner.noise_identity.as_ref()
+    }
+
+    /// The stable mesh identity, if loaded.
+    #[must_use]
+    pub fn mesh_identity(&self) -> Option<&MeshIdentityMaterial> {
+        self.inner.mesh_identity.as_ref()
+    }
+
+    /// The per-node mesh SPKI allowlist (the transport pre-gate for quic-mesh).
+    #[must_use]
+    pub fn mesh_spki_allowlist(&self) -> &HashSet<Vec<u8>> {
+        &self.inner.mesh_spki_allowlist
+    }
+
+    /// The sticky fail-closed setup poison, if any.
+    #[must_use]
+    pub fn setup_error(&self) -> Option<&str> {
+        self.inner.setup_error.as_deref()
+    }
+
+    /// Whether any credential bindings are configured (strict-bound node).
+    #[must_use]
+    pub fn has_bindings(&self) -> bool {
+        !self.inner.bindings.is_empty()
+    }
+
+    /// True if the given Noise static public key is in this node's Noise
+    /// allowlist (the per-node pre-gate replacing the global allowlist check).
+    #[must_use]
+    pub fn noise_pubkey_allowlisted(&self, pubkey: &[u8; NOISE_KEY_LEN]) -> bool {
+        let cred = PeerCredential::NoiseKey(*pubkey);
+        self.inner
+            .bindings
+            .values()
+            .any(|creds| creds.contains(&cred))
+    }
+
+    /// Validate the snapshot is self-consistent (defence-in-depth at the shared
+    /// `hew_node_start`, applies to low-level callers too).
+    ///
+    /// * strict (`bindings` non-empty) requires `node_id = Some`;
+    /// * explicit opt-out (`unverified == true`) requires empty `bindings`;
+    /// * `unconfigured` (`unverified == false`, empty bindings) is legal.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed message on a malformed snapshot.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.inner.unverified && !self.inner.bindings.is_empty() {
+            return Err(
+                "hew_node_start: unverified opt-out snapshot must not carry peer bindings \
+                 (fail-closed)"
+                    .to_string(),
+            );
+        }
+        if !self.inner.bindings.is_empty() && self.inner.node_id.is_none() {
+            return Err(
+                "hew_node_start: strict binding snapshot requires a stable node id (fail-closed)"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Decide the posture for one connection from its remote endpoint class.
+    ///
+    /// | Condition | Posture |
+    /// |---|---|
+    /// | explicit unverified opt-out (bindings empty) | `Unverified` |
+    /// | bindings non-empty (any remote) | `Strict` |
+    /// | remote `NonLoopback` or `Unknown` | `Strict` |
+    /// | remote `Loopback`, bindings empty, not opt-out | `Unverified` |
+    #[must_use]
+    pub fn posture_for(&self, remote: RemoteIpClass) -> Posture {
+        if self.inner.unverified {
+            return Posture::Unverified;
+        }
+        if self.has_bindings() {
+            return Posture::Strict;
+        }
+        match remote {
+            RemoteIpClass::Loopback => Posture::Unverified,
+            RemoteIpClass::NonLoopback | RemoteIpClass::Unknown => Posture::Strict,
+        }
+    }
+
+    /// The structured authorization verdict for a connection.
+    ///
+    /// In `Unverified` posture returns [`PeerAuthz::Unverified`] (a `None`
+    /// credential is legal). In `Strict` posture resolves the credential
+    /// against the `NodeId -> {credential}` bindings.
+    #[must_use]
+    pub fn authorize(
+        &self,
+        posture: Posture,
+        claimed: u16,
+        cred: Option<&PeerCredential>,
+    ) -> PeerAuthz {
+        if posture == Posture::Unverified {
+            return PeerAuthz::Unverified;
+        }
+        if claimed == 0 {
+            return PeerAuthz::InvalidNodeId;
+        }
+        let Some(cred) = cred else {
+            return PeerAuthz::MissingCredential;
+        };
+        match self.inner.bindings.get(&claimed) {
+            Some(creds) if creds.contains(cred) => PeerAuthz::Authorized(claimed),
+            Some(_) => {
+                // Claimed NodeId has bindings but none match this credential;
+                // report a bound-elsewhere conflict if the credential belongs to
+                // a different NodeId, else a plain mismatch.
+                if let Some(bound) = self.credential_bound_node(cred) {
+                    PeerAuthz::CredentialBoundElsewhere { bound }
+                } else {
+                    PeerAuthz::CredentialMismatch
+                }
+            }
+            None => {
+                if let Some(bound) = self.credential_bound_node(cred) {
+                    PeerAuthz::CredentialBoundElsewhere { bound }
+                } else {
+                    PeerAuthz::NoBindingForNode
+                }
+            }
+        }
+    }
+
+    /// The `NodeId` this credential is bound to, if any (for conflict reporting).
+    fn credential_bound_node(&self, cred: &PeerCredential) -> Option<u16> {
+        self.inner
+            .bindings
+            .iter()
+            .find(|(_, creds)| creds.contains(cred))
+            .map(|(id, _)| *id)
+    }
+}
+
+impl std::fmt::Debug for PeerAuthSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerAuthSnapshot")
+            .field("node_id", &self.inner.node_id)
+            .field("unverified", &self.inner.unverified)
+            .field("transport", &self.inner.transport)
+            .field("binding_node_count", &self.inner.bindings.len())
+            .field(
+                "mesh_spki_allowlist_len",
+                &self.inner.mesh_spki_allowlist.len(),
+            )
+            .field("has_noise_identity", &self.inner.noise_identity.is_some())
+            .field("has_mesh_identity", &self.inner.mesh_identity.is_some())
+            .field("setup_error", &self.inner.setup_error)
+            .finish()
+    }
+}
+
+/// The public-API-only staging + owner-scoped lifecycle guard.
+///
+/// Governs *only* the singleton public `Node::*` API. `owner` is the owning
+/// `HewNode*` as a `usize` (mirroring `CURRENT_NODE`'s representation) — used
+/// only for lifecycle matching (who may transition/reset), **never**
+/// dereferenced. `identity_export` in `Running` is a cloned identity string so
+/// the public `identity_key` never reads a raw node pointer.
+#[derive(Debug)]
+pub enum ConfigState {
+    /// Pre-start public staging; `allow_peer` / `load_keys` / `set_transport`
+    /// mutate the held config here.
+    Building(PeerAuthConfig),
+    /// The public node was created and its snapshot installed; the consumed
+    /// config is retained for `identity_key` and `fail_start`.
+    Starting {
+        /// The lifecycle generation this transition owns.
+        generation: u64,
+        /// The owning `HewNode*` as a `usize` (never dereferenced).
+        owner: usize,
+        /// The consumed staging config (retained for restore/read).
+        config: PeerAuthConfig,
+    },
+    /// The public node is live; `identity_export` is a standalone clone.
+    Running {
+        /// The lifecycle generation this transition owns.
+        generation: u64,
+        /// The owning `HewNode*` as a `usize` (never dereferenced).
+        owner: usize,
+        /// The cloned identity string `identity_key` returns while running.
+        identity_export: String,
+    },
+}
+
+impl Default for ConfigState {
+    fn default() -> Self {
+        ConfigState::Building(PeerAuthConfig::default())
+    }
+}
+
+/// The public-API staging state paired with a monotonic generation counter.
+///
+/// The generation is bumped on every owner-scoped reset so a stale `fail_start`
+/// cannot clobber a concurrently-staged config.
+pub static PEER_AUTH_STATE: std::sync::LazyLock<Mutex<PeerAuthStateCell>> =
+    std::sync::LazyLock::new(|| Mutex::new(PeerAuthStateCell::new()));
+
+/// The mutex-protected public staging cell.
+#[derive(Debug)]
+pub struct PeerAuthStateCell {
+    /// The current public-API config lifecycle state.
+    pub state: ConfigState,
+    /// Monotonic generation for the next `Starting` transition.
+    pub next_generation: u64,
+}
+
+impl PeerAuthStateCell {
+    fn new() -> Self {
+        Self {
+            state: ConfigState::default(),
+            next_generation: 1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noise(byte: u8) -> PeerCredential {
+        PeerCredential::NoiseKey([byte; NOISE_KEY_LEN])
+    }
+
+    fn nz(v: u16) -> Option<NonZeroU16> {
+        NonZeroU16::new(v)
+    }
+
+    #[test]
+    fn unconfigured_is_not_a_blanket_unverified_pass() {
+        let snap = PeerAuthSnapshot::unconfigured();
+        // Loopback ⇒ Unverified (delivery-only dev).
+        assert_eq!(
+            snap.posture_for(RemoteIpClass::Loopback),
+            Posture::Unverified
+        );
+        // Non-loopback / Unknown ⇒ strict (fail-closed).
+        assert_eq!(
+            snap.posture_for(RemoteIpClass::NonLoopback),
+            Posture::Strict
+        );
+        assert_eq!(snap.posture_for(RemoteIpClass::Unknown), Posture::Strict);
+        assert!(!snap.is_unverified_optout());
+    }
+
+    #[test]
+    fn explicit_optout_is_unverified_regardless_of_endpoint() {
+        let cfg = PeerAuthConfig {
+            unverified_optout: true,
+            ..PeerAuthConfig::default()
+        };
+        let snap = cfg.snapshot();
+        for remote in [
+            RemoteIpClass::Loopback,
+            RemoteIpClass::NonLoopback,
+            RemoteIpClass::Unknown,
+        ] {
+            assert_eq!(snap.posture_for(remote), Posture::Unverified);
+        }
+    }
+
+    #[test]
+    fn strict_bindings_force_strict_on_any_endpoint() {
+        let mut bindings = PeerBindings::new();
+        bindings.entry(42).or_default().insert(noise(0xAB));
+        let cfg = PeerAuthConfig {
+            node_id: nz(7),
+            bindings,
+            ..PeerAuthConfig::default()
+        };
+        let snap = cfg.snapshot();
+        for remote in [
+            RemoteIpClass::Loopback,
+            RemoteIpClass::NonLoopback,
+            RemoteIpClass::Unknown,
+        ] {
+            assert_eq!(snap.posture_for(remote), Posture::Strict);
+        }
+    }
+
+    #[test]
+    fn authorize_binds_credential_to_nodeid() {
+        let mut bindings = PeerBindings::new();
+        bindings.entry(42).or_default().insert(noise(0xBB));
+        let snap = PeerAuthConfig {
+            node_id: nz(7),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // Correct key for the claimed NodeId.
+        assert_eq!(
+            snap.authorize(Posture::Strict, 42, Some(&noise(0xBB))),
+            PeerAuthz::Authorized(42)
+        );
+        // The composed-gap case: a DIFFERENT key claiming 42 must NOT authorize.
+        assert_eq!(
+            snap.authorize(Posture::Strict, 42, Some(&noise(0xCC))),
+            PeerAuthz::CredentialMismatch
+        );
+    }
+
+    #[test]
+    fn authorize_reports_credential_bound_elsewhere() {
+        let mut bindings = PeerBindings::new();
+        bindings.entry(42).or_default().insert(noise(0xBB));
+        bindings.entry(43).or_default().insert(noise(0xCC));
+        let snap = PeerAuthConfig {
+            node_id: nz(7),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // key 0xCC is bound to 43, not 42.
+        assert_eq!(
+            snap.authorize(Posture::Strict, 42, Some(&noise(0xCC))),
+            PeerAuthz::CredentialBoundElsewhere { bound: 43 }
+        );
+    }
+
+    #[test]
+    fn authorize_rejects_missing_credential_and_no_binding_and_zero() {
+        let mut bindings = PeerBindings::new();
+        bindings.entry(42).or_default().insert(noise(0xBB));
+        let snap = PeerAuthConfig {
+            node_id: nz(7),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        assert_eq!(
+            snap.authorize(Posture::Strict, 42, None),
+            PeerAuthz::MissingCredential
+        );
+        assert_eq!(
+            snap.authorize(Posture::Strict, 99, Some(&noise(0xDD))),
+            PeerAuthz::NoBindingForNode
+        );
+        assert_eq!(
+            snap.authorize(Posture::Strict, 0, Some(&noise(0xBB))),
+            PeerAuthz::InvalidNodeId
+        );
+    }
+
+    #[test]
+    fn authorize_unverified_allows_none_credential() {
+        let snap = PeerAuthSnapshot::unconfigured();
+        assert_eq!(
+            snap.authorize(Posture::Unverified, 42, None),
+            PeerAuthz::Unverified
+        );
+    }
+
+    #[test]
+    fn rotation_overlap_admits_either_bound_credential() {
+        // Both K_old and K_new bound to 42 (break-before-make overlap window).
+        let mut bindings = PeerBindings::new();
+        let set = bindings.entry(42).or_default();
+        set.insert(noise(0x01));
+        set.insert(noise(0x02));
+        let snap = PeerAuthConfig {
+            node_id: nz(7),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        assert_eq!(
+            snap.authorize(Posture::Strict, 42, Some(&noise(0x01))),
+            PeerAuthz::Authorized(42)
+        );
+        assert_eq!(
+            snap.authorize(Posture::Strict, 42, Some(&noise(0x02))),
+            PeerAuthz::Authorized(42)
+        );
+    }
+
+    #[test]
+    fn snapshot_derives_mesh_spki_allowlist_from_bindings() {
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(42)
+            .or_default()
+            .insert(PeerCredential::Spki(vec![1, 2, 3]));
+        bindings
+            .entry(43)
+            .or_default()
+            .insert(PeerCredential::Spki(vec![4, 5, 6]));
+        let snap = PeerAuthConfig {
+            node_id: nz(7),
+            transport: Some(TransportSelection::QuicMesh),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        assert!(snap.mesh_spki_allowlist().contains(&vec![1, 2, 3]));
+        assert!(snap.mesh_spki_allowlist().contains(&vec![4, 5, 6]));
+        assert_eq!(snap.mesh_spki_allowlist().len(), 2);
+    }
+
+    #[test]
+    fn noise_pubkey_allowlisted_reflects_bindings() {
+        let mut bindings = PeerBindings::new();
+        bindings.entry(42).or_default().insert(noise(0xEE));
+        let snap = PeerAuthConfig {
+            node_id: nz(7),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        assert!(snap.noise_pubkey_allowlisted(&[0xEE; NOISE_KEY_LEN]));
+        assert!(!snap.noise_pubkey_allowlisted(&[0x00; NOISE_KEY_LEN]));
+    }
+
+    #[test]
+    fn validate_public_rejects_strict_without_node_id() {
+        let mut bindings = PeerBindings::new();
+        bindings.entry(42).or_default().insert(noise(0xBB));
+        let cfg = PeerAuthConfig {
+            node_id: None,
+            bindings,
+            ..PeerAuthConfig::default()
+        };
+        assert!(cfg.validate_public().is_err());
+    }
+
+    #[test]
+    fn validate_public_rejects_optout_with_bindings() {
+        let mut bindings = PeerBindings::new();
+        bindings.entry(42).or_default().insert(noise(0xBB));
+        let cfg = PeerAuthConfig {
+            node_id: nz(7),
+            unverified_optout: true,
+            bindings,
+            ..PeerAuthConfig::default()
+        };
+        assert!(cfg.validate_public().is_err());
+    }
+
+    #[test]
+    fn validate_snapshot_rejects_malformed_unverified_with_bindings() {
+        // A malformed low-level snapshot: unverified opt-out WITH bindings.
+        let mut bindings = PeerBindings::new();
+        bindings.entry(42).or_default().insert(noise(0xBB));
+        let snap = PeerAuthConfig {
+            node_id: nz(7),
+            unverified_optout: true,
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        assert!(snap.validate().is_err());
+    }
+
+    #[test]
+    fn validate_snapshot_accepts_unconfigured() {
+        assert!(PeerAuthSnapshot::unconfigured().validate().is_ok());
+    }
+
+    #[test]
+    fn identity_export_string_is_empty_without_identity() {
+        assert_eq!(PeerAuthConfig::default().identity_export_string(), "");
+    }
+
+    #[test]
+    fn identity_export_string_noise_pubkey_on_tcp() {
+        let cfg = PeerAuthConfig {
+            transport: Some(TransportSelection::Tcp),
+            noise_identity: Some(StableNoiseIdentity::from_raw(
+                [0xAB; NOISE_KEY_LEN],
+                [0x01; NOISE_KEY_LEN],
+            )),
+            ..PeerAuthConfig::default()
+        };
+        assert_eq!(cfg.identity_export_string(), "ab".repeat(NOISE_KEY_LEN));
+    }
+}

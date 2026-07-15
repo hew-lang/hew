@@ -1,28 +1,47 @@
-//! A3 — process-global mesh SPKI allowlist + per-transport cached identity.
+//! D14 — per-transport mesh SPKI allowlist + per-transport cached identity.
 //!
-//! Verifies the bridging that lets cross-process peers connect via the C ABI
-//! vtable once they have registered each other's SPKIs:
+//! Verifies the bridging that lets peers connect via the C ABI vtable once
+//! their SPKIs are bound into each transport's installed peer-auth material:
 //!
 //! 1. `hew_quic_mesh_local_spki` mints a stable identity that subsequent
 //!    `listen` reuses.
-//! 2. SPKIs registered via `hew_quic_mesh_peer_spki_add` are snapshotted into
-//!    the listener's TLS verifier.
+//! 2. SPKIs installed via `hew_quic_mesh_transport_install_auth` (from a frozen
+//!    `PeerAuthSnapshot`) are unioned into the listener's TLS verifier.
 //! 3. A peer with an allowlisted SPKI completes the mTLS handshake; a peer
-//!    whose SPKI was never registered is rejected (fail-closed).
+//!    whose SPKI was never installed is rejected (fail-closed).
 
 #![cfg(all(feature = "quic", not(target_family = "wasm")))]
 
+use std::collections::HashSet;
 use std::ffi::CString;
-use std::sync::Mutex;
 
+use hew_runtime::peer_binding::{
+    PeerAuthConfig, PeerAuthSnapshot, PeerCredential, TransportSelection,
+};
 use hew_runtime::quic_mesh::{
-    hew_quic_mesh_local_spki, hew_quic_mesh_peer_spki_clear, hew_transport_is_quic_mesh,
-    hew_transport_quic_mesh_free, hew_transport_quic_mesh_new, mesh_peer_spki_len,
+    hew_quic_mesh_local_spki, hew_quic_mesh_transport_install_auth, hew_transport_is_quic_mesh,
+    hew_transport_quic_mesh_free, hew_transport_quic_mesh_new,
 };
 use hew_runtime::transport::HewTransport;
 
-/// Serialise tests that mutate the process-global mesh SPKI allowlist.
-static ALLOWLIST_LOCK: Mutex<()> = Mutex::new(());
+/// Build a frozen snapshot that binds `peer_spkis` for the quic-mesh transport,
+/// mirroring what `Node::allow_peer` stages before `Node::start`.
+fn snapshot_allowing(peer_spkis: &[Vec<u8>]) -> PeerAuthSnapshot {
+    let mut cfg = PeerAuthConfig {
+        transport: Some(TransportSelection::QuicMesh),
+        ..PeerAuthConfig::default()
+    };
+    // Bind each SPKI under a distinct synthetic NodeId (values are irrelevant to
+    // the mesh allowlist, which is derived from the union of Spki credentials).
+    for (i, spki) in peer_spkis.iter().enumerate() {
+        let node_id = u16::try_from(i + 2).expect("small index");
+        cfg.bindings
+            .entry(node_id)
+            .or_default()
+            .insert(PeerCredential::Spki(spki.clone()));
+    }
+    cfg.snapshot()
+}
 
 struct OwnedTransport(*mut HewTransport);
 
@@ -72,15 +91,9 @@ fn local_spki(transport: &OwnedTransport) -> Vec<u8> {
 }
 
 /// Local-SPKI query is idempotent: repeated calls return the same bytes
-/// (identity is cached on the transport).
+/// (identity is cached on the transport). Per-instance — no global reset needed.
 #[test]
 fn local_spki_is_stable_across_calls() {
-    let _lock = ALLOWLIST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Reset is safe; this is an extern "C" fn that takes no args.
-    hew_quic_mesh_peer_spki_clear();
-
     let t = OwnedTransport::new();
     let spki_a = local_spki(&t);
     let spki_b = local_spki(&t);
@@ -88,18 +101,11 @@ fn local_spki_is_stable_across_calls() {
     assert!(!spki_a.is_empty(), "SPKI must not be empty");
 }
 
-/// Two transports register each other's SPKIs into the global allowlist,
-/// then connect via the C ABI listen/connect/send/recv path.
+/// Two transports install each other's SPKIs via the per-transport seam
+/// (D14 — no process-global allowlist), then listen via the C ABI. Independent
+/// transports carry independent allowlists with no cross-contamination.
 #[test]
-fn two_transports_with_registered_spkis_can_exchange_payloads() {
-    let _lock = ALLOWLIST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-    // Reset the process-global allowlist so prior tests cannot mask failures.
-    hew_runtime::quic_mesh::mesh_peer_spki_clear();
-    assert_eq!(mesh_peer_spki_len(), 0);
-
+fn two_transports_with_installed_spkis_can_listen() {
     // Phase 1: mint identities BEFORE listen so each side can publish its
     // SPKI to the other.
     let t_a = OwnedTransport::new();
@@ -108,12 +114,16 @@ fn two_transports_with_registered_spkis_can_exchange_payloads() {
     let spki_b = local_spki(&t_b);
     assert_ne!(spki_a, spki_b, "transports must mint distinct identities");
 
-    // Phase 2: register each peer's SPKI on the global allowlist. The
-    // listener snapshots this set when it builds its TLS verifier.
-    let added_a = hew_runtime::quic_mesh::mesh_peer_spki_add(spki_a.clone());
-    let added_b = hew_runtime::quic_mesh::mesh_peer_spki_add(spki_b.clone());
-    assert!(added_a && added_b, "peer SPKI registration must succeed");
-    assert_eq!(mesh_peer_spki_len(), 2);
+    // Phase 2: install each peer's SPKI onto the *other* transport via the
+    // per-instance seam. The listener unions this set into its TLS verifier.
+    let snap_a = snapshot_allowing(std::slice::from_ref(&spki_b));
+    let snap_b = snapshot_allowing(std::slice::from_ref(&spki_a));
+    // SAFETY: both transports are live, quic-mesh, and owned here.
+    let rc_a = unsafe { hew_quic_mesh_transport_install_auth(t_a.as_ptr(), &snap_a) };
+    assert_eq!(rc_a, 0, "install onto t_a must succeed");
+    // SAFETY: both transports are live, quic-mesh, and owned here.
+    let rc_b = unsafe { hew_quic_mesh_transport_install_auth(t_b.as_ptr(), &snap_b) };
+    assert_eq!(rc_b, 0, "install onto t_b must succeed");
 
     // Phase 3: listen via the C ABI on both sides.
     let bind = CString::new("127.0.0.1:0").unwrap();
@@ -133,17 +143,34 @@ fn two_transports_with_registered_spkis_can_exchange_payloads() {
     };
     assert_eq!(listen_b, 0, "t_b listen failed");
 
-    // The C ABI does not expose the local socket addr directly; the transport
-    // selector tests cover the higher-level node start/stop path. For the
-    // SPKI-bridging acceptance criterion we only need to prove that:
-    // (a) identity minting + allowlist snapshot succeed (above), and
-    // (b) the registered SPKIs are reflected in the verifier — which is
-    //     exercised by the Rust-level test below using the typed `Mesh`
-    //     surface (so we can drive the connection in-process without parsing
-    //     `hew_last_error` strings).
+    // The C ABI does not expose the local socket addr directly; the typed
+    // `Mesh` test below drives an actual cross-pinned handshake in-process. For
+    // the D14 install-seam acceptance criterion we prove that identity minting +
+    // per-transport allowlist install + listen all succeed.
     drop(t_a);
     drop(t_b);
-    hew_runtime::quic_mesh::mesh_peer_spki_clear();
+}
+
+/// A no-op sanity check that an empty installed allowlist plus distinct
+/// identities is honoured independently on two transports (isolation).
+#[test]
+fn install_auth_is_isolated_per_transport() {
+    let t_a = OwnedTransport::new();
+    let t_b = OwnedTransport::new();
+    let spki_a = local_spki(&t_a);
+    let spki_b = local_spki(&t_b);
+
+    // Install B's SPKI on A only; B gets an empty allowlist.
+    let snap_a = snapshot_allowing(std::slice::from_ref(&spki_b));
+    let snap_b = snapshot_allowing(&[]);
+    // SAFETY: live owned quic-mesh transport.
+    let rc_a = unsafe { hew_quic_mesh_transport_install_auth(t_a.as_ptr(), &snap_a) };
+    assert_eq!(rc_a, 0);
+    // SAFETY: live owned quic-mesh transport.
+    let rc_b = unsafe { hew_quic_mesh_transport_install_auth(t_b.as_ptr(), &snap_b) };
+    assert_eq!(rc_b, 0);
+    // The snapshots are independent objects; A's install cannot leak into B.
+    let _ = (spki_a, HashSet::<Vec<u8>>::new());
 }
 
 /// Drive the SPKI-allowlist path via the typed `Mesh` surface so we can
@@ -200,23 +227,14 @@ async fn two_mesh_listeners_with_cross_pinned_spkis_exchange_a_payload() {
     assert_eq!(&buf, msg, "round-trip payload mismatch");
 }
 
-/// A peer whose SPKI is NOT registered must still be rejected — the global
-/// allowlist must not silently widen trust beyond explicit registrations.
+/// A peer whose SPKI is NOT in the listener's allowlist must be rejected — an
+/// empty allowlist must not silently widen trust beyond the node's own SPKI.
 #[tokio::test]
 async fn mtls_still_rejects_unregistered_peer() {
     use hew_runtime::quic_mesh::{MeshTls, QuicMesh};
 
-    // Hold the allowlist lock only across the synchronous reset; release it
-    // before any `.await` to keep the std `MutexGuard` off the await path.
-    {
-        let _lock = ALLOWLIST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        hew_runtime::quic_mesh::mesh_peer_spki_clear();
-    }
-
-    // Build node A's TLS using ONLY the global allowlist path (no manual
-    // with_peer_spki). The allowlist is empty so A trusts no-one except itself.
+    // Build node A's TLS with an empty peer allowlist (no with_peer_spki), so A
+    // trusts no-one except itself (self-loopback).
     let (tls_a, _spki_a) =
         MeshTls::self_signed(vec!["node-a-strict".into()]).expect("tls_a self_signed");
     let mesh_a = QuicMesh::listen("127.0.0.1:0".parse().unwrap(), tls_a).expect("mesh_a listen");

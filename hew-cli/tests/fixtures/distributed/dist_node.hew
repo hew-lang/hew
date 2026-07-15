@@ -25,6 +25,7 @@
 //   - "PASS <scenario> <detail>"  on success
 //   - "FAIL <scenario> <detail>"  on any mismatch; main returns non-zero
 import std::os;
+import std::fs;
 
 import std::link_monitor::{ MonitorError };
 
@@ -322,6 +323,65 @@ actor Linker {
     }
 }
 
+// ── Strict TCP-Noise credential staging (issue #2652) ───────────────────────
+//
+// Both processes run under strict peer binding: plain TCP is Unverified
+// (delivery-only) and cannot lookup / ask / gossip / SWIM. Each node mints a
+// stable Noise identity, publishes its public credential to a shared key-
+// exchange directory, waits for the peer's, and binds it with allow_peer BEFORE
+// the handshake — a real mutual authenticated pin, never an injected posture.
+// Node ids are fixed by the harness: server = 1, client = 2 (HEW_NODE_ID).
+
+// Atomically publish `content` at `<dir>/<name>` via temp-then-rename, so a
+// reader polling for the file never observes a partial write.
+fn publish_atomic(dir: string, name: string, content: string) {
+    let tmp = f"{dir}/{name}.tmp";
+    let _ = fs.write(tmp, content);
+    let _ = fs.rename(tmp, f"{dir}/{name}");
+}
+
+// Bounded poll for a published file, returning its contents (or "" on timeout).
+// ~30 s ceiling (600 * 50 ms) — generous for a warm host while still failing
+// closed if the peer never publishes.
+fn wait_for_file(path: string) -> string {
+    var attempts: i64 = 0;
+    loop {
+        if fs.exists(path) {
+            let contents = fs.read(path);
+            if !contents.is_empty() {
+                return contents;
+            }
+        }
+        attempts = attempts + 1;
+        if attempts >= 600 {
+            return "";
+        }
+        sleep(50ms);
+    }
+}
+
+// Mint this node's stable Noise identity, publish its identity_key() for the
+// peer to pin, wait for the peer's published credential, and bind it to the
+// NodeId the peer will claim. Runs before Node::start so the listener and the
+// handshake adopt the staged allowlist (config locks once Starting/Running).
+fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_node_id: u16) {
+    Node::load_keys(f"{kx}/{my_role}.key");
+    let me = Node::identity_key();
+    publish_atomic(kx, f"{my_role}.pub", me);
+    let peer_key = wait_for_file(f"{kx}/{peer_role}.pub");
+    Node::allow_peer(peer_node_id, peer_key);
+}
+
+// Server → client listener-liveness signal. The client waits on this before it
+// connects, because it cannot observe the harness READY line.
+fn signal_server_listening(kx: string) {
+    publish_atomic(kx, "server.ready", "1");
+}
+
+fn wait_for_server_listening(kx: string) {
+    let _ = wait_for_file(f"{kx}/server.ready");
+}
+
 // Bounded poll for the remote actor: retry Node::lookup until registry gossip
 // resolves it, instead of a single fixed-interval sleep. ~50 attempts at 100 ms
 // = 5 s deadline, generous for loopback gossip while still failing closed if the
@@ -386,7 +446,13 @@ fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, 
 
 fn run_server(port: string, scenario: string) {
     let addr = f"127.0.0.1:{port}";
+    let kx = os.env("HEW_DIST_KX_DIR");
     Node::set_transport("tcp");
+    // Strict TCP-Noise (issue #2652): mint this node's stable Noise identity,
+    // publish its public credential for the peer to pin, and bind the client's
+    // BEFORE the listener adopts the allowlist. Server is node 1, client is
+    // node 2 (HEW_NODE_ID pins each side; see the harness).
+    stage_peer_credentials(kx, "server", "client", 2);
     Node::start(addr);
     let s: HashMap<string, string> = HashMap::new();
     let kv = spawn KeyValue(store: s);
@@ -398,6 +464,11 @@ fn run_server(port: string, scenario: string) {
     let identity = spawn IdentityProbe;
     Node::register("identity", identity);
 
+    // Listener-liveness signal: emitted ONLY after the actors are registered.
+    // The client waits on this file before it connects, because it cannot
+    // observe the harness READY line and a failed one-shot connect is not
+    // retried.
+    signal_server_listening(kx);
     // Readiness signal: emitted ONLY after the actors are registered, so the
     // harness never launches the client against a half-started node.
     println(f"READY {port}");
@@ -1352,9 +1423,18 @@ fn scenario_quarantine_rejoin() -> i64 {
 }
 
 fn run_client(port: string, scenario: string) -> i64 {
-    let remote_addr = f"127.0.0.1:{port}";
+    let kx = os.env("HEW_DIST_KX_DIR");
     Node::set_transport("tcp");
+    // Strict TCP-Noise (issue #2652): client is node 2; bind the server
+    // (node 1) credential before connecting.
+    stage_peer_credentials(kx, "client", "server", 1);
     Node::start("127.0.0.1:0");
+    // Wait for the server's listener to be live: a failed one-shot connect is
+    // not retried, so connecting before the server binds would fail closed.
+    wait_for_server_listening(kx);
+    // Connect using the server's pinned NodeId so admission binds the claimed
+    // id to the authenticated Noise key (fail-closed on identity mismatch).
+    let remote_addr = f"1@127.0.0.1:{port}";
     Node::connect(remote_addr);
     // Scenario dispatch. New scenarios add a branch here plus a scenario_*
     // function above; the harness selects via HEW_DIST_SCENARIO. The #[wire]

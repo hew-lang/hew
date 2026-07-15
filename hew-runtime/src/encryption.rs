@@ -788,6 +788,74 @@ fn write_noise_key_file(path_str: &str, public: &[u8], private: &[u8]) -> io::Re
     Ok(())
 }
 
+/// Load (or, if absent, mint-and-persist) this node's stable Noise static
+/// identity for the tcp-noise transport (issue #2652, D1). The keyfile stores
+/// `32-byte public || 32-byte private`, written owner-only. Peers pin the
+/// resulting public key via `Node::allow_peer`; persisting it keeps that key
+/// stable across restarts, which is what makes the key bindable. An existing
+/// file is loaded verbatim (never re-minted); a malformed/oversize file is
+/// rejected fail-closed rather than silently replaced.
+///
+/// # Errors
+///
+/// Returns a diagnostic string if the keyfile cannot be read/written, has the
+/// wrong size, or a fresh identity cannot be minted.
+pub fn noise_identity_load_or_create(
+    path: &std::path::Path,
+) -> Result<crate::peer_binding::StableNoiseIdentity, String> {
+    use crate::peer_binding::StableNoiseIdentity;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| "load_keys: non-UTF-8 keyfile path".to_string())?;
+    if path.exists() {
+        let mut bytes = read_noise_keyfile_bounded(path)?;
+        if bytes.len() != KEYPAIR_FILE_LEN {
+            bytes.zeroize();
+            return Err("load_keys: noise keyfile has unexpected size".into());
+        }
+        let mut public = [0u8; KEY_LEN];
+        let mut private = [0u8; KEY_LEN];
+        public.copy_from_slice(&bytes[..KEY_LEN]);
+        private.copy_from_slice(&bytes[KEY_LEN..]);
+        bytes.zeroize();
+        return Ok(StableNoiseIdentity::from_raw(public, private));
+    }
+    let builder = Builder::new(
+        NOISE_PATTERN
+            .parse()
+            .map_err(|e| format!("load_keys: invalid noise pattern: {e}"))?,
+    );
+    let mut keypair = builder
+        .generate_keypair()
+        .map_err(|e| format!("load_keys: mint noise identity: {e}"))?;
+    if keypair.public.len() != KEY_LEN || keypair.private.len() != KEY_LEN {
+        keypair.private.zeroize();
+        return Err("load_keys: noise keygen produced unexpected key length".into());
+    }
+    let mut public = [0u8; KEY_LEN];
+    let mut private = [0u8; KEY_LEN];
+    public.copy_from_slice(&keypair.public);
+    private.copy_from_slice(&keypair.private);
+    keypair.private.zeroize();
+    write_noise_key_file(path_str, &public, &private)
+        .map_err(|e| format!("load_keys: write {}: {e}", path.display()))?;
+    Ok(StableNoiseIdentity::from_raw(public, private))
+}
+
+/// Bounded read of a Noise keyfile: cap the read at one byte past the exact
+/// keypair length so a truncated-but-huge or corrupt file cannot drive an
+/// unbounded allocation before the length check rejects it.
+fn read_noise_keyfile_bounded(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file =
+        fs::File::open(path).map_err(|e| format!("load_keys: read {}: {e}", path.display()))?;
+    let mut buf = Vec::new();
+    file.take((KEYPAIR_FILE_LEN + 1) as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("load_keys: read {}: {e}", path.display()))?;
+    Ok(buf)
+}
+
 // ---------------------------------------------------------------------------
 // Test-only hooks for the process-global allowlist state
 // ---------------------------------------------------------------------------
@@ -1465,6 +1533,48 @@ mod tests {
         assert_eq!(load_rc, 0);
         assert_eq!(loaded_public, public);
         assert_eq!(loaded_private, private);
+    }
+
+    /// Issue #2652 D1: `noise_identity_load_or_create` mints a stable Noise
+    /// identity on first call, persists it owner-only, and reloads the *same*
+    /// public/private key on a second call — the property that makes the key
+    /// bindable via `Node::allow_peer` across restarts. A corrupt/wrong-size
+    /// file is rejected fail-closed rather than silently re-minted.
+    #[test]
+    fn noise_identity_load_or_create_persists_stable_identity() {
+        let dir = tempdir().unwrap();
+        let key_file = dir.path().join("noise_id.key");
+
+        let first = noise_identity_load_or_create(&key_file).expect("mint stable noise identity");
+        assert!(key_file.exists(), "first call must persist the keyfile");
+        assert_eq!(
+            fs::read(&key_file).unwrap().len(),
+            KEYPAIR_FILE_LEN,
+            "keyfile is public || private"
+        );
+        #[cfg(unix)]
+        {
+            let mode = fs::metadata(&key_file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "private key material must be owner-only");
+        }
+
+        let second = noise_identity_load_or_create(&key_file).expect("reload stable identity");
+        assert_eq!(
+            first.public(),
+            second.public(),
+            "reload must yield the same stable public key (bindable across restarts)"
+        );
+        assert_eq!(
+            first.private(),
+            second.private(),
+            "reload must yield the same private key"
+        );
+
+        // A truncated / wrong-size file is rejected, never silently re-minted.
+        fs::write(&key_file, [0xAB; KEYPAIR_FILE_LEN - 1]).unwrap();
+        let err =
+            noise_identity_load_or_create(&key_file).expect_err("wrong-size keyfile rejected");
+        assert!(err.contains("unexpected size"), "diagnostic: {err}");
     }
 
     #[cfg(windows)]

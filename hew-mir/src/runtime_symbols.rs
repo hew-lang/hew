@@ -1161,6 +1161,7 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_float_to_string"
         | "hew_i64_to_string"
         | "hew_int_to_string"
+        | "hew_node_api_identity_key"
         | "hew_string_from_char"
         | "hew_u64_to_string"
         | "hew_uint_to_string"
@@ -1242,6 +1243,7 @@ mod tests {
         "hew_hashset_to_vec_layout",
         "hew_i64_to_string",
         "hew_int_to_string",
+        "hew_node_api_identity_key",
         "hew_string_char_at",
         "hew_string_char_at_utf8",
         "hew_string_char_count",
@@ -1430,7 +1432,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 170);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 171);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

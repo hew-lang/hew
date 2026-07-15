@@ -24,6 +24,10 @@ use std::thread::{self, JoinHandle};
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
 use crate::envelope::encode_envelope_frame_from_raw_parts;
+use crate::peer_binding::{
+    ConfigState, PeerAuthSnapshot, PeerCredential, TransportSelection as PeerTransport,
+    PEER_AUTH_STATE,
+};
 use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -53,6 +57,22 @@ enum TransportSelection {
     Quic,
     #[cfg(feature = "quic")]
     QuicMesh,
+}
+
+impl TransportSelection {
+    /// Project the (feature-gated) runtime transport selection onto the
+    /// self-contained `peer_binding::TransportSelection` carried by the frozen
+    /// per-node snapshot (issue #2652). Keeps the peer-auth authority module
+    /// independent of the `quic` feature.
+    fn as_peer_transport(self) -> PeerTransport {
+        match self {
+            TransportSelection::Tcp => PeerTransport::Tcp,
+            #[cfg(feature = "quic")]
+            TransportSelection::Quic => PeerTransport::Quic,
+            #[cfg(feature = "quic")]
+            TransportSelection::QuicMesh => PeerTransport::QuicMesh,
+        }
+    }
 }
 
 fn normalize_transport_name(name: &str) -> Result<&'static str, String> {
@@ -132,6 +152,32 @@ fn transport_selection_from_env() -> Result<TransportSelection, String> {
         #[cfg(feature = "quic")]
         "quic-mesh" => Ok(TransportSelection::QuicMesh),
         _ => unreachable!("normalize_transport_name returns only supported transport keys"),
+    }
+}
+
+/// Map a normalized transport key (from [`normalize_transport_name`]) onto the
+/// self-contained `peer_binding::TransportSelection` pinned into the config.
+fn peer_transport_from_normalized(normalized: &str) -> PeerTransport {
+    match normalized {
+        "tcp" => PeerTransport::Tcp,
+        #[cfg(feature = "quic")]
+        "quic" => PeerTransport::Quic,
+        #[cfg(feature = "quic")]
+        "quic-mesh" => PeerTransport::QuicMesh,
+        _ => unreachable!("normalize_transport_name returns only supported transport keys"),
+    }
+}
+
+/// The canonical `HEW_TRANSPORT` string for a pinned transport selection — the
+/// inverse of [`peer_transport_from_normalized`]. Used to re-assert the pinned
+/// selection onto the env at start so the low-level transport construction
+/// (which reads `HEW_TRANSPORT`) builds the stored selection, not a diverged
+/// env value (issue #2652 — start uses the stored selection).
+fn peer_transport_env_name(t: PeerTransport) -> &'static str {
+    match t {
+        PeerTransport::Tcp => "tcp",
+        PeerTransport::Quic => "quic",
+        PeerTransport::QuicMesh => "quic-mesh",
     }
 }
 
@@ -807,6 +853,12 @@ impl ReplyRoutingTable {
 
     /// Complete a pending reply by depositing the payload and signalling
     /// the waiting thread. Returns `true` if the request ID was found.
+    ///
+    /// Test-only helper: the production reply-arrival path completes through
+    /// [`ReplyRoutingTable::complete_from_connection`] so a peer cannot resolve
+    /// another peer's ask (issue #2652, D12). Tests that don't exercise the
+    /// connection binding use this request-id-only shortcut.
+    #[cfg(test)]
     fn complete(&self, request_id: u64, payload: Vec<u8>) -> bool {
         self.finish(
             request_id,
@@ -818,6 +870,9 @@ impl ReplyRoutingTable {
         )
     }
 
+    /// Resolve a pending reply by request id alone (test-only; see
+    /// [`ReplyRoutingTable::complete`]).
+    #[cfg(test)]
     fn finish(&self, request_id: u64, outcome: ReplyOutcome) -> bool {
         let entry = {
             let mut map = self
@@ -954,6 +1009,65 @@ impl ReplyRoutingTable {
         map.remove(&request_id)
     }
 
+    /// Remove `request_id` **only if** it was registered against `expected`
+    /// connection (issue #2652, D12). A reply that arrives on a different
+    /// `(conn_mgr, conn_id)` than the ask was sent on must not resolve it — a
+    /// peer cannot complete (or reject) another peer's ask. A mismatch leaves
+    /// the pending ask intact (it resolves via its real reply or times out).
+    fn remove_if_connection(
+        &self,
+        request_id: u64,
+        expected: ConnectionKey,
+    ) -> Option<Arc<PendingReply>> {
+        let mut map = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match map.get(&request_id) {
+            Some(pending) if pending.connection == expected => map.remove(&request_id),
+            _ => None,
+        }
+    }
+
+    /// Connection-validated success completion (D12): resolve `request_id` with
+    /// `payload` only when the reply arrived on the originating connection.
+    fn complete_from_connection(
+        &self,
+        request_id: u64,
+        expected: ConnectionKey,
+        payload: Vec<u8>,
+    ) -> bool {
+        if let Some(pending) = self.remove_if_connection(request_id, expected) {
+            Self::complete_pending(
+                &pending,
+                ReplyOutcome {
+                    status: ReplyStatus::Success,
+                    data: payload,
+                    ask_error: AskError::None,
+                },
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Connection-validated rejection (D12): fail `request_id` with `ask_error`
+    /// only when the rejection reply arrived on the originating connection.
+    fn fail_from_connection(
+        &self,
+        request_id: u64,
+        expected: ConnectionKey,
+        ask_error: AskError,
+    ) -> bool {
+        if let Some(pending) = self.remove_if_connection(request_id, expected) {
+            Self::fail_pending_with_reason(&pending, ask_error);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Number of registered-but-unresolved pending replies. Test-only: used to
     /// assert the reply slot does not leak on the fail-closed send path.
     #[cfg(test)]
@@ -970,9 +1084,18 @@ static REMOTE_VOID_REPLY_SENTINEL: u8 = 0;
 /// Deposit a reply payload for a pending remote ask.
 ///
 /// Called by the reader thread when a reply envelope arrives. Returns
-/// `true` if the request ID was matched.
-pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
-    reply_table_opt().is_some_and(|table| table.complete(request_id, payload.to_vec()))
+/// `true` if the request ID was matched **and** the reply arrived on the same
+/// `(conn_mgr, conn_id)` the ask was issued on (issue #2652, D12) — a peer
+/// cannot complete another peer's ask.
+pub(crate) fn complete_remote_reply(
+    conn_mgr: *const HewConnMgr,
+    conn_id: c_int,
+    request_id: u64,
+    payload: &[u8],
+) -> bool {
+    let expected = ConnectionKey::new(conn_mgr, conn_id);
+    reply_table_opt()
+        .is_some_and(|table| table.complete_from_connection(request_id, expected, payload.to_vec()))
 }
 
 fn ask_error_from_code(code: i32) -> Option<AskError> {
@@ -1059,11 +1182,22 @@ fn decode_rejection_reason(reason_payload: &[u8]) -> Result<AskError, AskRejecti
 /// Called by the reader thread when a **rejection** reply envelope arrives
 /// (one with [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type` field).
 /// Empty payloads from older peers still default to `WorkerAtCapacity`.
-pub(crate) fn fail_remote_reply(request_id: u64, reason_payload: &[u8]) -> bool {
+/// The rejection resolves the ask only when it arrives on the same
+/// `(conn_mgr, conn_id)` the ask was issued on (issue #2652, D12).
+pub(crate) fn fail_remote_reply(
+    conn_mgr: *const HewConnMgr,
+    conn_id: c_int,
+    request_id: u64,
+    reason_payload: &[u8],
+) -> bool {
     // On unknown codes, leave the pending ask unresolved (it will timeout)
     // rather than fabricating a misleading AskError.
     match decode_rejection_reason(reason_payload) {
-        Ok(reason) => reply_table_opt().is_some_and(|table| table.fail(request_id, reason)),
+        Ok(reason) => {
+            let expected = ConnectionKey::new(conn_mgr, conn_id);
+            reply_table_opt()
+                .is_some_and(|table| table.fail_from_connection(request_id, expected, reason))
+        }
         Err(_) => false,
     }
 }
@@ -1208,6 +1342,15 @@ pub struct HewNode {
     bind_addr_owned: *mut c_char,
     accept_stop: Arc<AtomicBool>,
     accept_thread: Mutex<Option<JoinHandle<()>>>,
+    /// The per-node peer-authentication authority installed before start.
+    ///
+    /// Defaults to [`PeerAuthSnapshot::unconfigured`] in [`hew_node_new`]; the
+    /// public `Node::start` path installs the staged snapshot via
+    /// [`hew_node_set_auth_snapshot`] before the shared low-level start, and
+    /// low-level callers install their own explicit snapshot. `hew_node_start`
+    /// reads this — never the public `ConfigState` — so concurrent low-level
+    /// nodes stay isolated.
+    pub(crate) auth: PeerAuthSnapshot,
 }
 
 impl std::fmt::Debug for HewNode {
@@ -2116,10 +2259,40 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
         bind_addr_owned: bind_copy,
         accept_stop: Arc::new(AtomicBool::new(false)),
         accept_thread: Mutex::new(None),
+        auth: PeerAuthSnapshot::unconfigured(),
     });
     let raw = Box::into_raw(node);
     remember_node(raw);
     raw
+}
+
+/// Install the per-node [`PeerAuthSnapshot`] before the node starts.
+///
+/// The public `hew_node_api_start` calls this (after `hew_node_new`, before the
+/// shared `hew_node_start`) with the staged config's snapshot; low-level callers
+/// call it to install a strict, explicit-unverified, or unconfigured snapshot
+/// per node. Rejected once the node is not `STOPPED` so a live node's admission
+/// authority cannot be swapped underneath it.
+///
+/// # Safety
+///
+/// `node` must be a valid pointer returned by [`hew_node_new`].
+pub(crate) unsafe fn hew_node_set_auth_snapshot(
+    node: *mut HewNode,
+    snapshot: PeerAuthSnapshot,
+) -> c_int {
+    if node.is_null() {
+        set_last_error("hew_node_set_auth_snapshot: node is null");
+        return -1;
+    }
+    // SAFETY: caller guarantees `node` is valid.
+    let node_ref = unsafe { &mut *node };
+    if node_ref.state.load(Ordering::Acquire) != NODE_STATE_STOPPED {
+        set_last_error("hew_node_set_auth_snapshot: node is not stopped");
+        return -1;
+    }
+    node_ref.auth = snapshot;
+    0
 }
 
 /// Start the node runtime: transport listen, accept loop, and cluster init.
@@ -2176,6 +2349,30 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         }};
     }
 
+    // ── NodeId authority (BLOCK-5 point 1) — before any allocation/listen ──
+    // The per-node `PeerAuthSnapshot` (never the process-global `ConfigState`)
+    // is authoritative for `node.node_id` in strict mode. Defence-in-depth:
+    // reject a self-inconsistent snapshot, then reconcile the node id.
+    if let Err(reason) = node.auth.validate() {
+        fail_start!(reason);
+    }
+    if let Some(snapshot_id) = node.auth.node_id() {
+        let snapshot_id = snapshot_id.get();
+        if node.node_id == 0 {
+            // A low-level caller deferred the id to its snapshot.
+            node.node_id = snapshot_id;
+        } else if node.node_id != snapshot_id {
+            // An explicit `hew_node_new(explicit_id)` contradicts the snapshot's
+            // strict binding identity — refuse before the listener binds and
+            // before cluster/routing/connmgr are created.
+            fail_start!(format!(
+                "hew_node_start: explicit node id {} conflicts with strict binding identity \
+                 HEW_NODE_ID={snapshot_id} — refusing to listen (fail-closed)",
+                node.node_id
+            ));
+        }
+    }
+
     if node.transport.is_null() {
         let selection = match transport_selection_from_env() {
             Ok(selection) => selection,
@@ -2213,6 +2410,26 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     // SAFETY: checked non-null above.
     let ops = unsafe { &*node.transport_ops };
 
+    // Install the frozen per-node mesh peer-auth material (stable identity + peer
+    // SPKI allowlist + setup-error poison, derived from `Node::load_keys` /
+    // `Node::allow_peer` bindings, issue #2652 / D14) onto this transport before
+    // it binds. The mTLS handshake then admits exactly the bound peers and no
+    // other, and a poisoned setup refuses to bind (fail-closed). Per-instance —
+    // no process-global allowlist, so two concurrent mesh nodes stay isolated.
+    #[cfg(feature = "quic")]
+    if node.auth.transport() == PeerTransport::QuicMesh {
+        // SAFETY: node.transport was created/validated above and is live here.
+        let rc = unsafe {
+            crate::quic_mesh::hew_quic_mesh_transport_install_auth(node.transport, &node.auth)
+        };
+        if rc != 0 {
+            fail_start!(
+                "hew_node_start: refusing to bind mesh listener — failed to install the \
+                 per-node mesh peer-auth material (fail-closed)"
+            );
+        }
+    }
+
     let Some(listen_fn) = ops.listen else {
         fail_start!("hew_node_start: transport listen op missing");
     };
@@ -2241,14 +2458,17 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.conn_mgr.is_null() {
-        // SAFETY: pointers are valid for manager lifetime.
+        // SAFETY: pointers are valid for manager lifetime. The manager receives
+        // this node's per-node auth snapshot (cheap clone; identity behind Arc)
+        // — never the process-global `ConfigState` or `ACTIVE_*` statics.
         node.conn_mgr = unsafe {
-            connection::hew_connmgr_new(
+            connection::connmgr_new(
                 node.transport,
                 Some(node_inbound_router),
                 node.routing_table,
                 node.cluster,
                 node.node_id,
+                node.auth.clone(),
             )
         };
         if node.conn_mgr.is_null() {
@@ -3935,6 +4155,76 @@ fn next_local_node_id(base: u16, offset: u16) -> u16 {
     id
 }
 
+/// Parse `HEW_NODE_ID` into a validated non-zero `u16` stable binding identity.
+///
+/// Returns `Ok(None)` when unset, `Ok(Some(id))` for a value in `1..=65535`,
+/// and `Err` for a malformed or out-of-range value (fail-closed at start).
+fn hew_node_id_from_env() -> Result<Option<std::num::NonZeroU16>, String> {
+    let raw = crate::env::ENV_LOCK.read_access(|()| std::env::var("HEW_NODE_ID").ok());
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    match trimmed.parse::<u16>() {
+        Ok(v) => std::num::NonZeroU16::new(v).map(Some).ok_or_else(|| {
+            "Node::start: HEW_NODE_ID must be a nonzero u16 in 1..=65535 (fail-closed)".to_string()
+        }),
+        Err(_) => Err(format!(
+            "Node::start: HEW_NODE_ID must be a u16 in 1..=65535, got '{trimmed}' (fail-closed)"
+        )),
+    }
+}
+
+/// Whether `HEW_DIST_UNVERIFIED` requests the explicit documented unverified
+/// opt-out (`1` / `true`, case-insensitive).
+fn hew_dist_unverified_from_env() -> bool {
+    crate::env::ENV_LOCK
+        .read_access(|()| std::env::var("HEW_DIST_UNVERIFIED").ok())
+        .is_some_and(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true")
+        })
+}
+
+/// Merge start-time environment posture (`HEW_NODE_ID`, `HEW_DIST_UNVERIFIED`,
+/// `HEW_TRANSPORT`) into the staged pre-start config (issue #2652). The pinned
+/// transport is carried by the frozen snapshot so admission interprets peer
+/// credentials (Noise pubkey vs mesh SPKI) consistently with the listener.
+///
+/// # Errors
+///
+/// Returns a typed message when an environment value is malformed.
+fn merge_start_env_into_config(
+    cfg: &mut crate::peer_binding::PeerAuthConfig,
+) -> Result<(), String> {
+    if let Some(id) = hew_node_id_from_env()? {
+        cfg.node_id = Some(id);
+    }
+    if hew_dist_unverified_from_env() {
+        cfg.unverified_optout = true;
+    }
+    // Transport (issue #2652): a selection pinned by an earlier transport-
+    // sensitive op (`Node::set_transport` / `Node::load_keys` /
+    // `Node::allow_peer`) is authoritative and wins over any later env change —
+    // start uses the STORED selection. Only when unpinned do we adopt the
+    // start-time env selection.
+    let effective = if let Some(pinned) = cfg.transport {
+        pinned
+    } else {
+        let sel = transport_selection_from_env()?.as_peer_transport();
+        cfg.transport = Some(sel);
+        sel
+    };
+    // Re-assert the effective selection onto `HEW_TRANSPORT` so the low-level
+    // transport construction (which reads the env) builds the stored selection,
+    // not a value that diverged after the pin.
+    // SAFETY: ENV_LOCK synchronises access to the process-global environ array.
+    crate::env::ENV_LOCK.access(|()| unsafe {
+        std::env::set_var("HEW_TRANSPORT", peer_transport_env_name(effective));
+    });
+    Ok(())
+}
+
 /// `Node::start(addr)` — Create and start a node, binding to `addr`.
 ///
 /// # Safety
@@ -3946,40 +4236,121 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         set_last_error("Node::start: address is null");
         return -1;
     }
-    // Fail-closed: if a pre-start peer-auth step (`Node::load_keys` /
-    // `Node::allow_peer`) failed, refuse to start. Otherwise the node would bind
-    // a listener with an *ephemeral* self-signed identity (the operator's pinned
-    // key failed to load) or an *incomplete* peer allowlist — silently
-    // downgrading the configured mTLS posture (the F6 fail-open). The Hew call
-    // form discards this `-1`, so the operator-visible signal is the `hew: `
-    // diagnostic on stderr; the mesh `ensure_identity` boundary re-checks the
-    // same record as defence in depth.
-    #[cfg(feature = "quic")]
-    if let Some(reason) = crate::quic_mesh::mesh_auth_setup_error() {
-        let msg = format!(
-            "Node::start: refusing to bind listener — peer-auth setup failed (fail-closed): {reason}"
-        );
-        eprintln!("hew: {msg}");
-        set_last_error(msg);
-        return -1;
-    }
-    // Each call within the same process adds a small offset to the process
-    // base so multiple Node::start calls don't collide with each other.
+    // Fail-closed: a failed pre-start peer-auth step (`Node::load_keys` /
+    // `Node::allow_peer`) poisons the staged config; the check runs below inside
+    // the staging lock (D14 — the poison lives on the per-node config, not a
+    // process-global record). The mesh `ensure_identity` boundary re-checks the
+    // installed snapshot as defence in depth.
+
+    // ── Public owner-scoped staging (BLOCK-6) ─────────────────────────────
+    // The singleton public `Node::*` API stages config in `PEER_AUTH_STATE`.
+    // Transition `Building → Starting{owner}` under the lock, then run the
+    // shared low-level start WITHOUT the lock (it reads the node's installed
+    // snapshot, never `ConfigState`), then re-acquire for `Running` / restore.
     let offset = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let node_id = next_local_node_id(process_node_id_base(), offset);
-    // SAFETY: addr was null-checked above and is a valid C string.
-    let node = unsafe { hew_node_new(node_id, addr) };
-    if node.is_null() {
-        return -1;
-    }
-    // SAFETY: node was just created successfully by hew_node_new.
+    let (node, cfg, generation) = {
+        let mut guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let ConfigState::Building(building) = &guard.state else {
+            // A public node lifecycle already owns the staging state
+            // (Starting/Running). Refuse a repeated public start (composes with
+            // #2656, which owns the pre-allocation rejection).
+            set_last_error("Node::start: a public node lifecycle is already active (fail-closed)");
+            return -1;
+        };
+        // Merge start-time environment posture into the staged config.
+        let mut cfg = building.clone();
+        // Fail-closed: a failed pre-start peer-auth step poisoned the staged
+        // config. Refuse to start rather than binding a listener with an
+        // ephemeral self-signed identity (the operator's pinned key failed to
+        // load) or an incomplete peer allowlist — the F6 fail-open. The Hew call
+        // form discards this `-1`, so the operator-visible signal is the `hew: `
+        // stderr diagnostic.
+        if let Some(reason) = cfg.setup_error.as_deref() {
+            let msg = format!(
+                "Node::start: refusing to bind listener — peer-auth setup failed (fail-closed): {reason}"
+            );
+            eprintln!("hew: {msg}");
+            set_last_error(msg);
+            return -1;
+        }
+        if let Err(msg) = merge_start_env_into_config(&mut cfg) {
+            eprintln!("hew: {msg}");
+            set_last_error(msg);
+            return -1;
+        }
+        // Pre-listen public validation (fail-closed before allocation).
+        if let Err(msg) = cfg.validate_public() {
+            eprintln!("hew: {msg}");
+            set_last_error(msg);
+            return -1;
+        }
+        // Derive the node id: strict ⇒ the pinned HEW_NODE_ID; else PID-derived.
+        let node_id = match cfg.node_id {
+            Some(id) => id.get(),
+            None => next_local_node_id(process_node_id_base(), offset),
+        };
+        // SAFETY: addr was null-checked above and is a valid C string.
+        let node = unsafe { hew_node_new(node_id, addr) };
+        if node.is_null() {
+            // State unchanged (still Building); the staged config is intact.
+            return -1;
+        }
+        // Install the frozen per-node snapshot before the low-level start.
+        // SAFETY: node was just created and is STOPPED.
+        if unsafe { hew_node_set_auth_snapshot(node, cfg.snapshot()) } != 0 {
+            // SAFETY: node is valid, not started; free it.
+            unsafe { hew_node_free(node) };
+            return -1;
+        }
+        let generation = guard.next_generation;
+        guard.next_generation = guard.next_generation.wrapping_add(1);
+        guard.state = ConfigState::Starting {
+            generation,
+            owner: node as usize,
+            config: cfg.clone(),
+        };
+        (node, cfg, generation)
+    };
+
+    // SAFETY: node was created above; the low-level start reads node.auth only.
     let rc = unsafe { hew_node_start(node) };
-    if rc != 0 {
+    let mut guard = PEER_AUTH_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if rc == 0 {
+        // Success: compute the standalone identity export clone and go Running.
+        let identity_export = cfg.identity_export_string();
+        if matches!(&guard.state, ConfigState::Starting { generation: g, owner, .. }
+            if *g == generation && *owner == node as usize)
+        {
+            guard.state = ConfigState::Running {
+                generation,
+                owner: node as usize,
+                identity_export,
+            };
+        }
+        0
+    } else {
+        // Public fail_start: restore the exact held config iff owner+generation
+        // still match (a concurrent stage that advanced generation is untouched).
+        if let ConfigState::Starting {
+            generation: g,
+            owner,
+            config,
+        } = &guard.state
+        {
+            if *g == generation && *owner == node as usize {
+                let restored = config.clone();
+                guard.state = ConfigState::Building(restored);
+            }
+        }
+        drop(guard);
         // SAFETY: node is valid but not started; free the allocation.
         unsafe { hew_node_free(node) };
-        return rc;
+        rc
     }
-    0
 }
 
 /// `Node::shutdown()` — Stop and free the current node.
@@ -4008,6 +4379,26 @@ pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
     unsafe { hew_node_stop(ptr) };
     // SAFETY: ptr is valid; the node has been stopped.
     unsafe { hew_node_free(ptr) };
+    // Owner-scoped reset: return the public staging state to `Building` and bump
+    // the generation ONLY when the shutting node owns it (mirrors
+    // `hew_node_stop`'s `CURRENT_NODE` owner check). `owner` is compared as an
+    // integer — never dereferenced. A secondary low-level `hew_node_stop` never
+    // reaches this path, so it leaves `ConfigState` intact.
+    {
+        let mut guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owner_matches = match &guard.state {
+            ConfigState::Running { owner, .. } | ConfigState::Starting { owner, .. } => {
+                *owner == ptr as usize
+            }
+            ConfigState::Building(_) => false,
+        };
+        if owner_matches {
+            guard.state = ConfigState::default();
+            guard.next_generation = guard.next_generation.wrapping_add(1);
+        }
+    }
     0
 }
 
@@ -4200,7 +4591,14 @@ pub extern "C" fn hew_remote_pid_from_raw(node_id: u64, serial: u64) -> u64 {
 /// `Node::set_transport(name)` — Set the transport type before starting.
 ///
 /// Supported values: `"tcp"` (default), `"quic"`, `"quic-mesh"`.
-/// Must be called before `Node::start`.
+/// Must be called before `Node::start` — and, per issue #2652, before any
+/// transport-sensitive credential is staged (`Node::allow_peer` /
+/// `Node::load_keys`). Peer credentials and stable identities are interpreted
+/// under the pinned transport (a 32-byte Noise pubkey on TCP vs a cert SPKI on
+/// quic-mesh), so once any is staged a transport change is refused fail-closed
+/// rather than silently reinterpreting the already-staged material. The
+/// selection is pinned into the pre-start `Building` config so `Node::start`
+/// uses the stored selection.
 ///
 /// # Safety
 ///
@@ -4211,19 +4609,58 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     let Some(s) = (unsafe { crate::util::cstr_to_str(&name, "hew_node_set_transport") }) else {
         return -1;
     };
-    match normalize_transport_name(s) {
-        Ok(normalized) => {
-            // SAFETY: ENV_LOCK synchronises access to the process-global environ
-            // array; set_var is safe under exclusive write access.
-            crate::env::ENV_LOCK
-                .access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", normalized) });
-            0
-        }
+    let normalized = match normalize_transport_name(s) {
+        Ok(normalized) => normalized,
         Err(err) => {
             set_last_error(format!("Node::set_transport: {err}"));
-            -1
+            return -1;
+        }
+    };
+    let requested = peer_transport_from_normalized(normalized);
+
+    // Transport must be pinned BEFORE identity credential staging (issue #2652):
+    // `Node::allow_peer` / `Node::load_keys` interpret their credential under the
+    // pinned transport. A `set_transport` after staging would reinterpret the
+    // already-staged Noise pubkeys / mesh SPKIs under a different transport —
+    // credential confusion. Refuse fail-closed (no env mutation) when the
+    // Building config already carries staged credentials and the request would
+    // change the pinned selection; an idempotent re-selection of the same
+    // transport is allowed. While the public node lifecycle owns the state
+    // (Starting/Running) the started node already froze its snapshot, so leave
+    // the env write to preserve legacy behaviour for any low-level node.
+    {
+        let guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let ConfigState::Building(cfg) = &guard.state {
+            if cfg.has_staged_credentials() && cfg.transport != Some(requested) {
+                drop(guard);
+                let msg = "Node::set_transport: transport cannot be changed after peer \
+                     credentials or a stable identity have been staged (Node::allow_peer / \
+                     Node::load_keys) — select the transport before staging (fail-closed)"
+                    .to_string();
+                eprintln!("hew: {msg}");
+                set_last_error(msg);
+                return -1;
+            }
         }
     }
+
+    // Set the process-global selection and pin it into the Building config so
+    // `Node::start` (and `identity_key()`) use the stored selection and a later
+    // start-time env merge does not override it.
+    // SAFETY: ENV_LOCK synchronises access to the process-global environ array;
+    // set_var is safe under exclusive write access.
+    crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", normalized) });
+    {
+        let mut guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let ConfigState::Building(cfg) = &mut guard.state {
+            cfg.transport = Some(requested);
+        }
+    }
+    0
 }
 
 /// Surface a `Node::load_keys` / `Node::allow_peer` peer-auth setup failure on
@@ -4233,23 +4670,38 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
 ///   the pre-F6 behaviour);
 /// - a `hew: ` stderr diagnostic — operator-visible, because the Hew call form
 ///   discards the `-1` return (these builtins are typed `Unit`);
-/// - the sticky mesh peer-auth failure record (quic-mesh builds only), which
-///   makes the next `Node::start` refuse to bind a listener (fail-closed) so a
-///   node never silently comes up with an ephemeral identity or an incomplete
-///   peer allowlist after the operator's setup failed.
+/// - the sticky setup-error poison on the staged `Building` config (D14 —
+///   per-node config state, no process-global record), which makes the next
+///   `Node::start` refuse to bind a listener (fail-closed) so a node never
+///   silently comes up with an ephemeral identity or an incomplete peer
+///   allowlist after the operator's setup failed.
 fn node_peer_auth_setup_failed(msg: impl Into<String>) {
     let msg = msg.into();
     eprintln!("hew: {msg} (fail-closed)");
-    #[cfg(feature = "quic")]
-    crate::quic_mesh::mesh_auth_record_failure(msg.clone());
+    // Poison the staged config. If a public node lifecycle already owns the
+    // state (Starting/Running) the poison is moot: that node already froze and
+    // installed its snapshot. First poison wins (a later generic failure must
+    // not overwrite the specific first cause).
+    {
+        let mut guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let ConfigState::Building(cfg) = &mut guard.state {
+            if cfg.setup_error.is_none() {
+                cfg.setup_error = Some(msg.clone());
+            }
+        }
+    }
     set_last_error(msg);
 }
 
 /// `Node::load_keys(path)` — Load (or, if absent, mint-and-persist) this node's
-/// stable mesh TLS identity from `path`. Must be called **before**
-/// `Node::start` so the listener presents the loaded key. Peers pin the
-/// resulting SPKI via `Node::allow_peer`; persisting the key keeps that SPKI
-/// stable across restarts. Native quic-mesh only.
+/// stable transport identity from `path`, selected by the pinned transport: a
+/// mesh TLS identity (SPKI) on quic-mesh, a stable Noise static keypair on
+/// tcp-noise. Must be called **before** `Node::start` so the listener/handshake
+/// presents the loaded key. Peers pin the resulting public credential via
+/// `Node::allow_peer`; persisting the key keeps that credential stable across
+/// restarts. Native only (plain quic has no pinnable peer identity).
 ///
 /// Returns `0` on success, `-1` on a null/invalid path or key I/O failure
 /// (error string available via `hew_last_error`). Never fabricates an identity.
@@ -4267,71 +4719,258 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
         node_peer_auth_setup_failed("Node::load_keys: invalid path argument");
         return -1;
     };
-    #[cfg(feature = "quic")]
-    {
-        match crate::quic_mesh::mesh_identity_load_or_create(std::path::Path::new(p)) {
-            Ok(_spki) => 0,
-            Err(err) => {
-                node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
+    // Transport-selected identity (issue #2652, D1): load the identity whose
+    // credential the pinned transport interprets — a mesh TLS identity on
+    // quic-mesh, a stable Noise static keypair on tcp-noise. Reading the
+    // selection here also pins it early into the Building config so
+    // `Node::identity_key()` can export the pinned credential before start.
+    let selection = match transport_selection_from_env() {
+        Ok(s) => s,
+        Err(err) => {
+            node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
+            return -1;
+        }
+    };
+    match selection {
+        TransportSelection::Tcp => {
+            #[cfg(feature = "encryption")]
+            {
+                match crate::encryption::noise_identity_load_or_create(std::path::Path::new(p)) {
+                    Ok(identity) => stage_loaded_identity(
+                        |cfg| cfg.noise_identity = Some(identity),
+                        PeerTransport::Tcp,
+                    ),
+                    Err(err) => {
+                        node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
+                        -1
+                    }
+                }
+            }
+            #[cfg(not(feature = "encryption"))]
+            {
+                let _ = p;
+                node_peer_auth_setup_failed(
+                    "Node::load_keys: tcp-noise identity requires the hew-runtime encryption \
+                     feature (peer auth unavailable)",
+                );
                 -1
             }
         }
-    }
-    #[cfg(not(feature = "quic"))]
-    {
-        let _ = p;
-        node_peer_auth_setup_failed(
-            "Node::load_keys: quic-mesh transport not built (peer auth unavailable)",
-        );
-        -1
+        #[cfg(feature = "quic")]
+        TransportSelection::QuicMesh => {
+            match crate::quic_mesh::mesh_identity_load_or_create(std::path::Path::new(p)) {
+                Ok(material) => stage_loaded_identity(
+                    |cfg| cfg.mesh_identity = Some(material),
+                    PeerTransport::QuicMesh,
+                ),
+                Err(err) => {
+                    node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
+                    -1
+                }
+            }
+        }
+        #[cfg(feature = "quic")]
+        TransportSelection::Quic => {
+            let _ = p;
+            node_peer_auth_setup_failed(
+                "Node::load_keys: plain quic transport has no pinnable peer identity \
+                 (use quic-mesh or tcp-noise)",
+            );
+            -1
+        }
     }
 }
 
-/// `Node::allow_peer(spki_hex)` — Add a peer's certificate SPKI (lowercase hex)
-/// to the fail-closed mesh allowlist. The snapshot is taken at `Node::start`,
-/// so call this before starting. A peer whose SPKI is not pinned is rejected
-/// by the mTLS handshake. Native quic-mesh only.
+/// Stage a freshly loaded stable identity into the pre-start `Building` config
+/// and pin the transport selection (issue #2652, D1/D14). The identity is
+/// frozen into the per-node snapshot at `Node::start` and presented by the
+/// listener (mesh via `install_auth`) / handshake (Noise). Rejected once the
+/// public node lifecycle owns the state (`Starting`/`Running`) so a load never
+/// races a running node. Returns `0` on success, `-1` after marking the
+/// peer-auth setup failed when the config is locked.
+#[cfg(any(feature = "quic", feature = "encryption"))]
+fn stage_loaded_identity(
+    apply: impl FnOnce(&mut crate::peer_binding::PeerAuthConfig),
+    selection: PeerTransport,
+) -> c_int {
+    let mut guard = PEER_AUTH_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ConfigState::Building(cfg) = &mut guard.state else {
+        drop(guard);
+        node_peer_auth_setup_failed(
+            "Node::load_keys: peer auth config is locked while the public node \
+             lifecycle is active (Starting/Running)",
+        );
+        return -1;
+    };
+    apply(cfg);
+    // Early transport pin: loading a stable identity commits this node to the
+    // operator's selected transport, so `identity_key()` can export the pinned
+    // credential before `Node::start` freezes the snapshot. Idempotent with the
+    // authoritative pin in `merge_start_env_into_config` (both read the env).
+    if cfg.transport.is_none() {
+        cfg.transport = Some(selection);
+    }
+    0
+}
+
+/// `Node::allow_peer(node_id, credential_hex)` — bind a peer's authenticated
+/// credential to the `NodeId` it is permitted to claim (issue #2652). The
+/// credential is interpreted by the node's pinned transport (TCP ⇒ 32-byte
+/// Noise pubkey; quic-mesh ⇒ cert SPKI). The binding is staged into the
+/// pre-start `Building` `PeerAuthConfig` and frozen into the per-node snapshot
+/// at `Node::start`; a peer whose credential is not bound to the `NodeId` it
+/// claims is rejected at admission (fail-closed).
 ///
-/// Returns `0` on success, `-1` on a null/odd/non-hex string or empty/oversize
-/// SPKI. Adds nothing on error. On failure the peer-auth setup is marked failed
-/// so a subsequent `Node::start` refuses to bind a listener (fail-closed) rather
-/// than silently coming up with an incomplete peer allowlist.
+/// Returns `0` on success, `-1` on a reserved/local `node_id`, a null/odd/
+/// non-hex string, a credential of the wrong length for the transport, a
+/// credential already bound to a different `NodeId`, or while the public node
+/// lifecycle owns the config. Adds nothing on error. On failure the peer-auth
+/// setup is marked failed so a subsequent `Node::start` refuses to bind a
+/// listener (fail-closed) rather than silently coming up with an incomplete
+/// peer allowlist.
 ///
 /// # Safety
 ///
-/// `spki_hex` must be a valid null-terminated C string.
+/// `credential_hex` must be a valid null-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_api_allow_peer(spki_hex: *const c_char) -> c_int {
-    // SAFETY: caller guarantees spki_hex is a valid C string (or null).
-    let Some(s) = (unsafe { crate::util::cstr_to_str(&spki_hex, "Node::allow_peer") }) else {
-        node_peer_auth_setup_failed("Node::allow_peer: invalid SPKI argument");
+pub unsafe extern "C" fn hew_node_api_allow_peer(
+    node_id: u16,
+    credential_hex: *const c_char,
+) -> c_int {
+    if node_id == 0 {
+        node_peer_auth_setup_failed(
+            "Node::allow_peer: node id must be nonzero and not the local id",
+        );
+        return -1;
+    }
+    // Reject binding a peer to this node's own pinned identity, when known.
+    if let Ok(Some(local)) = hew_node_id_from_env() {
+        if local.get() == node_id {
+            node_peer_auth_setup_failed(
+                "Node::allow_peer: node id must be nonzero and not the local id",
+            );
+            return -1;
+        }
+    }
+    // SAFETY: caller guarantees credential_hex is a valid C string (or null).
+    let Some(s) = (unsafe { crate::util::cstr_to_str(&credential_hex, "Node::allow_peer") }) else {
+        node_peer_auth_setup_failed("Node::allow_peer: invalid credential argument");
         return -1;
     };
     let Some(bytes) = decode_hex(s) else {
         node_peer_auth_setup_failed("Node::allow_peer: peer key must be hex-encoded SPKI bytes");
         return -1;
     };
-    #[cfg(feature = "quic")]
-    {
-        // SAFETY: bytes is a live Vec; ptr+len describe its contents.
-        let rc =
-            unsafe { crate::quic_mesh::hew_quic_mesh_peer_spki_add(bytes.as_ptr(), bytes.len()) };
-        if rc != 0 {
-            node_peer_auth_setup_failed("Node::allow_peer: SPKI rejected by mesh allowlist");
+    // Interpret the credential per the node's pinned transport (env-resolved;
+    // the same selection is pinned into the config at start). Plain QUIC has no
+    // peer-credential channel, so strict binding is unsupported there.
+    let transport = match transport_selection_from_env() {
+        Ok(sel) => sel,
+        Err(msg) => {
+            node_peer_auth_setup_failed(format!("Node::allow_peer: {msg}"));
+            return -1;
         }
-        rc
-    }
-    #[cfg(not(feature = "quic"))]
-    {
-        let _ = bytes;
+    };
+    let credential = match transport {
+        TransportSelection::Tcp => {
+            let Ok(key) = <[u8; crate::peer_binding::NOISE_KEY_LEN]>::try_from(bytes.as_slice())
+            else {
+                node_peer_auth_setup_failed("Node::allow_peer: Noise pubkey must be 32 bytes");
+                return -1;
+            };
+            PeerCredential::NoiseKey(key)
+        }
+        #[cfg(feature = "quic")]
+        TransportSelection::QuicMesh => {
+            if bytes.is_empty() || bytes.len() > MAX_SPKI_DECODE_BYTES {
+                node_peer_auth_setup_failed("Node::allow_peer: mesh SPKI is empty or oversize");
+                return -1;
+            }
+            PeerCredential::Spki(bytes)
+        }
+        #[cfg(feature = "quic")]
+        TransportSelection::Quic => {
+            node_peer_auth_setup_failed(
+                "Node::allow_peer: strict binding unsupported on plain quic transport \
+                 (use quic-mesh or tcp-noise)",
+            );
+            return -1;
+        }
+    };
+    // Stage into the pre-start Building config. Rejected while the public node
+    // lifecycle owns the state (Starting/Running).
+    let mut guard = PEER_AUTH_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ConfigState::Building(cfg) = &mut guard.state else {
+        drop(guard);
         node_peer_auth_setup_failed(
-            "Node::allow_peer: quic-mesh transport not built (peer auth unavailable)",
+            "Node::allow_peer: peer auth config is locked while the public node lifecycle \
+             is active (Starting/Running)",
         );
-        -1
+        return -1;
+    };
+    // A given credential may bind to exactly one NodeId: the same credential
+    // pinned to a different NodeId is a conflict (rotation overlap binds two
+    // *credentials* to one NodeId, never one credential to two NodeIds).
+    for (bound_id, creds) in &cfg.bindings {
+        if *bound_id != node_id && creds.contains(&credential) {
+            let bound_id = *bound_id;
+            drop(guard);
+            node_peer_auth_setup_failed(format!(
+                "Node::allow_peer: credential already bound to node id {bound_id}"
+            ));
+            return -1;
+        }
     }
+    cfg.bindings.entry(node_id).or_default().insert(credential);
+    // Pin the transport selection (issue #2652): the credential was interpreted
+    // under `transport`, so bind the config to it now. Idempotent with the pins
+    // in `Node::set_transport` / `stage_loaded_identity` and the start-time
+    // merge; once pinned, a later `Node::set_transport` that would change it is
+    // rejected via `has_staged_credentials`.
+    if cfg.transport.is_none() {
+        cfg.transport = Some(transport.as_peer_transport());
+    }
+    0
 }
 
-/// Upper bound on a decoded peer SPKI, mirroring `quic_mesh::MAX_SPKI_BYTES`
+/// `Node::identity_key()` — Return this node's stable public credential for the
+/// pinned transport as lowercase hex (issue #2652, D8): the Noise static public
+/// key on TCP, the certificate SPKI on quic-mesh. Operators hand the returned
+/// value to peers so they can bind it via `Node::allow_peer`.
+///
+/// Reads the three-state public staging config (BLOCK-7 point 3 — never
+/// dereferences the owning node pointer):
+/// - `Building` — the staged config (before start);
+/// - `Starting` — the consumed config held for the in-flight start;
+/// - `Running` — the standalone `identity_export` clone captured at the
+///   `Starting → Running` transition.
+///
+/// Returns an **owned** hew string (empty string `""`, never null, when no
+/// stable identity has been loaded). The caller frees it via `hew_string_drop`;
+/// the runtime never retains the pointer.
+#[no_mangle]
+pub extern "C" fn hew_node_api_identity_key() -> *mut c_char {
+    let export = {
+        let guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &guard.state {
+            ConfigState::Building(cfg) => cfg.identity_export_string(),
+            ConfigState::Starting { config, .. } => config.identity_export_string(),
+            ConfigState::Running {
+                identity_export, ..
+            } => identity_export.clone(),
+        }
+    };
+    // SAFETY: `export` is valid UTF-8 for its byte length; malloc_cstring copies
+    // exactly that many bytes and NUL-terminates (owned hew string).
+    unsafe { crate::cabi::malloc_cstring(export.as_ptr(), export.len()) }
+}
+
 /// (4 KiB). The mesh allowlist re-enforces this, but `decode_hex` checks it
 /// *before* allocating so an oversize hex argument can't force a large up-front
 /// `Vec`. A well-formed RSA-4096 SPKI is under 1 KiB; anything larger is junk.
@@ -4424,6 +5063,23 @@ fn setup_remote_ask(
         let target_node_id = crate::pid::hew_pid_node(pid);
         if quarantine_blocks_send(node, target_node_id) {
             return RemoteAskSetupResult::Error(AskError::Partition);
+        }
+
+        // issue #2652 (outbound authority): an ask is control-bearing — its reply
+        // deposits into THIS node's pending table and its dispatch runs a handler
+        // on the peer, so it must go ONLY to the exact authenticated owner (Strict
+        // posture + published claim) of the target NodeId. An Unverified
+        // (delivery-only) or a superseded / non-exact-owner connection carries no
+        // control-plane authority; fail CLOSED here — before serializing the
+        // request or registering a pending reply — symmetric with the inbound ask
+        // gate (`inbound_ask_denied_unverified`) and D12's unverified-ask REJECT.
+        // Reply-completion validation stays a backstop, never the primary control.
+        // SAFETY: conn_mgr is non-null and valid while the node is running (the
+        // CURRENT_NODE read lock is held for the whole closure).
+        let authenticated =
+            unsafe { connection::authenticated_peer_node_id_for_conn(&*node.conn_mgr, conn_id) };
+        if authenticated != target_node_id {
+            return RemoteAskSetupResult::Error(AskError::Unauthorized);
         }
 
         // Serialize the request value before it leaves this address space —
@@ -5036,8 +5692,8 @@ mod tests {
         );
 
         with_current_node_read(|current| assert_eq!(*current, 0));
-        assert!(!complete_remote_reply(1, &[1, 2, 3]));
-        assert!(!fail_remote_reply(1, &[]));
+        assert!(!complete_remote_reply(std::ptr::null(), 0, 1, &[1, 2, 3]));
+        assert!(!fail_remote_reply(std::ptr::null(), 0, 1, &[]));
         fail_remote_replies_for_connection(std::ptr::null(), 0);
         // SAFETY: with no runtime there are no known-node registries to sweep.
         unsafe { unregister_actor_names(crate::pid::hew_pid_make(1, 1)) };
@@ -5242,6 +5898,155 @@ mod tests {
             unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
                 .expect("started TCP test node must expose its bound listener port");
         (node, port)
+    }
+
+    /// Environment key naming the pre-generated Noise keyfile a two-process
+    /// helper loads its stable identity from (brokered by the parent test).
+    #[cfg(feature = "encryption")]
+    const TWO_PROCESS_KEYFILE_ENV: &str = "HEW_2P_KEYFILE";
+    /// Environment key carrying the peer's Noise static pubkey (lowercase hex)
+    /// for the helper to bind via its per-node snapshot before connecting.
+    #[cfg(feature = "encryption")]
+    const TWO_PROCESS_PEER_PUBKEY_ENV: &str = "HEW_2P_PEER_PUBKEY";
+
+    /// Start a **credentialed, Strict-authorized** TCP-Noise listener node for a
+    /// two-process helper (issue #2652, D110).
+    ///
+    /// Reads the pre-generated Noise keyfile (`HEW_2P_KEYFILE`) and the peer's
+    /// Noise static pubkey (`HEW_2P_PEER_PUBKEY`, lowercase hex) — the parent
+    /// test brokered both out-of-band, mirroring a real key exchange. Installs a
+    /// per-node snapshot with the stable Noise identity + a
+    /// `peer_node → NoiseKey(peer_pub)` binding, so the TCP-Noise handshake
+    /// authenticates the peer and the claim machine binds its `NodeId`. This is a
+    /// genuine authorized connection — there is no test-only posture promotion:
+    /// a peer presenting an unbound Noise key fails the pre-gate and admission.
+    #[cfg(feature = "encryption")]
+    fn start_authorized_tcp_node(node_id: u16, peer_node: u16) -> (TestNode, u16) {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings, NOISE_KEY_LEN};
+
+        let keyfile = std::env::var(TWO_PROCESS_KEYFILE_ENV).expect("2p keyfile env");
+        let peer_pub_hex = std::env::var(TWO_PROCESS_PEER_PUBKEY_ENV).expect("2p peer pubkey env");
+
+        let identity =
+            crate::encryption::noise_identity_load_or_create(std::path::Path::new(&keyfile))
+                .expect("load 2p noise identity");
+        let peer_pub_bytes = decode_hex(&peer_pub_hex).expect("2p peer pubkey must be hex");
+        assert_eq!(
+            peer_pub_bytes.len(),
+            NOISE_KEY_LEN,
+            "2p peer pubkey must be a 32-byte Noise static key"
+        );
+        let mut peer_pub = [0u8; NOISE_KEY_LEN];
+        peer_pub.copy_from_slice(&peer_pub_bytes);
+
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(peer_node)
+            .or_default()
+            .insert(PeerCredential::NoiseKey(peer_pub));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(node_id),
+            noise_identity: Some(identity),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this helper.
+        let node = unsafe { TestNode::new(node_id, &bind_addr) };
+        assert!(!node.as_ptr().is_null(), "authorized tcp node alloc failed");
+        // SAFETY: node is freshly created (STOPPED); install the snapshot before start.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0, "install 2p auth snapshot on node {node_id}");
+        // SAFETY: node pointer is valid; start selects TCP from the snapshot and
+        // reads the installed strict bindings.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(
+            rc,
+            0,
+            "authorized tcp start({node_id}) failed: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: node started successfully on the TCP transport.
+        let port =
+            unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
+                .expect("authorized tcp node must expose its bound listener port");
+        (node, port)
+    }
+
+    /// Start two mutually-authenticated in-process nodes on the native TCP
+    /// (Noise) transport. Each mints a stable Noise identity and pins the
+    /// other's real static public key to the peer's `NodeId`, so the loopback
+    /// handshake admits `Strict` with a published claim (issue #2652 —
+    /// `posture_for` returns `Strict` whenever bindings exist, regardless of
+    /// loopback). This is a genuine credentialed harness, never a test-only
+    /// posture promotion; it mirrors [`start_authorized_quic_mesh_pair`] for the
+    /// cases that must exercise TCP-specific pending-ask / connection behaviour
+    /// now that an unverified outbound ask fails closed before it is ever sent.
+    #[cfg(feature = "encryption")]
+    fn start_authorized_tcp_pair(id_a: u16, id_b: u16) -> (TestNode, u16, TestNode, u16) {
+        use crate::peer_binding::{
+            PeerAuthConfig, PeerBindings, StableNoiseIdentity, NOISE_KEY_LEN,
+        };
+
+        let dir = tempfile::tempdir().expect("authorized tcp pair keydir");
+        let identity_a =
+            crate::encryption::noise_identity_load_or_create(&dir.path().join("node-a.key"))
+                .expect("mint node-a noise identity");
+        let identity_b =
+            crate::encryption::noise_identity_load_or_create(&dir.path().join("node-b.key"))
+                .expect("mint node-b noise identity");
+        let pub_a = identity_a.public();
+        let pub_b = identity_b.public();
+
+        let start_one = |node_id: u16,
+                         peer_id: u16,
+                         identity: StableNoiseIdentity,
+                         peer_pub: [u8; NOISE_KEY_LEN]|
+         -> (TestNode, u16) {
+            let mut bindings = PeerBindings::new();
+            bindings
+                .entry(peer_id)
+                .or_default()
+                .insert(PeerCredential::NoiseKey(peer_pub));
+            let snapshot = PeerAuthConfig {
+                node_id: std::num::NonZeroU16::new(node_id),
+                noise_identity: Some(identity),
+                bindings,
+                ..PeerAuthConfig::default()
+            }
+            .snapshot();
+            let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+            // SAFETY: bind_addr is a valid C string for the duration of this closure.
+            let node = unsafe { TestNode::new(node_id, &bind_addr) };
+            assert!(
+                !node.as_ptr().is_null(),
+                "authorized tcp node {node_id} alloc failed"
+            );
+            // SAFETY: node is freshly created (STOPPED); install before start.
+            let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+            assert_eq!(set_rc, 0, "install auth snapshot on node {node_id}");
+            // SAFETY: node pointer is valid; start selects TCP + Noise from the
+            // snapshot and reads the installed strict bindings.
+            let rc = unsafe { hew_node_start(node.as_ptr()) };
+            assert_eq!(
+                rc,
+                0,
+                "authorized tcp start({node_id}) failed: {:?}",
+                crate::stream_error::take_last_error()
+            );
+            // SAFETY: node started successfully on the TCP transport.
+            let port = unsafe {
+                crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport)
+            }
+            .expect("authorized tcp node must expose its bound listener port");
+            (node, port)
+        };
+
+        let (node_a, port_a) = start_one(id_a, id_b, identity_a, pub_b);
+        let (node_b, port_b) = start_one(id_b, id_a, identity_b, pub_a);
+        (node_a, port_a, node_b, port_b)
     }
 
     const TWO_PROCESS_REGISTRY_SERVER_NODE: u16 = 620;
@@ -5498,6 +6303,7 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    #[cfg(feature = "encryption")]
     fn run_registry_gossip_server_helper() {
         reset_two_process_delivery();
         // Install the runtime before touching the name registry: in this helper
@@ -5506,7 +6312,10 @@ mod tests {
         let _real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
-        let (node, port) = start_tcp_test_listener_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
+        let (node, port) = start_authorized_tcp_node(
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+        );
         crate::pid::hew_pid_set_local_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
 
         // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
@@ -5541,6 +6350,7 @@ mod tests {
         assert!(delivered, "server did not observe two-process send");
     }
 
+    #[cfg(feature = "encryption")]
     fn run_registry_gossip_client_helper() {
         // Install the runtime before touching the name registry (helper
         // subprocess holds no `runtime_test_guard`).
@@ -5551,12 +6361,10 @@ mod tests {
             .expect("server port env")
             .parse::<u16>()
             .expect("server port");
-        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // SAFETY: bind_addr is valid for this helper scope.
-        let node = unsafe { TestNode::new(TWO_PROCESS_REGISTRY_CLIENT_NODE, &bind_addr) };
-        assert!(!node.as_ptr().is_null(), "client node allocation failed");
-        // SAFETY: node pointer is valid.
-        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, 0, "client start");
+        let (node, _client_port) = start_authorized_tcp_node(
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+        );
 
         let connect_addr = CString::new(format!(
             "{TWO_PROCESS_REGISTRY_SERVER_NODE}@127.0.0.1:{server_port}"
@@ -5599,6 +6407,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_ask_server_helper(
         node_id: u16,
         name: &str,
@@ -5623,7 +6432,7 @@ mod tests {
         let _real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
-        let (node, port) = start_tcp_test_listener_node(node_id);
+        let (node, port) = start_authorized_tcp_node(node_id, TWO_PROCESS_REGISTRY_CLIENT_NODE);
         crate::pid::hew_pid_set_local_node(node_id);
         // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
         let worker = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(dispatch)) };
@@ -5654,12 +6463,14 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     struct TwoProcessAskClient {
         node: TestNode,
         remote_pid: u64,
         _real_sched: RealSchedulerGuard,
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_ask_echo_client_helper() {
         let client = run_two_process_ask_client_setup(
             TWO_PROCESS_REGISTRY_CLIENT_NODE,
@@ -5704,6 +6515,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_ask_timeout_client_helper() {
         let client = run_two_process_ask_client_setup(
             TWO_PROCESS_REGISTRY_CLIENT_NODE,
@@ -5743,6 +6555,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_ask_client_setup(
         client_node_id: u16,
         server_node_id: u16,
@@ -5760,15 +6573,7 @@ mod tests {
             .expect("server port env")
             .parse::<u16>()
             .expect("server port");
-        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // SAFETY: bind_addr is valid for this helper scope.
-        let node = unsafe { TestNode::new(client_node_id, &bind_addr) };
-        assert!(
-            !node.as_ptr().is_null(),
-            "ask client node allocation failed"
-        );
-        // SAFETY: node pointer is valid.
-        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, 0, "client start");
+        let (node, _client_port) = start_authorized_tcp_node(client_node_id, server_node_id);
 
         let connect_addr = CString::new(format!("{server_node_id}@127.0.0.1:{server_port}"))
             .expect("valid connect addr");
@@ -5799,6 +6604,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn registry_gossip_two_process_server_helper() {
         if !matches!(
@@ -5810,6 +6616,7 @@ mod tests {
         run_registry_gossip_server_helper();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn registry_gossip_two_process_client_helper() {
         if !matches!(
@@ -5821,6 +6628,7 @@ mod tests {
         run_registry_gossip_client_helper();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn remote_ask_two_process_echo_server_helper() {
         if !matches!(
@@ -5837,6 +6645,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn remote_ask_two_process_echo_client_helper() {
         if !matches!(
@@ -5848,6 +6657,7 @@ mod tests {
         run_two_process_ask_echo_client_helper();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn remote_ask_two_process_timeout_server_helper() {
         if !matches!(
@@ -5864,6 +6674,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn remote_ask_two_process_timeout_client_helper() {
         if !matches!(
@@ -5875,6 +6686,30 @@ mod tests {
         run_two_process_ask_timeout_client_helper();
     }
 
+    /// Broker a real Noise key exchange for the two-process tests (issue #2652,
+    /// D110). Mints both nodes' stable identities up-front in the shared temp
+    /// dir and returns `(server_keyfile, server_pubkey_hex, client_keyfile,
+    /// client_pubkey_hex)`. Each helper is handed its own keyfile (which it
+    /// re-loads to the identical identity) plus the *peer's* pubkey, so both
+    /// sides bind each other before connecting — no test-only posture promotion.
+    #[cfg(feature = "encryption")]
+    fn broker_two_process_noise_keys(dir: &std::path::Path) -> (String, String, String, String) {
+        use crate::peer_binding::hex_lower;
+        let server_keyfile = dir.join("server.key");
+        let client_keyfile = dir.join("client.key");
+        let server_id = crate::encryption::noise_identity_load_or_create(&server_keyfile)
+            .expect("mint 2p server identity");
+        let client_id = crate::encryption::noise_identity_load_or_create(&client_keyfile)
+            .expect("mint 2p client identity");
+        (
+            server_keyfile.to_string_lossy().into_owned(),
+            hex_lower(&server_id.public()),
+            client_keyfile.to_string_lossy().into_owned(),
+            hex_lower(&client_id.public()),
+        )
+    }
+
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_process_registry_gossip_lookup_then_tell() {
         let _guard = crate::runtime_test_guard();
@@ -5882,17 +6717,29 @@ mod tests {
         let ready_file = ready_dir.path().join("server-ready");
         let ready_file_s = ready_file.to_string_lossy().into_owned();
 
+        // Broker a real Noise key exchange (D110) so both nodes admit Strict.
+        let (server_keyfile, server_pub_hex, client_keyfile, client_pub_hex) =
+            broker_two_process_noise_keys(ready_dir.path());
+
         let mut server = spawn_registry_gossip_helper(
             "hew_node::tests::registry_gossip_two_process_server_helper",
             "server",
-            &[(TWO_PROCESS_READY_FILE_ENV, ready_file_s)],
+            &[
+                (TWO_PROCESS_READY_FILE_ENV, ready_file_s),
+                (TWO_PROCESS_KEYFILE_ENV, server_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, client_pub_hex),
+            ],
         );
         let server_port = wait_for_ready_port(&ready_file, &mut server, Duration::from_secs(10));
 
         let mut client = spawn_registry_gossip_helper(
             "hew_node::tests::registry_gossip_two_process_client_helper",
             "client",
-            &[(TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string())],
+            &[
+                (TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string()),
+                (TWO_PROCESS_KEYFILE_ENV, client_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, server_pub_hex),
+            ],
         );
         let client_output = client.wait_output(Duration::from_secs(40));
         assert_child_success("client", &client_output);
@@ -5901,6 +6748,7 @@ mod tests {
         assert_child_success("server", &server_output);
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_remote_ask_case(
         server_helper: &'static str,
         server_role: &'static str,
@@ -5912,17 +6760,29 @@ mod tests {
         let ready_file = ready_dir.path().join("ask-server-ready");
         let ready_file_s = ready_file.to_string_lossy().into_owned();
 
+        // Broker a real Noise key exchange (D110) so both nodes admit Strict.
+        let (server_keyfile, server_pub_hex, client_keyfile, client_pub_hex) =
+            broker_two_process_noise_keys(ready_dir.path());
+
         let mut server = spawn_registry_gossip_helper(
             server_helper,
             server_role,
-            &[(TWO_PROCESS_READY_FILE_ENV, ready_file_s)],
+            &[
+                (TWO_PROCESS_READY_FILE_ENV, ready_file_s),
+                (TWO_PROCESS_KEYFILE_ENV, server_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, client_pub_hex),
+            ],
         );
         let server_port = wait_for_ready_port(&ready_file, &mut server, Duration::from_secs(10));
 
         let mut client = spawn_registry_gossip_helper(
             client_helper,
             client_role,
-            &[(TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string())],
+            &[
+                (TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string()),
+                (TWO_PROCESS_KEYFILE_ENV, client_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, server_pub_hex),
+            ],
         );
         let client_output = client.wait_output(Duration::from_secs(40));
         assert_child_success(client_role, &client_output);
@@ -5931,6 +6791,7 @@ mod tests {
         assert_child_success(server_role, &server_output);
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_process_remote_ask_echo_double_returns_42() {
         run_two_process_remote_ask_case(
@@ -5941,6 +6802,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_process_remote_ask_timeout_returns_timeout_under_1500ms() {
         run_two_process_remote_ask_case(
@@ -6006,6 +6868,103 @@ mod tests {
         (node, port)
     }
 
+    /// Start a **credentialed, Strict-authorized** quic-mesh listener node
+    /// (issue #2652, D110).
+    ///
+    /// Unlike [`start_quic_mesh_test_listener_node`] (which leaves `node.auth`
+    /// unconfigured → `Unverified` posture, delivery-only), this installs a real
+    /// per-node [`PeerAuthSnapshot`] before start:
+    ///  - `node_id = Some(node_id)` — the operator-pinned identity;
+    ///  - `bindings = {peer_id → Spki(peer_spki)}` — the peer's *actual* leaf
+    ///    SPKI (from [`make_mutually_pinned_mesh_tls`]), so the claim machine
+    ///    binds the claimed `NodeId` to the authenticated key.
+    ///
+    /// The mutually-pinned `tls` (which already carries `with_peer_spki`) drives
+    /// the mTLS handshake; admission extracts the *presented* leaf SPKI and
+    /// matches it against the binding. This is a genuine authorized connection —
+    /// there is no test-only posture promotion (D110): a peer presenting a
+    /// different cert fails both the TLS pin and the claim-machine binding.
+    #[cfg(feature = "quic")]
+    fn start_authorized_quic_mesh_node(
+        node_id: u16,
+        tls: crate::quic_mesh::MeshTls,
+        peer_id: u16,
+        peer_spki: Vec<u8>,
+    ) -> (TestNode, u16) {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings};
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this helper.
+        let node = unsafe { TestNode::new(node_id, &bind_addr) };
+        assert!(!node.as_ptr().is_null(), "test node allocation failed");
+
+        // Install the credentialed snapshot: strict node identity + the peer's
+        // real SPKI bound to the peer's NodeId.
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(peer_id)
+            .or_default()
+            .insert(PeerCredential::Spki(peer_spki));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(node_id),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // SAFETY: node is freshly created (STOPPED); installing a snapshot is valid.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0, "install auth snapshot on node {node_id}");
+
+        // SAFETY: hew_transport_quic_mesh_new returns an owned transport pointer.
+        let transport = unsafe { crate::quic_mesh::hew_transport_quic_mesh_new() };
+        assert!(
+            !transport.is_null(),
+            "quic_mesh transport allocation failed: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: transport pointer was just allocated by the constructor.
+        let rc =
+            unsafe { crate::quic_mesh::hew_transport_quic_mesh_set_tls_override(transport, tls) };
+        assert_eq!(rc, 0, "set TLS override on quic_mesh transport");
+
+        // SAFETY: node owns the previously null transport slot; replace it with
+        // the pre-allocated quic_mesh transport before start.
+        unsafe {
+            (*node.as_ptr()).transport = transport;
+        }
+
+        // SAFETY: node and transport pointers are valid; start consumes the
+        // injected transport and reads the installed strict snapshot.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(
+            rc,
+            0,
+            "hew_node_start({node_id}) authorized quic_mesh failed: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: node started successfully on the quic_mesh transport.
+        let port = unsafe {
+            crate::quic_mesh::hew_transport_quic_mesh_bound_port((*node.as_ptr()).transport)
+        }
+        .expect("started quic_mesh test node must expose its bound listener port");
+        (node, port)
+    }
+
+    /// Start a mutually-authorized quic-mesh node **pair** (issue #2652, D110).
+    ///
+    /// Returns `(node_a, port_a, node_b, port_b)`. `node_a` is started first (so
+    /// it becomes `CURRENT_NODE` / initiator); both nodes carry cross-bound
+    /// `Spki → NodeId` credentials so a connection between them admits Strict.
+    #[cfg(feature = "quic")]
+    fn start_authorized_quic_mesh_pair(id_a: u16, id_b: u16) -> (TestNode, u16, TestNode, u16) {
+        let (tls_a, tls_b, spki_a, spki_b) =
+            make_mutually_pinned_mesh_tls(&format!("node-{id_a}"), &format!("node-{id_b}"));
+        let (node_a, port_a) = start_authorized_quic_mesh_node(id_a, tls_a, id_b, spki_b);
+        thread::sleep(Duration::from_millis(50));
+        let (node_b, port_b) = start_authorized_quic_mesh_node(id_b, tls_b, id_a, spki_a);
+        (node_a, port_a, node_b, port_b)
+    }
+
     unsafe extern "C-unwind" fn noop_dispatch(
         _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
@@ -6015,6 +6974,220 @@ mod tests {
         _borrow_mode: i32,
     ) -> *mut c_void {
         std::ptr::null_mut()
+    }
+
+    /// `NodeId` authority (BLOCK-5 point 1): a low-level node whose explicit
+    /// `hew_node_new(id)` contradicts its installed strict snapshot binding
+    /// identity is rejected **before** the listener binds — no socket, no
+    /// manager, fail-closed.
+    #[test]
+    fn node_start_rejects_conflicting_snapshot_node_id_before_listen() {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings, PeerCredential};
+        let _guard = crate::runtime_test_guard();
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // Explicit low-level id 100 conflicts with the snapshot's strict id 42.
+        // SAFETY: bind_addr is valid for the duration of this test.
+        let node = unsafe { TestNode::new(100, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(42)
+            .or_default()
+            .insert(PeerCredential::NoiseKey([0xAB; 32]));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(42),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // SAFETY: node is STOPPED; installing a snapshot is valid.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0);
+        // SAFETY: node is valid; start must reject the conflicting id.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(rc, -1, "conflicting snapshot id must be rejected");
+        // SAFETY: node valid; assert fail-closed: STOPPED, no manager, no transport.
+        unsafe {
+            let n = &*node.as_ptr();
+            assert_eq!(n.state.load(Ordering::Acquire), NODE_STATE_STOPPED);
+            assert!(n.conn_mgr.is_null(), "no manager on rejected start");
+            assert!(n.transport.is_null(), "no listener bound on rejected start");
+        }
+        // SAFETY: reads the thread-local last-error C string set by the start
+        // path; the pointer is valid until the next error is set on this thread.
+        let err = unsafe {
+            let p = crate::hew_last_error();
+            if p.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        assert!(
+            err.contains("conflicts with strict binding identity"),
+            "diagnostic should name the conflict; got: {err}"
+        );
+    }
+
+    /// `NodeId` authority: a low-level node created with id `0` adopts its
+    /// snapshot's stable `NodeId` at start (a caller that deferred the id).
+    #[test]
+    fn node_start_adopts_snapshot_node_id_when_created_with_zero() {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings, PeerCredential};
+        let _guard = crate::runtime_test_guard();
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr valid for the test.
+        let node = unsafe { TestNode::new(0, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(4242)
+            .or_default()
+            .insert(PeerCredential::NoiseKey([0xCD; 32]));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(4242),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // SAFETY: node STOPPED.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0);
+        // SAFETY: node valid; start should adopt 4242 and succeed.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(
+            rc,
+            0,
+            "start should adopt snapshot id: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: node valid & running.
+        unsafe {
+            assert_eq!((*node.as_ptr()).node_id, 4242);
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+    }
+
+    /// Defence-in-depth: a self-inconsistent snapshot (unverified opt-out WITH
+    /// bindings) fails the node's own start before listen.
+    #[test]
+    fn node_start_rejects_malformed_snapshot() {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings, PeerCredential};
+        let _guard = crate::runtime_test_guard();
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr valid.
+        let node = unsafe { TestNode::new(7, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(42)
+            .or_default()
+            .insert(PeerCredential::NoiseKey([0x11; 32]));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(7),
+            unverified_optout: true,
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // SAFETY: node STOPPED.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0);
+        // SAFETY: node valid; start must reject the malformed snapshot.
+        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, -1);
+        // SAFETY: node valid.
+        unsafe {
+            assert!((*node.as_ptr()).transport.is_null());
+        }
+    }
+
+    /// `hew_node_set_auth_snapshot` is rejected once the node is not STOPPED.
+    #[test]
+    fn set_auth_snapshot_rejected_when_running() {
+        let _guard = crate::runtime_test_guard();
+        let (node, _port) = start_tcp_test_listener_node(55);
+        // SAFETY: node is RUNNING; the setter must refuse.
+        let rc =
+            unsafe { hew_node_set_auth_snapshot(node.as_ptr(), PeerAuthSnapshot::unconfigured()) };
+        assert_eq!(rc, -1, "installing a snapshot on a running node must fail");
+        // SAFETY: node valid.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+    }
+
+    /// Public owner-scoped staging (BLOCK-6): a default `Node::start` transitions
+    /// `Building → Running{owner}` and `Node::shutdown` returns it to `Building`
+    /// with a bumped generation. No env configured ⇒ unconfigured snapshot,
+    /// PID-derived id — the pre-fix default behaviour is preserved.
+    #[test]
+    fn public_start_default_then_shutdown_resets_state() {
+        let _guard = crate::runtime_test_guard();
+        // Start from a known-clean staging cell (other unit tests stage config).
+        {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        }
+        let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind is a valid C string for this call.
+        let rc = unsafe { hew_node_api_start(bind.as_ptr()) };
+        assert_eq!(rc, 0, "default public start should succeed");
+        {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                matches!(g.state, ConfigState::Running { .. }),
+                "staging state should be Running after a successful start"
+            );
+        }
+        let gen_before = {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.next_generation
+        };
+        // SAFETY: a node was started by this test; shutdown reclaims it.
+        assert_eq!(unsafe { hew_node_api_shutdown() }, 0);
+        {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                matches!(g.state, ConfigState::Building(_)),
+                "shutdown must return staging to Building"
+            );
+            assert_ne!(
+                g.next_generation, gen_before,
+                "shutdown must bump the staging generation"
+            );
+        }
+    }
+
+    /// A second public `Node::start` while one is already active is refused
+    /// (fail-closed), and the first node keeps running until its own shutdown.
+    #[test]
+    fn public_start_rejected_when_already_active() {
+        let _guard = crate::runtime_test_guard();
+        {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        }
+        let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind valid.
+        assert_eq!(unsafe { hew_node_api_start(bind.as_ptr()) }, 0);
+        // SAFETY: bind valid; second start must be rejected.
+        let second_rc = unsafe { hew_node_api_start(bind.as_ptr()) };
+        assert_eq!(
+            second_rc, -1,
+            "a second concurrent public start must be refused"
+        );
+        // SAFETY: the first node is still active; shutdown reclaims it.
+        assert_eq!(unsafe { hew_node_api_shutdown() }, 0);
     }
 
     #[test]
@@ -6042,26 +7215,28 @@ mod tests {
     }
 
     /// F6 fail-closed (C ABI): a failed `Node::load_keys` / `Node::allow_peer`
-    /// records a sticky peer-auth failure, so the next `Node::start` refuses to
-    /// bind a listener (returns -1) rather than silently coming up with an
-    /// ephemeral identity or an incomplete allowlist. This is the closed half of
-    /// the worst-case fail-open F6 addresses: pre-fix, `load_keys` returned -1
+    /// poisons the staged config, so the next `Node::start` refuses to bind a
+    /// listener (returns -1) rather than silently coming up with an ephemeral
+    /// identity or an incomplete allowlist. This is the closed half of the
+    /// worst-case fail-open F6 addresses: pre-fix, `load_keys` returned -1
     /// (discarded by the `Unit` Hew form) yet `start` proceeded.
     #[cfg(feature = "quic")]
     #[test]
     fn start_refuses_after_failed_peer_auth_setup_fail_closed() {
-        // Serialise against quic_mesh tests that mint identities / mutate the
-        // global allowlist: this test records a peer-auth failure in the shared
-        // process-global flag, which would otherwise fail-close a concurrent
-        // `ensure_identity` in another module. Held as the outermost guard.
-        let _state_guard = crate::quic_mesh::MESH_GLOBAL_STATE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = crate::runtime_test_guard();
+        // The setup poison now lives on the per-node staged config (D14), not a
+        // process-global flag; reset the staging cell to a clean Building config
+        // between sub-cases via this local helper.
+        let reset_staging = || {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        };
         let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
 
         // --- corrupt keyfile: load_keys must fail and poison start ---
-        crate::quic_mesh::mesh_auth_setup_reset();
+        reset_staging();
         let dir = std::env::temp_dir().join(format!("f6-cabi-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let key = dir.join("corrupt.key");
@@ -6076,14 +7251,13 @@ mod tests {
             // SAFETY: shutdown reclaims the current node, if any; takes no arguments.
             unsafe { hew_node_api_shutdown() };
         }
-        crate::quic_mesh::mesh_auth_setup_reset();
         let _ = std::fs::remove_file(&key);
 
         // --- bad-hex allow_peer: must fail and poison start ---
-        crate::quic_mesh::mesh_auth_setup_reset();
+        reset_staging();
         let bad_hex = CString::new("nothex!!").expect("valid C string");
         // SAFETY: bad_hex is a valid NUL-terminated C string for this call.
-        let rc_allow = unsafe { hew_node_api_allow_peer(bad_hex.as_ptr()) };
+        let rc_allow = unsafe { hew_node_api_allow_peer(2, bad_hex.as_ptr()) };
         // SAFETY: bind is a valid NUL-terminated C string for this call.
         let rc_start_after_allow = unsafe { hew_node_api_start(bind.as_ptr()) };
         if rc_start_after_allow == 0 {
@@ -6091,7 +7265,7 @@ mod tests {
             unsafe { hew_node_api_shutdown() };
         }
         // Reset BEFORE asserting so a failed assertion can't poison sibling tests.
-        crate::quic_mesh::mesh_auth_setup_reset();
+        reset_staging();
 
         assert_eq!(rc_load, -1, "a corrupt keyfile must report a load failure");
         assert_eq!(
@@ -6146,6 +7320,253 @@ mod tests {
         );
         with_current_node_read(|current| {
             assert_eq!(*current, 0);
+        });
+    }
+
+    /// D8 / BLOCK-7 point 3: `Node::identity_key` reads the three-state staging
+    /// config — `Building` config, held `Starting.config`, and the retained
+    /// `Running.identity_export` clone — returns `""` (never null) when no stable
+    /// identity is loaded, and NEVER dereferences the owner pointer (the owner
+    /// here is a fabricated non-pointer value the read must not touch).
+    #[test]
+    fn node_identity_key_reads_three_state_config_without_owner_deref() {
+        use crate::peer_binding::{PeerAuthConfig, StableNoiseIdentity, TransportSelection};
+        let _guard = crate::runtime_test_guard();
+
+        let set_state = |state| {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = state;
+        };
+        let read = || {
+            let p = hew_node_api_identity_key();
+            assert!(!p.is_null(), "identity_key must never return null");
+            // SAFETY: p is a freshly-owned NUL-terminated hew string.
+            let s = unsafe { std::ffi::CStr::from_ptr(p) }
+                .to_string_lossy()
+                .into_owned();
+            // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
+            unsafe { crate::string::hew_string_drop(p) };
+            s
+        };
+
+        // Building (default) — no identity loaded ⇒ "".
+        set_state(ConfigState::default());
+        assert_eq!(
+            read(),
+            "",
+            "no stable identity must read as the empty string"
+        );
+
+        // Building with a pinned TCP Noise identity ⇒ its public key hex.
+        let noise = StableNoiseIdentity::from_raw([0x11; 32], [0x22; 32]);
+        let expect_hex = "11".repeat(32);
+        let cfg = PeerAuthConfig {
+            transport: Some(TransportSelection::Tcp),
+            noise_identity: Some(noise),
+            ..PeerAuthConfig::default()
+        };
+        set_state(ConfigState::Building(cfg.clone()));
+        assert_eq!(read(), expect_hex, "Building must read the staged identity");
+
+        // Starting holds the consumed config ⇒ same hex; owner is a fabricated
+        // non-pointer value the read must not dereference.
+        set_state(ConfigState::Starting {
+            generation: 7,
+            owner: 0xDEAD_BEEF,
+            config: cfg,
+        });
+        assert_eq!(
+            read(),
+            expect_hex,
+            "Starting must read the held config (no owner deref)"
+        );
+
+        // Running retains a standalone identity_export clone ⇒ that clone.
+        set_state(ConfigState::Running {
+            generation: 7,
+            owner: 0xDEAD_BEEF,
+            identity_export: "cafe".to_string(),
+        });
+        assert_eq!(
+            read(),
+            "cafe",
+            "Running must read the retained identity_export clone (no owner deref)"
+        );
+
+        // Restore clean staging for sibling tests.
+        set_state(ConfigState::default());
+    }
+
+    /// Issue #2652 (item 2): `Node::set_transport` must pin the selection BEFORE
+    /// any transport-sensitive credential is staged. A `set_transport` that would
+    /// change the transport after `Node::allow_peer` / `Node::load_keys` staged
+    /// material is refused fail-closed (returns `-1`) and leaves both the pinned
+    /// config transport and the process-global `HEW_TRANSPORT` unchanged, so the
+    /// already-staged Noise pubkeys / mesh SPKIs are never reinterpreted under a
+    /// different transport. Re-selecting the SAME transport stays allowed
+    /// (idempotent).
+    #[cfg(feature = "quic")]
+    #[test]
+    fn set_transport_rejected_after_credential_staging() {
+        use crate::peer_binding::TransportSelection as PT;
+        let _guard = crate::runtime_test_guard();
+
+        let reset = || {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        };
+        let pinned_transport = || {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &g.state {
+                ConfigState::Building(cfg) => cfg.transport,
+                _ => panic!("expected Building state"),
+            }
+        };
+        let env_transport =
+            || crate::env::ENV_LOCK.read_access(|()| std::env::var("HEW_TRANSPORT").ok());
+
+        reset();
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: exclusive process-global env access via ENV_LOCK.
+            unsafe { std::env::remove_var("HEW_TRANSPORT") };
+        });
+
+        // Pin TCP explicitly, then stage a peer credential under it.
+        let tcp = CString::new("tcp").unwrap();
+        // SAFETY: tcp is a valid C string for the call.
+        assert_eq!(unsafe { hew_node_api_set_transport(tcp.as_ptr()) }, 0);
+        assert_eq!(pinned_transport(), Some(PT::Tcp));
+
+        let noise_hex = CString::new("11".repeat(32)).unwrap();
+        // SAFETY: noise_hex is a valid 32-byte (64-hex) C string.
+        assert_eq!(unsafe { hew_node_api_allow_peer(2, noise_hex.as_ptr()) }, 0);
+        assert_eq!(
+            pinned_transport(),
+            Some(PT::Tcp),
+            "allow_peer must keep the pinned TCP selection"
+        );
+
+        // A transport change after staging is rejected fail-closed and mutates
+        // neither the pinned config nor the env.
+        let mesh = CString::new("quic-mesh").unwrap();
+        crate::hew_clear_error();
+        // SAFETY: mesh is a valid C string for the call.
+        let flip_rc = unsafe { hew_node_api_set_transport(mesh.as_ptr()) };
+        assert_eq!(
+            flip_rc, -1,
+            "set_transport after credential staging must be rejected"
+        );
+        assert_eq!(
+            pinned_transport(),
+            Some(PT::Tcp),
+            "a rejected set_transport must NOT change the pinned selection"
+        );
+        assert_eq!(
+            env_transport().as_deref(),
+            Some("tcp"),
+            "a rejected set_transport must NOT change HEW_TRANSPORT"
+        );
+
+        // Re-selecting the same transport is idempotent and allowed.
+        // SAFETY: tcp is a valid C string for the call.
+        let reselect_rc = unsafe { hew_node_api_set_transport(tcp.as_ptr()) };
+        assert_eq!(
+            reselect_rc, 0,
+            "re-selecting the same transport after staging stays allowed"
+        );
+
+        reset();
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: exclusive process-global env access via ENV_LOCK.
+            unsafe { std::env::remove_var("HEW_TRANSPORT") };
+        });
+    }
+
+    /// Issue #2652 (item 2): a node's exported stable identity (`identity_key()`)
+    /// is stable across an attempted transport flip after staging. Once
+    /// `Node::load_keys` pins the transport and stages the Noise identity, a
+    /// rejected `Node::set_transport` cannot change which credential is exported,
+    /// and the pinned selection `Node::start` will use stays put.
+    #[cfg(all(feature = "quic", feature = "encryption"))]
+    #[test]
+    fn identity_key_stable_across_attempted_transport_flip() {
+        use crate::peer_binding::TransportSelection as PT;
+        let _guard = crate::runtime_test_guard();
+
+        let reset = || {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        };
+        let pinned_transport = || {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &g.state {
+                ConfigState::Building(cfg) => cfg.transport,
+                _ => panic!("expected Building state"),
+            }
+        };
+        let read_identity = || {
+            let p = hew_node_api_identity_key();
+            assert!(!p.is_null());
+            // SAFETY: p is a freshly-owned NUL-terminated hew string.
+            let s = unsafe { std::ffi::CStr::from_ptr(p) }
+                .to_string_lossy()
+                .into_owned();
+            // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
+            unsafe { crate::string::hew_string_drop(p) };
+            s
+        };
+
+        reset();
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: exclusive process-global env access via ENV_LOCK.
+            unsafe { std::env::set_var("HEW_TRANSPORT", "tcp") };
+        });
+
+        // Load (mint) a stable Noise identity under TCP — pins TCP, stages the id.
+        let dir = tempfile::tempdir().expect("identity keydir");
+        let keyfile = dir.path().join("node.key");
+        let keyfile_c = CString::new(keyfile.to_str().unwrap()).unwrap();
+        // SAFETY: keyfile_c is a valid C string for the call.
+        assert_eq!(unsafe { hew_node_api_load_keys(keyfile_c.as_ptr()) }, 0);
+        assert_eq!(pinned_transport(), Some(PT::Tcp));
+
+        let key_before = read_identity();
+        assert!(
+            !key_before.is_empty(),
+            "a loaded Noise identity must export a nonempty credential"
+        );
+
+        // Attempt to flip to quic-mesh — rejected; identity and pin are stable.
+        let mesh = CString::new("quic-mesh").unwrap();
+        crate::hew_clear_error();
+        // SAFETY: mesh is a valid C string for the call.
+        assert_eq!(unsafe { hew_node_api_set_transport(mesh.as_ptr()) }, -1);
+
+        let key_after = read_identity();
+        assert_eq!(
+            key_before, key_after,
+            "the exported identity must be stable across a rejected transport flip"
+        );
+        assert_eq!(
+            pinned_transport(),
+            Some(PT::Tcp),
+            "start must use the stored TCP selection, not the attempted mesh flip"
+        );
+
+        reset();
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: exclusive process-global env access via ENV_LOCK.
+            unsafe { std::env::remove_var("HEW_TRANSPORT") };
         });
     }
 
@@ -6885,6 +8306,49 @@ mod tests {
         assert_eq!(hew_node_ask_take_last_error(), AskError::None as i32);
     }
 
+    /// Issue #2652 D12: a reply that arrives on a DIFFERENT `(conn_mgr, conn_id)`
+    /// than the ask was issued on must not resolve it — a peer cannot complete
+    /// (or reject) another peer's ask. The pending entry survives the mismatched
+    /// attempt and is resolvable only by the originating connection.
+    #[test]
+    fn reply_completion_requires_the_originating_connection() {
+        let _guard = crate::runtime_test_guard();
+        let origin = ConnectionKey::new(std::ptr::without_provenance(0x5010), 21);
+        let (id, pending) = reply_table().register(origin);
+
+        // Same request id, wrong manager → rejected, ask stays pending.
+        assert!(
+            !complete_remote_reply(std::ptr::without_provenance(0x9999), 21, id, &[1, 2, 3]),
+            "a reply on a different conn_mgr must not complete the ask"
+        );
+        // Same manager, wrong conn_id → rejected, ask stays pending.
+        assert!(
+            !complete_remote_reply(std::ptr::without_provenance(0x5010), 99, id, &[1, 2, 3]),
+            "a reply on a different conn_id must not complete the ask"
+        );
+        // A rejection reply on the wrong connection is likewise rejected.
+        assert!(
+            !fail_remote_reply(std::ptr::without_provenance(0x9999), 21, id, &[]),
+            "a rejection on a different connection must not fail the ask"
+        );
+        assert!(
+            pending.outcome.lock().unwrap().is_none(),
+            "the ask must remain unresolved after mismatched attempts"
+        );
+
+        // The originating connection resolves it.
+        assert!(
+            complete_remote_reply(std::ptr::without_provenance(0x5010), 21, id, &[9, 9]),
+            "the originating connection must complete the ask"
+        );
+        let guard = pending.outcome.lock().unwrap();
+        let outcome = guard
+            .as_ref()
+            .expect("outcome set by originating connection");
+        assert_eq!(outcome.status, ReplyStatus::Success);
+        assert_eq!(outcome.data, vec![9, 9]);
+    }
+
     #[test]
     fn parked_reply_timeout_finishes_with_timeout_error() {
         let _guard = crate::runtime_test_guard();
@@ -7087,7 +8551,12 @@ mod tests {
             conn_mgr: 91,
             conn_id: 14,
         });
-        assert!(fail_remote_reply(id, &[]));
+        assert!(fail_remote_reply(
+            std::ptr::without_provenance(91),
+            14,
+            id,
+            &[]
+        ));
 
         let guard = pending
             .outcome
@@ -7174,7 +8643,12 @@ mod tests {
             conn_mgr: 92,
             conn_id: 15,
         });
-        assert!(!fail_remote_reply(id, &[0xFF]));
+        assert!(!fail_remote_reply(
+            std::ptr::without_provenance(92),
+            15,
+            id,
+            &[0xFF]
+        ));
 
         let guard = pending
             .outcome
@@ -7671,6 +9145,84 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    /// Wire-identity (issue #2652, BLOCK-5 point 1): the `NodeId` a peer
+    /// advertises over the handshake is the operator-pinned `HEW_NODE_ID`
+    /// (`HewNode.node_id`) — NOT a PID-derived value. After an authorized
+    /// quic-mesh handshake, the responder must observe the initiator under the
+    /// exact configured id, and the *credential-bound* authenticated identity
+    /// must resolve to that same id. This proves the two-part invariant the
+    /// `ctrl-frame-binds-to-authenticated-peer` lesson requires: the handshake
+    /// `NodeId` is BOTH credential-bound AND equal to the operator-pinned id.
+    ///
+    /// If the initiator advertised anything other than its bound id, admission
+    /// on the responder would reject it (credential / `NodeId` mismatch) and no
+    /// connection would key to `ID_A` at all — so a successful observation of
+    /// `ID_A` here is a positive proof of the binding, not a coincidence.
+    #[cfg(feature = "quic")]
+    #[test]
+    fn wire_identity_peer_observes_configured_node_id() {
+        // Configured ids chosen to be unrelated to any PID-derived scheme.
+        const ID_A: u16 = 331;
+        const ID_B: u16 = 332;
+
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(ID_A, ID_B);
+
+        let connect_addr = CString::new(format!("{ID_B}@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // node2 (responder) must have admitted node1's inbound connection under
+        // its configured HEW_NODE_ID (331). Poll briefly: `wait_for_handshake`
+        // only proves the socket is up; claim publication completes a moment
+        // later inside admission.
+        // SAFETY: node2 is valid and its conn_mgr is live while node2 runs.
+        let mgr2 = unsafe { (*node2.as_ptr()).conn_mgr };
+        assert!(!mgr2.is_null(), "node2 conn_mgr must be live");
+        let mut conn_id = -1;
+        let mut authenticated = 0u16;
+        for _ in 0..100 {
+            // SAFETY: mgr2 is a live manager pointer for the duration of the read.
+            conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(mgr2, ID_A) };
+            if conn_id >= 0 {
+                // SAFETY: mgr2 is live for this read.
+                authenticated =
+                    connection::authenticated_peer_node_id_for_conn(unsafe { &*mgr2 }, conn_id);
+                if authenticated == ID_A {
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            conn_id >= 0,
+            "node2 must route the initiator under its configured id {ID_A}"
+        );
+        // SAFETY: mgr2 is a live manager pointer for the duration of these reads.
+        let mgr2_ref = unsafe { &*mgr2 };
+        assert_eq!(
+            connection::peer_node_id_for_conn(mgr2_ref, conn_id),
+            ID_A,
+            "peer-observed handshake NodeId must equal the configured HEW_NODE_ID, \
+             not a PID-derived value"
+        );
+        assert_eq!(
+            authenticated, ID_A,
+            "the observed NodeId must be credential-bound (authenticated), not merely declared"
+        );
+
+        // SAFETY: nodes were allocated in this test and remain valid here.
+        unsafe {
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
     /// Fail-closed: when the two in-process nodes do NOT mutually pin each
     /// other's SPKIs, the mTLS handshake must fail and `hew_node_connect`
     /// must surface a typed diagnostic rather than silently degrading or
@@ -7829,24 +9381,16 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_remote_void_ask_returns_sentinel() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(313, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(314);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection
+        // (inbound ask authority requires an authenticated peer, D9/D12).
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(313, 314);
 
         _real_sched = init_real_scheduler();
 
@@ -7895,6 +9439,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_remote_ask_reply() {
         let _guard = crate::runtime_test_guard();
@@ -7904,19 +9449,10 @@ mod tests {
         register_test_u32_codec(test_dispatch(), 1);
 
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 311.
-        // Node 2 (responder) starts after; CURRENT_NODE stays as node1.
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(311, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0); // CURRENT_NODE = node1, LOCAL_NODE_ID = 311
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(312); // CURRENT_NODE stays node1
+        // Node 2 (responder) starts after; CURRENT_NODE stays as node1. Both nodes
+        // carry cross-bound SPKI→NodeId credentials so the connection admits
+        // Strict — inbound ask authority (D9/D12) requires an authenticated peer.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(311, 312);
 
         // Ensure the scheduler is running so actor dispatches work.
         _real_sched = init_real_scheduler();
@@ -7987,6 +9523,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_remote_ask_async_resumes_on_wire_reply() {
         // NEW-5 worker-free oracle at the runtime contract: a suspendable remote
@@ -8000,16 +9537,8 @@ mod tests {
         crate::registry::hew_registry_clear();
         register_test_u32_codec(test_dispatch(), 1);
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: bind address is a valid C string for this scope.
-        let node1 = unsafe { TestNode::new(321, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-        // SAFETY: node1 is valid for the call.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(322);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(321, 322);
 
         _real_sched = init_real_scheduler();
 
@@ -8109,23 +9638,15 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_inbound_orphaned_ask_reports_orphaned() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(315, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(316);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(315, 316);
 
         _real_sched = init_real_scheduler();
 
@@ -8179,23 +9700,15 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_inbound_actor_stopped_reports_actor_stopped() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(317, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(318);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(317, 318);
 
         _real_sched = init_real_scheduler();
 
@@ -8251,23 +9764,15 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_inbound_mailbox_full_reports_mailbox_full() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(326, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(327);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(326, 327);
 
         _real_sched = init_real_scheduler();
 
@@ -8342,23 +9847,14 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_worker_limit_still_reports_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(319, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(320);
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(319, 320);
 
         _real_sched = init_real_scheduler();
 
@@ -8413,23 +9909,18 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_node_pre_rejection_peer_gets_timeout_not_wrong_error() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(330, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(331);
+        // Authenticated pair: an outbound ask is refused (Unauthorized) before it
+        // is sent unless the target connection is the exact authenticated owner
+        // (issue #2652). The pre-rejection fallback under test needs the ask to
+        // actually reach node2, so the peers are mutually credentialed.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(330, 331);
 
         _real_sched = init_real_scheduler();
 
@@ -8514,24 +10005,15 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_remote_nonvoid_empty_reply_returns_null() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(317, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(318);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(317, 318);
 
         _real_sched = init_real_scheduler();
 
@@ -8583,24 +10065,17 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_node_remote_ask_timeout_reports_timeout() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(328, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(329);
+        // Authenticated pair (issue #2652): a genuine timeout requires the ask to
+        // be sent to an authorized peer and left unanswered — an unverified target
+        // would instead fail closed with Unauthorized before the send.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(328, 329);
 
         _real_sched = init_real_scheduler();
 
@@ -8657,24 +10132,107 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    /// Issue #2652 (item 1, outbound authority): an outbound ask whose target
+    /// connection is `Unverified` (delivery-only — here a plain loopback-TCP pair
+    /// with NO cross-pinned credentials) must fail CLOSED at initiation with
+    /// `AskError::Unauthorized`, BEFORE any request bytes are serialized or a
+    /// pending reply is registered. This is the outbound symmetric of the inbound
+    /// gate (`inbound_ask_denied_unverified`): control-bearing traffic must go
+    /// only to the exact authenticated owner of the target `NodeId`.
+    ///
+    /// Regression guard: before the gate, this same setup silently serialized and
+    /// sent the ask; the responder dropped the unverified inbound ask with no
+    /// reply, so the initiator saw only a `Timeout` — reply-completion validation
+    /// was the sole (insufficient) backstop. A `Timeout` here now means the gate
+    /// was bypassed.
+    #[test]
+    fn unverified_outbound_ask_rejected_unauthorized() {
+        let _guard = crate::runtime_test_guard();
+        let _real_sched;
+        crate::registry::hew_registry_clear();
+
+        // Plain loopback-TCP pair with no cross-pinned credentials → both sides
+        // authenticate as `Unverified` (delivery-only), NOT `Strict`.
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: bind address is a valid C string for the duration of this test.
+        let node1 = unsafe { TestNode::new(342, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+        // SAFETY: node1 came from TestNode::new and is valid for start-up here.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(343);
+
+        _real_sched = init_real_scheduler();
+
+        crate::pid::hew_pid_set_local_node(343);
+        // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
+        let target_actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(blocked_ask_probe_dispatch))
+        };
+        crate::pid::hew_pid_set_local_node(342);
+        assert!(!target_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
+        let actor_id = unsafe { (*target_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 343);
+
+        let connect_addr = CString::new(format!("343@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        let ask_start = std::time::Instant::now();
+        // SAFETY: the actor pid and null payload are valid for this remote ask probe.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                test_dispatch(),
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            )
+        };
+        let err = hew_node_ask_take_last_error();
+
+        assert!(
+            reply_ptr.is_null(),
+            "an ask to an unverified target must return null"
+        );
+        assert_eq!(
+            err,
+            AskError::Unauthorized as i32,
+            "an outbound ask to an Unverified (non-exact-owner) target must be \
+             refused with Unauthorized, not silently sent and timed out"
+        );
+        // The gate fires at initiation — well before the ask timeout deadline.
+        assert!(
+            ask_start.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS),
+            "the outbound authority gate must reject immediately, not block to the deadline"
+        );
+
+        // SAFETY: the actor and nodes were allocated in this test and remain valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(target_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[cfg(feature = "encryption")]
     #[test]
     fn node_stop_wakes_pending_remote_ask() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(315, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(316);
+        // Authenticated pair (issue #2652): the pending ask under test must reach
+        // the reply table, which only happens when the outbound ask is authorized.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(315, 316);
 
         _real_sched = init_real_scheduler();
 
@@ -8756,24 +10314,16 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn connection_drop_wakes_pending_remote_ask() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(320, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(321);
+        // Authenticated pair (issue #2652): the pending ask must register against
+        // the outbound connection, which requires an authorized target.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(320, 321);
 
         _real_sched = init_real_scheduler();
 
@@ -8888,24 +10438,17 @@ mod tests {
     /// node-side fan-out (`fail_remote_asks_for_node`), with the socket left
     /// open so the only thing that resolves the ask is the failure-detector
     /// verdict — distinct from `ConnectionDropped`.
+    #[cfg(feature = "encryption")]
     #[test]
     fn swim_dead_wakes_pending_remote_ask_with_partition() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(330, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(331);
+        // Authenticated pair (issue #2652): the pending ask must reach the reply
+        // table so the SWIM-DEAD fan-out can resolve it with Partition; that only
+        // happens for an authorized outbound target.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(330, 331);
 
         _real_sched = init_real_scheduler();
 
@@ -9230,6 +10773,7 @@ mod tests {
     /// End-to-end: inbound ask counter is bounded during a real two-node ask
     /// round-trip. After the ask completes the worker slot is released and the
     /// counter returns to its pre-ask value.
+    #[cfg(feature = "quic")]
     #[test]
     fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
         let _guard = crate::runtime_test_guard();
@@ -9237,18 +10781,8 @@ mod tests {
         crate::registry::hew_registry_clear();
         register_test_u32_codec(test_dispatch(), 1);
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(320, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(321);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(320, 321);
 
         _real_sched = init_real_scheduler();
 
@@ -9335,24 +10869,15 @@ mod tests {
 
     /// Over-limit rejection of a **void** remote ask returns null +
     /// `WorkerAtCapacity` (not the void-success sentinel, not `ConnectionDropped`).
+    #[cfg(feature = "quic")]
     #[test]
     fn over_limit_void_ask_fails_closed_with_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(322, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(323);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(322, 323);
         _real_sched = init_real_scheduler();
 
         // Spawn a void-reply actor on node2.
@@ -9419,6 +10944,7 @@ mod tests {
     /// Over-limit rejection of a **non-void** remote ask returns null +
     /// `WorkerAtCapacity` (not `PayloadSizeMismatch` from the old empty-
     /// payload path, not `ConnectionDropped`, and not a spurious success).
+    #[cfg(feature = "quic")]
     #[test]
     fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
@@ -9426,18 +10952,8 @@ mod tests {
         crate::registry::hew_registry_clear();
         register_test_u32_codec(test_dispatch(), 1);
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(324, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(325);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(324, 325);
         _real_sched = init_real_scheduler();
 
         // Spawn a u32-echo actor on node2.
@@ -10222,6 +11738,7 @@ mod tests {
     // WINDOWS-TODO: loopback TCP on Windows has higher round-trip latency
     // (15 ms OS timer granularity) than this test's real-sleep window.  Fix
     // requires the IOCP reactor (Phase 2) timer infrastructure.
+    #[cfg(feature = "quic")]
     #[test]
     fn alive_node_is_not_falsely_killed_by_driven_swim() {
         use crate::cluster::hew_cluster_member_state;
@@ -10246,16 +11763,10 @@ mod tests {
         let _swim_env = SwimTimingEnv::fast();
         crate::registry::hew_registry_clear();
 
-        let node_a_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: bind is a valid C string for the test scope.
-        let node_a = unsafe { TestNode::new(NODE_A, &node_a_bind) };
-        assert!(!node_a.as_ptr().is_null());
-        // SAFETY: node_a is valid.
-        unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
-        // Allow node A's runtime to settle before connecting.
-        thread::sleep(Duration::from_millis(50));
-
-        let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        // Driven SWIM requires an authenticated peer (D9 gates the handler).
+        let (node_a, _node_a_port, node_b, node_b_port) =
+            start_authorized_quic_mesh_pair(NODE_A, NODE_B);
 
         let connect_addr = CString::new(format!("{NODE_B}@127.0.0.1:{node_b_port}")).unwrap();
         // SAFETY: node_a and the connect addr are valid for this call.

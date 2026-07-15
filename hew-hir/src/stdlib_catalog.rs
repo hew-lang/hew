@@ -307,6 +307,7 @@ const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
 const BOOL_BOOL: &[BuiltinTy] = &[BuiltinTy::Bool, BuiltinTy::Bool];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
+const U16_STRING: &[BuiltinTy] = &[BuiltinTy::U16, BuiltinTy::String];
 const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
 const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
 const STRING_STRING_STRING: &[BuiltinTy] =
@@ -2400,15 +2401,32 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_node_api_load_keys",
         },
     ),
-    // `Node::allow_peer(spki_hex: String)` — pin a peer's certificate SPKI in
-    // the fail-closed mesh allowlist. String (lowercase hex) in, c_int as Unit.
+    // `Node::allow_peer(node_id: U16, credential_hex: String)` — bind a peer's
+    // authenticated credential to the NodeId it is permitted to claim (issue
+    // #2652). The credential is interpreted by the node's pinned transport: TCP
+    // ⇒ 32-byte Noise pubkey (`PeerCredential::NoiseKey`); quic-mesh ⇒ cert SPKI
+    // (`PeerCredential::Spki`). U16 + String in, c_int discarded as Unit.
     direct(
         "Node::allow_peer",
         BuiltinClass::ClassB,
-        STRING,
+        U16_STRING,
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_node_api_allow_peer",
+        },
+    ),
+    // `Node::identity_key() -> String` — this node's stable public credential
+    // for the pinned transport as lowercase hex (Noise pubkey on TCP, cert SPKI
+    // on quic-mesh, issue #2652). Operators hand it to peers for `allow_peer`.
+    // No args in; returns an owned hew string (`""` when no stable identity has
+    // been loaded), freed by generated code via `hew_string_drop`.
+    direct(
+        "Node::identity_key",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_identity_key",
         },
     ),
     // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`

@@ -800,6 +800,13 @@ pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod monitor;
 pub mod observe;
+/// Peer authentication authority: binds an authenticated peer credential
+/// (Noise static key on TCP, certificate SPKI on quic-mesh) to the `NodeId`
+/// that credential is permitted to claim. Native-only; feature-agnostic (stores
+/// identity material as opaque bytes so it compiles under every native feature
+/// combination). See the module docs for the two-authority model.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod peer_binding;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod phi_accrual;
 #[cfg(not(target_arch = "wasm32"))]

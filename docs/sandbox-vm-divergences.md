@@ -8,6 +8,7 @@ The sandbox VM is deterministic by design. It admits programs whose observable b
 - [Virtual clock vs wall-clock](#virtual-clock-vs-wall-clock)
 - [Seeded PRNG vs host entropy](#seeded-prng-vs-host-entropy)
 - [Logical heap accounting vs allocator](#logical-heap-accounting-vs-allocator)
+- [Native-64 `isize`/`usize` parity](#native-64-isizeusize-parity)
 - [Deterministic actor/message IDs](#deterministic-actormessage-ids)
 - [Page stdout/stderr/stdin vs OS streams](#page-stdoutstderrstdin-vs-os-streams)
 - [In-memory streams only (no file/network backing)](#in-memory-streams-only-no-filenetwork-backing)
@@ -34,6 +35,10 @@ Sandbox random APIs are seeded by the VM run configuration. They do not read hos
 ## Logical heap accounting vs allocator
 
 The sandbox VM accounts heap usage logically at VM allocation boundaries. Native allocator layout, fragmentation, and platform-specific allocation overhead are not part of the sandbox contract. Heap-limit diagnostics therefore refer to the VM accounting model, not the host allocator's byte-for-byte behavior.
+
+## Native-64 `isize`/`usize` parity
+
+Browser-sandbox `isize` and `usize` follow native-64 parity semantics, using a host-native `hew run` as the parity reference. This is intentional: they do **not** follow wasm32 pointer-width semantics.
 
 ## Deterministic actor/message IDs
 

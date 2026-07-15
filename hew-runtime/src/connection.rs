@@ -99,6 +99,13 @@ const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 /// advertise this flag; old nodes would misinterpret it as a void-success reply.
 pub(crate) const HEW_FEATURE_SUPPORTS_ASK_REJECTION: u32 = 1 << 3;
 const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
+
+/// Ceiling on retry ATTEMPTS for a parked registry-gossip flush (finding:
+/// unbounded retries). After this many failed drains the parked frames are
+/// dropped with a loud diagnostic — fail-closed name loss on a connection
+/// whose sends persistently fail (it is about to be torn down anyway) beats
+/// an unbounded retry stream.
+const MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS: u32 = 8;
 const FNV1A32_OFFSET_BASIS: u32 = 2_166_136_261;
 const FNV1A32_PRIME: u32 = 16_777_619;
 
@@ -328,8 +335,14 @@ struct PendingRegistryFlush {
     /// entry (token mismatch) is never consumed by a successor connection
     /// reusing the transport `conn_id`.
     token: u64,
-    /// Encoded control frames, in original flush order.
+    /// Encoded control frames, in original flush/broadcast order (per-
+    /// connection FIFO: later registry events park BEHIND earlier unsent ones,
+    /// so an ADD can never be replayed after a newer REMOVE for the same name
+    /// — ordering is preserved end to end).
     frames: Vec<Vec<u8>>,
+    /// Failed drain attempts so far (bounded by
+    /// [`MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS`]).
+    attempts: u32,
 }
 
 #[derive(Debug, Default)]
@@ -1818,7 +1831,7 @@ fn flush_registry_gossip_to_connection(
             encode_registry_gossip_control(&event.name, event.actor_id, event.is_add)
         })
         .collect();
-    send_registry_flush_frames(mgr, conn_id, publication_token, frames);
+    send_registry_flush_frames(mgr, conn_id, publication_token, frames, 0);
 }
 
 /// Send encoded registry-gossip flush frames in order. On a failed send, park
@@ -1831,6 +1844,7 @@ fn send_registry_flush_frames(
     conn_id: c_int,
     publication_token: u64,
     mut frames: Vec<Vec<u8>>,
+    attempts: u32,
 ) {
     let mut sent = 0;
     while let Some(bytes) = frames.get(sent) {
@@ -1841,7 +1855,17 @@ fn send_registry_flush_frames(
                  parking {} frame(s) for retry",
                 frames.len() - sent
             ));
-            park_pending_registry_flush(mgr, conn_id, publication_token, frames.split_off(sent));
+            // Re-park AT FRONT: a concurrent broadcast may have appended newer
+            // frames to the entry while this drain ran; the unsent remainder
+            // predates them, so it must go back ahead of them (FIFO).
+            park_pending_registry_flush(
+                mgr,
+                conn_id,
+                publication_token,
+                frames.split_off(sent),
+                attempts,
+                true,
+            );
             return;
         }
         sent += 1;
@@ -1856,6 +1880,8 @@ fn park_pending_registry_flush(
     conn_id: c_int,
     publication_token: u64,
     frames: Vec<Vec<u8>>,
+    attempts: u32,
+    at_front: bool,
 ) {
     if frames.is_empty() {
         return;
@@ -1864,14 +1890,21 @@ fn park_pending_registry_flush(
         let entry = map.entry(conn_id).or_insert_with(|| PendingRegistryFlush {
             token: publication_token,
             frames: Vec::new(),
+            attempts: 0,
         });
         if entry.token != publication_token {
             // A previous admission's leftovers never survive into a successor
             // on a reused conn_id.
             entry.token = publication_token;
             entry.frames.clear();
+            entry.attempts = 0;
         }
-        entry.frames.extend(frames);
+        entry.attempts = entry.attempts.max(attempts);
+        if at_front {
+            entry.frames.splice(0..0, frames);
+        } else {
+            entry.frames.extend(frames);
+        }
         if entry.frames.len() > MAX_REGISTRY_GOSSIP_FLUSH_EVENTS {
             let excess = entry.frames.len() - MAX_REGISTRY_GOSSIP_FLUSH_EVENTS;
             entry.frames.drain(..excess);
@@ -1894,7 +1927,7 @@ fn retry_pending_registry_flush(mgr: &HewConnMgr, conn_id: c_int, claim_token: u
     if mgr.pending_registry_flush_count.load(Ordering::Acquire) == 0 {
         return;
     }
-    let Some(frames) = mgr.pending_registry_flush.access(|map| {
+    let Some((frames, attempts)) = mgr.pending_registry_flush.access(|map| {
         let matches = map
             .get(&conn_id)
             .is_some_and(|pending| pending.token == claim_token);
@@ -1904,10 +1937,22 @@ fn retry_pending_registry_flush(mgr: &HewConnMgr, conn_id: c_int, claim_token: u
         let pending = map.remove(&conn_id);
         mgr.pending_registry_flush_count
             .store(map.len(), Ordering::Release);
-        pending.map(|p| p.frames)
+        pending.map(|p| (p.frames, p.attempts + 1))
     }) else {
         return;
     };
+    if attempts > MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS {
+        // Fail closed, loudly: this connection's sends have failed
+        // MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS drains in a row — drop the parked
+        // frames instead of retrying forever on a connection that is
+        // evidently broken.
+        set_last_error(format!(
+            "registry gossip retry budget exhausted for conn {conn_id}: dropping \
+             {} parked frame(s) after {MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS} failed attempts",
+            frames.len()
+        ));
+        return;
+    }
     if authenticated_peer_node_id_for_conn(mgr, conn_id) == 0 {
         set_last_error(format!(
             "registry gossip retry dropped for conn {conn_id}: connection no longer \
@@ -1915,7 +1960,7 @@ fn retry_pending_registry_flush(mgr: &HewConnMgr, conn_id: c_int, claim_token: u
         ));
         return;
     }
-    send_registry_flush_frames(mgr, conn_id, claim_token, frames);
+    send_registry_flush_frames(mgr, conn_id, claim_token, frames, attempts);
 }
 
 // ── SWIM failure-detection transport ────────────────────────────────────
@@ -3935,16 +3980,44 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
     };
 
     let conn_ids = active_gossip_connection_ids(mgr_ref);
+    // Publication tokens for FIFO parking: a broadcast frame for a connection
+    // with an undelivered parked flush must queue BEHIND it — never overtake
+    // it — so per-connection registry-event ordering (ADD before a newer
+    // REMOVE of the same name, and vice versa) is preserved even across send
+    // failures. A failed direct send parks the frame the same way.
+    let tokens: HashMap<c_int, u64> = mgr_ref.connections.access(|conns| {
+        conns
+            .iter()
+            .filter(|c| conn_ids.contains(&c.conn_id))
+            .map(|c| (c.conn_id, c.publication_token))
+            .collect()
+    });
     let mut success_count: c_int = 0;
     for conn_id in conn_ids {
+        let Some(&token) = tokens.get(&conn_id) else {
+            continue;
+        };
+        let has_parked = mgr_ref.pending_registry_flush_count.load(Ordering::Acquire) != 0
+            && mgr_ref.pending_registry_flush.access(|map| {
+                map.get(&conn_id)
+                    .is_some_and(|pending| pending.token == token)
+            });
+        if has_parked {
+            park_pending_registry_flush(mgr_ref, conn_id, token, vec![bytes.clone()], 0, false);
+            set_last_error(format!(
+                "registry gossip broadcast parked behind an undelivered flush for conn {conn_id}"
+            ));
+            continue;
+        }
         // SAFETY: manager is live and bytes is a complete encoded control frame.
         if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, bytes.as_ptr(), bytes.len()) } == 0
         {
             success_count += 1;
         } else {
             set_last_error(format!(
-                "registry gossip broadcast send failed for conn {conn_id}"
+                "registry gossip broadcast send failed for conn {conn_id}; parked for retry"
             ));
+            park_pending_registry_flush(mgr_ref, conn_id, token, vec![bytes.clone()], 0, false);
         }
     }
     success_count
@@ -5665,6 +5738,203 @@ mod tests {
                 );
             }
         });
+    }
+
+    /// Ordering safety across a failed flush (the stale-replay hazard): a
+    /// broadcast REMOVE for a name whose ADD is still parked must queue BEHIND
+    /// the parked ADD, and the retry must deliver both in original order — the
+    /// receiver's final state is the REMOVE, never a replayed stale ADD.
+    #[test]
+    fn broadcast_parks_behind_undelivered_flush_preserving_order() {
+        let state = Box::into_raw(Box::new(FailingOnceSends {
+            fail_remaining: AtomicUsize::new(1),
+            sends: Mutex::new(Vec::new()),
+        }));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(fail_once_then_record_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: state.cast(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.posture = crate::peer_binding::Posture::Strict;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+            let token = test_publish_claim(&*mgr, 2, 10);
+
+            let actor_id = crate::pid::hew_pid_make(1, 0x88);
+            (&*cluster).emit_registry_add("svc", actor_id);
+            // The ADD flush fails and parks.
+            flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                1,
+                "the failed ADD must park"
+            );
+
+            // A later REMOVE broadcast must park BEHIND it, not overtake it.
+            assert_eq!(
+                hew_connmgr_broadcast_registry_gossip(mgr, "svc", 0, false),
+                0,
+                "the REMOVE must not report a direct send while the ADD is parked"
+            );
+            assert!(
+                (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty(),
+                "nothing may reach the wire before the retry drains in order"
+            );
+
+            // The retry drains BOTH, in original order: ADD then REMOVE.
+            retry_pending_registry_flush(&*mgr, 10, token);
+            {
+                let sends = (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let ops_seen: Vec<u8> = sends
+                    .iter()
+                    .map(|(_, bytes)| {
+                        let WireFrame::Control(ctrl) =
+                            decode_wire_frame(bytes).expect("frame decodes")
+                        else {
+                            panic!("expected control frame");
+                        };
+                        decode_registry_gossip_payload(&ctrl.payload)
+                            .expect("gossip payload")
+                            .op
+                    })
+                    .collect();
+                assert_eq!(
+                    ops_seen,
+                    vec![REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE],
+                    "the drain must preserve ADD-before-REMOVE order"
+                );
+            }
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                0,
+                "a full drain clears the parked entry"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(state));
+        }
+        drop(ops);
+    }
+
+    /// The retry budget is BOUNDED: after `MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS`
+    /// failed drains the parked frames are dropped fail-closed (with a
+    /// diagnostic), never retried forever.
+    #[test]
+    fn retry_attempts_ceiling_drops_parked_frames() {
+        let state = Box::into_raw(Box::new(FailingOnceSends {
+            fail_remaining: AtomicUsize::new(usize::MAX),
+            sends: Mutex::new(Vec::new()),
+        }));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(fail_once_then_record_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: state.cast(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.posture = crate::peer_binding::Posture::Strict;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+            let token = test_publish_claim(&*mgr, 2, 10);
+
+            (&*cluster).emit_registry_add("svc", crate::pid::hew_pid_make(1, 0x99));
+            flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                1
+            );
+
+            // Every retry fails; the ceiling must eventually drop the entry.
+            for _ in 0..MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS {
+                retry_pending_registry_flush(&*mgr, 10, token);
+                assert_eq!(
+                    (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                    1,
+                    "within budget, a failed drain re-parks"
+                );
+            }
+            let _ = take_hew_last_error();
+            retry_pending_registry_flush(&*mgr, 10, token);
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                0,
+                "the attempt over budget must drop the parked entry"
+            );
+            let diag = take_hew_last_error().expect("budget exhaustion must leave a diagnostic");
+            assert!(
+                diag.contains("retry budget exhausted"),
+                "diagnostic must name the budget exhaustion, got: {diag}"
+            );
+            assert!(
+                (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty(),
+                "no frame ever reached the wire"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(state));
+        }
+        drop(ops);
     }
 
     /// Recorder for the real-order admission test: collects every registry

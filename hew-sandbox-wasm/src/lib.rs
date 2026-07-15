@@ -44,6 +44,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // statement-position if/match/if-let now lower and run. Each name is backed
     // by a `parity.rs` case asserting full stdout+exit parity under HEW_SEED=42.
     "float_arithmetic",
+    // f32 literals and every arithmetic result round at single precision via
+    // const.f32/f32.* rather than carrying hidden f64 precision until a cast.
+    "f32_arithmetic_precision",
     "float_division",
     "float_nonfinite_compare",
     "mixed_numeric",

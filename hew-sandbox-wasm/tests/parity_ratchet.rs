@@ -316,6 +316,11 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("float_arithmetic"),
     },
     Construct {
+        id: "f32 arithmetic rounds after every operation",
+        probe: "fn main() {\n    let base: f32 = 16777216.0;\n    let rounded: f32 = base + 1.0 + 1.0;\n    println(rounded as i64);\n}\n",
+        coverage: Coverage::Parity("f32_arithmetic_precision"),
+    },
+    Construct {
         id: "float division",
         // f64 division/remainder lowers to the f64.* opcode family (IEEE-754,
         // never trap-on-zero). Pinned to the float_division case.
@@ -918,7 +923,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 55; // +3: array repeat, scalar casts, and postfix-try
+    const RUNNABLE_BASELINE: usize = 56; // +1: true single-precision f32 arithmetic
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_) | Coverage::ParityTrap(_)))

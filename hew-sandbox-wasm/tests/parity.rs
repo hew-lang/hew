@@ -27,6 +27,13 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
+        // Each f32 operation rounds immediately. Carrying the chain as f64 and
+        // rounding only at the final cast would incorrectly print 16777218.
+        test_name: "f32_arithmetic_precision",
+        source_rel: "examples/sandbox-graduation/f32_arithmetic_precision.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         // Float division and remainder (IEEE-754, never trap-on-zero).
         test_name: "float_division",
         source_rel: "examples/playground/basics/float_division.hew",
@@ -569,6 +576,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "trap_residual" => Some(
             "repeat-value\nrepeat-count\n3\n7\n7\n7\n65535\n18446744073709551615\n-1\n255\n1\ntrue\n65\n42\nboom\n6\nnone\n",
         ),
+        "f32_arithmetic_precision" => Some("16777216\n"),
         _ => None,
     };
     if let Some(expected) = expected {

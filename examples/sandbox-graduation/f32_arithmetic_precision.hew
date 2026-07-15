@@ -1,0 +1,5 @@
+fn main() {
+    let base: f32 = 16777216.0;
+    let rounded: f32 = base + 1.0 + 1.0;
+    println(rounded as i64);
+}

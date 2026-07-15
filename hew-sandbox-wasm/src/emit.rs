@@ -804,7 +804,13 @@ impl<'a> PackageEmitter<'a> {
                 "u64".to_string(),
                 Vec::new(),
             ),
-            Ty::F32 | Ty::F64 | Ty::FloatLiteral => (
+            Ty::F32 => (
+                "type:f32".to_string(),
+                "float".to_string(),
+                "f32".to_string(),
+                Vec::new(),
+            ),
+            Ty::F64 | Ty::FloatLiteral => (
                 "type:f64".to_string(),
                 "float".to_string(),
                 "f64".to_string(),
@@ -1431,8 +1437,14 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                             // Read the current binding, combine with rhs using the
                             // type-directed opcode family, then write the result back.
                             let target_ty = self.ty_for_expr(target);
+                            let operand_is_f32 = target_ty == Ty::F32;
                             let operand_is_float = target_ty.is_float();
                             let opcode = match compound_op {
+                                CompoundAssignOp::Add if operand_is_f32 => "f32.add",
+                                CompoundAssignOp::Subtract if operand_is_f32 => "f32.sub",
+                                CompoundAssignOp::Multiply if operand_is_f32 => "f32.mul",
+                                CompoundAssignOp::Divide if operand_is_f32 => "f32.div",
+                                CompoundAssignOp::Modulo if operand_is_f32 => "f32.rem",
                                 CompoundAssignOp::Add if operand_is_float => "f64.add",
                                 CompoundAssignOp::Subtract if operand_is_float => "f64.sub",
                                 CompoundAssignOp::Multiply if operand_is_float => "f64.mul",
@@ -1740,10 +1752,15 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 let value = self.lower_expr(operand)?;
                 if *op == hew_parser::ast::UnaryOp::Negate {
                     let ty = self.ty_for_expr(expr);
-                    // Type-directed negation: float negation is IEEE-754
-                    // (`f64.neg`, never traps), integer negation is checked
-                    // (`i64.neg`, traps on `I64_MIN` overflow). See G1.
-                    let opcode = if ty.is_float() { "f64.neg" } else { "i64.neg" };
+                    // Type-directed negation: f32 rounds to single precision,
+                    // f64 stays double precision, and integer negation is checked.
+                    let opcode = if ty == Ty::F32 {
+                        "f32.neg"
+                    } else if ty.is_float() {
+                        "f64.neg"
+                    } else {
+                        "i64.neg"
+                    };
                     let dst = self.temp_local(&ty, Some(span.clone()));
                     self.emit_instruction(
                         opcode,
@@ -2574,9 +2591,15 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 dst
             }
             Literal::Float(value) => {
-                let dst = self.temp_local(&Ty::F64, Some(span.clone()));
+                let ty = self.ty_for_span(&span);
+                let (literal_ty, opcode) = if ty == Ty::F32 {
+                    (Ty::F32, "const.f32")
+                } else {
+                    (Ty::F64, "const.f64")
+                };
+                let dst = self.temp_local(&literal_ty, Some(span.clone()));
                 self.emit_instruction(
-                    "const.f64",
+                    opcode,
                     Some(dst.clone()),
                     vec![Operand::literal(*value)],
                     Some(span),
@@ -2660,8 +2683,15 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         // but comparisons yield `bool`, so we read the operand type from the
         // left-hand expression (both operands share a numeric type by the
         // time the type checker accepts the expression).
-        let operand_is_float = self.ty_for_expr(left).is_float();
+        let operand_ty = self.ty_for_expr(left);
+        let operand_is_f32 = operand_ty == Ty::F32;
+        let operand_is_float = operand_ty.is_float();
         let opcode = match op {
+            BinaryOp::Add if operand_is_f32 => "f32.add",
+            BinaryOp::Subtract if operand_is_f32 => "f32.sub",
+            BinaryOp::Multiply if operand_is_f32 => "f32.mul",
+            BinaryOp::Divide if operand_is_f32 => "f32.div",
+            BinaryOp::Modulo if operand_is_f32 => "f32.rem",
             BinaryOp::Add if operand_is_float => "f64.add",
             BinaryOp::Subtract if operand_is_float => "f64.sub",
             BinaryOp::Multiply if operand_is_float => "f64.mul",

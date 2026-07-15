@@ -309,6 +309,9 @@ class Interpreter {
       case "const.u64":
         this.writeDst(frame, instruction, this.i64(this.bigintArg(instruction.args[0], instruction.span)));
         return;
+      case "const.f32":
+        this.writeDst(frame, instruction, this.f32(this.numberArg(instruction.args[0], instruction.span)));
+        return;
       case "const.f64":
         this.writeDst(frame, instruction, { kind: "f64", value: this.numberArg(instruction.args[0], instruction.span) });
         return;
@@ -397,6 +400,26 @@ class Interpreter {
         return;
       case "i64.checked_mul":
         this.writeDst(frame, instruction, this.checkedI64(this.i64Arg(frame, instruction.args[0], instruction.span) * this.i64Arg(frame, instruction.args[1], instruction.span), instruction.span));
+        return;
+      // f32 values use the VM's numeric value representation, but every literal
+      // and arithmetic result is rounded to IEEE-754 single precision.
+      case "f32.add":
+        this.writeDst(frame, instruction, this.f32(this.f32Arg(frame, instruction.args[0], instruction.span) + this.f32Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f32.sub":
+        this.writeDst(frame, instruction, this.f32(this.f32Arg(frame, instruction.args[0], instruction.span) - this.f32Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f32.mul":
+        this.writeDst(frame, instruction, this.f32(this.f32Arg(frame, instruction.args[0], instruction.span) * this.f32Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f32.div":
+        this.writeDst(frame, instruction, this.f32(this.f32Arg(frame, instruction.args[0], instruction.span) / this.f32Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f32.rem":
+        this.writeDst(frame, instruction, this.f32(this.f32Arg(frame, instruction.args[0], instruction.span) % this.f32Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f32.neg":
+        this.writeDst(frame, instruction, this.f32(-this.f32Arg(frame, instruction.args[0], instruction.span)));
         return;
       // f64 arithmetic follows IEEE-754 exactly (matching native LLVM
       // fadd/fsub/fmul/fdiv/frem/fneg). JS `number` is an IEEE-754 double, so
@@ -1647,6 +1670,10 @@ class Interpreter {
     return value.value;
   }
 
+  private f32Arg(frame: Frame, operand: Operand | undefined, span: string | null): number {
+    return Math.fround(this.f64Arg(frame, operand, span));
+  }
+
   private indexArg(frame: Frame, operand: Operand | undefined, span: string | null): number {
     const value = this.i64Arg(frame, operand, span);
     if (value < BigInt(Number.MIN_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -1747,6 +1774,10 @@ class Interpreter {
 
   private f64(value: number): VmValue {
     return { kind: "f64", value };
+  }
+
+  private f32(value: number): VmValue {
+    return this.f64(Math.fround(value));
   }
 
   private checkedI64(value: bigint, span: string | null): VmValue {

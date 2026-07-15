@@ -1465,9 +1465,9 @@ impl Checker {
     /// `bind_pattern` has already accepted the arm (so the scrutinee type is
     /// known and the payload bindings are sound).
     ///
-    /// `Pattern::Or` arms are intentionally skipped: or-pattern lowering is a
-    /// future lane.  A missing entry for an or-pattern arm must surface a typed
-    /// diagnostic downstream, not a silent fallthrough.
+    /// `Pattern::Or` records each leaf under that leaf's own span. The enclosing
+    /// or-node has no resolution entry because downstream expansion consumes the
+    /// independently classified leaves.
     #[expect(
         clippy::too_many_lines,
         reason = "pattern classification requires one branch per AST variant; extraction would hide the shape"
@@ -1980,10 +1980,11 @@ impl Checker {
                     payload_variant_patterns: vec![],
                 }
             }
-            // Or-patterns are intentionally skipped.  Or-pattern lowering is
-            // a future lane; a missing entry must surface a typed diagnostic
-            // downstream rather than a silent fallthrough.
-            Pattern::Or(_, _) => return,
+            Pattern::Or(left, right) => {
+                self.record_arm_resolution(&left.0, &left.1, scrutinee_ty);
+                self.record_arm_resolution(&right.0, &right.1, scrutinee_ty);
+                return;
+            }
             // Regex patterns: derive named capture names from the pattern at
             // check time using the same `regex` engine as the runtime. The
             // AST `captures` field is initialised to `vec![]` by the parser;

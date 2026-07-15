@@ -477,10 +477,10 @@ fn foo(p: Point) -> i64 {
         );
     }
 
-    // ── or-pattern is absent ─────────────────────────────────────────────────
+    // ── or-pattern leaves ────────────────────────────────────────────────────
 
     #[test]
-    fn or_pattern_arm_absent_from_side_table() {
+    fn or_pattern_records_each_leaf_resolution() {
         let resolutions = pattern_resolutions(
             r"
 fn foo(x: i64) {
@@ -490,14 +490,42 @@ fn foo(x: i64) {
     }
 }",
         );
-        // The or-pattern arm must be absent; only the wildcard arm is recorded.
+        assert_eq!(resolutions.len(), 3);
         assert_eq!(
-            resolutions.len(),
-            1,
-            "or-pattern arm must not appear in pattern_resolutions"
+            resolutions
+                .values()
+                .filter(|resolution| resolution.pattern_kind == PatternKind::Literal)
+                .count(),
+            2
         );
-        let arm = resolutions.values().next().unwrap();
-        assert_eq!(arm.pattern_kind, PatternKind::Wildcard);
+        assert_eq!(
+            resolutions
+                .values()
+                .filter(|resolution| resolution.pattern_kind == PatternKind::Wildcard)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn or_pattern_uppercase_binder_leaves_record_as_bindings() {
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) -> i64 {
+    match x {
+        MAX | MAX => MAX,
+        _ => 0,
+    }
+}",
+        );
+        assert_eq!(
+            resolutions
+                .values()
+                .filter(|resolution| resolution.pattern_kind == PatternKind::Binding)
+                .count(),
+            2,
+            "both uppercase leaves must use scrutinee-aware binding classification"
+        );
     }
 
     // ── payload types resolved at output boundary ────────────────────────────

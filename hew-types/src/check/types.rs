@@ -449,9 +449,8 @@ pub struct TypeCheckOutput {
     /// resolution context, which is a HIR diagnostic (analogous to
     /// `MethodCallNoRewrite`).
     ///
-    /// `Pattern::Or` arms are intentionally absent from this table; or-pattern
-    /// lowering is a future lane.  A missing entry for an or-pattern arm must
-    /// surface a typed diagnostic, not a silent fallthrough.
+    /// Or-patterns publish one entry per leaf span; the enclosing or-node is not
+    /// itself classified.
     ///
     /// WHEN-OBSOLETE: never; this table is the checker's authoritative
     /// output for match semantics downstream.
@@ -907,10 +906,7 @@ pub(crate) struct SupervisorChildren {
 /// Checker-resolved classification of one match arm's top-level pattern.
 ///
 /// Populated by the checker during `check_match_stmt` / `check_match_expr` for
-/// every arm whose pattern is accepted.  `Pattern::Or` arms are absent by
-/// design: or-pattern lowering is a follow-on lane; HIR lowering must treat a
-/// missing entry for an or-pattern arm as a fail-closed diagnostic, not a
-/// silent fallthrough.
+/// every accepted non-or arm and every accepted or-pattern leaf.
 ///
 /// This is the top-level kind only — sub-patterns (e.g. the inner pattern of
 /// `Some(x)`) are not recorded separately; per-arm is the granularity the

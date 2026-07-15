@@ -24,6 +24,7 @@ use std::thread::{self, JoinHandle};
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
 use crate::envelope::encode_envelope_frame_from_raw_parts;
+use crate::peer_binding::{ConfigState, PeerAuthSnapshot, PEER_AUTH_STATE};
 use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -1208,6 +1209,15 @@ pub struct HewNode {
     bind_addr_owned: *mut c_char,
     accept_stop: Arc<AtomicBool>,
     accept_thread: Mutex<Option<JoinHandle<()>>>,
+    /// The per-node peer-authentication authority installed before start.
+    ///
+    /// Defaults to [`PeerAuthSnapshot::unconfigured`] in [`hew_node_new`]; the
+    /// public `Node::start` path installs the staged snapshot via
+    /// [`hew_node_set_auth_snapshot`] before the shared low-level start, and
+    /// low-level callers install their own explicit snapshot. `hew_node_start`
+    /// reads this — never the public `ConfigState` — so concurrent low-level
+    /// nodes stay isolated.
+    pub(crate) auth: PeerAuthSnapshot,
 }
 
 impl std::fmt::Debug for HewNode {
@@ -2116,10 +2126,40 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
         bind_addr_owned: bind_copy,
         accept_stop: Arc::new(AtomicBool::new(false)),
         accept_thread: Mutex::new(None),
+        auth: PeerAuthSnapshot::unconfigured(),
     });
     let raw = Box::into_raw(node);
     remember_node(raw);
     raw
+}
+
+/// Install the per-node [`PeerAuthSnapshot`] before the node starts.
+///
+/// The public `hew_node_api_start` calls this (after `hew_node_new`, before the
+/// shared `hew_node_start`) with the staged config's snapshot; low-level callers
+/// call it to install a strict, explicit-unverified, or unconfigured snapshot
+/// per node. Rejected once the node is not `STOPPED` so a live node's admission
+/// authority cannot be swapped underneath it.
+///
+/// # Safety
+///
+/// `node` must be a valid pointer returned by [`hew_node_new`].
+pub(crate) unsafe fn hew_node_set_auth_snapshot(
+    node: *mut HewNode,
+    snapshot: PeerAuthSnapshot,
+) -> c_int {
+    if node.is_null() {
+        set_last_error("hew_node_set_auth_snapshot: node is null");
+        return -1;
+    }
+    // SAFETY: caller guarantees `node` is valid.
+    let node_ref = unsafe { &mut *node };
+    if node_ref.state.load(Ordering::Acquire) != NODE_STATE_STOPPED {
+        set_last_error("hew_node_set_auth_snapshot: node is not stopped");
+        return -1;
+    }
+    node_ref.auth = snapshot;
+    0
 }
 
 /// Start the node runtime: transport listen, accept loop, and cluster init.
@@ -2174,6 +2214,30 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
             set_last_error($msg);
             return -1;
         }};
+    }
+
+    // ── NodeId authority (BLOCK-5 point 1) — before any allocation/listen ──
+    // The per-node `PeerAuthSnapshot` (never the process-global `ConfigState`)
+    // is authoritative for `node.node_id` in strict mode. Defence-in-depth:
+    // reject a self-inconsistent snapshot, then reconcile the node id.
+    if let Err(reason) = node.auth.validate() {
+        fail_start!(reason);
+    }
+    if let Some(snapshot_id) = node.auth.node_id() {
+        let snapshot_id = snapshot_id.get();
+        if node.node_id == 0 {
+            // A low-level caller deferred the id to its snapshot.
+            node.node_id = snapshot_id;
+        } else if node.node_id != snapshot_id {
+            // An explicit `hew_node_new(explicit_id)` contradicts the snapshot's
+            // strict binding identity — refuse before the listener binds and
+            // before cluster/routing/connmgr are created.
+            fail_start!(format!(
+                "hew_node_start: explicit node id {} conflicts with strict binding identity \
+                 HEW_NODE_ID={snapshot_id} — refusing to listen (fail-closed)",
+                node.node_id
+            ));
+        }
     }
 
     if node.transport.is_null() {
@@ -2241,14 +2305,17 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.conn_mgr.is_null() {
-        // SAFETY: pointers are valid for manager lifetime.
+        // SAFETY: pointers are valid for manager lifetime. The manager receives
+        // this node's per-node auth snapshot (cheap clone; identity behind Arc)
+        // — never the process-global `ConfigState` or `ACTIVE_*` statics.
         node.conn_mgr = unsafe {
-            connection::hew_connmgr_new(
+            connection::connmgr_new(
                 node.transport,
                 Some(node_inbound_router),
                 node.routing_table,
                 node.cluster,
                 node.node_id,
+                node.auth.clone(),
             )
         };
         if node.conn_mgr.is_null() {
@@ -3935,6 +4002,37 @@ fn next_local_node_id(base: u16, offset: u16) -> u16 {
     id
 }
 
+/// Parse `HEW_NODE_ID` into a validated non-zero `u16` stable binding identity.
+///
+/// Returns `Ok(None)` when unset, `Ok(Some(id))` for a value in `1..=65535`,
+/// and `Err` for a malformed or out-of-range value (fail-closed at start).
+fn hew_node_id_from_env() -> Result<Option<std::num::NonZeroU16>, String> {
+    let raw = crate::env::ENV_LOCK.read_access(|()| std::env::var("HEW_NODE_ID").ok());
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    match trimmed.parse::<u16>() {
+        Ok(v) => std::num::NonZeroU16::new(v).map(Some).ok_or_else(|| {
+            "Node::start: HEW_NODE_ID must be a nonzero u16 in 1..=65535 (fail-closed)".to_string()
+        }),
+        Err(_) => Err(format!(
+            "Node::start: HEW_NODE_ID must be a u16 in 1..=65535, got '{trimmed}' (fail-closed)"
+        )),
+    }
+}
+
+/// Whether `HEW_DIST_UNVERIFIED` requests the explicit documented unverified
+/// opt-out (`1` / `true`, case-insensitive).
+fn hew_dist_unverified_from_env() -> bool {
+    crate::env::ENV_LOCK
+        .read_access(|()| std::env::var("HEW_DIST_UNVERIFIED").ok())
+        .is_some_and(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true")
+        })
+}
+
 /// `Node::start(addr)` — Create and start a node, binding to `addr`.
 ///
 /// # Safety
@@ -3963,23 +4061,109 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         set_last_error(msg);
         return -1;
     }
-    // Each call within the same process adds a small offset to the process
-    // base so multiple Node::start calls don't collide with each other.
+
+    // ── Public owner-scoped staging (BLOCK-6) ─────────────────────────────
+    // The singleton public `Node::*` API stages config in `PEER_AUTH_STATE`.
+    // Transition `Building → Starting{owner}` under the lock, then run the
+    // shared low-level start WITHOUT the lock (it reads the node's installed
+    // snapshot, never `ConfigState`), then re-acquire for `Running` / restore.
     let offset = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let node_id = next_local_node_id(process_node_id_base(), offset);
-    // SAFETY: addr was null-checked above and is a valid C string.
-    let node = unsafe { hew_node_new(node_id, addr) };
-    if node.is_null() {
-        return -1;
-    }
-    // SAFETY: node was just created successfully by hew_node_new.
+    let (node, cfg, generation) = {
+        let mut guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let ConfigState::Building(building) = &guard.state else {
+            // A public node lifecycle already owns the staging state
+            // (Starting/Running). Refuse a repeated public start (composes with
+            // #2656, which owns the pre-allocation rejection).
+            set_last_error("Node::start: a public node lifecycle is already active (fail-closed)");
+            return -1;
+        };
+        // Merge start-time environment posture into the staged config.
+        let mut cfg = building.clone();
+        match hew_node_id_from_env() {
+            Ok(Some(id)) => cfg.node_id = Some(id),
+            Ok(None) => {}
+            Err(msg) => {
+                eprintln!("hew: {msg}");
+                set_last_error(msg);
+                return -1;
+            }
+        }
+        if hew_dist_unverified_from_env() {
+            cfg.unverified_optout = true;
+        }
+        // Pre-listen public validation (fail-closed before allocation).
+        if let Err(msg) = cfg.validate_public() {
+            eprintln!("hew: {msg}");
+            set_last_error(msg);
+            return -1;
+        }
+        // Derive the node id: strict ⇒ the pinned HEW_NODE_ID; else PID-derived.
+        let node_id = match cfg.node_id {
+            Some(id) => id.get(),
+            None => next_local_node_id(process_node_id_base(), offset),
+        };
+        // SAFETY: addr was null-checked above and is a valid C string.
+        let node = unsafe { hew_node_new(node_id, addr) };
+        if node.is_null() {
+            // State unchanged (still Building); the staged config is intact.
+            return -1;
+        }
+        // Install the frozen per-node snapshot before the low-level start.
+        // SAFETY: node was just created and is STOPPED.
+        if unsafe { hew_node_set_auth_snapshot(node, cfg.snapshot()) } != 0 {
+            // SAFETY: node is valid, not started; free it.
+            unsafe { hew_node_free(node) };
+            return -1;
+        }
+        let generation = guard.next_generation;
+        guard.next_generation = guard.next_generation.wrapping_add(1);
+        guard.state = ConfigState::Starting {
+            generation,
+            owner: node as usize,
+            config: cfg.clone(),
+        };
+        (node, cfg, generation)
+    };
+
+    // SAFETY: node was created above; the low-level start reads node.auth only.
     let rc = unsafe { hew_node_start(node) };
-    if rc != 0 {
+    let mut guard = PEER_AUTH_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if rc == 0 {
+        // Success: compute the standalone identity export clone and go Running.
+        let identity_export = cfg.identity_export_string();
+        if matches!(&guard.state, ConfigState::Starting { generation: g, owner, .. }
+            if *g == generation && *owner == node as usize)
+        {
+            guard.state = ConfigState::Running {
+                generation,
+                owner: node as usize,
+                identity_export,
+            };
+        }
+        0
+    } else {
+        // Public fail_start: restore the exact held config iff owner+generation
+        // still match (a concurrent stage that advanced generation is untouched).
+        if let ConfigState::Starting {
+            generation: g,
+            owner,
+            config,
+        } = &guard.state
+        {
+            if *g == generation && *owner == node as usize {
+                let restored = config.clone();
+                guard.state = ConfigState::Building(restored);
+            }
+        }
+        drop(guard);
         // SAFETY: node is valid but not started; free the allocation.
         unsafe { hew_node_free(node) };
-        return rc;
+        rc
     }
-    0
 }
 
 /// `Node::shutdown()` — Stop and free the current node.
@@ -4008,6 +4192,26 @@ pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
     unsafe { hew_node_stop(ptr) };
     // SAFETY: ptr is valid; the node has been stopped.
     unsafe { hew_node_free(ptr) };
+    // Owner-scoped reset: return the public staging state to `Building` and bump
+    // the generation ONLY when the shutting node owns it (mirrors
+    // `hew_node_stop`'s `CURRENT_NODE` owner check). `owner` is compared as an
+    // integer — never dereferenced. A secondary low-level `hew_node_stop` never
+    // reaches this path, so it leaves `ConfigState` intact.
+    {
+        let mut guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owner_matches = match &guard.state {
+            ConfigState::Running { owner, .. } | ConfigState::Starting { owner, .. } => {
+                *owner == ptr as usize
+            }
+            ConfigState::Building(_) => false,
+        };
+        if owner_matches {
+            guard.state = ConfigState::default();
+            guard.next_generation = guard.next_generation.wrapping_add(1);
+        }
+    }
     0
 }
 
@@ -6015,6 +6219,220 @@ mod tests {
         _borrow_mode: i32,
     ) -> *mut c_void {
         std::ptr::null_mut()
+    }
+
+    /// `NodeId` authority (BLOCK-5 point 1): a low-level node whose explicit
+    /// `hew_node_new(id)` contradicts its installed strict snapshot binding
+    /// identity is rejected **before** the listener binds — no socket, no
+    /// manager, fail-closed.
+    #[test]
+    fn node_start_rejects_conflicting_snapshot_node_id_before_listen() {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings, PeerCredential};
+        let _guard = crate::runtime_test_guard();
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // Explicit low-level id 100 conflicts with the snapshot's strict id 42.
+        // SAFETY: bind_addr is valid for the duration of this test.
+        let node = unsafe { TestNode::new(100, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(42)
+            .or_default()
+            .insert(PeerCredential::NoiseKey([0xAB; 32]));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(42),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // SAFETY: node is STOPPED; installing a snapshot is valid.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0);
+        // SAFETY: node is valid; start must reject the conflicting id.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(rc, -1, "conflicting snapshot id must be rejected");
+        // SAFETY: node valid; assert fail-closed: STOPPED, no manager, no transport.
+        unsafe {
+            let n = &*node.as_ptr();
+            assert_eq!(n.state.load(Ordering::Acquire), NODE_STATE_STOPPED);
+            assert!(n.conn_mgr.is_null(), "no manager on rejected start");
+            assert!(n.transport.is_null(), "no listener bound on rejected start");
+        }
+        // SAFETY: reads the thread-local last-error C string set by the start
+        // path; the pointer is valid until the next error is set on this thread.
+        let err = unsafe {
+            let p = crate::hew_last_error();
+            if p.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        assert!(
+            err.contains("conflicts with strict binding identity"),
+            "diagnostic should name the conflict; got: {err}"
+        );
+    }
+
+    /// `NodeId` authority: a low-level node created with id `0` adopts its
+    /// snapshot's stable `NodeId` at start (a caller that deferred the id).
+    #[test]
+    fn node_start_adopts_snapshot_node_id_when_created_with_zero() {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings, PeerCredential};
+        let _guard = crate::runtime_test_guard();
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr valid for the test.
+        let node = unsafe { TestNode::new(0, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(4242)
+            .or_default()
+            .insert(PeerCredential::NoiseKey([0xCD; 32]));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(4242),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // SAFETY: node STOPPED.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0);
+        // SAFETY: node valid; start should adopt 4242 and succeed.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(
+            rc,
+            0,
+            "start should adopt snapshot id: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: node valid & running.
+        unsafe {
+            assert_eq!((*node.as_ptr()).node_id, 4242);
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+    }
+
+    /// Defence-in-depth: a self-inconsistent snapshot (unverified opt-out WITH
+    /// bindings) fails the node's own start before listen.
+    #[test]
+    fn node_start_rejects_malformed_snapshot() {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings, PeerCredential};
+        let _guard = crate::runtime_test_guard();
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr valid.
+        let node = unsafe { TestNode::new(7, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(42)
+            .or_default()
+            .insert(PeerCredential::NoiseKey([0x11; 32]));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(7),
+            unverified_optout: true,
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // SAFETY: node STOPPED.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0);
+        // SAFETY: node valid; start must reject the malformed snapshot.
+        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, -1);
+        // SAFETY: node valid.
+        unsafe {
+            assert!((*node.as_ptr()).transport.is_null());
+        }
+    }
+
+    /// `hew_node_set_auth_snapshot` is rejected once the node is not STOPPED.
+    #[test]
+    fn set_auth_snapshot_rejected_when_running() {
+        let _guard = crate::runtime_test_guard();
+        let (node, _port) = start_tcp_test_listener_node(55);
+        // SAFETY: node is RUNNING; the setter must refuse.
+        let rc =
+            unsafe { hew_node_set_auth_snapshot(node.as_ptr(), PeerAuthSnapshot::unconfigured()) };
+        assert_eq!(rc, -1, "installing a snapshot on a running node must fail");
+        // SAFETY: node valid.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+    }
+
+    /// Public owner-scoped staging (BLOCK-6): a default `Node::start` transitions
+    /// `Building → Running{owner}` and `Node::shutdown` returns it to `Building`
+    /// with a bumped generation. No env configured ⇒ unconfigured snapshot,
+    /// PID-derived id — the pre-fix default behaviour is preserved.
+    #[test]
+    fn public_start_default_then_shutdown_resets_state() {
+        let _guard = crate::runtime_test_guard();
+        // Start from a known-clean staging cell (other unit tests stage config).
+        {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        }
+        let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind is a valid C string for this call.
+        let rc = unsafe { hew_node_api_start(bind.as_ptr()) };
+        assert_eq!(rc, 0, "default public start should succeed");
+        {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                matches!(g.state, ConfigState::Running { .. }),
+                "staging state should be Running after a successful start"
+            );
+        }
+        let gen_before = {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.next_generation
+        };
+        // SAFETY: a node was started by this test; shutdown reclaims it.
+        assert_eq!(unsafe { hew_node_api_shutdown() }, 0);
+        {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                matches!(g.state, ConfigState::Building(_)),
+                "shutdown must return staging to Building"
+            );
+            assert_ne!(
+                g.next_generation, gen_before,
+                "shutdown must bump the staging generation"
+            );
+        }
+    }
+
+    /// A second public `Node::start` while one is already active is refused
+    /// (fail-closed), and the first node keeps running until its own shutdown.
+    #[test]
+    fn public_start_rejected_when_already_active() {
+        let _guard = crate::runtime_test_guard();
+        {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        }
+        let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind valid.
+        assert_eq!(unsafe { hew_node_api_start(bind.as_ptr()) }, 0);
+        // SAFETY: bind valid; second start must be rejected.
+        let second_rc = unsafe { hew_node_api_start(bind.as_ptr()) };
+        assert_eq!(
+            second_rc, -1,
+            "a second concurrent public start must be refused"
+        );
+        // SAFETY: the first node is still active; shutdown reclaims it.
+        assert_eq!(unsafe { hew_node_api_shutdown() }, 0);
     }
 
     #[test]

@@ -63,6 +63,7 @@ use crate::envelope::{
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
+use crate::peer_binding::PeerAuthSnapshot;
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
@@ -265,6 +266,16 @@ pub struct HewConnMgr {
     /// correct ID in their outgoing handshake even when `LOCAL_NODE_ID` refers
     /// to a different (`CURRENT_NODE`) node.
     pub(crate) local_node_id: u16,
+    /// The frozen per-node peer-authentication authority this manager admits
+    /// connections against. Installed from the owning node's `PeerAuthSnapshot`
+    /// at construction; never the process-global `ACTIVE_*` credential statics.
+    /// Concurrent managers hold independent snapshots, so there is no shared
+    /// admission authority across nodes.
+    #[expect(
+        dead_code,
+        reason = "consumed by the per-connection posture + admission gating slice"
+    )]
+    pub(crate) auth: PeerAuthSnapshot,
 }
 
 #[derive(Debug, Default)]
@@ -1997,6 +2008,44 @@ pub unsafe extern "C" fn hew_connmgr_new(
     cluster: *mut HewCluster,
     local_node_id: u16,
 ) -> *mut HewConnMgr {
+    // The exported C ABI is unchanged (no Rust type crosses the boundary). An
+    // external C caller gets a fail-closed *unconfigured* posture — strict on
+    // any non-loopback/`Unknown` connection, `Unverified` only on a
+    // demonstrated-loopback endpoint. Production installs a real per-node
+    // snapshot via the internal `connmgr_new` constructor below.
+    // SAFETY: transport contract forwarded to the internal constructor.
+    unsafe {
+        connmgr_new(
+            transport,
+            router,
+            routing_table,
+            cluster,
+            local_node_id,
+            PeerAuthSnapshot::unconfigured(),
+        )
+    }
+}
+
+/// Internal constructor taking the per-node [`PeerAuthSnapshot`] by value.
+///
+/// This is the per-manager authority: production (`hew_node_start`) calls it
+/// with the node's installed snapshot; the C `hew_connmgr_new` shim passes
+/// [`PeerAuthSnapshot::unconfigured`]. It **never** reads the public
+/// `ConfigState` — each manager owns its own admission authority.
+///
+/// # Safety
+///
+/// - `transport` must be a valid, non-null pointer to a [`HewTransport`].
+/// - `router` (if non-null) must be a valid function pointer valid for the
+///   manager's lifetime.
+pub(crate) unsafe fn connmgr_new(
+    transport: *mut HewTransport,
+    router: Option<InboundRouter>,
+    routing_table: *mut HewRoutingTable,
+    cluster: *mut HewCluster,
+    local_node_id: u16,
+    auth: PeerAuthSnapshot,
+) -> *mut HewConnMgr {
     cabi_guard!(transport.is_null(), std::ptr::null_mut());
     let mgr = Box::new(HewConnMgr {
         connections: PoisonSafe::new(Vec::with_capacity(16)),
@@ -2014,6 +2063,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         local_node_id,
+        auth,
     });
     Box::into_raw(mgr)
 }
@@ -3184,6 +3234,7 @@ mod tests {
             reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 0,
+            auth: PeerAuthSnapshot::unconfigured(),
         };
 
         assert_eq!(
@@ -3252,6 +3303,7 @@ mod tests {
             reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 1,
+            auth: PeerAuthSnapshot::unconfigured(),
         };
 
         assert_eq!(
@@ -3464,6 +3516,7 @@ mod tests {
             reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 1,
+            auth: PeerAuthSnapshot::unconfigured(),
         };
         let mgr_ptr = std::ptr::from_ref(&mgr).cast_mut();
         let payload = crate::envelope::LinkReqPayload {

@@ -7765,7 +7765,7 @@ fn collect_borrow_arg_sites_in_expr(
 /// Conservative by construction: a helper that returns a let-bound local
 /// (`fn make() { let x = Inner { .. }; x }`) is classified non-fresh — sound
 /// (fail-closed), at the cost of over-rejecting that idiom as a funcupdate base.
-fn compute_fn_returns_fresh_owner(
+pub(crate) fn compute_fn_returns_fresh_owner(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
 ) -> HashMap<hew_hir::ItemId, bool> {
     let mut fresh: HashMap<hew_hir::ItemId, bool> = fns.keys().map(|&id| (id, false)).collect();
@@ -7841,99 +7841,18 @@ fn fn_body_returns_fresh_owner(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, bool>
 ///
 /// EXHAUSTIVE and fail-closed: every form that is not provably non-aliasing
 /// (a bare binding, a method call, a deref, any unmodelled form) returns `true`.
+///
+/// # Delegation (#2648)
+///
+/// The leaf walk now lives ONCE in [`crate::return_provenance::return_alias_bits`],
+/// parameterized by a `LeafPolicy`. This function is the byte-identical **Coarse**
+/// wrapper: `return_alias_bits(expr, &CoarsePolicy) != ∅` reproduces the exact
+/// pre-refactor boolean, keeping the shared funcupdate (#2420 base gate) /
+/// reassign consumers unchanged while #2648's Precise driver consumes the same
+/// walk under a different policy. Pinned byte-identical by the
+/// `coarse_verdict_differential` frozen-reference test.
 fn return_value_may_alias_borrow(expr: &HirExpr, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
-    match &expr.kind {
-        // Value-passthrough wrappers: the value flows from the tail / both
-        // branches / every arm — aliasing iff ANY reachable value aliases.
-        HirExprKind::Block(block) => block
-            .tail
-            .as_deref()
-            .is_none_or(|t| return_value_may_alias_borrow(t, fresh)),
-        HirExprKind::If {
-            then_expr,
-            else_expr,
-            ..
-        } => {
-            return_value_may_alias_borrow(then_expr, fresh)
-                || else_expr
-                    .as_deref()
-                    .is_none_or(|e| return_value_may_alias_borrow(e, fresh))
-        }
-        HirExprKind::Match { arms, .. } => {
-            arms.is_empty()
-                || arms
-                    .iter()
-                    .any(|arm| return_value_may_alias_borrow(&arm.body, fresh))
-        }
-        // A nested `return <e>` in value position (`... else { return p }`)
-        // contributes its own value; it aliases iff that value does.
-        HirExprKind::Return { value } => value
-            .as_deref()
-            .is_none_or(|v| return_value_may_alias_borrow(v, fresh)),
-        // Fresh leaves — NEVER an alias of a caller-owned value. A `.clone()` is
-        // a deep copy; a `Vec<T>` element load / slice is an independent heap
-        // element (push-clone + refcount); a literal owns nothing borrowed.
-        HirExprKind::RecordCloneCall { .. }
-        | HirExprKind::Index { .. }
-        | HirExprKind::Slice { .. }
-        | HirExprKind::Literal(_) => false,
-        // A construction aliases a parameter iff one of its owned operands does.
-        // Storing a managed operand into a field/element refcount-bumps or
-        // COW-copies a PROJECTION/temporary, but a WHOLE by-value parameter is
-        // moved without a bump (`Outer { inner: p }` returns a value whose
-        // `inner` aliases the caller's argument — the call-returns-a-constructor-
-        // embedding-a-borrow use-after-free). The recursion bottoms a bare
-        // parameter operand out at the `_ => true` arm, so it is caught.
-        HirExprKind::StructInit { fields, base, .. } => {
-            fields
-                .iter()
-                .any(|(_, v)| return_value_may_alias_borrow(v, fresh))
-                || base
-                    .as_deref()
-                    .is_some_and(|b| return_value_may_alias_borrow(b, fresh))
-        }
-        HirExprKind::TupleLiteral { elements } => elements
-            .iter()
-            .any(|e| return_value_may_alias_borrow(e, fresh)),
-        HirExprKind::MachineVariantCtor { payload, .. } => payload.as_ref().is_some_and(|fields| {
-            fields
-                .iter()
-                .any(|(_, v)| return_value_may_alias_borrow(v, fresh))
-        }),
-        // A call that is NOT to a statically-resolved Item — a closure value, a
-        // function-pointer parameter, or any indirect/dynamic dispatch — can hand
-        // back a CAPTURED by-value heap parameter through its environment, a
-        // HIDDEN argument the explicit-arg flow below cannot see:
-        // `fn f(p) { let g = || -> Inner { p }; g() }` returns `p` with ZERO
-        // explicit arguments, so an `args`-only test would conclude "no args ⇒ no
-        // alias ⇒ fresh" and admit `..f(o.inner)` — the closure-capture-return
-        // use-after-free. Trust ONLY a resolved Item (a free function whose body
-        // the fixpoint analyzed, or an owned-return-ABI extern / constructor);
-        // every other callee may-alias regardless of arguments. Fail closed.
-        HirExprKind::Call { callee, args } => {
-            !callee_is_resolved_item(callee)
-                // A resolved free-function / owned-ABI extern / constructor call
-                // aliases a parameter iff the callee is NOT proven to return a
-                // fresh owner AND some argument itself aliases a parameter (the
-                // callee could forward that argument out). A proven-fresh callee
-                // never aliases regardless of arguments; a non-fresh callee with
-                // only non-aliasing arguments (`string.repeat("a", 32)`) cannot
-                // alias the ENCLOSING function's parameters. Param-flow, composed
-                // through the fixpoint.
-                || (!callee_returns_fresh_owner(callee, fresh)
-                    && args.iter().any(|a| return_value_may_alias_borrow(a, fresh)))
-        }
-        // A projection aliases a parameter iff its object chain does: `p.inner`
-        // / `t.0` bottoms out at a bare parameter (`_ => true`) and carries that
-        // up; `makeOuter().inner` bottoms out at a fresh `Call` and does not.
-        HirExprKind::FieldAccess { object, .. } => return_value_may_alias_borrow(object, fresh),
-        HirExprKind::TupleIndex { tuple, .. } => return_value_may_alias_borrow(tuple, fresh),
-        // A by-value parameter is a BORROW; a bare local may itself hold a
-        // borrow (`let x = p; x`); a method call can return borrowed `self` /
-        // a parameter; a deref and every other form are not provably fresh.
-        // Fail closed: assume the value MAY alias.
-        _ => true,
-    }
+    crate::return_provenance::coarse_may_alias_borrow(expr, fresh)
 }
 
 /// Resolve a `Call` callee to its freshness fact.
@@ -7991,7 +7910,7 @@ fn callee_is_resolved_item(callee: &HirExpr) -> bool {
 /// recursing into nested control flow but NOT into closures. Exhaustive over
 /// `HirStmtKind`: a missed return statement would let a borrowed-param return
 /// escape the freshness summary (a use-after-free), so every form is handled.
-fn collect_return_values_in_block<'f>(block: &'f HirBlock, out: &mut Vec<&'f HirExpr>) {
+pub(crate) fn collect_return_values_in_block<'f>(block: &'f HirBlock, out: &mut Vec<&'f HirExpr>) {
     for stmt in &block.statements {
         match &stmt.kind {
             HirStmtKind::Let(_, init) => {

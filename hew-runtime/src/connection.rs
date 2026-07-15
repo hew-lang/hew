@@ -846,6 +846,17 @@ fn publish_connection_established(
 
     flush_registry_gossip_to_connection(mgr, conn_id, publication_token, peer_feature_flags);
 
+    // Publication is COMPLETE: clear the actor's stashed superseded claim
+    // before closing the superseded connection below, so a later remove of
+    // THIS connection can never restore a claim for a connection whose
+    // transport is closed here. The stash is restorable state only while the
+    // publication is still pending or suppressed.
+    mgr.connections.access(|conns| {
+        if let Some(conn) = conns.iter().find(|c| c.conn_id == conn_id) {
+            conn.superseded_claim.lock_or_recover().take();
+        }
+    });
+
     // Same-credential reconnect (issue #2652, D3 step 3): our claim overwrote a
     // live Published claim from the same peer credential. The superseded
     // connection already lost its authority at the map overwrite (D9 owner
@@ -3453,6 +3464,47 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     0
 }
 
+/// Pre-join admission-claim resolution for `hew_connmgr_remove` (see the
+/// call site's comment): aborts a still-`Reserved` claim owned by this exact
+/// admission (restoring `stashed_superseded`) and wakes any parked reader; a
+/// `Published`-but-about-to-be-suppressed claim instead hands the stash back
+/// for restoration AFTER retirement. Returns the claim to restore post-retire
+/// (if any).
+fn resolve_admission_claim_before_join(
+    mgr: &HewConnMgr,
+    peer_node_id: u16,
+    conn_id: c_int,
+    publication_token: u64,
+    stashed_superseded: Option<LiveClaim>,
+) -> Option<LiveClaim> {
+    if peer_node_id == 0 {
+        return None;
+    }
+    let (lock, condvar) = &mgr.claims;
+    let mut guard = lock.lock_or_recover();
+    match guard.get(&peer_node_id) {
+        Some(claim) if claim.conn_id == conn_id && claim.publication_token == publication_token => {
+            match claim.state {
+                ClaimState::Reserved => {
+                    match stashed_superseded {
+                        Some(prev) => {
+                            guard.insert(peer_node_id, prev);
+                        }
+                        None => {
+                            guard.remove(&peer_node_id);
+                        }
+                    }
+                    drop(guard);
+                    condvar.notify_all();
+                    None
+                }
+                ClaimState::Published => stashed_superseded,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Remove a connection from the manager and close it.
 ///
 /// Returns 0 on success, -1 if not found.
@@ -3550,13 +3602,24 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // claim — which only THIS abort (or the `CLAIM_RESERVE_WAIT_MS` backstop)
     // can resolve, because claim retirement runs after the join below. Abort
     // the reservation — restoring any claim this admission superseded — and
-    // wake the waiter so the join cannot wedge on the backstop. `abort_claim`
-    // is exact-owner guarded (`conn_id` + token + `Reserved`), so a published
-    // claim, a successor's claim, or an already-aborted admission is untouched.
-    if peer_node_id != 0 {
-        let superseded = conn.superseded_claim.lock_or_recover().take();
-        abort_claim(mgr, peer_node_id, conn_id, publication_token, superseded);
-    }
+    // wake the waiter so the join cannot wedge on the backstop. Exact-owner
+    // guarded (`conn_id` + token), so a successor's claim or an already-
+    // aborted admission is untouched.
+    //
+    // If the claim is already PUBLISHED but our removal SUPPRESSES the
+    // publication (`publication_removed` was set before the cluster notify),
+    // the stashed predecessor claim is still live restorable state — the
+    // publish path clears the stash only when publication completes. Carry it
+    // past the retirement below and restore it there, so a same-credential
+    // reconnect removed mid-publication hands authority back to the prior
+    // connection instead of orphaning it claimless.
+    let restore_after_retire = resolve_admission_claim_before_join(
+        mgr,
+        peer_node_id,
+        conn_id,
+        publication_token,
+        conn.superseded_claim.lock_or_recover().take(),
+    );
     // Drop this admission's parked registry-flush retry frames (token-matched
     // so a successor's parked frames on a reused conn_id are never touched).
     mgr.pending_registry_flush.access(|map| {
@@ -3582,6 +3645,18 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         publication_token,
         &publication_sync,
     );
+
+    // Suppressed-publication restore (see the pre-join comment above): with our
+    // claim retired, hand the node's authority back to the superseded prior
+    // connection — guarded on an EMPTY slot so a racing fresh admission's
+    // reservation is never overwritten.
+    if let Some(prev) = restore_after_retire {
+        let (lock, condvar) = &mgr.claims;
+        let mut guard = lock.lock_or_recover();
+        guard.entry(peer_node_id).or_insert(prev);
+        drop(guard);
+        condvar.notify_all();
+    }
 
     0
 }
@@ -5490,6 +5565,106 @@ mod tests {
             drop(Box::from_raw(state));
         }
         drop(ops);
+    }
+
+    /// Remove racing a JUST-PUBLISHED claim whose publication our removal
+    /// suppressed: the stashed predecessor claim must be restored after our
+    /// claim's retirement — the prior same-credential connection regains
+    /// authority instead of being orphaned claimless. (The publish path clears
+    /// the stash when publication completes, so this restore can never
+    /// resurrect a closed connection's claim.)
+    #[test]
+    fn remove_after_suppressed_publication_restores_superseded_claim() {
+        with_reserved_claim(15, 95, 700, true, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                assert!(publish_claim(&*mgr, 15, 95, 700), "original must publish");
+
+                // Same-credential reconnect: conn 96 reserves (superseding),
+                // installs, and its claim reaches Published — but the cluster
+                // publication is then SUPPRESSED by removal, so the stash is
+                // never cleared.
+                let superseded = match reserve_claim(&*mgr, 15, None, 96, 800) {
+                    ClaimReservation::Reserved { superseded } => {
+                        superseded.expect("reconnect must supersede the published claim")
+                    }
+                    ClaimReservation::Rejected(detail) => {
+                        panic!("same-credential reconnect must reserve: {detail}")
+                    }
+                };
+                install_strict_conn(&*mgr, 15, 96, 800);
+                (*mgr).connections.access(|conns| {
+                    let conn = conns
+                        .iter_mut()
+                        .find(|c| c.conn_id == 96)
+                        .expect("reconnect actor installed");
+                    *conn.superseded_claim.lock_or_recover() = Some(superseded);
+                });
+                assert!(
+                    publish_claim(&*mgr, 15, 96, 800),
+                    "reconnect claim publishes"
+                );
+
+                assert_eq!(hew_connmgr_remove(mgr, 96), 0, "remove must succeed");
+
+                let (lock, _condvar) = &(*mgr).claims;
+                let guard = lock.lock_or_recover();
+                let restored = guard.get(&15).expect("predecessor claim must be restored");
+                assert_eq!(restored.conn_id, 95);
+                assert_eq!(restored.publication_token, 700);
+                assert_eq!(restored.state, ClaimState::Published);
+            }
+        });
+    }
+
+    /// The counter-half: when the publication COMPLETES, the publish path
+    /// clears the stash (and closes the superseded connection), so a later
+    /// remove retires the claim without restoring anything — no resurrected
+    /// authority for a closed predecessor.
+    #[test]
+    fn remove_after_completed_publication_restores_nothing() {
+        with_reserved_claim(16, 95, 900, true, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                assert!(publish_claim(&*mgr, 16, 95, 900), "original must publish");
+                let superseded = match reserve_claim(&*mgr, 16, None, 96, 1000) {
+                    ClaimReservation::Reserved { superseded } => {
+                        superseded.expect("reconnect must supersede the published claim")
+                    }
+                    ClaimReservation::Rejected(detail) => {
+                        panic!("same-credential reconnect must reserve: {detail}")
+                    }
+                };
+                let mut actor = ConnectionActor::new(96);
+                actor.peer_node_id = 16;
+                actor.publication_token = 1000;
+                actor.posture = crate::peer_binding::Posture::Strict;
+                actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+                *actor.superseded_claim.lock_or_recover() = Some(superseded.clone());
+                let Ok(publication) = install_connection_actor(&*mgr, actor) else {
+                    panic!("install must succeed");
+                };
+                // Full publication (not suppressed): clears the stash.
+                publish_connection_established(
+                    &*mgr,
+                    16,
+                    96,
+                    0,
+                    publication.token,
+                    &publication.sync,
+                    &publication.removed,
+                    Some(superseded),
+                );
+
+                assert_eq!(hew_connmgr_remove(mgr, 96), 0, "remove must succeed");
+
+                let (lock, _condvar) = &(*mgr).claims;
+                assert!(
+                    lock.lock_or_recover().get(&16).is_none(),
+                    "a completed publication's remove must not restore the predecessor"
+                );
+            }
+        });
     }
 
     /// Recorder for the real-order admission test: collects every registry

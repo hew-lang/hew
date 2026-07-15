@@ -151,6 +151,52 @@ impl Checker {
         name.to_string()
     }
 
+    /// Whether a bare (unqualified) nominal name is a root-local / current-module
+    /// declaration — its own bare spelling IS its canonical identity, and it is a
+    /// DISTINCT definition from any imported `owner.Name` that merely shares the
+    /// final segment. This is the discriminator the #2651 collision turns on.
+    fn is_root_local_nominal(&self, id: &str) -> bool {
+        !id.contains('.')
+            && (self.local_type_defs.contains(id) || self.source_type_defs.contains(id))
+    }
+
+    /// Whether two concrete nominal names denote the SAME definition for the
+    /// #2651 owner-identity gate. This is the STRICT side of
+    /// `nominal_owner_conflict`: it returns `false` ONLY when the pairing is a
+    /// PROVABLE root-local↔foreign-owner collision (`Widget` vs
+    /// `widgeti8.Widget`), and `true` everywhere else.
+    ///
+    /// Equal canonical identities, a self-qualified spelling, and a builtin
+    /// bare/carrier alias are trivially the same owner. The load-bearing case is
+    /// a suffix-equal pair whose two spellings CANNOT both be resolved to a
+    /// registered owner — e.g. a foreign type spelled bare in its OWN module's
+    /// method signature (`TlsHandler` in `std.net.tls`) compared against a
+    /// caller's alias-qualified `tls.TlsHandler`, with no `TlsHandler` def key in
+    /// the importer's frame to canonicalize either side. That is a LEGAL alias,
+    /// not a collision, so it must NOT be flagged. A conflict is reported only
+    /// when we can prove distinct owners: one side is a genuine root-local /
+    /// current-module declaration and the other is a foreign-owner qualifier.
+    fn strict_names_same_owner(&self, an: &str, bn: &str) -> bool {
+        let a_id = self.strict_nominal_identity(an);
+        let b_id = self.strict_nominal_identity(bn);
+        if a_id == b_id || Self::builtin_suffix_alias(&a_id, &b_id) {
+            return true;
+        }
+        // Suffix-equal but distinct spellings that both resolved to a canonical
+        // owner are a genuine cross-owner difference; but the *only* collision
+        // #2651 is chartered to reject is a root-local declaration conflated with
+        // a foreign import. Require that exact shape — a root-local bare identity
+        // on one side and a foreign-owner qualifier on the other — so an
+        // unresolved bare↔qualified alias (neither side provably distinct) stays
+        // accepted, preserving the permissive suffix behaviour it relied on.
+        let a_local = self.is_root_local_nominal(&a_id);
+        let b_local = self.is_root_local_nominal(&b_id);
+        let a_foreign = a_id.contains('.');
+        let b_foreign = b_id.contains('.');
+        let provable_conflict = (a_local && b_foreign) || (b_local && a_foreign);
+        !provable_conflict
+    }
+
     /// Structural equality of two concrete types, comparing each `Ty::Named`
     /// either by the permissive suffix rule (`strict == false`) or by
     /// owner-qualified definition identity (`strict == true`). Non-nominal
@@ -168,9 +214,7 @@ impl Checker {
                 },
             ) => {
                 let names_ok = if strict {
-                    let ca = self.strict_nominal_identity(an);
-                    let cb = self.strict_nominal_identity(bn);
-                    ca == cb || Self::builtin_suffix_alias(&ca, &cb)
+                    self.strict_names_same_owner(an, bn)
                 } else {
                     Ty::names_match_qualified(an, bn)
                 };

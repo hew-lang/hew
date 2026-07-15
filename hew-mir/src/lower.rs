@@ -31715,11 +31715,18 @@ impl Builder {
                 // materialises into its slot on the win edge (the reply
                 // channel / channel reaps only NON-consumed legs), so it
                 // enters `owned_locals` exactly like a `let`-bound owned
-                // local: `build_lifo_drops` releases it on every scope
-                // exit, `ValueOwnership::classify` filters BitCopy types
-                // to no-op drops, and the standard move-out analysis
-                // suppresses the drop when the arm body moves the value
-                // out. Registering here — the one site shared by every
+                // local. Win-edge-only release is the DATAFLOW's
+                // invariant, not this Bind's scope placement: the binding
+                // is `Live` only in its own body block, the join-entry
+                // meet demotes it to absent (`Uninit ⊔ X = Uninit`,
+                // dataflow.rs), and the scope-close forward-`Goto` pass
+                // releases it on the winning body-block→join edge — the
+                // last point it is provably the live sole owner. Loser
+                // arms' slots are never `Live`, so no drop can fire on
+                // them. `ValueOwnership::classify` filters BitCopy types
+                // to no-op drops, and the move-out mark below suppresses
+                // the drop when the arm body moves the value out.
+                // Registering here — the one site shared by every
                 // value-bearing arm kind — covers ActorAsk, StreamNext,
                 // TaskAwait, and ChannelRecv uniformly; AfterTimer arms
                 // bind nothing and fall outside this block.

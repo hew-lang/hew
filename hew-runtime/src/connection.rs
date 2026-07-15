@@ -1459,7 +1459,11 @@ fn authenticated_peer_node_id(mgr: *mut HewConnMgr, conn_id: c_int, context: &st
     }
     // SAFETY: reader_loop owns a live manager pointer for this connection.
     let mgr_ref = unsafe { &*mgr };
-    let authenticated = authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
+    // Waiting variant: an inbound control frame can race this connection's own
+    // Reserved → Published publication (the reader thread starts before
+    // `publish_connection_established`); one-shot frames like the peer's
+    // registry-gossip flush must not be dropped inside that window.
+    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
     if authenticated == 0 {
         set_last_error(format!(
             "connection reader {context}: missing authenticated peer for conn {conn_id} \
@@ -1780,6 +1784,65 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
     }
 }
 
+/// As [`authenticated_peer_node_id_for_conn`], but tolerant of this
+/// connection's own admission window. `hew_connmgr_add` spawns the reader
+/// thread BEFORE `publish_connection_established` transitions the claim
+/// `Reserved → Published`, so an inbound control frame can arrive while the
+/// local claim is still `Reserved` by this very connection. Some of those
+/// frames are one-shot — the peer's registry-gossip flush at ITS publish drains
+/// the peer's event queue and is never retransmitted — so an instant deny here
+/// permanently loses cluster state (the lookup-unresolved race). When the claim
+/// for the connection's self-declared `NodeId` is `Reserved` and owned by THIS
+/// `conn_id`, block on the claims condvar until the local admission decision
+/// resolves: `Published` grants, abort/supersession denies. Every claim
+/// transition (`publish_claim` / `abort_claim` / `retire_claim` /
+/// `reserve_claim`) notifies the condvar, so this is a readiness signal on a
+/// local bounded step, never a poll. All other denials — absent claim, a claim
+/// owned by another connection (superseded peer), `Unverified` posture — stay
+/// immediate and fail-closed, and the wait itself fails closed on the
+/// `CLAIM_RESERVE_WAIT_MS` backstop.
+pub(crate) fn wait_authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
+    // (a) the connection must be ACTIVE, carry `Strict` posture, and advertise a
+    // nonzero NodeId — identical to the non-waiting gate.
+    let claimed = mgr.connections.access(|conns| {
+        conns
+            .iter()
+            .find(|c| {
+                c.conn_id == conn_id
+                    && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && c.posture == Posture::Strict
+                    && c.peer_node_id != 0
+            })
+            .map_or(0, |c| c.peer_node_id)
+    });
+    if claimed == 0 {
+        return 0;
+    }
+    let deadline = std::time::Instant::now() + Duration::from_millis(CLAIM_RESERVE_WAIT_MS);
+    let (lock, condvar) = &mgr.claims;
+    let mut guard = lock.lock_or_recover();
+    loop {
+        match guard.get(&claimed) {
+            Some(claim) if claim.conn_id == conn_id => match claim.state {
+                ClaimState::Published => return claimed,
+                ClaimState::Reserved => {
+                    // Our own admission is mid-publication; wait for it to
+                    // publish or abort rather than dropping the frame.
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        return 0;
+                    }
+                    let (next_guard, _timeout) = condvar.wait_timeout_or_recover(guard, remaining);
+                    guard = next_guard;
+                }
+            },
+            // Absent, or owned by another connection (this one was superseded /
+            // never admitted): no authority, deny immediately.
+            _ => return 0,
+        }
+    }
+}
+
 /// D12 data-plane gate: decide whether an inbound *ask* on `conn_id` must be
 /// dropped because the source connection carries no reply/route authority.
 ///
@@ -2030,8 +2093,9 @@ fn handle_swim_control_frame(
     // claimed sender must equal the *authenticated* (`Strict`) handshake
     // identity of the connection it arrived on. An `Unverified` (delivery-only)
     // connection resolves to 0 here and is rejected — it cannot inject SWIM
-    // membership state.
-    let authenticated = authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
+    // membership state. Waiting variant: the first inbound SWIM frame can race
+    // this connection's own Reserved → Published publication.
+    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
     if authenticated == 0 || authenticated != payload.from_node {
         set_last_error(format!(
             "connection reader SWIM frame from_node {} does not match authenticated peer {authenticated}",
@@ -4631,6 +4695,150 @@ mod tests {
             drop(Box::from_raw(transport_ptr));
         }
         drop(ops);
+    }
+
+    /// Shared scaffold for the admission-window (`Reserved → Published`) gate
+    /// tests: a manager with one Strict ACTIVE connection whose claim is still
+    /// `Reserved` by that connection, modelling the reader thread starting
+    /// before `publish_connection_established` resolves the claim.
+    fn with_reserved_strict_conn(
+        node_id: u16,
+        conn_id: c_int,
+        token: u64,
+        body: impl FnOnce(*mut HewConnMgr),
+    ) {
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: std::ptr::null_mut(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut strict = ConnectionActor::new(conn_id);
+            strict.peer_node_id = node_id;
+            strict.posture = crate::peer_binding::Posture::Strict;
+            strict.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(strict));
+            // Claim is Reserved (mid-admission), NOT yet Published.
+            test_reserve_unverified(&*mgr, node_id, conn_id, token);
+
+            body(mgr);
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+        }
+        drop(ops);
+    }
+
+    /// Admission-window race (the lookup-unresolved CI failure): a control frame
+    /// arriving while this connection's OWN claim is still `Reserved` must WAIT
+    /// for the local publication and then be granted — not be dropped. The
+    /// non-waiting gate denies inside the window (that instant deny permanently
+    /// lost the peer's one-shot registry-gossip flush); the waiting gate blocks
+    /// on the claims condvar until `publish_claim` fires and then grants.
+    #[test]
+    fn reserved_claim_same_conn_wait_grants_after_publish() {
+        with_reserved_strict_conn(5, 30, 77, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                // Pre-fix behaviour: the non-waiting gate denies mid-window.
+                assert_eq!(
+                    authenticated_peer_node_id_for_conn(&*mgr, 30),
+                    0,
+                    "a Reserved claim carries no authority in the non-waiting gate"
+                );
+                let waiter = SendConnMgr(mgr);
+                let handle = std::thread::spawn(move || {
+                    let waiter = waiter;
+                    // SAFETY: manager outlives the join below.
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 30)
+                });
+                // Give the waiter time to reach the condvar wait, then publish —
+                // modelling `publish_connection_established` completing.
+                std::thread::sleep(Duration::from_millis(50));
+                assert!(publish_claim(&*mgr, 5, 30, 77), "publication must be ours");
+                let granted = handle.join().expect("waiter thread");
+                assert_eq!(
+                    granted, 5,
+                    "the waiting gate must grant once the local claim publishes"
+                );
+            }
+        });
+    }
+
+    /// Fail-closed half of the admission-window wait: when the mid-window
+    /// admission ABORTS (install failure), the waiter must wake and deny — the
+    /// wait never fabricates authority for a connection that was never admitted.
+    #[test]
+    fn reserved_claim_same_conn_wait_denies_after_abort() {
+        with_reserved_strict_conn(6, 40, 88, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                let waiter = SendConnMgr(mgr);
+                let handle = std::thread::spawn(move || {
+                    let waiter = waiter;
+                    // SAFETY: manager outlives the join below.
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 40)
+                });
+                std::thread::sleep(Duration::from_millis(50));
+                abort_claim(&*mgr, 6, 40, 88, None);
+                let granted = handle.join().expect("waiter thread");
+                assert_eq!(
+                    granted, 0,
+                    "an aborted admission must deny the waiting gate (fail-closed)"
+                );
+            }
+        });
+    }
+
+    /// The wait applies ONLY to this connection's own in-flight admission: a
+    /// claim `Reserved` by a DIFFERENT connection (a superseding admission) is
+    /// denied immediately — no blocking, no authority (D3 point 2 preserved).
+    #[test]
+    fn reserved_claim_other_conn_denied_without_wait() {
+        with_reserved_strict_conn(7, 50, 99, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                // A second Strict ACTIVE conn 51 for the same node id, with NO
+                // claim of its own — node 7's claim is Reserved by conn 50.
+                let mut other = ConnectionActor::new(51);
+                other.peer_node_id = 7;
+                other.posture = crate::peer_binding::Posture::Strict;
+                other.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+                (&*mgr).connections.access(|conns| conns.push(other));
+
+                let started = std::time::Instant::now();
+                assert_eq!(
+                    wait_authenticated_peer_node_id_for_conn(&*mgr, 51),
+                    0,
+                    "a claim reserved by another connection must deny immediately"
+                );
+                assert!(
+                    started.elapsed() < Duration::from_millis(CLAIM_RESERVE_WAIT_MS / 2),
+                    "the other-owner denial must not consume the wait budget"
+                );
+            }
+        });
     }
 
     /// Issue #2652 (item 1, outbound authority): the predicate the outbound ask

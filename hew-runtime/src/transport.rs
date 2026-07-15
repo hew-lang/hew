@@ -2006,8 +2006,9 @@ mod tests {
         // SAFETY: server is a bound TCP transport.
         let port = unsafe { hew_transport_tcp_bound_port(server) }.expect("bound port");
         let client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("client connect");
-        // SAFETY: server valid; accept the inbound connection.
-        let conn_id = unsafe { ((*(*server).ops).accept.unwrap())((*server).r#impl, 0) };
+        // SAFETY: server valid; accept the inbound connection. A positive timeout
+        // makes accept wait for the just-dialed client rather than racing it.
+        let conn_id = unsafe { ((*(*server).ops).accept.unwrap())((*server).r#impl, 2000) };
         assert!(conn_id >= 0, "accept should yield a conn id");
         // SAFETY: server + conn_id valid; classify the accepted endpoint.
         let class = unsafe { hew_transport_conn_remote_ip_class(server, conn_id) };

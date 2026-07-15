@@ -63,7 +63,9 @@ use crate::envelope::{
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
-use crate::peer_binding::{PeerAuthSnapshot, Posture};
+use crate::peer_binding::{
+    ClaimState, LiveClaim, PeerAuthSnapshot, PeerAuthz, PeerCredential, Posture,
+};
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
@@ -177,6 +179,11 @@ struct ConnectionActor {
     /// connections are delivery-only (no cluster/gossip/ask authority). Defaults
     /// to `Strict` (fail-closed) until admission classifies the endpoint.
     posture: Posture,
+    /// The authenticated credential this connection presented (issue #2652).
+    /// `Some` only for a `Strict` admission bound to the claimed `NodeId`;
+    /// `None` under `Unverified` posture. Used as part of the exact-owner key
+    /// `(credential, conn_id, publication_token)` for claim publish/retire.
+    credential: Option<PeerCredential>,
     /// Current connection state.
     state: AtomicI32,
     /// Monotonic timestamp (ms) of last successful send or recv.
@@ -277,6 +284,13 @@ pub struct HewConnMgr {
     /// Concurrent managers hold independent snapshots, so there is no shared
     /// admission authority across nodes.
     pub(crate) auth: PeerAuthSnapshot,
+    /// Live `NodeId` claim table (issue #2652, D3). The single serializing guard
+    /// for the reserve → publish → retire window: exactly one connection may own
+    /// a `NodeId`'s route + cluster token at a time. The condvar coordinates the
+    /// reserve/publish handoff so a concurrent admission for the same `NodeId`
+    /// waits rather than racing. Per-manager, so two concurrent nodes hold
+    /// independent claim tables (a `NodeId` on node1 never collides with node2).
+    pub(crate) claims: (Mutex<HashMap<u16, LiveClaim>>, Condvar),
 }
 
 #[derive(Debug, Default)]
@@ -385,6 +399,7 @@ impl ConnectionActor {
             peer_node_id: 0,
             peer_feature_flags: 0,
             posture: Posture::Strict,
+            credential: None,
             state: AtomicI32::new(CONN_STATE_CONNECTING),
             last_activity_ms: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "encryption")]
@@ -515,6 +530,193 @@ fn next_publication_token(mgr: &HewConnMgr) -> u64 {
     mgr.next_publication_token.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Bounded wait for an in-flight `Reserved` claim to resolve, in ms. Mirrors the
+/// handshake timeout ceiling: a stuck reservation must not wedge admission.
+const CLAIM_RESERVE_WAIT_MS: u64 = 5_000;
+
+/// Outcome of reserving a `NodeId` claim during admission (issue #2652, D3).
+enum ClaimReservation {
+    /// The reservation succeeded. Carries the superseded same-credential
+    /// `Published` claim (if any) to demote after our publish.
+    Reserved { superseded: Option<LiveClaim> },
+    /// The reservation was rejected fail-closed (a live different-credential
+    /// owner, or an in-flight reservation that did not resolve in time). Carries
+    /// the diagnostic detail.
+    Rejected(String),
+}
+
+/// Reserve a `NodeId` claim for a connection mid-admission (issue #2652, D3
+/// step 1). Runs under the claims mutex; the condvar coordinates the
+/// reserve/publish handoff.
+///
+/// On an existing entry for `node_id`:
+/// - `Published` with a **different** credential ⇒ reject fail-closed (a live
+///   authenticated owner is never taken over by a different credential).
+/// - `Published` with the **same** credential ⇒ same-peer reconnect: supersede.
+/// - `Reserved` (another admission in flight) ⇒ wait on the condvar until it
+///   publishes/aborts, then re-evaluate; on timeout ⇒ reject.
+/// - absent ⇒ insert `Reserved`; no supersede.
+fn reserve_claim(
+    mgr: &HewConnMgr,
+    node_id: u16,
+    credential: Option<&PeerCredential>,
+    conn_id: c_int,
+    publication_token: u64,
+) -> ClaimReservation {
+    let (lock, condvar) = &mgr.claims;
+    let mut map = lock.lock_or_recover();
+    loop {
+        match map.get(&node_id) {
+            Some(existing) if existing.state == ClaimState::Published => {
+                if existing.credential.as_ref() == credential {
+                    // Same-credential reconnect: supersede the live claim.
+                    let superseded = existing.clone();
+                    map.insert(
+                        node_id,
+                        LiveClaim {
+                            credential: credential.cloned(),
+                            conn_id,
+                            publication_token,
+                            state: ClaimState::Reserved,
+                        },
+                    );
+                    return ClaimReservation::Reserved {
+                        superseded: Some(superseded),
+                    };
+                }
+                // Different-credential live owner ⇒ reject fail-closed. Key
+                // rotation is sequential break-before-make (D5); there is no
+                // different-credential live-replacement path.
+                return ClaimReservation::Rejected(format!(
+                    "duplicate live claim for node id {node_id} held by a different credential (conn {conn_id})"
+                ));
+            }
+            Some(_reserved) => {
+                // Another admission is mid-flight for this NodeId. Wait for it to
+                // publish or abort, then re-evaluate. Bounded to avoid wedging.
+                let (guard, timeout) = condvar.wait_timeout_or_recover(
+                    map,
+                    std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS),
+                );
+                map = guard;
+                if timeout.timed_out() {
+                    return ClaimReservation::Rejected(format!(
+                        "timed out waiting on in-flight reservation for node id {node_id} (conn {conn_id})"
+                    ));
+                }
+                // Loop and re-evaluate the (possibly changed) entry.
+            }
+            None => {
+                map.insert(
+                    node_id,
+                    LiveClaim {
+                        credential: credential.cloned(),
+                        conn_id,
+                        publication_token,
+                        state: ClaimState::Reserved,
+                    },
+                );
+                return ClaimReservation::Reserved { superseded: None };
+            }
+        }
+    }
+}
+
+/// Abort a reservation on install failure (issue #2652, D3 step 2). If
+/// `claims[node_id]` is still our exact `Reserved` claim, restore the superseded
+/// claim (if any) or remove it, then wake any waiter.
+fn abort_claim(
+    mgr: &HewConnMgr,
+    node_id: u16,
+    conn_id: c_int,
+    publication_token: u64,
+    superseded: Option<LiveClaim>,
+) {
+    let (lock, condvar) = &mgr.claims;
+    let mut map = lock.lock_or_recover();
+    if let Some(current) = map.get(&node_id) {
+        if current.state == ClaimState::Reserved
+            && current.conn_id == conn_id
+            && current.publication_token == publication_token
+        {
+            match superseded {
+                Some(prev) => {
+                    map.insert(node_id, prev);
+                }
+                None => {
+                    map.remove(&node_id);
+                }
+            }
+        }
+    }
+    drop(map);
+    condvar.notify_all();
+}
+
+/// Transition our reservation `Reserved → Published` (issue #2652, D3 step 3).
+/// Returns `true` iff `claims[node_id]` is still our exact reservation (so the
+/// caller may write route + cluster token under the same lock). A superseding
+/// claim arriving meanwhile ⇒ `false` (abort publish, write nothing).
+fn publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, publication_token: u64) -> bool {
+    let (lock, condvar) = &mgr.claims;
+    let mut map = lock.lock_or_recover();
+    let still_ours = map.get(&node_id).is_some_and(|c| {
+        c.state == ClaimState::Reserved
+            && c.conn_id == conn_id
+            && c.publication_token == publication_token
+    });
+    if still_ours {
+        if let Some(claim) = map.get_mut(&node_id) {
+            claim.state = ClaimState::Published;
+        }
+    }
+    drop(map);
+    condvar.notify_all();
+    still_ours
+}
+
+/// Retire our published claim (issue #2652, D3 retire). Removes `claims[node_id]`
+/// iff it exactly matches this connection's `(conn_id, publication_token)`,
+/// then wakes any waiter. Returns `true` iff this connection was the exact owner
+/// (drives the real route removal / `MonitorLost` fan-out). A non-matching /
+/// superseded connection removes nothing and reports "not owner".
+fn retire_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, publication_token: u64) -> bool {
+    let (lock, condvar) = &mgr.claims;
+    let mut map = lock.lock_or_recover();
+    let is_owner = map
+        .get(&node_id)
+        .is_some_and(|c| c.conn_id == conn_id && c.publication_token == publication_token);
+    if is_owner {
+        map.remove(&node_id);
+    }
+    drop(map);
+    condvar.notify_all();
+    is_owner
+}
+
+/// Test-only: reserve an `Unverified` (credential-free) claim, mirroring what
+/// admission does before `publish_connection_established`. Returns the
+/// superseded claim (if any) to thread into publish. Panics on rejection — the
+/// unit tests below only reserve fresh or same-`NodeId` reconnect claims.
+#[cfg(test)]
+fn test_reserve_unverified(
+    mgr: &HewConnMgr,
+    node_id: u16,
+    conn_id: c_int,
+    token: u64,
+) -> Option<LiveClaim> {
+    match reserve_claim(mgr, node_id, None, conn_id, token) {
+        ClaimReservation::Reserved { superseded } => superseded,
+        ClaimReservation::Rejected(detail) => {
+            panic!("unexpected claim rejection in test (node {node_id}, conn {conn_id}): {detail}")
+        }
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "publication threads route/cluster/gossip metadata plus the issue #2652 superseded claim; bundling them would obscure the call site"
+)]
 fn publish_connection_established(
     mgr: &HewConnMgr,
     peer_node_id: u16,
@@ -523,12 +725,20 @@ fn publish_connection_established(
     publication_token: u64,
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
+    superseded: Option<LiveClaim>,
 ) {
     if peer_node_id == 0 {
         return;
     }
 
     if publication_removed.load(Ordering::Acquire) {
+        return;
+    }
+
+    // Transition our reservation Reserved → Published (issue #2652, D3 step 3).
+    // A superseding admission arriving in the reserve window ⇒ we are no longer
+    // the map owner ⇒ abort publish (write no route / cluster token / gossip).
+    if !publish_claim(mgr, peer_node_id, conn_id, publication_token) {
         return;
     }
 
@@ -566,6 +776,18 @@ fn publish_connection_established(
     }
 
     flush_registry_gossip_to_connection(mgr, conn_id, peer_feature_flags);
+
+    // Same-credential reconnect (issue #2652, D3 step 3): our claim overwrote a
+    // live Published claim from the same peer credential. The superseded
+    // connection already lost its authority at the map overwrite (D9 owner
+    // check); close its transport so it can no longer emit SWIM/gossip/control
+    // frames. Its actor tears down via the normal reader-exit path.
+    if let Some(superseded) = superseded {
+        if superseded.conn_id != conn_id {
+            // SAFETY: mgr.transport is valid while the manager is alive.
+            unsafe { close_transport_conn(mgr.transport, superseded.conn_id) };
+        }
+    }
 }
 
 fn retire_connection_publication(
@@ -576,6 +798,15 @@ fn retire_connection_publication(
     publication_sync: &Arc<Mutex<()>>,
 ) {
     if peer_node_id == 0 {
+        return;
+    }
+
+    // Retire our claim iff we are still the exact owner (issue #2652, D3 retire).
+    // A superseded / non-matching connection removes nothing and must NOT drive
+    // route removal, a cluster-lost notification, or a MonitorLost fan-out — the
+    // peer is still live under a newer claim.
+    let is_owner = retire_claim(mgr, peer_node_id, conn_id, publication_token);
+    if !is_owner {
         return;
     }
 
@@ -2066,6 +2297,7 @@ pub(crate) unsafe fn connmgr_new(
         next_publication_token: AtomicU64::new(1),
         local_node_id,
         auth,
+        claims: (Mutex::new(HashMap::new()), Condvar::new()),
     });
     Box::into_raw(mgr)
 }
@@ -2511,6 +2743,13 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         None
     };
 
+    // The authenticated peer credential this connection presents (issue #2652),
+    // used to bind the claimed `NodeId` in the claim machine below. Populated
+    // from the Noise static key for tcp-noise; mesh SPKI extraction is wired in
+    // a later slice. `None` under `Unverified` posture (loopback / opt-out).
+    #[cfg(feature = "encryption")]
+    let mut peer_credential: Option<PeerCredential> = None;
+
     #[cfg(feature = "encryption")]
     let upgraded_noise = if !skip_noise
         && supports_encryption(local_hs.feature_flags)
@@ -2532,17 +2771,70 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
             ));
             return -1;
         }
+        peer_credential = Some(PeerCredential::NoiseKey(peer_static_pubkey));
         Some(noise)
+    } else {
+        None
+    };
+
+    // Resolve the credential for the claim machine. Only the `encryption` build
+    // can present a Noise credential; without it every connection is credential
+    // -free (delivery-only / loopback dev).
+    #[cfg(feature = "encryption")]
+    let peer_credential: Option<PeerCredential> = peer_credential;
+    #[cfg(not(feature = "encryption"))]
+    let peer_credential: Option<PeerCredential> = None;
+
+    // Authorize the claimed identity against the frozen per-node authority, then
+    // reserve the `NodeId` claim (issue #2652, D3). node_id 0 is the pre-identity
+    // / bare-address case: no claim, no authority (publication skips it too).
+    let claim_token = next_publication_token(mgr);
+    let superseded_claim: Option<LiveClaim> = if peer_hs.node_id != 0 {
+        match mgr
+            .auth
+            .authorize(posture, peer_hs.node_id, peer_credential.as_ref())
+        {
+            PeerAuthz::Authorized(_) | PeerAuthz::Unverified => {
+                match reserve_claim(
+                    mgr,
+                    peer_hs.node_id,
+                    peer_credential.as_ref(),
+                    conn_id,
+                    claim_token,
+                ) {
+                    ClaimReservation::Reserved { superseded } => superseded,
+                    ClaimReservation::Rejected(detail) => {
+                        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+                        unsafe { close_transport_conn(mgr.transport, conn_id) };
+                        set_last_error(format!("hew_connmgr_add: {detail}"));
+                        return -1;
+                    }
+                }
+            }
+            reject => {
+                // Strict posture with an absent / mismatched / bound-elsewhere
+                // credential ⇒ reject fail-closed. The claimed identity is not
+                // authenticated by the presented credential.
+                // SAFETY: mgr.transport and conn_id are valid per caller contract.
+                unsafe { close_transport_conn(mgr.transport, conn_id) };
+                set_last_error(format!(
+                    "hew_connmgr_add: peer failed identity binding for node id {} (conn {conn_id}): {reject:?}",
+                    peer_hs.node_id
+                ));
+                return -1;
+            }
+        }
     } else {
         None
     };
 
     let mut actor = ConnectionActor::new(conn_id);
     actor.transport = mgr.transport;
-    actor.publication_token = next_publication_token(mgr);
+    actor.publication_token = claim_token;
     actor.peer_node_id = peer_hs.node_id;
     actor.peer_feature_flags = peer_hs.feature_flags;
     actor.posture = posture;
+    actor.credential = peer_credential;
     #[cfg(feature = "encryption")]
     if let Some(noise) = upgraded_noise {
         let Ok(mut guard) = actor.noise_transport.lock() else {
@@ -2596,6 +2888,11 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     } else {
         // SAFETY: actor.transport is valid per caller contract of hew_connmgr_add.
         unsafe { actor.close_transport() };
+        // Abort the reservation (issue #2652, D3 step 2): restore the superseded
+        // claim (if any) or remove our Reserved entry, and wake any waiter.
+        if peer_hs.node_id != 0 {
+            abort_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
+        }
         set_last_error(format!(
             "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
         ));
@@ -2609,12 +2906,18 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     } = match install_connection_actor(mgr, actor) {
         Ok(publication) => publication,
         Err(ConnectionInstallError::Shutdown) => {
+            if peer_hs.node_id != 0 {
+                abort_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
+            }
             set_last_error(format!(
                 "hew_connmgr_add: manager shutdown won install race for conn {conn_id}"
             ));
             return -1;
         }
         Err(ConnectionInstallError::Duplicate) => {
+            if peer_hs.node_id != 0 {
+                abort_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
+            }
             set_last_error(format!(
                 "hew_connmgr_add: connection {conn_id} became duplicate during install"
             ));
@@ -2630,6 +2933,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         publication_token,
         &publication_sync,
         &publication_removed,
+        superseded_claim,
     );
 
     0
@@ -3279,6 +3583,10 @@ mod tests {
             next_publication_token: AtomicU64::new(1),
             local_node_id: 0,
             auth: PeerAuthSnapshot::unconfigured(),
+            claims: (
+                std::sync::Mutex::new(std::collections::HashMap::new()),
+                std::sync::Condvar::new(),
+            ),
         };
 
         assert_eq!(
@@ -3348,6 +3656,10 @@ mod tests {
             next_publication_token: AtomicU64::new(1),
             local_node_id: 1,
             auth: PeerAuthSnapshot::unconfigured(),
+            claims: (
+                std::sync::Mutex::new(std::collections::HashMap::new()),
+                std::sync::Condvar::new(),
+            ),
         };
 
         assert_eq!(
@@ -3561,6 +3873,10 @@ mod tests {
             next_publication_token: AtomicU64::new(1),
             local_node_id: 1,
             auth: PeerAuthSnapshot::unconfigured(),
+            claims: (
+                std::sync::Mutex::new(std::collections::HashMap::new()),
+                std::sync::Condvar::new(),
+            ),
         };
         let mgr_ptr = std::ptr::from_ref(&mgr).cast_mut();
         let payload = crate::envelope::LinkReqPayload {
@@ -4393,6 +4709,7 @@ mod tests {
             let old_publication_sync = Arc::clone(&old_actor.publication_sync);
             let old_publication_removed = Arc::clone(&old_actor.publication_removed);
             (&*mgr).connections.access(|conns| conns.push(old_actor));
+            let old_superseded = test_reserve_unverified(&*mgr, 2, 11, old_token);
             publish_connection_established(
                 &*mgr,
                 2,
@@ -4401,6 +4718,7 @@ mod tests {
                 old_token,
                 &old_publication_sync,
                 &old_publication_removed,
+                old_superseded,
             );
 
             let mgr_send = SendConnMgr(mgr);
@@ -4462,6 +4780,7 @@ mod tests {
                 replacement_installed,
                 "replacement connection should install while old remove waits on reader shutdown"
             );
+            let replacement_superseded = test_reserve_unverified(&*mgr, 2, 22, replacement_token);
             publish_connection_established(
                 &*mgr,
                 2,
@@ -4470,6 +4789,7 @@ mod tests {
                 replacement_token,
                 &replacement_publication_sync,
                 &replacement_publication_removed,
+                replacement_superseded,
             );
 
             reader_release_tx
@@ -4511,6 +4831,309 @@ mod tests {
             ));
         }
         drop(ops);
+    }
+
+    // ---- issue #2652 · Slice 4 · NodeId claim state machine ----------------
+
+    /// Build a minimal manager for claim-machine unit tests: a stub transport
+    /// with all-`None` ops (its `close_conn` is a no-op) and no routing/cluster.
+    /// The claim helpers only touch `mgr.claims`, so this isolates the state
+    /// machine from routing/cluster side effects.
+    fn claim_test_mgr() -> (*mut HewConnMgr, *mut HewTransport) {
+        let transport = Box::into_raw(Box::new(HewTransport {
+            ops: std::ptr::null(),
+            r#impl: std::ptr::null_mut(),
+        }));
+        // SAFETY: transport is a freshly-boxed valid pointer; routing/cluster null
+        // is accepted by hew_connmgr_new.
+        let mgr = unsafe {
+            hew_connmgr_new(
+                transport,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+            )
+        };
+        assert!(!mgr.is_null());
+        (mgr, transport)
+    }
+
+    fn free_claim_test_mgr(mgr: *mut HewConnMgr, transport: *mut HewTransport) {
+        // SAFETY: both pointers were allocated in claim_test_mgr and are not
+        // referenced after this call.
+        unsafe {
+            hew_connmgr_free(mgr);
+            drop(Box::from_raw(transport));
+        }
+    }
+
+    fn claim_snapshot(mgr: &HewConnMgr, node_id: u16) -> Option<LiveClaim> {
+        mgr.claims.0.lock_or_recover().get(&node_id).cloned()
+    }
+
+    #[test]
+    fn claim_reserve_publish_retire_exact_owner_lifecycle() {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // SAFETY: mgr_ptr is live until free below.
+        let mgr = unsafe { &*mgr_ptr };
+        let cred = Some(PeerCredential::NoiseKey([7u8; 32]));
+
+        match reserve_claim(mgr, 42, cred.as_ref(), 100, 1) {
+            ClaimReservation::Reserved { superseded } => assert!(superseded.is_none()),
+            ClaimReservation::Rejected(d) => panic!("fresh reserve rejected: {d}"),
+        }
+        let reserved = claim_snapshot(mgr, 42).expect("claim should exist after reserve");
+        assert_eq!(reserved.state, ClaimState::Reserved);
+        assert_eq!(reserved.conn_id, 100);
+
+        assert!(publish_claim(mgr, 42, 100, 1), "exact owner should publish");
+        assert_eq!(
+            claim_snapshot(mgr, 42).expect("claim persists").state,
+            ClaimState::Published
+        );
+
+        assert!(retire_claim(mgr, 42, 100, 1), "exact owner should retire");
+        assert!(
+            claim_snapshot(mgr, 42).is_none(),
+            "claim removed after exact-owner retire"
+        );
+        free_claim_test_mgr(mgr_ptr, transport);
+    }
+
+    #[test]
+    fn claim_reserve_rejects_different_credential_over_published() {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // SAFETY: mgr_ptr live until free.
+        let mgr = unsafe { &*mgr_ptr };
+        let cred_a = Some(PeerCredential::NoiseKey([0xAA; 32]));
+        let cred_b = Some(PeerCredential::NoiseKey([0xBB; 32]));
+
+        // A owns 42, Published.
+        assert!(matches!(
+            reserve_claim(mgr, 42, cred_a.as_ref(), 100, 1),
+            ClaimReservation::Reserved { .. }
+        ));
+        assert!(publish_claim(mgr, 42, 100, 1));
+
+        // B presents a different credential for the same NodeId ⇒ reject.
+        match reserve_claim(mgr, 42, cred_b.as_ref(), 200, 2) {
+            ClaimReservation::Rejected(detail) => {
+                assert!(detail.contains("different credential"), "detail: {detail}");
+            }
+            ClaimReservation::Reserved { .. } => {
+                panic!("different-credential reserve must be rejected fail-closed")
+            }
+        }
+        // A's claim is untouched.
+        let still = claim_snapshot(mgr, 42).expect("A's claim persists");
+        assert_eq!(still.conn_id, 100);
+        assert_eq!(still.publication_token, 1);
+        assert_eq!(still.state, ClaimState::Published);
+        assert_eq!(still.credential, cred_a);
+        free_claim_test_mgr(mgr_ptr, transport);
+    }
+
+    #[test]
+    fn claim_reserve_supersedes_same_credential_and_abort_restores_it() {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // SAFETY: mgr_ptr live until free.
+        let mgr = unsafe { &*mgr_ptr };
+        let cred = Some(PeerCredential::NoiseKey([0xCC; 32]));
+
+        assert!(matches!(
+            reserve_claim(mgr, 42, cred.as_ref(), 100, 1),
+            ClaimReservation::Reserved { .. }
+        ));
+        assert!(publish_claim(mgr, 42, 100, 1));
+
+        // Same-credential reconnect supersedes the live Published claim.
+        let superseded = match reserve_claim(mgr, 42, cred.as_ref(), 200, 2) {
+            ClaimReservation::Reserved { superseded } => {
+                superseded.expect("same-credential reconnect supersedes the old claim")
+            }
+            ClaimReservation::Rejected(d) => panic!("same-credential reconnect rejected: {d}"),
+        };
+        assert_eq!(superseded.conn_id, 100);
+        assert_eq!(superseded.state, ClaimState::Published);
+        // Map now holds the new Reserved claim.
+        let mid = claim_snapshot(mgr, 42).expect("new reservation present");
+        assert_eq!(mid.conn_id, 200);
+        assert_eq!(mid.state, ClaimState::Reserved);
+
+        // Aborting the replacement restores the superseded Published claim —
+        // never orphans it.
+        abort_claim(mgr, 42, 200, 2, Some(superseded));
+        let restored = claim_snapshot(mgr, 42).expect("superseded claim restored");
+        assert_eq!(restored.conn_id, 100);
+        assert_eq!(restored.state, ClaimState::Published);
+        free_claim_test_mgr(mgr_ptr, transport);
+    }
+
+    #[test]
+    fn claim_abort_removes_fresh_reservation() {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // SAFETY: mgr_ptr live until free.
+        let mgr = unsafe { &*mgr_ptr };
+        assert!(matches!(
+            reserve_claim(mgr, 7, None, 300, 5),
+            ClaimReservation::Reserved { .. }
+        ));
+        abort_claim(mgr, 7, 300, 5, None);
+        assert!(
+            claim_snapshot(mgr, 7).is_none(),
+            "aborting a fresh reservation leaves the map empty"
+        );
+        free_claim_test_mgr(mgr_ptr, transport);
+    }
+
+    #[test]
+    fn claim_retire_non_owner_removes_nothing() {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // SAFETY: mgr_ptr live until free.
+        let mgr = unsafe { &*mgr_ptr };
+        assert!(matches!(
+            reserve_claim(mgr, 9, None, 100, 1),
+            ClaimReservation::Reserved { .. }
+        ));
+        assert!(publish_claim(mgr, 9, 100, 1));
+        // A different conn/token retires nothing and reports "not owner".
+        assert!(!retire_claim(mgr, 9, 999, 42), "non-owner must not retire");
+        assert!(
+            claim_snapshot(mgr, 9).is_some(),
+            "non-owner retire leaves the claim intact"
+        );
+        // The real owner retires.
+        assert!(retire_claim(mgr, 9, 100, 1));
+        assert!(claim_snapshot(mgr, 9).is_none());
+        free_claim_test_mgr(mgr_ptr, transport);
+    }
+
+    #[test]
+    fn claim_publish_aborts_when_superseded_in_reserve_window() {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // SAFETY: mgr_ptr live until free.
+        let mgr = unsafe { &*mgr_ptr };
+        let cred = Some(PeerCredential::NoiseKey([0xDD; 32]));
+
+        // A reserves + publishes.
+        assert!(matches!(
+            reserve_claim(mgr, 42, cred.as_ref(), 100, 1),
+            ClaimReservation::Reserved { .. }
+        ));
+        assert!(publish_claim(mgr, 42, 100, 1));
+
+        // A2 supersedes (same credential) → map owner is now A2's reservation.
+        assert!(matches!(
+            reserve_claim(mgr, 42, cred.as_ref(), 200, 2),
+            ClaimReservation::Reserved { .. }
+        ));
+
+        // A's (late) publish must abort — it is no longer the map owner.
+        assert!(
+            !publish_claim(mgr, 42, 100, 1),
+            "a superseded connection's publish must abort"
+        );
+        // A2 still owns the reservation, still Reserved (its own publish pending).
+        let owner = claim_snapshot(mgr, 42).expect("A2 reservation present");
+        assert_eq!(owner.conn_id, 200);
+        assert_eq!(owner.state, ClaimState::Reserved);
+        free_claim_test_mgr(mgr_ptr, transport);
+    }
+
+    #[test]
+    fn claim_reserve_waits_on_reserved_then_proceeds_after_abort() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // A reserves node 42 (Reserved), does not yet publish or abort.
+        {
+            // SAFETY: mgr_ptr live until free.
+            let mgr = unsafe { &*mgr_ptr };
+            assert!(matches!(
+                reserve_claim(mgr, 42, None, 100, 1),
+                ClaimReservation::Reserved { .. }
+            ));
+        }
+
+        let mgr_addr = mgr_ptr as usize;
+        let b_reserved = Arc::new(AtomicBool::new(false));
+        let b_reserved_thread = Arc::clone(&b_reserved);
+        // B arrives for 42, observes Reserved, and must WAIT (not reject).
+        let b = std::thread::spawn(move || {
+            // SAFETY: mgr stays live until the test joins this thread.
+            let mgr = unsafe { &*(mgr_addr as *mut HewConnMgr) };
+            let outcome = reserve_claim(mgr, 42, None, 200, 2);
+            b_reserved_thread.store(true, Ordering::Release);
+            matches!(outcome, ClaimReservation::Reserved { .. })
+        });
+
+        // Give B time to reach the wait; it must not have returned yet.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !b_reserved.load(Ordering::Acquire),
+            "B must block while A's reservation is in flight"
+        );
+
+        // A aborts → signals the condvar → B wakes, sees absent, reserves.
+        {
+            // SAFETY: mgr_ptr live.
+            let mgr = unsafe { &*mgr_ptr };
+            abort_claim(mgr, 42, 100, 1, None);
+        }
+        let b_ok = b.join().expect("B thread should not panic");
+        assert!(b_ok, "B should reserve after A aborts");
+        // SAFETY: mgr_ptr live.
+        let owner = claim_snapshot(unsafe { &*mgr_ptr }, 42).expect("B now owns 42");
+        assert_eq!(owner.conn_id, 200);
+        free_claim_test_mgr(mgr_ptr, transport);
+    }
+
+    /// Concurrent restoration of BLOCK-3: many admissions race for the same
+    /// `NodeId`; exactly one may hold a Published claim at a time.
+    #[test]
+    fn claim_concurrent_reserve_publish_yields_exactly_one_owner() {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        let mgr_addr = mgr_ptr as usize;
+        let winners = Arc::new(std::sync::Mutex::new(Vec::<c_int>::new()));
+        let mut handles = Vec::new();
+        for i in 0u8..8 {
+            let winners = Arc::clone(&winners);
+            handles.push(std::thread::spawn(move || {
+                // SAFETY: mgr stays live until join below.
+                let mgr = unsafe { &*(mgr_addr as *mut HewConnMgr) };
+                let conn_id = 1000 + c_int::from(i);
+                let token = 1000 + u64::from(i);
+                let cred = Some(PeerCredential::NoiseKey([i; 32]));
+                match reserve_claim(mgr, 42, cred.as_ref(), conn_id, token) {
+                    ClaimReservation::Reserved { .. } => {
+                        if publish_claim(mgr, 42, conn_id, token) {
+                            winners.lock_or_recover().push(conn_id);
+                        }
+                    }
+                    ClaimReservation::Rejected(_) => {}
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("claim race thread should not panic");
+        }
+        // At most one Published owner at any time; whoever published is the sole
+        // map owner. Distinct credentials mean losers were rejected, not queued.
+        let winners = winners.lock_or_recover();
+        assert!(
+            winners.len() <= 1,
+            "at most one connection may publish a NodeId claim, got {winners:?}"
+        );
+        // SAFETY: mgr_ptr live.
+        let final_owner = claim_snapshot(unsafe { &*mgr_ptr }, 42);
+        if let Some(owner) = final_owner {
+            assert_eq!(owner.state, ClaimState::Published);
+            if let Some(&w) = winners.first() {
+                assert_eq!(owner.conn_id, w);
+            }
+        }
+        drop(winners);
+        free_claim_test_mgr(mgr_ptr, transport);
     }
 
     /// Regression: `hew_connmgr_free` must set `reader_stop` BEFORE closing the
@@ -4602,6 +5225,10 @@ mod tests {
     /// window where `hew_routing_lookup` returns a `conn_id` that `hew_connmgr_send`
     /// would reject (route-ok but conn already gone from the list).
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single-place staging of the route-gone-before-conn-leaves ordering, now including the issue #2652 claim reservation"
+    )]
     fn connmgr_remove_route_gone_before_conn_leaves_list() {
         use std::sync::atomic::Ordering;
 
@@ -4683,6 +5310,10 @@ mod tests {
         // SAFETY: mgr is live.
         unsafe { (&*mgr).connections.access(|conns| conns.push(actor)) };
 
+        // Reserve the claim as admission would before publishing.
+        // SAFETY: mgr is live.
+        let superseded = unsafe { test_reserve_unverified(&*mgr, 2, 77, publication_token) };
+
         // Publish the route so routing_lookup returns 77 before remove.
         // SAFETY: mgr is live; all arguments come from the actor and publication
         // metadata allocated in this test.
@@ -4695,6 +5326,7 @@ mod tests {
                 publication_token,
                 &pub_sync,
                 &pub_removed,
+                superseded,
             );
         }
         assert_eq!(
@@ -4796,6 +5428,7 @@ mod tests {
             let publication_sync = Arc::clone(&actor.publication_sync);
             let publication_removed = Arc::clone(&actor.publication_removed);
             (&*mgr).connections.access(|conns| conns.push(actor));
+            let superseded = test_reserve_unverified(&*mgr, 2, 31, publication_token);
             publish_connection_established(
                 &*mgr,
                 2,
@@ -4804,6 +5437,7 @@ mod tests {
                 publication_token,
                 &publication_sync,
                 &publication_removed,
+                superseded,
             );
 
             assert_eq!(hew_connmgr_remove(mgr, 31), 0);
@@ -4925,6 +5559,9 @@ mod tests {
             let publication_sync = Arc::clone(&actor.publication_sync);
             let publication_removed = Arc::clone(&actor.publication_removed);
             (&*mgr).connections.access(|conns| conns.push(actor));
+            // Reserve the claim (token 2) so the raced publish below can transition
+            // it Reserved → Published, mirroring admission.
+            let _ = test_reserve_unverified(&*mgr, 2, 22, 2);
 
             let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
             let lost_cluster = SendCluster(cluster);
@@ -4955,6 +5592,7 @@ mod tests {
                     2,
                     &publication_sync,
                     &publication_removed,
+                    None,
                 );
                 publish_done_tx
                     .send(())
@@ -5132,6 +5770,7 @@ mod tests {
             let publication_sync = Arc::clone(&actor.publication_sync);
             let publication_removed = Arc::clone(&actor.publication_removed);
             (&*mgr).connections.access(|conns| conns.push(actor));
+            let superseded = test_reserve_unverified(&*mgr, 2, 44, publication_token);
 
             publish_connection_established(
                 &*mgr,
@@ -5141,6 +5780,7 @@ mod tests {
                 publication_token,
                 &publication_sync,
                 &publication_removed,
+                superseded,
             );
 
             assert_eq!(

@@ -31707,9 +31707,22 @@ impl Builder {
                     binding: binding_id,
                     name: binding_name.clone(),
                     site: arm.body.site,
-                    ty: ty_of_place,
+                    ty: ty_of_place.clone(),
                 });
                 self.record_binding_scope(binding_id);
+                // The select-arm binding owns the value the runtime
+                // materialises into its slot on the win edge (the reply
+                // channel / channel reaps only NON-consumed legs), so it
+                // enters `owned_locals` exactly like a `let`-bound owned
+                // local: `build_lifo_drops` releases it on every scope
+                // exit, `ValueOwnership::classify` filters BitCopy types
+                // to no-op drops, and the standard move-out analysis
+                // suppresses the drop when the arm body moves the value
+                // out. Registering here — the one site shared by every
+                // value-bearing arm kind — covers ActorAsk, StreamNext,
+                // TaskAwait, and ChannelRecv uniformly; AfterTimer arms
+                // bind nothing and fall outside this block.
+                self.register_owned_local(binding_id, binding_name.clone(), ty_of_place);
             }
             let body_value = self.lower_value(&arm.body);
             if let Some(src) = body_value {

@@ -1562,6 +1562,8 @@ class Interpreter {
       case "i32":
         return { kind: "integer", bits: 32, signed: true };
       case "i64":
+        return { kind: "integer", bits: 64, signed: true };
+      // The sandbox parity oracle is 64-bit host-native `hew run`, not wasm32.
       case "isize":
         return { kind: "integer", bits: 64, signed: true };
       case "u8":
@@ -1571,6 +1573,7 @@ class Interpreter {
       case "u32":
         return { kind: "integer", bits: 32, signed: false };
       case "u64":
+        return { kind: "integer", bits: 64, signed: false };
       case "usize":
         return { kind: "integer", bits: 64, signed: false };
       case "f32":

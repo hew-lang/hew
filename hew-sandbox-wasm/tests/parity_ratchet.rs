@@ -466,6 +466,11 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("trap_residual"),
     },
     Construct {
+        id: "isize/usize casts use the native 64-bit parity width",
+        probe: "fn main() {\n    let signed: i64 = 4294967296;\n    let unsigned: u64 = 4294967296;\n    println(signed as isize);\n    println(unsigned as usize);\n}\n",
+        coverage: Coverage::Parity("pointer_width_native64"),
+    },
+    Construct {
         id: "postfix-try (`?`)",
         probe: "fn ok() -> Result<i64, string> { Ok(1) }\nfn run() -> Result<i64, string> {\n    let v = ok()?;\n    Ok(v + 1)\n}\nfn main() {\n    println(match run() { Ok(v) => v, Err(_) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("trap_residual"),
@@ -923,7 +928,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 56; // +1: true single-precision f32 arithmetic
+    const RUNNABLE_BASELINE: usize = 57; // +1: 64-bit native isize/usize cast width
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_) | Coverage::ParityTrap(_)))

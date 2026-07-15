@@ -266,6 +266,13 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
+        // This suite compares against host-native `hew run`, whose supported
+        // targets are 64-bit. A wasm32 build would truncate both values to zero.
+        test_name: "pointer_width_native64",
+        source_rel: "examples/sandbox-graduation/pointer_width_native64.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         // `#[wire]` is now the sole canonical declaration surface for wire types
         // (bare `wire`/`wire type`/`wire enum` keyword forms removed in 60c50dae;
         // the `struct` keyword itself later removed in favour of `#[wire] type`).
@@ -577,6 +584,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             "repeat-value\nrepeat-count\n3\n7\n7\n7\n65535\n18446744073709551615\n-1\n255\n1\ntrue\n65\n42\nboom\n6\nnone\n",
         ),
         "f32_arithmetic_precision" => Some("16777216\n"),
+        "pointer_width_native64" => Some("4294967296\n4294967296\n"),
         _ => None,
     };
     if let Some(expected) = expected {

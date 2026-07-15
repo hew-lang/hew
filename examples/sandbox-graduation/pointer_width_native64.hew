@@ -1,0 +1,6 @@
+fn main() {
+    let signed: i64 = 4294967296;
+    let unsigned: u64 = 4294967296;
+    println(signed as isize);
+    println(unsigned as usize);
+}

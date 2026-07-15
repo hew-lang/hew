@@ -74,6 +74,8 @@ function runCast(sourceOp, sourceValue, from, to) {
 test("numeric.cast preserves native integer width and signedness", () => {
   assert.equal(runCast("const.i64", "-1", "i8", "u16"), "65535");
   assert.equal(runCast("const.u64", "18446744073709551615", "u64", "i64"), "-1");
+  assert.equal(runCast("const.i64", "4294967296", "i64", "isize"), "4294967296");
+  assert.equal(runCast("const.u64", "4294967296", "u64", "usize"), "4294967296");
 });
 
 test("numeric.cast saturates float to integer like native", () => {

@@ -792,6 +792,9 @@ impl<'a> PackageEmitter<'a> {
                 "bool".to_string(),
                 Vec::new(),
             ),
+            // Sandbox parity compares against `hew run` on the supported 64-bit
+            // native hosts, not the wasm32 playground target. isize/usize
+            // therefore intentionally use 64-bit storage and cast semantics.
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize | Ty::IntLiteral => (
                 "type:i64".to_string(),
                 "integer".to_string(),

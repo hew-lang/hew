@@ -90,6 +90,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // f-string interpolation for all canonical integer and char primitives that
     // gained Display impls: i8/i16/i32, u8/u16/u32, u64, isize, usize, char.
     "display_scalars",
+    // The parity oracle is native `hew run` on supported 64-bit hosts, so
+    // isize/usize casts retain values above the wasm32 boundary.
+    "pointer_width_native64",
     // `#[wire]` type declaration with tagged fields now uses the sole canonical
     // surface (`#[wire]` attribute on TypeDecl; bare `wire` keyword removed).
     // Verifies the sandbox profile and emitter treat `#[wire]` TypeDecl as a

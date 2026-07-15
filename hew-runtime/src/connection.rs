@@ -5402,42 +5402,61 @@ mod tests {
         });
     }
 
-    /// Removal racing publication must resolve the admission wait PROMPTLY:
-    /// `hew_connmgr_remove` aborts a still-`Reserved` claim (and notifies the
-    /// claims condvar) BEFORE joining the reader, so a reader parked in
-    /// `wait_authenticated_peer_node_id_for_conn` wakes to a fail-closed deny
-    /// instead of holding the join hostage for the `CLAIM_RESERVE_WAIT_MS`
-    /// backstop. Also pins the cleanup: the aborted reservation leaves no
-    /// dangling claim to wedge a subsequent reconnect's `reserve_claim`.
+    /// Removal racing publication must resolve the admission wait PROMPTLY —
+    /// pinned with a REAL joined reader: the installed actor's `reader_handle`
+    /// IS a thread parked in `wait_authenticated_peer_node_id_for_conn`, and
+    /// `hew_connmgr_remove` JOINS it (via the actor drop). Without the
+    /// pre-join claim abort the join blocks for the full
+    /// `CLAIM_RESERVE_WAIT_MS` backstop and the wall-clock assertion fails;
+    /// with it the abort wakes the parked reader to a fail-closed deny and
+    /// remove returns promptly. Also pins the cleanup: the aborted
+    /// reservation leaves no dangling claim to wedge a reconnect's
+    /// `reserve_claim`.
     #[test]
     fn remove_during_admission_wait_resolves_promptly_and_cleans_claim() {
-        with_reserved_strict_conn(12, 90, 300, |mgr| {
+        with_reserved_claim(12, 90, 300, false, |mgr| {
             // SAFETY: mgr is live for the whole closure.
             unsafe {
                 let (started_tx, started_rx) = std::sync::mpsc::channel();
+                let (result_tx, result_rx) = std::sync::mpsc::channel();
                 let waiter = SendConnMgr(mgr);
-                let handle = std::thread::spawn(move || {
+                let reader = std::thread::spawn(move || {
                     let waiter = waiter;
-                    started_tx.send(()).expect("waiter start signal");
-                    // SAFETY: manager outlives the join below.
-                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 90, 300)
+                    started_tx.send(()).expect("reader start signal");
+                    // SAFETY: the manager outlives the join hew_connmgr_remove
+                    // performs on this thread.
+                    let granted = wait_authenticated_peer_node_id_for_conn(&*waiter.0, 90, 300);
+                    result_tx.send(granted).expect("reader result");
                 });
-                started_rx.recv().expect("waiter thread started");
-                // Scheduling grace so the waiter reaches the condvar wait; the
-                // verdict is interleaving-independent (an un-parked waiter sees
-                // the aborted claim and denies just the same).
+
+                // Install the actor with the parked thread as its REAL reader
+                // handle, exactly what hew_connmgr_remove must join.
+                let mut actor = ConnectionActor::new(90);
+                actor.peer_node_id = 12;
+                actor.publication_token = 300;
+                actor.posture = crate::peer_binding::Posture::Strict;
+                actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+                actor.reader_handle = Some(reader);
+                (*mgr).connections.access(|conns| conns.push(actor));
+
+                started_rx.recv().expect("reader thread started");
+                // Scheduling grace so the reader reaches the condvar wait; the
+                // verdict is interleaving-independent (an un-parked reader
+                // sees the aborted claim and denies just the same).
                 std::thread::sleep(Duration::from_millis(50));
 
                 let remove_started = std::time::Instant::now();
                 assert_eq!(hew_connmgr_remove(mgr, 90), 0, "remove must succeed");
-                let granted = handle.join().expect("waiter thread");
+                let elapsed = remove_started.elapsed();
+                assert!(
+                    elapsed < Duration::from_millis(CLAIM_RESERVE_WAIT_MS / 2),
+                    "remove (which joins the parked reader) must resolve at the \
+                     abort, not the {CLAIM_RESERVE_WAIT_MS} ms backstop; took {elapsed:?}"
+                );
+                let granted = result_rx.recv().expect("reader result delivered");
                 assert_eq!(
                     granted, 0,
                     "removal aborting the reservation must deny the waiting gate"
-                );
-                assert!(
-                    remove_started.elapsed() < Duration::from_millis(CLAIM_RESERVE_WAIT_MS / 2),
-                    "the admission wait must resolve at the removal abort, not the backstop"
                 );
                 let (lock, _condvar) = &(*mgr).claims;
                 assert!(
@@ -5957,7 +5976,11 @@ mod tests {
             .push((name, actor_id, is_add));
     }
 
-    /// Real admission ordering, end to end through the production pieces:
+    /// Real admission ordering through the production pieces (the full
+    /// `hew_connmgr_add` path additionally requires a live Noise handshake to
+    /// reach `Strict` posture, which only the two-process e2e suite drives;
+    /// this test pins the same ordering seam with the real reserve / install /
+    /// publish / gate / decode functions):
     /// `reserve_claim` → a registry-gossip control frame processed by
     /// `handle_control_frame` (real decode + waiting gate) → REAL
     /// `install_connection_actor` → REAL `publish_connection_established` →

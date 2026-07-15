@@ -6,6 +6,8 @@
 mod borrow_param_lowering;
 #[path = "lowering_calls/bytes_runtime_call_producer.rs"]
 mod bytes_runtime_call_producer;
+#[path = "lowering_calls/call_scrutinee_return_provenance.rs"]
+mod call_scrutinee_return_provenance;
 #[path = "lowering_calls/dyn_trait_dispatch.rs"]
 mod dyn_trait_dispatch;
 #[path = "lowering_calls/extern_string_ownership.rs"]

@@ -87,16 +87,12 @@ fn flatten_or_pattern(pattern: &Spanned<Pattern>) -> Vec<Spanned<Pattern>> {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one exhaustive AST-pattern classifier keeps literal field indexing and type lookup aligned"
-)]
 fn collect_match_payload_predicates(
     ctx: &LowerCtx,
-    pattern: &Pattern,
+    pattern: &Spanned<Pattern>,
     scrutinee_ty: &ResolvedTy,
 ) -> Result<Vec<HirPayloadPredicate>, String> {
-    match pattern {
+    match &pattern.0 {
         Pattern::Constructor { name, patterns } => {
             let field_tys = ctx
                 .lookup_variant_ctor(name)
@@ -128,68 +124,30 @@ fn collect_match_payload_predicates(
                 })
                 .collect())
         }
-        Pattern::Struct { name, fields, .. } => {
-            let field_decls = if let Some((_, _, kind)) = ctx.lookup_variant_ctor(name) {
-                match kind {
-                    HirVariantKind::Struct(field_decls) => field_decls.clone(),
-                    HirVariantKind::Unit | HirVariantKind::Tuple(_) => Vec::new(),
-                }
-            } else {
-                let ResolvedTy::Named {
-                    name: type_name,
-                    args,
-                    ..
-                } = scrutinee_ty
-                else {
-                    return Err(format!(
-                        "record literal predicates require a named record scrutinee, got {scrutinee_ty:?}"
-                    ));
+        Pattern::Struct { .. } => {
+            let key = ctx.mk_key(&pattern.1);
+            let plan = ctx.pattern_plans.get(&key).ok_or_else(|| {
+                "checker did not provide a PatternPlan for record literal predicates".to_string()
+            })?;
+            let mut predicates = Vec::new();
+            for field in &plan.fields {
+                let hew_types::PlanSub::Literal(lit) = &field.sub else {
+                    continue;
                 };
-                let entry = ctx
-                    .record_registry
-                    .get(type_name)
-                    .or_else(|| {
-                        type_name
-                            .rsplit('.')
-                            .next()
-                            .and_then(|n| ctx.record_registry.get(n))
-                    })
-                    .ok_or_else(|| {
-                        format!("record layout `{type_name}` is unavailable for literal predicates")
-                    })?;
-                entry
-                    .fields
-                    .iter()
-                    .map(|(field_name, field_ty)| {
-                        (
-                            field_name.clone(),
-                            substitute_type_params(field_ty, &entry.type_params, args),
-                        )
-                    })
-                    .collect()
-            };
-            Ok(fields
-                .iter()
-                .filter_map(|field| {
-                    let (sub_pat, _) = field.pattern.as_ref()?;
-                    let Pattern::Literal(lit) = sub_pat else {
-                        return None;
-                    };
-                    let (field_idx, (_, ty)) = field_decls
-                        .iter()
-                        .enumerate()
-                        .find(|(_, (name, _))| name == &field.name)?;
-                    let Ok(field_idx) = u32::try_from(field_idx) else {
-                        return None;
-                    };
-                    let (literal, _) = literal_to_hir(lit);
-                    Some(HirPayloadPredicate {
-                        field_idx,
-                        literal,
-                        ty: ty.clone(),
-                    })
-                })
-                .collect())
+                let ty = ResolvedTy::from_ty(&field.ty).map_err(|err| {
+                    format!(
+                        "record literal predicate field `{}` has unresolved plan type ({err:?})",
+                        field.name
+                    )
+                })?;
+                let (literal, _) = literal_to_hir(lit);
+                predicates.push(HirPayloadPredicate {
+                    field_idx: field.decl_idx,
+                    literal,
+                    ty,
+                });
+            }
+            Ok(predicates)
         }
         Pattern::Tuple(patterns) => {
             let ResolvedTy::Tuple(field_tys) = scrutinee_ty else {
@@ -5648,6 +5606,8 @@ struct LowerCtx {
     /// `Expr::Match` lowering to map arms to their resolved enum variant
     /// (or wildcard) without re-resolving names against the type registry.
     pattern_resolutions: HashMap<SpanKey, hew_types::ArmResolution>,
+    /// Checker-authored canonical record-pattern plans keyed by pattern span.
+    pattern_plans: HashMap<SpanKey, hew_types::PatternPlan>,
     /// Compiler-recognised lang-item registry surfaced by the checker.
     ///
     /// HIR f-string lowering looks up the `Display` trait method here
@@ -5871,6 +5831,7 @@ impl LowerCtx {
             folded_integer_consts: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
+            pattern_plans: tc_output.pattern_plans.clone(),
             lang_items: tc_output.lang_items.clone(),
             target_arch,
             current_impl_self_ty: None,
@@ -11623,76 +11584,102 @@ impl LowerCtx {
             // `bind_pattern` (called by the checker at check_stmt time) has
             // already bound the field names in the checker's env; HIR mirrors
             // those bindings via `self.bind(...)` below.
-            let pat_fields_opt = match &pattern.0 {
+            let source_fields_opt = match &pattern.0 {
                 Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
                     Some(fields)
                 }
                 _ => None,
             };
-            if let Some(pat_fields) = pat_fields_opt {
-                let rec_val = self.lower_expr(value_expr, IntentKind::Consume);
-                let rec_ty = rec_val.ty.clone();
-
-                // Look up declared field types from the record registry.
-                // The record registry holds source-declared types (possibly
-                // mentioning generic type params); we substitute concrete
-                // type args from the resolved value type.
-                let (type_params, declared_fields): (Vec<String>, Vec<(String, ResolvedTy)>) =
-                    if let ResolvedTy::Named { name, args, .. } = &rec_ty {
-                        if let Some(entry) = self.lookup_record_entry(name) {
-                            let type_params = entry.type_params.clone();
-                            let subst: HashMap<String, ResolvedTy> = type_params
-                                .iter()
-                                .zip(args.iter())
-                                .map(|(param, arg)| (param.clone(), arg.clone()))
-                                .collect();
-                            let instantiated: Vec<(String, ResolvedTy)> = entry
-                                .fields
-                                .iter()
-                                .map(|(fname, fty)| (fname.clone(), substitute_ty(fty, &subst)))
-                                .collect();
-                            (type_params, instantiated)
-                        } else {
-                            // Type not in registry (imported or unknown).
-                            // The checker already reported an error; emit
-                            // a fail-closed diagnostic and abort the desugar.
+            if let Some(source_fields) = source_fields_opt {
+                let key = self.mk_key(&pattern.1);
+                let Some(plan) = self.pattern_plans.get(&key).cloned() else {
+                    let _ = self.lower_expr(value_expr, IntentKind::Consume);
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "record pattern".into(),
+                            reason: "missing checker PatternPlan".into(),
+                        },
+                        pattern.1.clone(),
+                        "checker did not provide a canonical plan for this record pattern",
+                    ));
+                    return vec![HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(
+                            self.unsupported_expr(
+                                span.clone(),
+                                "record pattern missing PatternPlan",
+                            ),
+                        ),
+                        span: span.clone(),
+                    }];
+                };
+                let mut planned_fields = Vec::with_capacity(plan.fields.len());
+                for field in plan.fields {
+                    let field_ty = match ResolvedTy::from_ty(&field.ty) {
+                        Ok(ty) => ty,
+                        Err(err) => {
+                            let _ = self.lower_expr(value_expr, IntentKind::Consume);
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: name.clone(),
-                                    reason: "record type not in HIR registry".into(),
+                                    name: field.name.clone(),
+                                    reason: format!(
+                                        "PatternPlan field type is unresolved ({err:?})"
+                                    ),
                                 },
-                                span.clone(),
-                                "record type missing from HIR registry; \
-                                 cannot desugar let-record",
+                                field.span.clone(),
+                                "record pattern plan contains an unresolved field type",
                             ));
                             return vec![HirStmt {
                                 node: self.ids.node(),
-                                kind: HirStmtKind::Expr(
-                                    self.unsupported_expr(span, "record type not in registry"),
-                                ),
-                                span: 0..0,
+                                kind: HirStmtKind::Expr(self.unsupported_expr(
+                                    span.clone(),
+                                    "record PatternPlan field type is unresolved",
+                                )),
+                                span: span.clone(),
                             }];
                         }
-                    } else {
-                        // Non-named type: checker should have caught this.
-                        // Fail closed.
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: "let-record on non-named type".into(),
-                                owning_pass: "pattern-lowering".into(),
-                            },
-                            span.clone(),
-                            "record destructure requires a named record type",
-                        ));
-                        return vec![HirStmt {
-                            node: self.ids.node(),
-                            kind: HirStmtKind::Expr(
-                                self.unsupported_expr(span, "let-record on non-named type"),
-                            ),
-                            span: 0..0,
-                        }];
                     };
-                let _ = type_params; // consumed during substitution above
+                    let field_pattern = match field.sub {
+                        hew_types::PlanSub::Binding(name) => {
+                            (Pattern::Identifier(name), field.span.clone())
+                        }
+                        hew_types::PlanSub::Wildcard => (Pattern::Wildcard, field.span.clone()),
+                        hew_types::PlanSub::Literal(literal) => {
+                            (Pattern::Literal(literal), field.span.clone())
+                        }
+                        hew_types::PlanSub::Nested(_) => {
+                            let Some(source_pattern) = source_fields
+                                .iter()
+                                .find(|source| source.name == field.name)
+                                .and_then(|source| source.pattern.clone())
+                            else {
+                                let _ = self.lower_expr(value_expr, IntentKind::Consume);
+                                self.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::CheckerBoundaryViolation {
+                                        name: field.name.clone(),
+                                        reason: "nested PatternPlan field has no source subpattern"
+                                            .into(),
+                                    },
+                                    field.span.clone(),
+                                    "record pattern plan cannot be materialised",
+                                ));
+                                return vec![HirStmt {
+                                    node: self.ids.node(),
+                                    kind: HirStmtKind::Expr(self.unsupported_expr(
+                                        span.clone(),
+                                        "record PatternPlan nested field is missing",
+                                    )),
+                                    span: span.clone(),
+                                }];
+                            };
+                            source_pattern
+                        }
+                    };
+                    planned_fields.push((field.name, field_ty, field_pattern));
+                }
+
+                let rec_val = self.lower_expr(value_expr, IntentKind::Consume);
+                let rec_ty = rec_val.ty.clone();
 
                 // Phase 1: bind the record value to a synthetic temp.
                 let temp_name = format!("__rec_{}", self.ids.binding().0);
@@ -11708,21 +11695,7 @@ impl LowerCtx {
                 let mut stmts = vec![temp_stmt];
 
                 // Phase 2: per-field projection lets.
-                for pat_field in pat_fields {
-                    let field_name = &pat_field.name;
-
-                    // Look up the instantiated field type.
-                    let field_span = pat_field
-                        .pattern
-                        .as_ref()
-                        .map_or_else(|| span.clone(), |(_, ps)| ps.clone());
-                    let field_ty = declared_fields
-                        .iter()
-                        .find(|(fname, _)| fname == field_name)
-                        // Field not in registry — checker already reported the error.
-                        // Use Unit for HIR type-recovery so downstream does not crash.
-                        .map_or_else(|| ResolvedTy::Unit, |(_, fty)| fty.clone());
-
+                for (field_name, field_ty, field_pattern) in planned_fields {
                     // Build a FieldAccess expression: `__rec_N.<field_name>`.
                     // `ResolvedRef::Binding(temp_id)` — same as the tuple-let path
                     // (`:9579`) — so MIR resolves the proxy local from
@@ -11749,13 +11722,9 @@ impl LowerCtx {
                             object: Box::new(temp_ref),
                             field: field_name.clone(),
                         },
-                        span: field_span.clone(),
+                        span: field_pattern.1.clone(),
                     };
 
-                    let field_pattern = pat_field
-                        .pattern
-                        .clone()
-                        .unwrap_or_else(|| (Pattern::Identifier(field_name.clone()), field_span));
                     self.lower_pattern_value_into_stmts(
                         &field_pattern,
                         projection,
@@ -23677,12 +23646,9 @@ impl LowerCtx {
     /// as belt-and-braces; this HIR producer assumes the checker pre-gate
     /// holds.
     ///
-    /// **Or-patterns**: the type-checker intentionally skips
-    /// `record_arm_resolution` for `Pattern::Or` arms. HIR lowering handles
-    /// them by flattening each or-tree into its leaf alternatives (each leaf
-    /// becomes a separate `HirMatchArm` sharing the same body expression). The
-    /// leaf patterns are classified directly rather than via the resolution
-    /// side-table.
+    /// **Or-patterns**: HIR flattens each or-tree into leaf alternatives (each
+    /// leaf becomes a separate `HirMatchArm` sharing the body), then reads the
+    /// checker-authored resolution keyed by that leaf's span.
     ///
     /// **Guards**: a guard expression is lowered and attached to the `HirMatchArm`
     /// via the `guard` field. MIR lowering evaluates the guard after pattern
@@ -23749,37 +23715,18 @@ impl LowerCtx {
             let pattern_span = &arm.pattern.1;
             let key = self.mk_key(pattern_span);
 
-            // Resolve the pattern classification. For arms expanded from
-            // or-patterns (or any arm whose resolution is not in the side table),
-            // classify the leaf pattern directly from the AST. The checker has
-            // already validated the pattern and arm type; HIR lowering only needs
-            // the kind to emit the right predicate shape.
-            let resolution_opt = self.pattern_resolutions.get(&key).cloned();
-
-            // Classify: use the side-table entry when present, fall back to
-            // direct pattern classification for or-pattern-derived leaves.
-            let resolution = match resolution_opt {
-                Some(r) => r,
-                None => {
-                    // Or-pattern leaf: classify the leaf pattern directly.
-                    // Any other case (checker-rejected arm) is fail-closed below.
-                    if let Some(r) =
-                        self.classify_or_leaf_pattern(&arm.pattern.0, &scrutinee_hir.ty)
-                    {
-                        r
-                    } else {
-                        // Not a classifiable leaf (e.g. checker rejected or
-                        // unknown shape). Fail closed.
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
-                        self.unsupported(
-                            pattern_span.clone(),
-                            "or-pattern leaf / unsupported pattern in match arm",
-                            "match-expression-substrate",
-                        );
-                        rejected = true;
-                        continue;
-                    }
-                }
+            let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "match pattern".into(),
+                        reason: "missing checker pattern resolution".into(),
+                    },
+                    pattern_span.clone(),
+                    "checker did not provide a resolution for this match-pattern leaf",
+                ));
+                rejected = true;
+                continue;
             };
 
             let predicate = match resolution.pattern_kind {
@@ -24007,7 +23954,7 @@ impl LowerCtx {
             }
 
             let payload_predicates =
-                match collect_match_payload_predicates(self, &arm.pattern.0, &scrutinee_hir.ty) {
+                match collect_match_payload_predicates(self, &arm.pattern, &scrutinee_hir.ty) {
                     Ok(predicates) => predicates,
                     Err(reason) => {
                         let _ = self.lower_expr(&arm.body, IntentKind::Read);
@@ -24340,154 +24287,6 @@ impl LowerCtx {
             bindings,
             nested,
         })
-    }
-
-    /// Classify a single leaf (non-`Or`) pattern for use when expanding
-    /// or-patterns at HIR lowering time (the type-checker intentionally omits
-    /// `record_arm_resolution` for `Pattern::Or` arms, so the resolution
-    /// side-table has no entry for these).
-    ///
-    /// Returns `None` for patterns that cannot be classified (e.g. nested
-    /// struct/tuple patterns that require deeper scrutinee type knowledge);
-    /// the caller emits a fail-closed `Unsupported` diagnostic in that case.
-    fn classify_or_leaf_pattern(
-        &self,
-        pattern: &Pattern,
-        scrutinee_ty: &ResolvedTy,
-    ) -> Option<hew_types::ArmResolution> {
-        use hew_types::{ArmResolution, VariantMatch};
-        match pattern {
-            Pattern::Wildcard => Some(ArmResolution {
-                pattern_kind: PatternKind::Wildcard,
-                variant_match: None,
-                payload_bindings: vec![],
-                payload_variant_patterns: vec![],
-            }),
-            Pattern::Literal(_) => Some(ArmResolution {
-                pattern_kind: PatternKind::Literal,
-                variant_match: None,
-                payload_bindings: vec![],
-                payload_variant_patterns: vec![],
-            }),
-            Pattern::Identifier(name) => {
-                let is_ctor =
-                    name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
-                if is_ctor {
-                    // Unit variant reference: resolve against the scrutinee type.
-                    // Use the same qualified-key lookup used by `lower_match_expr`
-                    // for VariantCtor arms.
-                    let short_name = name.rsplit("::").next().unwrap_or(name);
-                    // Derive type_name from scrutinee type.
-                    let type_name = match scrutinee_ty {
-                        ResolvedTy::Named { name: n, .. } => n.clone(),
-                        _ => return None,
-                    };
-                    let qualified = format!("{type_name}::{short_name}");
-                    // Validate the variant is registered; return None if not.
-                    self.machine_ctor_registry
-                        .contains_key(&qualified)
-                        .then(|| ArmResolution {
-                            pattern_kind: PatternKind::VariantCtor,
-                            variant_match: Some(VariantMatch {
-                                type_name,
-                                variant_name: short_name.to_owned(),
-                            }),
-                            payload_bindings: vec![],
-                            payload_variant_patterns: vec![],
-                        })
-                } else {
-                    Some(ArmResolution {
-                        pattern_kind: PatternKind::Binding,
-                        variant_match: None,
-                        payload_bindings: vec![],
-                        payload_variant_patterns: vec![],
-                    })
-                }
-            }
-            // Flat tuple-payload constructor leaf, e.g. `.A(x)` / `A(x)` inside
-            // an or-pattern. The checker already validated the leaf and unified
-            // the binding types across the or alternatives
-            // (`or_pattern_bindings_match`), but intentionally records no
-            // side-table resolution for or-pattern arms, so we resolve the
-            // variant and payload types here using the SAME registries the
-            // unit-variant arm above and the non-or constructor path use:
-            // `machine_ctor_registry` for the qualified variant key,
-            // `enum_variants_by_name` for the declared payload field types, and
-            // `enum_type_params` + the scrutinee's concrete args for generic
-            // substitution. v0.5 scope: only plain-binding / wildcard payload
-            // sub-patterns; anything richer (nested constructor, literal,
-            // struct, tuple, or-pattern in payload position) stays fail-closed.
-            Pattern::Constructor { name, patterns } => {
-                let (type_name, scrutinee_args) = match scrutinee_ty {
-                    ResolvedTy::Named { name: n, args, .. } => (n.clone(), args.as_slice()),
-                    _ => return None,
-                };
-                let short_name = name.rsplit("::").next().unwrap_or(name);
-                let qualified = format!("{type_name}::{short_name}");
-                // Validate the variant is registered; bail fail-closed if not.
-                let (_, idx) = self.machine_ctor_registry.get(&qualified)?.clone();
-                // Resolve the variant's declared payload field types, then
-                // substitute the enum's type params with the scrutinee's
-                // concrete args so a bound payload lands at its concrete type
-                // even for a generic enum instantiation.
-                let variant = self.enum_variants_by_name.get(&type_name)?.get(idx)?;
-                let raw_field_tys = variant.field_tys();
-                // Arity must match exactly — a constructor pattern with a
-                // different field count than the variant declares is a checker
-                // contract violation; fail closed rather than mis-index.
-                if raw_field_tys.len() != patterns.len() {
-                    return None;
-                }
-                let type_params = self
-                    .enum_type_params
-                    .get(&type_name)
-                    .cloned()
-                    .unwrap_or_default();
-                let mut payload_bindings = Vec::with_capacity(patterns.len());
-                for (field_idx, ((sub_pat, _sub_span), raw_ty)) in
-                    patterns.iter().zip(raw_field_tys.iter()).enumerate()
-                {
-                    // v0.5 scope limit: only plain bindings and wildcards. Any
-                    // other sub-pattern shape (nested constructor, literal,
-                    // struct, tuple, or-pattern) is not yet lowered inside an
-                    // or-pattern leaf — fail closed, never half-build.
-                    match sub_pat {
-                        Pattern::Wildcard => {}
-                        Pattern::Identifier(binding_name)
-                            if !binding_name.contains("::")
-                                && !binding_name.chars().next().is_some_and(char::is_uppercase) =>
-                        {
-                            let subst_ty =
-                                substitute_type_params(raw_ty, &type_params, scrutinee_args);
-                            payload_bindings.push(hew_types::PayloadBinding {
-                                field_idx,
-                                binding_name: binding_name.clone(),
-                                ty: subst_ty.to_ty(),
-                            });
-                        }
-                        _ => return None,
-                    }
-                }
-                Some(ArmResolution {
-                    pattern_kind: PatternKind::VariantCtor,
-                    variant_match: Some(VariantMatch {
-                        type_name,
-                        variant_name: short_name.to_owned(),
-                    }),
-                    payload_bindings,
-                    payload_variant_patterns: vec![],
-                })
-            }
-            // Struct / tuple / nested-or / regex leaves inside an or-pattern
-            // remain fail-closed: they require deeper destructure lowering the
-            // v0.5 substrate does not yet provide.
-            // RecordShorthand is only valid in `let` position; reject here.
-            Pattern::Struct { .. }
-            | Pattern::RecordShorthand { .. }
-            | Pattern::Tuple(_)
-            | Pattern::Or(_, _)
-            | Pattern::Regex { .. } => None,
-        }
     }
 
     /// Lower the body block of a `scope{}` expression. This is separate from

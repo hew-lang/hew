@@ -281,3 +281,112 @@ fn spoofed_recv_symbol_extern_scrutinee_rejects() {
     );
     assert!(!any_owner_minted(&p));
 }
+
+// ---------------------------------------------------------------------------
+// S3 — the #2523 projected-payload twin gate (classify_scrutinee_origin)
+//
+// The twin classifier no longer admits every call/method/aggregate arm
+// unconditionally: it consults the same return-provenance authority. These
+// tests exercise the observable move-out behaviour through the in-memory MIR
+// (p.raw_mir / p.diagnostics), NOT --dump-mir.
+// ---------------------------------------------------------------------------
+
+/// A projected-payload move-out diagnostic (#2523's fail-closed reject at
+/// consume time), distinct from the preflight `NotYetImplemented` reject.
+fn payload_move_reject_count(p: &IrPipeline) -> usize {
+    p.diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                &d.kind,
+                MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { .. }
+            )
+        })
+        .count()
+}
+
+#[test]
+fn twin_call_forwarder_move_out_rejects_with_no_neutralize() {
+    // The #2523 twin repro: a PARAM forwarder scrutinee whose Ok payload is
+    // MOVED OUT. The preflight rejects it before lowering, so no owner and no
+    // NeutralizePayloadSlot are emitted (the twin double-free is closed).
+    let src = format!(
+        "{FORWARDER}\n\
+         fn sink(s: string) -> i64 {{ 1 }}\n\
+         fn use_it(r: Result<string, string>) -> i64 {{\n\
+            match passthru(r) {{ Ok(inner) => sink(inner), Err(_) => 0 }}\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "the twin forwarder move-out must reject: {:#?}",
+        p.diagnostics
+    );
+    assert!(
+        !any_neutralize(&p),
+        "a rejected twin scrutinee must emit NO NeutralizePayloadSlot"
+    );
+    assert!(!any_owner_minted(&p), "and NO owner mint");
+}
+
+#[test]
+fn owned_record_getter_move_out_admits_not_rejected() {
+    // A `Vec<Rec>` `.get` lowers to the fresh-owner clone choke
+    // (`hew_vec_get_clone`), so the F1 emitted-symbol contract classifies it
+    // Fresh → EphemeralTemp: the Some-payload move-out ADMITS. No preflight
+    // reject (a getter is a `ResolvedImplCall`, not a `Call`) and, crucially, no
+    // projected-payload reject (the twin gate does not false-reject the clone
+    // getter that keeps `owned_nested_tuple_record` green).
+    let src = r"
+        type Rec { s: string; }
+        fn take(r: Rec) -> i64 { 1 }
+        fn use_it(ys: Vec<Rec>) -> i64 {
+            match ys.get(0) { Some(v) => take(v), None => 0 }
+        }
+    ";
+    let p = pipeline(src);
+    assert_eq!(reject_count(&p), 0, "getter must not preflight-reject");
+    assert_eq!(
+        payload_move_reject_count(&p),
+        0,
+        "an owned clone getter must not projected-payload-reject: {:#?}",
+        p.diagnostics
+    );
+    assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
+}
+
+#[test]
+fn opaque_only_module_fn_move_out_admits_and_mints_owner() {
+    // An `OPAQUE`-only module fn (forwarding a heap extern result) is admitted
+    // via the interim LegacyModuleCall path; a move-out of its payload keeps the
+    // legacy classification (mints the owner as today, not rejected).
+    let src = r#"
+        extern "C" {
+            fn ext_make() -> Result<string, string>;
+        }
+        fn wrap() -> Result<string, string> { ext_make() }
+        fn sink(s: string) -> i64 { 1 }
+        fn use_it() -> i64 {
+            match wrap() { Ok(inner) => sink(inner), Err(_) => 0 }
+        }
+    "#;
+    let p = pipeline(src);
+    assert_eq!(
+        reject_count(&p),
+        0,
+        "an OPAQUE-only module fn move-out must not reject: {:#?}",
+        p.diagnostics
+    );
+    assert_eq!(
+        payload_move_reject_count(&p),
+        0,
+        "diags: {:#?}",
+        p.diagnostics
+    );
+    assert!(
+        any_owner_minted(&p),
+        "the interim LegacyModuleCall path mints the owner byte-for-byte as today"
+    );
+}

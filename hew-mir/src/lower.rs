@@ -61356,3 +61356,192 @@ mod call_args_borrow_safe_bytes_append_pins {
         );
     }
 }
+
+#[cfg(test)]
+mod twin_gate_classifier {
+    //! #2648 (S3) — direct unit tests of the #2523 projected-payload twin
+    //! classifier (`classify_scrutinee_origin`). The precise-freshness arms
+    //! (Group B aggregate constructors, Group C1 `Binary`, the Group A `Call`
+    //! interim PARAM reject) are unreachable through full lowering in current
+    //! code — a temporary aggregate scrutinee hits an upstream "non-BitCopy match
+    //! destructure on temporary scrutinee" NYI, and every real collection getter
+    //! lowers to the fresh-owner clone choke — so the classifier's reject/admit
+    //! verdict is pinned here directly on synthetic HIR. Exact-value assertions
+    //! (the precise origin variant), fail-closed by default.
+    use super::*;
+    use crate::return_provenance::{AliasBits, CallScrutineeProvenance, ExternContractTable};
+
+    fn expr(kind: HirExprKind, ty: ResolvedTy) -> HirExpr {
+        HirExpr {
+            node: HirNodeId(u32::MAX),
+            site: SiteId(u32::MAX),
+            ty,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind,
+            span: 0..0,
+        }
+    }
+
+    fn binding_ref(name: &str, id: u32, ty: ResolvedTy) -> HirExpr {
+        expr(
+            HirExprKind::BindingRef {
+                name: name.to_string(),
+                resolved: ResolvedRef::Binding(BindingId(id)),
+            },
+            ty,
+        )
+    }
+
+    fn is_alias_reject(o: &ProjectedPayloadOrigin) -> bool {
+        matches!(
+            o,
+            ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::AliasesCallerStorage)
+        )
+    }
+
+    fn is_ephemeral(o: &ProjectedPayloadOrigin) -> bool {
+        matches!(o, ProjectedPayloadOrigin::EphemeralTemp)
+    }
+
+    #[test]
+    fn string_binary_scrutinee_is_fresh() {
+        let b = Builder::default();
+        let bin = expr(
+            HirExprKind::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(binding_ref("a", 0, ResolvedTy::String)),
+                right: Box::new(binding_ref("b", 1, ResolvedTy::String)),
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_ephemeral(&b.classify_scrutinee_origin(&bin)),
+            "a string concat allocates fresh (hew_string_concat) — a fresh sole owner"
+        );
+    }
+
+    #[test]
+    fn heap_non_string_binary_scrutinee_rejects() {
+        let b = Builder::default();
+        let bin = expr(
+            HirExprKind::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(binding_ref("a", 0, ResolvedTy::Bytes)),
+                right: Box::new(binding_ref("b", 1, ResolvedTy::Bytes)),
+            },
+            ResolvedTy::Bytes,
+        );
+        assert!(
+            is_alias_reject(&b.classify_scrutinee_origin(&bin)),
+            "a heap non-string Binary is not proven fresh — fail closed"
+        );
+    }
+
+    #[test]
+    fn aggregate_over_a_heap_place_operand_rejects() {
+        let b = Builder::default();
+        // (h.b, 0) — the string field `h.b` is a re-readable heap place.
+        let field = expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(binding_ref("h", 0, ResolvedTy::String)),
+                field: "b".to_string(),
+            },
+            ResolvedTy::String,
+        );
+        let tuple = expr(
+            HirExprKind::TupleLiteral {
+                elements: vec![field, binding_ref("n", 1, ResolvedTy::I64)],
+            },
+            ResolvedTy::Unit,
+        );
+        assert!(
+            is_alias_reject(&b.classify_scrutinee_origin(&tuple)),
+            "an aggregate embedding a live heap place operand must reject"
+        );
+    }
+
+    #[test]
+    fn aggregate_over_fresh_operands_is_fresh() {
+        let b = Builder::default();
+        // (m, n) — both scalar (the type short-circuit proves each operand ∅).
+        let tuple = expr(
+            HirExprKind::TupleLiteral {
+                elements: vec![
+                    binding_ref("m", 0, ResolvedTy::I64),
+                    binding_ref("n", 1, ResolvedTy::I64),
+                ],
+            },
+            ResolvedTy::Unit,
+        );
+        assert!(
+            is_ephemeral(&b.classify_scrutinee_origin(&tuple)),
+            "an aggregate whose every operand is fresh is a fresh sole owner"
+        );
+    }
+
+    #[test]
+    fn call_forwarding_a_param_summary_rejects() {
+        // A resolved module-fn callee whose precise summary carries PARAM forwards
+        // a by-value heap parameter — the twin gate rejects it (defence-in-depth
+        // for the #2523 forwarding-call twin; the preflight owns the same reject).
+        let mut b = Builder::default();
+        let mut provenance = HashMap::new();
+        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM);
+        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
+            provenance,
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+        });
+        let callee = expr(
+            HirExprKind::BindingRef {
+                name: "passthru".to_string(),
+                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+            },
+            ResolvedTy::Unit,
+        );
+        let call = expr(
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: vec![],
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_alias_reject(&b.classify_scrutinee_origin(&call)),
+            "a PARAM-forwarding module-fn call scrutinee must reject"
+        );
+    }
+
+    #[test]
+    fn call_to_a_fresh_summary_admits() {
+        // A resolved module-fn callee with no PARAM bit keeps today's admission
+        // (the interim legacy window).
+        let mut b = Builder::default();
+        let mut provenance = HashMap::new();
+        provenance.insert(hew_hir::ItemId(7), AliasBits::EMPTY);
+        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
+            provenance,
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+        });
+        let callee = expr(
+            HirExprKind::BindingRef {
+                name: "make_fresh".to_string(),
+                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+            },
+            ResolvedTy::Unit,
+        );
+        let call = expr(
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: vec![],
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_ephemeral(&b.classify_scrutinee_origin(&call)),
+            "a fresh-summary call scrutinee is an ephemeral fresh owner"
+        );
+    }
+}

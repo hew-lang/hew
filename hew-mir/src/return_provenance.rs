@@ -466,6 +466,70 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
 }
 
 // ---------------------------------------------------------------------------
+// Module-global preflight context — built once, threaded into every builder
+// ---------------------------------------------------------------------------
+
+/// The module-global call-scrutinee return-provenance context the #2648 preflight
+/// admission classifier consults at every scrutinee consumer.
+///
+/// Built ONCE per module (beside the coarse `compute_fn_returns_fresh_owner`
+/// summary): the precise three-state provenance summary over every module fn, the
+/// set of declared extern `ItemId`s, and the audited owned-return extern table.
+///
+/// `Default` (empty) fails SAFE: an empty summary classifies every module-fn
+/// callee as an unknown item → interim `LegacyModuleCall` (today's fail-open
+/// mint), never a wrongly-Fresh admit and never a spurious reject. The live
+/// pipeline always threads the fully-built context; the empty default only backs
+/// `Builder::default()` in unit tests that do not exercise a forwarder scrutinee.
+#[derive(Debug, Default, Clone)]
+pub struct CallScrutineeProvenance {
+    /// Per-module-fn `ItemId` → precise three-state return provenance.
+    pub provenance: HashMap<hew_hir::ItemId, ReturnProvenance>,
+    /// Every declared `extern "C"` fn NAME. A call to an extern dispatches by
+    /// name (its call-site `ResolvedRef::Item` carries a placeholder id, NOT the
+    /// declaration's `ItemId`), so extern detection at the preflight keys on the
+    /// name. A user extern whose name spoofs a runtime symbol is therefore caught
+    /// here (heap-extern reject) BEFORE the name-based runtime-symbol carve-out;
+    /// module-fn names are disjoint from extern names, so this cannot shadow a
+    /// module fn.
+    pub extern_names: HashSet<String>,
+    /// The audited owned-return extern contract table (interim: scalar → Fresh,
+    /// every heap extern → `{OPAQUE}`). Consumed by the precise fixpoint.
+    pub extern_table: ExternContractTable,
+}
+
+/// Build the module-global preflight context: the precise return-provenance
+/// fixpoint (via the interprocedural mutation summary), the declared-extern id
+/// set, and the audited extern contract table.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "built once over the pipeline's default-hasher origin_fns map"
+)]
+pub fn build_call_scrutinee_provenance(
+    module: &hew_hir::HirModule,
+    origin_fns: &HashMap<hew_hir::ItemId, &HirFn>,
+) -> CallScrutineeProvenance {
+    let extern_table = build_extern_contract_table(module);
+    let extern_names: HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hew_hir::HirItem::ExternFn(ef) => Some(ef.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let may_mutate = compute_may_mutate_heap_param(origin_fns);
+    let provenance =
+        compute_call_scrutinee_return_provenance(origin_fns, &extern_table, &may_mutate);
+    CallScrutineeProvenance {
+        provenance,
+        extern_names,
+        extern_table,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Preflight carve-out detectors — pure HIR, keyed on TYPED identity [F4-new]
 // ---------------------------------------------------------------------------
 

@@ -2738,6 +2738,15 @@ pub fn lower_hir_module_with_facts(
     // it without re-cloning the map.
     let funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>> =
         Rc::new(compute_fn_returns_fresh_owner(&origin_fns));
+    // Module-global call-scrutinee return-provenance context (#2648): the precise
+    // three-state provenance fixpoint (+ the interprocedural mutation summary),
+    // the declared-extern id set, and the audited extern contract table. Computed
+    // ONCE and threaded (as `Rc`) into every body-lowering builder so the
+    // preflight admission classifier rejects a forwarded borrowed-parameter
+    // scrutinee before the from-call owner mint fires.
+    let call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance> = Rc::new(
+        crate::return_provenance::build_call_scrutinee_provenance(module, &origin_fns),
+    );
     // Module-global RAII-2 (#1295) param-ownership facts: which affine
     // `#[resource]` free-fn value params are CONSUME vs BORROW, and the
     // call-arg `SiteId`s whose over-stamped `Consume` intent is downgraded to a
@@ -2790,6 +2799,7 @@ pub fn lower_hir_module_with_facts(
                         &module_fn_names,
                         &module_generic_fn_names,
                         &funcupdate_fn_returns_fresh,
+                        &call_scrutinee_provenance,
                         &param_ownership,
                         &trait_impl_index,
                         &module.call_site_type_args,
@@ -2842,6 +2852,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &call_scrutinee_provenance,
                     &param_ownership,
                     &trait_impl_index,
                     &module.call_site_type_args,
@@ -2883,6 +2894,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
@@ -2925,6 +2937,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
@@ -3013,6 +3026,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
@@ -3079,6 +3093,7 @@ pub fn lower_hir_module_with_facts(
             &module_fn_names,
             &module_generic_fn_names,
             &funcupdate_fn_returns_fresh,
+            &call_scrutinee_provenance,
             &param_ownership,
             &trait_impl_index,
             &module.call_site_type_args,
@@ -3380,6 +3395,7 @@ fn lower_actor_receive_handlers(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -3465,6 +3481,7 @@ fn lower_actor_receive_handlers(
             module_fn_names,
             module_generic_fn_names,
             funcupdate_fn_returns_fresh,
+            call_scrutinee_provenance,
             param_ownership,
             &HashMap::new(),
             call_site_type_args,
@@ -3496,6 +3513,7 @@ fn lower_actor_body_handlers(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -3520,6 +3538,7 @@ fn lower_actor_body_handlers(
             module_fn_names,
             module_generic_fn_names,
             funcupdate_fn_returns_fresh,
+            call_scrutinee_provenance,
             param_ownership,
             call_site_type_args,
             supervisor_child_slots,
@@ -3544,6 +3563,7 @@ fn lower_actor_body_handlers(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        call_scrutinee_provenance,
         param_ownership,
         call_site_type_args,
         supervisor_child_slots,
@@ -3565,6 +3585,7 @@ fn lower_actor_body_handlers(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        call_scrutinee_provenance,
         param_ownership,
         call_site_type_args,
         supervisor_child_slots,
@@ -3594,6 +3615,7 @@ fn lower_actor_init_handler(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -3647,6 +3669,7 @@ fn lower_actor_init_handler(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        call_scrutinee_provenance,
         param_ownership,
         &HashMap::new(),
         call_site_type_args,
@@ -3679,6 +3702,7 @@ fn lower_actor_lifecycle_handlers(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -3737,6 +3761,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    call_scrutinee_provenance,
                     param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
@@ -3788,6 +3813,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    call_scrutinee_provenance,
                     param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
@@ -4060,6 +4086,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    call_scrutinee_provenance,
                     param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
@@ -4168,6 +4195,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    call_scrutinee_provenance,
                     param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
@@ -4390,6 +4418,7 @@ fn synthesize_machine_step_fn(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -4440,6 +4469,7 @@ fn synthesize_machine_step_fn(
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
         funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
+        call_scrutinee_provenance: call_scrutinee_provenance.clone(),
         param_ownership: param_ownership.clone(),
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
@@ -5403,6 +5433,7 @@ fn lower_supervisor_bootstrap(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -5739,6 +5770,7 @@ fn lower_supervisor_bootstrap(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        call_scrutinee_provenance,
         param_ownership,
         &HashMap::new(),
         call_site_type_args,
@@ -8324,6 +8356,7 @@ fn lower_function(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     trait_impl_index: &HashMap<
         hew_hir::dispatch::TraitImplKey,
@@ -8373,6 +8406,7 @@ fn lower_function(
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
         funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
+        call_scrutinee_provenance: call_scrutinee_provenance.clone(),
         param_ownership: param_ownership.clone(),
         trait_impl_index: trait_impl_index.clone(),
         subst,
@@ -9840,6 +9874,15 @@ struct Builder {
     /// builders share it cheaply; the empty default fails every call-base
     /// closed, which is sound. See `compute_fn_returns_fresh_owner`.
     funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>>,
+    /// Module-global call-scrutinee return-provenance context (#2648) for the
+    /// preflight admission classifier (`classify_call_scrutinee_admission`). Maps
+    /// each module-fn `ItemId` to its precise three-state return provenance, the
+    /// declared-extern id set, and the audited extern contract table. `Rc` so
+    /// child builders share it cheaply; the empty default classifies every callee
+    /// as an unknown item → interim `LegacyModuleCall` fail-open (sound —
+    /// preserves today's mint, never a wrongly-Fresh admit). See
+    /// `crate::return_provenance::CallScrutineeProvenance`.
+    call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance>,
     /// Module-global RAII-2 param-ownership facts: which affine
     /// `#[resource]` free-fn params are CONSUME (callee owns + drops) vs
     /// BORROW (caller keeps + drops), and the call-arg `SiteId`s whose
@@ -10985,11 +11028,136 @@ impl Builder {
         Some(ty)
     }
 
+    /// #2648 preflight admission classifier — pure HIR, run at the TOP of every
+    /// call-scrutinee consumer BEFORE `lower_value`/CFG allocation. Returns the
+    /// admission token the from-call owner mint and the #2523 origin consume, or
+    /// an `Err(MirDiagnostic)` reject (ONE diagnostic, no partial MIR) for a
+    /// scrutinee whose callee may hand back a borrowed by-value parameter alias
+    /// (summary contains `PARAM`) or an un-audited heap-returning `extern`.
+    ///
+    /// # Interim behaviour (S2–S4, before the trusted-root precursor merges)
+    ///
+    /// - A resolved module-fn callee whose precise summary carries `PARAM`
+    ///   REJECTS — the PRIMARY #2648 forwarder double-free fix (`match
+    ///   passthru(h.b)`). Mixed `PARAM|OPAQUE` forwarders reject too.
+    /// - A module fn whose summary is `∅` (Fresh) or `OPAQUE`-only takes
+    ///   [`CallScrutineeAdmission::LegacyModuleCall`] — today's owner-mint
+    ///   admission EXACTLY (jwt/encrypt/semver/template keep compiling). The
+    ///   precise `OPAQUE`-only rejects + jwt/encrypt Fresh admits land at S4b.
+    /// - A declared heap-returning `extern` REJECTS — including a user extern
+    ///   whose NAME spoofs a runtime recv symbol (it resolves to
+    ///   `ResolvedRef::Item`, so it is keyed by id, never the name).
+    /// - Every recv/stream/`Builtin` carve-out, unknown/cross-module item, and
+    ///   indirect/closure callee behaves as today (`NotApplicable` /
+    ///   `LegacyModuleCall` fail-open).
+    fn classify_call_scrutinee_admission(
+        &self,
+        scrutinee: &HirExpr,
+    ) -> Result<crate::return_provenance::CallScrutineeAdmission, Box<MirDiagnostic>> {
+        use crate::return_provenance::{is_typed_recv_callee, AliasBits, CallScrutineeAdmission};
+        // Structural Call-gate FIRST: only a direct `Call` rvalue can mint the
+        // from-call owner. A non-`Call` scrutinee (a `Block`/`If` synthetic
+        // `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place, an
+        // aggregate) is `NotApplicable` ON KIND — exactly `call_scrutinee_owned_ty`'s
+        // early `None`, before any runtime-identity resolution can be consulted.
+        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
+            return Ok(CallScrutineeAdmission::NotApplicable);
+        };
+        if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
+            // Typed carve-outs, keyed on the compiler-minted identity (NOT the
+            // display name): a recv/stream family or any `ResolvedRef::Builtin`
+            // callee carries its own per-iteration `BodyEndReleased` release, so
+            // no synthetic owner is minted. A user extern SPOOFING one of those
+            // names resolves to `ResolvedRef::Item` → does NOT match here → falls
+            // through to the reject arms below (closes the name-forgeable bypass).
+            if is_typed_recv_callee(callee) || matches!(resolved, ResolvedRef::Builtin(_)) {
+                return Ok(CallScrutineeAdmission::NotApplicable);
+            }
+            // Only a heap-owning-enum-composite return mints an owner; anything
+            // else is `NotApplicable`, exactly as `call_scrutinee_owned_ty`
+            // returns `None`.
+            let ty = self.subst_ty(&scrutinee.ty);
+            if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts)
+            {
+                return Ok(CallScrutineeAdmission::NotApplicable);
+            }
+            let prov = &self.call_scrutinee_provenance;
+            // A declared user extern — even one whose name spoofs a runtime
+            // symbol — reaching the heap-enum ty-gate is an un-audited heap
+            // extern. A call to an extern dispatches by NAME (its call-site
+            // `ResolvedRef::Item` carries a placeholder id, not the declaration's),
+            // so extern detection keys on the name, BEFORE the runtime-symbol
+            // carve-out (closes the name-forgeable bypass). No heap extern is
+            // trusted-Fresh in the interim (the marker-backed jwt/encrypt rows
+            // land at S4b).
+            if prov.extern_names.contains(name) {
+                return Err(Box::new(Self::call_scrutinee_reject(
+                    scrutinee,
+                    "an un-audited heap-returning `extern` may hand back an interior pointer \
+                     the caller still owns",
+                )));
+            }
+            if let ResolvedRef::Item(id) = resolved {
+                // A resolved module fn with an analysable body: consult its
+                // precise summary ONLY for the interim `PARAM`-present reject.
+                if let Some(bits) = prov.provenance.get(id) {
+                    if bits.contains(AliasBits::PARAM) {
+                        return Err(Box::new(Self::call_scrutinee_reject(
+                            scrutinee,
+                            "the called function may return one of its by-value heap parameters \
+                             (a borrow the caller still owns), so minting a second owner over \
+                             the scrutinee would double-free",
+                        )));
+                    }
+                    // Fresh or `OPAQUE`-only → interim legacy fail-open mint.
+                    return Ok(CallScrutineeAdmission::LegacyModuleCall);
+                }
+            }
+            // A genuine runtime-symbol callee that resolves to neither a user
+            // extern nor an analysable module fn keeps today's name-based skip.
+            if crate::runtime_symbols::is_known_runtime_symbol(name) {
+                return Ok(CallScrutineeAdmission::NotApplicable);
+            }
+        }
+        // An unknown/missing/cross-module item or a non-`BindingRef` (indirect /
+        // closure) callee → interim legacy fail-open (today's mint); the precise
+        // `OPAQUE` reject for these lands at S4b.
+        Ok(CallScrutineeAdmission::LegacyModuleCall)
+    }
+
+    /// Build the single #2648 reject diagnostic (a clean NYI — no partial
+    /// codegen). `why` names the specific unsound shape. Boxed to keep the
+    /// preflight's `Result` `Err` variant small.
+    fn call_scrutinee_reject(scrutinee: &HirExpr, why: &str) -> MirDiagnostic {
+        MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "call-scrutinee returning a borrowed parameter or un-audited heap \
+                            extern"
+                    .to_string(),
+                site: scrutinee.site,
+            },
+            note: format!(
+                "#2648: {why}. Bind the call result to a `let` and match on the binding, or \
+                 return a freshly-constructed value from the callee."
+            ),
+        }
+    }
+
     fn register_from_call_scrutinee_owner(
         &mut self,
+        admission: crate::return_provenance::CallScrutineeAdmission,
         scrutinee: &HirExpr,
         scrutinee_local: u32,
     ) -> Option<(BindingId, ResolvedTy)> {
+        use crate::return_provenance::CallScrutineeAdmission;
+        // The non-optional admission token gates the mint [F4]: `NotApplicable`
+        // mints nothing (the scrutinee's own release runs); `Admit` /
+        // `LegacyModuleCall` proceed to the existing owner gate. A `Reject` never
+        // reaches here — the preflight returned early at the consumer.
+        match admission {
+            CallScrutineeAdmission::NotApplicable => return None,
+            CallScrutineeAdmission::Admit | CallScrutineeAdmission::LegacyModuleCall => {}
+        }
         let ty = self.call_scrutinee_owned_ty(scrutinee)?;
         let binding = self.register_synthetic_owned_local(
             SYNTHETIC_CALL_SCRUTINEE_NAME,
@@ -14936,6 +15104,12 @@ impl Builder {
         payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
         else_body: &hew_hir::HirBlock,
     ) {
+        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. A
+        // reject pushes one diagnostic and returns with no partial MIR.
+        if let Err(diag) = self.classify_call_scrutinee_admission(scrutinee) {
+            self.diagnostics.push(*diag);
+            return;
+        }
         // Entry: evaluate scrutinee, load tag, branch.
         let Some(scrutinee_place) = self.lower_value(scrutinee) else {
             return;
@@ -15153,6 +15327,17 @@ impl Builder {
             // (`apply_nested_fresh_string_temp_drops`), which splices one inline
             // `hew_string_drop` after the unused producer. No Vec-specific
             // handling is owed here.
+            //
+            // #2648 preflight — run BEFORE `lower_value`. A rejected discarded
+            // call-scrutinee (forwarded borrowed parameter, un-audited heap
+            // extern) pushes one diagnostic and emits no MIR / no owner. The
+            // early return is the safety guard; the non-Call HashMap-get owner
+            // path in `register_discarded_call_result_owner` is `NotApplicable`
+            // to the preflight and proceeds unchanged.
+            if let Err(diag) = self.classify_call_scrutinee_admission(expr) {
+                self.diagnostics.push(*diag);
+                return;
+            }
             if let Some(place) = self.lower_value(expr) {
                 self.register_discarded_call_result_owner(expr, place);
             }
@@ -23500,6 +23685,17 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
+        // #2648 preflight — run BEFORE any `lower_value`/CFG allocation. A reject
+        // (forwarded borrowed parameter, un-audited heap extern) pushes exactly
+        // one diagnostic and returns with NO partial MIR: no scrutinee call, no
+        // owner mint, no `NeutralizePayloadSlot`.
+        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
+            Ok(admission) => admission,
+            Err(diag) => {
+                self.diagnostics.push(*diag);
+                return None;
+            }
+        };
         // Result local first so every arm's Move dominates it.
         let result_place = self.alloc_local(result_ty.clone());
 
@@ -23598,7 +23794,7 @@ impl Builder {
         // (#2429). No-op for binding-ref scrutinees, runtime-symbol
         // producers, and the recv/iter-next shapes that carry their own
         // release discipline.
-        self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
+        self.register_from_call_scrutinee_owner(scrutinee_admission, scrutinee, scrutinee_local);
 
         // Load the tag into a fresh i64 local. `Place::EnumTag(local)`
         // is the substrate primitive; codegen GEPs to outer-struct
@@ -24468,6 +24664,15 @@ impl Builder {
                       the algorithm is one coherent unit and factoring it would obscure \
                       the loop CFG"
         )]
+        // #2648 preflight — run BEFORE any block allocation or scrutinee lowering.
+        // A reject leaves no half-built loop CFG.
+        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
+            Ok(admission) => admission,
+            Err(diag) => {
+                self.diagnostics.push(*diag);
+                return None;
+            }
+        };
         let header_bb = self.alloc_block();
         let body_bb = self.alloc_block();
         let exit_bb = self.alloc_block();
@@ -24498,7 +24703,11 @@ impl Builder {
                 return None;
             }
         };
-        let scrutinee_owner = self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
+        let scrutinee_owner = self.register_from_call_scrutinee_owner(
+            scrutinee_admission,
+            scrutinee,
+            scrutinee_local,
+        );
         let false_cleanup_bb = scrutinee_owner.as_ref().map(|_| self.alloc_block());
 
         // Load the variant tag into a fresh i64 local, mirroring
@@ -24778,6 +24987,13 @@ impl Builder {
         else_body: Option<&hew_hir::HirBlock>,
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
+        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. If-let
+        // mints no from-call owner but DOES classify the #2523 projected-payload
+        // origin; the reject short-circuits that too (no partial MIR).
+        if let Err(diag) = self.classify_call_scrutinee_admission(scrutinee) {
+            self.diagnostics.push(*diag);
+            return None;
+        }
         let result_place = self.alloc_local(self.subst_ty(result_ty));
 
         // Entry: evaluate scrutinee, load tag, branch.
@@ -52109,6 +52325,7 @@ mod slice3_invariants {
                 &HashSet::new(),
                 &HashSet::new(),
                 &std::rc::Rc::new(std::collections::HashMap::new()),
+                &std::rc::Rc::new(crate::return_provenance::CallScrutineeProvenance::default()),
                 &std::rc::Rc::new(ParamOwnershipFacts::default()),
                 &HashMap::new(),
                 &HashMap::new(),

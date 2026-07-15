@@ -26,7 +26,7 @@ use hew_parser::ast::{
 };
 use hew_types::BuiltinType;
 use hew_types::{
-    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildKind, ChildSlot,
+    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
     ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
     LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
     NumericMethodLowering, OptionResultMethod, PatternKind, ResolvedTy, SpanKey, Ty, TyPattern,
@@ -797,11 +797,6 @@ impl LowerOutput {
     ///   actors/tasks/coroutines on a target that does not support them.
     /// - [`HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm`] — the
     ///   program calls blocking channel recv on wasm32.
-    /// - [`HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported`] — the
-    ///   program performs a bare (unindexed) `sup.pool_child` field access on
-    ///   a pool slot; permanently rejected by design (no member index to
-    ///   route on). Indexed access (`sup.pool[i]`) is a separate, shipped
-    ///   path.
     /// - [`HirDiagnosticKind::NestedSupervisorAccessorUnsupported`] — dead
     ///   code; `sup.nested` field access on a nested supervisor now lowers
     ///   via `hew_supervisor_nested_get` and never constructs this variant.
@@ -856,7 +851,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::SpawnedClosureNonSendCapture { .. }
                     | crate::HirDiagnosticKind::ForkBlockBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
-                    | crate::HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::CallableUnsupportedInMir { .. }
@@ -2865,18 +2859,6 @@ pub fn lower_program_with_mono_cap(
     // ctx.diagnostics.clear()) so these fail-closed diagnostics survive into
     // LowerOutput per the FC-P0 diagnostic survival ordering lesson.
     check_task_gates(&mut ctx, program);
-
-    // P1-C: Supervisor child accessor gates. Dispatched HERE (after
-    // diagnostics.clear above) so the gate's diagnostics survive into the
-    // final LowerOutput. Reads checker side-table `supervisor_child_slots`
-    // and emits a fail-closed diagnostic for the bare (unindexed) pool-child
-    // accessor, which lands in an `unreachable`/`NotYetImplemented` arm at
-    // MIR lowering (hew-mir/src/lower.rs, `ChildKind::Pool` arm) because it
-    // has no member index to route on — permanent by design, not a future
-    // ABI wait. The nested-supervisor accessor is no longer gated here: it
-    // lowers through `hew_supervisor_nested_get`. Gate runs unconditionally
-    // on every target because the pool-accessor gap is target-independent.
-    check_supervisor_child_accessor_gates(&mut ctx, type_check_output);
 
     // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
     // diagnostics.clear above) so the gate's diagnostics survive into the
@@ -26387,65 +26369,6 @@ fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
     // - `fork` statements (when they exist in surface AST)
     // - `await` expressions (when they appear outside of existing actor/scope)
     // For now, actors and supervisors are the only coroutine entry points.
-}
-
-/// Check for unsupported supervisor child accessor patterns (P1-C).
-///
-/// Reads the checker side-table `supervisor_child_slots` (keyed by the
-/// `SpanKey` of the `sup.child_name` field-access expression) and emits a
-/// fail-closed diagnostic for the one remaining unsupported form:
-///
-/// - **Pool child accessor** — `slot.kind == ChildKind::Pool`. Routing pool
-///   slots requires a dynamic member index the bare `sup.pool` accessor does
-///   not express, so it stays fail-closed here.
-///
-/// A `ChildKind::Static` child whose declared type is itself a supervisor
-/// (`child api: AuthSupervisor;`) is a NESTED supervisor accessor; it now
-/// lowers through the `hew_supervisor_nested_get` ABI call (MIR
-/// `lower_supervisor_nested_get`) and is no longer gated.
-///
-/// LESSONS P0 `boundary-fail-closed` / slepp A222: surface the gap as a
-/// compile-time diagnostic rather than letting the program reach a MIR
-/// `NotYetImplemented` trap (or worse, a runtime panic).
-fn check_supervisor_child_accessor_gates(ctx: &mut LowerCtx, tc_output: &TypeCheckOutput) {
-    // Iterate checker side-table. ChildSlot now carries authoritative
-    // `supervisor` and `child_name` set by the checker at construction —
-    // no reverse lookup, no string-identifier fragility (A39 invariant),
-    // and two children of the same actor type are correctly disambiguated.
-    for (span_key, slot) in &tc_output.supervisor_child_slots {
-        let span = span_key.start..span_key.end;
-        let sup_name = slot.supervisor.as_str();
-        let child_name = slot.child_name.as_str();
-
-        match slot.kind {
-            ChildKind::Pool => {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported {
-                        supervisor: sup_name.to_string(),
-                        child: child_name.to_string(),
-                    },
-                    span,
-                    format!(
-                        "bare pool child accessor `{sup_name}.{child_name}` is not \
-                         supported: a pool has no member index to route on without \
-                         one. Use indexed access (`{sup_name}.{child_name}[i]`) or a \
-                         static child (`child {child_name}: {ty}`) if the pool \
-                         semantics are not required.",
-                        ty = slot.child_ty,
-                    ),
-                ));
-            }
-            ChildKind::Static => {
-                // Nested supervisor: the declared child type is itself a
-                // supervisor, so the result of the field access is
-                // `LocalPid<NestedSupervisor>`. This lowers through the
-                // `hew_supervisor_nested_get` ABI call (MIR
-                // `lower_supervisor_nested_get`), so it is no longer gated
-                // here. A plain actor child (the common case) also routes
-                // through this `Static` arm and needs no gate.
-            }
-        }
-    }
 }
 
 /// Check for blocking channel recv usage on wasm32 (P0.3 + P0.4).

@@ -361,11 +361,8 @@ pub struct TypeCheckOutput {
     /// Missing entry means the checker could not resolve the child (e.g. unknown
     /// field); MIR lowering must fail closed on a missing entry.
     pub supervisor_child_slots: HashMap<SpanKey, ChildSlot>,
-    /// Resolved static-pool accessors (`sup.pool[i]` / `.get(i)` / `.len()`),
-    /// keyed by the OUTER expression span (the `Index` or `MethodCall`). The
-    /// inner `FieldAccess`'s `supervisor_child_slots` entry is REMOVED when
-    /// consumed by one of these forms, so the bare-pool-access HIR gate fires
-    /// only for a genuinely bare `sup.pool`.
+    /// Resolved static-pool accessors (`pool[i]` / `.get(i)` / `.len()`),
+    /// keyed by the OUTER expression span (the `Index` or `MethodCall`).
     pub pool_accessor_sites: HashMap<SpanKey, PoolAccessor>,
     /// Per-call-site `T → dyn Trait` coercion metadata used by the MIR
     /// trait-object lowering and the LLVM vtable emitter.
@@ -864,20 +861,11 @@ pub enum ChildKind {
     Pool,
 }
 
-/// A resolved static-pool accessor: `sup.pool[i]`, `sup.pool.get(i)`, or
-/// `sup.pool.len()`. Recorded by the checker at the OUTER expression span (the
-/// `Index` or `MethodCall`, not the inner `FieldAccess`) so MIR lowering reads
-/// the supervisor + `pool_key` and emits the right runtime call.
+/// A resolved static-pool accessor: `pool[i]`, `pool.get(i)`, or `pool.len()`.
+/// The receiver is a first-class `SupervisorPool<S, T>` value carrying the
+/// supervisor handle and pool key at runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolAccessor {
-    /// The supervisor type owning the pool (e.g. `"Pool"`).
-    pub supervisor: String,
-    /// The pool child name (e.g. `"workers"`).
-    pub child_name: String,
-    /// The pool's declared member actor type (e.g. `"Worker"`).
-    pub child_ty: String,
-    /// The pool slot index in `HewSupervisor.pool_slots[]` (the `pool_key`).
-    pub pool_key: u32,
     /// Which accessor form this site is.
     pub kind: PoolAccessorKind,
 }

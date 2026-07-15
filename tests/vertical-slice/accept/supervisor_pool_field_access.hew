@@ -1,0 +1,64 @@
+actor Worker {
+    var value: i64;
+
+    receive fn id() -> i64 {
+        value
+    }
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 5 within 60s;
+
+    pool workers: Worker(count: 3, value: 7);
+}
+
+fn main() -> i64 {
+    let sup = spawn Pool;
+    let workers = sup.workers;
+    var total = workers.len();
+
+    let indexed = workers[1];
+    match await indexed.id() {
+        Ok(value) => {
+            if value != 7 {
+                return 1;
+            }
+            total = total + value;
+        },
+        Err(_) => {
+            return 2;
+        },
+    }
+
+    match workers.get(2) {
+        Some(worker) => {
+            match await worker.id() {
+                Ok(value) => {
+                    if value != 7 {
+                        return 3;
+                    }
+                    total = total + value;
+                },
+                Err(_) => {
+                    return 4;
+                },
+            }
+        },
+        None => {
+            return 5;
+        },
+    }
+
+    match workers.get(3) {
+        Some(_) => {
+            return 6;
+        },
+        None => {
+            total = total + 20;
+        },
+    }
+
+    println(total);
+    0
+}

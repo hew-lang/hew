@@ -666,22 +666,6 @@ pub enum HirDiagnosticKind {
         /// Site identifier for error reporting.
         site: SiteId,
     },
-    /// Bare (unindexed) pool-supervisor child accessor. The program performs
-    /// a field access on a supervisor-typed handle (`sup.child_name`) where
-    /// the named child is declared with `pool name: Type` rather than
-    /// `child name: Type`, with no index. Indexed pool access
-    /// (`sup.pool[i]` / `sup.pool.len()`) is a separate, already-implemented
-    /// path (`hew_supervisor_pool_child_get`/`hew_supervisor_pool_len`); the
-    /// bare accessor has no member index to route on and is rejected
-    /// permanently by design, not pending a future ABI. Fail-closed per
-    /// slepp A222: compile-time diagnostic instead of `unreachable`/
-    /// `NotYetImplemented` trap at MIR lowering.
-    SupervisorPoolChildAccessorUnsupported {
-        /// Supervisor type name (e.g. `"Pool"`).
-        supervisor: String,
-        /// Pool child name being accessed (e.g. `"worker"`).
-        child: String,
-    },
     /// Dead code: nested-supervisor field access (`root.sub`, including
     /// chained `root.sub.worker`) now lowers end-to-end through the
     /// `hew_supervisor_nested_get` ABI call and never constructs this

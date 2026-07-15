@@ -162,7 +162,7 @@ impl ValueClass {
             // to `Unknown` (record-field reject, W3.029). It is a plain 8-byte
             // copyable scalar — classify it BitCopy like `duration` / `i64`.
             | ResolvedTy::Named {
-                builtin: Some(BuiltinType::Instant),
+                builtin: Some(BuiltinType::Instant | BuiltinType::SupervisorPool),
                 ..
             }
             | ResolvedTy::Unit

@@ -379,6 +379,7 @@ stable = [
   "hew_msg_node_free",
   "hew_node_api_allow_peer",
   "hew_node_api_connect",
+  "hew_node_api_identity_key",
   "hew_node_api_load_keys",
   "hew_node_api_lookup",
   "hew_node_api_register_by_pid",

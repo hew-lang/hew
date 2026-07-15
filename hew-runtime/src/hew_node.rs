@@ -4560,6 +4560,18 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
                     return -1;
                 };
                 cfg.mesh_identity = Some(material);
+                // Early transport pin (D1/D14 handoff): loading a stable mesh
+                // identity commits this node to the transport the operator has
+                // selected, so `Node::identity_key()` can export the pinned
+                // credential *before* `Node::start` freezes the snapshot. The
+                // pin is idempotent with the authoritative pin in
+                // `merge_start_env_into_config`; a mismatch cannot occur because
+                // both read `transport_selection_from_env`.
+                if cfg.transport.is_none() {
+                    if let Ok(selection) = transport_selection_from_env() {
+                        cfg.transport = Some(selection.as_peer_transport());
+                    }
+                }
                 0
             }
             Err(err) => {
@@ -4692,7 +4704,40 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
     0
 }
 
-/// Upper bound on a decoded peer SPKI, mirroring `quic_mesh::MAX_SPKI_BYTES`
+/// `Node::identity_key()` — Return this node's stable public credential for the
+/// pinned transport as lowercase hex (issue #2652, D8): the Noise static public
+/// key on TCP, the certificate SPKI on quic-mesh. Operators hand the returned
+/// value to peers so they can bind it via `Node::allow_peer`.
+///
+/// Reads the three-state public staging config (BLOCK-7 point 3 — never
+/// dereferences the owning node pointer):
+/// - `Building` — the staged config (before start);
+/// - `Starting` — the consumed config held for the in-flight start;
+/// - `Running` — the standalone `identity_export` clone captured at the
+///   `Starting → Running` transition.
+///
+/// Returns an **owned** hew string (empty string `""`, never null, when no
+/// stable identity has been loaded). The caller frees it via `hew_string_drop`;
+/// the runtime never retains the pointer.
+#[no_mangle]
+pub extern "C" fn hew_node_api_identity_key() -> *mut c_char {
+    let export = {
+        let guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &guard.state {
+            ConfigState::Building(cfg) => cfg.identity_export_string(),
+            ConfigState::Starting { config, .. } => config.identity_export_string(),
+            ConfigState::Running {
+                identity_export, ..
+            } => identity_export.clone(),
+        }
+    };
+    // SAFETY: `export` is valid UTF-8 for its byte length; malloc_cstring copies
+    // exactly that many bytes and NUL-terminates (owned hew string).
+    unsafe { crate::cabi::malloc_cstring(export.as_ptr(), export.len()) }
+}
+
 /// (4 KiB). The mesh allowlist re-enforces this, but `decode_hex` checks it
 /// *before* allocating so an oversize hex argument can't force a large up-front
 /// `Vec`. A well-formed RSA-4096 SPKI is under 1 KiB; anything larger is junk.
@@ -6723,6 +6768,82 @@ mod tests {
         with_current_node_read(|current| {
             assert_eq!(*current, 0);
         });
+    }
+
+    /// D8 / BLOCK-7 point 3: `Node::identity_key` reads the three-state staging
+    /// config — `Building` config, held `Starting.config`, and the retained
+    /// `Running.identity_export` clone — returns `""` (never null) when no stable
+    /// identity is loaded, and NEVER dereferences the owner pointer (the owner
+    /// here is a fabricated non-pointer value the read must not touch).
+    #[test]
+    fn node_identity_key_reads_three_state_config_without_owner_deref() {
+        use crate::peer_binding::{PeerAuthConfig, StableNoiseIdentity, TransportSelection};
+        let _guard = crate::runtime_test_guard();
+
+        let set_state = |state| {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = state;
+        };
+        let read = || {
+            let p = hew_node_api_identity_key();
+            assert!(!p.is_null(), "identity_key must never return null");
+            // SAFETY: p is a freshly-owned NUL-terminated hew string.
+            let s = unsafe { std::ffi::CStr::from_ptr(p) }
+                .to_string_lossy()
+                .into_owned();
+            // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
+            unsafe { crate::string::hew_string_drop(p) };
+            s
+        };
+
+        // Building (default) — no identity loaded ⇒ "".
+        set_state(ConfigState::default());
+        assert_eq!(
+            read(),
+            "",
+            "no stable identity must read as the empty string"
+        );
+
+        // Building with a pinned TCP Noise identity ⇒ its public key hex.
+        let noise = StableNoiseIdentity::from_raw([0x11; 32], [0x22; 32]);
+        let expect_hex = "11".repeat(32);
+        let cfg = PeerAuthConfig {
+            transport: Some(TransportSelection::Tcp),
+            noise_identity: Some(noise),
+            ..PeerAuthConfig::default()
+        };
+        set_state(ConfigState::Building(cfg.clone()));
+        assert_eq!(read(), expect_hex, "Building must read the staged identity");
+
+        // Starting holds the consumed config ⇒ same hex; owner is a fabricated
+        // non-pointer value the read must not dereference.
+        set_state(ConfigState::Starting {
+            generation: 7,
+            owner: 0xDEAD_BEEF,
+            config: cfg,
+        });
+        assert_eq!(
+            read(),
+            expect_hex,
+            "Starting must read the held config (no owner deref)"
+        );
+
+        // Running retains a standalone identity_export clone ⇒ that clone.
+        set_state(ConfigState::Running {
+            generation: 7,
+            owner: 0xDEAD_BEEF,
+            identity_export: "cafe".to_string(),
+        });
+        assert_eq!(
+            read(),
+            "cafe",
+            "Running must read the retained identity_export clone (no owner deref)"
+        );
+
+        // Restore clean staging for sibling tests.
+        set_state(ConfigState::default());
     }
 
     #[test]

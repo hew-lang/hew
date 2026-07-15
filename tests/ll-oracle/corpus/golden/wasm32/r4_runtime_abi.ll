@@ -291,6 +291,8 @@ declare void @hew_node_api_load_keys(ptr)
 
 declare void @hew_node_api_allow_peer(i16, ptr)
 
+declare ptr @hew_node_api_identity_key()
+
 declare i64 @hew_actor_pid(ptr)
 
 declare i32 @hew_node_api_register_by_pid(ptr, i64)

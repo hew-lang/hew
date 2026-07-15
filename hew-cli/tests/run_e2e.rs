@@ -486,13 +486,14 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
         fn main() {
             Node::set_transport("quic-mesh");
             Node::load_keys("node.key");
+            let me = Node::identity_key();
             Node::allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
             Node::start("127.0.0.1:0");
             let counter = spawn Counter(count: 0);
             Node::register("counter", counter);
             counter.increment(5);
             Node::shutdown();
-            println("peer-auth ok");
+            println(f"peer-auth ok id={me}");
         }
         "#,
     )
@@ -507,9 +508,20 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(
-        strip_ansi(&String::from_utf8_lossy(&output.stdout)),
-        "peer-auth ok\n"
+    // `Node::identity_key()` must export this node's stable mesh credential
+    // (the loaded cert SPKI as lowercase hex) *before* start froze the snapshot;
+    // it is non-empty and pure lowercase hex.
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let id_hex = stdout
+        .trim()
+        .strip_prefix("peer-auth ok id=")
+        .expect("identity_key round-trip line");
+    assert!(
+        !id_hex.is_empty()
+            && id_hex
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "identity_key must export non-empty lowercase hex; got {id_hex:?}"
     );
 
     let keyfile = dir.path().join("node.key");

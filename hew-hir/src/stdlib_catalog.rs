@@ -2415,6 +2415,20 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_node_api_allow_peer",
         },
     ),
+    // `Node::identity_key() -> String` — this node's stable public credential
+    // for the pinned transport as lowercase hex (Noise pubkey on TCP, cert SPKI
+    // on quic-mesh, issue #2652). Operators hand it to peers for `allow_peer`.
+    // No args in; returns an owned hew string (`""` when no stable identity has
+    // been loaded), freed by generated code via `hew_string_drop`.
+    direct(
+        "Node::identity_key",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::String,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_api_identity_key",
+        },
+    ),
     // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
     //
     // Per R81, `LocalPid<T>` lowers to a bare `u64` PID at the C-ABI

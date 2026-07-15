@@ -873,6 +873,10 @@ impl Checker {
         // RuntimeFfiShim path (catalog), like start/connect.
         self.register_builtin_fn("Node::load_keys", vec![Ty::String], Ty::Unit);
         self.register_builtin_fn("Node::allow_peer", vec![Ty::U16, Ty::String], Ty::Unit);
+        // `Node::identity_key() -> String` — this node's stable public
+        // credential for the pinned transport as lowercase hex (issue #2652);
+        // `""` when no stable identity has been loaded.
+        self.register_builtin_fn("Node::identity_key", vec![], Ty::String);
         // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
         // The second argument is tightened to `LocalPid<T>` so that passing a
         // `RemotePid<T>` or bare `u64` is caught at the checker rather than

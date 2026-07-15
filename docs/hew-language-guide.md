@@ -3143,12 +3143,17 @@ keys. Call these before `Node::start`:
 ```hew
 Node::set_transport("quic-mesh");
 Node::load_keys("node.key");        // mint+persist this node's identity (stable SPKI)
+let me = Node::identity_key();       // this node's stable public credential (hex)
 Node::allow_peer(2, "3059…0107");   // bind peer NodeId 2 to its cert SPKI; fail-closed
 Node::start("0.0.0.0:9000");
 ```
 
 `load_keys` loads the node's TLS identity from the keyfile, creating one on
-first run so the public key stays stable across restarts. `allow_peer(node_id,
+first run so the public key stays stable across restarts. `Node::identity_key()`
+returns this node's own stable public credential for the pinned transport as
+lowercase hex (the cert SPKI on quic-mesh, the 32-byte Noise public key on
+tcp-noise), or the empty string `""` before an identity is loaded — hand it to a
+peer so they can pin it with their own `allow_peer`. `allow_peer(node_id,
 credential)` binds a peer's authenticated credential (quic-mesh: cert SPKI;
 tcp-noise: 32-byte Noise public key, both lowercase hex) to the `NodeId` that
 peer is permitted to claim — a peer whose credential is unbound, or which

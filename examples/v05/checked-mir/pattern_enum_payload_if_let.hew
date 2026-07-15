@@ -1,0 +1,33 @@
+// Stage-0 pattern-discharge pin: if-let over an enum struct variant with one
+// bound owned field and one wildcarded owned sibling.
+//
+// The payload alias does not own a release. The `Packet` local remains the
+// sole owner and each dynamic exit executes exactly one EnumInPlace drop.
+enum Packet {
+    Data { a: string, b: string };
+    Empty;
+}
+
+fn make(good: bool) -> Packet {
+    if good {
+        Packet::Data {
+            a: "if-let-a".to_upper(),
+            b: "if-let-b".to_upper(),
+        }
+    } else {
+        Packet::Empty
+    }
+}
+
+fn probe(good: bool) -> i64 {
+    let p = make(good);
+    if let Packet::Data { a, b: _ } = p {
+        a.len()
+    } else {
+        0
+    }
+}
+
+fn main() -> i64 {
+    if probe(true) > 0 && probe(false) == 0 { 0 } else { 1 }
+}

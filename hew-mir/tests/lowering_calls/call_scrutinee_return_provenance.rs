@@ -82,6 +82,22 @@ fn any_owner_minted(p: &IrPipeline) -> bool {
     })
 }
 
+/// Count `__hew_call_scrutinee` owner mints across every lowered function.
+fn count_owner_mints(p: &IrPipeline) -> usize {
+    p.raw_mir
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.statements.iter())
+        .filter(|s| {
+            matches!(
+                s,
+                hew_mir::MirStatement::Bind { name, .. }
+                    if name == SYNTHETIC_CALL_SCRUTINEE_NAME
+            )
+        })
+        .count()
+}
+
 /// True when ANY lowered function emits a `NeutralizePayloadSlot` instruction.
 fn any_neutralize(p: &IrPipeline) -> bool {
     p.raw_mir.iter().any(|f| {
@@ -250,9 +266,11 @@ fn fresh_producer_match_admits_and_mints_owner() {
     let p = pipeline(src);
     assert_eq!(reject_count(&p), 0, "a fresh producer must not reject");
     assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
-    assert!(
-        any_owner_minted(&p),
-        "a fresh heap-enum producer scrutinee mints the __hew_call_scrutinee owner"
+    assert_eq!(
+        count_owner_mints(&p),
+        1,
+        "a single fresh-producer scrutinee mints EXACTLY ONE __hew_call_scrutinee \
+         owner — never two over the same buffer (the #2648 double-mint invariant)"
     );
 }
 
@@ -279,9 +297,11 @@ fn opaque_only_module_fn_takes_legacy_path_and_mints_owner() {
         p.diagnostics
     );
     assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
-    assert!(
-        any_owner_minted(&p),
-        "the interim LegacyModuleCall path preserves the owner mint byte-for-byte"
+    assert_eq!(
+        count_owner_mints(&p),
+        1,
+        "the interim LegacyModuleCall path preserves the owner mint byte-for-byte \
+         (exactly one owner, as today)"
     );
 }
 

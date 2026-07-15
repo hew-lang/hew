@@ -56,8 +56,8 @@ use crate::envelope::{
     decode_link_down_payload, decode_link_req_payload, decode_monitor_down_payload,
     decode_monitor_req_payload, decode_registry_gossip_payload, decode_swim_payload,
     decode_wire_frame, encode_control_frame, encode_registry_gossip_payload, encode_swim_payload,
-    ControlFrame, RegistryGossipPayload, SwimControlPayload, SwimGossipEntry, WireFrame,
-    CTRL_DEMONITOR, CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
+    ControlFrame, EnvelopeFrame, RegistryGossipPayload, SwimControlPayload, SwimGossipEntry,
+    WireFrame, CTRL_DEMONITOR, CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
     CTRL_REGISTRY_GOSSIP, CTRL_SWIM, CTRL_UNLINK, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
     REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
@@ -711,6 +711,26 @@ fn test_reserve_unverified(
             panic!("unexpected claim rejection in test (node {node_id}, conn {conn_id}): {detail}")
         }
     }
+}
+
+/// Test helper: reserve **and** publish a claim binding `node_id` to `conn_id`,
+/// modelling a fully-admitted authenticated peer. Unit tests that construct a
+/// [`ConnectionActor`] by hand (bypassing `hew_connmgr_add`) must seed this so
+/// the issue #2652 exact-owner gate ([`authenticated_peer_node_id_for_conn`])
+/// recognises the connection as the current published owner of its `NodeId`.
+#[cfg(test)]
+fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) {
+    let token = next_publication_token(mgr);
+    test_reserve_unverified(mgr, node_id, conn_id, token);
+    let (lock, condvar) = &mgr.claims;
+    let mut guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(claim) = guard.get_mut(&node_id) {
+        claim.state = ClaimState::Published;
+    }
+    drop(guard);
+    condvar.notify_all();
 }
 
 #[expect(
@@ -1390,6 +1410,13 @@ fn handle_control_frame(
         set_last_error("connection reader rejected registry gossip from non-gossip peer");
         return;
     }
+    // D9/D12: only an authenticated (`Strict`) peer may inject registry gossip.
+    // An `Unverified` (delivery-only) connection carries no control-plane
+    // authority — drop its gossip with a diagnostic and apply no registry
+    // mutation (fail-closed).
+    if authenticated_peer_node_id(mgr, conn_id, "registry gossip").is_none() {
+        return;
+    }
 
     let payload = match decode_registry_gossip_payload(&control.payload) {
         Ok(payload) => payload,
@@ -1432,10 +1459,11 @@ fn authenticated_peer_node_id(mgr: *mut HewConnMgr, conn_id: c_int, context: &st
     }
     // SAFETY: reader_loop owns a live manager pointer for this connection.
     let mgr_ref = unsafe { &*mgr };
-    let authenticated = peer_node_id_for_conn(mgr_ref, conn_id);
+    let authenticated = authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
     if authenticated == 0 {
         set_last_error(format!(
-            "connection reader {context}: missing authenticated peer for conn {conn_id}"
+            "connection reader {context}: missing authenticated peer for conn {conn_id} \
+             (unverified/delivery-only connections carry no control-plane authority)"
         ));
         return None;
     }
@@ -1679,6 +1707,104 @@ pub(crate) fn peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
     })
 }
 
+/// The *authenticated* peer `NodeId` for a control frame arriving on `conn_id`
+/// (issue #2652, D9/D12). Returns `Some(node_id)` only when the connection is
+/// ACTIVE, carries `Strict` (credential-authenticated) posture, and advertised
+/// a nonzero `NodeId` — i.e. it is the exact current owner of a published,
+/// credential-bound claim. Returns `None` for an `Unverified` (loopback-dev /
+/// opt-out) connection: such a peer is delivery-only and carries no
+/// control-plane authority, so it can never inject registry/SWIM/cluster
+/// membership gossip, monitor/link control, or complete another peer's ask.
+/// Delivery routing continues to use [`peer_node_id_for_conn`], which does not
+/// gate on posture (D9's one intentional `Unverified` capability).
+pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
+    // (a) the connection must be ACTIVE, carry `Strict` posture, and advertise a
+    // nonzero NodeId.
+    let claimed = mgr.connections.access(|conns| {
+        conns
+            .iter()
+            .find(|c| {
+                c.conn_id == conn_id
+                    && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && c.posture == Posture::Strict
+                    && c.peer_node_id != 0
+            })
+            .map_or(0, |c| c.peer_node_id)
+    });
+    if claimed == 0 {
+        return 0;
+    }
+    // (b)+(c) the connection must be the *exact current owner* of the published
+    // claim for its NodeId (issue #2652, D9 / BLOCK-4 point 2): the claim must be
+    // `Published` AND owned by THIS `conn_id`. A superseded connection (D3 point
+    // 2) still carries `Strict` posture but its `conn_id` no longer matches the
+    // claim owner, so it loses control authority the instant the map is
+    // overwritten — before its actor is even closed.
+    let (lock, _condvar) = &mgr.claims;
+    let guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guard.get(&claimed) {
+        Some(claim) if claim.state == ClaimState::Published && claim.conn_id == conn_id => claimed,
+        _ => 0,
+    }
+}
+
+/// D12 data-plane gate: decide whether an inbound *ask* on `conn_id` must be
+/// dropped because the source connection carries no reply/route authority.
+///
+/// Returns `true` (deny) when the envelope is an ask (`request_id > 0`) and the
+/// connection is not the exact current owner of a published, credential-bound
+/// claim — i.e. an `Unverified` (loopback-dev / opt-out) or superseded peer. A
+/// fire-and-forget delivery (`request_id == 0`) is never denied here: it flows
+/// on the D9 self-declared delivery route, the sole allowed `Unverified`
+/// capability.
+fn inbound_ask_denied_unverified(mgr: *mut HewConnMgr, conn_id: c_int, request_id: u64) -> bool {
+    if request_id == 0 {
+        return false;
+    }
+    if mgr.is_null() {
+        return true;
+    }
+    // SAFETY: reader_loop holds a live manager pointer for this connection while
+    // the reader thread runs; the null case is handled above.
+    let mgr_ref = unsafe { &*mgr };
+    authenticated_peer_node_id_for_conn(mgr_ref, conn_id) == 0
+}
+
+/// Deposit an inbound reply envelope (`request_id > 0`, `source_node_id == 0`)
+/// into the reply routing table, bypassing the normal inbound router. The
+/// completion validates the originating `(conn_mgr, conn_id)` (issue #2652 D12)
+/// so a peer cannot complete or reject another peer's ask.
+fn deposit_reply_envelope(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    peer_feature_flags: u32,
+    envelope: &EnvelopeFrame,
+) {
+    if is_ask_rejection_reply(envelope.msg_type, peer_feature_flags) {
+        // Rejection reply: the remote node hit its inbound ask path and sent an
+        // encoded AskError reason. Mark the pending ask as failed so the
+        // originating caller gets the precise remote rejection reason. The
+        // `supports_ask_rejection` guard ensures old nodes (which never send
+        // this sentinel) cannot trigger this path even if they happen to send a
+        // message with msg_type = 65535.
+        crate::hew_node::fail_remote_reply(
+            mgr.cast_const(),
+            conn_id,
+            envelope.request_id,
+            envelope.payload.as_slice(),
+        );
+    } else {
+        crate::hew_node::complete_remote_reply(
+            mgr.cast_const(),
+            conn_id,
+            envelope.request_id,
+            envelope.payload.as_slice(),
+        );
+    }
+}
+
 /// Encode a SWIM control frame from a payload.
 fn encode_swim_control(payload: &SwimControlPayload) -> Option<Vec<u8>> {
     let payload_bytes = match encode_swim_payload(payload) {
@@ -1853,9 +1979,12 @@ fn handle_swim_control_frame(
         return;
     }
 
-    // Cross-attribution defence: the frame's claimed sender must equal the
-    // authenticated handshake identity of the connection it arrived on.
-    let authenticated = peer_node_id_for_conn(mgr_ref, conn_id);
+    // Cross-attribution defence + D9/D12 control-plane gate: the frame's
+    // claimed sender must equal the *authenticated* (`Strict`) handshake
+    // identity of the connection it arrived on. An `Unverified` (delivery-only)
+    // connection resolves to 0 here and is rejected — it cannot inject SWIM
+    // membership state.
+    let authenticated = authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
     if authenticated == 0 || authenticated != payload.from_node {
         set_last_error(format!(
             "connection reader SWIM frame from_node {} does not match authenticated peer {authenticated}",
@@ -2165,27 +2294,23 @@ fn reader_loop(
                 // deposited directly into the reply routing table, bypassing
                 // the normal inbound router.
                 if envelope.request_id > 0 && envelope.source_node_id == 0 {
-                    if is_ask_rejection_reply(envelope.msg_type, peer_feature_flags) {
-                        // Rejection reply: the remote node hit its inbound
-                        // ask path and sent an encoded AskError reason.
-                        // Mark the pending ask as failed so the originating
-                        // caller gets the precise remote rejection reason.
-                        //
-                        // The `supports_ask_rejection` guard ensures that
-                        // old nodes (which never send this sentinel) cannot
-                        // accidentally trigger this path even if they happen
-                        // to send a message with msg_type = 65535.
-                        crate::hew_node::fail_remote_reply(
-                            envelope.request_id,
-                            envelope.payload.as_slice(),
-                        );
-                    } else {
-                        crate::hew_node::complete_remote_reply(
-                            envelope.request_id,
-                            envelope.payload.as_slice(),
-                        );
-                    }
+                    deposit_reply_envelope(mgr, conn_id, peer_feature_flags, &envelope);
                 } else {
+                    // D9/D12 data-plane gate: an inbound *ask* (request_id > 0
+                    // with a declared source_node_id) needs a reply routed back
+                    // to the source, which an `Unverified` (delivery-only)
+                    // connection has no authority to establish. Reject it —
+                    // emit no reply, create no route, run no router side effect.
+                    // Fire-and-forget delivery (request_id == 0) via the
+                    // self-declared delivery route stays allowed (D9's one
+                    // intentional `Unverified` capability).
+                    if inbound_ask_denied_unverified(mgr, conn_id, envelope.request_id) {
+                        set_last_error(format!(
+                            "connection reader dropped inbound ask from unverified peer on conn \
+                             {conn_id} (delivery-only; no reply/route authority)"
+                        ));
+                        continue;
+                    }
                     // I/O recv span: bracket the router call so the
                     // mailbox enqueue captures the io_recv span as the
                     // parent of the actor-dispatch span.
@@ -2796,13 +2921,32 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         None
     };
 
-    // Resolve the credential for the claim machine. Only the `encryption` build
-    // can present a Noise credential; without it every connection is credential
-    // -free (delivery-only / loopback dev).
+    // Resolve the credential for the claim machine (issue #2652, D2/D6):
+    //  - tcp-noise: the Noise static key recovered above (encryption build);
+    //  - quic-mesh: the peer's leaf-certificate SPKI (D6) — the mTLS handshake
+    //    already pinned the SPKI at the transport layer, so binding it here ties
+    //    the *claimed* NodeId to that authenticated key (an allowlisted key must
+    //    not claim a NodeId bound to a different key);
+    //  - otherwise (plain tcp without encryption / plain quic / Unknown):
+    //    credential-free (delivery-only / loopback dev).
     #[cfg(feature = "encryption")]
-    let peer_credential: Option<PeerCredential> = peer_credential;
+    let noise_credential: Option<PeerCredential> = peer_credential;
     #[cfg(not(feature = "encryption"))]
-    let peer_credential: Option<PeerCredential> = None;
+    let noise_credential: Option<PeerCredential> = None;
+
+    #[cfg(feature = "quic")]
+    // SAFETY: mgr.transport is valid while the manager is alive; conn_id is the
+    // live handle being admitted. A non-mesh/unknown conn yields None.
+    let peer_credential: Option<PeerCredential> =
+        if unsafe { crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport) } {
+            // SAFETY: same caller contract as above.
+            unsafe { crate::quic_mesh::hew_transport_quic_mesh_peer_spki(mgr.transport, conn_id) }
+                .map(PeerCredential::Spki)
+        } else {
+            noise_credential
+        };
+    #[cfg(not(feature = "quic"))]
+    let peer_credential: Option<PeerCredential> = noise_credential;
 
     // Authorize the claimed identity against the frozen per-node authority, then
     // reserve the `NodeId` claim (issue #2652, D3). node_id 0 is the pre-identity
@@ -4116,6 +4260,9 @@ mod tests {
             peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
             peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             (&*mgr).connections.access(|conns| conns.push(peer));
+            // Model node 2 as the admitted, published owner of its NodeId so the
+            // issue #2652 exact-owner control gate accepts its SWIM frames.
+            test_publish_claim(&*mgr, 2, 10);
 
             // Honest PING from node 2 (matches the conn's authenticated id).
             let ping = SwimControlPayload {
@@ -4222,6 +4369,9 @@ mod tests {
             peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
             peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             (&*mgr).connections.access(|conns| conns.push(peer));
+            // Model node 2 as the admitted, published owner of its NodeId so the
+            // issue #2652 exact-owner control gate accepts its gossip.
+            test_publish_claim(&*mgr, 2, 10);
 
             // ACK from node 2 carrying DEAD-about-node-3 gossip.
             let ack = SwimControlPayload {
@@ -4256,7 +4406,176 @@ mod tests {
         drop(ops);
     }
 
-    /// Defense-in-depth: `ConnectionActor::drop` must close the transport
+    /// Issue #2652 D9/D12 `unverified_gating`: an `Unverified` (delivery-only)
+    /// peer carries no control-plane authority. A SWIM frame it sends — even one
+    /// honestly attributed to its own declared `NodeId` — is dropped with no
+    /// ACK, and the [`inbound_ask_denied_unverified`] data-plane gate denies its
+    /// asks while still permitting fire-and-forget delivery.
+    #[test]
+    fn unverified_gating_denies_control_and_ask_authority() {
+        let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(record_registry_gossip_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: sends.cast(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            // Unverified (loopback-dev / opt-out) peer node 2 on conn 10:
+            // ACTIVE, gossip-capable, but posture is Unverified.
+            let mut unverified = ConnectionActor::new(10);
+            unverified.peer_node_id = 2;
+            unverified.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            unverified.posture = crate::peer_binding::Posture::Unverified;
+            unverified.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(unverified));
+            // Its delivery claim is published (Unverified peers still route
+            // fire-and-forget), but posture keeps it off the control plane.
+            test_publish_claim(&*mgr, 2, 10);
+
+            // Control plane: an honest SWIM PING from the Unverified peer is
+            // dropped — no ACK is sent.
+            let ping = SwimControlPayload {
+                msg_type: crate::cluster::SWIM_MSG_PING,
+                from_node: 2,
+                incarnation: 1,
+                target_node: 0,
+                gossip: vec![],
+            };
+            let frame = decode_wire_frame(&swim_control_frame_bytes(&ping)).expect("frame");
+            let WireFrame::Control(control) = frame else {
+                panic!("expected control frame");
+            };
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+            {
+                let guard = (&*sends)
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(
+                    guard.len(),
+                    0,
+                    "an Unverified peer's SWIM frame must be dropped with no ACK"
+                );
+            }
+            assert_eq!(
+                authenticated_peer_node_id_for_conn(&*mgr, 10),
+                0,
+                "an Unverified connection has no control-plane authority"
+            );
+
+            // Data plane: an inbound ask (request_id > 0) from the Unverified
+            // peer is denied; a fire-and-forget delivery (request_id == 0) is
+            // permitted (D9's one intentional Unverified capability).
+            assert!(
+                inbound_ask_denied_unverified(mgr, 10, 1),
+                "an inbound ask from an Unverified peer must be denied"
+            );
+            assert!(
+                !inbound_ask_denied_unverified(mgr, 10, 0),
+                "fire-and-forget delivery from an Unverified peer stays allowed"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(sends));
+        }
+        drop(ops);
+    }
+
+    /// Issue #2652 D9 exact-owner authority: an authorised (`Strict` +
+    /// published) peer carries control-plane authority, and a **superseded**
+    /// owner loses it the instant the claim map is overwritten — even though its
+    /// posture is still `Strict` and its actor is not yet closed (D3 point 2).
+    #[test]
+    fn unverified_gating_supersede_revokes_authority() {
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: std::ptr::null_mut(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            // Exact-owner (Strict + published) peer node 3 on conn 20.
+            let mut strict = ConnectionActor::new(20);
+            strict.peer_node_id = 3;
+            strict.posture = crate::peer_binding::Posture::Strict;
+            strict.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(strict));
+            test_publish_claim(&*mgr, 3, 20);
+            assert_eq!(
+                authenticated_peer_node_id_for_conn(&*mgr, 20),
+                3,
+                "an exact-owner Strict connection carries control authority"
+            );
+            assert!(
+                !inbound_ask_denied_unverified(mgr, 20, 1),
+                "an inbound ask from an authorised peer is permitted"
+            );
+
+            // Supersede node 3's claim onto a new conn 21.
+            let mut strict2 = ConnectionActor::new(21);
+            strict2.peer_node_id = 3;
+            strict2.posture = crate::peer_binding::Posture::Strict;
+            strict2.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(strict2));
+            test_publish_claim(&*mgr, 3, 21);
+            assert_eq!(
+                authenticated_peer_node_id_for_conn(&*mgr, 20),
+                0,
+                "a superseded connection loses control authority"
+            );
+            assert_eq!(
+                authenticated_peer_node_id_for_conn(&*mgr, 21),
+                3,
+                "the new exact owner carries control authority"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+        }
+        drop(ops);
+    }
+
     /// before joining the reader thread so a reader blocked in `recv()` cannot
     /// hang the drop.
     #[test]

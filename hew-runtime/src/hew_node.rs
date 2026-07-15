@@ -827,6 +827,12 @@ impl ReplyRoutingTable {
 
     /// Complete a pending reply by depositing the payload and signalling
     /// the waiting thread. Returns `true` if the request ID was found.
+    ///
+    /// Test-only helper: the production reply-arrival path completes through
+    /// [`ReplyRoutingTable::complete_from_connection`] so a peer cannot resolve
+    /// another peer's ask (issue #2652, D12). Tests that don't exercise the
+    /// connection binding use this request-id-only shortcut.
+    #[cfg(test)]
     fn complete(&self, request_id: u64, payload: Vec<u8>) -> bool {
         self.finish(
             request_id,
@@ -838,6 +844,9 @@ impl ReplyRoutingTable {
         )
     }
 
+    /// Resolve a pending reply by request id alone (test-only; see
+    /// [`ReplyRoutingTable::complete`]).
+    #[cfg(test)]
     fn finish(&self, request_id: u64, outcome: ReplyOutcome) -> bool {
         let entry = {
             let mut map = self
@@ -974,6 +983,65 @@ impl ReplyRoutingTable {
         map.remove(&request_id)
     }
 
+    /// Remove `request_id` **only if** it was registered against `expected`
+    /// connection (issue #2652, D12). A reply that arrives on a different
+    /// `(conn_mgr, conn_id)` than the ask was sent on must not resolve it — a
+    /// peer cannot complete (or reject) another peer's ask. A mismatch leaves
+    /// the pending ask intact (it resolves via its real reply or times out).
+    fn remove_if_connection(
+        &self,
+        request_id: u64,
+        expected: ConnectionKey,
+    ) -> Option<Arc<PendingReply>> {
+        let mut map = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match map.get(&request_id) {
+            Some(pending) if pending.connection == expected => map.remove(&request_id),
+            _ => None,
+        }
+    }
+
+    /// Connection-validated success completion (D12): resolve `request_id` with
+    /// `payload` only when the reply arrived on the originating connection.
+    fn complete_from_connection(
+        &self,
+        request_id: u64,
+        expected: ConnectionKey,
+        payload: Vec<u8>,
+    ) -> bool {
+        if let Some(pending) = self.remove_if_connection(request_id, expected) {
+            Self::complete_pending(
+                &pending,
+                ReplyOutcome {
+                    status: ReplyStatus::Success,
+                    data: payload,
+                    ask_error: AskError::None,
+                },
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Connection-validated rejection (D12): fail `request_id` with `ask_error`
+    /// only when the rejection reply arrived on the originating connection.
+    fn fail_from_connection(
+        &self,
+        request_id: u64,
+        expected: ConnectionKey,
+        ask_error: AskError,
+    ) -> bool {
+        if let Some(pending) = self.remove_if_connection(request_id, expected) {
+            Self::fail_pending_with_reason(&pending, ask_error);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Number of registered-but-unresolved pending replies. Test-only: used to
     /// assert the reply slot does not leak on the fail-closed send path.
     #[cfg(test)]
@@ -990,9 +1058,18 @@ static REMOTE_VOID_REPLY_SENTINEL: u8 = 0;
 /// Deposit a reply payload for a pending remote ask.
 ///
 /// Called by the reader thread when a reply envelope arrives. Returns
-/// `true` if the request ID was matched.
-pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
-    reply_table_opt().is_some_and(|table| table.complete(request_id, payload.to_vec()))
+/// `true` if the request ID was matched **and** the reply arrived on the same
+/// `(conn_mgr, conn_id)` the ask was issued on (issue #2652, D12) — a peer
+/// cannot complete another peer's ask.
+pub(crate) fn complete_remote_reply(
+    conn_mgr: *const HewConnMgr,
+    conn_id: c_int,
+    request_id: u64,
+    payload: &[u8],
+) -> bool {
+    let expected = ConnectionKey::new(conn_mgr, conn_id);
+    reply_table_opt()
+        .is_some_and(|table| table.complete_from_connection(request_id, expected, payload.to_vec()))
 }
 
 fn ask_error_from_code(code: i32) -> Option<AskError> {
@@ -1079,11 +1156,22 @@ fn decode_rejection_reason(reason_payload: &[u8]) -> Result<AskError, AskRejecti
 /// Called by the reader thread when a **rejection** reply envelope arrives
 /// (one with [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type` field).
 /// Empty payloads from older peers still default to `WorkerAtCapacity`.
-pub(crate) fn fail_remote_reply(request_id: u64, reason_payload: &[u8]) -> bool {
+/// The rejection resolves the ask only when it arrives on the same
+/// `(conn_mgr, conn_id)` the ask was issued on (issue #2652, D12).
+pub(crate) fn fail_remote_reply(
+    conn_mgr: *const HewConnMgr,
+    conn_id: c_int,
+    request_id: u64,
+    reason_payload: &[u8],
+) -> bool {
     // On unknown codes, leave the pending ask unresolved (it will timeout)
     // rather than fabricating a misleading AskError.
     match decode_rejection_reason(reason_payload) {
-        Ok(reason) => reply_table_opt().is_some_and(|table| table.fail(request_id, reason)),
+        Ok(reason) => {
+            let expected = ConnectionKey::new(conn_mgr, conn_id);
+            reply_table_opt()
+                .is_some_and(|table| table.fail_from_connection(request_id, expected, reason))
+        }
         Err(_) => false,
     }
 }
@@ -5489,8 +5577,8 @@ mod tests {
         );
 
         with_current_node_read(|current| assert_eq!(*current, 0));
-        assert!(!complete_remote_reply(1, &[1, 2, 3]));
-        assert!(!fail_remote_reply(1, &[]));
+        assert!(!complete_remote_reply(std::ptr::null(), 0, 1, &[1, 2, 3]));
+        assert!(!fail_remote_reply(std::ptr::null(), 0, 1, &[]));
         fail_remote_replies_for_connection(std::ptr::null(), 0);
         // SAFETY: with no runtime there are no known-node registries to sweep.
         unsafe { unregister_actor_names(crate::pid::hew_pid_make(1, 1)) };
@@ -5694,6 +5782,81 @@ mod tests {
         let port =
             unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
                 .expect("started TCP test node must expose its bound listener port");
+        (node, port)
+    }
+
+    /// Environment key naming the pre-generated Noise keyfile a two-process
+    /// helper loads its stable identity from (brokered by the parent test).
+    #[cfg(feature = "encryption")]
+    const TWO_PROCESS_KEYFILE_ENV: &str = "HEW_2P_KEYFILE";
+    /// Environment key carrying the peer's Noise static pubkey (lowercase hex)
+    /// for the helper to bind via its per-node snapshot before connecting.
+    #[cfg(feature = "encryption")]
+    const TWO_PROCESS_PEER_PUBKEY_ENV: &str = "HEW_2P_PEER_PUBKEY";
+
+    /// Start a **credentialed, Strict-authorized** TCP-Noise listener node for a
+    /// two-process helper (issue #2652, D110).
+    ///
+    /// Reads the pre-generated Noise keyfile (`HEW_2P_KEYFILE`) and the peer's
+    /// Noise static pubkey (`HEW_2P_PEER_PUBKEY`, lowercase hex) — the parent
+    /// test brokered both out-of-band, mirroring a real key exchange. Installs a
+    /// per-node snapshot with the stable Noise identity + a
+    /// `peer_node → NoiseKey(peer_pub)` binding, so the TCP-Noise handshake
+    /// authenticates the peer and the claim machine binds its `NodeId`. This is a
+    /// genuine authorized connection — there is no test-only posture promotion:
+    /// a peer presenting an unbound Noise key fails the pre-gate and admission.
+    #[cfg(feature = "encryption")]
+    fn start_authorized_tcp_node(node_id: u16, peer_node: u16) -> (TestNode, u16) {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings, NOISE_KEY_LEN};
+
+        let keyfile = std::env::var(TWO_PROCESS_KEYFILE_ENV).expect("2p keyfile env");
+        let peer_pub_hex = std::env::var(TWO_PROCESS_PEER_PUBKEY_ENV).expect("2p peer pubkey env");
+
+        let identity =
+            crate::encryption::noise_identity_load_or_create(std::path::Path::new(&keyfile))
+                .expect("load 2p noise identity");
+        let peer_pub_bytes = decode_hex(&peer_pub_hex).expect("2p peer pubkey must be hex");
+        assert_eq!(
+            peer_pub_bytes.len(),
+            NOISE_KEY_LEN,
+            "2p peer pubkey must be a 32-byte Noise static key"
+        );
+        let mut peer_pub = [0u8; NOISE_KEY_LEN];
+        peer_pub.copy_from_slice(&peer_pub_bytes);
+
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(peer_node)
+            .or_default()
+            .insert(PeerCredential::NoiseKey(peer_pub));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(node_id),
+            noise_identity: Some(identity),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this helper.
+        let node = unsafe { TestNode::new(node_id, &bind_addr) };
+        assert!(!node.as_ptr().is_null(), "authorized tcp node alloc failed");
+        // SAFETY: node is freshly created (STOPPED); install the snapshot before start.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0, "install 2p auth snapshot on node {node_id}");
+        // SAFETY: node pointer is valid; start selects TCP from the snapshot and
+        // reads the installed strict bindings.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(
+            rc,
+            0,
+            "authorized tcp start({node_id}) failed: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: node started successfully on the TCP transport.
+        let port =
+            unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
+                .expect("authorized tcp node must expose its bound listener port");
         (node, port)
     }
 
@@ -5951,6 +6114,7 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    #[cfg(feature = "encryption")]
     fn run_registry_gossip_server_helper() {
         reset_two_process_delivery();
         // Install the runtime before touching the name registry: in this helper
@@ -5959,7 +6123,10 @@ mod tests {
         let _real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
-        let (node, port) = start_tcp_test_listener_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
+        let (node, port) = start_authorized_tcp_node(
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+        );
         crate::pid::hew_pid_set_local_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
 
         // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
@@ -5994,6 +6161,7 @@ mod tests {
         assert!(delivered, "server did not observe two-process send");
     }
 
+    #[cfg(feature = "encryption")]
     fn run_registry_gossip_client_helper() {
         // Install the runtime before touching the name registry (helper
         // subprocess holds no `runtime_test_guard`).
@@ -6004,12 +6172,10 @@ mod tests {
             .expect("server port env")
             .parse::<u16>()
             .expect("server port");
-        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // SAFETY: bind_addr is valid for this helper scope.
-        let node = unsafe { TestNode::new(TWO_PROCESS_REGISTRY_CLIENT_NODE, &bind_addr) };
-        assert!(!node.as_ptr().is_null(), "client node allocation failed");
-        // SAFETY: node pointer is valid.
-        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, 0, "client start");
+        let (node, _client_port) = start_authorized_tcp_node(
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+        );
 
         let connect_addr = CString::new(format!(
             "{TWO_PROCESS_REGISTRY_SERVER_NODE}@127.0.0.1:{server_port}"
@@ -6052,6 +6218,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_ask_server_helper(
         node_id: u16,
         name: &str,
@@ -6076,7 +6243,7 @@ mod tests {
         let _real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
-        let (node, port) = start_tcp_test_listener_node(node_id);
+        let (node, port) = start_authorized_tcp_node(node_id, TWO_PROCESS_REGISTRY_CLIENT_NODE);
         crate::pid::hew_pid_set_local_node(node_id);
         // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
         let worker = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(dispatch)) };
@@ -6107,12 +6274,14 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     struct TwoProcessAskClient {
         node: TestNode,
         remote_pid: u64,
         _real_sched: RealSchedulerGuard,
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_ask_echo_client_helper() {
         let client = run_two_process_ask_client_setup(
             TWO_PROCESS_REGISTRY_CLIENT_NODE,
@@ -6157,6 +6326,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_ask_timeout_client_helper() {
         let client = run_two_process_ask_client_setup(
             TWO_PROCESS_REGISTRY_CLIENT_NODE,
@@ -6196,6 +6366,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_ask_client_setup(
         client_node_id: u16,
         server_node_id: u16,
@@ -6213,15 +6384,7 @@ mod tests {
             .expect("server port env")
             .parse::<u16>()
             .expect("server port");
-        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // SAFETY: bind_addr is valid for this helper scope.
-        let node = unsafe { TestNode::new(client_node_id, &bind_addr) };
-        assert!(
-            !node.as_ptr().is_null(),
-            "ask client node allocation failed"
-        );
-        // SAFETY: node pointer is valid.
-        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, 0, "client start");
+        let (node, _client_port) = start_authorized_tcp_node(client_node_id, server_node_id);
 
         let connect_addr = CString::new(format!("{server_node_id}@127.0.0.1:{server_port}"))
             .expect("valid connect addr");
@@ -6252,6 +6415,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn registry_gossip_two_process_server_helper() {
         if !matches!(
@@ -6263,6 +6427,7 @@ mod tests {
         run_registry_gossip_server_helper();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn registry_gossip_two_process_client_helper() {
         if !matches!(
@@ -6274,6 +6439,7 @@ mod tests {
         run_registry_gossip_client_helper();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn remote_ask_two_process_echo_server_helper() {
         if !matches!(
@@ -6290,6 +6456,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn remote_ask_two_process_echo_client_helper() {
         if !matches!(
@@ -6301,6 +6468,7 @@ mod tests {
         run_two_process_ask_echo_client_helper();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn remote_ask_two_process_timeout_server_helper() {
         if !matches!(
@@ -6317,6 +6485,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn remote_ask_two_process_timeout_client_helper() {
         if !matches!(
@@ -6328,6 +6497,30 @@ mod tests {
         run_two_process_ask_timeout_client_helper();
     }
 
+    /// Broker a real Noise key exchange for the two-process tests (issue #2652,
+    /// D110). Mints both nodes' stable identities up-front in the shared temp
+    /// dir and returns `(server_keyfile, server_pubkey_hex, client_keyfile,
+    /// client_pubkey_hex)`. Each helper is handed its own keyfile (which it
+    /// re-loads to the identical identity) plus the *peer's* pubkey, so both
+    /// sides bind each other before connecting — no test-only posture promotion.
+    #[cfg(feature = "encryption")]
+    fn broker_two_process_noise_keys(dir: &std::path::Path) -> (String, String, String, String) {
+        use crate::peer_binding::hex_lower;
+        let server_keyfile = dir.join("server.key");
+        let client_keyfile = dir.join("client.key");
+        let server_id = crate::encryption::noise_identity_load_or_create(&server_keyfile)
+            .expect("mint 2p server identity");
+        let client_id = crate::encryption::noise_identity_load_or_create(&client_keyfile)
+            .expect("mint 2p client identity");
+        (
+            server_keyfile.to_string_lossy().into_owned(),
+            hex_lower(&server_id.public()),
+            client_keyfile.to_string_lossy().into_owned(),
+            hex_lower(&client_id.public()),
+        )
+    }
+
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_process_registry_gossip_lookup_then_tell() {
         let _guard = crate::runtime_test_guard();
@@ -6335,17 +6528,29 @@ mod tests {
         let ready_file = ready_dir.path().join("server-ready");
         let ready_file_s = ready_file.to_string_lossy().into_owned();
 
+        // Broker a real Noise key exchange (D110) so both nodes admit Strict.
+        let (server_keyfile, server_pub_hex, client_keyfile, client_pub_hex) =
+            broker_two_process_noise_keys(ready_dir.path());
+
         let mut server = spawn_registry_gossip_helper(
             "hew_node::tests::registry_gossip_two_process_server_helper",
             "server",
-            &[(TWO_PROCESS_READY_FILE_ENV, ready_file_s)],
+            &[
+                (TWO_PROCESS_READY_FILE_ENV, ready_file_s),
+                (TWO_PROCESS_KEYFILE_ENV, server_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, client_pub_hex),
+            ],
         );
         let server_port = wait_for_ready_port(&ready_file, &mut server, Duration::from_secs(10));
 
         let mut client = spawn_registry_gossip_helper(
             "hew_node::tests::registry_gossip_two_process_client_helper",
             "client",
-            &[(TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string())],
+            &[
+                (TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string()),
+                (TWO_PROCESS_KEYFILE_ENV, client_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, server_pub_hex),
+            ],
         );
         let client_output = client.wait_output(Duration::from_secs(40));
         assert_child_success("client", &client_output);
@@ -6354,6 +6559,7 @@ mod tests {
         assert_child_success("server", &server_output);
     }
 
+    #[cfg(feature = "encryption")]
     fn run_two_process_remote_ask_case(
         server_helper: &'static str,
         server_role: &'static str,
@@ -6365,17 +6571,29 @@ mod tests {
         let ready_file = ready_dir.path().join("ask-server-ready");
         let ready_file_s = ready_file.to_string_lossy().into_owned();
 
+        // Broker a real Noise key exchange (D110) so both nodes admit Strict.
+        let (server_keyfile, server_pub_hex, client_keyfile, client_pub_hex) =
+            broker_two_process_noise_keys(ready_dir.path());
+
         let mut server = spawn_registry_gossip_helper(
             server_helper,
             server_role,
-            &[(TWO_PROCESS_READY_FILE_ENV, ready_file_s)],
+            &[
+                (TWO_PROCESS_READY_FILE_ENV, ready_file_s),
+                (TWO_PROCESS_KEYFILE_ENV, server_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, client_pub_hex),
+            ],
         );
         let server_port = wait_for_ready_port(&ready_file, &mut server, Duration::from_secs(10));
 
         let mut client = spawn_registry_gossip_helper(
             client_helper,
             client_role,
-            &[(TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string())],
+            &[
+                (TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string()),
+                (TWO_PROCESS_KEYFILE_ENV, client_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, server_pub_hex),
+            ],
         );
         let client_output = client.wait_output(Duration::from_secs(40));
         assert_child_success(client_role, &client_output);
@@ -6384,6 +6602,7 @@ mod tests {
         assert_child_success(server_role, &server_output);
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_process_remote_ask_echo_double_returns_42() {
         run_two_process_remote_ask_case(
@@ -6394,6 +6613,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_process_remote_ask_timeout_returns_timeout_under_1500ms() {
         run_two_process_remote_ask_case(
@@ -6457,6 +6677,103 @@ mod tests {
         }
         .expect("started quic_mesh test node must expose its bound listener port");
         (node, port)
+    }
+
+    /// Start a **credentialed, Strict-authorized** quic-mesh listener node
+    /// (issue #2652, D110).
+    ///
+    /// Unlike [`start_quic_mesh_test_listener_node`] (which leaves `node.auth`
+    /// unconfigured → `Unverified` posture, delivery-only), this installs a real
+    /// per-node [`PeerAuthSnapshot`] before start:
+    ///  - `node_id = Some(node_id)` — the operator-pinned identity;
+    ///  - `bindings = {peer_id → Spki(peer_spki)}` — the peer's *actual* leaf
+    ///    SPKI (from [`make_mutually_pinned_mesh_tls`]), so the claim machine
+    ///    binds the claimed `NodeId` to the authenticated key.
+    ///
+    /// The mutually-pinned `tls` (which already carries `with_peer_spki`) drives
+    /// the mTLS handshake; admission extracts the *presented* leaf SPKI and
+    /// matches it against the binding. This is a genuine authorized connection —
+    /// there is no test-only posture promotion (D110): a peer presenting a
+    /// different cert fails both the TLS pin and the claim-machine binding.
+    #[cfg(feature = "quic")]
+    fn start_authorized_quic_mesh_node(
+        node_id: u16,
+        tls: crate::quic_mesh::MeshTls,
+        peer_id: u16,
+        peer_spki: Vec<u8>,
+    ) -> (TestNode, u16) {
+        use crate::peer_binding::{PeerAuthConfig, PeerBindings};
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this helper.
+        let node = unsafe { TestNode::new(node_id, &bind_addr) };
+        assert!(!node.as_ptr().is_null(), "test node allocation failed");
+
+        // Install the credentialed snapshot: strict node identity + the peer's
+        // real SPKI bound to the peer's NodeId.
+        let mut bindings = PeerBindings::new();
+        bindings
+            .entry(peer_id)
+            .or_default()
+            .insert(PeerCredential::Spki(peer_spki));
+        let snapshot = PeerAuthConfig {
+            node_id: std::num::NonZeroU16::new(node_id),
+            bindings,
+            ..PeerAuthConfig::default()
+        }
+        .snapshot();
+        // SAFETY: node is freshly created (STOPPED); installing a snapshot is valid.
+        let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+        assert_eq!(set_rc, 0, "install auth snapshot on node {node_id}");
+
+        // SAFETY: hew_transport_quic_mesh_new returns an owned transport pointer.
+        let transport = unsafe { crate::quic_mesh::hew_transport_quic_mesh_new() };
+        assert!(
+            !transport.is_null(),
+            "quic_mesh transport allocation failed: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: transport pointer was just allocated by the constructor.
+        let rc =
+            unsafe { crate::quic_mesh::hew_transport_quic_mesh_set_tls_override(transport, tls) };
+        assert_eq!(rc, 0, "set TLS override on quic_mesh transport");
+
+        // SAFETY: node owns the previously null transport slot; replace it with
+        // the pre-allocated quic_mesh transport before start.
+        unsafe {
+            (*node.as_ptr()).transport = transport;
+        }
+
+        // SAFETY: node and transport pointers are valid; start consumes the
+        // injected transport and reads the installed strict snapshot.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(
+            rc,
+            0,
+            "hew_node_start({node_id}) authorized quic_mesh failed: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: node started successfully on the quic_mesh transport.
+        let port = unsafe {
+            crate::quic_mesh::hew_transport_quic_mesh_bound_port((*node.as_ptr()).transport)
+        }
+        .expect("started quic_mesh test node must expose its bound listener port");
+        (node, port)
+    }
+
+    /// Start a mutually-authorized quic-mesh node **pair** (issue #2652, D110).
+    ///
+    /// Returns `(node_a, port_a, node_b, port_b)`. `node_a` is started first (so
+    /// it becomes `CURRENT_NODE` / initiator); both nodes carry cross-bound
+    /// `Spki → NodeId` credentials so a connection between them admits Strict.
+    #[cfg(feature = "quic")]
+    fn start_authorized_quic_mesh_pair(id_a: u16, id_b: u16) -> (TestNode, u16, TestNode, u16) {
+        let (tls_a, tls_b, spki_a, spki_b) =
+            make_mutually_pinned_mesh_tls(&format!("node-{id_a}"), &format!("node-{id_b}"));
+        let (node_a, port_a) = start_authorized_quic_mesh_node(id_a, tls_a, id_b, spki_b);
+        thread::sleep(Duration::from_millis(50));
+        let (node_b, port_b) = start_authorized_quic_mesh_node(id_b, tls_b, id_a, spki_a);
+        (node_a, port_a, node_b, port_b)
     }
 
     unsafe extern "C-unwind" fn noop_dispatch(
@@ -7629,6 +7946,49 @@ mod tests {
         assert_eq!(hew_node_ask_take_last_error(), AskError::None as i32);
     }
 
+    /// Issue #2652 D12: a reply that arrives on a DIFFERENT `(conn_mgr, conn_id)`
+    /// than the ask was issued on must not resolve it — a peer cannot complete
+    /// (or reject) another peer's ask. The pending entry survives the mismatched
+    /// attempt and is resolvable only by the originating connection.
+    #[test]
+    fn reply_completion_requires_the_originating_connection() {
+        let _guard = crate::runtime_test_guard();
+        let origin = ConnectionKey::new(std::ptr::without_provenance(0x5010), 21);
+        let (id, pending) = reply_table().register(origin);
+
+        // Same request id, wrong manager → rejected, ask stays pending.
+        assert!(
+            !complete_remote_reply(std::ptr::without_provenance(0x9999), 21, id, &[1, 2, 3]),
+            "a reply on a different conn_mgr must not complete the ask"
+        );
+        // Same manager, wrong conn_id → rejected, ask stays pending.
+        assert!(
+            !complete_remote_reply(std::ptr::without_provenance(0x5010), 99, id, &[1, 2, 3]),
+            "a reply on a different conn_id must not complete the ask"
+        );
+        // A rejection reply on the wrong connection is likewise rejected.
+        assert!(
+            !fail_remote_reply(std::ptr::without_provenance(0x9999), 21, id, &[]),
+            "a rejection on a different connection must not fail the ask"
+        );
+        assert!(
+            pending.outcome.lock().unwrap().is_none(),
+            "the ask must remain unresolved after mismatched attempts"
+        );
+
+        // The originating connection resolves it.
+        assert!(
+            complete_remote_reply(std::ptr::without_provenance(0x5010), 21, id, &[9, 9]),
+            "the originating connection must complete the ask"
+        );
+        let guard = pending.outcome.lock().unwrap();
+        let outcome = guard
+            .as_ref()
+            .expect("outcome set by originating connection");
+        assert_eq!(outcome.status, ReplyStatus::Success);
+        assert_eq!(outcome.data, vec![9, 9]);
+    }
+
     #[test]
     fn parked_reply_timeout_finishes_with_timeout_error() {
         let _guard = crate::runtime_test_guard();
@@ -7831,7 +8191,12 @@ mod tests {
             conn_mgr: 91,
             conn_id: 14,
         });
-        assert!(fail_remote_reply(id, &[]));
+        assert!(fail_remote_reply(
+            std::ptr::without_provenance(91),
+            14,
+            id,
+            &[]
+        ));
 
         let guard = pending
             .outcome
@@ -7918,7 +8283,12 @@ mod tests {
             conn_mgr: 92,
             conn_id: 15,
         });
-        assert!(!fail_remote_reply(id, &[0xFF]));
+        assert!(!fail_remote_reply(
+            std::ptr::without_provenance(92),
+            15,
+            id,
+            &[0xFF]
+        ));
 
         let guard = pending
             .outcome
@@ -8573,24 +8943,16 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_remote_void_ask_returns_sentinel() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(313, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(314);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection
+        // (inbound ask authority requires an authenticated peer, D9/D12).
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(313, 314);
 
         _real_sched = init_real_scheduler();
 
@@ -8639,6 +9001,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_remote_ask_reply() {
         let _guard = crate::runtime_test_guard();
@@ -8648,19 +9011,10 @@ mod tests {
         register_test_u32_codec(test_dispatch(), 1);
 
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 311.
-        // Node 2 (responder) starts after; CURRENT_NODE stays as node1.
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(311, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0); // CURRENT_NODE = node1, LOCAL_NODE_ID = 311
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(312); // CURRENT_NODE stays node1
+        // Node 2 (responder) starts after; CURRENT_NODE stays as node1. Both nodes
+        // carry cross-bound SPKI→NodeId credentials so the connection admits
+        // Strict — inbound ask authority (D9/D12) requires an authenticated peer.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(311, 312);
 
         // Ensure the scheduler is running so actor dispatches work.
         _real_sched = init_real_scheduler();
@@ -8731,6 +9085,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_remote_ask_async_resumes_on_wire_reply() {
         // NEW-5 worker-free oracle at the runtime contract: a suspendable remote
@@ -8744,16 +9099,8 @@ mod tests {
         crate::registry::hew_registry_clear();
         register_test_u32_codec(test_dispatch(), 1);
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: bind address is a valid C string for this scope.
-        let node1 = unsafe { TestNode::new(321, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-        // SAFETY: node1 is valid for the call.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(322);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(321, 322);
 
         _real_sched = init_real_scheduler();
 
@@ -8853,23 +9200,15 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_inbound_orphaned_ask_reports_orphaned() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(315, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(316);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(315, 316);
 
         _real_sched = init_real_scheduler();
 
@@ -8923,23 +9262,15 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_inbound_actor_stopped_reports_actor_stopped() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(317, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(318);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(317, 318);
 
         _real_sched = init_real_scheduler();
 
@@ -8995,23 +9326,15 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_inbound_mailbox_full_reports_mailbox_full() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(326, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(327);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(326, 327);
 
         _real_sched = init_real_scheduler();
 
@@ -9086,23 +9409,14 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_worker_limit_still_reports_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(319, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(320);
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(319, 320);
 
         _real_sched = init_real_scheduler();
 
@@ -9258,24 +9572,15 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "quic")]
     #[test]
     fn two_node_remote_nonvoid_empty_reply_returns_null() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(317, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(318);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(317, 318);
 
         _real_sched = init_real_scheduler();
 
@@ -9974,6 +10279,7 @@ mod tests {
     /// End-to-end: inbound ask counter is bounded during a real two-node ask
     /// round-trip. After the ask completes the worker slot is released and the
     /// counter returns to its pre-ask value.
+    #[cfg(feature = "quic")]
     #[test]
     fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
         let _guard = crate::runtime_test_guard();
@@ -9981,18 +10287,8 @@ mod tests {
         crate::registry::hew_registry_clear();
         register_test_u32_codec(test_dispatch(), 1);
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(320, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(321);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(320, 321);
 
         _real_sched = init_real_scheduler();
 
@@ -10079,24 +10375,15 @@ mod tests {
 
     /// Over-limit rejection of a **void** remote ask returns null +
     /// `WorkerAtCapacity` (not the void-success sentinel, not `ConnectionDropped`).
+    #[cfg(feature = "quic")]
     #[test]
     fn over_limit_void_ask_fails_closed_with_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(322, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(323);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(322, 323);
         _real_sched = init_real_scheduler();
 
         // Spawn a void-reply actor on node2.
@@ -10163,6 +10450,7 @@ mod tests {
     /// Over-limit rejection of a **non-void** remote ask returns null +
     /// `WorkerAtCapacity` (not `PayloadSizeMismatch` from the old empty-
     /// payload path, not `ConnectionDropped`, and not a spurious success).
+    #[cfg(feature = "quic")]
     #[test]
     fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
@@ -10170,18 +10458,8 @@ mod tests {
         crate::registry::hew_registry_clear();
         register_test_u32_codec(test_dispatch(), 1);
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the test scope.
-        let node1 = unsafe { TestNode::new(324, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(325);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(324, 325);
         _real_sched = init_real_scheduler();
 
         // Spawn a u32-echo actor on node2.
@@ -10966,6 +11244,7 @@ mod tests {
     // WINDOWS-TODO: loopback TCP on Windows has higher round-trip latency
     // (15 ms OS timer granularity) than this test's real-sleep window.  Fix
     // requires the IOCP reactor (Phase 2) timer infrastructure.
+    #[cfg(feature = "quic")]
     #[test]
     fn alive_node_is_not_falsely_killed_by_driven_swim() {
         use crate::cluster::hew_cluster_member_state;
@@ -10990,16 +11269,10 @@ mod tests {
         let _swim_env = SwimTimingEnv::fast();
         crate::registry::hew_registry_clear();
 
-        let node_a_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: bind is a valid C string for the test scope.
-        let node_a = unsafe { TestNode::new(NODE_A, &node_a_bind) };
-        assert!(!node_a.as_ptr().is_null());
-        // SAFETY: node_a is valid.
-        unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
-        // Allow node A's runtime to settle before connecting.
-        thread::sleep(Duration::from_millis(50));
-
-        let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        // Driven SWIM requires an authenticated peer (D9 gates the handler).
+        let (node_a, _node_a_port, node_b, node_b_port) =
+            start_authorized_quic_mesh_pair(NODE_A, NODE_B);
 
         let connect_addr = CString::new(format!("{NODE_B}@127.0.0.1:{node_b_port}")).unwrap();
         // SAFETY: node_a and the connect addr are valid for this call.

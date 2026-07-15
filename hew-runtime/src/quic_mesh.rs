@@ -1767,6 +1767,42 @@ pub(crate) unsafe fn hew_transport_quic_mesh_bound_port(
     qmt.mesh.as_ref()?.local_addr().ok().map(|a| a.port())
 }
 
+/// Extract the peer's leaf-certificate SPKI (DER `SubjectPublicKeyInfo`) for the
+/// mesh connection `conn_id` (issue #2652, D6).
+///
+/// The mTLS handshake has already pinned the peer's SPKI at the transport layer
+/// (`allowed_peer_spkis`); admission calls this to recover that authenticated
+/// key so it can bind the *claimed* `NodeId` to it — an allowlisted key must not
+/// be able to claim a `NodeId` bound to a different key. Returns `None` for a
+/// null/non-mesh transport, an unknown conn, or a connection that presented no
+/// peer certificate (fail-closed: the caller treats `None` as a strict reject).
+///
+/// # Safety
+///
+/// `transport` must be null or a valid pointer for the duration of this call.
+pub(crate) unsafe fn hew_transport_quic_mesh_peer_spki(
+    transport: *mut HewTransport,
+    conn_id: c_int,
+) -> Option<Vec<u8>> {
+    if transport.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees transport is valid for the duration of this call.
+    let t = unsafe { &*transport };
+    if !std::ptr::eq(t.ops, &raw const QUIC_MESH_OPS) || t.r#impl.is_null() {
+        return None;
+    }
+    // SAFETY: ops-check above guarantees impl is a QuicMeshTransport.
+    let qmt = unsafe { &*t.r#impl.cast::<QuicMeshTransport>() };
+    let conn = qmt.get_conn(conn_id)?;
+    // quinn 0.11: `peer_identity()` yields `Box<dyn Any>` downcasting to the
+    // presented `Vec<CertificateDer<'static>>` (the peer's cert chain).
+    let identity = conn.peer.conn.peer_identity()?;
+    let certs = identity.downcast::<Vec<CertificateDer<'static>>>().ok()?;
+    let leaf = certs.first()?;
+    extract_spki_from_cert_der(leaf.as_ref()).ok()
+}
+
 // ---------------------------------------------------------------------------
 // Per-instance mesh peer-auth install seam (D14) + per-transport local SPKI
 // ---------------------------------------------------------------------------

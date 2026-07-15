@@ -300,6 +300,18 @@ impl PeerAuthConfig {
         }
     }
 
+    /// Whether any transport-sensitive credential or stable identity has been
+    /// staged (issue #2652). Peer bindings (`allow_peer`) and stable identities
+    /// (`load_keys`) are interpreted under the pinned [`Self::transport`] — a
+    /// Noise pubkey vs a mesh SPKI — so once any is staged the transport MUST NOT
+    /// change: a later flip would silently reinterpret already-staged material.
+    /// `Node::set_transport` consults this to reject a post-staging transport
+    /// change (fail-closed) rather than corrupt the credential interpretation.
+    #[must_use]
+    pub fn has_staged_credentials(&self) -> bool {
+        !self.bindings.is_empty() || self.noise_identity.is_some() || self.mesh_identity.is_some()
+    }
+
     /// Validate the *public* config before listen/allocation (D109 pre-listen).
     ///
     /// * strict-bound (`bindings` non-empty) requires a stable `node_id`;

@@ -155,6 +155,32 @@ fn transport_selection_from_env() -> Result<TransportSelection, String> {
     }
 }
 
+/// Map a normalized transport key (from [`normalize_transport_name`]) onto the
+/// self-contained `peer_binding::TransportSelection` pinned into the config.
+fn peer_transport_from_normalized(normalized: &str) -> PeerTransport {
+    match normalized {
+        "tcp" => PeerTransport::Tcp,
+        #[cfg(feature = "quic")]
+        "quic" => PeerTransport::Quic,
+        #[cfg(feature = "quic")]
+        "quic-mesh" => PeerTransport::QuicMesh,
+        _ => unreachable!("normalize_transport_name returns only supported transport keys"),
+    }
+}
+
+/// The canonical `HEW_TRANSPORT` string for a pinned transport selection — the
+/// inverse of [`peer_transport_from_normalized`]. Used to re-assert the pinned
+/// selection onto the env at start so the low-level transport construction
+/// (which reads `HEW_TRANSPORT`) builds the stored selection, not a diverged
+/// env value (issue #2652 — start uses the stored selection).
+fn peer_transport_env_name(t: PeerTransport) -> &'static str {
+    match t {
+        PeerTransport::Tcp => "tcp",
+        PeerTransport::Quic => "quic",
+        PeerTransport::QuicMesh => "quic-mesh",
+    }
+}
+
 #[derive(Clone, Copy)]
 struct KnownNodePtr(*mut HewNode);
 
@@ -4177,7 +4203,25 @@ fn merge_start_env_into_config(
     if hew_dist_unverified_from_env() {
         cfg.unverified_optout = true;
     }
-    cfg.transport = Some(transport_selection_from_env()?.as_peer_transport());
+    // Transport (issue #2652): a selection pinned by an earlier transport-
+    // sensitive op (`Node::set_transport` / `Node::load_keys` /
+    // `Node::allow_peer`) is authoritative and wins over any later env change —
+    // start uses the STORED selection. Only when unpinned do we adopt the
+    // start-time env selection.
+    let effective = if let Some(pinned) = cfg.transport {
+        pinned
+    } else {
+        let sel = transport_selection_from_env()?.as_peer_transport();
+        cfg.transport = Some(sel);
+        sel
+    };
+    // Re-assert the effective selection onto `HEW_TRANSPORT` so the low-level
+    // transport construction (which reads the env) builds the stored selection,
+    // not a value that diverged after the pin.
+    // SAFETY: ENV_LOCK synchronises access to the process-global environ array.
+    crate::env::ENV_LOCK.access(|()| unsafe {
+        std::env::set_var("HEW_TRANSPORT", peer_transport_env_name(effective));
+    });
     Ok(())
 }
 
@@ -4547,7 +4591,14 @@ pub extern "C" fn hew_remote_pid_from_raw(node_id: u64, serial: u64) -> u64 {
 /// `Node::set_transport(name)` — Set the transport type before starting.
 ///
 /// Supported values: `"tcp"` (default), `"quic"`, `"quic-mesh"`.
-/// Must be called before `Node::start`.
+/// Must be called before `Node::start` — and, per issue #2652, before any
+/// transport-sensitive credential is staged (`Node::allow_peer` /
+/// `Node::load_keys`). Peer credentials and stable identities are interpreted
+/// under the pinned transport (a 32-byte Noise pubkey on TCP vs a cert SPKI on
+/// quic-mesh), so once any is staged a transport change is refused fail-closed
+/// rather than silently reinterpreting the already-staged material. The
+/// selection is pinned into the pre-start `Building` config so `Node::start`
+/// uses the stored selection.
 ///
 /// # Safety
 ///
@@ -4558,19 +4609,58 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     let Some(s) = (unsafe { crate::util::cstr_to_str(&name, "hew_node_set_transport") }) else {
         return -1;
     };
-    match normalize_transport_name(s) {
-        Ok(normalized) => {
-            // SAFETY: ENV_LOCK synchronises access to the process-global environ
-            // array; set_var is safe under exclusive write access.
-            crate::env::ENV_LOCK
-                .access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", normalized) });
-            0
-        }
+    let normalized = match normalize_transport_name(s) {
+        Ok(normalized) => normalized,
         Err(err) => {
             set_last_error(format!("Node::set_transport: {err}"));
-            -1
+            return -1;
+        }
+    };
+    let requested = peer_transport_from_normalized(normalized);
+
+    // Transport must be pinned BEFORE identity credential staging (issue #2652):
+    // `Node::allow_peer` / `Node::load_keys` interpret their credential under the
+    // pinned transport. A `set_transport` after staging would reinterpret the
+    // already-staged Noise pubkeys / mesh SPKIs under a different transport —
+    // credential confusion. Refuse fail-closed (no env mutation) when the
+    // Building config already carries staged credentials and the request would
+    // change the pinned selection; an idempotent re-selection of the same
+    // transport is allowed. While the public node lifecycle owns the state
+    // (Starting/Running) the started node already froze its snapshot, so leave
+    // the env write to preserve legacy behaviour for any low-level node.
+    {
+        let guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let ConfigState::Building(cfg) = &guard.state {
+            if cfg.has_staged_credentials() && cfg.transport != Some(requested) {
+                drop(guard);
+                let msg = "Node::set_transport: transport cannot be changed after peer \
+                     credentials or a stable identity have been staged (Node::allow_peer / \
+                     Node::load_keys) — select the transport before staging (fail-closed)"
+                    .to_string();
+                eprintln!("hew: {msg}");
+                set_last_error(msg);
+                return -1;
+            }
         }
     }
+
+    // Set the process-global selection and pin it into the Building config so
+    // `Node::start` (and `identity_key()`) use the stored selection and a later
+    // start-time env merge does not override it.
+    // SAFETY: ENV_LOCK synchronises access to the process-global environ array;
+    // set_var is safe under exclusive write access.
+    crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", normalized) });
+    {
+        let mut guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let ConfigState::Building(cfg) = &mut guard.state {
+            cfg.transport = Some(requested);
+        }
+    }
+    0
 }
 
 /// Surface a `Node::load_keys` / `Node::allow_peer` peer-auth setup failure on
@@ -4836,6 +4926,14 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
         }
     }
     cfg.bindings.entry(node_id).or_default().insert(credential);
+    // Pin the transport selection (issue #2652): the credential was interpreted
+    // under `transport`, so bind the config to it now. Idempotent with the pins
+    // in `Node::set_transport` / `stage_loaded_identity` and the start-time
+    // merge; once pinned, a later `Node::set_transport` that would change it is
+    // rejected via `has_staged_credentials`.
+    if cfg.transport.is_none() {
+        cfg.transport = Some(transport.as_peer_transport());
+    }
     0
 }
 
@@ -7299,6 +7397,177 @@ mod tests {
 
         // Restore clean staging for sibling tests.
         set_state(ConfigState::default());
+    }
+
+    /// Issue #2652 (item 2): `Node::set_transport` must pin the selection BEFORE
+    /// any transport-sensitive credential is staged. A `set_transport` that would
+    /// change the transport after `Node::allow_peer` / `Node::load_keys` staged
+    /// material is refused fail-closed (returns `-1`) and leaves both the pinned
+    /// config transport and the process-global `HEW_TRANSPORT` unchanged, so the
+    /// already-staged Noise pubkeys / mesh SPKIs are never reinterpreted under a
+    /// different transport. Re-selecting the SAME transport stays allowed
+    /// (idempotent).
+    #[cfg(feature = "quic")]
+    #[test]
+    fn set_transport_rejected_after_credential_staging() {
+        use crate::peer_binding::TransportSelection as PT;
+        let _guard = crate::runtime_test_guard();
+
+        let reset = || {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        };
+        let pinned_transport = || {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &g.state {
+                ConfigState::Building(cfg) => cfg.transport,
+                _ => panic!("expected Building state"),
+            }
+        };
+        let env_transport =
+            || crate::env::ENV_LOCK.read_access(|()| std::env::var("HEW_TRANSPORT").ok());
+
+        reset();
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: exclusive process-global env access via ENV_LOCK.
+            unsafe { std::env::remove_var("HEW_TRANSPORT") };
+        });
+
+        // Pin TCP explicitly, then stage a peer credential under it.
+        let tcp = CString::new("tcp").unwrap();
+        // SAFETY: tcp is a valid C string for the call.
+        assert_eq!(unsafe { hew_node_api_set_transport(tcp.as_ptr()) }, 0);
+        assert_eq!(pinned_transport(), Some(PT::Tcp));
+
+        let noise_hex = CString::new("11".repeat(32)).unwrap();
+        // SAFETY: noise_hex is a valid 32-byte (64-hex) C string.
+        assert_eq!(unsafe { hew_node_api_allow_peer(2, noise_hex.as_ptr()) }, 0);
+        assert_eq!(
+            pinned_transport(),
+            Some(PT::Tcp),
+            "allow_peer must keep the pinned TCP selection"
+        );
+
+        // A transport change after staging is rejected fail-closed and mutates
+        // neither the pinned config nor the env.
+        let mesh = CString::new("quic-mesh").unwrap();
+        crate::hew_clear_error();
+        // SAFETY: mesh is a valid C string for the call.
+        let flip_rc = unsafe { hew_node_api_set_transport(mesh.as_ptr()) };
+        assert_eq!(
+            flip_rc, -1,
+            "set_transport after credential staging must be rejected"
+        );
+        assert_eq!(
+            pinned_transport(),
+            Some(PT::Tcp),
+            "a rejected set_transport must NOT change the pinned selection"
+        );
+        assert_eq!(
+            env_transport().as_deref(),
+            Some("tcp"),
+            "a rejected set_transport must NOT change HEW_TRANSPORT"
+        );
+
+        // Re-selecting the same transport is idempotent and allowed.
+        // SAFETY: tcp is a valid C string for the call.
+        let reselect_rc = unsafe { hew_node_api_set_transport(tcp.as_ptr()) };
+        assert_eq!(
+            reselect_rc, 0,
+            "re-selecting the same transport after staging stays allowed"
+        );
+
+        reset();
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: exclusive process-global env access via ENV_LOCK.
+            unsafe { std::env::remove_var("HEW_TRANSPORT") };
+        });
+    }
+
+    /// Issue #2652 (item 2): a node's exported stable identity (`identity_key()`)
+    /// is stable across an attempted transport flip after staging. Once
+    /// `Node::load_keys` pins the transport and stages the Noise identity, a
+    /// rejected `Node::set_transport` cannot change which credential is exported,
+    /// and the pinned selection `Node::start` will use stays put.
+    #[cfg(all(feature = "quic", feature = "encryption"))]
+    #[test]
+    fn identity_key_stable_across_attempted_transport_flip() {
+        use crate::peer_binding::TransportSelection as PT;
+        let _guard = crate::runtime_test_guard();
+
+        let reset = || {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        };
+        let pinned_transport = || {
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &g.state {
+                ConfigState::Building(cfg) => cfg.transport,
+                _ => panic!("expected Building state"),
+            }
+        };
+        let read_identity = || {
+            let p = hew_node_api_identity_key();
+            assert!(!p.is_null());
+            // SAFETY: p is a freshly-owned NUL-terminated hew string.
+            let s = unsafe { std::ffi::CStr::from_ptr(p) }
+                .to_string_lossy()
+                .into_owned();
+            // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
+            unsafe { crate::string::hew_string_drop(p) };
+            s
+        };
+
+        reset();
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: exclusive process-global env access via ENV_LOCK.
+            unsafe { std::env::set_var("HEW_TRANSPORT", "tcp") };
+        });
+
+        // Load (mint) a stable Noise identity under TCP — pins TCP, stages the id.
+        let dir = tempfile::tempdir().expect("identity keydir");
+        let keyfile = dir.path().join("node.key");
+        let keyfile_c = CString::new(keyfile.to_str().unwrap()).unwrap();
+        // SAFETY: keyfile_c is a valid C string for the call.
+        assert_eq!(unsafe { hew_node_api_load_keys(keyfile_c.as_ptr()) }, 0);
+        assert_eq!(pinned_transport(), Some(PT::Tcp));
+
+        let key_before = read_identity();
+        assert!(
+            !key_before.is_empty(),
+            "a loaded Noise identity must export a nonempty credential"
+        );
+
+        // Attempt to flip to quic-mesh — rejected; identity and pin are stable.
+        let mesh = CString::new("quic-mesh").unwrap();
+        crate::hew_clear_error();
+        // SAFETY: mesh is a valid C string for the call.
+        assert_eq!(unsafe { hew_node_api_set_transport(mesh.as_ptr()) }, -1);
+
+        let key_after = read_identity();
+        assert_eq!(
+            key_before, key_after,
+            "the exported identity must be stable across a rejected transport flip"
+        );
+        assert_eq!(
+            pinned_transport(),
+            Some(PT::Tcp),
+            "start must use the stored TCP selection, not the attempted mesh flip"
+        );
+
+        reset();
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: exclusive process-global env access via ENV_LOCK.
+            unsafe { std::env::remove_var("HEW_TRANSPORT") };
+        });
     }
 
     #[test]

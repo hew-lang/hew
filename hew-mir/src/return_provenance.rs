@@ -36,9 +36,16 @@
 //! consumes the three-state verdict. Two parallel walkers were the drift that
 //! produced the #2523 twin — there is only one here.
 
+#![allow(
+    deprecated,
+    reason = "the reachability + mutation visitors visit the legacy CallTraitMethodStatic \
+              variant exhaustively (fail-closed as may-mutate); it is allowlist-gated at \
+              construction, matching the same allow in lower.rs"
+)]
+
 use std::collections::HashMap;
 
-use hew_hir::{HirExpr, HirExprKind, HirFn, ResolvedRef};
+use hew_hir::{HirBlock, HirExpr, HirExprKind, HirFn, ResolvedRef};
 use hew_types::ResolvedTy;
 
 // ---------------------------------------------------------------------------
@@ -533,6 +540,515 @@ pub enum CallScrutineeAdmission {
 }
 
 // ---------------------------------------------------------------------------
+// Total HIR reachability visitor + intra-procedural alias partition [F2-Rev6]
+// ---------------------------------------------------------------------------
+
+/// The set of tracked local/param bindings a value expression may carry an alias
+/// of, plus an `unknown` flag.
+///
+/// `unknown` is set when the visitor hits an unmodelled heap-bearing form — a
+/// fail-closed marker: an `unknown` reachability taints as if every tracked class
+/// were reached. This is what makes the mutation-side extraction TOTAL: a form
+/// the visitor cannot see through never silently reads as "reaches nothing".
+#[derive(Debug, Default, Clone)]
+pub struct Reachable {
+    /// Bindings the value may embed an alias of.
+    pub bindings: std::collections::HashSet<hew_hir::BindingId>,
+    /// True when an unmodelled heap-bearing sub-form was encountered.
+    pub unknown: bool,
+}
+
+/// Resolve the root binding of a place expression, walking through
+/// field/tuple/index/slice projections. `None` when the root is not a binding
+/// reference (a call result, a literal, an aggregate, …).
+#[must_use]
+#[allow(
+    clippy::match_same_arms,
+    reason = "projection arms are kept distinct to mirror the sealed HirExprKind surface"
+)]
+pub fn place_root_binding(expr: &HirExpr) -> Option<hew_hir::BindingId> {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => Some(*id),
+        HirExprKind::FieldAccess { object, .. } => place_root_binding(object),
+        HirExprKind::TupleIndex { tuple, .. } => place_root_binding(tuple),
+        HirExprKind::Index { container, .. } => place_root_binding(container),
+        HirExprKind::Slice { container, .. } => place_root_binding(container),
+        _ => None,
+    }
+}
+
+/// The TOTAL reachability visitor: descend EVERY expression AND statement form
+/// reachable from `expr` — aggregate operands, projections, wrappers (`Block`
+/// with ALL statements and the tail, `If`, `Match` arms), the array-literal
+/// desugar's non-tail push statements, `Closure`/`GenBlock` capture ledgers,
+/// call/method arguments and receivers, and every nested sub-expression —
+/// accumulating every tracked binding alias into `out`.
+///
+/// SEPARATE from the admission-side value-flow [`return_alias_bits`] (which stays
+/// tail-only, sound for the returned VALUE). Reusing the tail-only walk for
+/// REACHABILITY was the round-4 bug: `helper([h], p)` hides `h` in a non-tail
+/// push, and a `Closure` capturing `h` stores it in a ledger field an operand
+/// visitor never reaches.
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "the reachability visitor mirrors the sealed HirExprKind surface exhaustively;               structurally-similar arms are kept separate for auditability"
+)]
+pub fn reachable_bindings(expr: &HirExpr, out: &mut Reachable) {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => {
+            out.bindings.insert(*id);
+        }
+        // Aggregates — an operand embedded in a struct/tuple/variant carries its
+        // alias into the constructed value.
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, v) in fields {
+                reachable_bindings(v, out);
+            }
+            if let Some(base) = base.as_deref() {
+                reachable_bindings(base, out);
+            }
+        }
+        HirExprKind::TupleLiteral { elements } => {
+            for e in elements {
+                reachable_bindings(e, out);
+            }
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, v) in fields {
+                    reachable_bindings(v, out);
+                }
+            }
+        }
+        // Projections and casts pass the alias through.
+        HirExprKind::FieldAccess { object, .. } => reachable_bindings(object, out),
+        HirExprKind::TupleIndex { tuple, .. } => reachable_bindings(tuple, out),
+        HirExprKind::Index { container, index } => {
+            reachable_bindings(container, out);
+            reachable_bindings(index, out);
+        }
+        HirExprKind::Slice { container, .. } => reachable_bindings(container, out),
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => reachable_bindings(value, out),
+        // Wrappers — visit ALL statements (the array-literal desugar hides its
+        // push in a NON-tail statement) and the tail.
+        HirExprKind::Block(block) => reachable_bindings_in_block(block, out),
+        HirExprKind::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            reachable_bindings(then_expr, out);
+            if let Some(e) = else_expr.as_deref() {
+                reachable_bindings(e, out);
+            }
+        }
+        HirExprKind::Match {
+            scrutinee, arms, ..
+        } => {
+            reachable_bindings(scrutinee, out);
+            for arm in arms {
+                reachable_bindings(&arm.body, out);
+            }
+        }
+        // Calls / methods — an argument (or receiver) embedding a tracked local
+        // carries it to the call boundary.
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            reachable_bindings(callee, out);
+            for a in args {
+                reachable_bindings(a, out);
+            }
+        }
+        HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            reachable_bindings(receiver, out);
+            for a in args {
+                reachable_bindings(a, out);
+            }
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            reachable_bindings(receiver, out);
+            reachable_bindings(arg, out);
+        }
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            reachable_bindings(left, out);
+            reachable_bindings(right, out);
+        }
+        HirExprKind::Unary { operand, .. } => reachable_bindings(operand, out),
+        // Capture ledgers — a closure/generator capturing a tracked local carries
+        // it across the callable boundary (an operand visitor cannot see these).
+        HirExprKind::Closure { captures, .. } => {
+            for cap in captures {
+                out.bindings.insert(cap.binding);
+            }
+        }
+        HirExprKind::GenBlock { captures, .. } => {
+            for cap in captures {
+                out.bindings.insert(cap.binding);
+            }
+        }
+        // Fresh-by-construction / non-heap leaves carry no caller local.
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::RecordCloneCall { .. }
+        | HirExprKind::ActorSelf
+        | HirExprKind::ContextReader { .. } => {}
+        HirExprKind::BindingRef { .. } => {
+            // A non-local binding reference (Item / Const / Builtin) — a global or
+            // module item, carries no tracked local.
+        }
+        // Any other form: fail closed if it could carry heap.
+        other => {
+            let _ = other;
+            if !ty_is_scalar_non_heap(&expr.ty) {
+                out.unknown = true;
+            }
+        }
+    }
+}
+
+/// Reachability over a block: EVERY statement (initializers, assignments,
+/// discarded expressions, returns, defers, let-else scrutinees/preludes) and the
+/// tail. The non-tail statements are what the tail-only value-flow walk misses.
+#[allow(
+    clippy::match_same_arms,
+    reason = "statement arms mirror the sealed HirStmtKind surface exhaustively"
+)]
+fn reachable_bindings_in_block(block: &HirBlock, out: &mut Reachable) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            hew_hir::HirStmtKind::Let(_, Some(init)) => reachable_bindings(init, out),
+            hew_hir::HirStmtKind::Let(_, None) => {}
+            hew_hir::HirStmtKind::Assign { target, value } => {
+                reachable_bindings(target, out);
+                reachable_bindings(value, out);
+            }
+            hew_hir::HirStmtKind::Expr(e) => reachable_bindings(e, out),
+            hew_hir::HirStmtKind::Return(Some(e)) => reachable_bindings(e, out),
+            hew_hir::HirStmtKind::Return(None) => {}
+            hew_hir::HirStmtKind::Defer { body, .. } => reachable_bindings(body, out),
+            hew_hir::HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                reachable_bindings(scrutinee, out);
+                for s in success_prelude {
+                    if let hew_hir::HirStmtKind::Let(_, Some(v)) = &s.kind {
+                        reachable_bindings(v, out);
+                    }
+                }
+                reachable_bindings_in_block(else_body, out);
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        reachable_bindings(tail, out);
+    }
+}
+
+/// The by-value heap parameters of `f` (the borrows a caller still owns). A
+/// scalar param owns nothing → excluded; every non-scalar param is conservatively
+/// included (a precise `ty_owns_heap` refinement is a wiring-site concern; PARAM
+/// over-inclusion is sound).
+#[must_use]
+pub fn by_value_heap_param_bindings(f: &HirFn) -> std::collections::HashSet<hew_hir::BindingId> {
+    f.params
+        .iter()
+        .filter(|p| !ty_is_scalar_non_heap(&p.ty))
+        .map(|p| p.id)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Interprocedural may-mutate-heap-param summary [F2]
+// ---------------------------------------------------------------------------
+
+/// Whole-function conservative summary: does `f` MUTATE (or store into) any of
+/// its by-value heap parameters — the channel by which a returned param-borrow
+/// silently gains an alias?
+///
+/// A second monotone boolean fixpoint (init `false`), built beside the provenance
+/// fixpoint. `f` is may-mutate if its body:
+/// - projection-stores (`p.f = …` / `p[i] = …`) into a heap param;
+/// - calls a mutating / storing method on a heap param (anything NOT proven
+///   `BorrowsReceiver` + non-escaping string args);
+/// - passes a heap param (reachable through the total visitor) as an argument to
+///   a callee NOT proven `!may_mutate` under the current table;
+/// - invokes a callable parameter (an fn-pointer/closure param — conservatively
+///   may-mutate).
+///
+/// Audited pure externs are absent from `fns`, so they never set the bit; an
+/// unknown/indirect callee is treated as may-mutate (fail-closed).
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "built once over the pipeline's default-hasher origin_fns map"
+)]
+pub fn compute_may_mutate_heap_param(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+) -> HashMap<hew_hir::ItemId, bool> {
+    let mut summary: HashMap<hew_hir::ItemId, bool> = fns.keys().map(|&id| (id, false)).collect();
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            if summary[&id] {
+                continue;
+            }
+            if fn_mutates_heap_param(f, &summary) {
+                summary.insert(id, true);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    summary
+}
+
+/// True when `f`'s body mutates one of its by-value heap params (or their alias
+/// class) under the current `summary`.
+fn fn_mutates_heap_param(f: &HirFn, summary: &HashMap<hew_hir::ItemId, bool>) -> bool {
+    let param_class = by_value_heap_param_bindings(f);
+    if param_class.is_empty() {
+        return false;
+    }
+    let mut ctx = MutationScan {
+        param_class: &param_class,
+        summary,
+        callable_params: f
+            .params
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.ty,
+                    ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+                )
+            })
+            .map(|p| p.id)
+            .collect(),
+    };
+    ctx.block_mutates(&f.body)
+}
+
+struct MutationScan<'a> {
+    param_class: &'a std::collections::HashSet<hew_hir::BindingId>,
+    summary: &'a HashMap<hew_hir::ItemId, bool>,
+    callable_params: std::collections::HashSet<hew_hir::BindingId>,
+}
+
+impl MutationScan<'_> {
+    /// True when any tracked heap param is reachable from `expr` as an argument
+    /// value (via the total reachability visitor, including the `unknown`
+    /// fail-closed marker).
+    fn arg_reaches_param(&self, expr: &HirExpr) -> bool {
+        let mut r = Reachable::default();
+        reachable_bindings(expr, &mut r);
+        r.unknown || r.bindings.iter().any(|b| self.param_class.contains(b))
+    }
+
+    #[allow(
+        clippy::match_same_arms,
+        reason = "statement arms mirror the sealed HirStmtKind surface exhaustively"
+    )]
+    fn block_mutates(&mut self, block: &HirBlock) -> bool {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                hew_hir::HirStmtKind::Let(_, Some(init)) => {
+                    if self.expr_mutates(init) {
+                        return true;
+                    }
+                }
+                hew_hir::HirStmtKind::Let(_, None) => {}
+                hew_hir::HirStmtKind::Assign { target, value } => {
+                    // A projection-store into a heap-param place is a mutation.
+                    if is_projection_place(target)
+                        && place_root_binding(target).is_some_and(|b| self.param_class.contains(&b))
+                    {
+                        return true;
+                    }
+                    if self.expr_mutates(target) || self.expr_mutates(value) {
+                        return true;
+                    }
+                }
+                hew_hir::HirStmtKind::Expr(e) => {
+                    if self.expr_mutates(e) {
+                        return true;
+                    }
+                }
+                hew_hir::HirStmtKind::Return(Some(e)) => {
+                    if self.expr_mutates(e) {
+                        return true;
+                    }
+                }
+                hew_hir::HirStmtKind::Return(None) => {}
+                hew_hir::HirStmtKind::Defer { body, .. } => {
+                    if self.expr_mutates(body) {
+                        return true;
+                    }
+                }
+                hew_hir::HirStmtKind::LetElse {
+                    scrutinee,
+                    else_body,
+                    ..
+                } => {
+                    if self.expr_mutates(scrutinee) || self.block_mutates(else_body) {
+                        return true;
+                    }
+                }
+            }
+        }
+        block.tail.as_deref().is_some_and(|t| self.expr_mutates(t))
+    }
+
+    #[allow(
+        clippy::match_same_arms,
+        reason = "mutation-scan arms mirror the sealed HirExprKind surface exhaustively"
+    )]
+    fn expr_mutates(&mut self, expr: &HirExpr) -> bool {
+        match &expr.kind {
+            // A mutating / storing method on a heap-param receiver.
+            HirExprKind::ResolvedImplCall {
+                receiver,
+                target_symbol,
+                args,
+                ..
+            } => {
+                if place_root_binding(receiver).is_some_and(|b| self.param_class.contains(&b))
+                    && !method_is_non_mutating(target_symbol)
+                {
+                    return true;
+                }
+                self.expr_mutates(receiver) || args.iter().any(|a| self.expr_mutates(a))
+            }
+            HirExprKind::VarSelfMethodCall { receiver, args, .. }
+            | HirExprKind::CallDynMethod { receiver, args, .. }
+            | HirExprKind::CallTraitMethodStatic { receiver, args, .. } => {
+                // No emitted-symbol contract available for these forms here →
+                // fail-closed: a mutating method on a heap-param receiver taints.
+                if place_root_binding(receiver).is_some_and(|b| self.param_class.contains(&b)) {
+                    return true;
+                }
+                self.expr_mutates(receiver) || args.iter().any(|a| self.expr_mutates(a))
+            }
+            HirExprKind::NumericMethod { receiver, arg, .. } => {
+                self.expr_mutates(receiver) || self.expr_mutates(arg)
+            }
+            // A direct call: may-mutate if the callee is not proven pure AND an
+            // argument reaches a heap-param class; a callable-param invocation is
+            // may-mutate unconditionally when an arg reaches (or when the invoked
+            // callable itself captures — conservatively any-arg).
+            HirExprKind::Call { callee, args } => {
+                let callee_pure = self.callee_is_proven_pure(callee);
+                if !callee_pure && args.iter().any(|a| self.arg_reaches_param(a)) {
+                    return true;
+                }
+                // A callable-parameter invocation with no explicit heap arg still
+                // may mutate through the callable's captures — fail-closed.
+                if self.callee_is_callable_param(callee) {
+                    return true;
+                }
+                args.iter().any(|a| self.expr_mutates(a))
+            }
+            HirExprKind::Block(block) => self.block_mutates(block),
+            HirExprKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                self.expr_mutates(then_expr)
+                    || else_expr.as_deref().is_some_and(|e| self.expr_mutates(e))
+            }
+            HirExprKind::Match {
+                scrutinee, arms, ..
+            } => self.expr_mutates(scrutinee) || arms.iter().any(|a| self.expr_mutates(&a.body)),
+            HirExprKind::StructInit { fields, base, .. } => {
+                fields.iter().any(|(_, v)| self.expr_mutates(v))
+                    || base.as_deref().is_some_and(|b| self.expr_mutates(b))
+            }
+            HirExprKind::TupleLiteral { elements } => elements.iter().any(|e| self.expr_mutates(e)),
+            HirExprKind::FieldAccess { object, .. } => self.expr_mutates(object),
+            HirExprKind::TupleIndex { tuple, .. } => self.expr_mutates(tuple),
+            HirExprKind::Index { container, index } => {
+                self.expr_mutates(container) || self.expr_mutates(index)
+            }
+            HirExprKind::Binary { left, right, .. } => {
+                self.expr_mutates(left) || self.expr_mutates(right)
+            }
+            HirExprKind::Unary { operand, .. } => self.expr_mutates(operand),
+            HirExprKind::Return { value } => value.as_deref().is_some_and(|v| self.expr_mutates(v)),
+            _ => false,
+        }
+    }
+
+    fn callee_is_callable_param(&self, callee: &HirExpr) -> bool {
+        matches!(
+            &callee.kind,
+            HirExprKind::BindingRef { resolved: ResolvedRef::Binding(id), .. }
+            if self.callable_params.contains(id)
+        )
+    }
+
+    fn callee_is_proven_pure(&self, callee: &HirExpr) -> bool {
+        // A resolved module item proven `!may_mutate` under the current summary is
+        // pure. `None` in the summary = an extern / constructor with no analysable
+        // body → pure by the owned-return ABI (matches the freshness gate's trust
+        // of owned-return externs). Everything else (closure/indirect/unresolved)
+        // is NOT proven pure → fail-closed.
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Item(id),
+            ..
+        } = &callee.kind
+        {
+            !self.summary.get(id).copied().unwrap_or(false)
+        } else {
+            false
+        }
+    }
+}
+
+/// True when `place` is a projection (not a bare binding) — a `p.f` / `p[i]` /
+/// `p.0` place whose store mutates interior storage.
+fn is_projection_place(place: &HirExpr) -> bool {
+    matches!(
+        &place.kind,
+        HirExprKind::FieldAccess { .. }
+            | HirExprKind::TupleIndex { .. }
+            | HirExprKind::Index { .. }
+            | HirExprKind::Slice { .. }
+    )
+}
+
+/// True when an EMITTED method symbol is proven non-mutating AND non-storing —
+/// the ONLY exempt contract (`BorrowsReceiver` receiver + non-escaping string
+/// args). Everything else (a storing element write, an escaping arg, an unknown
+/// symbol's `FAIL_CLOSED` default) counts as mutating.
+fn method_is_non_mutating(emitted_symbol: &str) -> bool {
+    use crate::runtime_symbols::{
+        callee_ownership_contract, ReceiverOwnership, StringArgsOwnership,
+    };
+    let contract = callee_ownership_contract(emitted_symbol);
+    matches!(contract.receiver, ReceiverOwnership::BorrowsReceiver { .. })
+        && matches!(
+            contract.string_args,
+            StringArgsOwnership::BorrowingUse | StringArgsOwnership::PrintSink
+        )
+}
+
+// ---------------------------------------------------------------------------
 // Module-map helpers
 // ---------------------------------------------------------------------------
 
@@ -780,6 +1296,85 @@ mod tests {
                 *out |= scrutinee_is_call_kind(scrutinee);
             }
         }
+    }
+
+    // -- Interprocedural may-mutate-heap-param summary [F2] --
+
+    fn fn_id(module: &hew_hir::HirModule, name: &str) -> hew_hir::ItemId {
+        for item in &module.items {
+            if let hew_hir::HirItem::Function(f) = item {
+                if f.name == name {
+                    return f.id;
+                }
+            }
+        }
+        panic!("function {name} not found");
+    }
+
+    #[test]
+    fn method_mutation_on_heap_param_is_may_mutate() {
+        let module = lower_source(
+            r"
+            fn mutate(x: Vec<i64>, v: i64) { x.push(v); }
+            fn reader(x: Vec<i64>) -> i64 { 0 }
+            ",
+        );
+        let origin_fns = origin_fns_of(&module);
+        let summary = compute_may_mutate_heap_param(&origin_fns);
+        assert!(
+            summary[&fn_id(&module, "mutate")],
+            "x.push(v) stores into the heap param x → may-mutate"
+        );
+        assert!(
+            !summary[&fn_id(&module, "reader")],
+            "a body that never touches the heap param is not may-mutate"
+        );
+    }
+
+    #[test]
+    fn interprocedural_mutation_propagates_to_the_caller() {
+        let module = lower_source(
+            r"
+            fn mutate(x: Vec<i64>, v: i64) { x.push(v); }
+            fn caller(h: Vec<i64>, v: i64) { mutate(h, v); }
+            fn pure_target(x: Vec<i64>) -> i64 { 0 }
+            fn caller_pure(h: Vec<i64>) -> i64 { pure_target(h) }
+            ",
+        );
+        let origin_fns = origin_fns_of(&module);
+        let summary = compute_may_mutate_heap_param(&origin_fns);
+        assert!(
+            summary[&fn_id(&module, "caller")],
+            "passing a heap param to a may-mutate callee taints the caller"
+        );
+        assert!(
+            !summary[&fn_id(&module, "caller_pure")],
+            "passing a heap param to a proven-pure callee does not taint the caller"
+        );
+    }
+
+    #[test]
+    fn reachability_sees_a_heap_param_through_a_direct_ref() {
+        let module = lower_source(r"fn f(a: Vec<i64>) -> Vec<i64> { a }");
+        let f = module.items.iter().find_map(|it| match it {
+            hew_hir::HirItem::Function(f) if f.name == "f" => Some(f),
+            _ => None,
+        });
+        let f = f.expect("f present");
+        let params = by_value_heap_param_bindings(f);
+        assert_eq!(
+            params.len(),
+            1,
+            "the Vec<i64> param is a by-value heap param"
+        );
+        let tail = f.body.tail.as_deref().expect("f has a tail expr");
+        let mut r = Reachable::default();
+        reachable_bindings(tail, &mut r);
+        assert!(!r.unknown);
+        assert!(
+            params.iter().all(|p| r.bindings.contains(p)),
+            "the returned `a` reaches the heap param binding"
+        );
     }
 
     #[test]

@@ -63,7 +63,7 @@ use crate::envelope::{
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
-use crate::peer_binding::PeerAuthSnapshot;
+use crate::peer_binding::{PeerAuthSnapshot, Posture};
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
@@ -172,6 +172,11 @@ struct ConnectionActor {
     peer_node_id: u16,
     /// Remote capability bitfield from handshake.
     peer_feature_flags: u32,
+    /// Per-connection admission posture (issue #2652). `Strict` connections
+    /// carry authenticated identity + control-plane authority; `Unverified`
+    /// connections are delivery-only (no cluster/gossip/ask authority). Defaults
+    /// to `Strict` (fail-closed) until admission classifies the endpoint.
+    posture: Posture,
     /// Current connection state.
     state: AtomicI32,
     /// Monotonic timestamp (ms) of last successful send or recv.
@@ -271,10 +276,6 @@ pub struct HewConnMgr {
     /// at construction; never the process-global `ACTIVE_*` credential statics.
     /// Concurrent managers hold independent snapshots, so there is no shared
     /// admission authority across nodes.
-    #[expect(
-        dead_code,
-        reason = "consumed by the per-connection posture + admission gating slice"
-    )]
     pub(crate) auth: PeerAuthSnapshot,
 }
 
@@ -383,6 +384,7 @@ impl ConnectionActor {
             publication_removed: Arc::new(AtomicBool::new(false)),
             peer_node_id: 0,
             peer_feature_flags: 0,
+            posture: Posture::Strict,
             state: AtomicI32::new(CONN_STATE_CONNECTING),
             last_activity_ms: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "encryption")]
@@ -2431,6 +2433,47 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         return -1;
     }
 
+    // ── Per-connection posture (issue #2652, D1/D2/BLOCK-7) ───────────────
+    // Classify the endpoint and derive posture from this manager's per-node
+    // snapshot (never a process-global authority). A `Strict` connection must
+    // resolve an authenticated credential bound to the claimed NodeId; an
+    // `Unverified` connection (demonstrated-loopback dev, or the explicit
+    // opt-out) is delivery-only. Credential-free posture rejects fire here,
+    // before the credential is resolved:
+    //   * an unconfigured node (no bindings, no HEW_NODE_ID, not opt-out) on a
+    //     non-loopback/Unknown endpoint has no way to authenticate the peer, so
+    //     the strict connection is rejected rather than silently admitted;
+    //   * a strict connection over a transport with no peer-credential channel
+    //     (plain quic / stub / Unknown) is rejected fail-closed.
+    // SAFETY: mgr.transport is valid while the manager is alive; conn_id is the
+    // live handle being admitted.
+    let remote_ip_class =
+        unsafe { crate::transport::hew_transport_conn_remote_ip_class(mgr.transport, conn_id) };
+    let posture = mgr.auth.posture_for(remote_ip_class);
+    if posture == Posture::Strict {
+        let unconfigured = !mgr.auth.has_bindings()
+            && mgr.auth.node_id().is_none()
+            && !mgr.auth.is_unverified_optout();
+        if unconfigured {
+            // SAFETY: mgr.transport and conn_id are valid per caller contract.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            set_last_error(format!(
+                "hew_connmgr_add: strict connection to non-loopback peer requires HEW_NODE_ID (conn {conn_id})"
+            ));
+            return -1;
+        }
+        if remote_ip_class == crate::peer_binding::RemoteIpClass::Unknown {
+            // Unknown transport class (plain quic / stub) has no peer-credential
+            // mechanism — a strict admission cannot be authenticated.
+            // SAFETY: mgr.transport and conn_id are valid per caller contract.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            set_last_error(format!(
+                "hew_connmgr_add: strict binding unsupported on plain quic transport (use quic-mesh or tcp-noise) (conn {conn_id})"
+            ));
+            return -1;
+        }
+    }
+
     #[cfg(feature = "encryption")]
     let skip_noise = {
         #[cfg(feature = "quic")]
@@ -2499,6 +2542,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     actor.publication_token = next_publication_token(mgr);
     actor.peer_node_id = peer_hs.node_id;
     actor.peer_feature_flags = peer_hs.feature_flags;
+    actor.posture = posture;
     #[cfg(feature = "encryption")]
     if let Some(noise) = upgraded_noise {
         let Ok(mut guard) = actor.noise_transport.lock() else {

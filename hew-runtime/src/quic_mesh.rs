@@ -94,6 +94,7 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
+use crate::peer_binding::RemoteIpClass;
 use crate::set_last_error;
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -1802,10 +1803,36 @@ pub(crate) unsafe fn hew_transport_quic_mesh_set_tls_override(
     0
 }
 
-/// Return the bound local port of a listening `quic_mesh` transport.
+/// Classify a quic-mesh connection's remote endpoint (issue #2652).
 ///
-/// Returns `None` if the transport is null, is not a `quic_mesh` transport,
-/// or has not yet been bound by `listen`.
+/// Ops-verifies the transport is quic-mesh (never a raw `impl` cast on a
+/// non-mesh transport), resolves the connection to its live `QuicMeshConn`, and
+/// classifies `PeerConn::remote_address()`. Any lookup miss ⇒
+/// [`RemoteIpClass::Unknown`] (strict, fail-closed).
+///
+/// # Safety
+///
+/// `transport` must be null or a valid pointer for the duration of this call.
+pub(crate) unsafe fn hew_quic_mesh_transport_conn_remote_ip_class(
+    transport: *mut HewTransport,
+    conn_id: c_int,
+) -> RemoteIpClass {
+    if transport.is_null() {
+        return RemoteIpClass::Unknown;
+    }
+    // SAFETY: caller guarantees transport is valid for the duration of this call.
+    let t = unsafe { &*transport };
+    if !std::ptr::eq(t.ops, &raw const QUIC_MESH_OPS) || t.r#impl.is_null() {
+        return RemoteIpClass::Unknown;
+    }
+    // SAFETY: ops-check above guarantees impl is a QuicMeshTransport.
+    let qmt = unsafe { &*t.r#impl.cast::<QuicMeshTransport>() };
+    match qmt.get_conn(conn_id) {
+        Some(conn) => crate::transport::classify_remote_socket_addr(conn.peer.remote_address()),
+        None => RemoteIpClass::Unknown,
+    }
+}
+
 ///
 /// # Safety
 ///

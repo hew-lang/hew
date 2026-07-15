@@ -302,6 +302,34 @@ pub struct HewConnMgr {
     /// waits rather than racing. Per-manager, so two concurrent nodes hold
     /// independent claim tables (a `NodeId` on node1 never collides with node2).
     pub(crate) claims: (Mutex<HashMap<u16, LiveClaim>>, Condvar),
+    /// Encoded registry-gossip flush frames whose initial send failed, parked
+    /// for retry, keyed by connection and bound to that admission's
+    /// publication token. The connection-establish flush is one-shot — the
+    /// drained events age out of the cluster queue after eight disseminations
+    /// — so a transiently failed send would otherwise leave an
+    /// already-connected peer permanently without the cluster's registered
+    /// names (a lookup-unresolved loss). The connection's reader retries on
+    /// its next inbound frame (SWIM keeps frames flowing, so retry latency is
+    /// bounded by the protocol period); entries are dropped when the
+    /// connection is removed or superseded (fail-closed: a successor's own
+    /// flush carries current state). Bounded per connection at
+    /// `MAX_REGISTRY_GOSSIP_FLUSH_EVENTS` frames.
+    pending_registry_flush: PoisonSafe<HashMap<c_int, PendingRegistryFlush>>,
+    /// Fast-path mirror of `pending_registry_flush.len()` so the per-frame
+    /// reader check is one atomic load when nothing is parked.
+    pending_registry_flush_count: AtomicUsize,
+}
+
+/// A parked registry-gossip flush awaiting retry (see
+/// [`HewConnMgr::pending_registry_flush`]).
+#[derive(Debug)]
+struct PendingRegistryFlush {
+    /// Publication token of the admission that parked these frames; a stale
+    /// entry (token mismatch) is never consumed by a successor connection
+    /// reusing the transport `conn_id`.
+    token: u64,
+    /// Encoded control frames, in original flush order.
+    frames: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, Default)]
@@ -816,7 +844,7 @@ fn publish_connection_established(
         unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
     }
 
-    flush_registry_gossip_to_connection(mgr, conn_id, peer_feature_flags);
+    flush_registry_gossip_to_connection(mgr, conn_id, publication_token, peer_feature_flags);
 
     // Same-credential reconnect (issue #2652, D3 step 3): our claim overwrote a
     // live Published claim from the same peer credential. The superseded
@@ -1753,32 +1781,130 @@ fn active_gossip_connection_ids(mgr: &HewConnMgr) -> Vec<c_int> {
         .collect()
 }
 
-fn flush_registry_gossip_to_connection(mgr: &HewConnMgr, conn_id: c_int, peer_feature_flags: u32) {
+fn flush_registry_gossip_to_connection(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    peer_feature_flags: u32,
+) {
     if !supports_gossip(peer_feature_flags) || mgr.cluster.is_null() {
         return;
     }
     // issue #2652 (D9, outbound): never flush registry gossip onto an
     // `Unverified` (delivery-only) or superseded connection — it carries no
     // control-plane authority in either direction. Only the exact authenticated
-    // owner of a published claim receives cluster state.
+    // owner of a published claim receives cluster state. This gate runs BEFORE
+    // the drain, so a denial retains the events for other connections.
     if authenticated_peer_node_id_for_conn(mgr, conn_id) == 0 {
         return;
     }
 
     // SAFETY: cluster pointer belongs to this live connection manager.
     let events = unsafe { (&*mgr.cluster).take_registry_gossip(MAX_REGISTRY_GOSSIP_FLUSH_EVENTS) };
-    for event in events {
-        let Some(bytes) = encode_registry_gossip_control(&event.name, event.actor_id, event.is_add)
-        else {
-            continue;
-        };
+    let frames: Vec<Vec<u8>> = events
+        .into_iter()
+        .filter_map(|event| {
+            encode_registry_gossip_control(&event.name, event.actor_id, event.is_add)
+        })
+        .collect();
+    send_registry_flush_frames(mgr, conn_id, publication_token, frames);
+}
+
+/// Send encoded registry-gossip flush frames in order. On a failed send, park
+/// the unsent remainder (including the failed frame) for retry on the
+/// connection's next inbound frame — the flush is one-shot at the cluster
+/// level (drained events age out of the queue), so dropping here would leave
+/// the peer permanently without those names.
+fn send_registry_flush_frames(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    mut frames: Vec<Vec<u8>>,
+) {
+    let mut sent = 0;
+    while let Some(bytes) = frames.get(sent) {
         // SAFETY: mgr is live and `bytes` is a complete encoded control frame.
         if unsafe { send_preencoded_on_manager(mgr, conn_id, bytes.as_ptr(), bytes.len()) } != 0 {
             set_last_error(format!(
-                "registry gossip flush send failed for conn {conn_id}"
+                "registry gossip flush send failed for conn {conn_id}; \
+                 parking {} frame(s) for retry",
+                frames.len() - sent
+            ));
+            park_pending_registry_flush(mgr, conn_id, publication_token, frames.split_off(sent));
+            return;
+        }
+        sent += 1;
+    }
+}
+
+/// Park unsent flush frames for retry, bound to the admission's publication
+/// token. Bounded at [`MAX_REGISTRY_GOSSIP_FLUSH_EVENTS`] frames per
+/// connection (oldest evicted with a diagnostic).
+fn park_pending_registry_flush(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    frames: Vec<Vec<u8>>,
+) {
+    if frames.is_empty() {
+        return;
+    }
+    mgr.pending_registry_flush.access(|map| {
+        let entry = map.entry(conn_id).or_insert_with(|| PendingRegistryFlush {
+            token: publication_token,
+            frames: Vec::new(),
+        });
+        if entry.token != publication_token {
+            // A previous admission's leftovers never survive into a successor
+            // on a reused conn_id.
+            entry.token = publication_token;
+            entry.frames.clear();
+        }
+        entry.frames.extend(frames);
+        if entry.frames.len() > MAX_REGISTRY_GOSSIP_FLUSH_EVENTS {
+            let excess = entry.frames.len() - MAX_REGISTRY_GOSSIP_FLUSH_EVENTS;
+            entry.frames.drain(..excess);
+            set_last_error(format!(
+                "registry gossip retry buffer overflow for conn {conn_id}: \
+                 evicted {excess} oldest frame(s)"
             ));
         }
+        mgr.pending_registry_flush_count
+            .store(map.len(), Ordering::Release);
+    });
+}
+
+/// Retry a parked registry-gossip flush on inbound traffic from `conn_id`.
+/// Consumes the parked entry only for the SAME admission (publication token
+/// match); re-checks the outbound authority gate first, dropping the frames
+/// fail-closed if the connection lost its claim (superseded / removed — the
+/// successor's own establish flush carries current state).
+fn retry_pending_registry_flush(mgr: &HewConnMgr, conn_id: c_int, claim_token: u64) {
+    if mgr.pending_registry_flush_count.load(Ordering::Acquire) == 0 {
+        return;
     }
+    let Some(frames) = mgr.pending_registry_flush.access(|map| {
+        let matches = map
+            .get(&conn_id)
+            .is_some_and(|pending| pending.token == claim_token);
+        if !matches {
+            return None;
+        }
+        let pending = map.remove(&conn_id);
+        mgr.pending_registry_flush_count
+            .store(map.len(), Ordering::Release);
+        pending.map(|p| p.frames)
+    }) else {
+        return;
+    };
+    if authenticated_peer_node_id_for_conn(mgr, conn_id) == 0 {
+        set_last_error(format!(
+            "registry gossip retry dropped for conn {conn_id}: connection no longer \
+             holds its published claim"
+        ));
+        return;
+    }
+    send_registry_flush_frames(mgr, conn_id, claim_token, frames);
 }
 
 // ── SWIM failure-detection transport ────────────────────────────────────
@@ -2546,6 +2672,16 @@ fn reader_loop(
                 }
             }
         }
+
+        // A parked one-shot registry-gossip flush (initial send failed)
+        // retries on this connection's next inbound traffic — SWIM keeps
+        // frames flowing on an established connection, so retry latency is
+        // bounded by the protocol period. One atomic load when nothing is
+        // parked.
+        if !mgr.is_null() {
+            // SAFETY: reader_loop owns a live manager pointer for this connection.
+            retry_pending_registry_flush(unsafe { &*mgr }, conn_id, claim_token);
+        }
     }
 }
 
@@ -2627,6 +2763,8 @@ pub(crate) unsafe fn connmgr_new(
         local_node_id,
         auth,
         claims: (Mutex::new(HashMap::new()), Condvar::new()),
+        pending_registry_flush: PoisonSafe::new(HashMap::new()),
+        pending_registry_flush_count: AtomicUsize::new(0),
     });
     Box::into_raw(mgr)
 }
@@ -3419,6 +3557,18 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         let superseded = conn.superseded_claim.lock_or_recover().take();
         abort_claim(mgr, peer_node_id, conn_id, publication_token, superseded);
     }
+    // Drop this admission's parked registry-flush retry frames (token-matched
+    // so a successor's parked frames on a reused conn_id are never touched).
+    mgr.pending_registry_flush.access(|map| {
+        if map
+            .get(&conn_id)
+            .is_some_and(|pending| pending.token == publication_token)
+        {
+            map.remove(&conn_id);
+        }
+        mgr.pending_registry_flush_count
+            .store(map.len(), Ordering::Release);
+    });
     // Drop joins the reader thread after transport close.
     drop(conn);
     // Full publication retirement: re-removes route (idempotent) and fires the
@@ -3978,6 +4128,8 @@ mod tests {
                 std::sync::Mutex::new(std::collections::HashMap::new()),
                 std::sync::Condvar::new(),
             ),
+            pending_registry_flush: PoisonSafe::new(HashMap::new()),
+            pending_registry_flush_count: AtomicUsize::new(0),
         };
 
         assert_eq!(
@@ -4051,6 +4203,8 @@ mod tests {
                 std::sync::Mutex::new(std::collections::HashMap::new()),
                 std::sync::Condvar::new(),
             ),
+            pending_registry_flush: PoisonSafe::new(HashMap::new()),
+            pending_registry_flush_count: AtomicUsize::new(0),
         };
 
         assert_eq!(
@@ -4268,6 +4422,8 @@ mod tests {
                 std::sync::Mutex::new(std::collections::HashMap::new()),
                 std::sync::Condvar::new(),
             ),
+            pending_registry_flush: PoisonSafe::new(HashMap::new()),
+            pending_registry_flush_count: AtomicUsize::new(0),
         };
         let mgr_ptr = std::ptr::from_ref(&mgr).cast_mut();
         // No claim exists for conn 10; any reader token denies immediately.
@@ -5190,6 +5346,150 @@ mod tests {
                 assert_eq!(restored.state, ClaimState::Published);
             }
         });
+    }
+
+    /// Shared state for the failed-flush regression test: fails the first
+    /// `fail_remaining` sends, records the rest.
+    struct FailingOnceSends {
+        fail_remaining: AtomicUsize,
+        sends: Mutex<Vec<(c_int, Vec<u8>)>>,
+    }
+
+    unsafe extern "C" fn fail_once_then_record_send(
+        impl_ptr: *mut std::ffi::c_void,
+        conn_id: c_int,
+        data: *const std::ffi::c_void,
+        len: usize,
+    ) -> c_int {
+        // SAFETY: test installs a FailingOnceSends as the transport impl payload.
+        let state = unsafe { &*(impl_ptr.cast::<FailingOnceSends>()) };
+        if state
+            .fail_remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return -1;
+        }
+        // SAFETY: send_preencoded_on_manager passes an encoded frame valid for len bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }.to_vec();
+        state
+            .sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((conn_id, bytes));
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "test payload lengths fit c_int"
+        )]
+        {
+            len as c_int
+        }
+    }
+
+    /// A transiently failed connection-establish gossip flush must not lose the
+    /// cluster's registered names (the third lookup-unresolved mechanism): the
+    /// failed frames are PARKED, a stale admission token cannot consume them,
+    /// and the connection's next inbound-frame retry delivers them.
+    #[test]
+    fn failed_gossip_flush_parks_frames_and_retry_delivers() {
+        let state = Box::into_raw(Box::new(FailingOnceSends {
+            fail_remaining: AtomicUsize::new(1),
+            sends: Mutex::new(Vec::new()),
+        }));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(fail_once_then_record_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: state.cast(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.posture = crate::peer_binding::Posture::Strict;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+            let token = test_publish_claim(&*mgr, 2, 10);
+
+            (&*cluster).emit_registry_add("svc", crate::pid::hew_pid_make(1, 0x77));
+
+            // Initial flush: the send fails; the frame must be parked, not lost.
+            flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
+            assert!(
+                (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty(),
+                "the failed initial send must record nothing"
+            );
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                1,
+                "the failed flush must park its frames"
+            );
+
+            // A stale admission token (a reused conn_id's old reader) must not
+            // consume the parked frames.
+            retry_pending_registry_flush(&*mgr, 10, token + 1);
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                1,
+                "a stale token must not consume the parked flush"
+            );
+
+            // The connection's own retry (next inbound frame) delivers.
+            retry_pending_registry_flush(&*mgr, 10, token);
+            {
+                let sends = (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(sends.len(), 1, "the retry must deliver the parked frame");
+                assert_eq!(sends[0].0, 10);
+                let WireFrame::Control(ctrl) =
+                    decode_wire_frame(&sends[0].1).expect("delivered frame decodes")
+                else {
+                    panic!("delivered frame must be a control frame");
+                };
+                assert_eq!(ctrl.ctrl_kind, CTRL_REGISTRY_GOSSIP);
+                let payload =
+                    decode_registry_gossip_payload(&ctrl.payload).expect("gossip payload");
+                assert_eq!(payload.name, "svc");
+                assert_eq!(payload.op, REGISTRY_GOSSIP_OP_ADD);
+            }
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                0,
+                "a delivered retry must clear the parked entry"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(state));
+        }
+        drop(ops);
     }
 
     /// Issue #2652 (item 1, outbound authority): the predicate the outbound ask

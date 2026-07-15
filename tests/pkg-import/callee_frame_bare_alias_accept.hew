@@ -1,0 +1,24 @@
+// Issue #2651 accept side: a legal callee-frame bare alias reaching the unique
+// registered-owner scan. `framealias.make()` returns its result spelled bare
+// (`Widget`) in the callee's own frame; the local `read` parameter is typed
+// with the module-qualified `framealias.Widget`. Both name the SAME definition.
+//
+// Because this is a plain import (no `::{ Widget }` opt-in), the bare `Widget`
+// is not a published bare binding, so the owner-identity gate qualifies it
+// through the UNIQUE registered-owner scan (`type_defs`/`known_types` →
+// `framealias.Widget`) rather than the published-bare path. The gate must
+// ACCEPT the resulting owner-identical pairing — a false reject here would
+// break every legitimate callee-frame / prelude bare alias.
+//
+// Harness verb: hew run
+// Expected: 11 — the callee-frame `Widget` flows through the qualified-typed
+// parameter unchanged.
+import hew::framealias;
+
+fn read(w: framealias.Widget) -> i64 {
+    w.tag
+}
+
+fn main() {
+    println(f"{read(framealias.make())}");
+}

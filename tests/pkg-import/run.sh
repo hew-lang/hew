@@ -324,6 +324,24 @@ fixtures=(
   # owner and finds the two spellings identical, so it does NOT fire — the legal
   # alias is preserved. Prints bare=7 then qual=7.
   bare_import_alias_accept
+  # Issue #2651 accept side: a module that references its OWN type both bare and
+  # through its own module qualifier. `selfqualtype.roundtrip()` passes a bare
+  # `Meter` into a `selfqualtype.Meter` parameter, forcing the checker to compare
+  # bare `Meter` against `selfqualtype.Meter` with the current module set to
+  # `selfqualtype`. The owner-identity gate strips the redundant current-module
+  # self-qualifier so the two spellings of one definition compare equal; without
+  # that carve-out the pairing false-rejects. Prints 3. (This is the type-level
+  # equivalent of the generic-machine self-qualified transition — e.g. the stdlib
+  # `Lifecycle<T>` machine — reached deterministically without machine plumbing.)
+  self_qualified_type_identity
+  # Issue #2651 accept side: a legal callee-frame bare alias reaching the unique
+  # registered-owner scan. `framealias.make()` returns its result spelled bare
+  # (`Widget`) in the callee frame; the local `read` parameter is typed with the
+  # module-qualified `framealias.Widget`. Under a plain (non-opt-in) import the
+  # bare name is not a published bare binding, so the gate qualifies it through
+  # the UNIQUE registered-owner scan over `type_defs`/`known_types`
+  # (→ `framealias.Widget`) and ACCEPTS the owner-identical pairing. Prints 11.
+  callee_frame_bare_alias_accept
 )
 
 for fixture in "${fixtures[@]}"; do

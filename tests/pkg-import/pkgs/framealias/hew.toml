@@ -1,0 +1,6 @@
+[package]
+name = "hew::framealias"
+version = "0.1.0"
+description = "Callee-frame bare-alias fixture: a type returned bare from its defining frame, reached at an import site through its module-qualified spelling"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

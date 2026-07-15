@@ -1,0 +1,17 @@
+// Issue #2651 accept side: a module referencing its OWN type both bare and
+// through its own module qualifier. `selfqualtype.roundtrip()` passes a bare
+// `Meter` (from `build()`) into a `selfqualtype.Meter` parameter (`read`),
+// forcing the checker to compare bare `Meter` against `selfqualtype.Meter` with
+// the current module set to `selfqualtype`. These are the SAME definition, so
+// the owner-identity gate must accept the self-qualified alias — the strict
+// comparison strips the redundant current-module self-qualifier. A regression
+// here previously failed closed with a false
+// `type mismatch: expected selfqualtype.Meter, found Meter`.
+//
+// Harness verb: hew run
+// Expected: 3 — the bare `Meter` flows through the self-qualified parameter.
+import hew::selfqualtype;
+
+fn main() {
+    println(f"{selfqualtype.roundtrip()}");
+}

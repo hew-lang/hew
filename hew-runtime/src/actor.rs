@@ -779,12 +779,10 @@ fn should_fail_arena_alloc() -> bool {
     })
 }
 
-/// Get the ID of the actor currently being dispatched on this thread.
+/// Derive the current actor's ID from an execution context pointer.
 ///
-/// Returns -1 if no actor is active (called from main or non-actor context).
-#[no_mangle]
-pub extern "C" fn hew_actor_current_id() -> i64 {
-    let ctx = crate::execution_context::require_current_context();
+/// Returns -1 when the context is null or carries no actor.
+fn actor_id_from_context(ctx: *mut crate::execution_context::HewExecutionContext) -> i64 {
     if ctx.is_null() {
         return -1;
     }
@@ -799,6 +797,29 @@ pub extern "C" fn hew_actor_current_id() -> i64 {
         // SAFETY: actor is non-null and valid when installed by the scheduler.
         unsafe { &*actor }.id as i64
     }
+}
+
+/// Get the ID of the actor currently being dispatched on this thread.
+///
+/// Returns -1 if no actor is active (called from main or non-actor context).
+/// When no execution context is installed, records the diagnostic
+/// `EXECUTION_CONTEXT_NOT_INSTALLED` in the generic last-error slot — callers
+/// treating an absent context as a failure rely on that write.
+#[no_mangle]
+pub extern "C" fn hew_actor_current_id() -> i64 {
+    let ctx = crate::execution_context::require_current_context();
+    actor_id_from_context(ctx)
+}
+
+/// Silent variant of [`hew_actor_current_id`]: returns the current actor id,
+/// or -1 outside any actor context, WITHOUT writing the generic `LAST_ERROR`
+/// slot when no execution context is installed. Use this for identity-routing
+/// decisions (e.g. the `parse_error_slot` non-actor fallback) where "no actor"
+/// is an expected, non-error condition — not for paths where an absent context
+/// is itself a diagnosable failure.
+pub(crate) fn hew_actor_current_id_silent() -> i64 {
+    let ctx = crate::execution_context::current_context();
+    actor_id_from_context(ctx)
 }
 
 /// Default message processing budget per activation.
@@ -6224,6 +6245,42 @@ mod tests {
     /// `Running → Idle → Stopped` instead of `Running → Crashed`, and drain
     /// returns `Drained` instead of `Incomplete { crashed }`.
     static DRAIN_TRAP_ON_STOP_RELEASE: AtomicBool = AtomicBool::new(false);
+
+    /// With no execution context installed, the diagnostic accessor
+    /// `hew_actor_current_id` writes `EXECUTION_CONTEXT_NOT_INSTALLED` into the
+    /// generic last-error slot (callers treating an absent context as a failure
+    /// depend on that), while `hew_actor_current_id_silent` returns the same -1
+    /// without touching the slot — it is a routing probe, not a diagnostic.
+    #[test]
+    fn silent_probe_diverges_from_diagnostic_on_missing_context() {
+        let prev = crate::execution_context::set_current_context(ptr::null_mut());
+
+        crate::hew_clear_error();
+        assert_eq!(hew_actor_current_id_silent(), -1);
+        assert!(
+            crate::hew_last_error().is_null(),
+            "silent probe must not write the generic last-error slot"
+        );
+
+        assert_eq!(hew_actor_current_id(), -1);
+        let err = crate::hew_last_error();
+        assert!(
+            !err.is_null(),
+            "diagnostic accessor must record the missing-context error"
+        );
+        // SAFETY: hew_last_error returned a non-null, NUL-terminated C string
+        // owned by the thread-local slot; it stays valid until the next write.
+        let msg = unsafe { std::ffi::CStr::from_ptr(err) }
+            .to_str()
+            .expect("last-error message is valid UTF-8");
+        assert_eq!(
+            msg,
+            crate::execution_context::EXECUTION_CONTEXT_NOT_INSTALLED
+        );
+
+        crate::hew_clear_error();
+        let _ = crate::execution_context::set_current_context(prev);
+    }
 
     /// `Suspended` is non-quiescent: a suspended actor owns a live continuation
     /// frame, so a `hew_actor_free` caller spinning on the state must block

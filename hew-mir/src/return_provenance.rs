@@ -343,8 +343,197 @@ pub fn ty_is_scalar_non_heap(ty: &ResolvedTy) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Placeholder seams filled in by later S1 layers (kept here so the module's
-// public surface is stable across the layered commits).
+// Method-call return contract — keyed on the EMITTED runtime symbol [F1]
+// ---------------------------------------------------------------------------
+
+/// EMITTED runtime symbols proved (by reading the runtime implementation) to
+/// hand back a NEW `+1` owner, so a method call lowering to one of them is a
+/// fresh sole owner (`∅`).
+///
+/// These are the descriptor-clone / retain / move-out getters — NOT the borrowed
+/// getters. The distinction is load-bearing and is the F1 correction: the HIR
+/// `ResolvedImplCall.target_symbol` is a *placeholder* (`hew_hashmap_get_layout`,
+/// `hew_vec_get_owned`/`_ptr`), and lowering picks the actual owned callee at
+/// emission time (`hew_vec_get_clone` for owned-value elements,
+/// `hew_hashmap_get_clone_layout` always for `HashMap` get). Keying on the HIR
+/// symbol/family would admit the receiver-alias class this lane rejects, so the
+/// contract keys on the EMITTED symbol the site will actually lower to.
+const PROVED_OWNER_METHOD_SYMBOLS: &[&str] = &[
+    "hew_vec_get_clone",
+    "hew_vec_get_str",
+    "hew_vec_pop_str",
+    "hew_vec_remove_at_str",
+    "hew_hashmap_get_clone_layout",
+    "hew_hashmap_remove_take_layout",
+];
+
+/// Return-provenance of a method call, given the EMITTED runtime symbol the site
+/// lowers to. Fresh (`∅`) ONLY for a proved-owner clone/retain/take symbol or an
+/// owned-return string/bytes producer; every borrowed getter
+/// (`hew_vec_get_owned`/`_ptr`/`_layout`, `hew_hashmap_get_layout`), interior
+/// getter, unknown, or family-only placeholder → `{OPAQUE}` (fail-closed).
+///
+/// The caller resolves which symbol the site emits by reproducing lowering's
+/// owned-element-class decision (`Builder::is_owned_vec_element`) at the wiring
+/// site (S2); this function is the sound EMITTED-symbol → provenance contract it
+/// consults.
+#[must_use]
+pub fn method_return_provenance(emitted_symbol: &str) -> AliasBits {
+    use crate::runtime_symbols::{callee_ownership_contract, ResultOwnership};
+    if PROVED_OWNER_METHOD_SYMBOLS.contains(&emitted_symbol) {
+        return AliasBits::EMPTY;
+    }
+    match callee_ownership_contract(emitted_symbol).result {
+        ResultOwnership::FreshOwnedString | ResultOwnership::FreshOwnedBytes => AliasBits::EMPTY,
+        ResultOwnership::Borrowed
+        | ResultOwnership::InteriorAliasOfReceiver
+        | ResultOwnership::Untracked => AliasBits::OPAQUE,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Audited ExternFn owned-return contract table [F3] — EMPTY/fail-closed interim
+// ---------------------------------------------------------------------------
+
+/// The audited positive allowlist of externs whose by-value return is a fresh
+/// `+1` owner, keyed by `ItemId`.
+///
+/// # Interim (S1–S4): EMPTY / fail-closed [Rev-8, round-6 item 2]
+///
+/// `StdlibOrigin` / `TrustedStdlibRoot` / `HirModule.stdlib_origins` do NOT exist
+/// at this base, so NO marker-backed row can be built yet. The interim table
+/// therefore admits ONLY scalar-return externs (a scalar owns nothing and aliases
+/// nothing — no trusted-root marker needed) and treats EVERY heap-returning
+/// extern as `{OPAQUE}` (absent from the table → fail-closed lookup). The
+/// marker-backed jwt/encrypt rows land at S4b once the trusted-root precursor
+/// (`stdlib-root-canonical-resolution`, U194) exposes the non-forgeable marker.
+///
+/// A user `extern "C" fn evil() -> string` returning an interior pointer is
+/// therefore `{OPAQUE}` here — never auto-trusted from `return_ty` heap-ness or
+/// the arbitrary `abi` string.
+#[derive(Debug, Default, Clone)]
+pub struct ExternContractTable {
+    rows: HashMap<hew_hir::ItemId, ReturnProvenance>,
+}
+
+impl ExternContractTable {
+    /// Return-provenance of a resolved extern `ItemId`. An extern absent from the
+    /// table (every heap-returning extern in the interim) is `{OPAQUE}` —
+    /// fail-closed.
+    #[must_use]
+    pub fn provenance_of(&self, id: hew_hir::ItemId) -> AliasBits {
+        self.rows.get(&id).copied().unwrap_or(AliasBits::OPAQUE)
+    }
+
+    /// Number of marker-backed / scalar rows. Zero marker-backed rows in the
+    /// interim; the value is the count of scalar-return externs admitted.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// True when no extern is admitted.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+/// Build the interim (empty/fail-closed) extern contract table over a module's
+/// `extern "C"` declarations: scalar-return externs → Fresh; every
+/// heap-returning extern is omitted (→ `{OPAQUE}` on lookup). Zero marker-backed
+/// rows — the trusted-root precursor is required for those (S4b).
+#[must_use]
+pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContractTable {
+    let mut rows: HashMap<hew_hir::ItemId, ReturnProvenance> = HashMap::new();
+    for item in &module.items {
+        if let hew_hir::HirItem::ExternFn(ef) = item {
+            if ty_is_scalar_non_heap(&ef.return_ty) {
+                rows.insert(ef.id, AliasBits::EMPTY);
+            }
+        }
+    }
+    ExternContractTable { rows }
+}
+
+// ---------------------------------------------------------------------------
+// Preflight carve-out detectors — pure HIR, keyed on TYPED identity [F4-new]
+// ---------------------------------------------------------------------------
+
+/// True when `callee` carries the compiler-minted typed runtime identity of a
+/// receive family (`ResolvedRef::Builtin(RuntimeCallFamily::{ChannelRecv* |
+/// StreamNext* | DuplexRecv*})`).
+///
+/// The carve-out keys on this TYPED identity, NOT the display name: a genuine
+/// recv callee resolves to `ResolvedRef::Builtin(fam)` and carries its own
+/// `BodyEndReleased` per-iteration release discipline (no synthetic owner must be
+/// minted), whereas a user-declared `extern "C" fn hew_channel_recv_layout(..)`
+/// resolves to `ResolvedRef::Item` → does NOT match → falls through to the
+/// three-way `Call` resolution → `{OPAQUE}` → REJECT (fail-closed; closes the
+/// name-forgeable bypass this lane fixes).
+#[must_use]
+pub fn is_typed_recv_callee(callee: &HirExpr) -> bool {
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+    let HirExprKind::BindingRef {
+        resolved: ResolvedRef::Builtin(family),
+        ..
+    } = &callee.kind
+    else {
+        return false;
+    };
+    matches!(
+        family,
+        F::ChannelRecvLayout
+            | F::ChannelTryRecvLayout
+            | F::StreamNextLayout
+            | F::StreamTryNextLayout
+            | F::DuplexRecv
+            | F::DuplexRecvHalf
+            | F::DuplexTryRecv
+    )
+}
+
+/// True when `scrutinee` is a `Call` — the ONLY kind the from-call owner mint
+/// (`call_scrutinee_owned_ty`) engages on. A non-`Call` scrutinee (a `Block`/`If`
+/// synthetic `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place) is
+/// structurally `NotApplicable` — it can never reach the from-call owner mint, so
+/// its own release discipline runs unchanged. This is the `let HirExprKind::Call
+/// { .. } = &scrutinee.kind else { return None }` gate the preflight reproduces
+/// FIRST, before any runtime-identity or three-way `Call` resolution.
+#[must_use]
+pub fn scrutinee_is_call_kind(scrutinee: &HirExpr) -> bool {
+    matches!(&scrutinee.kind, HirExprKind::Call { .. })
+}
+
+/// The admission verdict a call/method/aggregate scrutinee consumer acts on
+/// (#2648 preflight). Pure-analysis shape; the wiring site (S2) maps `Admit` onto
+/// the `ProjectedPayloadOrigin` the #2523 classifier + the #2429 owner mint
+/// consume, and a reject onto a `MirDiagnostic` returned as `Err`.
+///
+/// `Reject` is NOT a variant here: the preflight returns `Result<_, MirDiagnostic>`
+/// at the wiring site, so a reject is `Err` (one diagnostic, early return, no
+/// partial MIR). This enum is the `Ok(..)` payload.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CallScrutineeAdmission {
+    /// Not a from-call owner shape (a non-`Call` scrutinee, a typed-recv/iter-next
+    /// carve-out, a builtin callee) → behave as today's `None`: no owner minted,
+    /// no reject, the scrutinee's own release discipline runs unchanged.
+    NotApplicable,
+    /// A `Fresh` (or `ParamsOnly`-with-all-fresh-args) scrutinee → mint the #2429
+    /// owner and classify #2523's move-out as `EphemeralTemp`.
+    Admit,
+    /// INTERIM ONLY (S2–S4; DELETED at S4b) [Rev-8, round-6 item 2]: a resolved
+    /// module-fn callee whose precise summary carries NO `PARAM` bit → today's
+    /// admission EXACTLY (the existing owner gate mints `__hew_call_scrutinee`;
+    /// #2523 keeps its legacy `EphemeralTemp`). The precise module summary is
+    /// consulted ONLY for the `PARAM`-present early reject, never for the
+    /// admission shape — so opaque-hidden forwarding stays legacy fail-open until
+    /// the trusted-root precursor merges.
+    LegacyModuleCall,
+}
+
+// ---------------------------------------------------------------------------
+// Module-map helpers
 // ---------------------------------------------------------------------------
 
 /// The set of `ItemId`s currently proven `false` (not fresh) under a coarse
@@ -479,6 +668,118 @@ mod tests {
             fn b(x: string) -> string { a(true, x) }
             ",
         );
+    }
+
+    // -- Method-call return contract [F1] --
+
+    #[test]
+    fn owned_value_vec_get_emits_clone_and_is_fresh() {
+        // The owned-value `Vec::get` lowers to `hew_vec_get_clone` (a descriptor
+        // clone → a fresh independent owner), even though its runtime contract is
+        // `Untracked`; the proved-owner set is what admits it.
+        assert!(method_return_provenance("hew_vec_get_clone").is_fresh());
+        assert!(method_return_provenance("hew_hashmap_get_clone_layout").is_fresh());
+        assert!(method_return_provenance("hew_hashmap_remove_take_layout").is_fresh());
+    }
+
+    #[test]
+    fn borrowed_vec_getters_are_opaque() {
+        // Collection-handle `Vec::get` lowers to `hew_vec_get_owned` — a slot
+        // borrow into the receiver storage; it MUST reject.
+        assert!(method_return_provenance("hew_vec_get_owned").is_opaque());
+        assert!(method_return_provenance("hew_vec_get_ptr").is_opaque());
+        assert!(method_return_provenance("hew_vec_get_layout").is_opaque());
+        assert!(method_return_provenance("hew_hashmap_get_layout").is_opaque());
+    }
+
+    #[test]
+    fn owned_return_string_method_is_fresh_and_unknown_symbol_is_opaque() {
+        // `s.slice(..)` → `hew_string_slice` → FreshOwnedString feeds semver.
+        assert!(method_return_provenance("hew_string_slice").is_fresh());
+        // An unknown / family-only placeholder fails closed.
+        assert!(method_return_provenance("hew_totally_unknown_symbol").is_opaque());
+    }
+
+    // -- Extern owned-return contract table (interim empty/fail-closed) [F3] --
+
+    #[test]
+    fn extern_table_admits_scalar_returns_and_rejects_heap_returns() {
+        let module = lower_source(
+            r#"
+            extern "C" {
+                fn scalar_ext() -> i64;
+                fn heap_ext() -> string;
+            }
+            "#,
+        );
+        let table = build_extern_contract_table(&module);
+        // Zero marker-backed rows in the interim: only the scalar extern is
+        // admitted; the heap-returning extern is absent → {OPAQUE} on lookup.
+        let mut scalar_id = None;
+        let mut heap_id = None;
+        for item in &module.items {
+            if let hew_hir::HirItem::ExternFn(ef) = item {
+                match ef.name.as_str() {
+                    "scalar_ext" => scalar_id = Some(ef.id),
+                    "heap_ext" => heap_id = Some(ef.id),
+                    _ => {}
+                }
+            }
+        }
+        let scalar_id = scalar_id.expect("scalar_ext must lower to an ExternFn");
+        let heap_id = heap_id.expect("heap_ext must lower to an ExternFn");
+        assert!(
+            table.provenance_of(scalar_id).is_fresh(),
+            "a scalar-return extern owns nothing and must be Fresh"
+        );
+        assert!(
+            table.provenance_of(heap_id).is_opaque(),
+            "a heap-return extern has no trusted-root marker in the interim → OPAQUE"
+        );
+        assert_eq!(table.len(), 1, "only the scalar extern is a row");
+    }
+
+    // -- Preflight structural carve-out --
+
+    #[test]
+    fn only_call_scrutinees_engage_the_owner_mint() {
+        let module = lower_source(
+            r#"
+            fn producer() -> Result<string, string> { Ok("x") }
+            fn use_call(r: Result<string, string>) -> i64 {
+                match producer() { Ok(_) => 1, Err(_) => 0 }
+            }
+            "#,
+        );
+        // Find the `match producer()` scrutinee inside `use_call` and confirm it
+        // is a Call kind; a bare-place / block scrutinee would not be.
+        let mut saw_call_scrutinee = false;
+        for item in &module.items {
+            if let hew_hir::HirItem::Function(f) = item {
+                if f.name == "use_call" {
+                    for stmt in &f.body.statements {
+                        collect_call_scrutinee(stmt, &mut saw_call_scrutinee);
+                    }
+                    if let Some(tail) = &f.body.tail {
+                        if let hew_hir::HirExprKind::Match { scrutinee, .. } = &tail.kind {
+                            saw_call_scrutinee |= scrutinee_is_call_kind(scrutinee);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            saw_call_scrutinee,
+            "the `match producer()` scrutinee must be recognised as a Call kind"
+        );
+    }
+
+    fn collect_call_scrutinee(stmt: &hew_hir::HirStmt, out: &mut bool) {
+        if let hew_hir::HirStmtKind::Expr(e) = &stmt.kind {
+            if let hew_hir::HirExprKind::Match { scrutinee, .. } = &e.kind {
+                *out |= scrutinee_is_call_kind(scrutinee);
+            }
+        }
     }
 
     #[test]

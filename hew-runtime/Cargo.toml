@@ -58,6 +58,19 @@ otel = ["dep:ureq"]
 # production dependencies.
 forced-cancel-test = []
 
+# Deterministic clone-failure injection for the TCP stream-bridge consumed-
+# connection ownership tests (#2650). Lets a test force `tcp_clone_stream`'s
+# first and/or second clone to fail *with a live table entry* (the valid-
+# handle-clone-failed path that rlimit forcing cannot target deterministically
+# and cannot aim at clone #2), so the two failure branches of
+# `hew_tcp_stream_from_conn` and the fd-leak slope are exercised without
+# rlimit flakiness. Test-only — never in `default`/`full`. Auto-enabled under
+# `cfg(test)` for unit tests inside the crate; integration tests opt in via
+# `--features clone-failure-test` (mirrors `sim-transport`/`forced-cancel-test`).
+# Also widens the `#[cfg(test)]` transport table probes to the same gate so
+# integration tests can read them. Adds no production dependencies.
+clone-failure-test = []
+
 [dependencies]
 # CBOR body codec (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.
 ciborium = "0.2"

@@ -1892,6 +1892,137 @@ mod tests {
         assert_eq!(coarse, frozen);
     }
 
+    /// Recursively collect every `.hew` file under `dir` into `out`.
+    fn collect_hew_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_hew_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "hew") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The F5 interface pin (corpus half) [F5/Rev-4]: iterate the named corpus
+    /// roots, standalone-lower every `.hew` to HIR, and for EVERY function assert
+    /// the LIVE Coarse fixpoint (routed through the shared `return_alias_bits`
+    /// walk) equals the FROZEN pre-refactor transfer. Divergence on any function
+    /// is a silent-UAF-regression signal in the funcupdate (#2420 base) / reassign
+    /// consumers that share the Coarse authority.
+    ///
+    /// An input that fails BEFORE HIR (parse / resolve error, or a standalone
+    /// lowering that panics without the full module registry) is skipped and
+    /// counted; the `compared` floor guards against silent corpus shrinkage
+    /// turning the differential vacuous. The floor is a lower bound (new inputs
+    /// only raise `compared`), so adding fixtures never breaks it while a
+    /// disappearing corpus does.
+    /// Floor on the number of `.hew` files discovered under the named roots.
+    const CORPUS_FILE_FLOOR: usize = 700;
+    /// Floor on the number of inputs that lower standalone and are compared.
+    const COMPARED_FLOOR: usize = 700;
+
+    #[test]
+    fn coarse_verdict_differential() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-mir crate dir has a repo-root parent")
+            .to_path_buf();
+        let roots = [
+            "std",
+            "tests/vertical-slice/accept",
+            "tests/vertical-slice/reject",
+            "examples/v05/checked-mir",
+            "examples/v05",
+        ];
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        for r in roots {
+            collect_hew_files(&repo_root.join(r), &mut files);
+        }
+        files.sort();
+        files.dedup();
+        assert!(
+            files.len() >= CORPUS_FILE_FLOOR,
+            "corpus enumeration collapsed: found only {} `.hew` files under the named roots \
+             (repo_root={}); expected >= {CORPUS_FILE_FLOOR}",
+            files.len(),
+            repo_root.display(),
+        );
+
+        // The comparison runs on a worker thread with a large stack: a corpus
+        // input's standalone lowering can recurse deeply enough to overflow the
+        // default test stack (an abort `catch_unwind` cannot trap), so the big
+        // stack keeps the differential robust over the whole corpus.
+        let worker = std::thread::Builder::new()
+            .name("coarse-verdict-differential".into())
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                // Standalone lowering of a corpus file that expects the full
+                // module registry can panic; treat a panic as a skip, not a
+                // differential failure.
+                let prev_hook = std::panic::take_hook();
+                std::panic::set_hook(Box::new(|_| {}));
+
+                let mut compared = 0usize;
+                let mut skipped = 0usize;
+                let mut drift: Vec<String> = Vec::new();
+                for f in &files {
+                    let Ok(src) = std::fs::read_to_string(f) else {
+                        skipped += 1;
+                        continue;
+                    };
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let parsed = hew_parser::parse(&src);
+                        if !parsed.errors.is_empty() {
+                            return None;
+                        }
+                        let mut checker = hew_types::Checker::new(
+                            hew_types::module_registry::ModuleRegistry::new(vec![]),
+                        );
+                        let tc_output = checker.check_program(&parsed.program);
+                        let output = hew_hir::lower_program(
+                            &parsed.program,
+                            &tc_output,
+                            &hew_hir::ResolutionCtx,
+                            hew_hir::TargetArch::host(),
+                        );
+                        let origin_fns = origin_fns_of(&output.module);
+                        let live = compute_fn_returns_fresh_owner(&origin_fns);
+                        let frozen = compute_fn_returns_fresh_owner_ref(&origin_fns);
+                        Some(live == frozen)
+                    }));
+                    match outcome {
+                        Ok(Some(true)) => compared += 1,
+                        Ok(Some(false)) => {
+                            compared += 1;
+                            drift.push(f.display().to_string());
+                        }
+                        Ok(None) | Err(_) => skipped += 1,
+                    }
+                }
+
+                std::panic::set_hook(prev_hook);
+                (compared, skipped, drift)
+            })
+            .expect("spawn coarse-verdict-differential worker");
+        let (compared, skipped, drift) = worker.join().expect("worker thread panicked");
+
+        assert!(
+            drift.is_empty(),
+            "Coarse verdict drift between the shared walk and the frozen pre-refactor \
+             reference on {} corpus input(s): {drift:#?}",
+            drift.len(),
+        );
+        assert!(
+            compared >= COMPARED_FLOOR,
+            "the coarse differential went vacuous: only {compared} corpus input(s) lowered \
+             standalone ({skipped} skipped); silent corpus shrinkage below the {COMPARED_FLOOR} floor",
+        );
+    }
+
     // -- Method-call return contract [F1] --
 
     #[test]

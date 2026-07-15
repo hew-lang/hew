@@ -8785,6 +8785,84 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    /// Wire-identity (issue #2652, BLOCK-5 point 1): the `NodeId` a peer
+    /// advertises over the handshake is the operator-pinned `HEW_NODE_ID`
+    /// (`HewNode.node_id`) — NOT a PID-derived value. After an authorized
+    /// quic-mesh handshake, the responder must observe the initiator under the
+    /// exact configured id, and the *credential-bound* authenticated identity
+    /// must resolve to that same id. This proves the two-part invariant the
+    /// `ctrl-frame-binds-to-authenticated-peer` lesson requires: the handshake
+    /// `NodeId` is BOTH credential-bound AND equal to the operator-pinned id.
+    ///
+    /// If the initiator advertised anything other than its bound id, admission
+    /// on the responder would reject it (credential / `NodeId` mismatch) and no
+    /// connection would key to `ID_A` at all — so a successful observation of
+    /// `ID_A` here is a positive proof of the binding, not a coincidence.
+    #[cfg(feature = "quic")]
+    #[test]
+    fn wire_identity_peer_observes_configured_node_id() {
+        // Configured ids chosen to be unrelated to any PID-derived scheme.
+        const ID_A: u16 = 331;
+        const ID_B: u16 = 332;
+
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(ID_A, ID_B);
+
+        let connect_addr = CString::new(format!("{ID_B}@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // node2 (responder) must have admitted node1's inbound connection under
+        // its configured HEW_NODE_ID (331). Poll briefly: `wait_for_handshake`
+        // only proves the socket is up; claim publication completes a moment
+        // later inside admission.
+        // SAFETY: node2 is valid and its conn_mgr is live while node2 runs.
+        let mgr2 = unsafe { (*node2.as_ptr()).conn_mgr };
+        assert!(!mgr2.is_null(), "node2 conn_mgr must be live");
+        let mut conn_id = -1;
+        let mut authenticated = 0u16;
+        for _ in 0..100 {
+            // SAFETY: mgr2 is a live manager pointer for the duration of the read.
+            conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(mgr2, ID_A) };
+            if conn_id >= 0 {
+                // SAFETY: mgr2 is live for this read.
+                authenticated =
+                    connection::authenticated_peer_node_id_for_conn(unsafe { &*mgr2 }, conn_id);
+                if authenticated == ID_A {
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            conn_id >= 0,
+            "node2 must route the initiator under its configured id {ID_A}"
+        );
+        // SAFETY: mgr2 is a live manager pointer for the duration of these reads.
+        let mgr2_ref = unsafe { &*mgr2 };
+        assert_eq!(
+            connection::peer_node_id_for_conn(mgr2_ref, conn_id),
+            ID_A,
+            "peer-observed handshake NodeId must equal the configured HEW_NODE_ID, \
+             not a PID-derived value"
+        );
+        assert_eq!(
+            authenticated, ID_A,
+            "the observed NodeId must be credential-bound (authenticated), not merely declared"
+        );
+
+        // SAFETY: nodes were allocated in this test and remain valid here.
+        unsafe {
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
     /// Fail-closed: when the two in-process nodes do NOT mutually pin each
     /// other's SPKIs, the mTLS handshake must fail and `hew_node_connect`
     /// must surface a typed diagnostic rather than silently degrading or

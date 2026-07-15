@@ -324,6 +324,41 @@ policy.
 
 Authorization failure resolves to `Unauthorized`; authn/authz teardown during an active operation must not collapse into a local-shaped success.
 
+### 12.2 Peer identity binding — `NodeId` ↔ authenticated credential
+
+A peer's advertised `NodeId` is not self-asserted authority. In `Strict`
+(non-loopback / configured) mode a connection is admitted only when the
+authenticated transport credential — the Noise static public key on TCP, or the
+pinned certificate SPKI on quic-mesh — is **bound in advance** to the exact
+`NodeId` the peer claims in its handshake. An admitted key may therefore claim
+only the `NodeId` it is bound to; a key bound to node *M* that claims node *N*,
+a claimed node with no bound credential, or a `Strict` connection presenting no
+credential at all, are each rejected at admission (fail-closed) before the peer
+becomes routable or gains any cluster/registry/reply authority.
+
+Two invariants follow, and both are load-bearing:
+
+- **The handshake `NodeId` is the operator-pinned identity.** The `NodeId` a peer
+  advertises is its configured `HEW_NODE_ID` (the consumed node identity), never
+  a value derived from a process id or connection ordinal. A low-level node whose
+  explicit id contradicts its bound strict identity is refused before it binds a
+  listener.
+- **`Unverified` is delivery-only across BOTH planes.** A loopback-dev or
+  explicit opt-out (`Unverified`) connection carries no control-plane and no
+  ask/reply authority: it may not inject registry gossip, SWIM/cluster
+  membership, or monitor/link control, and an inbound *ask* arriving on such a
+  connection is dropped with a diagnostic (no reply, no route, no membership
+  side effect). Its sole capability is fire-and-forget delivery on the
+  self-declared delivery route. Reply completion additionally validates the
+  originating `(connection manager, connection id)` — a reply arriving on any
+  other connection than the one the ask was issued on is dropped.
+
+Per-node authority is isolated: each node carries its own frozen peer-auth
+snapshot (identity, bindings, allowlist, setup error). Concurrent nodes in one
+process never share credential state, and poisoning one node's peer-auth setup
+never mints or weakens another node's listener identity.
+
+
 ## 13. Observability
 
 Distributed envelopes must carry trace context sufficient to correlate cross-node hops. A `traceparent`-equivalent field is the minimum contract.

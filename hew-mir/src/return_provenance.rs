@@ -1777,6 +1777,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn coarse_differential_aggregate_and_method_shapes() {
+        assert_coarse_byte_identical(
+            r"
+            record Box { data: string }
+            fn embed(p: string) -> Box { Box { data: p } }
+            fn tuple_embed(p: string) -> (string, i64) { (p, 0) }
+            fn via_method(v: Vec<i64>) -> i64 { v.len() }
+            ",
+        );
+    }
+
+    /// The four mandated Coarse negative pins [Sol-5 + F5]: the Coarse authority
+    /// (which the funcupdate/reassign gates consume) MUST still fail closed — a
+    /// forwarder, an aggregate embedding a param, and a mutation channel are all
+    /// NOT proven fresh. If any silently flipped to fresh, the shared UAF gates
+    /// would regress.
+    #[test]
+    fn coarse_still_fails_closed_on_the_unsafe_shapes() {
+        let module = lower_source(
+            r"
+            record Box { data: Vec<i64> }
+            fn recursive_forwarder(flag: bool, x: Vec<i64>) -> Vec<i64> {
+                if flag { x } else { recursive_forwarder(true, x) }
+            }
+            fn aggregate_embeds_param(p: Vec<i64>) -> Box { Box { data: p } }
+            fn mutation_channel(x: Vec<i64>, v: i64) -> Vec<i64> {
+                let y = x;
+                y.push(v);
+                x
+            }
+            ",
+        );
+        let origin_fns = origin_fns_of(&module);
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        for name in [
+            "recursive_forwarder",
+            "aggregate_embeds_param",
+            "mutation_channel",
+        ] {
+            assert!(
+                !coarse[&fn_id(&module, name)],
+                "Coarse must fail closed (not-fresh) on `{name}` so the shared gates never regress"
+            );
+        }
+        // And the shared walk stays byte-identical to the frozen reference on the
+        // same unsafe shapes.
+        let frozen = compute_fn_returns_fresh_owner_ref(&origin_fns);
+        assert_eq!(coarse, frozen);
+    }
+
     // -- Method-call return contract [F1] --
 
     #[test]

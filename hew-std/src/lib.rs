@@ -83,6 +83,12 @@ pub mod dns;
 pub mod http;
 #[cfg(not(target_family = "wasm"))]
 pub mod ipnet;
+// Shared #[cfg(test)] scaffolding for the tls/smtp/quic actor-scoped
+// last-error regression tests (#2659) — a single runtime-guard/actor-context
+// helper reused by all three so their tests serialize on one process-global
+// scheduler slot instead of racing on independent per-module locks.
+#[cfg(all(test, not(target_family = "wasm")))]
+mod net_error_slot_test_support;
 #[cfg(not(target_family = "wasm"))]
 pub mod quic;
 #[cfg(not(target_family = "wasm"))]

@@ -449,7 +449,7 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::ffi::{c_void, CStr, CString};
+    use std::ffi::{CStr, CString};
     use std::ptr;
     use std::rc::Rc;
 
@@ -796,68 +796,6 @@ mod tests {
         assert!(events.borrow().is_empty());
     }
 
-    /// Spawn a minimal, never-scheduled actor solely to obtain a stable,
-    /// dereferenceable actor identity for `hew_actor_current_id()`. The
-    /// dispatch stub is never invoked — this actor receives no messages.
-    fn spawn_error_slot_test_actor() -> *mut hew_runtime::actor::HewActor {
-        unsafe extern "C-unwind" fn noop_dispatch(
-            _ctx: *mut hew_runtime::HewExecutionContext,
-            _state: *mut c_void,
-            _msg_type: i32,
-            _data: *mut c_void,
-            _data_size: usize,
-            _borrow_mode: i32,
-        ) -> *mut c_void {
-            std::ptr::null_mut()
-        }
-
-        // SAFETY: null state / size 0 is a documented no-state spawn.
-        unsafe { hew_runtime::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) }
-    }
-
-    /// Install `actor` as the current dispatch's actor for the duration of
-    /// `f`, restoring whatever was previously installed afterward — the same
-    /// install/restore bracket codegen places around every real dispatch
-    /// (`hew_context_install`/`hew_context_restore`), so
-    /// `hew_actor_current_id()` resolves to `actor`'s id inside `f` exactly
-    /// as it would mid-dispatch.
-    fn with_actor_context<R>(actor: *mut hew_runtime::actor::HewActor, f: impl FnOnce() -> R) -> R {
-        let mut ctx = hew_runtime::HewExecutionContext {
-            actor,
-            ..Default::default()
-        };
-        let prev = hew_runtime::set_current_context(&raw mut ctx);
-        let result = f();
-        let _ = hew_runtime::set_current_context(prev);
-        result
-    }
-
-    static SMTP_RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    struct SmtpRuntimeGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl SmtpRuntimeGuard {
-        fn new() -> Self {
-            // The scheduler is process-global: repeated init is a no-op, but
-            // cleanup frees every tracked actor. Hold exclusive ownership for
-            // the full test so no other test can reclaim this actor.
-            let lock = SMTP_RUNTIME_TEST_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert_eq!(hew_runtime::scheduler::hew_sched_init(), 0);
-            Self { _lock: lock }
-        }
-    }
-
-    impl Drop for SmtpRuntimeGuard {
-        fn drop(&mut self) {
-            hew_runtime::scheduler::hew_sched_shutdown();
-            hew_runtime::scheduler::hew_runtime_cleanup();
-        }
-    }
-
     /// An SMTP error recorded by the REAL `hew_smtp_send` failure path —
     /// while a given actor is the installed dispatch context on OS thread A —
     /// must be readable through the REAL public `hew_smtp_last_error`
@@ -878,8 +816,14 @@ mod tests {
     /// Run 3× to satisfy the flake gate.
     #[test]
     fn smtp_error_visible_across_worker_threads_regression_2659() {
-        // hew_actor_spawn requires an installed runtime authority.
-        let _runtime = SmtpRuntimeGuard::new();
+        use crate::net_error_slot_test_support::{
+            spawn_error_slot_test_actor, with_actor_context, NetErrorSlotRuntimeGuard,
+        };
+
+        // hew_actor_spawn requires an installed runtime authority; shared
+        // across tls/smtp/quic so their regression tests serialize on the
+        // single process-global scheduler slot instead of racing.
+        let _runtime = NetErrorSlotRuntimeGuard::new();
 
         for run in 0..3_u32 {
             let test_actor = spawn_error_slot_test_actor();

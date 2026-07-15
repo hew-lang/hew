@@ -1884,42 +1884,6 @@ mod tests {
         }
     }
 
-    /// Spawn a minimal, never-scheduled actor solely to obtain a stable,
-    /// dereferenceable actor identity for `hew_actor_current_id()`. The
-    /// dispatch stub is never invoked — this actor receives no messages.
-    fn spawn_error_slot_test_actor() -> *mut hew_runtime::actor::HewActor {
-        unsafe extern "C-unwind" fn noop_dispatch(
-            _ctx: *mut hew_runtime::HewExecutionContext,
-            _state: *mut c_void,
-            _msg_type: i32,
-            _data: *mut c_void,
-            _data_size: usize,
-            _borrow_mode: i32,
-        ) -> *mut c_void {
-            std::ptr::null_mut()
-        }
-
-        // SAFETY: null state / size 0 is a documented no-state spawn.
-        unsafe { actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) }
-    }
-
-    /// Install `actor` as the current dispatch's actor for the duration of
-    /// `f`, restoring whatever was previously installed afterward — the same
-    /// install/restore bracket codegen places around every real dispatch
-    /// (`hew_context_install`/`hew_context_restore`), so
-    /// `hew_actor_current_id()` resolves to `actor`'s id inside `f` exactly
-    /// as it would mid-dispatch.
-    fn with_actor_context<R>(actor: *mut hew_runtime::actor::HewActor, f: impl FnOnce() -> R) -> R {
-        let mut ctx = hew_runtime::HewExecutionContext {
-            actor,
-            ..Default::default()
-        };
-        let prev = hew_runtime::set_current_context(&raw mut ctx);
-        let result = f();
-        let _ = hew_runtime::set_current_context(prev);
-        result
-    }
-
     /// A TLS error recorded by the REAL `hew_tls_connect` failure path —
     /// while a given actor is the installed dispatch context on OS thread A —
     /// must be readable through the REAL public `hew_tls_last_error`
@@ -1940,9 +1904,14 @@ mod tests {
     /// Run 3× to satisfy the flake gate.
     #[test]
     fn tls_error_visible_across_worker_threads_regression_2659() {
-        // hew_actor_spawn requires an installed runtime authority; reuse the
-        // same scheduler guard the attach/close tests above use.
-        let _runtime = TlsRuntimeGuard::new();
+        use crate::net_error_slot_test_support::{
+            spawn_error_slot_test_actor, with_actor_context, NetErrorSlotRuntimeGuard,
+        };
+
+        // hew_actor_spawn requires an installed runtime authority; shared
+        // across tls/smtp/quic so their regression tests serialize on the
+        // single process-global scheduler slot instead of racing.
+        let _runtime = NetErrorSlotRuntimeGuard::new();
 
         for run in 0..3_u32 {
             let test_actor = spawn_error_slot_test_actor();

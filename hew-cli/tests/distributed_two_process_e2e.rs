@@ -134,24 +134,61 @@ struct ManagedChild {
     label: String,
 }
 
-impl ManagedChild {
-    fn spawn(binary: &Path, role: &str, port: u16, scenario: &str) -> Self {
-        Self::spawn_with_env(binary, role, port, scenario, &[])
+impl Drop for ManagedChild {
+    fn drop(&mut self) {
+        // Best-effort force-kill; the server's happy path is to be killed here
+        // after the client finishes (it otherwise sleeps to a safety ceiling).
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Operator-pinned stable `NodeId`s for the two roles (`HEW_NODE_ID`). Strict
+/// distributed mode requires a nonzero `u16` on each side; the client connects
+/// to `"1@…"` so admission binds the server's claimed id to its authenticated
+/// Noise key (fail-closed on mismatch).
+const SERVER_NODE_ID: &str = "1";
+const CLIENT_NODE_ID: &str = "2";
+
+/// A shared credentialed-TCP-Noise scenario context (issue #2652). Both node
+/// processes read the same key-exchange directory: each mints its own stable
+/// Noise identity under `<kx>/<role>.key`, publishes its `identity_key()` to
+/// `<kx>/<role>.pub`, and binds the peer's published key via `allow_peer` before
+/// the handshake — a real authorized mutual pin under strict peer binding, never
+/// an injected test-only posture. The directory is held for the scenario's
+/// lifetime and reclaimed when this value drops.
+struct SecureScenario {
+    kx_dir: tempfile::TempDir,
+    port: u16,
+}
+
+impl SecureScenario {
+    fn new() -> Self {
+        Self {
+            kx_dir: tempfile::tempdir().expect("create key-exchange dir for scenario"),
+            port: allocate_loopback_port(),
+        }
     }
 
-    fn spawn_with_env(
-        binary: &Path,
+    /// Spawn one node process with the strict-binding environment: the shared
+    /// key-exchange directory and this role's pinned `HEW_NODE_ID`, plus the
+    /// role/port/scenario the fixture dispatches on.
+    fn spawn(
+        &self,
         role: &str,
-        port: u16,
+        node_id: &str,
         scenario: &str,
         extra_env: &[(&str, &str)],
-    ) -> Self {
+    ) -> ManagedChild {
+        let binary = compiled_node_binary();
         let mut command = Command::new(binary);
         command
             .env("HEW_TRANSPORT", "tcp")
             .env("HEW_DIST_ROLE", role)
-            .env("HEW_DIST_PORT", port.to_string())
+            .env("HEW_DIST_PORT", self.port.to_string())
             .env("HEW_DIST_SCENARIO", scenario)
+            .env("HEW_DIST_KX_DIR", self.kx_dir.path())
+            .env("HEW_NODE_ID", node_id)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (key, value) in extra_env {
@@ -160,19 +197,18 @@ impl ManagedChild {
         let child = command
             .spawn()
             .unwrap_or_else(|error| panic!("failed to spawn dist_node {role}: {error}"));
-        Self {
+        ManagedChild {
             child,
             label: role.to_string(),
         }
     }
-}
 
-impl Drop for ManagedChild {
-    fn drop(&mut self) {
-        // Best-effort force-kill; the server's happy path is to be killed here
-        // after the client finishes (it otherwise sleeps to a safety ceiling).
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+    fn spawn_server(&self, scenario: &str) -> ManagedChild {
+        self.spawn("server", SERVER_NODE_ID, scenario, &[])
+    }
+
+    fn spawn_client(&self, scenario: &str, extra_env: &[(&str, &str)]) -> ManagedChild {
+        self.spawn("client", CLIENT_NODE_ID, scenario, extra_env)
     }
 }
 
@@ -250,13 +286,16 @@ fn run_client_to_completion(mut client: ManagedChild) -> String {
 /// Spawn the server + client pair for `scenario` and return the client's
 /// captured stdout. The shared entry point every scenario test calls.
 fn run_two_process_scenario(scenario: &str) -> String {
-    let binary = compiled_node_binary();
-    let port = allocate_loopback_port();
+    let scene = SecureScenario::new();
 
-    let mut server = ManagedChild::spawn(binary, "server", port, scenario);
+    // Launch BOTH processes concurrently. Under strict peer binding each side
+    // stages `allow_peer(peer_id, peer_key)` before `Node::start`, so the server
+    // cannot reach READY until the client has published its Noise credential —
+    // a launch-server-then-wait-then-launch-client ordering would deadlock.
+    let mut server = scene.spawn_server(scenario);
+    let client = scene.spawn_client(scenario, &[]);
+
     let _server_stdout = wait_for_server_ready(&mut server);
-
-    let client = ManagedChild::spawn(binary, "client", port, scenario);
     let stdout = run_client_to_completion(client);
 
     // `server` is dropped here, force-killing the still-sleeping server.
@@ -269,14 +308,14 @@ fn run_two_process_scenario(scenario: &str) -> String {
 /// The client runs with `HEW_LINK_PROBE=1` so the runtime records actor terminal
 /// reasons in the probe ledger the fixture reads. Returns the client's stdout.
 fn run_link_cascade_scenario(scenario: &str) -> String {
-    let binary = compiled_node_binary();
-    let port = allocate_loopback_port();
+    let scene = SecureScenario::new();
 
-    let mut server = ManagedChild::spawn(binary, "server", port, scenario);
+    // Concurrent launch for the mutual credential exchange (see
+    // `run_two_process_scenario`).
+    let mut server = scene.spawn_server(scenario);
+    let client = scene.spawn_client(scenario, &[("HEW_LINK_PROBE", "1")]);
+
     let _server_stdout = wait_for_server_ready(&mut server);
-
-    let client =
-        ManagedChild::spawn_with_env(binary, "client", port, scenario, &[("HEW_LINK_PROBE", "1")]);
     let stdout = run_client_to_completion(client);
 
     drop(server);
@@ -295,13 +334,17 @@ fn run_conn_drop_scenario(scenario: &str) -> String {
 /// As [`run_conn_drop_scenario`], with extra client environment (e.g.
 /// `HEW_LINK_PROBE=1` for the cross-node link partition cascade).
 fn run_conn_drop_scenario_with_env(scenario: &str, client_env: &[(&str, &str)]) -> String {
-    let binary = compiled_node_binary();
-    let port = allocate_loopback_port();
+    let scene = SecureScenario::new();
 
-    let mut server = ManagedChild::spawn(binary, "server", port, scenario);
+    // Concurrent launch for the mutual credential exchange (see
+    // `run_two_process_scenario`); the client then waits on the server's
+    // listener-liveness file before it connects.
+    let mut server = scene.spawn_server(scenario);
+    let mut client = scene.spawn_client(scenario, client_env);
+
+    // Confirm the server reached READY (it has the client's credential and is
+    // listening) before we read the client's READY_DROP handshake.
     let _server_stdout = wait_for_server_ready(&mut server);
-
-    let mut client = ManagedChild::spawn_with_env(binary, "client", port, scenario, client_env);
 
     // Block until the client signals its monitor is registered, then kill the
     // server to drop the connection. Reading the client's stdout incrementally
@@ -372,10 +415,14 @@ fn run_conn_drop_scenario_with_env(scenario: &str, client_env: &[(&str, &str)]) 
 /// node death), and the SERVER runs to completion observing the prune and
 /// printing its assertion. Returns the server's captured stdout.
 fn run_watcher_drop_scenario(scenario: &str) -> String {
-    let binary = compiled_node_binary();
-    let port = allocate_loopback_port();
+    let scene = SecureScenario::new();
 
-    let mut server = ManagedChild::spawn(binary, "server", port, scenario);
+    // Concurrent launch for the mutual credential exchange (see
+    // `run_two_process_scenario`): the server needs the client's Noise
+    // credential to reach READY, so both must be live before we read READY.
+    let mut server = scene.spawn_server(scenario);
+    let mut client = scene.spawn_client(scenario, &[]);
+
     let server_stdout = server
         .child
         .stdout
@@ -402,9 +449,9 @@ fn run_watcher_drop_scenario(scenario: &str) -> String {
         }
     }
 
-    // Launch the client (the watcher) and block until it signals its monitor
-    // is live so the harness knows the watch-side entry is registered.
-    let mut client = ManagedChild::spawn(binary, "client", port, scenario);
+    // The client (the watcher) was launched concurrently; block until it signals
+    // its monitor is live so the harness knows the watch-side entry is
+    // registered.
     let client_stdout = client
         .child
         .stdout
@@ -499,10 +546,13 @@ fn run_watcher_drop_scenario(scenario: &str) -> String {
 /// its target-side watcher count rise then fall and prints the verdict. Returns
 /// the server's captured stdout.
 fn run_server_verdict_scenario(scenario: &str) -> String {
-    let binary = compiled_node_binary();
-    let port = allocate_loopback_port();
+    let scene = SecureScenario::new();
 
-    let mut server = ManagedChild::spawn(binary, "server", port, scenario);
+    // Concurrent launch for the mutual credential exchange (see
+    // `run_two_process_scenario`).
+    let mut server = scene.spawn_server(scenario);
+    let client = scene.spawn_client(scenario, &[]);
+
     let server_stdout = server
         .child
         .stdout
@@ -529,8 +579,8 @@ fn run_server_verdict_scenario(scenario: &str) -> String {
         }
     }
 
-    // Launch the client; it registers, closes its monitor, and exits cleanly.
-    let client = ManagedChild::spawn(binary, "client", port, scenario);
+    // The client was launched concurrently; it registers, closes its monitor,
+    // and exits cleanly on its own (it is not killed).
 
     // Drain the server's output until it prints its verdict or the cap elapses.
     let mut server_out = String::new();

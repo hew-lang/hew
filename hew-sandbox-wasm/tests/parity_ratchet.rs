@@ -353,20 +353,17 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "array-repeat literal (`[v; n]`)",
         probe: "fn main() {\n    let xs = [0; 3];\n    println(xs.len());\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "Expr::ArrayRepeat has no emit arm -> emit_unsupported -> trap",
-        },
+        coverage: Coverage::Parity("trap_residual"),
     },
     Construct {
         id: "map literal (`{\"k\": v}`)",
-        // Native: E_NOT_YET_IMPLEMENTED. The sandbox profile admits Expr::MapLiteral
-        // (walks entries) but the emitter has no arm -> emit_unsupported -> trap.
-        // Fail-loud; neither native nor sandbox runs it today.
+        // Native lowers this to HashMap insertion, but the sandbox VM has no map
+        // value kind, hash/equality substrate, or map opcodes. Keep the AST path
+        // fail-loud rather than approximating maps with records.
         probe: "fn main() {\n    let m = {\"a\": 1, \"b\": 2};\n    println(\"made map\");\n}\n",
         coverage: Coverage::NotYetRunnable {
             failure: Failure::Trap,
-            reason: "Expr::MapLiteral has no emit arm -> emit_unsupported -> trap; native also E_NOT_YET_IMPLEMENTED",
+            reason: "sandbox VM has no parity-correct map value or insertion semantics -> emit_unsupported -> trap",
         },
     },
     Construct {
@@ -461,18 +458,12 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "numeric cast (`as`)",
         probe: "fn main() {\n    let x: i64 = 65;\n    let c = x as i32;\n    println(c);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "Expr::Cast has no emit arm -> emit_unsupported -> trap",
-        },
+        coverage: Coverage::Parity("trap_residual"),
     },
     Construct {
         id: "postfix-try (`?`)",
         probe: "fn ok() -> Result<i64, string> { Ok(1) }\nfn run() -> Result<i64, string> {\n    let v = ok()?;\n    Ok(v + 1)\n}\nfn main() {\n    println(match run() { Ok(v) => v, Err(_) => 0 - 1 });\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "Expr::PostfixTry has no emit arm -> emit_unsupported -> trap",
-        },
+        coverage: Coverage::Parity("trap_residual"),
     },
     Construct {
         id: "Option Some/None construction",
@@ -927,7 +918,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 52; // +1: regex method `clone()` split into its own construct
+    const RUNNABLE_BASELINE: usize = 55; // +3: array repeat, scalar casts, and postfix-try
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_) | Coverage::ParityTrap(_)))

@@ -73,6 +73,7 @@ borrow checking.
 | `f64.div` | f64 | lhs, rhs | IEEE-754 divide; zero divisor yields ±inf/NaN, never traps. |
 | `f64.rem` | f64 | lhs, rhs | IEEE-754 remainder (LLVM `frem` / C `fmod`); never traps. |
 | `f64.neg` | f64 | value | IEEE-754 negation; never traps. |
+| `numeric.cast` | scalar | value, source type name, target type name | Checker-admitted numeric/bool/char cast with native width, truncation, extension, and saturation semantics. |
 
 The v0 registry started with i64 because fixture coverage can be educational
 without committing the full scalar matrix. The f64 arithmetic family is
@@ -80,8 +81,9 @@ type-directed by the emitter: it selects `f64.*` when the operand type is a
 float and `i64.*` otherwise. Unlike the checked i64 ops, the f64 ops follow
 IEEE-754 exactly (matching native LLVM `fadd`/`fsub`/`fmul`/`fdiv`/`frem`/
 `fneg`), so divide-by-zero produces `inf`/`-inf`/`NaN` rather than a trap.
-Additional numeric widths require a schema revision or a documented v0
-extension before use.
+`numeric.cast` carries the source and target scalar names explicitly because
+v0 locals intentionally collapse integer widths to i64/u64 storage and floats
+to f64 storage.
 
 ## Comparisons
 

@@ -127,6 +127,18 @@ type ScalarComparable =
   | { kind: "f64"; value: number }
   | { kind: "string"; value: string };
 
+type IntegerCastType = {
+  kind: "integer";
+  bits: 8 | 16 | 32 | 64;
+  signed: boolean;
+};
+
+type NumericCastType =
+  | IntegerCastType
+  | { kind: "float"; bits: 32 | 64 }
+  | { kind: "bool" }
+  | { kind: "char" };
+
 class VmHalt extends Error {
   constructor(readonly status: RuntimeStatus) {
     super(status);
@@ -314,6 +326,9 @@ class Interpreter {
         this.writeDst(frame, instruction, { kind: "bool", value: !value.value });
         return;
       }
+      case "numeric.cast":
+        this.writeDst(frame, instruction, this.numericCast(frame, instruction));
+        return;
       case "local.get":
       case "local.move":
       case "local.borrow":
@@ -1459,6 +1474,114 @@ class Interpreter {
       this.trap("invalid_local", "expected numeric operand", span);
     }
     return operand.value;
+  }
+
+  private numericCast(frame: Frame, instruction: Instruction): VmValue {
+    const value = this.resolve(frame, instruction.args[0], instruction.span);
+    const from = this.numericCastType(this.stringOperand(instruction.args[1], instruction.span), instruction.span);
+    const to = this.numericCastType(this.stringOperand(instruction.args[2], instruction.span), instruction.span);
+
+    let integerValue: bigint | null = null;
+    let floatValue: number | null = null;
+    if (from.kind === "integer") {
+      if (value.kind !== "i64") {
+        this.trap("invalid_local", "numeric.cast integer source is not an integer", instruction.span);
+      }
+      integerValue = this.normalizeInteger(value.value, from);
+    } else if (from.kind === "float") {
+      if (value.kind !== "f64") {
+        this.trap("invalid_local", "numeric.cast float source is not a float", instruction.span);
+      }
+      floatValue = from.bits === 32 ? Math.fround(value.value) : value.value;
+    } else if (from.kind === "bool") {
+      if (value.kind !== "bool") {
+        this.trap("invalid_local", "numeric.cast bool source is not a bool", instruction.span);
+      }
+      integerValue = value.value ? 1n : 0n;
+    } else {
+      if (value.kind !== "string" || [...value.value].length !== 1) {
+        this.trap("invalid_local", "numeric.cast char source is not one Unicode scalar", instruction.span);
+      }
+      integerValue = BigInt(value.value.codePointAt(0)!);
+    }
+
+    if (to.kind === "bool") {
+      if (integerValue === null || from.kind !== "integer") {
+        this.trap("invalid_local", "numeric.cast to bool requires an integer source", instruction.span);
+      }
+      return { kind: "bool", value: integerValue !== 0n };
+    }
+    if (to.kind === "integer") {
+      if (integerValue !== null) {
+        return this.i64(this.normalizeInteger(integerValue, to));
+      }
+      if (floatValue !== null) {
+        return this.i64(this.saturatingFloatToInteger(floatValue, to));
+      }
+      this.trap("invalid_local", "numeric.cast has no numeric source value", instruction.span);
+    }
+    if (to.kind === "float") {
+      const number = integerValue !== null ? Number(integerValue) : floatValue;
+      if (number === null) {
+        this.trap("invalid_local", "numeric.cast has no numeric source value", instruction.span);
+      }
+      return this.f64(to.bits === 32 ? Math.fround(number) : number);
+    }
+    this.trap("invalid_local", "numeric.cast cannot target char", instruction.span);
+  }
+
+  private numericCastType(name: string, span: string | null): NumericCastType {
+    switch (name) {
+      case "i8":
+        return { kind: "integer", bits: 8, signed: true };
+      case "i16":
+        return { kind: "integer", bits: 16, signed: true };
+      case "i32":
+        return { kind: "integer", bits: 32, signed: true };
+      case "i64":
+      case "isize":
+        return { kind: "integer", bits: 64, signed: true };
+      case "u8":
+        return { kind: "integer", bits: 8, signed: false };
+      case "u16":
+        return { kind: "integer", bits: 16, signed: false };
+      case "u32":
+        return { kind: "integer", bits: 32, signed: false };
+      case "u64":
+      case "usize":
+        return { kind: "integer", bits: 64, signed: false };
+      case "f32":
+        return { kind: "float", bits: 32 };
+      case "f64":
+        return { kind: "float", bits: 64 };
+      case "bool":
+        return { kind: "bool" };
+      case "char":
+        return { kind: "char" };
+      default:
+        this.trap("invalid_local", `numeric.cast has unknown type ${name}`, span);
+    }
+  }
+
+  private normalizeInteger(value: bigint, ty: IntegerCastType): bigint {
+    return ty.signed ? BigInt.asIntN(ty.bits, value) : BigInt.asUintN(ty.bits, value);
+  }
+
+  private saturatingFloatToInteger(value: number, ty: IntegerCastType): bigint {
+    if (Number.isNaN(value)) {
+      return 0n;
+    }
+    const bits = BigInt(ty.bits);
+    const min = ty.signed ? -(1n << (bits - 1n)) : 0n;
+    const max = ty.signed ? (1n << (bits - 1n)) - 1n : (1n << bits) - 1n;
+    const upperExclusive = ty.signed ? 2 ** (ty.bits - 1) : 2 ** ty.bits;
+    if (value <= Number(min)) {
+      return min;
+    }
+    if (value >= upperExclusive) {
+      return max;
+    }
+    return BigInt(Math.trunc(value));
   }
 
   private capacityArg(frame: Frame, operand: Operand | undefined, span: string | null): number {

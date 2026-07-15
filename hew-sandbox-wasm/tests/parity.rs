@@ -417,6 +417,14 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/regex_clone.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // Array repeat evaluates value then count exactly once and clones the
+        // value into every slot; casts cover width/sign/saturation/bool/char;
+        // postfix-try covers Result and Option success plus early propagation.
+        test_name: "trap_residual",
+        source_rel: "examples/sandbox-graduation/trap_residual.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -553,6 +561,24 @@ fn assert_case(case: &ParityCase) {
     let sandbox = run_sandbox(&bytecode_path);
     assert_exit_code_parity(case, &native, &sandbox);
     assert_stdout_parity(case, &native, &sandbox);
+    assert_exact_stdout(case, &native);
+}
+
+fn assert_exact_stdout(case: &ParityCase, native: &Output) {
+    let expected = match case.test_name {
+        "trap_residual" => Some(
+            "repeat-value\nrepeat-count\n3\n7\n7\n7\n65535\n18446744073709551615\n-1\n255\n1\ntrue\n65\n42\nboom\n6\nnone\n",
+        ),
+        _ => None,
+    };
+    if let Some(expected) = expected {
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            expected,
+            "{} native stdout changed from its exact-value contract",
+            case.test_name
+        );
+    }
 }
 
 fn assert_accepted_divergences(case: &ParityCase, diagnostics: &[Diagnostic]) {

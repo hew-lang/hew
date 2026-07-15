@@ -141,6 +141,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // its source lives outside the curated playground manifest scope (see
     // `regex_clone` in tests/parity.rs).
     "regex_clone",
+    // AST-emitter residuals: array repeat, checker-admitted scalar casts, and
+    // Result/Option postfix-try now execute at native parity.
+    "trap_residual",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

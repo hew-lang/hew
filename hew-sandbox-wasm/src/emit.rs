@@ -595,7 +595,7 @@ impl<'a> PackageEmitter<'a> {
             .unwrap_or(Ty::Unit);
         let result = self.type_id_for_ty(&result_ty);
 
-        let mut ctx = FunctionEmitter::new(self, &function.name);
+        let mut ctx = FunctionEmitter::new(self, &function.name, result_ty.clone());
         let mut params = Vec::new();
         for (idx, param) in function.params.iter().enumerate() {
             let param_ty = sig
@@ -653,7 +653,7 @@ impl<'a> PackageEmitter<'a> {
             .map_or(Ty::Unit, |(ty, _)| ty_from_type_expr(ty));
         let result = self.type_id_for_ty(&result_ty);
 
-        let mut ctx = FunctionEmitter::new(self, &function_name);
+        let mut ctx = FunctionEmitter::new(self, &function_name, result_ty.clone());
         let mut params = Vec::new();
 
         // The actor scheduler invokes a handler with the argument vector
@@ -1205,6 +1205,7 @@ struct ReceiveHandlerContext {
 struct FunctionEmitter<'pkg, 'src> {
     package: &'pkg mut PackageEmitter<'src>,
     function_name: String,
+    return_ty: Ty,
     locals: Vec<Local>,
     blocks: Vec<BlockBuilder>,
     current: usize,
@@ -1218,10 +1219,11 @@ struct FunctionEmitter<'pkg, 'src> {
 }
 
 impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
-    fn new(package: &'pkg mut PackageEmitter<'src>, function_name: &str) -> Self {
+    fn new(package: &'pkg mut PackageEmitter<'src>, function_name: &str, return_ty: Ty) -> Self {
         Self {
             package,
             function_name: function_name.to_string(),
+            return_ty,
             locals: Vec::new(),
             blocks: vec![BlockBuilder::new("block:entry".to_string(), None)],
             current: 0,
@@ -1410,65 +1412,12 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 }
             }
             Stmt::Return(value) => {
-                let span_ref = self.package.spans.span_ref(&span);
-                if let Some(rctx) = self.receive_context.clone() {
-                    // Inside a receive handler: mirror the normal-exit path.
-                    //
-                    // Normal exit (emit_handler, lines ~671-698) emits:
-                    //   1. actor.reply(reply_token, <trailing expr>)   — delivers the reply
-                    //   2. ret(<state record>)                         — next-actor-state
-                    //
-                    // An early `return expr` must do the same: the return
-                    // expression is the reply value; the state locals hold the
-                    // current (possibly mutated) actor state and must be returned
-                    // separately so the scheduler can update them.
-                    //
-                    // Without this path, `ret([expr])` collapses reply and state
-                    // into the same value, silently corrupting stateful actors.
-                    let reply_expr_local = if let Some(value) = value {
-                        self.lower_expr(value)?
-                    } else {
-                        self.emit_const_unit(Some(span.clone()))
-                    };
-                    self.emit_instruction(
-                        "actor.reply",
-                        None,
-                        vec![
-                            Operand::local(rctx.reply_local),
-                            Operand::local(reply_expr_local),
-                        ],
-                        None,
-                        None,
-                    );
-                    let return_operand = match rctx.state_locals.as_slice() {
-                        [] => Operand::local(self.emit_const_unit(Some(span.clone()))),
-                        [single] => Operand::local(single.clone()),
-                        fields => {
-                            let record_ty =
-                                self.package.actor_state_record_type_id(&rctx.actor_name);
-                            let mut operands = vec![Operand::ty(record_ty)];
-                            operands
-                                .extend(fields.iter().map(|local| Operand::local(local.clone())));
-                            let dst = self.temp_local(&Ty::Unit, Some(span.clone()));
-                            self.emit_instruction(
-                                "record.new",
-                                Some(dst.clone()),
-                                operands,
-                                None,
-                                None,
-                            );
-                            Operand::local(dst)
-                        }
-                    };
-                    self.terminate(Terminator::ret(vec![return_operand], span_ref));
+                let value_local = if let Some(value) = value {
+                    self.lower_expr(value)?
                 } else {
-                    let values = if let Some(value) = value {
-                        vec![Operand::local(self.lower_expr(value)?)]
-                    } else {
-                        vec![Operand::local(self.emit_const_unit(Some(span.clone())))]
-                    };
-                    self.terminate(Terminator::ret(values, span_ref));
-                }
+                    self.emit_const_unit(Some(span.clone()))
+                };
+                self.emit_early_return(value_local, span);
             }
             Stmt::Expression(expr) => {
                 self.lower_expr(expr)?;
@@ -1896,6 +1845,9 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 }
                 Ok(dst)
             }
+            Expr::ArrayRepeat { value, count } => {
+                self.lower_array_repeat(expr, value, count, span.clone())
+            }
             Expr::InterpolatedString(parts) => {
                 let mut current = None;
                 for part in parts {
@@ -2167,8 +2119,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             // — a native-only cooperative-scheduler primitive with no sandbox-VM
             // analogue. Fail closed (unsupported) on the sandbox path, matching
             // the other suspension/concurrency constructs in this group.
-            Expr::ArrayRepeat { .. }
-            | Expr::MapLiteral { .. }
+            Expr::MapLiteral { .. }
             | Expr::Lambda { .. }
             | Expr::SpawnLambdaActor { .. }
             | Expr::Scope { .. }
@@ -2182,8 +2133,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::Yield(_)
             | Expr::Return(_)
             | Expr::This
-            | Expr::Cast { .. }
-            | Expr::PostfixTry(_)
             | Expr::Range { .. }
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
@@ -2194,6 +2143,352 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 self.emit_unsupported(Some(span.clone()));
                 Ok(self.emit_const_unit(Some(span.clone())))
             }
+            Expr::Cast { expr: operand, .. } => self.lower_cast(operand, span.clone()),
+            Expr::PostfixTry(operand) => self.lower_postfix_try(operand, span.clone()),
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "array-repeat lowering builds a four-block counted loop whose evaluation and clone order must remain visible"
+    )]
+    fn lower_array_repeat(
+        &mut self,
+        expr: &Spanned<Expr>,
+        value: &Spanned<Expr>,
+        count: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        let vector_ty = self.ty_for_expr(expr);
+        let element_ty = match &vector_ty {
+            Ty::Named { args, .. } => args.first().cloned().unwrap_or(Ty::Unit),
+            Ty::Array(element, _) | Ty::Slice(element) => (**element).clone(),
+            _ => {
+                self.emit_unsupported(Some(span.clone()));
+                return Ok(self.emit_const_unit(Some(span)));
+            }
+        };
+        let element_type_id = self.package.type_id_for_ty(&element_ty);
+        let vector_local = self.temp_local(&vector_ty, Some(span.clone()));
+        self.emit_instruction(
+            "vector.new",
+            Some(vector_local.clone()),
+            vec![Operand::ty(element_type_id)],
+            Some(span.clone()),
+            None,
+        );
+
+        // Native lowering evaluates the repeated value once before the count,
+        // then clones that value into each slot.
+        let value_local = self.lower_expr(value)?;
+        let count_local = self.lower_expr(count)?;
+        let index_local = self.declare_local(None, &Ty::I64, true, Some(span.clone()));
+        let zero_local = self.lower_literal(
+            &Literal::Integer {
+                value: 0,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![
+                Operand::local(index_local.clone()),
+                Operand::local(zero_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+
+        let span_ref = self.package.spans.span_ref(&span);
+        let (header_idx, header_id) = self.new_block("array_repeat_header", span_ref.clone());
+        let (body_idx, body_id) = self.new_block("array_repeat_body", span_ref.clone());
+        let (continue_idx, continue_id) = self.new_block("array_repeat_continue", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("array_repeat_exit", span_ref.clone());
+
+        self.terminate(Terminator::br(
+            header_id.clone(),
+            Vec::new(),
+            span_ref.clone(),
+        ));
+        self.switch_to(header_idx);
+        let condition_local = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            "cmp.lt",
+            Some(condition_local.clone()),
+            vec![
+                Operand::local(index_local.clone()),
+                Operand::local(count_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br_if(
+            Operand::local(condition_local),
+            body_id,
+            exit_id.clone(),
+            Vec::new(),
+            span_ref.clone(),
+        ));
+
+        self.switch_to(body_idx);
+        self.emit_instruction(
+            "vector.push",
+            None,
+            vec![
+                Operand::local(vector_local.clone()),
+                Operand::local(value_local),
+            ],
+            Some(value.1.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(continue_id, Vec::new(), span_ref.clone()));
+
+        self.switch_to(continue_idx);
+        let one_local = self.lower_literal(
+            &Literal::Integer {
+                value: 1,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        let next_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "i64.checked_add",
+            Some(next_local.clone()),
+            vec![
+                Operand::local(index_local.clone()),
+                Operand::local(one_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![Operand::local(index_local), Operand::local(next_local)],
+            Some(span),
+            None,
+        );
+        self.terminate(Terminator::br(header_id, Vec::new(), span_ref));
+
+        self.switch_to(exit_idx);
+        Ok(vector_local)
+    }
+
+    fn lower_cast(
+        &mut self,
+        operand: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        let from_ty = self.ty_for_expr(operand);
+        let to_ty = self.ty_for_span(&span);
+        let (Some(from_name), Some(to_name)) = (
+            numeric_cast_type_name(&from_ty),
+            numeric_cast_type_name(&to_ty),
+        ) else {
+            self.emit_unsupported(Some(span.clone()));
+            return Ok(self.emit_const_unit(Some(span)));
+        };
+        let value_local = self.lower_expr(operand)?;
+        let dst = self.temp_local(&to_ty, Some(span.clone()));
+        self.emit_instruction(
+            "numeric.cast",
+            Some(dst.clone()),
+            vec![
+                Operand::local(value_local),
+                Operand::symbol(from_name),
+                Operand::symbol(to_name),
+            ],
+            Some(span),
+            None,
+        );
+        Ok(dst)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "postfix-try lowering keeps success extraction and fail-fast return CFG in one auditable unit"
+    )]
+    fn lower_postfix_try(
+        &mut self,
+        operand: &Spanned<Expr>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        let operand_ty = self.ty_for_expr(operand);
+        let return_ty = self.return_ty.clone();
+        let result_ty = self.ty_for_span(&span);
+        let is_result = match (&operand_ty, &return_ty) {
+            (
+                Ty::Named {
+                    builtin: Some(BuiltinType::Result),
+                    args: operand_args,
+                    ..
+                },
+                Ty::Named {
+                    builtin: Some(BuiltinType::Result),
+                    args: return_args,
+                    ..
+                },
+            ) => operand_args.get(1) == return_args.get(1),
+            (
+                Ty::Named {
+                    builtin: Some(BuiltinType::Option),
+                    ..
+                },
+                Ty::Named {
+                    builtin: Some(BuiltinType::Option),
+                    ..
+                },
+            ) => false,
+            _ => {
+                self.emit_unsupported(Some(span.clone()));
+                return Ok(self.emit_const_unit(Some(span)));
+            }
+        };
+        let is_option = matches!(
+            (&operand_ty, &return_ty),
+            (
+                Ty::Named {
+                    builtin: Some(BuiltinType::Option),
+                    ..
+                },
+                Ty::Named {
+                    builtin: Some(BuiltinType::Option),
+                    ..
+                }
+            )
+        );
+        if !is_result && !is_option {
+            self.emit_unsupported(Some(span.clone()));
+            return Ok(self.emit_const_unit(Some(span)));
+        }
+
+        self.package.ensure_option_result_layout(&operand_ty);
+        self.package.ensure_option_result_layout(&return_ty);
+        let operand_local = self.lower_expr(operand)?;
+        let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
+        let span_ref = self.package.spans.span_ref(&span);
+        let (success_idx, success_id) = self.new_block("postfix_try_success", span_ref.clone());
+        let (error_idx, error_id) = self.new_block("postfix_try_error", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("postfix_try_exit", span_ref.clone());
+
+        let tag_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "enum.tag",
+            Some(tag_local.clone()),
+            vec![Operand::local(operand_local.clone())],
+            Some(span.clone()),
+            None,
+        );
+        let zero_local = self.lower_literal(
+            &Literal::Integer {
+                value: 0,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        let condition_local = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            "cmp.eq",
+            Some(condition_local.clone()),
+            vec![Operand::local(tag_local), Operand::local(zero_local)],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br_if(
+            Operand::local(condition_local),
+            success_id,
+            error_id,
+            Vec::new(),
+            span_ref.clone(),
+        ));
+
+        self.switch_to(success_idx);
+        let payload_local = self.temp_local(&result_ty, Some(span.clone()));
+        self.emit_instruction(
+            "enum.payload",
+            Some(payload_local.clone()),
+            vec![
+                Operand::local(operand_local.clone()),
+                Operand::literal(0_u64),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![
+                Operand::local(result_local.clone()),
+                Operand::local(payload_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(exit_id, Vec::new(), span_ref.clone()));
+
+        self.switch_to(error_idx);
+        let return_type_id = self.package.type_id_for_ty(&return_ty);
+        let mut error_args = vec![Operand::ty(return_type_id), Operand::literal(1_u64)];
+        if is_result {
+            let error_ty = match &operand_ty {
+                Ty::Named { args, .. } => args.get(1).cloned().unwrap_or(Ty::Unit),
+                _ => Ty::Unit,
+            };
+            let error_payload = self.temp_local(&error_ty, Some(span.clone()));
+            self.emit_instruction(
+                "enum.payload",
+                Some(error_payload.clone()),
+                vec![Operand::local(operand_local), Operand::literal(0_u64)],
+                Some(span.clone()),
+                None,
+            );
+            error_args.push(Operand::local(error_payload));
+        }
+        let error_return = self.temp_local(&return_ty, Some(span.clone()));
+        self.emit_instruction(
+            "enum.new",
+            Some(error_return.clone()),
+            error_args,
+            Some(span.clone()),
+            None,
+        );
+        self.emit_early_return(error_return, span);
+
+        self.switch_to(exit_idx);
+        Ok(result_local)
+    }
+
+    fn emit_early_return(&mut self, value_local: String, span: std::ops::Range<usize>) {
+        let span_ref = self.package.spans.span_ref(&span);
+        if let Some(rctx) = self.receive_context.clone() {
+            self.emit_instruction(
+                "actor.reply",
+                None,
+                vec![
+                    Operand::local(rctx.reply_local),
+                    Operand::local(value_local),
+                ],
+                None,
+                None,
+            );
+            let return_operand = match rctx.state_locals.as_slice() {
+                [] => Operand::local(self.emit_const_unit(Some(span.clone()))),
+                [single] => Operand::local(single.clone()),
+                fields => {
+                    let record_ty = self.package.actor_state_record_type_id(&rctx.actor_name);
+                    let mut operands = vec![Operand::ty(record_ty)];
+                    operands.extend(fields.iter().map(|local| Operand::local(local.clone())));
+                    let dst = self.temp_local(&Ty::Unit, Some(span));
+                    self.emit_instruction("record.new", Some(dst.clone()), operands, None, None);
+                    Operand::local(dst)
+                }
+            };
+            self.terminate(Terminator::ret(vec![return_operand], span_ref));
+        } else {
+            self.terminate(Terminator::ret(vec![Operand::local(value_local)], span_ref));
         }
     }
 
@@ -4677,6 +4972,26 @@ fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
         hew_parser::ast::TypeExpr::Borrow(inner) => Ty::Borrow {
             pointee: Box::new(ty_from_type_expr(&inner.0)),
         },
+    }
+}
+
+fn numeric_cast_type_name(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::I8 => Some("i8"),
+        Ty::I16 => Some("i16"),
+        Ty::I32 => Some("i32"),
+        Ty::I64 | Ty::IntLiteral => Some("i64"),
+        Ty::U8 => Some("u8"),
+        Ty::U16 => Some("u16"),
+        Ty::U32 => Some("u32"),
+        Ty::U64 => Some("u64"),
+        Ty::Isize => Some("isize"),
+        Ty::Usize => Some("usize"),
+        Ty::F32 => Some("f32"),
+        Ty::F64 | Ty::FloatLiteral => Some("f64"),
+        Ty::Bool => Some("bool"),
+        Ty::Char => Some("char"),
+        _ => None,
     }
 }
 

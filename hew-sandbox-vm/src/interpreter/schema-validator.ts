@@ -10,6 +10,7 @@ const INSTRUCTION_OPS = new Set([
   "const.regex",
   "const.function",
   "bool.not",
+  "numeric.cast",
   "local.get",
   "local.set",
   "local.move",

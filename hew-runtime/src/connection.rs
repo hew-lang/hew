@@ -719,7 +719,7 @@ fn test_reserve_unverified(
 /// the issue #2652 exact-owner gate ([`authenticated_peer_node_id_for_conn`])
 /// recognises the connection as the current published owner of its `NodeId`.
 #[cfg(test)]
-fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) {
+fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) -> u64 {
     let token = next_publication_token(mgr);
     test_reserve_unverified(mgr, node_id, conn_id, token);
     let (lock, condvar) = &mgr.claims;
@@ -731,6 +731,15 @@ fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) {
     }
     drop(guard);
     condvar.notify_all();
+    // Stamp the connection entry with the same publication token so the
+    // generation-bound waiting gate recognises the hand-built actor as this
+    // admission (production sets `actor.publication_token` before install).
+    mgr.connections.access(|conns| {
+        if let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) {
+            conn.publication_token = token;
+        }
+    });
+    token
 }
 
 #[expect(
@@ -1367,36 +1376,37 @@ fn handle_control_frame(
     mgr: *mut HewConnMgr,
     peer_feature_flags: u32,
     conn_id: c_int,
+    claim_token: u64,
     control: &ControlFrame,
 ) {
     match control.ctrl_kind {
         CTRL_REGISTRY_GOSSIP => {}
         CTRL_SWIM => {
-            handle_swim_control_frame(mgr, peer_feature_flags, conn_id, control);
+            handle_swim_control_frame(mgr, peer_feature_flags, conn_id, claim_token, control);
             return;
         }
         CTRL_MONITOR_REQ => {
-            handle_monitor_req_frame(mgr, conn_id, control);
+            handle_monitor_req_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_DEMONITOR => {
-            handle_demonitor_frame(mgr, conn_id, control);
+            handle_demonitor_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_MONITOR_DOWN => {
-            handle_monitor_down_frame(mgr, conn_id, control);
+            handle_monitor_down_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_LINK_REQ => {
-            handle_link_req_frame(mgr, conn_id, control);
+            handle_link_req_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_UNLINK => {
-            handle_unlink_frame(mgr, conn_id, control);
+            handle_unlink_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_LINK_DOWN => {
-            handle_link_down_frame(mgr, conn_id, control);
+            handle_link_down_frame(mgr, conn_id, claim_token, control);
             return;
         }
         other => {
@@ -1414,7 +1424,7 @@ fn handle_control_frame(
     // An `Unverified` (delivery-only) connection carries no control-plane
     // authority — drop its gossip with a diagnostic and apply no registry
     // mutation (fail-closed).
-    if authenticated_peer_node_id(mgr, conn_id, "registry gossip").is_none() {
+    if authenticated_peer_node_id(mgr, conn_id, claim_token, "registry gossip").is_none() {
         return;
     }
 
@@ -1452,7 +1462,12 @@ fn handle_control_frame(
     }
 }
 
-fn authenticated_peer_node_id(mgr: *mut HewConnMgr, conn_id: c_int, context: &str) -> Option<u16> {
+fn authenticated_peer_node_id(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    context: &str,
+) -> Option<u16> {
     if mgr.is_null() {
         set_last_error(format!("connection reader {context}: missing manager"));
         return None;
@@ -1463,7 +1478,7 @@ fn authenticated_peer_node_id(mgr: *mut HewConnMgr, conn_id: c_int, context: &st
     // Reserved → Published publication (the reader thread starts before
     // `publish_connection_established`); one-shot frames like the peer's
     // registry-gossip flush must not be dropped inside that window.
-    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
+    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id, claim_token);
     if authenticated == 0 {
         set_last_error(format!(
             "connection reader {context}: missing authenticated peer for conn {conn_id} \
@@ -1480,7 +1495,12 @@ fn authenticated_peer_node_id(mgr: *mut HewConnMgr, conn_id: c_int, context: &st
 ///
 /// Fail-closed: a malformed / oversized payload is dropped with `set_last_error`
 /// and never registers a watcher — no fabricated state from untrusted bytes.
-fn handle_monitor_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_monitor_req_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_monitor_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1490,7 +1510,8 @@ fn handle_monitor_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Cont
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "monitor req") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "monitor req")
+    else {
         return;
     };
     if payload.watcher_node_id != authenticated {
@@ -1514,7 +1535,12 @@ fn handle_monitor_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Cont
 /// Handle an inbound `CTRL_DEMONITOR`: a remote node retracted its
 /// monitor of one of our local actors. Remove the target-side remote-watcher
 /// entry. Idempotent / fail-closed on malformed input.
-fn handle_demonitor_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_demonitor_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_monitor_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1524,7 +1550,8 @@ fn handle_demonitor_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Contro
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "demonitor") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "demonitor")
+    else {
         return;
     };
     if payload.watcher_node_id != authenticated {
@@ -1552,7 +1579,12 @@ fn handle_demonitor_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Contro
 /// connection-drop / SWIM-DEAD fan-out's reach (the slot is no longer
 /// `Pending`), which is the exactly-once disambiguation: a definitive DOWN beats
 /// a later partition signal for the same registration.
-fn handle_monitor_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_monitor_down_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_monitor_down_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1562,7 +1594,8 @@ fn handle_monitor_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Con
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "monitor down") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "monitor down")
+    else {
         return;
     };
     let Some(rt) = crate::runtime::rt_current_opt() else {
@@ -1580,7 +1613,12 @@ fn handle_monitor_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Con
 /// and never registers a link — no fabricated state from untrusted bytes. The
 /// decode bar is HIGHER than monitor because a registered link can later crash a
 /// real actor.
-fn handle_link_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_link_req_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_link_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1590,7 +1628,8 @@ fn handle_link_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Control
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "link req") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "link req")
+    else {
         return;
     };
     if payload.linker_node_id != authenticated {
@@ -1605,7 +1644,12 @@ fn handle_link_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Control
 
 /// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
 /// link of one of our local actors. Idempotent / fail-closed on malformed input.
-fn handle_unlink_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_unlink_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_link_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1615,7 +1659,8 @@ fn handle_unlink_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFr
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "unlink") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "unlink")
+    else {
         return;
     };
     if payload.linker_node_id != authenticated {
@@ -1639,7 +1684,12 @@ fn handle_unlink_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFr
 /// forged `ref_id` this node never linked NOR a different, genuinely-connected
 /// peer that merely guessed/learned a pending link `ref_id` can crash an actor
 /// linked to another, still-alive peer.
-fn handle_link_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_link_down_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_link_down_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1660,7 +1710,8 @@ fn handle_link_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Contro
     // because the delivery id is nonzero). Route through the exact-owner gate so
     // an `Unverified`/superseded connection yields `None` and is dropped with a
     // diagnostic before any cross-node exit cascade.
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "link down") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "link down")
+    else {
         return;
     };
     crate::hew_node::handle_inbound_link_down(payload.ref_id, authenticated, payload.reason);
@@ -1797,36 +1848,63 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
 ///
 /// The gate therefore keys on the CLAIMS map first, not the connections list:
 /// `reserve_claim` runs strictly before the reader spawn, so a `Reserved`
-/// claim owned by THIS `conn_id` is present for the entire admission window
-/// and is the complete "admission in flight" signal. While that claim is
-/// `Reserved`, block on the claims condvar until the local admission decision
-/// resolves; every claim transition (`publish_claim` / `abort_claim` /
-/// `retire_claim` / `reserve_claim`) notifies the condvar, so this is a
-/// readiness signal on a local bounded step, never a poll. Once the claim is
-/// `Published` — which happens strictly after the connections-list install —
-/// the full non-waiting gate decides (posture, ACTIVE state, exact owner),
-/// so an `Unverified`-posture connection still resolves to deny. An absent
-/// claim or a claim owned by another connection (superseded / never admitted /
-/// aborted) denies immediately and fail-closed, and the wait itself fails
+/// claim owned by THIS admission — identified by `(conn_id, claim_token)`,
+/// the publication token minted for this admission before the reserve — is
+/// present for the entire admission window and is the complete "admission in
+/// flight" signal. While that claim is `Reserved`, block on the claims
+/// condvar until the local admission decision resolves; every claim
+/// transition (`publish_claim` / `abort_claim` / `retire_claim` /
+/// `reserve_claim`) notifies the condvar, so this is a readiness signal on a
+/// local bounded step, never a poll. Once the claim is `Published` — which
+/// happens strictly after the connections-list install — the connections
+/// entry decides (posture, ACTIVE state, self-declared node), matched by the
+/// same publication token. An absent claim or a claim from a different
+/// admission (superseded / aborted / a successor on a REUSED transport
+/// `conn_id`) denies immediately and fail-closed, and the wait itself fails
 /// closed on the `CLAIM_RESERVE_WAIT_MS` backstop.
-pub(crate) fn wait_authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
+///
+/// The token binding matters because transport `conn_id`s are recycled: the
+/// TCP transport hands out the first free slot index (`store_conn`), so a
+/// reader still processing an already-read frame after its connection was
+/// removed could otherwise observe a successor connection's claim under the
+/// same `conn_id` and adopt that successor's authority. The publication token
+/// is unique per admission (`next_publication_token`), so a stale reader's
+/// gate resolves to deny the moment its own claim is gone.
+pub(crate) fn wait_authenticated_peer_node_id_for_conn(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+) -> u16 {
     let deadline = std::time::Instant::now() + Duration::from_millis(CLAIM_RESERVE_WAIT_MS);
     let (lock, condvar) = &mgr.claims;
     let mut guard = lock.lock_or_recover();
     loop {
-        let own_claim_state = guard
-            .values()
-            .find(|claim| claim.conn_id == conn_id)
-            .map(|claim| claim.state);
-        match own_claim_state {
-            Some(ClaimState::Published) => {
-                // Publication happens strictly after the connections-list
-                // install, so the non-waiting gate's connection lookup is now
-                // stable; delegate the posture / ACTIVE / exact-owner checks.
+        let own_claim = guard
+            .iter()
+            .find(|(_, claim)| claim.conn_id == conn_id && claim.publication_token == claim_token)
+            .map(|(node_id, claim)| (*node_id, claim.state));
+        match own_claim {
+            Some((claimed, ClaimState::Published)) => {
+                // Our admission published. Publication happens strictly after
+                // the connections-list install, so the entry is present; bind
+                // it by the same publication token (never bare `conn_id`) and
+                // apply the posture / ACTIVE / self-declared-node checks the
+                // non-waiting gate applies.
                 drop(guard);
-                return authenticated_peer_node_id_for_conn(mgr, conn_id);
+                return mgr.connections.access(|conns| {
+                    conns
+                        .iter()
+                        .find(|c| {
+                            c.conn_id == conn_id
+                                && c.publication_token == claim_token
+                                && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                                && c.posture == Posture::Strict
+                                && c.peer_node_id == claimed
+                        })
+                        .map_or(0, |c| c.peer_node_id)
+                });
             }
-            Some(ClaimState::Reserved) => {
+            Some((_, ClaimState::Reserved)) => {
                 // Our own admission is mid-flight (pre-install or
                 // pre-publication); wait for it to publish or abort rather
                 // than dropping the frame.
@@ -1837,7 +1915,7 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id
                 let (next_guard, _timeout) = condvar.wait_timeout_or_recover(guard, remaining);
                 guard = next_guard;
             }
-            // No claim owned by this connection: superseded, aborted, or a
+            // No claim owned by this admission: superseded, aborted, or a
             // claimless (node_id 0) connection — no authority, deny now.
             None => return 0,
         }
@@ -2064,6 +2142,7 @@ fn handle_swim_control_frame(
     mgr: *mut HewConnMgr,
     peer_feature_flags: u32,
     conn_id: c_int,
+    claim_token: u64,
     control: &ControlFrame,
 ) {
     if !supports_gossip(peer_feature_flags) {
@@ -2096,7 +2175,7 @@ fn handle_swim_control_frame(
     // connection resolves to 0 here and is rejected — it cannot inject SWIM
     // membership state. Waiting variant: the first inbound SWIM frame can race
     // this connection's own Reserved → Published publication.
-    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
+    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id, claim_token);
     if authenticated == 0 || authenticated != payload.from_node {
         set_last_error(format!(
             "connection reader SWIM frame from_node {} does not match authenticated peer {authenticated}",
@@ -2318,6 +2397,7 @@ fn reader_loop(
     mgr: SendConnMgr,
     transport: SendTransport,
     conn_id: c_int,
+    claim_token: u64,
     stop_flag: Arc<AtomicI32>,
     last_activity: Arc<AtomicU64>,
     router: Option<InboundRouter>,
@@ -2395,7 +2475,7 @@ fn reader_loop(
 
         match wire_frame {
             WireFrame::Control(control) => {
-                handle_control_frame(mgr, peer_feature_flags, conn_id, &control);
+                handle_control_frame(mgr, peer_feature_flags, conn_id, claim_token, &control);
             }
             WireFrame::Envelope(mut envelope) => {
                 let Some(router_fn) = router else {
@@ -3149,6 +3229,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
                 mgr_send,
                 transport_send,
                 conn_id,
+                claim_token,
                 stop,
                 activity_send,
                 router,
@@ -4154,6 +4235,8 @@ mod tests {
             ),
         };
         let mgr_ptr = std::ptr::from_ref(&mgr).cast_mut();
+        // No claim exists for conn 10; any reader token denies immediately.
+        let conn10_token = 1_u64;
         let payload = crate::envelope::LinkReqPayload {
             linker_node_id: 9,
             ref_id: 123,
@@ -4169,7 +4252,7 @@ mod tests {
             payload: crate::envelope::encode_link_req_payload(&payload)
                 .expect("link request payload must encode"),
         };
-        handle_control_frame(mgr_ptr, 0, 10, &link_req);
+        handle_control_frame(mgr_ptr, 0, 10, conn10_token, &link_req);
         assert!(
             crate::runtime::rt_current()
                 .dist_monitors
@@ -4187,7 +4270,7 @@ mod tests {
             payload: crate::envelope::encode_link_req_payload(&payload)
                 .expect("unlink payload must encode"),
         };
-        handle_control_frame(mgr_ptr, 0, 10, &unlink);
+        handle_control_frame(mgr_ptr, 0, 10, conn10_token, &unlink);
 
         let watchers = crate::runtime::rt_current()
             .dist_monitors
@@ -4384,7 +4467,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(peer));
             // Model node 2 as the admitted, published owner of its NodeId so the
             // issue #2652 exact-owner control gate accepts its SWIM frames.
-            test_publish_claim(&*mgr, 2, 10);
+            let conn10_token = test_publish_claim(&*mgr, 2, 10);
 
             // Honest PING from node 2 (matches the conn's authenticated id).
             let ping = SwimControlPayload {
@@ -4398,7 +4481,7 @@ mod tests {
             let WireFrame::Control(control) = frame else {
                 panic!("expected control frame");
             };
-            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, conn10_token, &control);
 
             // An ACK must have been sent back on conn 10.
             {
@@ -4430,7 +4513,13 @@ mod tests {
             let WireFrame::Control(spoof_control) = spoof_frame else {
                 panic!("expected control frame");
             };
-            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &spoof_control);
+            handle_swim_control_frame(
+                mgr,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                10,
+                conn10_token,
+                &spoof_control,
+            );
             {
                 let guard = (&*sends)
                     .lock()
@@ -4493,7 +4582,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(peer));
             // Model node 2 as the admitted, published owner of its NodeId so the
             // issue #2652 exact-owner control gate accepts its gossip.
-            test_publish_claim(&*mgr, 2, 10);
+            let conn10_token = test_publish_claim(&*mgr, 2, 10);
 
             // ACK from node 2 carrying DEAD-about-node-3 gossip.
             let ack = SwimControlPayload {
@@ -4511,7 +4600,7 @@ mod tests {
             let WireFrame::Control(control) = frame else {
                 panic!("expected control frame");
             };
-            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, conn10_token, &control);
 
             // Node 3 must now be DEAD in our membership view.
             assert_eq!(
@@ -4572,7 +4661,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(unverified));
             // Its delivery claim is published (Unverified peers still route
             // fire-and-forget), but posture keeps it off the control plane.
-            test_publish_claim(&*mgr, 2, 10);
+            let conn10_token = test_publish_claim(&*mgr, 2, 10);
 
             // Control plane: an honest SWIM PING from the Unverified peer is
             // dropped — no ACK is sent.
@@ -4587,7 +4676,7 @@ mod tests {
             let WireFrame::Control(control) = frame else {
                 panic!("expected control frame");
             };
-            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, conn10_token, &control);
             {
                 let guard = (&*sends)
                     .lock()
@@ -4701,9 +4790,10 @@ mod tests {
     /// Install a Strict ACTIVE connection entry, as `install_connection_actor`
     /// does mid-admission. Split out so the pre-install-window test can defer
     /// it until after the gate is already waiting.
-    fn install_strict_conn(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) {
+    fn install_strict_conn(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, token: u64) {
         let mut strict = ConnectionActor::new(conn_id);
         strict.peer_node_id = node_id;
+        strict.publication_token = token;
         strict.posture = crate::peer_binding::Posture::Strict;
         strict.state.store(CONN_STATE_ACTIVE, Ordering::Release);
         mgr.connections.access(|conns| conns.push(strict));
@@ -4762,7 +4852,7 @@ mod tests {
             assert!(!mgr.is_null());
 
             if install {
-                install_strict_conn(&*mgr, node_id, conn_id);
+                install_strict_conn(&*mgr, node_id, conn_id, token);
             }
             // Claim is Reserved (mid-admission), NOT yet Published.
             test_reserve_unverified(&*mgr, node_id, conn_id, token);
@@ -4797,7 +4887,7 @@ mod tests {
                 let handle = std::thread::spawn(move || {
                     let waiter = waiter;
                     // SAFETY: manager outlives the join below.
-                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 30)
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 30, 77)
                 });
                 // Give the waiter time to reach the condvar wait, then publish —
                 // modelling `publish_connection_established` completing.
@@ -4824,7 +4914,7 @@ mod tests {
                 let handle = std::thread::spawn(move || {
                     let waiter = waiter;
                     // SAFETY: manager outlives the join below.
-                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 40)
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 40, 88)
                 });
                 std::thread::sleep(Duration::from_millis(50));
                 abort_claim(&*mgr, 6, 40, 88, None);
@@ -4855,7 +4945,7 @@ mod tests {
 
                 let started = std::time::Instant::now();
                 assert_eq!(
-                    wait_authenticated_peer_node_id_for_conn(&*mgr, 51),
+                    wait_authenticated_peer_node_id_for_conn(&*mgr, 51, 100),
                     0,
                     "a claim reserved by another connection must deny immediately"
                 );
@@ -4884,13 +4974,13 @@ mod tests {
                 let handle = std::thread::spawn(move || {
                     let waiter = waiter;
                     // SAFETY: manager outlives the join below.
-                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 60)
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 60, 111)
                 });
                 // Give the waiter time to reach the condvar wait, then install
                 // and publish — modelling `install_connection_actor` followed
                 // by `publish_connection_established`.
                 std::thread::sleep(Duration::from_millis(50));
-                install_strict_conn(&*mgr, 8, 60);
+                install_strict_conn(&*mgr, 8, 60, 111);
                 assert!(publish_claim(&*mgr, 8, 60, 111), "publication must be ours");
                 let granted = handle.join().expect("waiter thread");
                 assert_eq!(
@@ -4914,7 +5004,7 @@ mod tests {
                 let handle = std::thread::spawn(move || {
                     let waiter = waiter;
                     // SAFETY: manager outlives the join below.
-                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 70)
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 70, 122)
                 });
                 std::thread::sleep(Duration::from_millis(50));
                 abort_claim(&*mgr, 9, 70, 122, None);
@@ -4922,6 +5012,52 @@ mod tests {
                 assert_eq!(
                     granted, 0,
                     "an admission aborted pre-install must deny the waiting gate"
+                );
+            }
+        });
+    }
+
+    /// Generation separation on a REUSED transport `conn_id`: the TCP transport
+    /// recycles slot indices (`store_conn` hands out the first free slot), so a
+    /// stale reader — one still processing an already-read frame after its
+    /// connection was removed — can observe a SUCCESSOR admission's claim under
+    /// the same `conn_id`. The stale reader's gate carries its own (older)
+    /// publication token and must deny immediately: it never waits on, and
+    /// never adopts, the successor's authority, whether the successor's claim
+    /// is still Reserved or already Published.
+    #[test]
+    fn stale_token_on_reused_conn_id_denied_without_wait() {
+        with_reserved_strict_conn(11, 80, 200, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                // Successor mid-admission (claim Reserved, token 200): the stale
+                // reader (token 150) must deny without consuming the wait budget.
+                let started = std::time::Instant::now();
+                assert_eq!(
+                    wait_authenticated_peer_node_id_for_conn(&*mgr, 80, 150),
+                    0,
+                    "a stale reader must not wait on a successor's Reserved claim"
+                );
+                assert!(
+                    started.elapsed() < Duration::from_millis(CLAIM_RESERVE_WAIT_MS / 2),
+                    "the stale-token denial must not consume the wait budget"
+                );
+
+                // Successor fully admitted (claim Published, token 200): the
+                // stale reader still denies; the successor itself grants.
+                assert!(
+                    publish_claim(&*mgr, 11, 80, 200),
+                    "publication must be ours"
+                );
+                assert_eq!(
+                    wait_authenticated_peer_node_id_for_conn(&*mgr, 80, 150),
+                    0,
+                    "a stale reader must not adopt a successor's published authority"
+                );
+                assert_eq!(
+                    wait_authenticated_peer_node_id_for_conn(&*mgr, 80, 200),
+                    11,
+                    "the successor's own gate must grant after its publication"
                 );
             }
         });
@@ -5102,7 +5238,7 @@ mod tests {
             unverified.posture = crate::peer_binding::Posture::Unverified;
             unverified.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             (&*mgr).connections.access(|conns| conns.push(unverified));
-            test_publish_claim(&*mgr, 2, 10);
+            let conn10_token = test_publish_claim(&*mgr, 2, 10);
 
             let _ = take_hew_last_error();
             assert_eq!(
@@ -5110,7 +5246,7 @@ mod tests {
                 0,
                 "precondition: Unverified conn 10 must have no authenticated identity"
             );
-            handle_link_down_frame(mgr, 10, &link_down_frame(101));
+            handle_link_down_frame(mgr, 10, conn10_token, &link_down_frame(101));
             let diag = take_hew_last_error().expect("gated link down must leave a diagnostic");
             assert!(
                 diag.contains("link down") && diag.contains("missing authenticated peer"),
@@ -5126,7 +5262,7 @@ mod tests {
             strict.posture = crate::peer_binding::Posture::Strict;
             strict.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             (&*mgr).connections.access(|conns| conns.push(strict));
-            test_publish_claim(&*mgr, 3, 20);
+            let conn20_token = test_publish_claim(&*mgr, 3, 20);
             let mut strict2 = ConnectionActor::new(21);
             strict2.peer_node_id = 3;
             strict2.posture = crate::peer_binding::Posture::Strict;
@@ -5135,7 +5271,7 @@ mod tests {
             test_publish_claim(&*mgr, 3, 21);
 
             let _ = take_hew_last_error();
-            handle_link_down_frame(mgr, 20, &link_down_frame(102));
+            handle_link_down_frame(mgr, 20, conn20_token, &link_down_frame(102));
             let diag = take_hew_last_error().expect("superseded link down must leave a diagnostic");
             assert!(
                 diag.contains("link down") && diag.contains("missing authenticated peer"),

@@ -195,6 +195,17 @@ struct ConnectionActor {
     reader_handle: Option<JoinHandle<()>>,
     /// Signal to stop the reader thread.
     reader_stop: Arc<AtomicI32>,
+    /// The same-credential `Published` claim this admission superseded at
+    /// reserve time (issue #2652, D3), if any. Stashed here (in addition to
+    /// the admission thread's local copy) so `hew_connmgr_remove` can restore
+    /// it when it aborts a still-`Reserved` reservation — the
+    /// remove-before-publication path, where `publish_connection_established`
+    /// early-returns on `publication_removed` and would otherwise leave the
+    /// reservation dangling and the reader parked in the admission wait until
+    /// the `CLAIM_RESERVE_WAIT_MS` backstop. Consumed at most once: the
+    /// remove-side abort is guarded by the exact `(conn_id, token, Reserved)`
+    /// owner check, so a published or superseded claim never restores from it.
+    superseded_claim: Mutex<Option<LiveClaim>>,
     /// Optional reconnect settings for this connection.
     reconnect: Option<ReconnectSettings>,
     /// Transport pointer for defense-in-depth close in `Drop`.
@@ -406,6 +417,7 @@ impl ConnectionActor {
             noise_transport: Arc::new(Mutex::new(None)),
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
+            superseded_claim: Mutex::new(None),
             reconnect: None,
             transport: std::ptr::null_mut(),
             transport_closed: AtomicBool::new(false),
@@ -3186,6 +3198,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let mut actor = ConnectionActor::new(conn_id);
     actor.transport = mgr.transport;
     actor.publication_token = claim_token;
+    // Stash the superseded claim on the actor so hew_connmgr_remove can
+    // restore it if removal wins the race against publication (the local
+    // `superseded_claim` below still feeds the publish path's close of the
+    // superseded transport).
+    actor
+        .superseded_claim
+        .lock_or_recover()
+        .clone_from(&superseded_claim);
     actor.peer_node_id = peer_hs.node_id;
     actor.peer_feature_flags = peer_hs.feature_flags;
     actor.posture = posture;
@@ -3384,6 +3404,21 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // Close the transport connection so a blocking recv unblocks.
     // SAFETY: transport is valid per manager contract.
     unsafe { close_transport_conn(mgr.transport, conn_id) };
+    // Resolve a still-pending admission BEFORE joining the reader. When removal
+    // wins the race against `publish_connection_established`, the publication
+    // early-returns on `publication_removed` without publishing or aborting,
+    // and this connection's reader may be parked in the admission wait
+    // (`wait_authenticated_peer_node_id_for_conn`) on the still-`Reserved`
+    // claim — which only THIS abort (or the `CLAIM_RESERVE_WAIT_MS` backstop)
+    // can resolve, because claim retirement runs after the join below. Abort
+    // the reservation — restoring any claim this admission superseded — and
+    // wake the waiter so the join cannot wedge on the backstop. `abort_claim`
+    // is exact-owner guarded (`conn_id` + token + `Reserved`), so a published
+    // claim, a successor's claim, or an already-aborted admission is untouched.
+    if peer_node_id != 0 {
+        let superseded = conn.superseded_claim.lock_or_recover().take();
+        abort_claim(mgr, peer_node_id, conn_id, publication_token, superseded);
+    }
     // Drop joins the reader thread after transport close.
     drop(conn);
     // Full publication retirement: re-removes route (idempotent) and fires the
@@ -5059,6 +5094,100 @@ mod tests {
                     11,
                     "the successor's own gate must grant after its publication"
                 );
+            }
+        });
+    }
+
+    /// Removal racing publication must resolve the admission wait PROMPTLY:
+    /// `hew_connmgr_remove` aborts a still-`Reserved` claim (and notifies the
+    /// claims condvar) BEFORE joining the reader, so a reader parked in
+    /// `wait_authenticated_peer_node_id_for_conn` wakes to a fail-closed deny
+    /// instead of holding the join hostage for the `CLAIM_RESERVE_WAIT_MS`
+    /// backstop. Also pins the cleanup: the aborted reservation leaves no
+    /// dangling claim to wedge a subsequent reconnect's `reserve_claim`.
+    #[test]
+    fn remove_during_admission_wait_resolves_promptly_and_cleans_claim() {
+        with_reserved_strict_conn(12, 90, 300, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                let (started_tx, started_rx) = std::sync::mpsc::channel();
+                let waiter = SendConnMgr(mgr);
+                let handle = std::thread::spawn(move || {
+                    let waiter = waiter;
+                    started_tx.send(()).expect("waiter start signal");
+                    // SAFETY: manager outlives the join below.
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 90, 300)
+                });
+                started_rx.recv().expect("waiter thread started");
+                // Scheduling grace so the waiter reaches the condvar wait; the
+                // verdict is interleaving-independent (an un-parked waiter sees
+                // the aborted claim and denies just the same).
+                std::thread::sleep(Duration::from_millis(50));
+
+                let remove_started = std::time::Instant::now();
+                assert_eq!(hew_connmgr_remove(mgr, 90), 0, "remove must succeed");
+                let granted = handle.join().expect("waiter thread");
+                assert_eq!(
+                    granted, 0,
+                    "removal aborting the reservation must deny the waiting gate"
+                );
+                assert!(
+                    remove_started.elapsed() < Duration::from_millis(CLAIM_RESERVE_WAIT_MS / 2),
+                    "the admission wait must resolve at the removal abort, not the backstop"
+                );
+                let (lock, _condvar) = &(*mgr).claims;
+                assert!(
+                    lock.lock_or_recover().get(&12).is_none(),
+                    "the aborted reservation must leave no dangling claim"
+                );
+            }
+        });
+    }
+
+    /// The remove-side abort restores the same-credential claim this admission
+    /// superseded (D3): when a reconnect's admission is removed before its
+    /// publication, the PREVIOUS owner's `Published` claim returns to the map
+    /// — authority falls back to the still-live prior connection instead of
+    /// evaporating.
+    #[test]
+    fn remove_before_publication_restores_superseded_claim() {
+        with_reserved_claim(13, 95, 400, true, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                // The original connection 95 is fully admitted (Published).
+                assert!(publish_claim(&*mgr, 13, 95, 400), "original must publish");
+
+                // A same-credential reconnect (conn 96) reserves, superseding
+                // the published claim, and installs — but is removed before
+                // `publish_connection_established` runs.
+                let superseded = match reserve_claim(&*mgr, 13, None, 96, 500) {
+                    ClaimReservation::Reserved { superseded } => {
+                        superseded.expect("reconnect must supersede the published claim")
+                    }
+                    ClaimReservation::Rejected(detail) => {
+                        panic!("same-credential reconnect must reserve: {detail}")
+                    }
+                };
+                install_strict_conn(&*mgr, 13, 96, 500);
+                (*mgr).connections.access(|conns| {
+                    let conn = conns
+                        .iter_mut()
+                        .find(|c| c.conn_id == 96)
+                        .expect("reconnect actor installed");
+                    *conn.superseded_claim.lock_or_recover() = Some(superseded);
+                });
+
+                assert_eq!(hew_connmgr_remove(mgr, 96), 0, "remove must succeed");
+
+                let (lock, _condvar) = &(*mgr).claims;
+                let guard = lock.lock_or_recover();
+                let restored = guard.get(&13).expect("superseded claim must be restored");
+                assert_eq!(
+                    restored.conn_id, 95,
+                    "restored claim owner is the original conn"
+                );
+                assert_eq!(restored.publication_token, 400);
+                assert_eq!(restored.state, ClaimState::Published);
             }
         });
     }

@@ -2217,6 +2217,99 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // [F2/Rev-6] Interprocedural mutation reachability — the three channels the
+    // tail-only value-flow recursion misses: an alias hidden inside an aggregate
+    // argument, inside an array-literal desugar's non-tail push, and inside a
+    // closure capture ledger reached via a callable-parameter invocation. Each
+    // caller returns a heap param it smuggled through a may-mutate helper, so the
+    // return is OPAQUE and its `match caller()` scrutinee rejects at S4b. These
+    // pin the ANALYSIS verdict (the interim compile verdict is `LegacyModuleCall`
+    // fail-open; the precise reject lands at S4b).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn helper_mutates_aggregate_arg_is_opaque() {
+        // `helper(Wrapper { v: h }, ..); return h` — h is reachable through the
+        // StructInit operand of a may-mutate call argument.
+        let (m, prov) = provenance_of_source(
+            r"
+            type Wrapper { v: Vec<i64>; }
+            fn helper(w: Wrapper, x: i64) { w.v.push(x); }
+            fn caller(h: Vec<i64>, x: i64) -> Vec<i64> {
+                helper(Wrapper { v: h }, x);
+                h
+            }
+            ",
+        );
+        assert!(
+            prov[&fn_id(&m, "caller")].is_opaque(),
+            "a heap param smuggled inside an aggregate arg to a may-mutate helper is Opaque"
+        );
+    }
+
+    #[test]
+    fn helper_mutates_array_arg_is_opaque() {
+        // `helper([h], ..); return h` — h is reachable only through the array
+        // literal's non-tail push statement, which a tail-only walk misses.
+        let (m, prov) = provenance_of_source(
+            r"
+            fn helper(xs: Vec<Vec<i64>>, x: i64) { xs.push(Vec::new()); }
+            fn caller(h: Vec<i64>, x: i64) -> Vec<i64> {
+                helper([h], x);
+                h
+            }
+            ",
+        );
+        assert!(
+            prov[&fn_id(&m, "caller")].is_opaque(),
+            "a heap param inside an array-literal arg (non-tail push) to a may-mutate helper is Opaque"
+        );
+    }
+
+    #[test]
+    fn helper_invokes_capturing_closure_is_opaque() {
+        // `helper(|| { h.len(); }, ..); return h` — helper invokes its callable
+        // parameter (may-mutate, callable-param invocation), and h lives in the
+        // closure's capture ledger, invisible to an operand-only visitor.
+        let (m, prov) = provenance_of_source(
+            r"
+            fn helper(f: fn() -> i64, x: i64) -> i64 { f() }
+            fn caller(h: Vec<i64>, x: i64) -> Vec<i64> {
+                helper(|| { h.len() }, x);
+                h
+            }
+            ",
+        );
+        assert!(
+            prov[&fn_id(&m, "caller")].is_opaque(),
+            "a heap param captured by a closure arg to a callable-invoking helper is Opaque"
+        );
+    }
+
+    #[test]
+    fn generator_capture_of_heap_param_is_opaque() {
+        // The generator-capture analogue: `h` lives in a `gen { .. }` block's
+        // capture ledger (`GenBlock.captures`), passed to a may-mutate helper.
+        // The total reachability visitor must descend the generator capture
+        // ledger — an operand-only walk cannot see it.
+        let (m, prov) = provenance_of_source(
+            r"
+            fn drain<I>(g: I, sink: Vec<i64>) where I: Iterator<Item = i64> {
+                sink.push(0);
+            }
+            fn caller(h: Vec<i64>, sink: Vec<i64>) -> Vec<i64> {
+                drain(gen { yield h.len(); }, sink);
+                h
+            }
+            ",
+        );
+        assert!(
+            prov[&fn_id(&m, "caller")].is_opaque(),
+            "a heap param captured by a generator-block arg to a may-mutate helper is Opaque"
+        );
+    }
+
     #[test]
     fn alias_bits_lattice_states_are_distinct() {
         assert!(AliasBits::EMPTY.is_fresh());

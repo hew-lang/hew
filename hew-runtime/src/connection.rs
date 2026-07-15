@@ -4633,6 +4633,101 @@ mod tests {
         drop(ops);
     }
 
+    /// Issue #2652 (item 1, outbound authority): the predicate the outbound ask
+    /// gate in `setup_remote_ask` applies — `authenticated_peer_node_id_for_conn(
+    /// mgr, conn) == target_node_id` — must hold ONLY for the exact authenticated
+    /// owner of `target_node_id`. This is the outbound symmetric of the inbound
+    /// `inbound_ask_denied_unverified` gate: an `Unverified` (delivery-only) or a
+    /// **superseded** connection routed to the target both resolve to `0`
+    /// (`!= target_node_id`), so an outbound ask over either fails CLOSED with
+    /// `AskError::Unauthorized` before serialization; only the exact owner clears
+    /// the gate. This test pins the exact tri-state `setup_remote_ask` branches on
+    /// at the authority it consults, so a regression in either the authority or
+    /// the outbound wiring is caught here.
+    #[test]
+    fn outbound_ask_gate_authorizes_only_exact_owner() {
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: std::ptr::null_mut(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // The predicate the outbound gate applies to a routed target connection.
+        let clears_gate = |mgr: &HewConnMgr, conn_id: c_int, target: u16| -> bool {
+            authenticated_peer_node_id_for_conn(mgr, conn_id) == target
+        };
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            // (a) Unverified target (node 2 on conn 10): the gate rejects — an
+            // outbound ask here fails closed with Unauthorized.
+            let mut unverified = ConnectionActor::new(10);
+            unverified.peer_node_id = 2;
+            unverified.posture = crate::peer_binding::Posture::Unverified;
+            unverified.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(unverified));
+            test_publish_claim(&*mgr, 2, 10);
+            assert!(
+                !clears_gate(&*mgr, 10, 2),
+                "an outbound ask to an Unverified target must NOT clear the gate"
+            );
+
+            // (b) Exact owner (node 3 on conn 20): the gate authorizes.
+            let mut owner = ConnectionActor::new(20);
+            owner.peer_node_id = 3;
+            owner.posture = crate::peer_binding::Posture::Strict;
+            owner.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(owner));
+            test_publish_claim(&*mgr, 3, 20);
+            assert!(
+                clears_gate(&*mgr, 20, 3),
+                "an outbound ask to the exact authenticated owner must clear the gate"
+            );
+
+            // (c) Supersede node 3's claim onto a new conn 21: the old owner
+            // (conn 20) loses authority the instant the claim map is overwritten,
+            // so an outbound ask still routed to conn 20 fails closed — while the
+            // new exact owner (conn 21) clears the gate.
+            let mut owner2 = ConnectionActor::new(21);
+            owner2.peer_node_id = 3;
+            owner2.posture = crate::peer_binding::Posture::Strict;
+            owner2.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(owner2));
+            test_publish_claim(&*mgr, 3, 21);
+            assert!(
+                !clears_gate(&*mgr, 20, 3),
+                "an outbound ask over a superseded connection must NOT clear the gate"
+            );
+            assert!(
+                clears_gate(&*mgr, 21, 3),
+                "the new exact owner must clear the outbound ask gate"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+        }
+        drop(ops);
+    }
+
     /// Read and clear the current thread's `hew_last_error` (the C-ABI sink that
     /// `crate::set_last_error` writes to — distinct from `stream_error`'s TLS).
     fn take_hew_last_error() -> Option<String> {

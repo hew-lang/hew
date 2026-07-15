@@ -4967,6 +4967,23 @@ fn setup_remote_ask(
             return RemoteAskSetupResult::Error(AskError::Partition);
         }
 
+        // issue #2652 (outbound authority): an ask is control-bearing — its reply
+        // deposits into THIS node's pending table and its dispatch runs a handler
+        // on the peer, so it must go ONLY to the exact authenticated owner (Strict
+        // posture + published claim) of the target NodeId. An Unverified
+        // (delivery-only) or a superseded / non-exact-owner connection carries no
+        // control-plane authority; fail CLOSED here — before serializing the
+        // request or registering a pending reply — symmetric with the inbound ask
+        // gate (`inbound_ask_denied_unverified`) and D12's unverified-ask REJECT.
+        // Reply-completion validation stays a backstop, never the primary control.
+        // SAFETY: conn_mgr is non-null and valid while the node is running (the
+        // CURRENT_NODE read lock is held for the whole closure).
+        let authenticated =
+            unsafe { connection::authenticated_peer_node_id_for_conn(&*node.conn_mgr, conn_id) };
+        if authenticated != target_node_id {
+            return RemoteAskSetupResult::Error(AskError::Unauthorized);
+        }
+
         // Serialize the request value before it leaves this address space —
         // `data`/`size` is the raw in-memory struct (which may hold heap
         // pointers). The codec for `msg_type` encodes its CONTENTS; the receiver
@@ -5858,6 +5875,80 @@ mod tests {
             unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
                 .expect("authorized tcp node must expose its bound listener port");
         (node, port)
+    }
+
+    /// Start two mutually-authenticated in-process nodes on the native TCP
+    /// (Noise) transport. Each mints a stable Noise identity and pins the
+    /// other's real static public key to the peer's `NodeId`, so the loopback
+    /// handshake admits `Strict` with a published claim (issue #2652 —
+    /// `posture_for` returns `Strict` whenever bindings exist, regardless of
+    /// loopback). This is a genuine credentialed harness, never a test-only
+    /// posture promotion; it mirrors [`start_authorized_quic_mesh_pair`] for the
+    /// cases that must exercise TCP-specific pending-ask / connection behaviour
+    /// now that an unverified outbound ask fails closed before it is ever sent.
+    #[cfg(feature = "encryption")]
+    fn start_authorized_tcp_pair(id_a: u16, id_b: u16) -> (TestNode, u16, TestNode, u16) {
+        use crate::peer_binding::{
+            PeerAuthConfig, PeerBindings, StableNoiseIdentity, NOISE_KEY_LEN,
+        };
+
+        let dir = tempfile::tempdir().expect("authorized tcp pair keydir");
+        let identity_a =
+            crate::encryption::noise_identity_load_or_create(&dir.path().join("node-a.key"))
+                .expect("mint node-a noise identity");
+        let identity_b =
+            crate::encryption::noise_identity_load_or_create(&dir.path().join("node-b.key"))
+                .expect("mint node-b noise identity");
+        let pub_a = identity_a.public();
+        let pub_b = identity_b.public();
+
+        let start_one = |node_id: u16,
+                         peer_id: u16,
+                         identity: StableNoiseIdentity,
+                         peer_pub: [u8; NOISE_KEY_LEN]|
+         -> (TestNode, u16) {
+            let mut bindings = PeerBindings::new();
+            bindings
+                .entry(peer_id)
+                .or_default()
+                .insert(PeerCredential::NoiseKey(peer_pub));
+            let snapshot = PeerAuthConfig {
+                node_id: std::num::NonZeroU16::new(node_id),
+                noise_identity: Some(identity),
+                bindings,
+                ..PeerAuthConfig::default()
+            }
+            .snapshot();
+            let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+            // SAFETY: bind_addr is a valid C string for the duration of this closure.
+            let node = unsafe { TestNode::new(node_id, &bind_addr) };
+            assert!(
+                !node.as_ptr().is_null(),
+                "authorized tcp node {node_id} alloc failed"
+            );
+            // SAFETY: node is freshly created (STOPPED); install before start.
+            let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
+            assert_eq!(set_rc, 0, "install auth snapshot on node {node_id}");
+            // SAFETY: node pointer is valid; start selects TCP + Noise from the
+            // snapshot and reads the installed strict bindings.
+            let rc = unsafe { hew_node_start(node.as_ptr()) };
+            assert_eq!(
+                rc,
+                0,
+                "authorized tcp start({node_id}) failed: {:?}",
+                crate::stream_error::take_last_error()
+            );
+            // SAFETY: node started successfully on the TCP transport.
+            let port = unsafe {
+                crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport)
+            }
+            .expect("authorized tcp node must expose its bound listener port");
+            (node, port)
+        };
+
+        let (node_a, port_a) = start_one(id_a, id_b, identity_a, pub_b);
+        let (node_b, port_b) = start_one(id_b, id_a, identity_b, pub_a);
+        (node_a, port_a, node_b, port_b)
     }
 
     const TWO_PROCESS_REGISTRY_SERVER_NODE: u16 = 620;
@@ -9549,23 +9640,18 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_node_pre_rejection_peer_gets_timeout_not_wrong_error() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-        // SAFETY: node1_bind is a valid C string for the duration of this test.
-        let node1 = unsafe { TestNode::new(330, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 was just allocated and remains valid until teardown.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(331);
+        // Authenticated pair: an outbound ask is refused (Unauthorized) before it
+        // is sent unless the target connection is the exact authenticated owner
+        // (issue #2652). The pre-rejection fallback under test needs the ask to
+        // actually reach node2, so the peers are mutually credentialed.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(330, 331);
 
         _real_sched = init_real_scheduler();
 
@@ -9710,24 +9796,17 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn two_node_remote_ask_timeout_reports_timeout() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(328, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(329);
+        // Authenticated pair (issue #2652): a genuine timeout requires the ask to
+        // be sent to an authorized peer and left unanswered — an unverified target
+        // would instead fail closed with Unauthorized before the send.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(328, 329);
 
         _real_sched = init_real_scheduler();
 
@@ -9784,24 +9863,107 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    /// Issue #2652 (item 1, outbound authority): an outbound ask whose target
+    /// connection is `Unverified` (delivery-only — here a plain loopback-TCP pair
+    /// with NO cross-pinned credentials) must fail CLOSED at initiation with
+    /// `AskError::Unauthorized`, BEFORE any request bytes are serialized or a
+    /// pending reply is registered. This is the outbound symmetric of the inbound
+    /// gate (`inbound_ask_denied_unverified`): control-bearing traffic must go
+    /// only to the exact authenticated owner of the target `NodeId`.
+    ///
+    /// Regression guard: before the gate, this same setup silently serialized and
+    /// sent the ask; the responder dropped the unverified inbound ask with no
+    /// reply, so the initiator saw only a `Timeout` — reply-completion validation
+    /// was the sole (insufficient) backstop. A `Timeout` here now means the gate
+    /// was bypassed.
+    #[test]
+    fn unverified_outbound_ask_rejected_unauthorized() {
+        let _guard = crate::runtime_test_guard();
+        let _real_sched;
+        crate::registry::hew_registry_clear();
+
+        // Plain loopback-TCP pair with no cross-pinned credentials → both sides
+        // authenticate as `Unverified` (delivery-only), NOT `Strict`.
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: bind address is a valid C string for the duration of this test.
+        let node1 = unsafe { TestNode::new(342, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+        // SAFETY: node1 came from TestNode::new and is valid for start-up here.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(343);
+
+        _real_sched = init_real_scheduler();
+
+        crate::pid::hew_pid_set_local_node(343);
+        // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
+        let target_actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(blocked_ask_probe_dispatch))
+        };
+        crate::pid::hew_pid_set_local_node(342);
+        assert!(!target_actor.is_null(), "actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
+        let actor_id = unsafe { (*target_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 343);
+
+        let connect_addr = CString::new(format!("343@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        let ask_start = std::time::Instant::now();
+        // SAFETY: the actor pid and null payload are valid for this remote ask probe.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                test_dispatch(),
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            )
+        };
+        let err = hew_node_ask_take_last_error();
+
+        assert!(
+            reply_ptr.is_null(),
+            "an ask to an unverified target must return null"
+        );
+        assert_eq!(
+            err,
+            AskError::Unauthorized as i32,
+            "an outbound ask to an Unverified (non-exact-owner) target must be \
+             refused with Unauthorized, not silently sent and timed out"
+        );
+        // The gate fires at initiation — well before the ask timeout deadline.
+        assert!(
+            ask_start.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS),
+            "the outbound authority gate must reject immediately, not block to the deadline"
+        );
+
+        // SAFETY: the actor and nodes were allocated in this test and remain valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(target_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[cfg(feature = "encryption")]
     #[test]
     fn node_stop_wakes_pending_remote_ask() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(315, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(316);
+        // Authenticated pair (issue #2652): the pending ask under test must reach
+        // the reply table, which only happens when the outbound ask is authorized.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(315, 316);
 
         _real_sched = init_real_scheduler();
 
@@ -9883,24 +10045,16 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    #[cfg(feature = "encryption")]
     #[test]
     fn connection_drop_wakes_pending_remote_ask() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(320, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(321);
+        // Authenticated pair (issue #2652): the pending ask must register against
+        // the outbound connection, which requires an authorized target.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(320, 321);
 
         _real_sched = init_real_scheduler();
 
@@ -10015,24 +10169,17 @@ mod tests {
     /// node-side fan-out (`fail_remote_asks_for_node`), with the socket left
     /// open so the only thing that resolves the ask is the failure-detector
     /// verdict — distinct from `ConnectionDropped`.
+    #[cfg(feature = "encryption")]
     #[test]
     fn swim_dead_wakes_pending_remote_ask_with_partition() {
         let _guard = crate::runtime_test_guard();
         let _real_sched;
         crate::registry::hew_registry_clear();
 
-        let node1_bind = CString::new("127.0.0.1:0").unwrap();
-
-        // SAFETY: bind addresses are valid C strings for the duration of this test.
-        let node1 = unsafe { TestNode::new(330, &node1_bind) };
-        assert!(!node1.as_ptr().is_null());
-
-        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
-        unsafe {
-            assert_eq!(hew_node_start(node1.as_ptr()), 0);
-        }
-        thread::sleep(Duration::from_millis(50));
-        let (node2, node2_port) = start_tcp_test_listener_node(331);
+        // Authenticated pair (issue #2652): the pending ask must reach the reply
+        // table so the SWIM-DEAD fan-out can resolve it with Partition; that only
+        // happens for an authorized outbound target.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(330, 331);
 
         _real_sched = init_real_scheduler();
 

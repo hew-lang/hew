@@ -774,7 +774,7 @@ fn pattern_binds(pattern: &Pattern, name: &str) -> bool {
         Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
             patterns.iter().any(|p| pattern_binds(&p.0, name))
         }
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             fields.iter().any(|field| match &field.pattern {
                 Some(sub) => pattern_binds(&sub.0, name),
                 None => field.name == name,

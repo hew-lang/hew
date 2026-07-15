@@ -128,7 +128,7 @@ fn collect_match_payload_predicates(
                 })
                 .collect())
         }
-        Pattern::Struct { name, fields } => {
+        Pattern::Struct { name, fields, .. } => {
             let field_decls = if let Some((_, _, kind)) = ctx.lookup_variant_ctor(name) {
                 match kind {
                     HirVariantKind::Struct(field_decls) => field_decls.clone(),
@@ -11624,7 +11624,7 @@ impl LowerCtx {
             // already bound the field names in the checker's env; HIR mirrors
             // those bindings via `self.bind(...)` below.
             let pat_fields_opt = match &pattern.0 {
-                Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+                Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
                     Some(fields)
                 }
                 _ => None,
@@ -11792,7 +11792,7 @@ impl LowerCtx {
             Pattern::Tuple(elements) => {
                 self.lower_tuple_pattern_value_into_stmts(elements, value, &value_ty, stmts, span);
             }
-            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
                 self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
             }
             Pattern::Constructor { .. }
@@ -24094,7 +24094,7 @@ impl LowerCtx {
                 );
                 body_prelude = prelude;
                 binding_error |= had_error;
-            } else if let Pattern::Struct { name, fields } = &arm.pattern.0 {
+            } else if let Pattern::Struct { name, fields, .. } = &arm.pattern.0 {
                 // Enum struct-variant arm with aggregate field sub-patterns
                 // (`Variant { field: (a, b) }`). Plain record-project arms
                 // (`Point { x, y }`) and plain field binders route through the

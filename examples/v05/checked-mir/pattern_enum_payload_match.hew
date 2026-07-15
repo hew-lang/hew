@@ -12,10 +12,7 @@ enum Packet {
 
 fn make(good: bool) -> Packet {
     if good {
-        Packet::Data {
-            a: "match-a".to_upper(),
-            b: "match-b".to_upper(),
-        }
+        Packet::Data { a: "match-a".to_upper(), b: "match-b".to_upper() }
     } else {
         Packet::Empty
     }
@@ -30,5 +27,9 @@ fn probe(good: bool) -> i64 {
 }
 
 fn main() -> i64 {
-    if probe(true) > 0 && probe(false) == 0 { 0 } else { 1 }
+    if probe(true) > 0 && probe(false) == 0 {
+        0
+    } else {
+        1
+    }
 }

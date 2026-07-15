@@ -485,6 +485,7 @@ pub enum Pattern {
     Struct {
         name: String,
         fields: Vec<PatternField>,
+        rest: Option<Span>,
     },
     /// Shorthand record destructure: `{ a, b }` with no type name.
     ///
@@ -493,6 +494,7 @@ pub enum Pattern {
     /// valid in `let` positions against an irrefutable (product) type.
     RecordShorthand {
         fields: Vec<PatternField>,
+        rest: Option<Span>,
     },
     Tuple(Vec<Spanned<Pattern>>),
     Or(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),

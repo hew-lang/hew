@@ -1,4 +1,4 @@
-use hew_parser::ast::{CallArg, Expr, Item, Stmt};
+use hew_parser::ast::{CallArg, Expr, Item, Pattern, Stmt};
 
 /// `=~` was removed in v0.5: regex matching now goes through `Pattern.is_match`
 /// or a match arm with a regex literal pattern.  The parser emits
@@ -386,14 +386,8 @@ fn comparison_full_spaces_parses_normally() {
 ///   1. Parsing never panics (a panic would kill the test process outright).
 ///   2. At least one parse error is reported (the `..` is rejected cleanly).
 ///
-/// A future implementation may parse `..` as a rest marker (`has_rest = true`)
-/// and this test can be updated to assert a clean parse. Until then, clean
-/// rejection is the fail-closed contract.
 #[test]
 fn struct_rest_pattern_does_not_panic() {
-    // If the parser panics, the test process is killed and the test harness
-    // reports a crash — this assertion would never be reached, which is itself
-    // the proof. The explicit `!result.errors.is_empty()` asserts clean rejection.
     let source = r"
 type Point {
     x: i64,
@@ -408,23 +402,21 @@ fn main() -> i64 {
 }";
     let result = hew_parser::parse(source);
     assert!(
-        !result.errors.is_empty(),
-        "expected parse errors for `Point {{ x, .. }}` (rest pattern not yet supported), \
-         got a clean parse — either the parser now supports rest patterns \
-         (update this test) or a silent accept occurred"
-    );
-    // No `..` field name must appear in the AST (it must not be silently accepted
-    // as a field named "..").
-    // The errors confirm the parser rejected the `..` token.
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("expected identifier") || e.message.contains("`..`")),
-        "expected an 'expected identifier' or '`..`' error for the rest pattern; \
-         got: {:?}",
+        result.errors.is_empty(),
+        "record rest pattern should parse cleanly: {:?}",
         result.errors
     );
+    let Item::Function(function) = &result.program.items[1].0 else {
+        panic!("expected main function");
+    };
+    let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+        panic!("expected trailing match expression");
+    };
+    let Pattern::Struct { fields, rest, .. } = &arms[0].pattern.0 else {
+        panic!("expected struct pattern");
+    };
+    assert_eq!(fields.len(), 1);
+    assert!(rest.is_some());
 }
 
 // `ask` is not lexer-recognised in edition 2026 — it is reserved for a future

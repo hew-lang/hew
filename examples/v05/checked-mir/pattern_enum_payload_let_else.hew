@@ -11,10 +11,7 @@ enum Packet {
 
 fn make(good: bool) -> Packet {
     if good {
-        Packet::Data {
-            a: "let-else-a".to_upper(),
-            b: "let-else-b".to_upper(),
-        }
+        Packet::Data { a: "let-else-a".to_upper(), b: "let-else-b".to_upper() }
     } else {
         Packet::Empty
     }
@@ -23,11 +20,15 @@ fn make(good: bool) -> Packet {
 fn probe(good: bool) -> i64 {
     let p = make(good);
     let Packet::Data { a, b: _ } = p else {
-        return 0
+        return 0;
     };
     a.len()
 }
 
 fn main() -> i64 {
-    if probe(true) > 0 && probe(false) == 0 { 0 } else { 1 }
+    if probe(true) > 0 && probe(false) == 0 {
+        0
+    } else {
+        1
+    }
 }

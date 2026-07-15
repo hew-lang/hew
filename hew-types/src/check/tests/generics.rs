@@ -2413,6 +2413,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
                     pattern: None,
                 },
             ],
+            rest: None,
         },
         &Ty::Named {
             builtin: None,
@@ -2472,6 +2473,7 @@ fn struct_pattern_missing_type_def_emits_diagnostic() {
                 name: "value".to_string(),
                 pattern: None,
             }],
+            rest: None,
         },
         &Ty::Named {
             builtin: None,

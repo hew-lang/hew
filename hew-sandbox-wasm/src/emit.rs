@@ -3867,7 +3867,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     }
                 }
             }
-            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
                 if let Some(layout) = self.struct_pattern_layout(scrutinee_ty) {
                     for field_pattern in fields {
                         let Some((field_idx, field_ty)) = layout

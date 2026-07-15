@@ -9,24 +9,75 @@ use super::*;
 impl Parser<'_> {
     // ── Patterns ──
 
-    /// If the next token is a record rest-pattern `..`, emit an honest
-    /// "not yet supported" diagnostic (matching the checker's deferred-feature
-    /// message) instead of letting the generic `expected identifier` error fire,
-    /// then return `true` so the caller can stop the field loop. See #2339.
-    fn reject_record_rest_pattern(&mut self) -> bool {
-        if self.peek() == Some(&Token::DotDot) {
-            let span = self.peek_span();
-            self.error_at_with_hint(
-                "record rest-patterns (`..`) are not yet supported".to_string(),
-                span,
-                "list every field explicitly, or bind the whole value; \
-                 subset destructuring with `..` is not implemented yet",
-            );
-            self.advance(); // consume `..` so recovery does not re-report it
-            true
-        } else {
-            false
+    fn parse_record_pattern_fields(&mut self) -> Option<(Vec<PatternField>, Option<Span>)> {
+        let mut fields = Vec::new();
+        let mut rest = None;
+
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            if self.peek() == Some(&Token::DotDot) {
+                let rest_span = self.peek_span();
+                self.advance();
+                rest = Some(rest_span);
+
+                let had_comma = self.eat(&Token::Comma);
+                match self.peek() {
+                    Some(Token::RightBrace) if had_comma => {
+                        self.error_at(
+                            "a record pattern cannot have a trailing comma after `..`".to_string(),
+                            self.peek_span(),
+                        );
+                    }
+                    Some(Token::RightBrace) => {}
+                    Some(Token::DotDot) => {
+                        self.error_at(
+                            "duplicate `..` in record pattern".to_string(),
+                            self.peek_span(),
+                        );
+                    }
+                    _ => {
+                        self.error_at(
+                            "record pattern fields must precede `..`".to_string(),
+                            self.peek_span(),
+                        );
+                    }
+                }
+
+                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    self.advance();
+                }
+                break;
+            }
+
+            let field_name = self.expect_ident()?;
+            let pattern = if self.eat(&Token::Colon) {
+                Some(self.parse_pattern()?)
+            } else {
+                None
+            };
+            fields.push(PatternField {
+                name: field_name,
+                pattern,
+            });
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
         }
+
+        self.expect(&Token::RightBrace)?;
+        Some((fields, rest))
+    }
+
+    fn reject_positional_rest_pattern(&mut self) -> bool {
+        if self.peek() != Some(&Token::DotDot) {
+            return false;
+        }
+        self.error_at(
+            "`..` is only allowed in record pattern field lists".to_string(),
+            self.peek_span(),
+        );
+        self.advance();
+        true
     }
 
     pub(crate) fn parse_pattern(&mut self) -> Option<Spanned<Pattern>> {
@@ -103,6 +154,10 @@ impl Parser<'_> {
                 if self.eat(&Token::LeftParen) {
                     let mut patterns = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                        if self.reject_positional_rest_pattern() {
+                            self.eat(&Token::Comma);
+                            continue;
+                        }
                         patterns.push(self.parse_pattern()?);
                         if !self.eat(&Token::Comma) {
                             break;
@@ -111,27 +166,8 @@ impl Parser<'_> {
                     self.expect(&Token::RightParen)?;
                     Pattern::Constructor { name, patterns }
                 } else if self.eat(&Token::LeftBrace) {
-                    let mut fields = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        if self.reject_record_rest_pattern() {
-                            break;
-                        }
-                        let field_name = self.expect_ident()?;
-                        let pattern = if self.eat(&Token::Colon) {
-                            Some(self.parse_pattern()?)
-                        } else {
-                            None
-                        };
-                        fields.push(PatternField {
-                            name: field_name,
-                            pattern,
-                        });
-                        if !self.eat(&Token::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&Token::RightBrace)?;
-                    Pattern::Struct { name, fields }
+                    let (fields, rest) = self.parse_record_pattern_fields()?;
+                    Pattern::Struct { name, fields, rest }
                 } else {
                     Pattern::Identifier(name)
                 }
@@ -156,6 +192,10 @@ impl Parser<'_> {
                         // Constructor pattern
                         let mut patterns = Vec::new();
                         while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                            if self.reject_positional_rest_pattern() {
+                                self.eat(&Token::Comma);
+                                continue;
+                            }
                             patterns.push(self.parse_pattern()?);
                             if !self.eat(&Token::Comma) {
                                 break;
@@ -165,28 +205,8 @@ impl Parser<'_> {
                         Pattern::Constructor { name, patterns }
                     } else if self.eat(&Token::LeftBrace) {
                         // Struct pattern
-                        let mut fields = Vec::new();
-                        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                            if self.reject_record_rest_pattern() {
-                                break;
-                            }
-                            let field_name = self.expect_ident()?;
-                            let pattern = if self.eat(&Token::Colon) {
-                                Some(self.parse_pattern()?)
-                            } else {
-                                None
-                            };
-                            fields.push(PatternField {
-                                name: field_name,
-                                pattern,
-                            });
-
-                            if !self.eat(&Token::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(&Token::RightBrace)?;
-                        Pattern::Struct { name, fields }
+                        let (fields, rest) = self.parse_record_pattern_fields()?;
+                        Pattern::Struct { name, fields, rest }
                     } else {
                         Pattern::Identifier(name)
                     }
@@ -219,27 +239,8 @@ impl Parser<'_> {
             // delegates to the same field-binding path as `Pattern::Struct`.
             Some(Token::LeftBrace) => {
                 self.advance(); // consume '{'
-                let mut fields = Vec::new();
-                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                    if self.reject_record_rest_pattern() {
-                        break;
-                    }
-                    let field_name = self.expect_ident()?;
-                    let pattern = if self.eat(&Token::Colon) {
-                        Some(self.parse_pattern()?)
-                    } else {
-                        None
-                    };
-                    fields.push(PatternField {
-                        name: field_name,
-                        pattern,
-                    });
-                    if !self.eat(&Token::Comma) {
-                        break;
-                    }
-                }
-                self.expect(&Token::RightBrace)?;
-                Pattern::RecordShorthand { fields }
+                let (fields, rest) = self.parse_record_pattern_fields()?;
+                Pattern::RecordShorthand { fields, rest }
             }
             Some(Token::Integer(s)) => {
                 if let Ok((val, radix)) = parse_int_literal(s) {

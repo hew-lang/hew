@@ -9,10 +9,7 @@ type Pair {
 }
 
 fn make() -> Pair {
-    Pair {
-        a: "record-let-a".to_upper(),
-        b: "record-let-b".to_upper(),
-    }
+    Pair { a: "record-let-a".to_upper(), b: "record-let-b".to_upper() }
 }
 
 fn probe() -> i64 {
@@ -22,5 +19,9 @@ fn probe() -> i64 {
 }
 
 fn main() -> i64 {
-    if probe() > 0 { 0 } else { 1 }
+    if probe() > 0 {
+        0
+    } else {
+        1
+    }
 }

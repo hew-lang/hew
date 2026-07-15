@@ -1626,7 +1626,7 @@ fn walk_pattern(
                 walk_pattern(pattern, owners);
             }
         }
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             for field in fields {
                 if let Some(pattern) = &field.pattern {
                     walk_pattern(pattern, owners);

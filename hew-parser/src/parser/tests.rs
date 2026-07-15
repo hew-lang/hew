@@ -4127,7 +4127,7 @@ fn parse_let_record_shorthand_two_fields_no_type_name() {
     let (crate::ast::Stmt::Let { pattern, .. }, _) = &stmts[1] else {
         panic!("expected let statement at index 1, got {:?}", stmts[1]);
     };
-    let Pattern::RecordShorthand { fields } = &pattern.0 else {
+    let Pattern::RecordShorthand { fields, .. } = &pattern.0 else {
         panic!("expected Pattern::RecordShorthand, got {:?}", pattern.0);
     };
     assert_eq!(fields.len(), 2);
@@ -4154,7 +4154,7 @@ fn parse_let_record_shorthand_with_alias_subpatterns() {
     let (crate::ast::Stmt::Let { pattern, .. }, _) = &stmts[1] else {
         panic!("expected let statement at index 1, got {:?}", stmts[1]);
     };
-    let Pattern::RecordShorthand { fields } = &pattern.0 else {
+    let Pattern::RecordShorthand { fields, .. } = &pattern.0 else {
         panic!("expected Pattern::RecordShorthand, got {:?}", pattern.0);
     };
     assert_eq!(fields.len(), 2);
@@ -4313,56 +4313,89 @@ fn wire_enum_keyword_form_rejected() {
     );
 }
 
-/// Record rest-patterns (`Point { x, .. }`) are not yet implemented. The parser
-/// must surface an honest "not yet supported" diagnostic pointing at the `..`
-/// rather than the generic `expected identifier, found `..`` error that gives
-/// no hint the construct is simply unimplemented. Covers the typed struct
-/// pattern, the enum-variant-qualified struct pattern, and the shorthand form.
-/// Regression for issue #2339.
-#[allow(clippy::doc_markdown, reason = "doc mentions code-like pattern syntax")]
 #[test]
-fn record_rest_pattern_reports_honest_unsupported_diagnostic() {
-    for source in [
-        // Typed struct pattern in a match arm.
-        "fn f(p: Point) -> i64 { match p { Point { x, .. } => x } }",
-        // Enum-variant-qualified struct pattern.
-        "fn f(e: E) -> i64 { match e { E::A { x, .. } => x } }",
-        // Shorthand record destructure.
-        "fn f(p: Point) -> i64 { match p { { x, .. } => x } }",
+fn record_rest_patterns_parse_in_all_record_forms() {
+    for (source, shorthand) in [
+        (
+            "fn f(p: Point) -> i64 { match p { Point { x, .. } => x } }",
+            false,
+        ),
+        (
+            "fn f(e: E) -> i64 { match e { E::A { x, .. } => x } }",
+            false,
+        ),
+        ("fn f(p: Point) -> i64 { match p { { x, .. } => x } }", true),
+    ] {
+        let patterns = first_match_arm_patterns(source);
+        match &patterns[0] {
+            Pattern::Struct { fields, rest, .. } if !shorthand => {
+                assert_eq!(fields.len(), 1);
+                assert!(rest.is_some());
+            }
+            Pattern::RecordShorthand { fields, rest } if shorthand => {
+                assert_eq!(fields.len(), 1);
+                assert!(rest.is_some());
+            }
+            other => panic!("unexpected rest pattern for {source}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn record_rest_pattern_all_wildcard_form_parses() {
+    let patterns =
+        first_match_arm_patterns("fn f(p: Point) -> i64 { match p { Point { .. } => 0 } }");
+    let Pattern::Struct { fields, rest, .. } = &patterns[0] else {
+        panic!("expected struct rest pattern, got {:?}", patterns[0]);
+    };
+    assert!(fields.is_empty());
+    assert!(rest.is_some());
+}
+
+#[test]
+fn record_rest_pattern_grammar_rejects_invalid_positions() {
+    for (source, expected) in [
+        (
+            "fn f(p: Point) -> i64 { match p { Point { x, .., } => x } }",
+            "cannot have a trailing comma after `..`",
+        ),
+        (
+            "fn f(p: Point) -> i64 { match p { Point { x, .., y } => x } }",
+            "fields must precede `..`",
+        ),
+        (
+            "fn f(p: Point) -> i64 { match p { Point { x, .., .. } => x } }",
+            "duplicate `..`",
+        ),
+        (
+            "fn f(p: Point) -> i64 { match p { Point(x, ..) => x } }",
+            "only allowed in record pattern field lists",
+        ),
     ] {
         let result = parse(source);
         assert!(
-            !result.errors.is_empty(),
-            "expected a parse error for rest pattern in: {source}"
-        );
-        let msg = &result.errors[0].message;
-        assert!(
-            msg.contains("rest-patterns") && msg.contains("not yet supported"),
-            "first error should be the honest unsupported-rest-pattern diagnostic, \
-             got: {msg} (source: {source})"
-        );
-        // The generic parser fallthrough must not fire ahead of the honest message.
-        assert!(
-            !msg.contains("expected identifier"),
-            "generic `expected identifier` should not precede the honest diagnostic, \
-             got: {msg} (source: {source})"
-        );
-        let hint = result.errors[0].hint.as_deref().unwrap_or_default();
-        assert!(
-            hint.contains("list every field explicitly"),
-            "diagnostic should hint at listing fields explicitly, got: {hint}"
+            result
+                .errors
+                .iter()
+                .any(|error| error.message.contains(expected)),
+            "expected `{expected}` for {source}, got {:?}",
+            result.errors
         );
     }
 }
 
-/// A full field enumeration (no `..`) in a typed record pattern must still parse
-/// cleanly — the rest-pattern guard must not disturb valid destructures.
 #[test]
-fn typed_record_pattern_full_destructure_still_parses() {
-    let result = parse("fn f(p: Point) -> i64 { match p { Point { x, y } => x + y } }");
+fn record_rest_patterns_round_trip_through_formatter() {
+    let source = "fn f(p: Point) -> i64 { let { x, .. } = p; match p { Point { .. } => x } }";
+    let parsed = parse(source);
+    assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
+    let formatted = crate::fmt::format_program(&parsed.program);
+    assert!(formatted.contains("let { x, .. } = p"));
+    assert!(formatted.contains("Point { .. }"));
+    let reparsed = parse(&formatted);
     assert!(
-        result.errors.is_empty(),
-        "full typed destructure should parse cleanly, got: {:?}",
-        result.errors
+        reparsed.errors.is_empty(),
+        "formatted source failed to parse: {:?}\n{formatted}",
+        reparsed.errors
     );
 }

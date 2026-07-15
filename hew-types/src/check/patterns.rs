@@ -422,7 +422,7 @@ impl Checker {
                         has_unit_row = true;
                     }
                 }
-                Pattern::Struct { name, fields } => {
+                Pattern::Struct { name, fields, .. } => {
                     let short = name.rsplit("::").next().unwrap_or(name);
                     if short == variant_name
                         && fields.iter().all(|pf| {
@@ -755,7 +755,7 @@ impl Checker {
                     }
                 }
             }
-            Pattern::Struct { name, fields } => {
+            Pattern::Struct { name, fields, .. } => {
                 if self.reject_machine_event_pattern_outside_transition(ty, span) {
                     return;
                 }
@@ -875,7 +875,7 @@ impl Checker {
             // Shorthand record destructure `{ a, b }` — no type name in the pattern.
             // Use the scrutinee's type directly to look up field types, identical to
             // the `Pattern::Struct` fields-only path but without the variant-name check.
-            Pattern::RecordShorthand { fields } => {
+            Pattern::RecordShorthand { fields, .. } => {
                 let type_name_opt = ty.type_name();
                 if let Some(type_name) = type_name_opt {
                     if let Some(td) = self.lookup_type_def(type_name) {
@@ -1330,7 +1330,7 @@ impl Checker {
                     payload_variant_patterns,
                 }
             }
-            Pattern::Struct { name, fields } => {
+            Pattern::Struct { name, fields, .. } => {
                 // Determine whether this is an enum struct-variant or a plain
                 // struct/record pattern.
                 let short_name = name.rsplit("::").next().unwrap_or(name);

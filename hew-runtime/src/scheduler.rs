@@ -2861,12 +2861,17 @@ impl Drop for NoWorkerSchedulerForTest {
 ///
 /// # Safety
 ///
-/// No preconditions — may be called from any context. When called
-/// outside an installed execution context, this sets `hew_last_error` and
-/// returns 0.
+/// No preconditions — may be called from any context. When called outside
+/// an installed execution context, this returns 0 and leaves the
+/// thread-local last-error slot untouched, so a real diagnostic set by a
+/// prior operation survives.
 #[no_mangle]
 pub extern "C" fn hew_actor_cooperate() -> c_int {
-    let ctx = crate::execution_context::require_current_context();
+    // A fail-open cooperative-yield checkpoint must not disturb the caller's
+    // LAST_ERROR: use the silent context read, not require_current_context()
+    // (which sets EXECUTION_CONTEXT_NOT_INSTALLED as a side effect and would
+    // clobber a real error a straight-line `main()` is about to read back).
+    let ctx = crate::execution_context::current_context();
     if ctx.is_null() {
         return 0;
     }

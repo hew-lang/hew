@@ -79,8 +79,15 @@ fn run_ctx_null_reader_case(case: u8) {
             assert_context_not_installed_error();
         }
         4 => {
+            // hew_actor_cooperate is a fail-open checkpoint, deliberately
+            // NOT a typed-error emitter: it must leave the last-error slot
+            // untouched so a real diagnostic set by a prior operation
+            // survives to its reader (issue #2506).
             assert_eq!(hew_runtime::scheduler::hew_actor_cooperate(), 0);
-            assert_context_not_installed_error();
+            assert!(
+                hew_last_error().is_null(),
+                "cooperate checkpoint must not write the last-error slot"
+            );
         }
         5 => {
             assert!(hew_runtime::arena::set_current_arena(ptr::null_mut()).is_null());

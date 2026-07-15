@@ -2765,17 +2765,22 @@ mod tests {
     }
 
     #[test]
-    fn cooperate_without_execution_context_fails_closed() {
+    fn cooperate_without_execution_context_preserves_last_error() {
+        // The cooperate checkpoint fails open (returns 0) without an
+        // installed execution context and must not disturb the thread-local
+        // last-error slot: a clear slot stays clear, and a real diagnostic
+        // set by a prior operation survives the checkpoint (issue #2506).
         crate::hew_clear_error();
+        assert_eq!(crate::scheduler::hew_actor_cooperate(), 0);
+        assert!(crate::hew_last_error().is_null());
+
+        crate::set_last_error("real diagnostic from a prior operation");
         assert_eq!(crate::scheduler::hew_actor_cooperate(), 0);
         let err = crate::hew_last_error();
         assert!(!err.is_null());
         // SAFETY: hew_last_error returned a non-null C string.
         let err = unsafe { CStr::from_ptr(err).to_str().unwrap() };
-        assert_eq!(
-            err,
-            crate::execution_context::EXECUTION_CONTEXT_NOT_INSTALLED
-        );
+        assert_eq!(err, "real diagnostic from a prior operation");
         crate::hew_clear_error();
     }
 

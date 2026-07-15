@@ -1387,8 +1387,9 @@ fn render_mir_check(check: &MirCheck) -> String {
             name,
             handle_ty,
             overwrite,
+            owner,
         } => format!(
-            "OwnedHandleAggregateDoubleFree {binding:?} {name} ty={handle_ty} overwrite={overwrite}"
+            "OwnedHandleAggregateDoubleFree {binding:?} {name} ty={handle_ty} overwrite={overwrite} owner={owner:?}"
         ),
     }
 }
@@ -1637,9 +1638,10 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             name,
             handle_ty,
             overwrite,
+            owner,
         } => {
             format!(
-                "OwnedHandleAggregateExtractionUnsupported {name} ty={handle_ty} overwrite={overwrite}"
+                "OwnedHandleAggregateExtractionUnsupported {name} ty={handle_ty} overwrite={overwrite} owner={owner:?}"
             )
         }
         MirDiagnosticKind::ClosurePairBorrowedStore { name, site } => {

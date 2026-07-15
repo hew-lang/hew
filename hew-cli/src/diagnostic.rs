@@ -832,14 +832,23 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             name,
             handle_ty,
             overwrite,
+            owner,
         } => {
             if *overwrite {
-                format!(
-                    "overwriting an owned handle field (`{name}`: {handle_ty}) in an aggregate \
-                     in this shape is not yet supported — the previous handle would leak \
-                     (its `close` never runs) and the new one would be double-owned; rebuild the \
-                     whole record instead of reassigning the field"
-                )
+                match owner {
+                    hew_mir::AggregateOwner::ActorState => format!(
+                        "overwriting an owned handle in actor state (`{name}`: {handle_ty}) is not \
+                         yet supported — the previous handle would leak (its `close` never runs) \
+                         and the new one would be double-owned by the actor's shutdown drop; \
+                         re-`spawn` the actor with fresh state instead of reassigning the field"
+                    ),
+                    hew_mir::AggregateOwner::Record => format!(
+                        "overwriting an owned handle field (`{name}`: {handle_ty}) in an aggregate \
+                         in this shape is not yet supported — the previous handle would leak \
+                         (its `close` never runs) and the new one would be double-owned; rebuild \
+                         the whole record instead of reassigning the field"
+                    ),
+                }
             } else {
                 format!(
                     "extracting an owned handle (`{name}`: {handle_ty}) out of an aggregate in this \

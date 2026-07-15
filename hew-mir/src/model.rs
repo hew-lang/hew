@@ -5344,6 +5344,22 @@ pub struct CheckedMirFunction {
 ///
 /// The variants are exhaustive over the v0.5 move/borrow/init/aliasing
 /// surface. Variants whose construction surface doesn't yet exist in
+/// Which aggregate kind owns the resource handle field that the RAII
+/// fail-closed gate refused. Selects ONLY the user-facing remediation wording
+/// (`OwnedHandleAggregateExtractionUnsupported`) — the refusal itself and its
+/// exactly-once-free rationale are identical for both. A plain record's
+/// remediation is "rebuild the whole record"; an actor's state field's is
+/// "re-`spawn` the actor / rebuild its whole state", because an actor's state
+/// is never a value the handler can wholesale-reconstruct in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggregateOwner {
+    /// A plain `type R { ... }` record aggregate (`h.dq = src`, `let d = h.dq`).
+    Record,
+    /// An actor's state field (`self.dq = src`) — overwrite only; actor-state
+    /// resource *extraction* is a separate, out-of-scope concern.
+    ActorState,
+}
+
 /// the spine (`Aliasing`, `GeneratorBorrowAcrossYield`,
 /// `ActorSendEscape`) are declared here so subsequent work that adds
 /// borrow ops, `Terminator::Yield` construction, and actor-send
@@ -5477,11 +5493,16 @@ pub enum MirCheck {
         /// `false` = the handle is projected OUT of the aggregate (a
         /// `RecordFieldLoad` / element read — `let d = h.dq`); `true` = the
         /// handle field is OVERWRITTEN in place (a `RecordFieldStore` —
-        /// `h.dq = src`), which drops the old handle on the floor (leak) and
-        /// byte-copies `src` in with no move/null discipline (double-owner).
-        /// Both are the SAME unprovable-exactly-once gate; the flag only
-        /// selects the user-facing remediation wording.
+        /// `h.dq = src`, or an `ActorStateFieldStore` — `self.dq = src`), which
+        /// drops the old handle on the floor (leak) and byte-copies `src` in
+        /// with no move/null discipline (double-owner). Both are the SAME
+        /// unprovable-exactly-once gate; the flag only selects the user-facing
+        /// remediation wording.
         overwrite: bool,
+        /// Which aggregate kind owns the field — selects record vs. actor-state
+        /// remediation wording. Actor-state findings are always `overwrite:
+        /// true` (no extraction arm).
+        owner: AggregateOwner,
     },
 }
 
@@ -6528,6 +6549,9 @@ pub enum MirDiagnosticKind {
         name: String,
         handle_ty: String,
         overwrite: bool,
+        /// Which aggregate kind owns the field — selects record vs. actor-state
+        /// remediation wording (see [`AggregateOwner`]).
+        owner: AggregateOwner,
     },
     /// Sole-owner closure-pair ingress gate: a function value flowing into an
     /// owning container position (record field, Vec element, machine payload,

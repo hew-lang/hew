@@ -2296,23 +2296,23 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     // SAFETY: checked non-null above.
     let ops = unsafe { &*node.transport_ops };
 
-    // Bridge the frozen per-node mesh SPKI allowlist (from `Node::allow_peer`
-    // bindings, issue #2652) into the quic-mesh listener before it binds, so a
-    // peer whose SPKI is bound in the config is admitted by the mTLS handshake
-    // and one that is not is rejected (fail-closed). Runs before listen so the
-    // allowlist is complete at bind time.
+    // Install the frozen per-node mesh peer-auth material (stable identity + peer
+    // SPKI allowlist + setup-error poison, derived from `Node::load_keys` /
+    // `Node::allow_peer` bindings, issue #2652 / D14) onto this transport before
+    // it binds. The mTLS handshake then admits exactly the bound peers and no
+    // other, and a poisoned setup refuses to bind (fail-closed). Per-instance —
+    // no process-global allowlist, so two concurrent mesh nodes stay isolated.
     #[cfg(feature = "quic")]
     if node.auth.transport() == PeerTransport::QuicMesh {
-        for spki in node.auth.mesh_spki_allowlist() {
-            // SAFETY: `spki` is a live slice for the duration of this call.
-            let rc =
-                unsafe { crate::quic_mesh::hew_quic_mesh_peer_spki_add(spki.as_ptr(), spki.len()) };
-            if rc != 0 {
-                fail_start!(
-                    "hew_node_start: refusing to bind mesh listener — a bound peer SPKI was \
-                     rejected by the mesh allowlist (fail-closed)"
-                );
-            }
+        // SAFETY: node.transport was created/validated above and is live here.
+        let rc = unsafe {
+            crate::quic_mesh::hew_quic_mesh_transport_install_auth(node.transport, &node.auth)
+        };
+        if rc != 0 {
+            fail_start!(
+                "hew_node_start: refusing to bind mesh listener — failed to install the \
+                 per-node mesh peer-auth material (fail-closed)"
+            );
         }
     }
 
@@ -4104,23 +4104,11 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         set_last_error("Node::start: address is null");
         return -1;
     }
-    // Fail-closed: if a pre-start peer-auth step (`Node::load_keys` /
-    // `Node::allow_peer`) failed, refuse to start. Otherwise the node would bind
-    // a listener with an *ephemeral* self-signed identity (the operator's pinned
-    // key failed to load) or an *incomplete* peer allowlist — silently
-    // downgrading the configured mTLS posture (the F6 fail-open). The Hew call
-    // form discards this `-1`, so the operator-visible signal is the `hew: `
-    // diagnostic on stderr; the mesh `ensure_identity` boundary re-checks the
-    // same record as defence in depth.
-    #[cfg(feature = "quic")]
-    if let Some(reason) = crate::quic_mesh::mesh_auth_setup_error() {
-        let msg = format!(
-            "Node::start: refusing to bind listener — peer-auth setup failed (fail-closed): {reason}"
-        );
-        eprintln!("hew: {msg}");
-        set_last_error(msg);
-        return -1;
-    }
+    // Fail-closed: a failed pre-start peer-auth step (`Node::load_keys` /
+    // `Node::allow_peer`) poisons the staged config; the check runs below inside
+    // the staging lock (D14 — the poison lives on the per-node config, not a
+    // process-global record). The mesh `ensure_identity` boundary re-checks the
+    // installed snapshot as defence in depth.
 
     // ── Public owner-scoped staging (BLOCK-6) ─────────────────────────────
     // The singleton public `Node::*` API stages config in `PEER_AUTH_STATE`.
@@ -4141,6 +4129,20 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         };
         // Merge start-time environment posture into the staged config.
         let mut cfg = building.clone();
+        // Fail-closed: a failed pre-start peer-auth step poisoned the staged
+        // config. Refuse to start rather than binding a listener with an
+        // ephemeral self-signed identity (the operator's pinned key failed to
+        // load) or an incomplete peer allowlist — the F6 fail-open. The Hew call
+        // form discards this `-1`, so the operator-visible signal is the `hew: `
+        // stderr diagnostic.
+        if let Some(reason) = cfg.setup_error.as_deref() {
+            let msg = format!(
+                "Node::start: refusing to bind listener — peer-auth setup failed (fail-closed): {reason}"
+            );
+            eprintln!("hew: {msg}");
+            set_last_error(msg);
+            return -1;
+        }
         if let Err(msg) = merge_start_env_into_config(&mut cfg) {
             eprintln!("hew: {msg}");
             set_last_error(msg);
@@ -4490,15 +4492,28 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
 ///   the pre-F6 behaviour);
 /// - a `hew: ` stderr diagnostic — operator-visible, because the Hew call form
 ///   discards the `-1` return (these builtins are typed `Unit`);
-/// - the sticky mesh peer-auth failure record (quic-mesh builds only), which
-///   makes the next `Node::start` refuse to bind a listener (fail-closed) so a
-///   node never silently comes up with an ephemeral identity or an incomplete
-///   peer allowlist after the operator's setup failed.
+/// - the sticky setup-error poison on the staged `Building` config (D14 —
+///   per-node config state, no process-global record), which makes the next
+///   `Node::start` refuse to bind a listener (fail-closed) so a node never
+///   silently comes up with an ephemeral identity or an incomplete peer
+///   allowlist after the operator's setup failed.
 fn node_peer_auth_setup_failed(msg: impl Into<String>) {
     let msg = msg.into();
     eprintln!("hew: {msg} (fail-closed)");
-    #[cfg(feature = "quic")]
-    crate::quic_mesh::mesh_auth_record_failure(msg.clone());
+    // Poison the staged config. If a public node lifecycle already owns the
+    // state (Starting/Running) the poison is moot: that node already froze and
+    // installed its snapshot. First poison wins (a later generic failure must
+    // not overwrite the specific first cause).
+    {
+        let mut guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let ConfigState::Building(cfg) = &mut guard.state {
+            if cfg.setup_error.is_none() {
+                cfg.setup_error = Some(msg.clone());
+            }
+        }
+    }
     set_last_error(msg);
 }
 
@@ -4527,7 +4542,26 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
     #[cfg(feature = "quic")]
     {
         match crate::quic_mesh::mesh_identity_load_or_create(std::path::Path::new(p)) {
-            Ok(_spki) => 0,
+            Ok(material) => {
+                // Stage the loaded stable mesh identity into the Building config
+                // so the frozen snapshot (and the listener via `install_auth`)
+                // present this key across restarts (D14 — no process-global
+                // identity override). Rejected once the public lifecycle owns
+                // the state (Starting/Running).
+                let mut guard = PEER_AUTH_STATE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let ConfigState::Building(cfg) = &mut guard.state else {
+                    drop(guard);
+                    node_peer_auth_setup_failed(
+                        "Node::load_keys: peer auth config is locked while the public node \
+                         lifecycle is active (Starting/Running)",
+                    );
+                    return -1;
+                };
+                cfg.mesh_identity = Some(material);
+                0
+            }
             Err(err) => {
                 node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
                 -1
@@ -6583,26 +6617,28 @@ mod tests {
     }
 
     /// F6 fail-closed (C ABI): a failed `Node::load_keys` / `Node::allow_peer`
-    /// records a sticky peer-auth failure, so the next `Node::start` refuses to
-    /// bind a listener (returns -1) rather than silently coming up with an
-    /// ephemeral identity or an incomplete allowlist. This is the closed half of
-    /// the worst-case fail-open F6 addresses: pre-fix, `load_keys` returned -1
+    /// poisons the staged config, so the next `Node::start` refuses to bind a
+    /// listener (returns -1) rather than silently coming up with an ephemeral
+    /// identity or an incomplete allowlist. This is the closed half of the
+    /// worst-case fail-open F6 addresses: pre-fix, `load_keys` returned -1
     /// (discarded by the `Unit` Hew form) yet `start` proceeded.
     #[cfg(feature = "quic")]
     #[test]
     fn start_refuses_after_failed_peer_auth_setup_fail_closed() {
-        // Serialise against quic_mesh tests that mint identities / mutate the
-        // global allowlist: this test records a peer-auth failure in the shared
-        // process-global flag, which would otherwise fail-close a concurrent
-        // `ensure_identity` in another module. Held as the outermost guard.
-        let _state_guard = crate::quic_mesh::MESH_GLOBAL_STATE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = crate::runtime_test_guard();
+        // The setup poison now lives on the per-node staged config (D14), not a
+        // process-global flag; reset the staging cell to a clean Building config
+        // between sub-cases via this local helper.
+        let reset_staging = || {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        };
         let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
 
         // --- corrupt keyfile: load_keys must fail and poison start ---
-        crate::quic_mesh::mesh_auth_setup_reset();
+        reset_staging();
         let dir = std::env::temp_dir().join(format!("f6-cabi-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let key = dir.join("corrupt.key");
@@ -6617,11 +6653,10 @@ mod tests {
             // SAFETY: shutdown reclaims the current node, if any; takes no arguments.
             unsafe { hew_node_api_shutdown() };
         }
-        crate::quic_mesh::mesh_auth_setup_reset();
         let _ = std::fs::remove_file(&key);
 
         // --- bad-hex allow_peer: must fail and poison start ---
-        crate::quic_mesh::mesh_auth_setup_reset();
+        reset_staging();
         let bad_hex = CString::new("nothex!!").expect("valid C string");
         // SAFETY: bad_hex is a valid NUL-terminated C string for this call.
         let rc_allow = unsafe { hew_node_api_allow_peer(2, bad_hex.as_ptr()) };
@@ -6632,7 +6667,7 @@ mod tests {
             unsafe { hew_node_api_shutdown() };
         }
         // Reset BEFORE asserting so a failed assertion can't poison sibling tests.
-        crate::quic_mesh::mesh_auth_setup_reset();
+        reset_staging();
 
         assert_eq!(rc_load, -1, "a corrupt keyfile must report a load failure");
         assert_eq!(

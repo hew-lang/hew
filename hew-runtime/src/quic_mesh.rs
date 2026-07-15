@@ -44,11 +44,12 @@
 //! verifier is installed as both [`rustls::server::danger::ClientCertVerifier`]
 //! and [`rustls::client::danger::ServerCertVerifier`].
 //!
-//! Cross-process peer authentication is supported via a process-global
-//! mesh-SPKI allowlist ([`mesh_peer_spki_add`] / [`hew_quic_mesh_peer_spki_add`]).
-//! Callers register the DER-encoded `SubjectPublicKeyInfo` bytes of each
-//! peer's leaf certificate before invoking `listen`; the listener snapshots
-//! the global set into its [`MeshTls::allowed_peer_spkis`]. The listener also
+//! Per-node peer authentication is supported via a per-transport mesh-SPKI
+//! allowlist installed from the owning node's frozen `PeerAuthSnapshot`
+//! ([`hew_quic_mesh_transport_install_auth`], issue #2652 / D14). `Node::allow_peer`
+//! binds the DER-encoded `SubjectPublicKeyInfo` bytes of each peer's leaf
+//! certificate before `Node::start`; the listener installs that set into its
+//! [`MeshTls::allowed_peer_spkis`]. The listener also
 //! unconditionally trusts its own SPKI to preserve self-loopback (a peer
 //! that obtains the cert cannot authenticate without the private key).
 //!
@@ -84,7 +85,7 @@ use std::collections::{HashSet, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -94,7 +95,7 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
-use crate::peer_binding::RemoteIpClass;
+use crate::peer_binding::{MeshIdentityMaterial, PeerAuthSnapshot, RemoteIpClass};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -560,82 +561,61 @@ const QUIC_MESH_WORKER_THREADS: usize = 2;
 /// slow-handshake `DoS` from a peer that completes mTLS but never opens the
 /// expected control stream.
 const MESH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Maximum accepted DER-encoded `SubjectPublicKeyInfo` size for a registered
-/// peer SPKI. A well-formed `RSA-4096` SPKI is well under 1 KiB; rejecting
-/// anything larger bounds allowlist memory and trivial `DoS` surface.
-const MAX_SPKI_BYTES: usize = 4096;
 
 // ---------------------------------------------------------------------------
-// Process-global mesh peer SPKI allowlist
+// Per-instance mesh peer-auth material (issue #2652, D14)
 // ---------------------------------------------------------------------------
+//
+// The QUIC-mesh identity, peer-SPKI allowlist, and setup-error poison live on
+// each `QuicMeshTransport` instance (populated from the owning node's
+// `PeerAuthSnapshot` before `listen`), never on process-global statics. Two
+// concurrent mesh nodes therefore hold independent identities + allowlists +
+// setup state — no `ACTIVE_*` cross-contamination.
 
-/// Process-global allowlist of DER-encoded `SubjectPublicKeyInfo` bytes for
-/// peers permitted to establish a QUIC mesh connection.
-///
-/// Sibling of the Noise allowlist (`encryption::ACTIVE_ALLOWLIST`). The mesh
-/// uses X.509 cert SPKIs which cannot be derived from raw X25519 Noise keys,
-/// so the two allowlists are intentionally separate (see module docs).
-///
-/// # Lifecycle
-///
-/// The allowlist is **snapshotted at `listen` time**. Mutations after the
-/// listener's `MeshTls` has been built do NOT propagate to that listener's
-/// rustls verifier (the verifier holds a cloned `HashSet`). Established
-/// connections are not re-authenticated on removal — revocation requires
-/// closing the connection at the application layer.
-static ACTIVE_MESH_SPKI_ALLOWLIST: LazyLock<RwLock<HashSet<Vec<u8>>>> =
-    LazyLock::new(|| RwLock::new(HashSet::new()));
+/// A loaded mesh identity: TLS config plus its leaf SPKI bytes.
+type MeshIdentity = (MeshTls, Vec<u8>);
 
-fn active_mesh_spki_snapshot() -> HashSet<Vec<u8>> {
-    ACTIVE_MESH_SPKI_ALLOWLIST
-        .read()
-        .map_or_else(|p| p.into_inner().clone(), |s| s.clone())
+/// Per-node mesh peer-auth material installed onto a `QuicMeshTransport` before
+/// `listen` (D14). An unconfigured transport (no install) has an empty
+/// allowlist, no pinned identity (self-signed loopback-dev fallback), and no
+/// setup error.
+#[derive(Default)]
+struct InstalledMeshAuth {
+    /// This node's stable mesh identity (from `Node::load_keys`), or `None` for
+    /// the self-signed loopback-dev fallback.
+    identity: Option<MeshIdentity>,
+    /// DER-encoded peer `SubjectPublicKeyInfo` bytes permitted to connect.
+    allowed_peer_spkis: HashSet<Vec<u8>>,
+    /// Sticky fail-closed poison: a failed `Node::load_keys` / `Node::allow_peer`
+    /// makes `ensure_identity` refuse to mint/reuse a listener identity.
+    setup_error: Option<String>,
 }
 
-/// Add a peer SPKI to the process-global mesh allowlist.
-///
-/// Returns `true` if the entry was newly inserted; `false` if it was already
-/// present or rejected (oversize). Rejected SPKIs do not mutate the set.
-pub fn mesh_peer_spki_add(spki: Vec<u8>) -> bool {
-    if spki.is_empty() || spki.len() > MAX_SPKI_BYTES {
-        return false;
-    }
-    match ACTIVE_MESH_SPKI_ALLOWLIST.write() {
-        Ok(mut s) => s.insert(spki),
-        Err(p) => p.into_inner().insert(spki),
-    }
+/// Build a listener-ready [`MeshTls`] (+ leaf SPKI) from type-erased snapshot
+/// identity material (DER cert chain + PKCS#8 key + precomputed SPKI).
+fn mesh_tls_from_material(material: &MeshIdentityMaterial) -> MeshIdentity {
+    let cert_chain = material
+        .cert_chain_der()
+        .iter()
+        .map(|der| CertificateDer::from(der.clone()))
+        .collect();
+    let tls = MeshTls {
+        cert_chain,
+        private_key_pkcs8: material.private_key_der().to_vec(),
+        allowed_peer_spkis: HashSet::new(),
+    };
+    (tls, material.spki().to_vec())
 }
 
-/// Remove a peer SPKI from the process-global mesh allowlist.
-///
-/// Returns `true` if the entry was present and removed. Note: does NOT
-/// revoke already-established connections; close them explicitly.
-pub fn mesh_peer_spki_remove(spki: &[u8]) -> bool {
-    match ACTIVE_MESH_SPKI_ALLOWLIST.write() {
-        Ok(mut s) => s.remove(spki),
-        Err(p) => p.into_inner().remove(spki),
-    }
-}
-
-/// Clear the process-global mesh allowlist. After-listen connections still
-/// honour the snapshot taken at listen time.
-pub fn mesh_peer_spki_clear() {
-    match ACTIVE_MESH_SPKI_ALLOWLIST.write() {
-        Ok(mut s) => s.clear(),
-        Err(p) => p.into_inner().clear(),
-    }
-}
-
-/// Returns the number of SPKIs currently in the process-global allowlist.
-#[must_use]
-pub fn mesh_peer_spki_len() -> usize {
-    ACTIVE_MESH_SPKI_ALLOWLIST
-        .read()
-        .map_or_else(|p| p.into_inner().len(), |s| s.len())
+/// Project a minted/loaded [`MeshTls`] identity into type-erased snapshot
+/// material for the `Node::load_keys` -> `PeerAuthConfig` path (D14).
+fn material_from_mesh_tls(tls: &MeshTls, spki: &[u8]) -> MeshIdentityMaterial {
+    let cert_chain_der = tls.cert_chain.iter().map(|c| c.as_ref().to_vec()).collect();
+    MeshIdentityMaterial::from_der(cert_chain_der, tls.private_key_pkcs8.clone(), spki.to_vec())
 }
 
 // ---------------------------------------------------------------------------
-// Process-global mesh identity (Node::load_keys)
+// Mesh identity keyfile (Node::load_keys)
 // ---------------------------------------------------------------------------
 
 /// Magic prefix for the binary keyfile written/read by [`mesh_identity_load_or_create`].
@@ -652,105 +632,6 @@ const MAX_KEYFILE_KEY_BYTES: usize = 8192;
 /// can't drive an unbounded allocation before the frame parser runs.
 const MAX_KEYFILE_BYTES: usize =
     MESH_KEYFILE_MAGIC.len() + 4 + MAX_KEYFILE_CERT_BYTES + 4 + MAX_KEYFILE_KEY_BYTES;
-
-/// Process-global mesh TLS identity override, populated by `Node::load_keys`.
-///
-/// When `Some`, [`QuicMeshTransport::ensure_identity`] adopts this cert + key
-/// instead of minting a fresh self-signed cert, so a node presents a **stable**
-/// SPKI across restarts — exactly the property peer pinning relies on. The
-/// cached SPKI is the leaf cert's `SubjectPublicKeyInfo`. Sibling of the peer
-/// allowlist; snapshotted by the transport on first identity mint.
-static ACTIVE_MESH_IDENTITY: LazyLock<RwLock<Option<MeshIdentity>>> =
-    LazyLock::new(|| RwLock::new(None));
-
-/// A loaded mesh identity: TLS config plus its leaf SPKI bytes.
-type MeshIdentity = (MeshTls, Vec<u8>);
-
-fn mesh_identity_snapshot() -> Option<MeshIdentity> {
-    ACTIVE_MESH_IDENTITY
-        .read()
-        .map_or_else(|p| p.into_inner().clone(), |s| s.clone())
-}
-
-fn mesh_identity_set(tls: MeshTls, spki: Vec<u8>) {
-    match ACTIVE_MESH_IDENTITY.write() {
-        Ok(mut g) => *g = Some((tls, spki)),
-        Err(p) => *p.into_inner() = Some((tls, spki)),
-    }
-}
-
-#[cfg(test)]
-fn mesh_identity_clear() {
-    match ACTIVE_MESH_IDENTITY.write() {
-        Ok(mut g) => *g = None,
-        Err(p) => *p.into_inner() = None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Mesh peer-auth setup failure (fail-closed gate for the listener identity)
-// ---------------------------------------------------------------------------
-
-/// Sticky record of a failed mesh peer-auth setup step — a `Node::load_keys`
-/// that could not load/persist the operator's identity, or a `Node::allow_peer`
-/// that rejected a malformed SPKI. Both are pre-`Node::start` configuration; the
-/// C ABI already surfaces each failure via `hew_last_error` and a `-1` return,
-/// but the Hew call form discards that return (the builtins are `Unit`). Without
-/// this record, a failed step is invisible to `Node::start`, which then binds a
-/// listener with an *ephemeral* self-signed cert (the pinned identity failed to
-/// load) or an *incomplete* peer allowlist — a silent downgrade of the
-/// configured mTLS posture (the F6 fail-open).
-///
-/// Once set, [`QuicMeshTransport::ensure_identity`] refuses to mint or reuse an
-/// identity, so the listener cannot bind (fail-closed). The record is sticky: a
-/// failed identity is not recoverable by retrying `start`; production only
-/// clears it by fixing the configuration and re-running. Tests reset it via
-/// [`mesh_auth_setup_reset`].
-static MESH_AUTH_SETUP_ERROR: LazyLock<RwLock<Option<String>>> =
-    LazyLock::new(|| RwLock::new(None));
-
-/// Record that a mesh peer-auth setup step failed. The recorded reason blocks
-/// the next listener bind (see [`MESH_AUTH_SETUP_ERROR`]). Last failure wins so
-/// the most recently reported cause is echoed at `Node::start`.
-pub fn mesh_auth_record_failure(reason: impl Into<String>) {
-    let reason = reason.into();
-    match MESH_AUTH_SETUP_ERROR.write() {
-        Ok(mut g) => *g = Some(reason),
-        Err(p) => *p.into_inner() = Some(reason),
-    }
-}
-
-/// Returns the recorded peer-auth setup failure reason, if any. `Some` means a
-/// `Node::load_keys` / `Node::allow_peer` step failed and the mesh listener must
-/// refuse to bind (fail-closed).
-#[must_use]
-pub fn mesh_auth_setup_error() -> Option<String> {
-    MESH_AUTH_SETUP_ERROR
-        .read()
-        .map_or_else(|p| p.into_inner().clone(), |s| s.clone())
-}
-
-/// Clear the sticky peer-auth setup failure. Test-only: production never
-/// recovers a failed identity by clearing the record.
-#[cfg(test)]
-pub fn mesh_auth_setup_reset() {
-    match MESH_AUTH_SETUP_ERROR.write() {
-        Ok(mut g) => *g = None,
-        Err(p) => *p.into_inner() = None,
-    }
-}
-
-/// Serialises every test that mutates process-global mesh state — the identity
-/// override ([`mesh_identity_clear`]), the global allowlist, and the sticky
-/// peer-auth setup record ([`MESH_AUTH_SETUP_ERROR`]). These tests live in both
-/// the `quic_mesh` and `hew_node` test modules, which otherwise serialise on
-/// *different* locks (`SchedTestLock`), so this shared mutex is the single
-/// cross-module point that stops one test's recorded failure from poisoning an
-/// unrelated `ensure_identity` mint (which would then fail-closed). Acquire it
-/// as the outermost guard before touching any of that state.
-#[cfg(test)]
-pub(crate) static MESH_GLOBAL_STATE_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
 impl MeshTls {
     /// Serialize this identity to the dependency-free keyfile frame. The mesh
@@ -833,28 +714,29 @@ impl MeshTls {
     }
 }
 
-/// Load (or, if absent, mint-and-persist) the process-wide mesh identity from
-/// `path`, installing it as the [`ACTIVE_MESH_IDENTITY`] override and returning
-/// the leaf SPKI. This is the runtime behind `Node::load_keys`: peers pin a
-/// stable public key only when the local key survives restarts, so a missing
-/// file is created with a fresh self-signed identity rather than failing.
+/// Load (or, if absent, mint-and-persist) a stable mesh identity from `path`,
+/// returning the type-erased [`MeshIdentityMaterial`] for the node to stage into
+/// its `PeerAuthConfig` (D14 — no process-global override). This is the runtime
+/// behind `Node::load_keys`: peers pin a stable public key only when the local
+/// key survives restarts, so a missing file is created with a fresh self-signed
+/// identity rather than failing.
 ///
 /// # Errors
 ///
 /// Returns [`MeshError::Tls`] if the keyfile cannot be read/written, if its
 /// frame is malformed, or if a fresh identity cannot be minted.
-pub fn mesh_identity_load_or_create(path: &std::path::Path) -> Result<Vec<u8>, MeshError> {
+pub fn mesh_identity_load_or_create(
+    path: &std::path::Path,
+) -> Result<MeshIdentityMaterial, MeshError> {
     if path.exists() {
         let bytes = read_keyfile_bounded(path)?;
         let (tls, spki) = MeshTls::from_keyfile_bytes(&bytes)?;
-        mesh_identity_set(tls, spki.clone());
-        return Ok(spki);
+        return Ok(material_from_mesh_tls(&tls, &spki));
     }
     let (tls, spki) = MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?;
     let frame = tls.to_keyfile_bytes()?;
     write_keyfile_owner_only(path, &frame)?;
-    mesh_identity_set(tls, spki.clone());
-    Ok(spki)
+    Ok(material_from_mesh_tls(&tls, &spki))
 }
 
 /// Read a keyfile capped at [`MAX_KEYFILE_BYTES`]. Bounding the read means a
@@ -1032,6 +914,13 @@ pub(crate) struct QuicMeshTransport {
     /// configs. Subsequent `listen` reuses this cached identity so the
     /// caller-published SPKI matches the cert presented on the wire.
     identity: std::sync::Mutex<Option<(MeshTls, Vec<u8>)>>,
+    /// Per-node mesh peer-auth material (D14): the stable identity, the peer
+    /// SPKI allowlist, and the fail-closed setup-error poison, installed from
+    /// the owning node's `PeerAuthSnapshot` by
+    /// [`hew_quic_mesh_transport_install_auth`] before `listen`. Replaces the
+    /// retired process-global `ACTIVE_MESH_*` statics so two concurrent mesh
+    /// nodes cannot cross-contaminate.
+    installed_auth: std::sync::Mutex<InstalledMeshAuth>,
 }
 
 impl QuicMeshTransport {
@@ -1047,7 +936,18 @@ impl QuicMeshTransport {
             incoming_rx: std::sync::Mutex::new(None),
             tls_override: std::sync::Mutex::new(None),
             identity: std::sync::Mutex::new(None),
+            installed_auth: std::sync::Mutex::new(InstalledMeshAuth::default()),
         }
+    }
+
+    /// Install this node's mesh peer-auth material (identity + peer allowlist +
+    /// setup-error poison) from its frozen snapshot, before `listen` (D14).
+    /// Idempotent replace; call once per node start.
+    fn install_auth(&self, auth: InstalledMeshAuth) {
+        *self
+            .installed_auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = auth;
     }
 
     /// Ensure a TLS identity (cert + SPKI) is minted and cached for this
@@ -1055,15 +955,22 @@ impl QuicMeshTransport {
     /// allowlist applied) and the local SPKI bytes.
     fn ensure_identity(&self) -> Result<(MeshTls, Vec<u8>), MeshError> {
         // Fail-closed: a failed `Node::load_keys` / `Node::allow_peer` poisons
-        // the mesh identity. Refuse to mint or reuse any identity so the
+        // this node's mesh identity. Refuse to mint or reuse any identity so the
         // listener can never bind with an ephemeral self-signed cert (the
         // operator's pinned identity failed to load) or an incomplete allowlist.
-        // See `MESH_AUTH_SETUP_ERROR`.
-        if let Some(reason) = mesh_auth_setup_error() {
-            return Err(MeshError::Tls(format!(
-                "peer-auth setup failed; refusing to mint mesh listener identity (fail-closed): {reason}"
-            )));
-        }
+        // Read the per-instance poison (D14), never a process-global.
+        let installed_identity = {
+            let auth = self
+                .installed_auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(reason) = &auth.setup_error {
+                return Err(MeshError::Tls(format!(
+                    "peer-auth setup failed; refusing to mint mesh listener identity (fail-closed): {reason}"
+                )));
+            }
+            auth.identity.clone()
+        };
         let mut guard = self
             .identity
             .lock()
@@ -1071,10 +978,10 @@ impl QuicMeshTransport {
         if let Some((tls, spki)) = guard.as_ref() {
             return Ok((tls.clone(), spki.clone()));
         }
-        // A `Node::load_keys` override pins a stable on-disk identity; adopt it
-        // so the SPKI presented on the wire survives restarts. Falls back to a
-        // fresh self-signed cert (loopback dev default) when none is installed.
-        let (tls, spki) = match mesh_identity_snapshot() {
+        // A `Node::load_keys` identity pins a stable on-disk key; adopt it so the
+        // SPKI presented on the wire survives restarts. Falls back to a fresh
+        // self-signed cert (loopback dev default) when none is installed.
+        let (tls, spki) = match installed_identity {
             Some(pair) => pair,
             None => MeshTls::self_signed(vec!["hew-mesh.local".into(), "localhost".into()])?,
         };
@@ -1083,12 +990,17 @@ impl QuicMeshTransport {
     }
 
     /// Build the listen-time TLS config: cached identity + own SPKI
-    /// (self-loopback) + snapshot of [`ACTIVE_MESH_SPKI_ALLOWLIST`].
+    /// (self-loopback) + this transport's installed peer SPKI allowlist (D14,
+    /// per-instance — no process-global).
     fn listen_tls(&self) -> Result<MeshTls, MeshError> {
         let (mut tls, own_spki) = self.ensure_identity()?;
         tls.allowed_peer_spkis.insert(own_spki);
-        for peer_spki in active_mesh_spki_snapshot() {
-            tls.allowed_peer_spkis.insert(peer_spki);
+        let auth = self
+            .installed_auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for peer_spki in &auth.allowed_peer_spkis {
+            tls.allowed_peer_spkis.insert(peer_spki.clone());
         }
         Ok(tls)
     }
@@ -1856,56 +1768,42 @@ pub(crate) unsafe fn hew_transport_quic_mesh_bound_port(
 }
 
 // ---------------------------------------------------------------------------
-// C ABI: process-global mesh SPKI allowlist + per-transport local SPKI
+// Per-instance mesh peer-auth install seam (D14) + per-transport local SPKI
 // ---------------------------------------------------------------------------
 
-/// Add a DER-encoded peer `SubjectPublicKeyInfo` to the process-global mesh
-/// allowlist. Subsequent `quic_mesh_listen` calls snapshot the current
-/// allowlist into the TLS verifier.
+/// Install this node's mesh peer-auth material (identity + peer SPKI allowlist +
+/// setup-error poison) onto its `QuicMeshTransport`, sourced from the node's
+/// frozen [`PeerAuthSnapshot`], **before** `listen` (issue #2652, D14). Replaces
+/// the retired process-global `ACTIVE_MESH_*` statics: two concurrent mesh nodes
+/// present + pin independent credentials with no cross-contamination.
 ///
-/// Returns `0` on success (newly added or already present), `-1` on invalid
-/// input (null pointer, empty SPKI, or SPKI larger than 4 KiB).
-///
-/// # Safety
-///
-/// `spki` must point to at least `len` readable bytes, or be null when
-/// `len == 0`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_quic_mesh_peer_spki_add(spki: *const u8, len: usize) -> c_int {
-    if spki.is_null() || len == 0 || len > MAX_SPKI_BYTES {
-        set_last_error("quic_mesh peer_spki_add: invalid argument");
-        return -1;
-    }
-    // SAFETY: spki checked non-null and len > 0; caller guarantees the buffer.
-    let bytes = unsafe { std::slice::from_raw_parts(spki, len) }.to_vec();
-    let _ = mesh_peer_spki_add(bytes);
-    0
-}
-
-/// Remove a peer SPKI from the process-global allowlist. Returns `0` if
-/// removed or not present, `-1` on invalid input. Does NOT revoke
-/// already-established connections.
+/// Ops-verifies the transport is quic-mesh (never a raw `impl` cast on a
+/// non-mesh transport). A non-mesh / null / null-`impl` transport is a no-op
+/// returning `-1`.
 ///
 /// # Safety
 ///
-/// `spki` must point to at least `len` readable bytes, or be null when
-/// `len == 0`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_quic_mesh_peer_spki_remove(spki: *const u8, len: usize) -> c_int {
-    if spki.is_null() || len == 0 || len > MAX_SPKI_BYTES {
-        set_last_error("quic_mesh peer_spki_remove: invalid argument");
+/// `transport` must be null or a valid pointer for the duration of this call.
+pub unsafe fn hew_quic_mesh_transport_install_auth(
+    transport: *mut HewTransport,
+    snapshot: &PeerAuthSnapshot,
+) -> c_int {
+    if transport.is_null() {
         return -1;
     }
-    // SAFETY: spki checked non-null and len > 0; caller guarantees the buffer.
-    let bytes = unsafe { std::slice::from_raw_parts(spki, len) };
-    let _ = mesh_peer_spki_remove(bytes);
-    0
-}
-
-/// Clear the process-global mesh SPKI allowlist. Returns `0`.
-#[no_mangle]
-pub extern "C" fn hew_quic_mesh_peer_spki_clear() -> c_int {
-    mesh_peer_spki_clear();
+    // SAFETY: caller guarantees transport is valid for the duration of this call.
+    let t = unsafe { &*transport };
+    if !std::ptr::eq(t.ops, &raw const QUIC_MESH_OPS) || t.r#impl.is_null() {
+        return -1;
+    }
+    // SAFETY: ops-check above guarantees impl is a QuicMeshTransport.
+    let qmt = unsafe { &*t.r#impl.cast::<QuicMeshTransport>() };
+    let auth = InstalledMeshAuth {
+        identity: snapshot.mesh_identity().map(mesh_tls_from_material),
+        allowed_peer_spkis: snapshot.mesh_spki_allowlist().clone(),
+        setup_error: snapshot.setup_error().map(str::to_owned),
+    };
+    qmt.install_auth(auth);
     0
 }
 
@@ -1913,7 +1811,7 @@ pub extern "C" fn hew_quic_mesh_peer_spki_clear() -> c_int {
 ///
 /// Calling this **before** `listen` ensures the same cert is used by
 /// subsequent `listen`; callers can publish the returned SPKI to peers
-/// out-of-band so peers can add it to their own [`hew_quic_mesh_peer_spki_add`]
+/// out-of-band so peers can bind it in their own `Node::allow_peer` allowlist
 /// before they `listen`.
 ///
 /// On the first call the cert + SPKI are generated and cached on the
@@ -2542,10 +2440,6 @@ mod tests {
     /// bounding allocation. Fail-closed, no fabricated identity.
     #[test]
     fn load_keys_rejects_oversize_keyfile() {
-        let _g = MESH_GLOBAL_STATE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        mesh_identity_clear();
         let dir = std::env::temp_dir().join(format!("cap12-oversize-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("big.key");
@@ -2566,10 +2460,6 @@ mod tests {
     #[test]
     fn load_keys_writes_owner_only_perms() {
         use std::os::unix::fs::PermissionsExt;
-        let _g = MESH_GLOBAL_STATE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        mesh_identity_clear();
         let dir = std::env::temp_dir().join(format!("cap12-perms-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("node.key");
@@ -2577,30 +2467,30 @@ mod tests {
         mesh_identity_load_or_create(&path).expect("mint+persist");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "keyfile must be owner-only rw");
-        mesh_identity_clear();
         let _ = std::fs::remove_file(&path);
     }
 
-    /// CAP-12: `load_keys` creates a stable, persisted identity that
-    /// `ensure_identity` adopts; a second load is byte-identical.
+    /// CAP-12: `load_keys` creates a stable, persisted identity; a second load
+    /// yields byte-identical material, and a transport that installs it adopts
+    /// that identity rather than minting a fresh one (D14 — per-instance
+    /// install, no process-global override).
     #[test]
-    fn load_keys_persists_and_overrides_identity() {
-        let _g = MESH_GLOBAL_STATE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        mesh_identity_clear();
-        mesh_auth_setup_reset();
+    fn load_keys_persists_and_transport_adopts_installed_identity() {
         let dir = std::env::temp_dir().join(format!("cap12-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("node.key");
         let _ = std::fs::remove_file(&path);
 
-        let spki1 = mesh_identity_load_or_create(&path).expect("mint+persist");
+        let material1 = mesh_identity_load_or_create(&path).expect("mint+persist");
         assert!(path.exists(), "keyfile must be written when absent");
-        let spki2 = mesh_identity_load_or_create(&path).expect("reload");
-        assert_eq!(spki1, spki2, "reload must yield the same identity");
+        let material2 = mesh_identity_load_or_create(&path).expect("reload");
+        assert_eq!(
+            material1.spki(),
+            material2.spki(),
+            "reload must yield the same identity"
+        );
 
-        // The transport's ensure_identity must adopt the override, not mint fresh.
+        // A transport that installs the loaded identity adopts it, not a fresh mint.
         let rt = std::sync::Arc::new(
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2608,12 +2498,17 @@ mod tests {
                 .unwrap(),
         );
         let qmt = QuicMeshTransport::new(rt);
+        qmt.install_auth(InstalledMeshAuth {
+            identity: Some(mesh_tls_from_material(&material1)),
+            allowed_peer_spkis: HashSet::new(),
+            setup_error: None,
+        });
         let (_tls, adopted) = qmt.ensure_identity().expect("ensure_identity");
         assert_eq!(
-            adopted, spki1,
-            "ensure_identity must adopt the load_keys override"
+            adopted,
+            material1.spki(),
+            "ensure_identity must adopt the installed load_keys identity"
         );
-        mesh_identity_clear();
         let _ = std::fs::remove_file(&path);
     }
 
@@ -2781,60 +2676,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // A3 — process-global mesh SPKI allowlist
+    // D14 — per-instance mesh peer-auth (identity + allowlist + setup poison)
     // -----------------------------------------------------------------------
-
-    /// `mesh_peer_spki_add` rejects empty SPKIs and SPKIs above the
-    /// `MAX_SPKI_BYTES` cap (`DoS` guard for an externally-driven C ABI).
-    #[test]
-    fn mesh_peer_spki_add_rejects_invalid_lengths() {
-        let _guard = MESH_GLOBAL_STATE_TEST_LOCK.lock().unwrap();
-        mesh_peer_spki_clear();
-        assert!(
-            !mesh_peer_spki_add(Vec::new()),
-            "empty SPKI must be rejected"
-        );
-        assert!(
-            !mesh_peer_spki_add(vec![0u8; MAX_SPKI_BYTES + 1]),
-            "SPKI larger than MAX_SPKI_BYTES must be rejected"
-        );
-        assert_eq!(mesh_peer_spki_len(), 0, "no entry must have been added");
-    }
-
-    /// Add + remove + clear cycle through the allowlist.
-    #[test]
-    fn mesh_peer_spki_add_remove_clear_roundtrip() {
-        let _guard = MESH_GLOBAL_STATE_TEST_LOCK.lock().unwrap();
-        mesh_peer_spki_clear();
-        let spki = vec![0xAAu8; 64];
-        assert!(mesh_peer_spki_add(spki.clone()));
-        assert!(
-            !mesh_peer_spki_add(spki.clone()),
-            "duplicate add must return false"
-        );
-        assert_eq!(mesh_peer_spki_len(), 1);
-        assert!(mesh_peer_spki_remove(&spki));
-        assert!(
-            !mesh_peer_spki_remove(&spki),
-            "removing absent SPKI must return false"
-        );
-        assert_eq!(mesh_peer_spki_len(), 0);
-
-        assert!(mesh_peer_spki_add(vec![1u8; 32]));
-        assert!(mesh_peer_spki_add(vec![2u8; 32]));
-        mesh_peer_spki_clear();
-        assert_eq!(mesh_peer_spki_len(), 0);
-    }
 
     /// `QuicMeshTransport::ensure_identity` is idempotent: the cached cert +
     /// SPKI survive across calls (required so `local_spki` returns the same
     /// bytes that the eventual `listen` uses).
     #[test]
     fn transport_identity_is_cached() {
-        let _guard = MESH_GLOBAL_STATE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        mesh_auth_setup_reset();
         let rt = Arc::new(
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2850,14 +2699,11 @@ mod tests {
         );
     }
 
-    /// `listen_tls` unions the cached own-SPKI with the global allowlist
-    /// snapshot. Self-loopback (own SPKI) must always be trusted; registered
-    /// peers must be trusted; un-registered SPKIs must NOT be trusted.
+    /// `listen_tls` unions the cached own-SPKI with this transport's installed
+    /// allowlist (D14, per-instance). Self-loopback (own SPKI) must always be
+    /// trusted; installed peers must be trusted; un-installed SPKIs must NOT be.
     #[test]
-    fn listen_tls_unions_global_allowlist_with_own_spki() {
-        let _guard = MESH_GLOBAL_STATE_TEST_LOCK.lock().unwrap();
-        mesh_auth_setup_reset();
-        mesh_peer_spki_clear();
+    fn listen_tls_unions_installed_allowlist_with_own_spki() {
         let rt = Arc::new(
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2869,7 +2715,11 @@ mod tests {
 
         let registered = vec![0x55u8; 48];
         let other = vec![0x66u8; 48];
-        assert!(mesh_peer_spki_add(registered.clone()));
+        qmt.install_auth(InstalledMeshAuth {
+            identity: None,
+            allowed_peer_spkis: [registered.clone()].into_iter().collect(),
+            setup_error: None,
+        });
 
         let tls = qmt.listen_tls().expect("listen_tls");
         assert!(
@@ -2878,31 +2728,82 @@ mod tests {
         );
         assert!(
             tls.allowed_peer_spkis.contains(&registered),
-            "registered SPKI must be in the snapshot"
+            "installed SPKI must be in the allowlist"
         );
         assert!(
             !tls.allowed_peer_spkis.contains(&other),
-            "unregistered SPKI must not be in the snapshot"
+            "un-installed SPKI must not be in the allowlist"
         );
-        mesh_peer_spki_clear();
     }
 
-    /// F6 fail-closed: a recorded peer-auth setup failure (a failed
-    /// `Node::load_keys` / `Node::allow_peer`) makes `ensure_identity` refuse to
-    /// mint or reuse an identity, so the mesh listener cannot bind with an
-    /// ephemeral cert or an incomplete allowlist. Clearing the record restores
-    /// the loopback-dev default (a fresh self-signed identity), so the gate only
-    /// fires after an *actual* failure, never when peer-auth was simply never
-    /// configured.
+    /// D14 isolation: two concurrent transports hold independent identities,
+    /// allowlists, and setup-error poison with no cross-contamination. Node1
+    /// admits only peer B; node2 (poisoned) fails closed; neither leaks into
+    /// the other. This is the invariant the retired `ACTIVE_MESH_*` globals
+    /// could not provide.
     #[test]
-    fn recorded_peer_auth_failure_makes_ensure_identity_fail_closed() {
-        let _guard = MESH_GLOBAL_STATE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        mesh_identity_clear();
-        mesh_auth_setup_reset();
+    fn mesh_transport_auth_isolation() {
+        let mk_rt = || {
+            Arc::new(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap(),
+            )
+        };
+        let node1 = QuicMeshTransport::new(mk_rt());
+        let node2 = QuicMeshTransport::new(mk_rt());
 
-        // No failure recorded: the loopback-dev default mints a self-signed
+        let peer_b = vec![0xB1u8; 48];
+        let peer_d = vec![0xD2u8; 48];
+        node1.install_auth(InstalledMeshAuth {
+            identity: None,
+            allowed_peer_spkis: [peer_b.clone()].into_iter().collect(),
+            setup_error: None,
+        });
+        node2.install_auth(InstalledMeshAuth {
+            identity: None,
+            allowed_peer_spkis: [peer_d.clone()].into_iter().collect(),
+            setup_error: Some("node2: simulated load_keys failure".into()),
+        });
+
+        // node1 admits only its own allowed peer B, not node2's peer D.
+        let tls1 = node1.listen_tls().expect("node1 listen_tls");
+        assert!(
+            tls1.allowed_peer_spkis.contains(&peer_b),
+            "node1 must admit its own allowed peer B"
+        );
+        assert!(
+            !tls1.allowed_peer_spkis.contains(&peer_d),
+            "node1 must NOT admit node2's peer D (no cross-contamination)"
+        );
+
+        // node2's poison is independent: it fails closed while node1 stays live.
+        let blocked = node2.ensure_identity();
+        assert!(
+            blocked.is_err(),
+            "node2's installed setup_error must fail closed"
+        );
+        assert!(
+            format!("{}", blocked.unwrap_err()).contains("simulated load_keys failure"),
+            "node2's fail-closed error must echo its own reason"
+        );
+        assert!(
+            node1.ensure_identity().is_ok(),
+            "node1 must stay live despite node2's independent poison"
+        );
+    }
+
+    /// F6 fail-closed: an installed peer-auth setup failure (a failed
+    /// `Node::load_keys` / `Node::allow_peer`, staged into the snapshot) makes
+    /// `ensure_identity` refuse to mint or reuse an identity, so the mesh
+    /// listener cannot bind with an ephemeral cert or an incomplete allowlist. A
+    /// transport with no installed poison mints the loopback-dev default (a
+    /// fresh self-signed identity), so the gate only fires after an *actual*
+    /// failure, never when peer-auth was simply never configured.
+    #[test]
+    fn installed_peer_auth_failure_makes_ensure_identity_fail_closed() {
+        // No poison installed: the loopback-dev default mints a self-signed
         // identity (peer-auth was never configured — not a failure).
         let rt0 = Arc::new(
             tokio::runtime::Builder::new_current_thread()
@@ -2912,41 +2813,32 @@ mod tests {
         );
         assert!(
             QuicMeshTransport::new(rt0).ensure_identity().is_ok(),
-            "with no recorded failure, ensure_identity mints the dev default"
+            "with no installed failure, ensure_identity mints the dev default"
         );
 
-        // A recorded failure poisons the identity: ensure_identity fails closed.
-        mesh_auth_record_failure("test: simulated load_keys failure");
+        // An installed failure poisons the identity: ensure_identity fails closed.
         let rt1 = Arc::new(
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap(),
         );
-        let blocked = QuicMeshTransport::new(rt1).ensure_identity();
+        let poisoned = QuicMeshTransport::new(rt1);
+        poisoned.install_auth(InstalledMeshAuth {
+            identity: None,
+            allowed_peer_spkis: HashSet::new(),
+            setup_error: Some("test: simulated load_keys failure".into()),
+        });
+        let blocked = poisoned.ensure_identity();
         assert!(
             blocked.is_err(),
-            "a recorded peer-auth failure must block the listener identity (fail-closed)"
+            "an installed peer-auth failure must block the listener identity (fail-closed)"
         );
         let msg = format!("{}", blocked.unwrap_err());
         assert!(
             msg.contains("fail-closed") && msg.contains("simulated load_keys failure"),
-            "the fail-closed error must echo the recorded reason, got: {msg}"
+            "the fail-closed error must echo the installed reason, got: {msg}"
         );
-
-        // Clearing the record restores the dev default.
-        mesh_auth_setup_reset();
-        let rt2 = Arc::new(
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap(),
-        );
-        assert!(
-            QuicMeshTransport::new(rt2).ensure_identity().is_ok(),
-            "clearing the recorded failure restores the dev default"
-        );
-        mesh_identity_clear();
     }
 
     // -----------------------------------------------------------------------

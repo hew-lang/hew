@@ -3,7 +3,10 @@ mod support;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use support::{hew_binary, repo_root, require_codegen, run_bounded_hew_run, strip_ansi};
+use support::{
+    hew_binary, repo_root, require_codegen, run_bounded_hew_run, run_bounded_hew_run_with_env,
+    strip_ansi,
+};
 
 /// Verify that `hew run --timeout` kills the entire process tree spawned by
 /// the compiled Hew program, not just the root binary.
@@ -483,7 +486,7 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
         fn main() {
             Node::set_transport("quic-mesh");
             Node::load_keys("node.key");
-            Node::allow_peer("3059301306072a8648ce3d020106082a8648ce3d030107");
+            Node::allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
             Node::start("127.0.0.1:0");
             let counter = spawn Counter(count: 0);
             Node::register("counter", counter);
@@ -495,7 +498,9 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
     )
     .expect("write peer-auth fixture");
 
-    let output = run_bounded_hew_run(&path, dir.path());
+    // Strict binding: configuring a peer binding requires this node's own
+    // stable id (HEW_NODE_ID), distinct from the bound peer id (2).
+    let output = run_bounded_hew_run_with_env(&path, dir.path(), &[("HEW_NODE_ID", "1")]);
     assert!(
         output.status.success(),
         "hew run should complete the peer-auth surface; stdout: {}\nstderr: {}",
@@ -515,7 +520,7 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
     );
 
     // Stable identity: a second run loads the existing key, never overwrites.
-    let output2 = run_bounded_hew_run(&path, dir.path());
+    let output2 = run_bounded_hew_run_with_env(&path, dir.path(), &[("HEW_NODE_ID", "1")]);
     assert!(
         output2.status.success(),
         "second run should reuse the persisted key"
@@ -543,7 +548,7 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         r#"
         fn main() {
             Node::set_transport("quic-mesh");
-            Node::allow_peer("zznothexzz");
+            Node::allow_peer(2, "zznothexzz");
             Node::start("127.0.0.1:0");
             println("after-start");
         }

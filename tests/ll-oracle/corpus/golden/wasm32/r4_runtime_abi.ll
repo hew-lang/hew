@@ -289,7 +289,7 @@ declare void @hew_node_api_shutdown()
 
 declare void @hew_node_api_load_keys(ptr)
 
-declare void @hew_node_api_allow_peer(ptr)
+declare void @hew_node_api_allow_peer(i16, ptr)
 
 declare i64 @hew_actor_pid(ptr)
 

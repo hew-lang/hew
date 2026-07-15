@@ -3143,14 +3143,18 @@ keys. Call these before `Node::start`:
 ```hew
 Node::set_transport("quic-mesh");
 Node::load_keys("node.key");        // mint+persist this node's identity (stable SPKI)
-Node::allow_peer("3059…0107");      // pin a peer's SPKI (lowercase hex); fail-closed
+Node::allow_peer(2, "3059…0107");   // bind peer NodeId 2 to its cert SPKI; fail-closed
 Node::start("0.0.0.0:9000");
 ```
 
 `load_keys` loads the node's TLS identity from the keyfile, creating one on
-first run so the public key stays stable across restarts. `allow_peer` adds a
-peer's certificate SPKI to the fail-closed allowlist — an unpinned peer's
-handshake is rejected. These are native-only; WASM/sandbox builds carry no
+first run so the public key stays stable across restarts. `allow_peer(node_id,
+credential)` binds a peer's authenticated credential (quic-mesh: cert SPKI;
+tcp-noise: 32-byte Noise public key, both lowercase hex) to the `NodeId` that
+peer is permitted to claim — a peer whose credential is unbound, or which
+claims a `NodeId` its credential is not bound to, is rejected (fail-closed).
+Configuring any binding requires this node's own stable id via the `HEW_NODE_ID`
+environment variable. These are native-only; WASM/sandbox builds carry no
 networking. See [`examples/distributed_hello.hew`](../examples/distributed_hello.hew).
 
 ### TLS client — free-function surface (with a v0.5 data-plane caveat)

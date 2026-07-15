@@ -24,7 +24,10 @@ use std::thread::{self, JoinHandle};
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
 use crate::envelope::encode_envelope_frame_from_raw_parts;
-use crate::peer_binding::{ConfigState, PeerAuthSnapshot, PEER_AUTH_STATE};
+use crate::peer_binding::{
+    ConfigState, PeerAuthSnapshot, PeerCredential, TransportSelection as PeerTransport,
+    PEER_AUTH_STATE,
+};
 use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -54,6 +57,22 @@ enum TransportSelection {
     Quic,
     #[cfg(feature = "quic")]
     QuicMesh,
+}
+
+impl TransportSelection {
+    /// Project the (feature-gated) runtime transport selection onto the
+    /// self-contained `peer_binding::TransportSelection` carried by the frozen
+    /// per-node snapshot (issue #2652). Keeps the peer-auth authority module
+    /// independent of the `quic` feature.
+    fn as_peer_transport(self) -> PeerTransport {
+        match self {
+            TransportSelection::Tcp => PeerTransport::Tcp,
+            #[cfg(feature = "quic")]
+            TransportSelection::Quic => PeerTransport::Quic,
+            #[cfg(feature = "quic")]
+            TransportSelection::QuicMesh => PeerTransport::QuicMesh,
+        }
+    }
 }
 
 fn normalize_transport_name(name: &str) -> Result<&'static str, String> {
@@ -2277,6 +2296,26 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     // SAFETY: checked non-null above.
     let ops = unsafe { &*node.transport_ops };
 
+    // Bridge the frozen per-node mesh SPKI allowlist (from `Node::allow_peer`
+    // bindings, issue #2652) into the quic-mesh listener before it binds, so a
+    // peer whose SPKI is bound in the config is admitted by the mTLS handshake
+    // and one that is not is rejected (fail-closed). Runs before listen so the
+    // allowlist is complete at bind time.
+    #[cfg(feature = "quic")]
+    if node.auth.transport() == PeerTransport::QuicMesh {
+        for spki in node.auth.mesh_spki_allowlist() {
+            // SAFETY: `spki` is a live slice for the duration of this call.
+            let rc =
+                unsafe { crate::quic_mesh::hew_quic_mesh_peer_spki_add(spki.as_ptr(), spki.len()) };
+            if rc != 0 {
+                fail_start!(
+                    "hew_node_start: refusing to bind mesh listener — a bound peer SPKI was \
+                     rejected by the mesh allowlist (fail-closed)"
+                );
+            }
+        }
+    }
+
     let Some(listen_fn) = ops.listen else {
         fail_start!("hew_node_start: transport listen op missing");
     };
@@ -4033,6 +4072,27 @@ fn hew_dist_unverified_from_env() -> bool {
         })
 }
 
+/// Merge start-time environment posture (`HEW_NODE_ID`, `HEW_DIST_UNVERIFIED`,
+/// `HEW_TRANSPORT`) into the staged pre-start config (issue #2652). The pinned
+/// transport is carried by the frozen snapshot so admission interprets peer
+/// credentials (Noise pubkey vs mesh SPKI) consistently with the listener.
+///
+/// # Errors
+///
+/// Returns a typed message when an environment value is malformed.
+fn merge_start_env_into_config(
+    cfg: &mut crate::peer_binding::PeerAuthConfig,
+) -> Result<(), String> {
+    if let Some(id) = hew_node_id_from_env()? {
+        cfg.node_id = Some(id);
+    }
+    if hew_dist_unverified_from_env() {
+        cfg.unverified_optout = true;
+    }
+    cfg.transport = Some(transport_selection_from_env()?.as_peer_transport());
+    Ok(())
+}
+
 /// `Node::start(addr)` — Create and start a node, binding to `addr`.
 ///
 /// # Safety
@@ -4081,17 +4141,10 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         };
         // Merge start-time environment posture into the staged config.
         let mut cfg = building.clone();
-        match hew_node_id_from_env() {
-            Ok(Some(id)) => cfg.node_id = Some(id),
-            Ok(None) => {}
-            Err(msg) => {
-                eprintln!("hew: {msg}");
-                set_last_error(msg);
-                return -1;
-            }
-        }
-        if hew_dist_unverified_from_env() {
-            cfg.unverified_optout = true;
+        if let Err(msg) = merge_start_env_into_config(&mut cfg) {
+            eprintln!("hew: {msg}");
+            set_last_error(msg);
+            return -1;
         }
         // Pre-listen public validation (fail-closed before allocation).
         if let Err(msg) = cfg.validate_public() {
@@ -4491,48 +4544,118 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
     }
 }
 
-/// `Node::allow_peer(spki_hex)` — Add a peer's certificate SPKI (lowercase hex)
-/// to the fail-closed mesh allowlist. The snapshot is taken at `Node::start`,
-/// so call this before starting. A peer whose SPKI is not pinned is rejected
-/// by the mTLS handshake. Native quic-mesh only.
+/// `Node::allow_peer(node_id, credential_hex)` — bind a peer's authenticated
+/// credential to the `NodeId` it is permitted to claim (issue #2652). The
+/// credential is interpreted by the node's pinned transport (TCP ⇒ 32-byte
+/// Noise pubkey; quic-mesh ⇒ cert SPKI). The binding is staged into the
+/// pre-start `Building` `PeerAuthConfig` and frozen into the per-node snapshot
+/// at `Node::start`; a peer whose credential is not bound to the `NodeId` it
+/// claims is rejected at admission (fail-closed).
 ///
-/// Returns `0` on success, `-1` on a null/odd/non-hex string or empty/oversize
-/// SPKI. Adds nothing on error. On failure the peer-auth setup is marked failed
-/// so a subsequent `Node::start` refuses to bind a listener (fail-closed) rather
-/// than silently coming up with an incomplete peer allowlist.
+/// Returns `0` on success, `-1` on a reserved/local `node_id`, a null/odd/
+/// non-hex string, a credential of the wrong length for the transport, a
+/// credential already bound to a different `NodeId`, or while the public node
+/// lifecycle owns the config. Adds nothing on error. On failure the peer-auth
+/// setup is marked failed so a subsequent `Node::start` refuses to bind a
+/// listener (fail-closed) rather than silently coming up with an incomplete
+/// peer allowlist.
 ///
 /// # Safety
 ///
-/// `spki_hex` must be a valid null-terminated C string.
+/// `credential_hex` must be a valid null-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_api_allow_peer(spki_hex: *const c_char) -> c_int {
-    // SAFETY: caller guarantees spki_hex is a valid C string (or null).
-    let Some(s) = (unsafe { crate::util::cstr_to_str(&spki_hex, "Node::allow_peer") }) else {
-        node_peer_auth_setup_failed("Node::allow_peer: invalid SPKI argument");
+pub unsafe extern "C" fn hew_node_api_allow_peer(
+    node_id: u16,
+    credential_hex: *const c_char,
+) -> c_int {
+    if node_id == 0 {
+        node_peer_auth_setup_failed(
+            "Node::allow_peer: node id must be nonzero and not the local id",
+        );
+        return -1;
+    }
+    // Reject binding a peer to this node's own pinned identity, when known.
+    if let Ok(Some(local)) = hew_node_id_from_env() {
+        if local.get() == node_id {
+            node_peer_auth_setup_failed(
+                "Node::allow_peer: node id must be nonzero and not the local id",
+            );
+            return -1;
+        }
+    }
+    // SAFETY: caller guarantees credential_hex is a valid C string (or null).
+    let Some(s) = (unsafe { crate::util::cstr_to_str(&credential_hex, "Node::allow_peer") }) else {
+        node_peer_auth_setup_failed("Node::allow_peer: invalid credential argument");
         return -1;
     };
     let Some(bytes) = decode_hex(s) else {
         node_peer_auth_setup_failed("Node::allow_peer: peer key must be hex-encoded SPKI bytes");
         return -1;
     };
-    #[cfg(feature = "quic")]
-    {
-        // SAFETY: bytes is a live Vec; ptr+len describe its contents.
-        let rc =
-            unsafe { crate::quic_mesh::hew_quic_mesh_peer_spki_add(bytes.as_ptr(), bytes.len()) };
-        if rc != 0 {
-            node_peer_auth_setup_failed("Node::allow_peer: SPKI rejected by mesh allowlist");
+    // Interpret the credential per the node's pinned transport (env-resolved;
+    // the same selection is pinned into the config at start). Plain QUIC has no
+    // peer-credential channel, so strict binding is unsupported there.
+    let transport = match transport_selection_from_env() {
+        Ok(sel) => sel,
+        Err(msg) => {
+            node_peer_auth_setup_failed(format!("Node::allow_peer: {msg}"));
+            return -1;
         }
-        rc
-    }
-    #[cfg(not(feature = "quic"))]
-    {
-        let _ = bytes;
+    };
+    let credential = match transport {
+        TransportSelection::Tcp => {
+            let Ok(key) = <[u8; crate::peer_binding::NOISE_KEY_LEN]>::try_from(bytes.as_slice())
+            else {
+                node_peer_auth_setup_failed("Node::allow_peer: Noise pubkey must be 32 bytes");
+                return -1;
+            };
+            PeerCredential::NoiseKey(key)
+        }
+        #[cfg(feature = "quic")]
+        TransportSelection::QuicMesh => {
+            if bytes.is_empty() || bytes.len() > MAX_SPKI_DECODE_BYTES {
+                node_peer_auth_setup_failed("Node::allow_peer: mesh SPKI is empty or oversize");
+                return -1;
+            }
+            PeerCredential::Spki(bytes)
+        }
+        #[cfg(feature = "quic")]
+        TransportSelection::Quic => {
+            node_peer_auth_setup_failed(
+                "Node::allow_peer: strict binding unsupported on plain quic transport \
+                 (use quic-mesh or tcp-noise)",
+            );
+            return -1;
+        }
+    };
+    // Stage into the pre-start Building config. Rejected while the public node
+    // lifecycle owns the state (Starting/Running).
+    let mut guard = PEER_AUTH_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ConfigState::Building(cfg) = &mut guard.state else {
+        drop(guard);
         node_peer_auth_setup_failed(
-            "Node::allow_peer: quic-mesh transport not built (peer auth unavailable)",
+            "Node::allow_peer: peer auth config is locked while the public node lifecycle \
+             is active (Starting/Running)",
         );
-        -1
+        return -1;
+    };
+    // A given credential may bind to exactly one NodeId: the same credential
+    // pinned to a different NodeId is a conflict (rotation overlap binds two
+    // *credentials* to one NodeId, never one credential to two NodeIds).
+    for (bound_id, creds) in &cfg.bindings {
+        if *bound_id != node_id && creds.contains(&credential) {
+            let bound_id = *bound_id;
+            drop(guard);
+            node_peer_auth_setup_failed(format!(
+                "Node::allow_peer: credential already bound to node id {bound_id}"
+            ));
+            return -1;
+        }
     }
+    cfg.bindings.entry(node_id).or_default().insert(credential);
+    0
 }
 
 /// Upper bound on a decoded peer SPKI, mirroring `quic_mesh::MAX_SPKI_BYTES`
@@ -6501,7 +6624,7 @@ mod tests {
         crate::quic_mesh::mesh_auth_setup_reset();
         let bad_hex = CString::new("nothex!!").expect("valid C string");
         // SAFETY: bad_hex is a valid NUL-terminated C string for this call.
-        let rc_allow = unsafe { hew_node_api_allow_peer(bad_hex.as_ptr()) };
+        let rc_allow = unsafe { hew_node_api_allow_peer(2, bad_hex.as_ptr()) };
         // SAFETY: bind is a valid NUL-terminated C string for this call.
         let rc_start_after_allow = unsafe { hew_node_api_start(bind.as_ptr()) };
         if rc_start_after_allow == 0 {

@@ -5492,6 +5492,149 @@ mod tests {
         drop(ops);
     }
 
+    /// Recorder for the real-order admission test: collects every registry
+    /// event the cluster applies.
+    extern "C" fn record_registry_apply(
+        name: *const std::ffi::c_char,
+        actor_id: u64,
+        is_add: bool,
+        user_data: *mut std::ffi::c_void,
+    ) {
+        // SAFETY: test installs a Mutex<Vec<_>> as the callback user data.
+        let applied = unsafe { &*(user_data.cast::<Mutex<Vec<(String, u64, bool)>>>()) };
+        // SAFETY: the cluster passes a valid NUL-terminated name.
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned();
+        applied
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((name, actor_id, is_add));
+    }
+
+    /// Real admission ordering, end to end through the production pieces:
+    /// `reserve_claim` → a registry-gossip control frame processed by
+    /// `handle_control_frame` (real decode + waiting gate) → REAL
+    /// `install_connection_actor` → REAL `publish_connection_established` →
+    /// the cluster registry callback applies the name. The frame processing
+    /// begins strictly BEFORE the install (channel-sequenced, plus a
+    /// scheduling grace biasing it into the pre-install window), modelling
+    /// the reader thread racing `hew_connmgr_add`; the gate must hold the
+    /// frame through install + publication and then apply it — an instant
+    /// deny loses the peer's one-shot flush and the name never resolves.
+    #[test]
+    fn control_frame_before_install_applies_registry_event_after_real_publish() {
+        let applied = Box::into_raw(Box::new(Mutex::new(Vec::<(String, u64, bool)>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: std::ptr::null_mut(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+        // SAFETY: cluster is live; the recorder's user data outlives it.
+        unsafe {
+            crate::cluster::hew_cluster_set_registry_callback(
+                cluster,
+                record_registry_apply,
+                applied.cast(),
+            );
+        }
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            // Step 1 (real): reserve the claim, as hew_connmgr_add does before
+            // spawning the reader.
+            let token = next_publication_token(&*mgr);
+            let ClaimReservation::Reserved { superseded: None } =
+                reserve_claim(&*mgr, 5, None, 30, token)
+            else {
+                panic!("fresh reservation must succeed without supersession");
+            };
+
+            // Step 2 (real decode + gate): a reader surrogate processes the
+            // peer's one-shot registry-gossip frame. It signals right before
+            // handing the frame to the production dispatch.
+            let actor_id = crate::pid::hew_pid_make(5, 0x99);
+            let frame_bytes = encode_registry_gossip_control("svc", actor_id, true)
+                .expect("gossip frame encodes");
+            let WireFrame::Control(control) =
+                decode_wire_frame(&frame_bytes).expect("frame decodes")
+            else {
+                panic!("expected a control frame");
+            };
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let reader = SendConnMgr(mgr);
+            let reader_handle = std::thread::spawn(move || {
+                let reader = reader;
+                started_tx.send(()).expect("reader start signal");
+                // SAFETY: manager outlives the join below.
+                handle_control_frame(reader.0, HEW_FEATURE_SUPPORTS_GOSSIP, 30, token, &control);
+            });
+            started_rx.recv().expect("reader surrogate started");
+            // Scheduling grace biasing the frame into the PRE-INSTALL window;
+            // the assertion is interleaving-independent (the gate is correct
+            // for frames arriving anywhere in the admission window).
+            std::thread::sleep(Duration::from_millis(50));
+
+            // Steps 3+4 (real): install, then publish, exactly as
+            // hew_connmgr_add does after spawning the reader.
+            let mut actor = ConnectionActor::new(30);
+            actor.peer_node_id = 5;
+            actor.publication_token = token;
+            actor.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            actor.posture = crate::peer_binding::Posture::Strict;
+            actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let Ok(publication) = install_connection_actor(&*mgr, actor) else {
+                panic!("install must succeed");
+            };
+            publish_connection_established(
+                &*mgr,
+                5,
+                30,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                publication.token,
+                &publication.sync,
+                &publication.removed,
+                None,
+            );
+
+            reader_handle.join().expect("reader surrogate");
+            {
+                let applied = (*applied)
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(
+                    applied.as_slice(),
+                    &[("svc".to_owned(), actor_id, true)],
+                    "the pre-install frame must apply exactly once after publication"
+                );
+            }
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(applied));
+        }
+        drop(ops);
+    }
+
     /// Issue #2652 (item 1, outbound authority): the predicate the outbound ask
     /// gate in `setup_remote_ask` applies — `authenticated_peer_node_id_for_conn(
     /// mgr, conn) == target_node_id` — must hold ONLY for the exact authenticated

@@ -338,6 +338,12 @@ STRING_COW_SRC="${ROOT}/tests/vertical-slice/accept/string_cow_retain_share.hew"
 ENUM_YIELD_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_owned_enum_yield.hew"
 RECORD_STREAM_BREAK_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_record_stream_break.hew"
 ENUM_PAYLOAD_LOOP_SRC="${ROOT}/tests/vertical-slice/accept/enum_payload_call_loop_release.hew"
+# Admitted fresh-producer call scrutinee (#2648): a heap-owning-enum result built
+# FRESH through immutable bindings and a helper chain (the D108 shape the return-
+# provenance preflight must keep admitting). The preflight mints exactly one
+# synthetic owner over the call temp; a double-mint would double-free the payload
+# header — invisible to macOS `leaks`, caught here by ASan. Exits 0, clean.
+CALL_SCRUTINEE_FRESH_SRC="${ROOT}/tests/vertical-slice/accept/call_scrutinee_fresh_forwarder_release.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -380,6 +386,9 @@ compile_asan_fixture "composite yield (record stream break)" "${RECORD_STREAM_BR
 
 ENUM_PAYLOAD_LOOP_BIN="${WORK_DIR}/enum_payload_call_loop_release"
 compile_asan_fixture "match-scrutinee enum payload (call loop)" "${ENUM_PAYLOAD_LOOP_SRC}" "${ENUM_PAYLOAD_LOOP_BIN}"
+
+CALL_SCRUTINEE_FRESH_BIN="${WORK_DIR}/call_scrutinee_fresh_forwarder_release"
+compile_asan_fixture "admitted fresh-producer call scrutinee (#2648)" "${CALL_SCRUTINEE_FRESH_SRC}" "${CALL_SCRUTINEE_FRESH_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -488,6 +497,17 @@ else
 fi
 
 if run_asan_fixture "match-scrutinee enum payload (call loop)" "${ENUM_PAYLOAD_LOOP_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+# ── Gate 9: admitted fresh-producer call scrutinee MUST be ASan/LSan-clean (#2648) ─
+# The return-provenance preflight admits a fresh-through-bindings producer and
+# mints exactly one synthetic owner over the call temp. This fixture proves that
+# admit path is leak-clean under ASan; a double-mint (the #2648 double-free) would
+# surface here as a heap-use-after-free on the payload header.
+if run_asan_fixture "admitted fresh-producer call scrutinee (#2648)" "${CALL_SCRUTINEE_FRESH_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

@@ -397,6 +397,11 @@ run_accept_expect_status "machine_generic_record_field" 0
 run_accept_expect_stdout "generic_record_string_field"
 run_accept_expect_stdout "nested_string_concat_temp"
 
+# #2648: an admitted fresh-producer call scrutinee (fresh through immutable
+# bindings + a helper chain) must keep compiling and produce deterministic
+# output — the D108 non-regression the return-provenance preflight protects.
+run_accept_expect_stdout "call_scrutinee_fresh_forwarder_release"
+
 # Regression guard: a plain record with an Option<i64> field must compile and
 # run.  The MIR field classifier must NOT strip args from generic enum types
 # (Option, Result) even though their origin names appear in machine_layout_names.

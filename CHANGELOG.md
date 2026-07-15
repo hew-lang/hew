@@ -46,10 +46,10 @@ ad-hoc per-shape heap walkers.
   operator-pinned `HEW_NODE_ID` (never PID-derived), and a node whose explicit id
   contradicts its bound strict identity is refused before it binds a listener.
   `Unverified` (loopback-dev / opt-out) connections are delivery-only across
-  **both** the control and data planes: they may not inject registry gossip,
-  SWIM/cluster membership, or monitor/link control, and an inbound *ask* on such
-  a connection is dropped with a diagnostic. Reply completion additionally
-  validates the originating connection. (#2652)
+  **both** the control and data planes: they neither inject nor receive registry
+  gossip or SWIM/cluster membership, may not drive monitor/link control, and an
+  inbound *ask* on such a connection is dropped with a diagnostic. Reply
+  completion additionally validates the originating connection. (#2652)
 - **`Node::allow_peer` now takes two arguments.** The signature changed from
   `Node::allow_peer(node_id)` to `Node::allow_peer(node_id, credential_hex)`,
   binding the peer's authenticated credential (lowercase-hex Noise pubkey on TCP,

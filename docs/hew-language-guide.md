@@ -3162,6 +3162,33 @@ Configuring any binding requires this node's own stable id via the `HEW_NODE_ID`
 environment variable. These are native-only; WASM/sandbox builds carry no
 networking. See [`examples/distributed_hello.hew`](../examples/distributed_hello.hew).
 
+Launch each node with its own stable `HEW_NODE_ID` — the identity it claims in
+the handshake, which must match the id its peers bound via `allow_peer`:
+
+<!-- doctest: skip -->
+```sh
+# Node 1 claims NodeId 1; its peers pin identity_key() -> 1
+HEW_NODE_ID=1 hew run node.hew
+# Node 2 claims NodeId 2; its peers pin identity_key() -> 2
+HEW_NODE_ID=2 hew run node.hew
+```
+
+In `Strict` (configured / non-loopback) mode `HEW_NODE_ID` is authoritative: it
+is never derived from a runtime PID, and a node whose configured id contradicts
+the identity its own credential is bound to is refused before it binds a
+listener. To exchange credentials, each operator runs their node once, reads the
+`Node::identity_key()` value it prints, and hands that hex string to the other
+operator to pin with `allow_peer(their_node_id, their_identity_key)`.
+
+**Migrating from the one-argument `allow_peer`.** Earlier releases accepted
+`Node::allow_peer(node_id)`, which allow-listed a `NodeId` without binding it to
+a specific credential — any admitted key could then claim that id. The call now
+requires the peer's credential: `Node::allow_peer(node_id, credential_hex)`.
+Replace every one-argument call with the two-argument form, passing the peer's
+`identity_key()` (lowercase hex: the cert SPKI on quic-mesh, the 32-byte Noise
+public key on tcp-noise). The one-argument form no longer compiles, and a
+malformed credential fails closed at `Node::start`.
+
 ### TLS client — free-function surface (with a v0.5 data-plane caveat)
 
 ```hew

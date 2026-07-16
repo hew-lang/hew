@@ -510,7 +510,10 @@ pub fn try_parse(src: string) -> Result<Template, TemplateError> {
 
 /// Parse and validate a template string, panicking if it is malformed.
 pub fn parse(src: string) -> Template {
-    match try_parse(src) {
+    // Bound before the match: `try_parse` forwards its parameter into the
+    // result, so matching the call directly would alias `src` (caller-owned).
+    let parsed = try_parse(src);
+    match parsed {
         Ok(t) => t,
         Err(err) => {
             panic(template_error_message(err));
@@ -526,7 +529,10 @@ pub fn render_try(t: Template, ctx: Ctx) -> Result<string, TemplateError> {
 
 /// Render a compiled template, panicking if the template is malformed.
 pub fn render_template(t: Template, ctx: Ctx) -> string {
-    match render_segment(t.src, ctx, "", false) {
+    // Bound before the match: the segment renderer's result derives from the
+    // caller-owned `t.src` place, so the call is not matched directly.
+    let rendered = render_segment(t.src, ctx, "", false);
+    match rendered {
         Ok(s) => s,
         Err(err) => {
             panic(template_error_message(err));
@@ -637,9 +643,13 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
 /// }
 /// ```
 pub fn render(tmpl: string, ctx: Ctx) -> Result<string, string> {
-    match try_parse(tmpl) {
+    // Bound before the match: `try_parse` forwards its parameter into the
+    // result, so matching the call directly would alias `tmpl` (caller-owned).
+    let parsed = try_parse(tmpl);
+    match parsed {
         Ok(t) => {
-            match render_segment(t.src, ctx, "", false) {
+            let rendered = render_segment(t.src, ctx, "", false);
+            match rendered {
                 Ok(s) => Ok(s),
                 Err(err) => Err(template_error_message(err)),
             }

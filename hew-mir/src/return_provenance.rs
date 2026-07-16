@@ -763,6 +763,12 @@ pub fn reachable_bindings(expr: &HirExpr, out: &mut Reachable) {
         } => {
             reachable_bindings(scrutinee, out);
             for arm in arms {
+                // Guards read (and can escape) tracked bindings before any
+                // arm body runs — a guard-only reference must still reach the
+                // caller-side taint.
+                if let Some(guard) = &arm.guard {
+                    reachable_bindings(guard, out);
+                }
                 reachable_bindings(&arm.body, out);
             }
         }
@@ -1022,6 +1028,7 @@ impl MutationScan<'_> {
 
     #[allow(
         clippy::match_same_arms,
+        clippy::too_many_lines,
         reason = "mutation-scan arms mirror the sealed HirExprKind surface exhaustively"
     )]
     fn expr_mutates(&mut self, expr: &HirExpr) -> bool {
@@ -1080,7 +1087,16 @@ impl MutationScan<'_> {
             }
             HirExprKind::Match {
                 scrutinee, arms, ..
-            } => self.expr_mutates(scrutinee) || arms.iter().any(|a| self.expr_mutates(&a.body)),
+            } => {
+                // Guards run before arm bodies and can mutate a heap param
+                // (`0 if { p.push(x); true } => …`) — omit them and the
+                // may-mutate summary reads a guard-mutating callee as pure.
+                self.expr_mutates(scrutinee)
+                    || arms.iter().any(|a| {
+                        a.guard.as_ref().is_some_and(|g| self.expr_mutates(g))
+                            || self.expr_mutates(&a.body)
+                    })
+            }
             HirExprKind::StructInit { fields, base, .. } => {
                 fields.iter().any(|(_, v)| self.expr_mutates(v))
                     || base.as_deref().is_some_and(|b| self.expr_mutates(b))
@@ -2735,6 +2751,87 @@ mod tests {
             !summary[&fn_id(&module, "reader")],
             "a body that never touches the heap param is not may-mutate"
         );
+    }
+
+    #[test]
+    fn guard_buried_return_contributes_param_bits() {
+        // A `return p` inside a match-arm GUARD exits the function: its value
+        // is a return path. Missing it read this forwarder as Fresh(∅) — the
+        // preflight then admitted `match evil(p, 0)` and minted a second owner
+        // over the caller-owned borrow (the codegen-review exploit).
+        let (m, prov) = provenance_of_source(
+            r"
+            fn evil(p: Vec<i64>, k: i64) -> Vec<i64> {
+                let d = match k {
+                    0 if { return p; } => 0,
+                    _ => 1,
+                };
+                let out: Vec<i64> = Vec::new();
+                out.push(d);
+                out
+            }
+            ",
+        );
+        assert!(
+            prov[&fn_id(&m, "evil")].contains(AliasBits::PARAM),
+            "the guard-buried `return p` path must union {{PARAM}}: {:?}",
+            prov[&fn_id(&m, "evil")]
+        );
+    }
+
+    #[test]
+    fn guard_mutation_of_heap_param_is_may_mutate() {
+        // A mutation inside a match-arm guard runs before any body — the
+        // may-mutate summary must see it.
+        let module = lower_source(
+            r"
+            fn guard_mut(x: Vec<i64>, k: i64) -> i64 {
+                match k {
+                    0 if { x.push(1); true } => 0,
+                    _ => 1,
+                }
+            }
+            ",
+        );
+        let origin_fns = origin_fns_of(&module);
+        let summary = compute_may_mutate_heap_param(&origin_fns);
+        assert!(
+            summary[&fn_id(&module, "guard_mut")],
+            "x.push(1) inside a guard stores into the heap param → may-mutate"
+        );
+    }
+
+    #[test]
+    fn guard_only_binding_reference_is_reachable() {
+        // The total reachability visitor must see a binding referenced ONLY in
+        // a match-arm guard (the caller-side taint channel).
+        let module = lower_source(
+            r"
+            fn probe(h: Vec<i64>, k: i64) -> i64 {
+                match k {
+                    0 if h.len() > 0 => 0,
+                    _ => 1,
+                }
+            }
+            ",
+        );
+        for item in &module.items {
+            if let hew_hir::HirItem::Function(f) = item {
+                if f.name == "probe" {
+                    let h_id = f.params[0].id;
+                    let mut r = Reachable::default();
+                    if let Some(tail) = &f.body.tail {
+                        reachable_bindings(tail, &mut r);
+                    }
+                    assert!(
+                        r.bindings.contains(&h_id),
+                        "a guard-only reference to `h` must be reachable: {r:?}"
+                    );
+                    return;
+                }
+            }
+        }
+        panic!("probe not found");
     }
 
     #[test]

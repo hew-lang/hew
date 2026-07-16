@@ -8219,6 +8219,13 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
         HirExprKind::Match { scrutinee, arms } => {
             collect_return_values_in_expr(scrutinee, out);
             for arm in arms {
+                // A `return <expr>` buried in an arm GUARD exits the function:
+                // its value is a return path the summary must union, or a
+                // guard-forwarded borrow reads wrongly-Fresh and the preflight
+                // mints a second owner over caller-owned storage.
+                if let Some(guard) = &arm.guard {
+                    collect_return_values_in_expr(guard, out);
+                }
                 collect_return_values_in_expr(&arm.body, out);
             }
         }

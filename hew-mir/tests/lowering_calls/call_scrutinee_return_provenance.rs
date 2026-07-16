@@ -942,3 +942,37 @@ fn generator_body_matches_mint_no_owner() {
         );
     }
 }
+
+#[test]
+fn guard_buried_return_forwarder_rejects() {
+    // The in-lane codegen-review exploit: `evil` forwards its caller-owned
+    // borrow `p` through a `return` buried in a match-arm GUARD while its
+    // straight-line return is fresh. Missing the guard from the return-value
+    // collection read `evil` as Fresh(∅) — the preflight admitted and minted
+    // an owner over the forwarded borrow (REJECTS=0 MINTS=1, the double-free
+    // class this lane closes). The guard path must union {PARAM} → REJECT.
+    let src = r#"
+        fn evil(p: Result<string, string>, k: i64) -> Result<string, string> {
+            let d = match k {
+                0 if { return p; } => 0,
+                _ => 1,
+            };
+            if d > 0 { Ok("fresh") } else { Ok("fresh") }
+        }
+        fn use_it(p: Result<string, string>) -> i64 {
+            match evil(p, 0) { Ok(_) => 1, Err(_) => 0 }
+        }
+    "#;
+    let p = pipeline(src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "a guard-buried return-forwarder scrutinee must reject: {:#?}",
+        p.diagnostics
+    );
+    assert!(
+        !any_owner_minted(&p),
+        "no owner may be minted over the guard-forwarded borrow"
+    );
+    assert!(!any_neutralize(&p));
+}

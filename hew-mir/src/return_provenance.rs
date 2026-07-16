@@ -1096,6 +1096,42 @@ impl MutationScan<'_> {
             }
             HirExprKind::Unary { operand, .. } => self.expr_mutates(operand),
             HirExprKind::Return { value } => value.as_deref().is_some_and(|v| self.expr_mutates(v)),
+            // Loop / scope bodies — a mutation inside a loop mutates on every
+            // back-edge; missing these arms silently read a loop-mutating
+            // callee as pure.
+            HirExprKind::While {
+                condition, body, ..
+            } => self.expr_mutates(condition) || self.block_mutates(body),
+            HirExprKind::ForRange {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                self.expr_mutates(start)
+                    || self.expr_mutates(end)
+                    || self.expr_mutates(step)
+                    || self.block_mutates(body)
+            }
+            HirExprKind::Loop { body, .. } => self.block_mutates(body),
+            HirExprKind::Scope { body } => self.block_mutates(body),
+            HirExprKind::Break { value, .. } => {
+                value.as_deref().is_some_and(|v| self.expr_mutates(v))
+            }
+            HirExprKind::IfLet {
+                scrutinee,
+                body,
+                else_body,
+                ..
+            } => {
+                self.expr_mutates(scrutinee)
+                    || self.block_mutates(body)
+                    || else_body.as_ref().is_some_and(|b| self.block_mutates(b))
+            }
+            HirExprKind::WhileLet {
+                scrutinee, body, ..
+            } => self.expr_mutates(scrutinee) || self.block_mutates(body),
             _ => false,
         }
     }
@@ -1476,6 +1512,49 @@ fn count_binding_refs(expr: &HirExpr, counts: &mut HashMap<BindingId, u32>, unkn
             count_binding_refs(scrutinee, counts, unknown);
             count_binding_refs_in_block(body, counts, unknown);
         }
+        // Loop bodies: every read inside a loop counts (and a loop-carried read
+        // can execute more than once per textual occurrence, so a binding read
+        // inside a loop body is counted TWICE — a loop-body arg can never
+        // qualify as single-read).
+        HirExprKind::While {
+            condition, body, ..
+        } => {
+            count_binding_refs(condition, counts, unknown);
+            let mut inner: HashMap<BindingId, u32> = HashMap::new();
+            count_binding_refs_in_block(body, &mut inner, unknown);
+            for (id, n) in inner {
+                *counts.entry(id).or_insert(0) += n.saturating_mul(2);
+            }
+        }
+        HirExprKind::ForRange {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            count_binding_refs(start, counts, unknown);
+            count_binding_refs(end, counts, unknown);
+            count_binding_refs(step, counts, unknown);
+            let mut inner: HashMap<BindingId, u32> = HashMap::new();
+            count_binding_refs_in_block(body, &mut inner, unknown);
+            for (id, n) in inner {
+                *counts.entry(id).or_insert(0) += n.saturating_mul(2);
+            }
+        }
+        HirExprKind::Loop { body, .. } => {
+            let mut inner: HashMap<BindingId, u32> = HashMap::new();
+            count_binding_refs_in_block(body, &mut inner, unknown);
+            for (id, n) in inner {
+                *counts.entry(id).or_insert(0) += n.saturating_mul(2);
+            }
+        }
+        HirExprKind::Break { value, .. } => {
+            if let Some(v) = value.as_deref() {
+                count_binding_refs(v, counts, unknown);
+            }
+        }
+        HirExprKind::Continue { .. } => {}
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             count_binding_refs(callee, counts, unknown);
             for a in args {
@@ -1871,10 +1950,104 @@ impl<'f> DefCollector<'_, 'f> {
                     self.collect_expr(v);
                 }
             }
-            // Leaves and unmodelled forms need no binder/taint recording here.
-            _ => {}
+            // Loop / scope bodies — a `let` or a mutating call inside a loop
+            // body defines/taints exactly like straight-line code (the union
+            // over defs is flow-insensitive already). Missing these arms left
+            // every loop-body local OUT of the map, and the fail-closed local
+            // leaf then read each one as `{PARAM}` — the injection that poisoned
+            // the whole template render SCC to ParamsOnly.
+            HirExprKind::While {
+                condition, body, ..
+            } => {
+                self.collect_expr(condition);
+                self.collect_block(body);
+            }
+            HirExprKind::ForRange {
+                binding,
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                // The loop counter is a compiler-stepped integer — register it
+                // so its `BindingRef`s resolve (∅ via the scalar short-circuit).
+                self.defs.defs.entry(binding.id).or_default();
+                self.collect_expr(start);
+                self.collect_expr(end);
+                self.collect_expr(step);
+                self.collect_block(body);
+            }
+            HirExprKind::Loop { body, .. } => self.collect_block(body),
+            HirExprKind::Scope { body } => self.collect_block(body),
+            HirExprKind::Break { value, .. } => {
+                if let Some(v) = value.as_deref() {
+                    self.collect_expr(v);
+                }
+            }
+            // A deep clone borrows its source non-mutatingly; descend for
+            // nested defs but do NOT taint the source.
+            HirExprKind::RecordCloneCall { src, .. } => self.collect_expr(src),
+            // Enum/machine variant construction embeds its operands by value —
+            // recurse them (the value-flow walk models the embedding); no taint.
+            HirExprKind::MachineVariantCtor { payload, .. } => {
+                if let Some(fields) = payload {
+                    for (_, v) in fields {
+                        self.collect_expr(v);
+                    }
+                }
+            }
+            // Pointer-identity comparison reads its operands without mutating
+            // or escaping them.
+            HirExprKind::IdentityCompare { left, right } => {
+                self.collect_expr(left);
+                self.collect_expr(right);
+            }
+            // Value-passthrough casts.
+            HirExprKind::NumericCast { value, .. }
+            | HirExprKind::SaturatingWidthCast { value, .. }
+            | HirExprKind::TryWidthCast { value, .. }
+            | HirExprKind::CoerceToDynTrait { value, .. } => self.collect_expr(value),
+            HirExprKind::Slice { container, .. } => self.collect_expr(container),
+            // Benign leaves: no binder, no taint, no sub-expression.
+            HirExprKind::Literal(_)
+            | HirExprKind::RegexLiteralRef { .. }
+            | HirExprKind::BindingRef { .. }
+            | HirExprKind::ActorSelf
+            | HirExprKind::ContextReader { .. }
+            | HirExprKind::Continue { .. } => {}
+            // Any OTHER form is unmodelled here: it may hide a mutation or an
+            // escape of a tracked binding (an actor send, a spawn capture, an
+            // await), so every binding reachable from it is tainted fail-closed
+            // rather than silently skipped.
+            other => {
+                let _ = other;
+                if !ty_is_scalar_non_heap(&expr.ty) || expr_has_substructure(expr) {
+                    let mut r = Reachable::default();
+                    reachable_bindings(expr, &mut r);
+                    for b in r.bindings {
+                        self.defs.tainted.insert(b);
+                    }
+                }
+            }
         }
     }
+}
+
+/// True when an expression form carries sub-expressions the def collector does
+/// not model — used to route scalar-RESULT composites (an await returning i64,
+/// an actor ask) through the fail-closed taint rather than skipping the
+/// bindings their operands may escape.
+fn expr_has_substructure(expr: &HirExpr) -> bool {
+    !matches!(
+        expr.kind,
+        HirExprKind::Literal(_)
+            | HirExprKind::RegexLiteralRef { .. }
+            | HirExprKind::BindingRef { .. }
+            | HirExprKind::ActorSelf
+            | HirExprKind::ContextReader { .. }
+            | HirExprKind::Continue { .. }
+    )
 }
 
 /// The local binding id a value expression refers to directly (a bare

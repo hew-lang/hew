@@ -3325,8 +3325,11 @@ mod tests {
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
     }
 
-    // Dispatch callback that records hew_actor_current_id() into a static.
+    // Dispatch callback that records hew_actor_current_id() into a static,
+    // and the silent routing probe into a sibling static for parity checks.
     static DISPATCH_SAW_ACTOR_ID: std::sync::atomic::AtomicI64 =
+        std::sync::atomic::AtomicI64::new(-999);
+    static DISPATCH_SAW_SILENT_ACTOR_ID: std::sync::atomic::AtomicI64 =
         std::sync::atomic::AtomicI64::new(-999);
 
     unsafe extern "C-unwind" fn dispatch_record_current_id(
@@ -3339,6 +3342,10 @@ mod tests {
     ) -> *mut c_void {
         let id = crate::actor::hew_actor_current_id();
         DISPATCH_SAW_ACTOR_ID.store(id, std::sync::atomic::Ordering::Relaxed);
+        DISPATCH_SAW_SILENT_ACTOR_ID.store(
+            crate::actor::hew_actor_current_id_silent(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         std::ptr::null_mut()
     }
@@ -3368,6 +3375,7 @@ mod tests {
         unsafe { hew_mailbox_send(mb, 0, ptr::null_mut(), 0) };
 
         DISPATCH_SAW_ACTOR_ID.store(-999, std::sync::atomic::Ordering::Relaxed);
+        DISPATCH_SAW_SILENT_ACTOR_ID.store(-999, std::sync::atomic::Ordering::Relaxed);
         // SAFETY: actor is valid, scheduler is initialized.
         unsafe { sched_enqueue(actor_ptr) };
         hew_sched_run();
@@ -3377,10 +3385,30 @@ mod tests {
             42,
             "hew_actor_current_id() must return the dispatching actor's ID, not -1"
         );
+        assert_eq!(
+            DISPATCH_SAW_SILENT_ACTOR_ID.load(std::sync::atomic::Ordering::Relaxed),
+            42,
+            "hew_actor_current_id_silent() must agree with the diagnostic \
+             accessor under dispatch"
+        );
 
         // SAFETY: mb is a valid mailbox pointer; all messages have been consumed.
         unsafe { hew_mailbox_free(mb) };
         hew_sched_shutdown();
+
+        // Outside dispatch both probes report -1; the silent probe must do so
+        // without writing the generic last-error slot (#2658).
+        let prev = crate::execution_context::set_current_context(ptr::null_mut());
+        crate::hew_clear_error();
+        assert_eq!(crate::actor::hew_actor_current_id_silent(), -1);
+        assert!(
+            crate::hew_last_error().is_null(),
+            "silent probe outside dispatch must leave the generic last-error \
+             slot untouched"
+        );
+        assert_eq!(crate::actor::hew_actor_current_id(), -1);
+        let _ = crate::execution_context::set_current_context(prev);
+        crate::hew_clear_error();
     }
 
     // Statics for the nested-activation test.

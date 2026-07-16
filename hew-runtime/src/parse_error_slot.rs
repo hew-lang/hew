@@ -9,14 +9,20 @@
 //! This module provides a slot keyed by **(logical actor identity, error kind)**,
 //! not OS thread identity:
 //!
-//! - When a Hew actor is currently dispatched (`hew_actor_current_id() >= 0`),
-//!   the slot is stored in a process-wide `Mutex<HashMap<(u64, ErrorSlotKind), String>>`
-//!   keyed by the actor ID and error kind.  Each error type has its own per-actor
-//!   slot, so a yaml error cannot clear a datetime error and vice-versa.
+//! - When a Hew actor is currently dispatched
+//!   (`hew_actor_current_id_silent() >= 0`), the slot is stored in a
+//!   process-wide `Mutex<HashMap<(u64, ErrorSlotKind), String>>` keyed by the
+//!   actor ID and error kind.  Each error type has its own per-actor slot, so
+//!   a yaml error cannot clear a datetime error and vice-versa.
 //! - When called from outside any actor (main, test, blocking-pool helper),
-//!   `hew_actor_current_id()` returns -1 and the slot falls back to a
+//!   `hew_actor_current_id_silent()` returns -1 and the slot falls back to a
 //!   `thread_local!` `HashMap<ErrorSlotKind, String>` so that non-actor callers
 //!   remain isolated from each other and from other error types.
+//!
+//! The routing decision uses the SILENT probe deliberately: falling back to
+//! the thread-local slot is an expected, non-error condition, so it must not
+//! write "execution context not installed" into the generic last-error slot
+//! and destroy an unrelated real error (#2658).
 //!
 //! # Slot lifecycle
 //!
@@ -67,7 +73,8 @@ pub enum ErrorSlotKind {
 
 /// Global map from `(actor_id, ErrorSlotKind)` → last error message.
 ///
-/// Only populated when `hew_actor_current_id()` returns a non-negative value.
+/// Only populated when `hew_actor_current_id_silent()` returns a non-negative
+/// value.
 static ACTOR_PARSE_ERRORS: PoisonSafe<Option<HashMap<(u64, ErrorSlotKind), String>>> =
     PoisonSafe::new(None);
 
@@ -115,7 +122,7 @@ thread_local! {
 /// Record `msg` as the most recent error for `kind` in the current
 /// logical context (actor or thread).
 pub fn set_error(kind: ErrorSlotKind, msg: impl Into<String>) {
-    let id = crate::actor::hew_actor_current_id();
+    let id = crate::actor::hew_actor_current_id_silent();
     if id >= 0 {
         #[expect(clippy::cast_sign_loss, reason = "checked: id >= 0")]
         actor_map_set(id as u64, kind, msg.into());
@@ -128,7 +135,7 @@ pub fn set_error(kind: ErrorSlotKind, msg: impl Into<String>) {
 
 /// Clear the error for `kind` in the current logical context.
 pub fn clear_error(kind: ErrorSlotKind) {
-    let id = crate::actor::hew_actor_current_id();
+    let id = crate::actor::hew_actor_current_id_silent();
     if id >= 0 {
         #[expect(clippy::cast_sign_loss, reason = "checked: id >= 0")]
         actor_map_clear(id as u64, kind);
@@ -143,7 +150,7 @@ pub fn clear_error(kind: ErrorSlotKind) {
 /// context, or `None` if no error has been set.
 #[must_use]
 pub fn get_error(kind: ErrorSlotKind) -> Option<String> {
-    let id = crate::actor::hew_actor_current_id();
+    let id = crate::actor::hew_actor_current_id_silent();
     if id >= 0 {
         #[expect(clippy::cast_sign_loss, reason = "checked: id >= 0")]
         actor_map_get(id as u64, kind)
@@ -200,6 +207,110 @@ pub fn __clear_error_for_actor(actor_id: u64, kind: ErrorSlotKind) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Read the process-generic last-error slot as an owned string.
+    fn generic_last_error() -> Option<String> {
+        let ptr = crate::hew_last_error();
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: hew_last_error returned a non-null, NUL-terminated C string
+        // owned by the thread-local slot; it stays valid until the next write.
+        Some(
+            unsafe { std::ffi::CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
+    /// Force a non-actor context for the duration of a closure, restoring the
+    /// previous execution context afterwards.
+    fn with_no_execution_context(f: impl FnOnce()) {
+        let prev = crate::execution_context::set_current_context(std::ptr::null_mut());
+        f();
+        let _ = crate::execution_context::set_current_context(prev);
+    }
+
+    /// Direct #2658 regression: a non-actor `get_error` fallback lookup is an
+    /// expected condition, so it must return `None` for an empty slot AND leave
+    /// a prior real generic error intact — not clobber it with
+    /// "execution context not installed".
+    #[test]
+    fn nonactor_get_error_preserves_generic_last_error() {
+        with_no_execution_context(|| {
+            crate::set_last_error("prior real error");
+            assert_eq!(get_error(ErrorSlotKind::Json), None);
+            assert_eq!(
+                generic_last_error().as_deref(),
+                Some("prior real error"),
+                "non-actor get_error must not clobber the generic last-error slot"
+            );
+            crate::hew_clear_error();
+        });
+    }
+
+    /// Same invariant for `set_error`: routing to the thread-local slot must
+    /// not disturb the generic last-error slot.
+    #[test]
+    fn nonactor_set_error_preserves_generic_last_error() {
+        with_no_execution_context(|| {
+            crate::set_last_error("prior real error");
+            set_error(ErrorSlotKind::Json, "json parse failed");
+            assert_eq!(
+                generic_last_error().as_deref(),
+                Some("prior real error"),
+                "non-actor set_error must not clobber the generic last-error slot"
+            );
+            clear_error(ErrorSlotKind::Json);
+            crate::hew_clear_error();
+        });
+    }
+
+    /// Same invariant for `clear_error`.
+    #[test]
+    fn nonactor_clear_error_preserves_generic_last_error() {
+        with_no_execution_context(|| {
+            crate::set_last_error("prior real error");
+            clear_error(ErrorSlotKind::Json);
+            assert_eq!(
+                generic_last_error().as_deref(),
+                Some("prior real error"),
+                "non-actor clear_error must not clobber the generic last-error slot"
+            );
+            crate::hew_clear_error();
+        });
+    }
+
+    /// From a clean generic slot, the routing probe inside set/clear/get must
+    /// write nothing at all — the slot stays null, not merely unchanged.
+    #[test]
+    fn nonactor_probe_writes_no_generic_error_from_clean_slot() {
+        with_no_execution_context(|| {
+            crate::hew_clear_error();
+            set_error(ErrorSlotKind::Yaml, "yaml parse failed");
+            assert_eq!(
+                generic_last_error(),
+                None,
+                "set_error routing probe wrote the generic slot"
+            );
+            assert_eq!(
+                get_error(ErrorSlotKind::Yaml).as_deref(),
+                Some("yaml parse failed")
+            );
+            assert_eq!(
+                generic_last_error(),
+                None,
+                "get_error routing probe wrote the generic slot"
+            );
+            clear_error(ErrorSlotKind::Yaml);
+            assert_eq!(
+                generic_last_error(),
+                None,
+                "clear_error routing probe wrote the generic slot"
+            );
+            assert_eq!(get_error(ErrorSlotKind::Yaml), None);
+        });
+    }
 
     /// A slot set and retrieved within the same non-actor thread returns the
     /// same string for the same error kind.

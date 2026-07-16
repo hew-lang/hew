@@ -99,6 +99,13 @@ const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 /// advertise this flag; old nodes would misinterpret it as a void-success reply.
 pub(crate) const HEW_FEATURE_SUPPORTS_ASK_REJECTION: u32 = 1 << 3;
 const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
+
+/// Ceiling on retry ATTEMPTS for a parked registry-gossip flush (finding:
+/// unbounded retries). After this many failed drains the parked frames are
+/// dropped with a loud diagnostic — fail-closed name loss on a connection
+/// whose sends persistently fail (it is about to be torn down anyway) beats
+/// an unbounded retry stream.
+const MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS: u32 = 8;
 const FNV1A32_OFFSET_BASIS: u32 = 2_166_136_261;
 const FNV1A32_PRIME: u32 = 16_777_619;
 
@@ -195,6 +202,17 @@ struct ConnectionActor {
     reader_handle: Option<JoinHandle<()>>,
     /// Signal to stop the reader thread.
     reader_stop: Arc<AtomicI32>,
+    /// The same-credential `Published` claim this admission superseded at
+    /// reserve time (issue #2652, D3), if any. Stashed here (in addition to
+    /// the admission thread's local copy) so `hew_connmgr_remove` can restore
+    /// it when it aborts a still-`Reserved` reservation — the
+    /// remove-before-publication path, where `publish_connection_established`
+    /// early-returns on `publication_removed` and would otherwise leave the
+    /// reservation dangling and the reader parked in the admission wait until
+    /// the `CLAIM_RESERVE_WAIT_MS` backstop. Consumed at most once: the
+    /// remove-side abort is guarded by the exact `(conn_id, token, Reserved)`
+    /// owner check, so a published or superseded claim never restores from it.
+    superseded_claim: Mutex<Option<LiveClaim>>,
     /// Optional reconnect settings for this connection.
     reconnect: Option<ReconnectSettings>,
     /// Transport pointer for defense-in-depth close in `Drop`.
@@ -291,6 +309,40 @@ pub struct HewConnMgr {
     /// waits rather than racing. Per-manager, so two concurrent nodes hold
     /// independent claim tables (a `NodeId` on node1 never collides with node2).
     pub(crate) claims: (Mutex<HashMap<u16, LiveClaim>>, Condvar),
+    /// Encoded registry-gossip flush frames whose initial send failed, parked
+    /// for retry, keyed by connection and bound to that admission's
+    /// publication token. The connection-establish flush is one-shot — the
+    /// drained events age out of the cluster queue after eight disseminations
+    /// — so a transiently failed send would otherwise leave an
+    /// already-connected peer permanently without the cluster's registered
+    /// names (a lookup-unresolved loss). The connection's reader retries on
+    /// its next inbound frame (SWIM keeps frames flowing, so retry latency is
+    /// bounded by the protocol period); entries are dropped when the
+    /// connection is removed or superseded (fail-closed: a successor's own
+    /// flush carries current state). Bounded per connection at
+    /// `MAX_REGISTRY_GOSSIP_FLUSH_EVENTS` frames.
+    pending_registry_flush: PoisonSafe<HashMap<c_int, PendingRegistryFlush>>,
+    /// Fast-path mirror of `pending_registry_flush.len()` so the per-frame
+    /// reader check is one atomic load when nothing is parked.
+    pending_registry_flush_count: AtomicUsize,
+}
+
+/// A parked registry-gossip flush awaiting retry (see
+/// [`HewConnMgr::pending_registry_flush`]).
+#[derive(Debug)]
+struct PendingRegistryFlush {
+    /// Publication token of the admission that parked these frames; a stale
+    /// entry (token mismatch) is never consumed by a successor connection
+    /// reusing the transport `conn_id`.
+    token: u64,
+    /// Encoded control frames, in original flush/broadcast order (per-
+    /// connection FIFO: later registry events park BEHIND earlier unsent ones,
+    /// so an ADD can never be replayed after a newer REMOVE for the same name
+    /// — ordering is preserved end to end).
+    frames: Vec<Vec<u8>>,
+    /// Failed drain attempts so far (bounded by
+    /// [`MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS`]).
+    attempts: u32,
 }
 
 #[derive(Debug, Default)]
@@ -406,6 +458,7 @@ impl ConnectionActor {
             noise_transport: Arc::new(Mutex::new(None)),
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
+            superseded_claim: Mutex::new(None),
             reconnect: None,
             transport: std::ptr::null_mut(),
             transport_closed: AtomicBool::new(false),
@@ -719,7 +772,7 @@ fn test_reserve_unverified(
 /// the issue #2652 exact-owner gate ([`authenticated_peer_node_id_for_conn`])
 /// recognises the connection as the current published owner of its `NodeId`.
 #[cfg(test)]
-fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) {
+fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) -> u64 {
     let token = next_publication_token(mgr);
     test_reserve_unverified(mgr, node_id, conn_id, token);
     let (lock, condvar) = &mgr.claims;
@@ -731,6 +784,15 @@ fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) {
     }
     drop(guard);
     condvar.notify_all();
+    // Stamp the connection entry with the same publication token so the
+    // generation-bound waiting gate recognises the hand-built actor as this
+    // admission (production sets `actor.publication_token` before install).
+    mgr.connections.access(|conns| {
+        if let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) {
+            conn.publication_token = token;
+        }
+    });
+    token
 }
 
 #[expect(
@@ -795,7 +857,18 @@ fn publish_connection_established(
         unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
     }
 
-    flush_registry_gossip_to_connection(mgr, conn_id, peer_feature_flags);
+    flush_registry_gossip_to_connection(mgr, conn_id, publication_token, peer_feature_flags);
+
+    // Publication is COMPLETE: clear the actor's stashed superseded claim
+    // before closing the superseded connection below, so a later remove of
+    // THIS connection can never restore a claim for a connection whose
+    // transport is closed here. The stash is restorable state only while the
+    // publication is still pending or suppressed.
+    mgr.connections.access(|conns| {
+        if let Some(conn) = conns.iter().find(|c| c.conn_id == conn_id) {
+            conn.superseded_claim.lock_or_recover().take();
+        }
+    });
 
     // Same-credential reconnect (issue #2652, D3 step 3): our claim overwrote a
     // live Published claim from the same peer credential. The superseded
@@ -1367,36 +1440,37 @@ fn handle_control_frame(
     mgr: *mut HewConnMgr,
     peer_feature_flags: u32,
     conn_id: c_int,
+    claim_token: u64,
     control: &ControlFrame,
 ) {
     match control.ctrl_kind {
         CTRL_REGISTRY_GOSSIP => {}
         CTRL_SWIM => {
-            handle_swim_control_frame(mgr, peer_feature_flags, conn_id, control);
+            handle_swim_control_frame(mgr, peer_feature_flags, conn_id, claim_token, control);
             return;
         }
         CTRL_MONITOR_REQ => {
-            handle_monitor_req_frame(mgr, conn_id, control);
+            handle_monitor_req_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_DEMONITOR => {
-            handle_demonitor_frame(mgr, conn_id, control);
+            handle_demonitor_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_MONITOR_DOWN => {
-            handle_monitor_down_frame(mgr, conn_id, control);
+            handle_monitor_down_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_LINK_REQ => {
-            handle_link_req_frame(mgr, conn_id, control);
+            handle_link_req_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_UNLINK => {
-            handle_unlink_frame(mgr, conn_id, control);
+            handle_unlink_frame(mgr, conn_id, claim_token, control);
             return;
         }
         CTRL_LINK_DOWN => {
-            handle_link_down_frame(mgr, conn_id, control);
+            handle_link_down_frame(mgr, conn_id, claim_token, control);
             return;
         }
         other => {
@@ -1414,7 +1488,7 @@ fn handle_control_frame(
     // An `Unverified` (delivery-only) connection carries no control-plane
     // authority — drop its gossip with a diagnostic and apply no registry
     // mutation (fail-closed).
-    if authenticated_peer_node_id(mgr, conn_id, "registry gossip").is_none() {
+    if authenticated_peer_node_id(mgr, conn_id, claim_token, "registry gossip").is_none() {
         return;
     }
 
@@ -1452,14 +1526,23 @@ fn handle_control_frame(
     }
 }
 
-fn authenticated_peer_node_id(mgr: *mut HewConnMgr, conn_id: c_int, context: &str) -> Option<u16> {
+fn authenticated_peer_node_id(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    context: &str,
+) -> Option<u16> {
     if mgr.is_null() {
         set_last_error(format!("connection reader {context}: missing manager"));
         return None;
     }
     // SAFETY: reader_loop owns a live manager pointer for this connection.
     let mgr_ref = unsafe { &*mgr };
-    let authenticated = authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
+    // Waiting variant: an inbound control frame can race this connection's own
+    // Reserved → Published publication (the reader thread starts before
+    // `publish_connection_established`); one-shot frames like the peer's
+    // registry-gossip flush must not be dropped inside that window.
+    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id, claim_token);
     if authenticated == 0 {
         set_last_error(format!(
             "connection reader {context}: missing authenticated peer for conn {conn_id} \
@@ -1476,7 +1559,12 @@ fn authenticated_peer_node_id(mgr: *mut HewConnMgr, conn_id: c_int, context: &st
 ///
 /// Fail-closed: a malformed / oversized payload is dropped with `set_last_error`
 /// and never registers a watcher — no fabricated state from untrusted bytes.
-fn handle_monitor_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_monitor_req_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_monitor_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1486,7 +1574,8 @@ fn handle_monitor_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Cont
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "monitor req") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "monitor req")
+    else {
         return;
     };
     if payload.watcher_node_id != authenticated {
@@ -1510,7 +1599,12 @@ fn handle_monitor_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Cont
 /// Handle an inbound `CTRL_DEMONITOR`: a remote node retracted its
 /// monitor of one of our local actors. Remove the target-side remote-watcher
 /// entry. Idempotent / fail-closed on malformed input.
-fn handle_demonitor_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_demonitor_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_monitor_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1520,7 +1614,8 @@ fn handle_demonitor_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Contro
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "demonitor") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "demonitor")
+    else {
         return;
     };
     if payload.watcher_node_id != authenticated {
@@ -1548,7 +1643,12 @@ fn handle_demonitor_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Contro
 /// connection-drop / SWIM-DEAD fan-out's reach (the slot is no longer
 /// `Pending`), which is the exactly-once disambiguation: a definitive DOWN beats
 /// a later partition signal for the same registration.
-fn handle_monitor_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_monitor_down_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_monitor_down_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1558,7 +1658,8 @@ fn handle_monitor_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Con
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "monitor down") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "monitor down")
+    else {
         return;
     };
     let Some(rt) = crate::runtime::rt_current_opt() else {
@@ -1576,7 +1677,12 @@ fn handle_monitor_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Con
 /// and never registers a link — no fabricated state from untrusted bytes. The
 /// decode bar is HIGHER than monitor because a registered link can later crash a
 /// real actor.
-fn handle_link_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_link_req_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_link_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1586,7 +1692,8 @@ fn handle_link_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Control
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "link req") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "link req")
+    else {
         return;
     };
     if payload.linker_node_id != authenticated {
@@ -1601,7 +1708,12 @@ fn handle_link_req_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Control
 
 /// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
 /// link of one of our local actors. Idempotent / fail-closed on malformed input.
-fn handle_unlink_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_unlink_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_link_req_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1611,7 +1723,8 @@ fn handle_unlink_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFr
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "unlink") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "unlink")
+    else {
         return;
     };
     if payload.linker_node_id != authenticated {
@@ -1635,7 +1748,12 @@ fn handle_unlink_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFr
 /// forged `ref_id` this node never linked NOR a different, genuinely-connected
 /// peer that merely guessed/learned a pending link `ref_id` can crash an actor
 /// linked to another, still-alive peer.
-fn handle_link_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &ControlFrame) {
+fn handle_link_down_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     let payload = match decode_link_down_payload(&control.payload) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1656,7 +1774,8 @@ fn handle_link_down_frame(mgr: *mut HewConnMgr, conn_id: c_int, control: &Contro
     // because the delivery id is nonzero). Route through the exact-owner gate so
     // an `Unverified`/superseded connection yields `None` and is dropped with a
     // diagnostic before any cross-node exit cascade.
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, "link down") else {
+    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "link down")
+    else {
         return;
     };
     crate::hew_node::handle_inbound_link_down(payload.ref_id, authenticated, payload.reason);
@@ -1686,32 +1805,162 @@ fn active_gossip_connection_ids(mgr: &HewConnMgr) -> Vec<c_int> {
         .collect()
 }
 
-fn flush_registry_gossip_to_connection(mgr: &HewConnMgr, conn_id: c_int, peer_feature_flags: u32) {
+fn flush_registry_gossip_to_connection(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    peer_feature_flags: u32,
+) {
     if !supports_gossip(peer_feature_flags) || mgr.cluster.is_null() {
         return;
     }
     // issue #2652 (D9, outbound): never flush registry gossip onto an
     // `Unverified` (delivery-only) or superseded connection — it carries no
     // control-plane authority in either direction. Only the exact authenticated
-    // owner of a published claim receives cluster state.
+    // owner of a published claim receives cluster state. This gate runs BEFORE
+    // the drain, so a denial retains the events for other connections.
     if authenticated_peer_node_id_for_conn(mgr, conn_id) == 0 {
         return;
     }
 
     // SAFETY: cluster pointer belongs to this live connection manager.
     let events = unsafe { (&*mgr.cluster).take_registry_gossip(MAX_REGISTRY_GOSSIP_FLUSH_EVENTS) };
-    for event in events {
-        let Some(bytes) = encode_registry_gossip_control(&event.name, event.actor_id, event.is_add)
-        else {
-            continue;
-        };
+    let frames: Vec<Vec<u8>> = events
+        .into_iter()
+        .filter_map(|event| {
+            encode_registry_gossip_control(&event.name, event.actor_id, event.is_add)
+        })
+        .collect();
+    send_registry_flush_frames(mgr, conn_id, publication_token, frames, 0);
+}
+
+/// Send encoded registry-gossip flush frames in order. On a failed send, park
+/// the unsent remainder (including the failed frame) for retry on the
+/// connection's next inbound frame — the flush is one-shot at the cluster
+/// level (drained events age out of the queue), so dropping here would leave
+/// the peer permanently without those names.
+fn send_registry_flush_frames(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    mut frames: Vec<Vec<u8>>,
+    attempts: u32,
+) {
+    let mut sent = 0;
+    while let Some(bytes) = frames.get(sent) {
         // SAFETY: mgr is live and `bytes` is a complete encoded control frame.
         if unsafe { send_preencoded_on_manager(mgr, conn_id, bytes.as_ptr(), bytes.len()) } != 0 {
             set_last_error(format!(
-                "registry gossip flush send failed for conn {conn_id}"
+                "registry gossip flush send failed for conn {conn_id}; \
+                 parking {} frame(s) for retry",
+                frames.len() - sent
+            ));
+            // Re-park AT FRONT: a concurrent broadcast may have appended newer
+            // frames to the entry while this drain ran; the unsent remainder
+            // predates them, so it must go back ahead of them (FIFO).
+            park_pending_registry_flush(
+                mgr,
+                conn_id,
+                publication_token,
+                frames.split_off(sent),
+                attempts,
+                true,
+            );
+            return;
+        }
+        sent += 1;
+    }
+}
+
+/// Park unsent flush frames for retry, bound to the admission's publication
+/// token. Bounded at [`MAX_REGISTRY_GOSSIP_FLUSH_EVENTS`] frames per
+/// connection (oldest evicted with a diagnostic).
+fn park_pending_registry_flush(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    frames: Vec<Vec<u8>>,
+    attempts: u32,
+    at_front: bool,
+) {
+    if frames.is_empty() {
+        return;
+    }
+    mgr.pending_registry_flush.access(|map| {
+        let entry = map.entry(conn_id).or_insert_with(|| PendingRegistryFlush {
+            token: publication_token,
+            frames: Vec::new(),
+            attempts: 0,
+        });
+        if entry.token != publication_token {
+            // A previous admission's leftovers never survive into a successor
+            // on a reused conn_id.
+            entry.token = publication_token;
+            entry.frames.clear();
+            entry.attempts = 0;
+        }
+        entry.attempts = entry.attempts.max(attempts);
+        if at_front {
+            entry.frames.splice(0..0, frames);
+        } else {
+            entry.frames.extend(frames);
+        }
+        if entry.frames.len() > MAX_REGISTRY_GOSSIP_FLUSH_EVENTS {
+            let excess = entry.frames.len() - MAX_REGISTRY_GOSSIP_FLUSH_EVENTS;
+            entry.frames.drain(..excess);
+            set_last_error(format!(
+                "registry gossip retry buffer overflow for conn {conn_id}: \
+                 evicted {excess} oldest frame(s)"
             ));
         }
+        mgr.pending_registry_flush_count
+            .store(map.len(), Ordering::Release);
+    });
+}
+
+/// Retry a parked registry-gossip flush on inbound traffic from `conn_id`.
+/// Consumes the parked entry only for the SAME admission (publication token
+/// match); re-checks the outbound authority gate first, dropping the frames
+/// fail-closed if the connection lost its claim (superseded / removed — the
+/// successor's own establish flush carries current state).
+fn retry_pending_registry_flush(mgr: &HewConnMgr, conn_id: c_int, claim_token: u64) {
+    if mgr.pending_registry_flush_count.load(Ordering::Acquire) == 0 {
+        return;
     }
+    let Some((frames, attempts)) = mgr.pending_registry_flush.access(|map| {
+        let matches = map
+            .get(&conn_id)
+            .is_some_and(|pending| pending.token == claim_token);
+        if !matches {
+            return None;
+        }
+        let pending = map.remove(&conn_id);
+        mgr.pending_registry_flush_count
+            .store(map.len(), Ordering::Release);
+        pending.map(|p| (p.frames, p.attempts + 1))
+    }) else {
+        return;
+    };
+    if attempts > MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS {
+        // Fail closed, loudly: this connection's sends have failed
+        // MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS drains in a row — drop the parked
+        // frames instead of retrying forever on a connection that is
+        // evidently broken.
+        set_last_error(format!(
+            "registry gossip retry budget exhausted for conn {conn_id}: dropping \
+             {} parked frame(s) after {MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS} failed attempts",
+            frames.len()
+        ));
+        return;
+    }
+    if authenticated_peer_node_id_for_conn(mgr, conn_id) == 0 {
+        set_last_error(format!(
+            "registry gossip retry dropped for conn {conn_id}: connection no longer \
+             holds its published claim"
+        ));
+        return;
+    }
+    send_registry_flush_frames(mgr, conn_id, claim_token, frames, attempts);
 }
 
 // ── SWIM failure-detection transport ────────────────────────────────────
@@ -1777,6 +2026,93 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
     match guard.get(&claimed) {
         Some(claim) if claim.state == ClaimState::Published && claim.conn_id == conn_id => claimed,
         _ => 0,
+    }
+}
+
+/// As [`authenticated_peer_node_id_for_conn`], but tolerant of this
+/// connection's own admission window. `hew_connmgr_add` spawns the reader
+/// thread BEFORE `install_connection_actor` pushes the `ConnectionActor` into
+/// `mgr.connections` and BEFORE `publish_connection_established` transitions
+/// the claim `Reserved → Published`, so an inbound control frame can arrive
+/// while the connection is missing from the connections list, or listed but
+/// with its claim still `Reserved`. Some of those frames are one-shot — the
+/// peer's registry-gossip flush at ITS publish drains the peer's event queue
+/// and is never retransmitted — so an instant deny anywhere in that window
+/// permanently loses cluster state (the lookup-unresolved race).
+///
+/// The gate therefore keys on the CLAIMS map first, not the connections list:
+/// `reserve_claim` runs strictly before the reader spawn, so a `Reserved`
+/// claim owned by THIS admission — identified by `(conn_id, claim_token)`,
+/// the publication token minted for this admission before the reserve — is
+/// present for the entire admission window and is the complete "admission in
+/// flight" signal. While that claim is `Reserved`, block on the claims
+/// condvar until the local admission decision resolves; every claim
+/// transition (`publish_claim` / `abort_claim` / `retire_claim` /
+/// `reserve_claim`) notifies the condvar, so this is a readiness signal on a
+/// local bounded step, never a poll. Once the claim is `Published` — which
+/// happens strictly after the connections-list install — the connections
+/// entry decides (posture, ACTIVE state, self-declared node), matched by the
+/// same publication token. An absent claim or a claim from a different
+/// admission (superseded / aborted / a successor on a REUSED transport
+/// `conn_id`) denies immediately and fail-closed, and the wait itself fails
+/// closed on the `CLAIM_RESERVE_WAIT_MS` backstop.
+///
+/// The token binding matters because transport `conn_id`s are recycled: the
+/// TCP transport hands out the first free slot index (`store_conn`), so a
+/// reader still processing an already-read frame after its connection was
+/// removed could otherwise observe a successor connection's claim under the
+/// same `conn_id` and adopt that successor's authority. The publication token
+/// is unique per admission (`next_publication_token`), so a stale reader's
+/// gate resolves to deny the moment its own claim is gone.
+pub(crate) fn wait_authenticated_peer_node_id_for_conn(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+) -> u16 {
+    let deadline = std::time::Instant::now() + Duration::from_millis(CLAIM_RESERVE_WAIT_MS);
+    let (lock, condvar) = &mgr.claims;
+    let mut guard = lock.lock_or_recover();
+    loop {
+        let own_claim = guard
+            .iter()
+            .find(|(_, claim)| claim.conn_id == conn_id && claim.publication_token == claim_token)
+            .map(|(node_id, claim)| (*node_id, claim.state));
+        match own_claim {
+            Some((claimed, ClaimState::Published)) => {
+                // Our admission published. Publication happens strictly after
+                // the connections-list install, so the entry is present; bind
+                // it by the same publication token (never bare `conn_id`) and
+                // apply the posture / ACTIVE / self-declared-node checks the
+                // non-waiting gate applies.
+                drop(guard);
+                return mgr.connections.access(|conns| {
+                    conns
+                        .iter()
+                        .find(|c| {
+                            c.conn_id == conn_id
+                                && c.publication_token == claim_token
+                                && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                                && c.posture == Posture::Strict
+                                && c.peer_node_id == claimed
+                        })
+                        .map_or(0, |c| c.peer_node_id)
+                });
+            }
+            Some((_, ClaimState::Reserved)) => {
+                // Our own admission is mid-flight (pre-install or
+                // pre-publication); wait for it to publish or abort rather
+                // than dropping the frame.
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return 0;
+                }
+                let (next_guard, _timeout) = condvar.wait_timeout_or_recover(guard, remaining);
+                guard = next_guard;
+            }
+            // No claim owned by this admission: superseded, aborted, or a
+            // claimless (node_id 0) connection — no authority, deny now.
+            None => return 0,
+        }
     }
 }
 
@@ -2000,6 +2336,7 @@ fn handle_swim_control_frame(
     mgr: *mut HewConnMgr,
     peer_feature_flags: u32,
     conn_id: c_int,
+    claim_token: u64,
     control: &ControlFrame,
 ) {
     if !supports_gossip(peer_feature_flags) {
@@ -2030,8 +2367,9 @@ fn handle_swim_control_frame(
     // claimed sender must equal the *authenticated* (`Strict`) handshake
     // identity of the connection it arrived on. An `Unverified` (delivery-only)
     // connection resolves to 0 here and is rejected — it cannot inject SWIM
-    // membership state.
-    let authenticated = authenticated_peer_node_id_for_conn(mgr_ref, conn_id);
+    // membership state. Waiting variant: the first inbound SWIM frame can race
+    // this connection's own Reserved → Published publication.
+    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id, claim_token);
     if authenticated == 0 || authenticated != payload.from_node {
         set_last_error(format!(
             "connection reader SWIM frame from_node {} does not match authenticated peer {authenticated}",
@@ -2253,6 +2591,7 @@ fn reader_loop(
     mgr: SendConnMgr,
     transport: SendTransport,
     conn_id: c_int,
+    claim_token: u64,
     stop_flag: Arc<AtomicI32>,
     last_activity: Arc<AtomicU64>,
     router: Option<InboundRouter>,
@@ -2330,7 +2669,7 @@ fn reader_loop(
 
         match wire_frame {
             WireFrame::Control(control) => {
-                handle_control_frame(mgr, peer_feature_flags, conn_id, &control);
+                handle_control_frame(mgr, peer_feature_flags, conn_id, claim_token, &control);
             }
             WireFrame::Envelope(mut envelope) => {
                 let Some(router_fn) = router else {
@@ -2388,6 +2727,16 @@ fn reader_loop(
                     }
                 }
             }
+        }
+
+        // A parked one-shot registry-gossip flush (initial send failed)
+        // retries on this connection's next inbound traffic — SWIM keeps
+        // frames flowing on an established connection, so retry latency is
+        // bounded by the protocol period. One atomic load when nothing is
+        // parked.
+        if !mgr.is_null() {
+            // SAFETY: reader_loop owns a live manager pointer for this connection.
+            retry_pending_registry_flush(unsafe { &*mgr }, conn_id, claim_token);
         }
     }
 }
@@ -2470,6 +2819,8 @@ pub(crate) unsafe fn connmgr_new(
         local_node_id,
         auth,
         claims: (Mutex::new(HashMap::new()), Condvar::new()),
+        pending_registry_flush: PoisonSafe::new(HashMap::new()),
+        pending_registry_flush_count: AtomicUsize::new(0),
     });
     Box::into_raw(mgr)
 }
@@ -3041,6 +3392,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let mut actor = ConnectionActor::new(conn_id);
     actor.transport = mgr.transport;
     actor.publication_token = claim_token;
+    // Stash the superseded claim on the actor so hew_connmgr_remove can
+    // restore it if removal wins the race against publication (the local
+    // `superseded_claim` below still feeds the publish path's close of the
+    // superseded transport).
+    actor
+        .superseded_claim
+        .lock_or_recover()
+        .clone_from(&superseded_claim);
     actor.peer_node_id = peer_hs.node_id;
     actor.peer_feature_flags = peer_hs.feature_flags;
     actor.posture = posture;
@@ -3084,6 +3443,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
                 mgr_send,
                 transport_send,
                 conn_id,
+                claim_token,
                 stop,
                 activity_send,
                 router,
@@ -3147,6 +3507,47 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     );
 
     0
+}
+
+/// Pre-join admission-claim resolution for `hew_connmgr_remove` (see the
+/// call site's comment): aborts a still-`Reserved` claim owned by this exact
+/// admission (restoring `stashed_superseded`) and wakes any parked reader; a
+/// `Published`-but-about-to-be-suppressed claim instead hands the stash back
+/// for restoration AFTER retirement. Returns the claim to restore post-retire
+/// (if any).
+fn resolve_admission_claim_before_join(
+    mgr: &HewConnMgr,
+    peer_node_id: u16,
+    conn_id: c_int,
+    publication_token: u64,
+    stashed_superseded: Option<LiveClaim>,
+) -> Option<LiveClaim> {
+    if peer_node_id == 0 {
+        return None;
+    }
+    let (lock, condvar) = &mgr.claims;
+    let mut guard = lock.lock_or_recover();
+    match guard.get(&peer_node_id) {
+        Some(claim) if claim.conn_id == conn_id && claim.publication_token == publication_token => {
+            match claim.state {
+                ClaimState::Reserved => {
+                    match stashed_superseded {
+                        Some(prev) => {
+                            guard.insert(peer_node_id, prev);
+                        }
+                        None => {
+                            guard.remove(&peer_node_id);
+                        }
+                    }
+                    drop(guard);
+                    condvar.notify_all();
+                    None
+                }
+                ClaimState::Published => stashed_superseded,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Remove a connection from the manager and close it.
@@ -3238,6 +3639,44 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // Close the transport connection so a blocking recv unblocks.
     // SAFETY: transport is valid per manager contract.
     unsafe { close_transport_conn(mgr.transport, conn_id) };
+    // Resolve a still-pending admission BEFORE joining the reader. When removal
+    // wins the race against `publish_connection_established`, the publication
+    // early-returns on `publication_removed` without publishing or aborting,
+    // and this connection's reader may be parked in the admission wait
+    // (`wait_authenticated_peer_node_id_for_conn`) on the still-`Reserved`
+    // claim — which only THIS abort (or the `CLAIM_RESERVE_WAIT_MS` backstop)
+    // can resolve, because claim retirement runs after the join below. Abort
+    // the reservation — restoring any claim this admission superseded — and
+    // wake the waiter so the join cannot wedge on the backstop. Exact-owner
+    // guarded (`conn_id` + token), so a successor's claim or an already-
+    // aborted admission is untouched.
+    //
+    // If the claim is already PUBLISHED but our removal SUPPRESSES the
+    // publication (`publication_removed` was set before the cluster notify),
+    // the stashed predecessor claim is still live restorable state — the
+    // publish path clears the stash only when publication completes. Carry it
+    // past the retirement below and restore it there, so a same-credential
+    // reconnect removed mid-publication hands authority back to the prior
+    // connection instead of orphaning it claimless.
+    let restore_after_retire = resolve_admission_claim_before_join(
+        mgr,
+        peer_node_id,
+        conn_id,
+        publication_token,
+        conn.superseded_claim.lock_or_recover().take(),
+    );
+    // Drop this admission's parked registry-flush retry frames (token-matched
+    // so a successor's parked frames on a reused conn_id are never touched).
+    mgr.pending_registry_flush.access(|map| {
+        if map
+            .get(&conn_id)
+            .is_some_and(|pending| pending.token == publication_token)
+        {
+            map.remove(&conn_id);
+        }
+        mgr.pending_registry_flush_count
+            .store(map.len(), Ordering::Release);
+    });
     // Drop joins the reader thread after transport close.
     drop(conn);
     // Full publication retirement: re-removes route (idempotent) and fires the
@@ -3251,6 +3690,18 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         publication_token,
         &publication_sync,
     );
+
+    // Suppressed-publication restore (see the pre-join comment above): with our
+    // claim retired, hand the node's authority back to the superseded prior
+    // connection — guarded on an EMPTY slot so a racing fresh admission's
+    // reservation is never overwritten.
+    if let Some(prev) = restore_after_retire {
+        let (lock, condvar) = &mgr.claims;
+        let mut guard = lock.lock_or_recover();
+        guard.entry(peer_node_id).or_insert(prev);
+        drop(guard);
+        condvar.notify_all();
+    }
 
     0
 }
@@ -3529,16 +3980,44 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
     };
 
     let conn_ids = active_gossip_connection_ids(mgr_ref);
+    // Publication tokens for FIFO parking: a broadcast frame for a connection
+    // with an undelivered parked flush must queue BEHIND it — never overtake
+    // it — so per-connection registry-event ordering (ADD before a newer
+    // REMOVE of the same name, and vice versa) is preserved even across send
+    // failures. A failed direct send parks the frame the same way.
+    let tokens: HashMap<c_int, u64> = mgr_ref.connections.access(|conns| {
+        conns
+            .iter()
+            .filter(|c| conn_ids.contains(&c.conn_id))
+            .map(|c| (c.conn_id, c.publication_token))
+            .collect()
+    });
     let mut success_count: c_int = 0;
     for conn_id in conn_ids {
+        let Some(&token) = tokens.get(&conn_id) else {
+            continue;
+        };
+        let has_parked = mgr_ref.pending_registry_flush_count.load(Ordering::Acquire) != 0
+            && mgr_ref.pending_registry_flush.access(|map| {
+                map.get(&conn_id)
+                    .is_some_and(|pending| pending.token == token)
+            });
+        if has_parked {
+            park_pending_registry_flush(mgr_ref, conn_id, token, vec![bytes.clone()], 0, false);
+            set_last_error(format!(
+                "registry gossip broadcast parked behind an undelivered flush for conn {conn_id}"
+            ));
+            continue;
+        }
         // SAFETY: manager is live and bytes is a complete encoded control frame.
         if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, bytes.as_ptr(), bytes.len()) } == 0
         {
             success_count += 1;
         } else {
             set_last_error(format!(
-                "registry gossip broadcast send failed for conn {conn_id}"
+                "registry gossip broadcast send failed for conn {conn_id}; parked for retry"
             ));
+            park_pending_registry_flush(mgr_ref, conn_id, token, vec![bytes.clone()], 0, false);
         }
     }
     success_count
@@ -3797,6 +4276,8 @@ mod tests {
                 std::sync::Mutex::new(std::collections::HashMap::new()),
                 std::sync::Condvar::new(),
             ),
+            pending_registry_flush: PoisonSafe::new(HashMap::new()),
+            pending_registry_flush_count: AtomicUsize::new(0),
         };
 
         assert_eq!(
@@ -3870,6 +4351,8 @@ mod tests {
                 std::sync::Mutex::new(std::collections::HashMap::new()),
                 std::sync::Condvar::new(),
             ),
+            pending_registry_flush: PoisonSafe::new(HashMap::new()),
+            pending_registry_flush_count: AtomicUsize::new(0),
         };
 
         assert_eq!(
@@ -4087,8 +4570,12 @@ mod tests {
                 std::sync::Mutex::new(std::collections::HashMap::new()),
                 std::sync::Condvar::new(),
             ),
+            pending_registry_flush: PoisonSafe::new(HashMap::new()),
+            pending_registry_flush_count: AtomicUsize::new(0),
         };
         let mgr_ptr = std::ptr::from_ref(&mgr).cast_mut();
+        // No claim exists for conn 10; any reader token denies immediately.
+        let conn10_token = 1_u64;
         let payload = crate::envelope::LinkReqPayload {
             linker_node_id: 9,
             ref_id: 123,
@@ -4104,7 +4591,7 @@ mod tests {
             payload: crate::envelope::encode_link_req_payload(&payload)
                 .expect("link request payload must encode"),
         };
-        handle_control_frame(mgr_ptr, 0, 10, &link_req);
+        handle_control_frame(mgr_ptr, 0, 10, conn10_token, &link_req);
         assert!(
             crate::runtime::rt_current()
                 .dist_monitors
@@ -4122,7 +4609,7 @@ mod tests {
             payload: crate::envelope::encode_link_req_payload(&payload)
                 .expect("unlink payload must encode"),
         };
-        handle_control_frame(mgr_ptr, 0, 10, &unlink);
+        handle_control_frame(mgr_ptr, 0, 10, conn10_token, &unlink);
 
         let watchers = crate::runtime::rt_current()
             .dist_monitors
@@ -4319,7 +4806,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(peer));
             // Model node 2 as the admitted, published owner of its NodeId so the
             // issue #2652 exact-owner control gate accepts its SWIM frames.
-            test_publish_claim(&*mgr, 2, 10);
+            let conn10_token = test_publish_claim(&*mgr, 2, 10);
 
             // Honest PING from node 2 (matches the conn's authenticated id).
             let ping = SwimControlPayload {
@@ -4333,7 +4820,7 @@ mod tests {
             let WireFrame::Control(control) = frame else {
                 panic!("expected control frame");
             };
-            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, conn10_token, &control);
 
             // An ACK must have been sent back on conn 10.
             {
@@ -4365,7 +4852,13 @@ mod tests {
             let WireFrame::Control(spoof_control) = spoof_frame else {
                 panic!("expected control frame");
             };
-            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &spoof_control);
+            handle_swim_control_frame(
+                mgr,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                10,
+                conn10_token,
+                &spoof_control,
+            );
             {
                 let guard = (&*sends)
                     .lock()
@@ -4428,7 +4921,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(peer));
             // Model node 2 as the admitted, published owner of its NodeId so the
             // issue #2652 exact-owner control gate accepts its gossip.
-            test_publish_claim(&*mgr, 2, 10);
+            let conn10_token = test_publish_claim(&*mgr, 2, 10);
 
             // ACK from node 2 carrying DEAD-about-node-3 gossip.
             let ack = SwimControlPayload {
@@ -4446,7 +4939,7 @@ mod tests {
             let WireFrame::Control(control) = frame else {
                 panic!("expected control frame");
             };
-            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, conn10_token, &control);
 
             // Node 3 must now be DEAD in our membership view.
             assert_eq!(
@@ -4507,7 +5000,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(unverified));
             // Its delivery claim is published (Unverified peers still route
             // fire-and-forget), but posture keeps it off the control plane.
-            test_publish_claim(&*mgr, 2, 10);
+            let conn10_token = test_publish_claim(&*mgr, 2, 10);
 
             // Control plane: an honest SWIM PING from the Unverified peer is
             // dropped — no ACK is sent.
@@ -4522,7 +5015,7 @@ mod tests {
             let WireFrame::Control(control) = frame else {
                 panic!("expected control frame");
             };
-            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, conn10_token, &control);
             {
                 let guard = (&*sends)
                     .lock()
@@ -4629,6 +5122,983 @@ mod tests {
             hew_connmgr_free(mgr);
             crate::cluster::hew_cluster_free(cluster);
             drop(Box::from_raw(transport_ptr));
+        }
+        drop(ops);
+    }
+
+    /// Install a Strict ACTIVE connection entry, as `install_connection_actor`
+    /// does mid-admission. Split out so the pre-install-window test can defer
+    /// it until after the gate is already waiting.
+    fn install_strict_conn(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, token: u64) {
+        let mut strict = ConnectionActor::new(conn_id);
+        strict.peer_node_id = node_id;
+        strict.publication_token = token;
+        strict.posture = crate::peer_binding::Posture::Strict;
+        strict.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        mgr.connections.access(|conns| conns.push(strict));
+    }
+
+    /// Shared scaffold for the admission-window (`Reserved → Published`) gate
+    /// tests: a manager with one Strict ACTIVE connection whose claim is still
+    /// `Reserved` by that connection, modelling the reader thread starting
+    /// before `publish_connection_established` resolves the claim.
+    fn with_reserved_strict_conn(
+        node_id: u16,
+        conn_id: c_int,
+        token: u64,
+        body: impl FnOnce(*mut HewConnMgr),
+    ) {
+        with_reserved_claim(node_id, conn_id, token, true, body);
+    }
+
+    /// As [`with_reserved_strict_conn`], but with `install` controlling whether
+    /// the connection entry is pushed into `mgr.connections` up front. Passing
+    /// `false` models the PRE-INSTALL admission window: `hew_connmgr_add`
+    /// spawns the reader thread before `install_connection_actor`, so a frame
+    /// can be gated while the claim is Reserved and the connections list does
+    /// not yet contain the connection at all.
+    fn with_reserved_claim(
+        node_id: u16,
+        conn_id: c_int,
+        token: u64,
+        install: bool,
+        body: impl FnOnce(*mut HewConnMgr),
+    ) {
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: std::ptr::null_mut(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            if install {
+                install_strict_conn(&*mgr, node_id, conn_id, token);
+            }
+            // Claim is Reserved (mid-admission), NOT yet Published.
+            test_reserve_unverified(&*mgr, node_id, conn_id, token);
+
+            body(mgr);
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+        }
+        drop(ops);
+    }
+
+    /// Admission-window race (the lookup-unresolved CI failure): a control frame
+    /// arriving while this connection's OWN claim is still `Reserved` must WAIT
+    /// for the local publication and then be granted — not be dropped. The
+    /// non-waiting gate denies inside the window (that instant deny permanently
+    /// lost the peer's one-shot registry-gossip flush); the waiting gate blocks
+    /// on the claims condvar until `publish_claim` fires and then grants.
+    #[test]
+    fn reserved_claim_same_conn_wait_grants_after_publish() {
+        with_reserved_strict_conn(5, 30, 77, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                // Pre-fix behaviour: the non-waiting gate denies mid-window.
+                assert_eq!(
+                    authenticated_peer_node_id_for_conn(&*mgr, 30),
+                    0,
+                    "a Reserved claim carries no authority in the non-waiting gate"
+                );
+                let waiter = SendConnMgr(mgr);
+                let handle = std::thread::spawn(move || {
+                    let waiter = waiter;
+                    // SAFETY: manager outlives the join below.
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 30, 77)
+                });
+                // Give the waiter time to reach the condvar wait, then publish —
+                // modelling `publish_connection_established` completing.
+                std::thread::sleep(Duration::from_millis(50));
+                assert!(publish_claim(&*mgr, 5, 30, 77), "publication must be ours");
+                let granted = handle.join().expect("waiter thread");
+                assert_eq!(
+                    granted, 5,
+                    "the waiting gate must grant once the local claim publishes"
+                );
+            }
+        });
+    }
+
+    /// Fail-closed half of the admission-window wait: when the mid-window
+    /// admission ABORTS (install failure), the waiter must wake and deny — the
+    /// wait never fabricates authority for a connection that was never admitted.
+    #[test]
+    fn reserved_claim_same_conn_wait_denies_after_abort() {
+        with_reserved_strict_conn(6, 40, 88, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                let waiter = SendConnMgr(mgr);
+                let handle = std::thread::spawn(move || {
+                    let waiter = waiter;
+                    // SAFETY: manager outlives the join below.
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 40, 88)
+                });
+                std::thread::sleep(Duration::from_millis(50));
+                abort_claim(&*mgr, 6, 40, 88, None);
+                let granted = handle.join().expect("waiter thread");
+                assert_eq!(
+                    granted, 0,
+                    "an aborted admission must deny the waiting gate (fail-closed)"
+                );
+            }
+        });
+    }
+
+    /// The wait applies ONLY to this connection's own in-flight admission: a
+    /// claim `Reserved` by a DIFFERENT connection (a superseding admission) is
+    /// denied immediately — no blocking, no authority (D3 point 2 preserved).
+    #[test]
+    fn reserved_claim_other_conn_denied_without_wait() {
+        with_reserved_strict_conn(7, 50, 99, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                // A second Strict ACTIVE conn 51 for the same node id, with NO
+                // claim of its own — node 7's claim is Reserved by conn 50.
+                let mut other = ConnectionActor::new(51);
+                other.peer_node_id = 7;
+                other.posture = crate::peer_binding::Posture::Strict;
+                other.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+                (&*mgr).connections.access(|conns| conns.push(other));
+
+                let started = std::time::Instant::now();
+                assert_eq!(
+                    wait_authenticated_peer_node_id_for_conn(&*mgr, 51, 100),
+                    0,
+                    "a claim reserved by another connection must deny immediately"
+                );
+                assert!(
+                    started.elapsed() < Duration::from_millis(CLAIM_RESERVE_WAIT_MS / 2),
+                    "the other-owner denial must not consume the wait budget"
+                );
+            }
+        });
+    }
+
+    /// Pre-install admission window (the residual lookup-unresolved race):
+    /// `hew_connmgr_add` spawns the reader thread BEFORE
+    /// `install_connection_actor`, so a frame can be gated while the claim is
+    /// `Reserved` by this connection and the connections list does not yet
+    /// contain the connection at all. The gate must WAIT (keyed on the claim,
+    /// which reserve placed before the spawn), then grant once the install +
+    /// publication complete — a connections-list-first gate denies here and
+    /// permanently drops the peer's one-shot registry-gossip flush.
+    #[test]
+    fn reserved_claim_before_install_wait_grants_after_install_and_publish() {
+        with_reserved_claim(8, 60, 111, false, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                let waiter = SendConnMgr(mgr);
+                let handle = std::thread::spawn(move || {
+                    let waiter = waiter;
+                    // SAFETY: manager outlives the join below.
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 60, 111)
+                });
+                // Give the waiter time to reach the condvar wait, then install
+                // and publish — modelling `install_connection_actor` followed
+                // by `publish_connection_established`.
+                std::thread::sleep(Duration::from_millis(50));
+                install_strict_conn(&*mgr, 8, 60, 111);
+                assert!(publish_claim(&*mgr, 8, 60, 111), "publication must be ours");
+                let granted = handle.join().expect("waiter thread");
+                assert_eq!(
+                    granted, 8,
+                    "the waiting gate must grant once install + publication complete"
+                );
+            }
+        });
+    }
+
+    /// Fail-closed half of the pre-install window: when the admission aborts
+    /// before the connection is ever installed, the waiter must wake and deny —
+    /// the wait never fabricates authority for a connection that was never
+    /// admitted, installed, or published.
+    #[test]
+    fn reserved_claim_before_install_wait_denies_after_abort() {
+        with_reserved_claim(9, 70, 122, false, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                let waiter = SendConnMgr(mgr);
+                let handle = std::thread::spawn(move || {
+                    let waiter = waiter;
+                    // SAFETY: manager outlives the join below.
+                    wait_authenticated_peer_node_id_for_conn(&*waiter.0, 70, 122)
+                });
+                std::thread::sleep(Duration::from_millis(50));
+                abort_claim(&*mgr, 9, 70, 122, None);
+                let granted = handle.join().expect("waiter thread");
+                assert_eq!(
+                    granted, 0,
+                    "an admission aborted pre-install must deny the waiting gate"
+                );
+            }
+        });
+    }
+
+    /// Generation separation on a REUSED transport `conn_id`: the TCP transport
+    /// recycles slot indices (`store_conn` hands out the first free slot), so a
+    /// stale reader — one still processing an already-read frame after its
+    /// connection was removed — can observe a SUCCESSOR admission's claim under
+    /// the same `conn_id`. The stale reader's gate carries its own (older)
+    /// publication token and must deny immediately: it never waits on, and
+    /// never adopts, the successor's authority, whether the successor's claim
+    /// is still Reserved or already Published.
+    #[test]
+    fn stale_token_on_reused_conn_id_denied_without_wait() {
+        with_reserved_strict_conn(11, 80, 200, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                // Successor mid-admission (claim Reserved, token 200): the stale
+                // reader (token 150) must deny without consuming the wait budget.
+                let started = std::time::Instant::now();
+                assert_eq!(
+                    wait_authenticated_peer_node_id_for_conn(&*mgr, 80, 150),
+                    0,
+                    "a stale reader must not wait on a successor's Reserved claim"
+                );
+                assert!(
+                    started.elapsed() < Duration::from_millis(CLAIM_RESERVE_WAIT_MS / 2),
+                    "the stale-token denial must not consume the wait budget"
+                );
+
+                // Successor fully admitted (claim Published, token 200): the
+                // stale reader still denies; the successor itself grants.
+                assert!(
+                    publish_claim(&*mgr, 11, 80, 200),
+                    "publication must be ours"
+                );
+                assert_eq!(
+                    wait_authenticated_peer_node_id_for_conn(&*mgr, 80, 150),
+                    0,
+                    "a stale reader must not adopt a successor's published authority"
+                );
+                assert_eq!(
+                    wait_authenticated_peer_node_id_for_conn(&*mgr, 80, 200),
+                    11,
+                    "the successor's own gate must grant after its publication"
+                );
+            }
+        });
+    }
+
+    /// Removal racing publication must resolve the admission wait PROMPTLY —
+    /// pinned with a REAL joined reader: the installed actor's `reader_handle`
+    /// IS a thread parked in `wait_authenticated_peer_node_id_for_conn`, and
+    /// `hew_connmgr_remove` JOINS it (via the actor drop). Without the
+    /// pre-join claim abort the join blocks for the full
+    /// `CLAIM_RESERVE_WAIT_MS` backstop and the wall-clock assertion fails;
+    /// with it the abort wakes the parked reader to a fail-closed deny and
+    /// remove returns promptly. Also pins the cleanup: the aborted
+    /// reservation leaves no dangling claim to wedge a reconnect's
+    /// `reserve_claim`.
+    #[test]
+    fn remove_during_admission_wait_resolves_promptly_and_cleans_claim() {
+        with_reserved_claim(12, 90, 300, false, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                let (started_tx, started_rx) = std::sync::mpsc::channel();
+                let (result_tx, result_rx) = std::sync::mpsc::channel();
+                let waiter = SendConnMgr(mgr);
+                let reader = std::thread::spawn(move || {
+                    let waiter = waiter;
+                    started_tx.send(()).expect("reader start signal");
+                    // SAFETY: the manager outlives the join hew_connmgr_remove
+                    // performs on this thread.
+                    let granted = wait_authenticated_peer_node_id_for_conn(&*waiter.0, 90, 300);
+                    result_tx.send(granted).expect("reader result");
+                });
+
+                // Install the actor with the parked thread as its REAL reader
+                // handle, exactly what hew_connmgr_remove must join.
+                let mut actor = ConnectionActor::new(90);
+                actor.peer_node_id = 12;
+                actor.publication_token = 300;
+                actor.posture = crate::peer_binding::Posture::Strict;
+                actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+                actor.reader_handle = Some(reader);
+                (*mgr).connections.access(|conns| conns.push(actor));
+
+                started_rx.recv().expect("reader thread started");
+                // Scheduling grace so the reader reaches the condvar wait; the
+                // verdict is interleaving-independent (an un-parked reader
+                // sees the aborted claim and denies just the same).
+                std::thread::sleep(Duration::from_millis(50));
+
+                let remove_started = std::time::Instant::now();
+                assert_eq!(hew_connmgr_remove(mgr, 90), 0, "remove must succeed");
+                let elapsed = remove_started.elapsed();
+                assert!(
+                    elapsed < Duration::from_millis(CLAIM_RESERVE_WAIT_MS / 2),
+                    "remove (which joins the parked reader) must resolve at the \
+                     abort, not the {CLAIM_RESERVE_WAIT_MS} ms backstop; took {elapsed:?}"
+                );
+                let granted = result_rx.recv().expect("reader result delivered");
+                assert_eq!(
+                    granted, 0,
+                    "removal aborting the reservation must deny the waiting gate"
+                );
+                let (lock, _condvar) = &(*mgr).claims;
+                assert!(
+                    lock.lock_or_recover().get(&12).is_none(),
+                    "the aborted reservation must leave no dangling claim"
+                );
+            }
+        });
+    }
+
+    /// The remove-side abort restores the same-credential claim this admission
+    /// superseded (D3): when a reconnect's admission is removed before its
+    /// publication, the PREVIOUS owner's `Published` claim returns to the map
+    /// — authority falls back to the still-live prior connection instead of
+    /// evaporating.
+    #[test]
+    fn remove_before_publication_restores_superseded_claim() {
+        with_reserved_claim(13, 95, 400, true, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                // The original connection 95 is fully admitted (Published).
+                assert!(publish_claim(&*mgr, 13, 95, 400), "original must publish");
+
+                // A same-credential reconnect (conn 96) reserves, superseding
+                // the published claim, and installs — but is removed before
+                // `publish_connection_established` runs.
+                let superseded = match reserve_claim(&*mgr, 13, None, 96, 500) {
+                    ClaimReservation::Reserved { superseded } => {
+                        superseded.expect("reconnect must supersede the published claim")
+                    }
+                    ClaimReservation::Rejected(detail) => {
+                        panic!("same-credential reconnect must reserve: {detail}")
+                    }
+                };
+                install_strict_conn(&*mgr, 13, 96, 500);
+                (*mgr).connections.access(|conns| {
+                    let conn = conns
+                        .iter_mut()
+                        .find(|c| c.conn_id == 96)
+                        .expect("reconnect actor installed");
+                    *conn.superseded_claim.lock_or_recover() = Some(superseded);
+                });
+
+                assert_eq!(hew_connmgr_remove(mgr, 96), 0, "remove must succeed");
+
+                let (lock, _condvar) = &(*mgr).claims;
+                let guard = lock.lock_or_recover();
+                let restored = guard.get(&13).expect("superseded claim must be restored");
+                assert_eq!(
+                    restored.conn_id, 95,
+                    "restored claim owner is the original conn"
+                );
+                assert_eq!(restored.publication_token, 400);
+                assert_eq!(restored.state, ClaimState::Published);
+            }
+        });
+    }
+
+    /// Shared state for the failed-flush regression test: fails the first
+    /// `fail_remaining` sends, records the rest.
+    struct FailingOnceSends {
+        fail_remaining: AtomicUsize,
+        sends: Mutex<Vec<(c_int, Vec<u8>)>>,
+    }
+
+    unsafe extern "C" fn fail_once_then_record_send(
+        impl_ptr: *mut std::ffi::c_void,
+        conn_id: c_int,
+        data: *const std::ffi::c_void,
+        len: usize,
+    ) -> c_int {
+        // SAFETY: test installs a FailingOnceSends as the transport impl payload.
+        let state = unsafe { &*(impl_ptr.cast::<FailingOnceSends>()) };
+        if state
+            .fail_remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return -1;
+        }
+        // SAFETY: send_preencoded_on_manager passes an encoded frame valid for len bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }.to_vec();
+        state
+            .sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((conn_id, bytes));
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "test payload lengths fit c_int"
+        )]
+        {
+            len as c_int
+        }
+    }
+
+    /// A transiently failed connection-establish gossip flush must not lose the
+    /// cluster's registered names (the third lookup-unresolved mechanism): the
+    /// failed frames are PARKED, a stale admission token cannot consume them,
+    /// and the connection's next inbound-frame retry delivers them.
+    #[test]
+    fn failed_gossip_flush_parks_frames_and_retry_delivers() {
+        let state = Box::into_raw(Box::new(FailingOnceSends {
+            fail_remaining: AtomicUsize::new(1),
+            sends: Mutex::new(Vec::new()),
+        }));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(fail_once_then_record_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: state.cast(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.posture = crate::peer_binding::Posture::Strict;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+            let token = test_publish_claim(&*mgr, 2, 10);
+
+            (&*cluster).emit_registry_add("svc", crate::pid::hew_pid_make(1, 0x77));
+
+            // Initial flush: the send fails; the frame must be parked, not lost.
+            flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
+            assert!(
+                (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty(),
+                "the failed initial send must record nothing"
+            );
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                1,
+                "the failed flush must park its frames"
+            );
+
+            // A stale admission token (a reused conn_id's old reader) must not
+            // consume the parked frames.
+            retry_pending_registry_flush(&*mgr, 10, token + 1);
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                1,
+                "a stale token must not consume the parked flush"
+            );
+
+            // The connection's own retry (next inbound frame) delivers.
+            retry_pending_registry_flush(&*mgr, 10, token);
+            {
+                let sends = (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(sends.len(), 1, "the retry must deliver the parked frame");
+                assert_eq!(sends[0].0, 10);
+                let WireFrame::Control(ctrl) =
+                    decode_wire_frame(&sends[0].1).expect("delivered frame decodes")
+                else {
+                    panic!("delivered frame must be a control frame");
+                };
+                assert_eq!(ctrl.ctrl_kind, CTRL_REGISTRY_GOSSIP);
+                let payload =
+                    decode_registry_gossip_payload(&ctrl.payload).expect("gossip payload");
+                assert_eq!(payload.name, "svc");
+                assert_eq!(payload.op, REGISTRY_GOSSIP_OP_ADD);
+            }
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                0,
+                "a delivered retry must clear the parked entry"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(state));
+        }
+        drop(ops);
+    }
+
+    /// Remove racing a JUST-PUBLISHED claim whose publication our removal
+    /// suppressed: the stashed predecessor claim must be restored after our
+    /// claim's retirement — the prior same-credential connection regains
+    /// authority instead of being orphaned claimless. (The publish path clears
+    /// the stash when publication completes, so this restore can never
+    /// resurrect a closed connection's claim.)
+    #[test]
+    fn remove_after_suppressed_publication_restores_superseded_claim() {
+        with_reserved_claim(15, 95, 700, true, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                assert!(publish_claim(&*mgr, 15, 95, 700), "original must publish");
+
+                // Same-credential reconnect: conn 96 reserves (superseding),
+                // installs, and its claim reaches Published — but the cluster
+                // publication is then SUPPRESSED by removal, so the stash is
+                // never cleared.
+                let superseded = match reserve_claim(&*mgr, 15, None, 96, 800) {
+                    ClaimReservation::Reserved { superseded } => {
+                        superseded.expect("reconnect must supersede the published claim")
+                    }
+                    ClaimReservation::Rejected(detail) => {
+                        panic!("same-credential reconnect must reserve: {detail}")
+                    }
+                };
+                install_strict_conn(&*mgr, 15, 96, 800);
+                (*mgr).connections.access(|conns| {
+                    let conn = conns
+                        .iter_mut()
+                        .find(|c| c.conn_id == 96)
+                        .expect("reconnect actor installed");
+                    *conn.superseded_claim.lock_or_recover() = Some(superseded);
+                });
+                assert!(
+                    publish_claim(&*mgr, 15, 96, 800),
+                    "reconnect claim publishes"
+                );
+
+                assert_eq!(hew_connmgr_remove(mgr, 96), 0, "remove must succeed");
+
+                let (lock, _condvar) = &(*mgr).claims;
+                let guard = lock.lock_or_recover();
+                let restored = guard.get(&15).expect("predecessor claim must be restored");
+                assert_eq!(restored.conn_id, 95);
+                assert_eq!(restored.publication_token, 700);
+                assert_eq!(restored.state, ClaimState::Published);
+            }
+        });
+    }
+
+    /// The counter-half: when the publication COMPLETES, the publish path
+    /// clears the stash (and closes the superseded connection), so a later
+    /// remove retires the claim without restoring anything — no resurrected
+    /// authority for a closed predecessor.
+    #[test]
+    fn remove_after_completed_publication_restores_nothing() {
+        with_reserved_claim(16, 95, 900, true, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                assert!(publish_claim(&*mgr, 16, 95, 900), "original must publish");
+                let superseded = match reserve_claim(&*mgr, 16, None, 96, 1000) {
+                    ClaimReservation::Reserved { superseded } => {
+                        superseded.expect("reconnect must supersede the published claim")
+                    }
+                    ClaimReservation::Rejected(detail) => {
+                        panic!("same-credential reconnect must reserve: {detail}")
+                    }
+                };
+                let mut actor = ConnectionActor::new(96);
+                actor.peer_node_id = 16;
+                actor.publication_token = 1000;
+                actor.posture = crate::peer_binding::Posture::Strict;
+                actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+                *actor.superseded_claim.lock_or_recover() = Some(superseded.clone());
+                let Ok(publication) = install_connection_actor(&*mgr, actor) else {
+                    panic!("install must succeed");
+                };
+                // Full publication (not suppressed): clears the stash.
+                publish_connection_established(
+                    &*mgr,
+                    16,
+                    96,
+                    0,
+                    publication.token,
+                    &publication.sync,
+                    &publication.removed,
+                    Some(superseded),
+                );
+
+                assert_eq!(hew_connmgr_remove(mgr, 96), 0, "remove must succeed");
+
+                let (lock, _condvar) = &(*mgr).claims;
+                assert!(
+                    lock.lock_or_recover().get(&16).is_none(),
+                    "a completed publication's remove must not restore the predecessor"
+                );
+            }
+        });
+    }
+
+    /// Ordering safety across a failed flush (the stale-replay hazard): a
+    /// broadcast REMOVE for a name whose ADD is still parked must queue BEHIND
+    /// the parked ADD, and the retry must deliver both in original order — the
+    /// receiver's final state is the REMOVE, never a replayed stale ADD.
+    #[test]
+    fn broadcast_parks_behind_undelivered_flush_preserving_order() {
+        let state = Box::into_raw(Box::new(FailingOnceSends {
+            fail_remaining: AtomicUsize::new(1),
+            sends: Mutex::new(Vec::new()),
+        }));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(fail_once_then_record_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: state.cast(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.posture = crate::peer_binding::Posture::Strict;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+            let token = test_publish_claim(&*mgr, 2, 10);
+
+            let actor_id = crate::pid::hew_pid_make(1, 0x88);
+            (&*cluster).emit_registry_add("svc", actor_id);
+            // The ADD flush fails and parks.
+            flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                1,
+                "the failed ADD must park"
+            );
+
+            // A later REMOVE broadcast must park BEHIND it, not overtake it.
+            assert_eq!(
+                hew_connmgr_broadcast_registry_gossip(mgr, "svc", 0, false),
+                0,
+                "the REMOVE must not report a direct send while the ADD is parked"
+            );
+            assert!(
+                (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty(),
+                "nothing may reach the wire before the retry drains in order"
+            );
+
+            // The retry drains BOTH, in original order: ADD then REMOVE.
+            retry_pending_registry_flush(&*mgr, 10, token);
+            {
+                let sends = (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let ops_seen: Vec<u8> = sends
+                    .iter()
+                    .map(|(_, bytes)| {
+                        let WireFrame::Control(ctrl) =
+                            decode_wire_frame(bytes).expect("frame decodes")
+                        else {
+                            panic!("expected control frame");
+                        };
+                        decode_registry_gossip_payload(&ctrl.payload)
+                            .expect("gossip payload")
+                            .op
+                    })
+                    .collect();
+                assert_eq!(
+                    ops_seen,
+                    vec![REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE],
+                    "the drain must preserve ADD-before-REMOVE order"
+                );
+            }
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                0,
+                "a full drain clears the parked entry"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(state));
+        }
+        drop(ops);
+    }
+
+    /// The retry budget is BOUNDED: after `MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS`
+    /// failed drains the parked frames are dropped fail-closed (with a
+    /// diagnostic), never retried forever.
+    #[test]
+    fn retry_attempts_ceiling_drops_parked_frames() {
+        let state = Box::into_raw(Box::new(FailingOnceSends {
+            fail_remaining: AtomicUsize::new(usize::MAX),
+            sends: Mutex::new(Vec::new()),
+        }));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(fail_once_then_record_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: state.cast(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.posture = crate::peer_binding::Posture::Strict;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+            let token = test_publish_claim(&*mgr, 2, 10);
+
+            (&*cluster).emit_registry_add("svc", crate::pid::hew_pid_make(1, 0x99));
+            flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                1
+            );
+
+            // Every retry fails; the ceiling must eventually drop the entry.
+            for _ in 0..MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS {
+                retry_pending_registry_flush(&*mgr, 10, token);
+                assert_eq!(
+                    (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                    1,
+                    "within budget, a failed drain re-parks"
+                );
+            }
+            let _ = take_hew_last_error();
+            retry_pending_registry_flush(&*mgr, 10, token);
+            assert_eq!(
+                (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
+                0,
+                "the attempt over budget must drop the parked entry"
+            );
+            let diag = take_hew_last_error().expect("budget exhaustion must leave a diagnostic");
+            assert!(
+                diag.contains("retry budget exhausted"),
+                "diagnostic must name the budget exhaustion, got: {diag}"
+            );
+            assert!(
+                (*state)
+                    .sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty(),
+                "no frame ever reached the wire"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(state));
+        }
+        drop(ops);
+    }
+
+    /// Recorder for the real-order admission test: collects every registry
+    /// event the cluster applies.
+    extern "C" fn record_registry_apply(
+        name: *const std::ffi::c_char,
+        actor_id: u64,
+        is_add: bool,
+        user_data: *mut std::ffi::c_void,
+    ) {
+        // SAFETY: test installs a Mutex<Vec<_>> as the callback user data.
+        let applied = unsafe { &*(user_data.cast::<Mutex<Vec<(String, u64, bool)>>>()) };
+        // SAFETY: the cluster passes a valid NUL-terminated name.
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned();
+        applied
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((name, actor_id, is_add));
+    }
+
+    /// Real admission ordering through the production pieces (the full
+    /// `hew_connmgr_add` path additionally requires a live Noise handshake to
+    /// reach `Strict` posture, which only the two-process e2e suite drives;
+    /// this test pins the same ordering seam with the real reserve / install /
+    /// publish / gate / decode functions):
+    /// `reserve_claim` → a registry-gossip control frame processed by
+    /// `handle_control_frame` (real decode + waiting gate) → REAL
+    /// `install_connection_actor` → REAL `publish_connection_established` →
+    /// the cluster registry callback applies the name. The frame processing
+    /// begins strictly BEFORE the install (channel-sequenced, plus a
+    /// scheduling grace biasing it into the pre-install window), modelling
+    /// the reader thread racing `hew_connmgr_add`; the gate must hold the
+    /// frame through install + publication and then apply it — an instant
+    /// deny loses the peer's one-shot flush and the name never resolves.
+    #[test]
+    fn control_frame_before_install_applies_registry_event_after_real_publish() {
+        let applied = Box::into_raw(Box::new(Mutex::new(Vec::<(String, u64, bool)>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: std::ptr::null_mut(),
+        }));
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+        // SAFETY: cluster is live; the recorder's user data outlives it.
+        unsafe {
+            crate::cluster::hew_cluster_set_registry_callback(
+                cluster,
+                record_registry_apply,
+                applied.cast(),
+            );
+        }
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            // Step 1 (real): reserve the claim, as hew_connmgr_add does before
+            // spawning the reader.
+            let token = next_publication_token(&*mgr);
+            let ClaimReservation::Reserved { superseded: None } =
+                reserve_claim(&*mgr, 5, None, 30, token)
+            else {
+                panic!("fresh reservation must succeed without supersession");
+            };
+
+            // Step 2 (real decode + gate): a reader surrogate processes the
+            // peer's one-shot registry-gossip frame. It signals right before
+            // handing the frame to the production dispatch.
+            let actor_id = crate::pid::hew_pid_make(5, 0x99);
+            let frame_bytes = encode_registry_gossip_control("svc", actor_id, true)
+                .expect("gossip frame encodes");
+            let WireFrame::Control(control) =
+                decode_wire_frame(&frame_bytes).expect("frame decodes")
+            else {
+                panic!("expected a control frame");
+            };
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let reader = SendConnMgr(mgr);
+            let reader_handle = std::thread::spawn(move || {
+                let reader = reader;
+                started_tx.send(()).expect("reader start signal");
+                // SAFETY: manager outlives the join below.
+                handle_control_frame(reader.0, HEW_FEATURE_SUPPORTS_GOSSIP, 30, token, &control);
+            });
+            started_rx.recv().expect("reader surrogate started");
+            // Scheduling grace biasing the frame into the PRE-INSTALL window;
+            // the assertion is interleaving-independent (the gate is correct
+            // for frames arriving anywhere in the admission window).
+            std::thread::sleep(Duration::from_millis(50));
+
+            // Steps 3+4 (real): install, then publish, exactly as
+            // hew_connmgr_add does after spawning the reader.
+            let mut actor = ConnectionActor::new(30);
+            actor.peer_node_id = 5;
+            actor.publication_token = token;
+            actor.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            actor.posture = crate::peer_binding::Posture::Strict;
+            actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let Ok(publication) = install_connection_actor(&*mgr, actor) else {
+                panic!("install must succeed");
+            };
+            publish_connection_established(
+                &*mgr,
+                5,
+                30,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                publication.token,
+                &publication.sync,
+                &publication.removed,
+                None,
+            );
+
+            reader_handle.join().expect("reader surrogate");
+            {
+                let applied = (*applied)
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(
+                    applied.as_slice(),
+                    &[("svc".to_owned(), actor_id, true)],
+                    "the pre-install frame must apply exactly once after publication"
+                );
+            }
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(applied));
         }
         drop(ops);
     }
@@ -4808,7 +6278,7 @@ mod tests {
             unverified.posture = crate::peer_binding::Posture::Unverified;
             unverified.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             (&*mgr).connections.access(|conns| conns.push(unverified));
-            test_publish_claim(&*mgr, 2, 10);
+            let conn10_token = test_publish_claim(&*mgr, 2, 10);
 
             let _ = take_hew_last_error();
             assert_eq!(
@@ -4816,7 +6286,7 @@ mod tests {
                 0,
                 "precondition: Unverified conn 10 must have no authenticated identity"
             );
-            handle_link_down_frame(mgr, 10, &link_down_frame(101));
+            handle_link_down_frame(mgr, 10, conn10_token, &link_down_frame(101));
             let diag = take_hew_last_error().expect("gated link down must leave a diagnostic");
             assert!(
                 diag.contains("link down") && diag.contains("missing authenticated peer"),
@@ -4832,7 +6302,7 @@ mod tests {
             strict.posture = crate::peer_binding::Posture::Strict;
             strict.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             (&*mgr).connections.access(|conns| conns.push(strict));
-            test_publish_claim(&*mgr, 3, 20);
+            let conn20_token = test_publish_claim(&*mgr, 3, 20);
             let mut strict2 = ConnectionActor::new(21);
             strict2.peer_node_id = 3;
             strict2.posture = crate::peer_binding::Posture::Strict;
@@ -4841,7 +6311,7 @@ mod tests {
             test_publish_claim(&*mgr, 3, 21);
 
             let _ = take_hew_last_error();
-            handle_link_down_frame(mgr, 20, &link_down_frame(102));
+            handle_link_down_frame(mgr, 20, conn20_token, &link_down_frame(102));
             let diag = take_hew_last_error().expect("superseded link down must leave a diagnostic");
             assert!(
                 diag.contains("link down") && diag.contains("missing authenticated peer"),

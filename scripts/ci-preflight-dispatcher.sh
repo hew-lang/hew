@@ -670,6 +670,7 @@ case "$LANE" in
         add_command "make leak-scan"
         add_command "cargo fmt --all -- --check"
         add_command "make test-rust"
+        add_command "make o2-differential-selftest"
         ;;
     grammar)
         add_command "cargo fmt --all -- --check"

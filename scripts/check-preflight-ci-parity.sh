@@ -14,8 +14,8 @@
 # --ci-required so there is a single source of truth: update the
 # CI_REQUIRED_CHECKS array in ci-preflight-dispatcher.sh, not here.
 #
-# The CI build-and-test step list is parsed directly from .github/workflows/ci.yml
-# using a comment-marked block (>>> CI-PARITY-STEPS … <<< CI-PARITY-STEPS).
+# The CI gate step list is parsed directly from .github/workflows/ci.yml using
+# one or more comment-marked blocks (>>> CI-PARITY-STEPS … <<< CI-PARITY-STEPS).
 # Within that block, steps are identified by:
 #   - A single-line `run: <cmd>` value, OR
 #   - A `# parity-cmd: <cmd>` annotation on a `run: >-` line (used when the
@@ -41,7 +41,7 @@ VERBOSE=0
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=1
 
 # ── Parse CI build-and-test steps from the marked block in ci.yml ─────────────
-# Extract commands from the >>> CI-PARITY-STEPS … <<< CI-PARITY-STEPS block.
+# Extract commands from all >>> CI-PARITY-STEPS … <<< CI-PARITY-STEPS blocks.
 # Two extraction rules:
 #   1. `run: >-  # parity-cmd: <cmd>` → extract <cmd> (multi-line run: override)
 #   2. `run: <cmd>` (single-line, no >-) → extract <cmd>

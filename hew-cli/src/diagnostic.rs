@@ -699,6 +699,9 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
                 hew_mir::ProjectedPayloadRejectReason::GuardedConsume => {
                     "a `match`-arm guard that can fall through"
                 }
+                hew_mir::ProjectedPayloadRejectReason::AliasesCallerStorage => {
+                    "a `match` on a value that may alias caller storage"
+                }
             };
             format!("cannot move the heap-owning payload `{name}` out of {source}")
         }

@@ -2738,6 +2738,15 @@ pub fn lower_hir_module_with_facts(
     // it without re-cloning the map.
     let funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>> =
         Rc::new(compute_fn_returns_fresh_owner(&origin_fns));
+    // Module-global call-scrutinee return-provenance context (#2648): the precise
+    // three-state provenance fixpoint (+ the interprocedural mutation summary),
+    // the declared-extern id set, and the audited extern contract table. Computed
+    // ONCE and threaded (as `Rc`) into every body-lowering builder so the
+    // preflight admission classifier rejects a forwarded borrowed-parameter
+    // scrutinee before the from-call owner mint fires.
+    let call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance> = Rc::new(
+        crate::return_provenance::build_call_scrutinee_provenance(module, &origin_fns),
+    );
     // Module-global RAII-2 (#1295) param-ownership facts: which affine
     // `#[resource]` free-fn value params are CONSUME vs BORROW, and the
     // call-arg `SiteId`s whose over-stamped `Consume` intent is downgraded to a
@@ -2790,6 +2799,7 @@ pub fn lower_hir_module_with_facts(
                         &module_fn_names,
                         &module_generic_fn_names,
                         &funcupdate_fn_returns_fresh,
+                        &call_scrutinee_provenance,
                         &param_ownership,
                         &trait_impl_index,
                         &module.call_site_type_args,
@@ -2842,6 +2852,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &call_scrutinee_provenance,
                     &param_ownership,
                     &trait_impl_index,
                     &module.call_site_type_args,
@@ -2883,6 +2894,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
@@ -2925,6 +2937,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
@@ -3013,6 +3026,7 @@ pub fn lower_hir_module_with_facts(
                     &module_fn_names,
                     &module_generic_fn_names,
                     &funcupdate_fn_returns_fresh,
+                    &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
@@ -3079,6 +3093,7 @@ pub fn lower_hir_module_with_facts(
             &module_fn_names,
             &module_generic_fn_names,
             &funcupdate_fn_returns_fresh,
+            &call_scrutinee_provenance,
             &param_ownership,
             &trait_impl_index,
             &module.call_site_type_args,
@@ -3380,6 +3395,7 @@ fn lower_actor_receive_handlers(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -3465,6 +3481,7 @@ fn lower_actor_receive_handlers(
             module_fn_names,
             module_generic_fn_names,
             funcupdate_fn_returns_fresh,
+            call_scrutinee_provenance,
             param_ownership,
             &HashMap::new(),
             call_site_type_args,
@@ -3496,6 +3513,7 @@ fn lower_actor_body_handlers(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -3520,6 +3538,7 @@ fn lower_actor_body_handlers(
             module_fn_names,
             module_generic_fn_names,
             funcupdate_fn_returns_fresh,
+            call_scrutinee_provenance,
             param_ownership,
             call_site_type_args,
             supervisor_child_slots,
@@ -3544,6 +3563,7 @@ fn lower_actor_body_handlers(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        call_scrutinee_provenance,
         param_ownership,
         call_site_type_args,
         supervisor_child_slots,
@@ -3565,6 +3585,7 @@ fn lower_actor_body_handlers(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        call_scrutinee_provenance,
         param_ownership,
         call_site_type_args,
         supervisor_child_slots,
@@ -3594,6 +3615,7 @@ fn lower_actor_init_handler(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -3647,6 +3669,7 @@ fn lower_actor_init_handler(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        call_scrutinee_provenance,
         param_ownership,
         &HashMap::new(),
         call_site_type_args,
@@ -3679,6 +3702,7 @@ fn lower_actor_lifecycle_handlers(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -3737,6 +3761,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    call_scrutinee_provenance,
                     param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
@@ -3788,6 +3813,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    call_scrutinee_provenance,
                     param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
@@ -4060,6 +4086,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    call_scrutinee_provenance,
                     param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
@@ -4168,6 +4195,7 @@ fn lower_actor_lifecycle_handlers(
                     module_fn_names,
                     module_generic_fn_names,
                     funcupdate_fn_returns_fresh,
+                    call_scrutinee_provenance,
                     param_ownership,
                     &HashMap::new(),
                     call_site_type_args,
@@ -4390,6 +4418,7 @@ fn synthesize_machine_step_fn(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -4440,6 +4469,7 @@ fn synthesize_machine_step_fn(
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
         funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
+        call_scrutinee_provenance: call_scrutinee_provenance.clone(),
         param_ownership: param_ownership.clone(),
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
@@ -5403,6 +5433,7 @@ fn lower_supervisor_bootstrap(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
@@ -5739,6 +5770,7 @@ fn lower_supervisor_bootstrap(
         module_fn_names,
         module_generic_fn_names,
         funcupdate_fn_returns_fresh,
+        call_scrutinee_provenance,
         param_ownership,
         &HashMap::new(),
         call_site_type_args,
@@ -7765,7 +7797,7 @@ fn collect_borrow_arg_sites_in_expr(
 /// Conservative by construction: a helper that returns a let-bound local
 /// (`fn make() { let x = Inner { .. }; x }`) is classified non-fresh — sound
 /// (fail-closed), at the cost of over-rejecting that idiom as a funcupdate base.
-fn compute_fn_returns_fresh_owner(
+pub(crate) fn compute_fn_returns_fresh_owner(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
 ) -> HashMap<hew_hir::ItemId, bool> {
     let mut fresh: HashMap<hew_hir::ItemId, bool> = fns.keys().map(|&id| (id, false)).collect();
@@ -7841,99 +7873,18 @@ fn fn_body_returns_fresh_owner(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, bool>
 ///
 /// EXHAUSTIVE and fail-closed: every form that is not provably non-aliasing
 /// (a bare binding, a method call, a deref, any unmodelled form) returns `true`.
+///
+/// # Delegation (#2648)
+///
+/// The leaf walk now lives ONCE in [`crate::return_provenance::return_alias_bits`],
+/// parameterized by a `LeafPolicy`. This function is the byte-identical **Coarse**
+/// wrapper: `return_alias_bits(expr, &CoarsePolicy) != ∅` reproduces the exact
+/// pre-refactor boolean, keeping the shared funcupdate (#2420 base gate) /
+/// reassign consumers unchanged while #2648's Precise driver consumes the same
+/// walk under a different policy. Pinned byte-identical by the
+/// `coarse_verdict_differential` frozen-reference test.
 fn return_value_may_alias_borrow(expr: &HirExpr, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
-    match &expr.kind {
-        // Value-passthrough wrappers: the value flows from the tail / both
-        // branches / every arm — aliasing iff ANY reachable value aliases.
-        HirExprKind::Block(block) => block
-            .tail
-            .as_deref()
-            .is_none_or(|t| return_value_may_alias_borrow(t, fresh)),
-        HirExprKind::If {
-            then_expr,
-            else_expr,
-            ..
-        } => {
-            return_value_may_alias_borrow(then_expr, fresh)
-                || else_expr
-                    .as_deref()
-                    .is_none_or(|e| return_value_may_alias_borrow(e, fresh))
-        }
-        HirExprKind::Match { arms, .. } => {
-            arms.is_empty()
-                || arms
-                    .iter()
-                    .any(|arm| return_value_may_alias_borrow(&arm.body, fresh))
-        }
-        // A nested `return <e>` in value position (`... else { return p }`)
-        // contributes its own value; it aliases iff that value does.
-        HirExprKind::Return { value } => value
-            .as_deref()
-            .is_none_or(|v| return_value_may_alias_borrow(v, fresh)),
-        // Fresh leaves — NEVER an alias of a caller-owned value. A `.clone()` is
-        // a deep copy; a `Vec<T>` element load / slice is an independent heap
-        // element (push-clone + refcount); a literal owns nothing borrowed.
-        HirExprKind::RecordCloneCall { .. }
-        | HirExprKind::Index { .. }
-        | HirExprKind::Slice { .. }
-        | HirExprKind::Literal(_) => false,
-        // A construction aliases a parameter iff one of its owned operands does.
-        // Storing a managed operand into a field/element refcount-bumps or
-        // COW-copies a PROJECTION/temporary, but a WHOLE by-value parameter is
-        // moved without a bump (`Outer { inner: p }` returns a value whose
-        // `inner` aliases the caller's argument — the call-returns-a-constructor-
-        // embedding-a-borrow use-after-free). The recursion bottoms a bare
-        // parameter operand out at the `_ => true` arm, so it is caught.
-        HirExprKind::StructInit { fields, base, .. } => {
-            fields
-                .iter()
-                .any(|(_, v)| return_value_may_alias_borrow(v, fresh))
-                || base
-                    .as_deref()
-                    .is_some_and(|b| return_value_may_alias_borrow(b, fresh))
-        }
-        HirExprKind::TupleLiteral { elements } => elements
-            .iter()
-            .any(|e| return_value_may_alias_borrow(e, fresh)),
-        HirExprKind::MachineVariantCtor { payload, .. } => payload.as_ref().is_some_and(|fields| {
-            fields
-                .iter()
-                .any(|(_, v)| return_value_may_alias_borrow(v, fresh))
-        }),
-        // A call that is NOT to a statically-resolved Item — a closure value, a
-        // function-pointer parameter, or any indirect/dynamic dispatch — can hand
-        // back a CAPTURED by-value heap parameter through its environment, a
-        // HIDDEN argument the explicit-arg flow below cannot see:
-        // `fn f(p) { let g = || -> Inner { p }; g() }` returns `p` with ZERO
-        // explicit arguments, so an `args`-only test would conclude "no args ⇒ no
-        // alias ⇒ fresh" and admit `..f(o.inner)` — the closure-capture-return
-        // use-after-free. Trust ONLY a resolved Item (a free function whose body
-        // the fixpoint analyzed, or an owned-return-ABI extern / constructor);
-        // every other callee may-alias regardless of arguments. Fail closed.
-        HirExprKind::Call { callee, args } => {
-            !callee_is_resolved_item(callee)
-                // A resolved free-function / owned-ABI extern / constructor call
-                // aliases a parameter iff the callee is NOT proven to return a
-                // fresh owner AND some argument itself aliases a parameter (the
-                // callee could forward that argument out). A proven-fresh callee
-                // never aliases regardless of arguments; a non-fresh callee with
-                // only non-aliasing arguments (`string.repeat("a", 32)`) cannot
-                // alias the ENCLOSING function's parameters. Param-flow, composed
-                // through the fixpoint.
-                || (!callee_returns_fresh_owner(callee, fresh)
-                    && args.iter().any(|a| return_value_may_alias_borrow(a, fresh)))
-        }
-        // A projection aliases a parameter iff its object chain does: `p.inner`
-        // / `t.0` bottoms out at a bare parameter (`_ => true`) and carries that
-        // up; `makeOuter().inner` bottoms out at a fresh `Call` and does not.
-        HirExprKind::FieldAccess { object, .. } => return_value_may_alias_borrow(object, fresh),
-        HirExprKind::TupleIndex { tuple, .. } => return_value_may_alias_borrow(tuple, fresh),
-        // A by-value parameter is a BORROW; a bare local may itself hold a
-        // borrow (`let x = p; x`); a method call can return borrowed `self` /
-        // a parameter; a deref and every other form are not provably fresh.
-        // Fail closed: assume the value MAY alias.
-        _ => true,
-    }
+    crate::return_provenance::coarse_may_alias_borrow(expr, fresh)
 }
 
 /// Resolve a `Call` callee to its freshness fact.
@@ -7991,7 +7942,7 @@ fn callee_is_resolved_item(callee: &HirExpr) -> bool {
 /// recursing into nested control flow but NOT into closures. Exhaustive over
 /// `HirStmtKind`: a missed return statement would let a borrowed-param return
 /// escape the freshness summary (a use-after-free), so every form is handled.
-fn collect_return_values_in_block<'f>(block: &'f HirBlock, out: &mut Vec<&'f HirExpr>) {
+pub(crate) fn collect_return_values_in_block<'f>(block: &'f HirBlock, out: &mut Vec<&'f HirExpr>) {
     for stmt in &block.statements {
         match &stmt.kind {
             HirStmtKind::Let(_, init) => {
@@ -8268,6 +8219,13 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
         HirExprKind::Match { scrutinee, arms } => {
             collect_return_values_in_expr(scrutinee, out);
             for arm in arms {
+                // A `return <expr>` buried in an arm GUARD exits the function:
+                // its value is a return path the summary must union, or a
+                // guard-forwarded borrow reads wrongly-Fresh and the preflight
+                // mints a second owner over caller-owned storage.
+                if let Some(guard) = &arm.guard {
+                    collect_return_values_in_expr(guard, out);
+                }
                 collect_return_values_in_expr(&arm.body, out);
             }
         }
@@ -8405,6 +8363,7 @@ fn lower_function(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
+    call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     trait_impl_index: &HashMap<
         hew_hir::dispatch::TraitImplKey,
@@ -8454,6 +8413,7 @@ fn lower_function(
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
         funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
+        call_scrutinee_provenance: call_scrutinee_provenance.clone(),
         param_ownership: param_ownership.clone(),
         trait_impl_index: trait_impl_index.clone(),
         subst,
@@ -8505,6 +8465,15 @@ fn lower_function(
     builder.lower_params(func);
     builder.funcupdate_base_proven =
         compute_funcupdate_base_provenance(func, funcupdate_fn_returns_fresh);
+    // #2648 S2b — the caller arg-scan's per-function local freshness facts,
+    // computed under the SAME module tables the S1 fixpoint used.
+    builder.call_scrutinee_local_freshness =
+        crate::return_provenance::compute_local_binding_freshness(
+            func,
+            &call_scrutinee_provenance.provenance,
+            &call_scrutinee_provenance.extern_table,
+            &call_scrutinee_provenance.may_mutate,
+        );
     builder.function_body(func);
 
     // Effective return type after type-parameter substitution.
@@ -9921,6 +9890,22 @@ struct Builder {
     /// builders share it cheaply; the empty default fails every call-base
     /// closed, which is sound. See `compute_fn_returns_fresh_owner`.
     funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>>,
+    /// Module-global call-scrutinee return-provenance context (#2648) for the
+    /// preflight admission classifier (`classify_call_scrutinee_admission`). Maps
+    /// each module-fn `ItemId` to its precise three-state return provenance, the
+    /// declared-extern id set, and the audited extern contract table. `Rc` so
+    /// child builders share it cheaply; the empty default classifies every callee
+    /// as an unknown item → interim `LegacyModuleCall` fail-open (sound —
+    /// preserves today's mint, never a wrongly-Fresh admit). See
+    /// `crate::return_provenance::CallScrutineeProvenance`.
+    call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance>,
+    /// Per-function local-binding freshness facts (#2648 S2b) consumed by the
+    /// caller-side argument scan: which of the CURRENT function's locals are
+    /// provably solely-owned fresh values (S1 bits `∅`, plain `let`, not
+    /// aliased, single read). Computed once per lowered function in
+    /// `lower_function`; the empty default (synthetic machine-step builders,
+    /// child builders, tests) admits NO local argument — fail-closed.
+    call_scrutinee_local_freshness: crate::return_provenance::LocalBindingFreshness,
     /// Module-global RAII-2 param-ownership facts: which affine
     /// `#[resource]` free-fn params are CONSUME (callee owns + drops) vs
     /// BORROW (caller keeps + drops), and the call-arg `SiteId`s whose
@@ -11066,11 +11051,239 @@ impl Builder {
         Some(ty)
     }
 
+    /// #2648 preflight admission classifier — pure HIR, run at the TOP of every
+    /// call-scrutinee consumer BEFORE `lower_value`/CFG allocation. Returns the
+    /// admission token the from-call owner mint and the #2523 origin consume, or
+    /// an `Err(MirDiagnostic)` reject (ONE diagnostic, no partial MIR) for a
+    /// scrutinee whose callee may hand back a borrowed by-value parameter alias
+    /// (summary contains `PARAM`) or an un-audited heap-returning `extern`.
+    ///
+    /// # Interim behaviour (S2–S4, before the trusted-root precursor merges)
+    ///
+    /// - A resolved module-fn callee whose precise summary carries `PARAM`
+    ///   REJECTS — the PRIMARY #2648 forwarder double-free fix (`match
+    ///   passthru(h.b)`). Mixed `PARAM|OPAQUE` forwarders reject too.
+    /// - A module fn whose summary is `∅` (Fresh) or `OPAQUE`-only takes
+    ///   [`CallScrutineeAdmission::LegacyModuleCall`] — today's owner-mint
+    ///   admission EXACTLY (jwt/encrypt/semver/template keep compiling). The
+    ///   precise `OPAQUE`-only rejects + jwt/encrypt Fresh admits land at S4b.
+    /// - A declared heap-returning `extern` REJECTS — including a user extern
+    ///   whose NAME spoofs a runtime recv symbol (it resolves to
+    ///   `ResolvedRef::Item`, so it is keyed by id, never the name).
+    /// - Every recv/stream/`Builtin` carve-out, unknown/cross-module item, and
+    ///   indirect/closure callee behaves as today (`NotApplicable` /
+    ///   `LegacyModuleCall` fail-open).
+    fn classify_call_scrutinee_admission(
+        &self,
+        scrutinee: &HirExpr,
+    ) -> Result<crate::return_provenance::CallScrutineeAdmission, Box<MirDiagnostic>> {
+        use crate::return_provenance::{is_typed_recv_callee, AliasBits, CallScrutineeAdmission};
+        // Structural Call-gate FIRST: only a direct `Call` rvalue can mint the
+        // from-call owner. A non-`Call` scrutinee (a `Block`/`If` synthetic
+        // `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place, an
+        // aggregate) is `NotApplicable` ON KIND — exactly `call_scrutinee_owned_ty`'s
+        // early `None`, before any runtime-identity resolution can be consulted.
+        let HirExprKind::Call { callee, args } = &scrutinee.kind else {
+            return Ok(CallScrutineeAdmission::NotApplicable);
+        };
+        if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
+            // Typed carve-outs, keyed on the compiler-minted identity (NOT the
+            // display name): a recv/stream family or any `ResolvedRef::Builtin`
+            // callee carries its own per-iteration `BodyEndReleased` release, so
+            // no synthetic owner is minted. A user extern SPOOFING one of those
+            // names resolves to `ResolvedRef::Item` → does NOT match here → falls
+            // through to the reject arms below (closes the name-forgeable bypass).
+            if is_typed_recv_callee(callee) || matches!(resolved, ResolvedRef::Builtin(_)) {
+                return Ok(CallScrutineeAdmission::NotApplicable);
+            }
+            // Only a heap-owning-enum-composite return mints an owner; anything
+            // else is `NotApplicable`, exactly as `call_scrutinee_owned_ty`
+            // returns `None`.
+            let ty = self.subst_ty(&scrutinee.ty);
+            if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts)
+            {
+                return Ok(CallScrutineeAdmission::NotApplicable);
+            }
+            let prov = &self.call_scrutinee_provenance;
+            // A declared user extern — even one whose name spoofs a runtime
+            // symbol — reaching the heap-enum ty-gate is an un-audited heap
+            // extern. A call to an extern dispatches by NAME (its call-site
+            // `ResolvedRef::Item` carries a placeholder id, not the declaration's),
+            // so extern detection keys on the name, BEFORE the runtime-symbol
+            // carve-out (closes the name-forgeable bypass). No heap extern is
+            // trusted-Fresh in the interim (the marker-backed jwt/encrypt rows
+            // land at S4b).
+            if prov.extern_names.contains(name) {
+                return Err(Box::new(Self::call_scrutinee_reject(
+                    scrutinee,
+                    "an un-audited heap-returning `extern` may hand back an interior pointer \
+                     the caller still owns",
+                )));
+            }
+            if let ResolvedRef::Item(id) = resolved {
+                // A resolved module fn with an analysable body: consult its
+                // precise summary ONLY for the interim `PARAM`-present reject.
+                if let Some(bits) = prov.provenance.get(id) {
+                    if bits.contains(AliasBits::PARAM) {
+                        // S2b — the ParamsOnly caller arg-scan. A `{PARAM}`-only
+                        // summary means the return can alias ONLY the callee's
+                        // by-value heap parameters, so when EVERY argument is
+                        // provably fresh at this call site the returned value
+                        // derives exclusively from fresh inputs — a fresh sole
+                        // owner: ADMIT (the template/semver stdlib shape). A
+                        // mixed `PARAM|OPAQUE` summary stays an unconditional
+                        // reject — the `OPAQUE` component is never
+                        // arg-rescuable.
+                        if bits.is_params_only() && self.params_only_args_provably_fresh(args) {
+                            return Ok(CallScrutineeAdmission::Admit);
+                        }
+                        return Err(Box::new(Self::call_scrutinee_reject(
+                            scrutinee,
+                            "the called function may return one of its by-value heap parameters \
+                             (a borrow the caller still owns), so minting a second owner over \
+                             the scrutinee would double-free",
+                        )));
+                    }
+                    // Fresh or `OPAQUE`-only → interim legacy fail-open mint.
+                    return Ok(CallScrutineeAdmission::LegacyModuleCall);
+                }
+            }
+            // A genuine runtime-symbol callee that resolves to neither a user
+            // extern nor an analysable module fn keeps today's name-based skip.
+            if crate::runtime_symbols::is_known_runtime_symbol(name) {
+                return Ok(CallScrutineeAdmission::NotApplicable);
+            }
+        }
+        // An unknown/missing/cross-module item or a non-`BindingRef` (indirect /
+        // closure) callee → interim legacy fail-open (today's mint); the precise
+        // `OPAQUE` reject for these lands at S4b.
+        Ok(CallScrutineeAdmission::LegacyModuleCall)
+    }
+
+    /// Build the single #2648 reject diagnostic (a clean NYI — no partial
+    /// codegen). `why` names the specific unsound shape. Boxed to keep the
+    /// preflight's `Result` `Err` variant small.
+    fn call_scrutinee_reject(scrutinee: &HirExpr, why: &str) -> MirDiagnostic {
+        MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "call-scrutinee returning a borrowed parameter or un-audited heap \
+                            extern"
+                    .to_string(),
+                site: scrutinee.site,
+            },
+            note: format!(
+                "#2648: {why}. Bind the call result to a `let` and match on the binding, or \
+                 return a freshly-constructed value from the callee."
+            ),
+        }
+    }
+
+    /// #2648 S2b — the caller-side argument scan for a `ParamsOnly` callee
+    /// (plan Fix-design (2), pulled forward from S4b by the ratchet evidence:
+    /// the interim PARAM-present reject falsely rejected genuine `ParamsOnly`
+    /// stdlib callers — `template.try_parse("…")` and friends). True iff EVERY
+    /// argument is provably fresh, in which case the callee's `PARAM`-aliasing
+    /// return can only alias fresh inputs — a fresh sole owner.
+    ///
+    /// Consulted ONLY for a `{PARAM}`-only summary; an `OPAQUE`-carrying
+    /// summary is never arg-rescuable.
+    fn params_only_args_provably_fresh(&self, args: &[HirExpr]) -> bool {
+        args.iter().all(|a| self.scrutinee_arg_provably_fresh(a))
+    }
+
+    /// The inline-fresh recursion. Fresh shapes ADMIT:
+    /// - a scalar-typed argument (owns no heap — cannot be the forwarded
+    ///   buffer);
+    /// - a literal / record clone (fresh by construction);
+    /// - an aggregate (`StructInit`/`TupleLiteral`/`MachineVariantCtor`) whose
+    ///   EVERY operand is recursively fresh;
+    /// - a nested call to a Fresh-summary module fn, or to a `ParamsOnly`
+    ///   module fn whose own arguments are recursively fresh;
+    /// - a builtin-collection method that lowers to a proved-owner EMITTED
+    ///   symbol (clone/retain/take — the F1 contract);
+    /// - a local binding proven solely-owned fresh by the per-function
+    ///   freshness facts (S1 bits `∅`, plain `let`, unaliased, single read).
+    ///
+    /// EVERYTHING ELSE fails closed — notably a heap-owning PLACE
+    /// (`h.b`, the primary #2648 forwarder repro), a bare parameter, an
+    /// aliased or re-read local, an extern call, and any unmodelled form.
+    fn scrutinee_arg_provably_fresh(&self, arg: &HirExpr) -> bool {
+        use crate::return_provenance::{method_return_provenance, ty_is_scalar_non_heap};
+        if ty_is_scalar_non_heap(&self.subst_ty(&arg.ty)) {
+            return true;
+        }
+        match &arg.kind {
+            HirExprKind::Literal(_) | HirExprKind::RecordCloneCall { .. } => true,
+            HirExprKind::StructInit { fields, base, .. } => {
+                fields
+                    .iter()
+                    .all(|(_, v)| self.scrutinee_arg_provably_fresh(v))
+                    && base
+                        .as_deref()
+                        .is_none_or(|b| self.scrutinee_arg_provably_fresh(b))
+            }
+            HirExprKind::TupleLiteral { elements } => elements
+                .iter()
+                .all(|e| self.scrutinee_arg_provably_fresh(e)),
+            HirExprKind::MachineVariantCtor { payload, .. } => payload
+                .as_ref()
+                .is_none_or(|fs| fs.iter().all(|(_, v)| self.scrutinee_arg_provably_fresh(v))),
+            HirExprKind::Call { callee, args } => {
+                let HirExprKind::BindingRef {
+                    name,
+                    resolved: ResolvedRef::Item(id),
+                } = &callee.kind
+                else {
+                    return false;
+                };
+                // An extern call dispatches by NAME (placeholder ItemId) and no
+                // heap-returning extern is trusted fresh in the interim.
+                if self.call_scrutinee_provenance.extern_names.contains(name) {
+                    return false;
+                }
+                match self.call_scrutinee_provenance.provenance.get(id) {
+                    Some(bits) if bits.is_fresh() => true,
+                    Some(bits) if bits.is_params_only() => {
+                        self.params_only_args_provably_fresh(args)
+                    }
+                    Some(_) => false,
+                    // An audited builtin collection constructor (`Vec::new()`)
+                    // is a fresh empty allocation — the same clause the
+                    // Precise policy's `classify_call` applies.
+                    None => crate::return_provenance::is_builtin_fresh_ctor(name),
+                }
+            }
+            // A builtin-collection getter is fresh iff the EMITTED symbol is a
+            // proved-owner clone/retain/take (the F1 contract) — never the HIR
+            // placeholder.
+            HirExprKind::ResolvedImplCall { .. } => self
+                .method_scrutinee_emitted_symbol(arg)
+                .is_some_and(|sym| method_return_provenance(&sym).is_fresh()),
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => self
+                .call_scrutinee_local_freshness
+                .local_is_provably_fresh(*id),
+            _ => false,
+        }
+    }
+
     fn register_from_call_scrutinee_owner(
         &mut self,
+        admission: crate::return_provenance::CallScrutineeAdmission,
         scrutinee: &HirExpr,
         scrutinee_local: u32,
     ) -> Option<(BindingId, ResolvedTy)> {
+        use crate::return_provenance::CallScrutineeAdmission;
+        // The non-optional admission token gates the mint [F4]: `NotApplicable`
+        // mints nothing (the scrutinee's own release runs); `Admit` /
+        // `LegacyModuleCall` proceed to the existing owner gate. A `Reject` never
+        // reaches here — the preflight returned early at the consumer.
+        match admission {
+            CallScrutineeAdmission::NotApplicable => return None,
+            CallScrutineeAdmission::Admit | CallScrutineeAdmission::LegacyModuleCall => {}
+        }
         let ty = self.call_scrutinee_owned_ty(scrutinee)?;
         let binding = self.register_synthetic_owned_local(
             SYNTHETIC_CALL_SCRUTINEE_NAME,
@@ -15017,6 +15230,12 @@ impl Builder {
         payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
         else_body: &hew_hir::HirBlock,
     ) {
+        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. A
+        // reject pushes one diagnostic and returns with no partial MIR.
+        if let Err(diag) = self.classify_call_scrutinee_admission(scrutinee) {
+            self.diagnostics.push(*diag);
+            return;
+        }
         // Entry: evaluate scrutinee, load tag, branch.
         let Some(scrutinee_place) = self.lower_value(scrutinee) else {
             return;
@@ -15234,6 +15453,17 @@ impl Builder {
             // (`apply_nested_fresh_string_temp_drops`), which splices one inline
             // `hew_string_drop` after the unused producer. No Vec-specific
             // handling is owed here.
+            //
+            // #2648 preflight — run BEFORE `lower_value`. A rejected discarded
+            // call-scrutinee (forwarded borrowed parameter, un-audited heap
+            // extern) pushes one diagnostic and emits no MIR / no owner. The
+            // early return is the safety guard; the non-Call HashMap-get owner
+            // path in `register_discarded_call_result_owner` is `NotApplicable`
+            // to the preflight and proceeds unchanged.
+            if let Err(diag) = self.classify_call_scrutinee_admission(expr) {
+                self.diagnostics.push(*diag);
+                return;
+            }
             if let Some(place) = self.lower_value(expr) {
                 self.register_discarded_call_result_owner(expr, place);
             }
@@ -15904,6 +16134,18 @@ impl Builder {
                                              (null-fault at runtime); consume the payload in \
                                              the arm body instead of the guard, or match an \
                                              owned value in a separate step after the guard"
+                                        }
+                                        ProjectedPayloadRejectReason::AliasesCallerStorage => {
+                                            "the scrutinee produces a value that may alias \
+                                             caller-visible storage (a call forwarding a \
+                                             by-value heap parameter, an aggregate over a \
+                                             re-readable heap place, or a borrowed collection \
+                                             getter), not a fresh sole owner, so moving the \
+                                             payload out would leave that storage dangling \
+                                             (use-after-free on a re-read, double-free at its \
+                                             drop); construct the value fresh at the \
+                                             scrutinee, or bind the call result to a `let` \
+                                             and match the binding"
                                         }
                                     };
                                     self.diagnostics.push(MirDiagnostic {
@@ -23363,99 +23605,35 @@ impl Builder {
         Some(result_place)
     }
 
-    /// Lower a match expression whose non-wildcard arms are all
-    /// `HirMatchArmPredicate::EnumVariant` — the fast enum-tag-compare chain.
+    /// #2648 (S3, the #2523 twin gate) — the **Group C2** unconditional
+    /// ephemeral-producer set: shapes whose produced value provably owns no
+    /// re-readable heap alias, so the match temp is always a fresh sole owner
+    /// regardless of any operand.
     ///
-    /// Emits the following block topology over `Place::EnumTag(scrutinee)`:
-    ///
-    /// ```text
-    /// entry_bb (current):
-    ///   scrutinee_local = lower(scrutinee)
-    ///   tag_local = Move from Place::EnumTag(scrutinee_local)
-    ///   Goto check_bb_0
-    ///
-    /// check_bb_i (one per non-wildcard arm i):
-    ///   k = ConstI64(variant_idx_i)
-    ///   cond_i = IntCmp(Eq, tag_local, k)
-    ///   Branch { cond_i, then: body_bb_i, else: check_bb_{i+1} }
-    ///
-    /// body_bb_i:
-    ///   result_local = lower(arm_i.body)
-    ///   Goto join_bb
-    ///
-    /// (last check falls through to either the wildcard body or the
-    /// fail-closed trap block)
-    ///
-    /// wildcard_bb (when a wildcard arm exists):
-    ///   result_local = lower(wildcard.body)
-    ///   Goto join_bb
-    ///
-    /// fallthrough_bb (when no wildcard arm — emitted as a runtime guard
-    /// even though the checker pre-gates non-exhaustive matches per
-    /// LESSONS `match-fail-closed`):
-    ///   Trap { kind: ExhaustivenessFallthrough }
-    ///
-    /// join_bb:
-    ///   (subsequent lowering continues here; result is result_local)
-    /// ```
-    ///
-    /// #2523 (F1b) — is `kind` a *provably ephemeral* scrutinee producer: a
-    /// shape that constructs a brand-new value or returns one by value from a
-    /// call/await/effect, so the match temp is a fresh SOLE owner with no
-    /// re-readable aliasing origin?
-    ///
-    /// A projected-payload move-out is sound only when nulling the match temp
-    /// neutralizes the payload's sole surviving owner. That holds for a bare
-    /// owning binding (moved into the temp — handled separately as
-    /// [`ProjectedPayloadOrigin::OwnedBinding`]) and for the fresh value
-    /// producers allowlisted here. It FAILS for a place projection
-    /// (`match h.b`, `match pair.0`, `match arr[i]`, machine-field access): the
-    /// match COPIES the place into the temp, so the origin keeps a live alias
-    /// the temp-null cannot reach (silent use-after-free / double-free).
-    ///
-    /// This predicate is the **fail-closed allowlist**: the classifier defaults
-    /// every shape NOT proven here (place projections, `Block`/`If`/`Scope`
-    /// wrappers whose value is a sub-expression, and any un-enumerated or future
-    /// shape) to [`ProjectedPayloadOrigin::ReadablePlace`], which rejects the
-    /// move-out before codegen. Rejecting a wrapper-hidden but otherwise-safe
-    /// producer (e.g. `match { mk() }`) is acceptable — the safe default is to
-    /// reject rather than risk aliasing. Wrappers are deliberately NOT peeled:
-    /// tracing a `Block`/`If` tail to guess ephemerality would reintroduce the
-    /// fail-open surface F1b closes (`match { h.b }` byte-copy-aliases `h`).
-    ///
-    /// Every arm is a value-producing rvalue that either builds a new aggregate
-    /// (`StructInit`, `TupleLiteral`, `MachineVariantCtor`, `Literal`) or moves
-    /// a value out by return/receive (`Call`, method calls, `ask`/`recv`/await
-    /// and machine effect nodes). None denote existing storage or a borrowed
-    /// view, so the produced temp is always a fresh sole owner. Shapes with any
-    /// aliasing risk (`Index`/`Slice` views, `FieldAccess`/`TupleIndex` places,
-    /// `ContextReader`, `RegexLiteralRef`, `ActorSelf`, `CoerceToDynTrait`,
-    /// `Yield`, wrappers, control flow) are intentionally omitted → rejected.
-    fn hir_scrutinee_is_ephemeral_producer(kind: &HirExprKind) -> bool {
+    /// This is the residue of the old blanket allowlist after the arms that CAN
+    /// alias caller storage were split out into precise gates
+    /// (`classify_producer_scrutinee_origin`): `Binary` (Group C1, string-concat
+    /// is fresh but a heap non-string result is not), the aggregate constructors
+    /// (Group B, fresh iff every owned operand is fresh), and the call/method
+    /// arms (Group A, gated on the return-provenance authority). Everything left
+    /// here is either scalar/bool-valued (the type short-circuit proves `∅`) or a
+    /// MOVE out of a channel/mailbox/generator/machine (ownership transfers to
+    /// the receiver), so it stays an unconditional `EphemeralTemp`.
+    fn hir_scrutinee_is_unconditional_ephemeral_producer(kind: &HirExprKind) -> bool {
         matches!(
             kind,
-            // Fresh scalar/aggregate literals and pure-value operators.
+            // Fresh scalar literals and pure-value operators (scalar/bool result).
             HirExprKind::Literal { .. }
-                | HirExprKind::Binary { .. }
                 | HirExprKind::Unary { .. }
                 | HirExprKind::NumericCast { .. }
                 | HirExprKind::SaturatingWidthCast { .. }
                 | HirExprKind::TryWidthCast { .. }
-                | HirExprKind::TupleLiteral { .. }
-                | HirExprKind::StructInit { .. }
-                | HirExprKind::MachineVariantCtor { .. }
                 | HirExprKind::IdentityCompare { .. }
                 | HirExprKind::CancellationTokenIsCancelled { .. }
-                // Calls return an owned value by value (Hew has no reference
-                // returns) — the result temp is a fresh sole owner.
-                | HirExprKind::Call { .. }
-                | HirExprKind::CallDynMethod { .. }
-                | HirExprKind::CallTraitMethodStatic { .. }
-                | HirExprKind::VarSelfMethodCall { .. }
-                | HirExprKind::ResolvedImplCall { .. }
-                | HirExprKind::NumericMethod { .. }
-                | HirExprKind::RecordCloneCall { .. }
-                // Spawns/closures/generators produce fresh handles or objects.
+                // Spawns/closures/generators produce fresh handles or objects. A
+                // `Closure` capturing a heap place is not destructured into
+                // payload binders on this path, so it never reaches the
+                // meaningful gate (fail-closed tightening is a future lane).
                 | HirExprKind::Spawn { .. }
                 | HirExprKind::SpawnedCall { .. }
                 | HirExprKind::SpawnLambdaActor { .. }
@@ -23481,6 +23659,193 @@ impl Builder {
                 | HirExprKind::MachineStep { .. }
                 | HirExprKind::MachineTakeEmits { .. }
         )
+    }
+
+    /// #2648 (S3) — classify a non-`BindingRef` producer scrutinee for the #2523
+    /// projected-payload move-out policy, routing every arm that CAN forward a
+    /// caller-visible alias through the precise return-provenance authority
+    /// (Fix-design-3, Groups A/B/C). No producer arm is an unconditional admit;
+    /// a value that may alias caller storage is `Reject(AliasesCallerStorage)`.
+    ///
+    /// Interim [Rev-8]: the module-fn / builtin-getter tightenings that are
+    /// precursor-INDEPENDENT are LIVE (the PARAM-forwarder reject and the F1
+    /// borrowed-getter reject); the FULL precise `OPAQUE`-only module-fn rejects
+    /// land at S4b, so a `∅`/`OPAQUE`-only module-fn or a user method call keeps
+    /// today's `EphemeralTemp` (the legacy fail-open window, stated explicitly).
+    fn classify_producer_scrutinee_origin(&self, scrutinee: &HirExpr) -> ProjectedPayloadOrigin {
+        match &scrutinee.kind {
+            // Group A — plain call: interim module-fn rule (mirrors the preflight
+            // admission classifier). A resolved module-fn callee whose precise
+            // summary carries PARAM forwards a by-value heap parameter → Reject;
+            // `∅`/`OPAQUE`-only/unknown/extern/indirect → legacy `EphemeralTemp`.
+            HirExprKind::Call { .. } => self.classify_call_arm_scrutinee_origin(scrutinee),
+            // Group A — builtin-collection getter (`Vec`/`HashMap`/`HashSet`
+            // dispatch; `ResolvedImplCall` is builtin-collection-only). The F1
+            // emitted-symbol contract is precursor-INDEPENDENT and LIVE: Fresh
+            // (`hew_vec_get_clone` / `hew_hashmap_get_clone_layout` / owned-return
+            // string/bytes) → `EphemeralTemp`; a borrowed getter
+            // (`hew_vec_get_owned`/`_ptr`, a `Vec<Vec<T>>` `.get`) → Reject.
+            HirExprKind::ResolvedImplCall { .. } => {
+                self.classify_builtin_getter_scrutinee_origin(scrutinee)
+            }
+            // Group A — a `.clone()` returns a fresh independent owner; and the
+            // user method / trait / numeric method calls. Interim [Rev-8]: no
+            // resolvable module-fn PARAM summary is reachable through the
+            // receiver-keyed HIR variants, so they keep today's admission
+            // (`EphemeralTemp`) — the legacy fail-open window for opaque-hidden
+            // method forwarding, closed by the FULL precise method verdicts at
+            // S4b. `NumericMethod` returns a scalar (the move-out never records a
+            // heap provenance), so its classification is inert either way.
+            HirExprKind::RecordCloneCall { .. }
+            | HirExprKind::VarSelfMethodCall { .. }
+            | HirExprKind::CallDynMethod { .. }
+            | HirExprKind::CallTraitMethodStatic { .. }
+            | HirExprKind::NumericMethod { .. } => ProjectedPayloadOrigin::EphemeralTemp,
+            // Group B (aggregate constructors) + Group C1 (`Binary`) share ONE
+            // precise-freshness gate (R6 — the SAME `return_alias_bits` operand
+            // recursion the callee summary and the caller arg-scan use):
+            // `EphemeralTemp` iff the scrutinee's precise bits are `∅`, else
+            // Reject. An `Outer { inner: h.b }` / `(h.b, …)` over a live place is
+            // rejected UNCONDITIONALLY; a string concat (`hew_string_concat`,
+            // fresh-allocating) is `∅`, while a non-string heap `Binary` is not.
+            HirExprKind::StructInit { .. }
+            | HirExprKind::TupleLiteral { .. }
+            | HirExprKind::MachineVariantCtor { .. }
+            | HirExprKind::Binary { .. } => {
+                if self.scrutinee_precise_bits(scrutinee).is_fresh() {
+                    ProjectedPayloadOrigin::EphemeralTemp
+                } else {
+                    ProjectedPayloadOrigin::Reject(
+                        ProjectedPayloadRejectReason::AliasesCallerStorage,
+                    )
+                }
+            }
+            // Group C2 — provably no re-readable heap operand → unconditional
+            // `EphemeralTemp`.
+            other if Self::hir_scrutinee_is_unconditional_ephemeral_producer(other) => {
+                ProjectedPayloadOrigin::EphemeralTemp
+            }
+            // Default-deny: a place projection / wrapper / any un-enumerated shape.
+            _ => ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::ReadablePlace),
+        }
+    }
+
+    /// Group A plain-`Call` arm: apply the interim module-fn PARAM-present reject
+    /// (the same rule the preflight admission classifier applies upstream — this
+    /// is the one-authority defence-in-depth for the #2523 twin), rescued by the
+    /// SAME S2b caller arg-scan: a `{PARAM}`-only summary whose every argument is
+    /// provably fresh is a fresh sole owner → `EphemeralTemp` (the twin agrees
+    /// with the preflight's `Admit`). A PARAM-carrying summary that the arg-scan
+    /// cannot rescue (a place/param/aliased-local argument, or a mixed
+    /// `PARAM|OPAQUE` return) → Reject. Every other callee (`∅`/`OPAQUE`-only
+    /// module fn, unknown/cross-module item, extern, builtin, indirect/closure)
+    /// keeps today's `EphemeralTemp` — the interim legacy fail-open window; the
+    /// FULL `OPAQUE`-only reject lands at S4b.
+    fn classify_call_arm_scrutinee_origin(&self, scrutinee: &HirExpr) -> ProjectedPayloadOrigin {
+        use crate::return_provenance::AliasBits;
+        if let HirExprKind::Call { callee, args } = &scrutinee.kind {
+            if let HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Item(id),
+            } = &callee.kind
+            {
+                // An extern callee carries the PLACEHOLDER `ItemId(0)` — never
+                // consult the module summary for it (id collision); the
+                // preflight already rejected any heap-extern scrutinee.
+                if !self.call_scrutinee_provenance.extern_names.contains(name) {
+                    if let Some(bits) = self.call_scrutinee_provenance.provenance.get(id) {
+                        if bits.contains(AliasBits::PARAM) {
+                            if bits.is_params_only() && self.params_only_args_provably_fresh(args) {
+                                return ProjectedPayloadOrigin::EphemeralTemp;
+                            }
+                            return ProjectedPayloadOrigin::Reject(
+                                ProjectedPayloadRejectReason::AliasesCallerStorage,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        ProjectedPayloadOrigin::EphemeralTemp
+    }
+
+    /// Group A builtin-collection-getter arm (F1, precursor-independent): resolve
+    /// the EMITTED runtime symbol the site will lower to and consult the
+    /// emitted-symbol return contract. Fresh (a proved-owner clone/retain/take
+    /// getter or an owned-return string/bytes producer) → `EphemeralTemp`; a
+    /// borrowed getter (`hew_vec_get_owned`/`_ptr`, `hew_vec_get_layout`), an
+    /// interior getter, or an unresolvable element ABI → Reject (fail-closed).
+    fn classify_builtin_getter_scrutinee_origin(
+        &self,
+        scrutinee: &HirExpr,
+    ) -> ProjectedPayloadOrigin {
+        match self.method_scrutinee_emitted_symbol(scrutinee) {
+            Some(sym) if crate::return_provenance::method_return_provenance(&sym).is_fresh() => {
+                ProjectedPayloadOrigin::EphemeralTemp
+            }
+            _ => ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::AliasesCallerStorage),
+        }
+    }
+
+    /// Resolve the EMITTED runtime symbol a builtin-collection `ResolvedImplCall`
+    /// scrutinee will lower to, reproducing lowering's placeholder decisions [F1]:
+    /// a `HashMap` `get` always lowers to the fresh-owner clone choke regardless
+    /// of the checker's `hew_hashmap_get_layout` placeholder; a generic
+    /// `Vec<T>`-element method left a `_FAMILY` placeholder is re-resolved from the
+    /// substituted element exactly as the call lowering does; a concrete call
+    /// already carries its resolved linker-edge symbol. Returns `None` (→
+    /// fail-closed Reject) for an unresolvable element ABI (closure/function
+    /// elements the owned authority excludes) or a non-`ResolvedImplCall`.
+    fn method_scrutinee_emitted_symbol(&self, scrutinee: &HirExpr) -> Option<String> {
+        let HirExprKind::ResolvedImplCall {
+            receiver,
+            target_family,
+            target_symbol,
+            ..
+        } = &scrutinee.kind
+        else {
+            return None;
+        };
+        // `HashMap::get -> Option<V>` always routes to the fresh-owner clone
+        // choke (`hew_hashmap_get_clone_layout`), never the `hew_hashmap_get_layout`
+        // placeholder the checker recorded (see `lower_hashmap_index_trap`).
+        if matches!(
+            target_family,
+            hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Get)
+        ) {
+            return Some("hew_hashmap_get_clone_layout".to_string());
+        }
+        // A generic-element `Vec<T>` method kept the `hew_vec_*_FAMILY`
+        // placeholder — re-resolve it from the substituted element, the same
+        // authority the call lowering consults.
+        if target_symbol.ends_with("_FAMILY") {
+            return self.resolve_polymorphic_vec_element_symbol(*target_family, &receiver.ty);
+        }
+        // Concrete dispatch: the checker already resolved the emitted symbol
+        // (e.g. an owned-value `Vec::get` carries `hew_vec_get_clone` directly).
+        Some(target_symbol.clone())
+    }
+
+    /// The precise three-state return-provenance bits of a scrutinee expression,
+    /// evaluated through the shared `return_alias_bits` walk under the module's
+    /// `PrecisePolicy`. Used by the Group B aggregate gate and the Group C1
+    /// `Binary` gate so all four #2648 consumers (callee summary, caller
+    /// arg-scan, aggregate scrutinee, `Binary` scrutinee) agree on operand
+    /// freshness (R6). The current function's local binding-provenance is not
+    /// threaded here — an aggregate scrutinee over a bare heap LOCAL operand
+    /// therefore reads as `{PARAM}` (non-fresh) and over-rejects fail-closed; no
+    /// reported case or fixture uses an aggregate/`Binary` scrutinee with a
+    /// fresh-local operand, and the precise local threading is a future
+    /// refinement.
+    fn scrutinee_precise_bits(&self, scrutinee: &HirExpr) -> crate::return_provenance::AliasBits {
+        use crate::return_provenance::{return_alias_bits, PrecisePolicy};
+        let local_bits: HashMap<BindingId, crate::return_provenance::AliasBits> = HashMap::new();
+        let policy = PrecisePolicy {
+            provenance: &self.call_scrutinee_provenance.provenance,
+            extern_table: &self.call_scrutinee_provenance.extern_table,
+            local_bits: &local_bits,
+        };
+        return_alias_bits(scrutinee, &policy)
     }
 
     /// #2523 — classify a match/while-let/let-else/if-let scrutinee for the
@@ -23519,10 +23884,7 @@ impl Builder {
                     })
                 }
             }
-            other if Self::hir_scrutinee_is_ephemeral_producer(other) => {
-                ProjectedPayloadOrigin::EphemeralTemp
-            }
-            _ => ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::ReadablePlace),
+            _ => self.classify_producer_scrutinee_origin(scrutinee),
         }
     }
 
@@ -23581,6 +23943,17 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
+        // #2648 preflight — run BEFORE any `lower_value`/CFG allocation. A reject
+        // (forwarded borrowed parameter, un-audited heap extern) pushes exactly
+        // one diagnostic and returns with NO partial MIR: no scrutinee call, no
+        // owner mint, no `NeutralizePayloadSlot`.
+        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
+            Ok(admission) => admission,
+            Err(diag) => {
+                self.diagnostics.push(*diag);
+                return None;
+            }
+        };
         // Result local first so every arm's Move dominates it.
         let result_place = self.alloc_local(result_ty.clone());
 
@@ -23679,7 +24052,7 @@ impl Builder {
         // (#2429). No-op for binding-ref scrutinees, runtime-symbol
         // producers, and the recv/iter-next shapes that carry their own
         // release discipline.
-        self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
+        self.register_from_call_scrutinee_owner(scrutinee_admission, scrutinee, scrutinee_local);
 
         // Load the tag into a fresh i64 local. `Place::EnumTag(local)`
         // is the substrate primitive; codegen GEPs to outer-struct
@@ -24549,6 +24922,15 @@ impl Builder {
                       the algorithm is one coherent unit and factoring it would obscure \
                       the loop CFG"
         )]
+        // #2648 preflight — run BEFORE any block allocation or scrutinee lowering.
+        // A reject leaves no half-built loop CFG.
+        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
+            Ok(admission) => admission,
+            Err(diag) => {
+                self.diagnostics.push(*diag);
+                return None;
+            }
+        };
         let header_bb = self.alloc_block();
         let body_bb = self.alloc_block();
         let exit_bb = self.alloc_block();
@@ -24579,7 +24961,11 @@ impl Builder {
                 return None;
             }
         };
-        let scrutinee_owner = self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
+        let scrutinee_owner = self.register_from_call_scrutinee_owner(
+            scrutinee_admission,
+            scrutinee,
+            scrutinee_local,
+        );
         let false_cleanup_bb = scrutinee_owner.as_ref().map(|_| self.alloc_block());
 
         // Load the variant tag into a fresh i64 local, mirroring
@@ -24859,6 +25245,13 @@ impl Builder {
         else_body: Option<&hew_hir::HirBlock>,
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
+        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. If-let
+        // mints no from-call owner but DOES classify the #2523 projected-payload
+        // origin; the reject short-circuits that too (no partial MIR).
+        if let Err(diag) = self.classify_call_scrutinee_admission(scrutinee) {
+            self.diagnostics.push(*diag);
+            return None;
+        }
         let result_place = self.alloc_local(self.subst_ty(result_ty));
 
         // Entry: evaluate scrutinee, load tag, branch.
@@ -27347,6 +27740,10 @@ impl Builder {
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            // #2648 — synthetic call wrapper (no user match scrutinees), but the
+            // provenance context is threaded uniformly: no child builder falls
+            // back to the legacy fail-open default.
+            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
             ..Builder::default()
         };
 
@@ -33493,6 +33890,23 @@ impl Builder {
             // globally-unique bindings a closure can capture and embed in a
             // funcupdate base, so the child must see them to reject the borrow.
             funcupdate_param_ids: self.funcupdate_param_ids.clone(),
+            // #2648 — the module return-provenance context MUST reach every
+            // child builder: without it the preflight classifies a resolved
+            // module fn as an unknown item → interim `LegacyModuleCall`
+            // fail-open → a `match wrap(captured)` INSIDE a closure minted an
+            // owner the enclosing frame also releases (a reproduced
+            // double-free). Never `Builder::default()` for this field on a
+            // user-body child.
+            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
+            // `call_scrutinee_local_freshness` is deliberately NOT inherited
+            // (the spread leaves it the empty fail-closed default): the
+            // parent's single-read/unaliased facts are computed for ONE
+            // execution of the parent body, while a child body (closure /
+            // lambda-actor / generator) can run any number of times per
+            // parent execution — a captured local that looks single-read in
+            // the parent may be re-read on every invocation. An empty map
+            // admits NO local argument inside child bodies; literal /
+            // fresh-ctor / Fresh-call arguments still admit.
             ..Builder::default()
         }
     }
@@ -33741,6 +34155,10 @@ impl Builder {
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            // #2648 — synthetic call wrapper (no user match scrutinees), but the
+            // provenance context is threaded uniformly: no child builder falls
+            // back to the legacy fail-open default.
+            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
             ..Builder::default()
         };
 
@@ -34967,6 +35385,12 @@ impl Builder {
             current_function_call_conv: crate::model::FunctionCallConv::Default,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             in_gen_body: true,
+            // #2648 — the generator body is USER code: the preflight needs the
+            // module provenance context or a `match wrap(x)` inside a gen body
+            // silently takes the unknown-item legacy fail-open mint (the same
+            // closure-shim double-free class). Local-freshness facts stay the
+            // fail-closed empty default — see `child_builder_tables`.
+            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
             ..Builder::default()
         };
         // Propagate the inadmissible-capture poison set into the body builder so
@@ -52190,6 +52614,7 @@ mod slice3_invariants {
                 &HashSet::new(),
                 &HashSet::new(),
                 &std::rc::Rc::new(std::collections::HashMap::new()),
+                &std::rc::Rc::new(crate::return_provenance::CallScrutineeProvenance::default()),
                 &std::rc::Rc::new(ParamOwnershipFacts::default()),
                 &HashMap::new(),
                 &HashMap::new(),
@@ -61096,6 +61521,281 @@ mod call_args_borrow_safe_bytes_append_pins {
             !call_args_borrow_safe(c, &args, 9),
             "a non-borrowing callee with the tracked local as a by-value arg \
              must stay unproven (fail-closed leak, never re-admitted)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod twin_gate_classifier {
+    //! #2648 (S3) — direct unit tests of the #2523 projected-payload twin
+    //! classifier (`classify_scrutinee_origin`). The precise-freshness arms
+    //! (Group B aggregate constructors, Group C1 `Binary`, the Group A `Call`
+    //! interim PARAM reject) are unreachable through full lowering in current
+    //! code — a temporary aggregate scrutinee hits an upstream "non-BitCopy match
+    //! destructure on temporary scrutinee" NYI, and every real collection getter
+    //! lowers to the fresh-owner clone choke — so the classifier's reject/admit
+    //! verdict is pinned here directly on synthetic HIR. Exact-value assertions
+    //! (the precise origin variant), fail-closed by default.
+    use super::*;
+    use crate::return_provenance::{AliasBits, CallScrutineeProvenance, ExternContractTable};
+
+    fn expr(kind: HirExprKind, ty: ResolvedTy) -> HirExpr {
+        HirExpr {
+            node: HirNodeId(u32::MAX),
+            site: SiteId(u32::MAX),
+            ty,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind,
+            span: 0..0,
+        }
+    }
+
+    fn binding_ref(name: &str, id: u32, ty: ResolvedTy) -> HirExpr {
+        expr(
+            HirExprKind::BindingRef {
+                name: name.to_string(),
+                resolved: ResolvedRef::Binding(BindingId(id)),
+            },
+            ty,
+        )
+    }
+
+    fn is_alias_reject(o: &ProjectedPayloadOrigin) -> bool {
+        matches!(
+            o,
+            ProjectedPayloadOrigin::Reject(ProjectedPayloadRejectReason::AliasesCallerStorage)
+        )
+    }
+
+    fn is_ephemeral(o: &ProjectedPayloadOrigin) -> bool {
+        matches!(o, ProjectedPayloadOrigin::EphemeralTemp)
+    }
+
+    #[test]
+    fn string_binary_scrutinee_is_fresh() {
+        let b = Builder::default();
+        let bin = expr(
+            HirExprKind::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(binding_ref("a", 0, ResolvedTy::String)),
+                right: Box::new(binding_ref("b", 1, ResolvedTy::String)),
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_ephemeral(&b.classify_scrutinee_origin(&bin)),
+            "a string concat allocates fresh (hew_string_concat) — a fresh sole owner"
+        );
+    }
+
+    #[test]
+    fn heap_non_string_binary_scrutinee_rejects() {
+        let b = Builder::default();
+        let bin = expr(
+            HirExprKind::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(binding_ref("a", 0, ResolvedTy::Bytes)),
+                right: Box::new(binding_ref("b", 1, ResolvedTy::Bytes)),
+            },
+            ResolvedTy::Bytes,
+        );
+        assert!(
+            is_alias_reject(&b.classify_scrutinee_origin(&bin)),
+            "a heap non-string Binary is not proven fresh — fail closed"
+        );
+    }
+
+    #[test]
+    fn aggregate_over_a_heap_place_operand_rejects() {
+        let b = Builder::default();
+        // (h.b, 0) — the string field `h.b` is a re-readable heap place.
+        let field = expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(binding_ref("h", 0, ResolvedTy::String)),
+                field: "b".to_string(),
+            },
+            ResolvedTy::String,
+        );
+        let tuple = expr(
+            HirExprKind::TupleLiteral {
+                elements: vec![field, binding_ref("n", 1, ResolvedTy::I64)],
+            },
+            ResolvedTy::Unit,
+        );
+        assert!(
+            is_alias_reject(&b.classify_scrutinee_origin(&tuple)),
+            "an aggregate embedding a live heap place operand must reject"
+        );
+    }
+
+    #[test]
+    fn aggregate_over_fresh_operands_is_fresh() {
+        let b = Builder::default();
+        // (m, n) — both scalar (the type short-circuit proves each operand ∅).
+        let tuple = expr(
+            HirExprKind::TupleLiteral {
+                elements: vec![
+                    binding_ref("m", 0, ResolvedTy::I64),
+                    binding_ref("n", 1, ResolvedTy::I64),
+                ],
+            },
+            ResolvedTy::Unit,
+        );
+        assert!(
+            is_ephemeral(&b.classify_scrutinee_origin(&tuple)),
+            "an aggregate whose every operand is fresh is a fresh sole owner"
+        );
+    }
+
+    #[test]
+    fn call_forwarding_a_param_summary_rejects() {
+        // A resolved module-fn callee whose precise summary carries PARAM forwards
+        // a by-value heap parameter — the twin gate rejects it (defence-in-depth
+        // for the #2523 forwarding-call twin; the preflight owns the same reject).
+        let mut b = Builder::default();
+        let mut provenance = HashMap::new();
+        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM);
+        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
+            provenance,
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
+        });
+        let callee = expr(
+            HirExprKind::BindingRef {
+                name: "passthru".to_string(),
+                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+            },
+            ResolvedTy::Unit,
+        );
+        // `passthru(h.b)` — the forwarded argument is a re-readable heap PLACE,
+        // so the S2b arg-scan cannot rescue the `{PARAM}` summary.
+        let place_arg = expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(binding_ref("h", 0, ResolvedTy::String)),
+                field: "b".to_string(),
+            },
+            ResolvedTy::String,
+        );
+        let call = expr(
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: vec![place_arg],
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_alias_reject(&b.classify_scrutinee_origin(&call)),
+            "a PARAM-forwarding module-fn call scrutinee over a place arg must reject"
+        );
+    }
+
+    #[test]
+    fn call_forwarding_a_param_summary_over_fresh_arg_admits() {
+        // S2b — the arg-scan rescue: the SAME `{PARAM}`-only callee over an
+        // inline string literal is a fresh sole owner (the template/semver
+        // stdlib shape) → the twin gate agrees with the preflight's Admit.
+        let mut b = Builder::default();
+        let mut provenance = HashMap::new();
+        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM);
+        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
+            provenance,
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
+        });
+        let callee = expr(
+            HirExprKind::BindingRef {
+                name: "try_parse".to_string(),
+                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+            },
+            ResolvedTy::Unit,
+        );
+        let literal_arg = expr(
+            HirExprKind::Literal(hew_hir::HirLiteral::String("hello {{.name".to_string())),
+            ResolvedTy::String,
+        );
+        let call = expr(
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: vec![literal_arg],
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_ephemeral(&b.classify_scrutinee_origin(&call)),
+            "a ParamsOnly callee over an inline-fresh literal arg is a fresh sole owner"
+        );
+    }
+
+    #[test]
+    fn call_with_mixed_param_opaque_summary_rejects_despite_fresh_args() {
+        // A mixed `PARAM|OPAQUE` summary is never arg-rescuable — the OPAQUE
+        // component can alias a capture/global regardless of the arguments.
+        let mut b = Builder::default();
+        let mut provenance = HashMap::new();
+        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM | AliasBits::OPAQUE);
+        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
+            provenance,
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
+        });
+        let callee = expr(
+            HirExprKind::BindingRef {
+                name: "mixed".to_string(),
+                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+            },
+            ResolvedTy::Unit,
+        );
+        let literal_arg = expr(
+            HirExprKind::Literal(hew_hir::HirLiteral::String("x".to_string())),
+            ResolvedTy::String,
+        );
+        let call = expr(
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: vec![literal_arg],
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_alias_reject(&b.classify_scrutinee_origin(&call)),
+            "a PARAM|OPAQUE summary must reject even over fresh args"
+        );
+    }
+
+    #[test]
+    fn call_to_a_fresh_summary_admits() {
+        // A resolved module-fn callee with no PARAM bit keeps today's admission
+        // (the interim legacy window).
+        let mut b = Builder::default();
+        let mut provenance = HashMap::new();
+        provenance.insert(hew_hir::ItemId(7), AliasBits::EMPTY);
+        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
+            provenance,
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
+        });
+        let callee = expr(
+            HirExprKind::BindingRef {
+                name: "make_fresh".to_string(),
+                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+            },
+            ResolvedTy::Unit,
+        );
+        let call = expr(
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: vec![],
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_ephemeral(&b.classify_scrutinee_origin(&call)),
+            "a fresh-summary call scrutinee is an ephemeral fresh owner"
         );
     }
 }

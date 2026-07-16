@@ -1,0 +1,85 @@
+// An ADMITTED fresh-producer call scrutinee — the D108 shape the #2648
+// preflight must keep compiling and releasing cleanly: a heap-owning-enum
+// result built FRESH through immutable bindings and a helper chain, matched
+// directly (no `let`) and released exactly once per exit edge.
+//
+// The return provenance of every producer here is Fresh (∅): each returns a
+// freshly-constructed value routed through `let`/binder/helper-chain links,
+// never a by-value heap parameter borrow. So the preflight ADMITs the
+// scrutinee and mints exactly one synthetic owner over the call temp — the
+// admit path this fixture proves is ASan/LSan-clean.
+//
+// Output teeth: every payload is read back before its release (a
+// use-after-free garbles the totals; a double-free aborts), both Ok and Err
+// arms are taken, and the loop back-edge exercises the per-iteration release.
+
+fn compose(seg: string) -> string {
+    var out = "";
+    out = out + seg;
+    out = out + "-payload";
+    out
+}
+
+// Fresh through an immutable binding + a helper chain (compose → build → produce).
+fn build(seg: string) -> string {
+    let t = compose(seg);
+    t
+}
+
+fn produce(n: i64) -> Result<string, string> {
+    if n % 2 == 0 {
+        let v = build("even");
+        Ok(v)
+    } else {
+        Err(build("odd"))
+    }
+}
+
+fn produce_bytes(n: i64) -> Result<bytes, string> {
+    if n >= 0 {
+        let s = build("bytes");
+        Ok(s.to_bytes())
+    } else {
+        Err(build("neg"))
+    }
+}
+
+fn string_loop() -> i64 {
+    var oks = 0;
+    var errs = 0;
+    var i = 0;
+    while i < 6 {
+        match produce(i) {
+            Ok(s) => {
+                oks = oks + s.len();
+            },
+            Err(e) => {
+                errs = errs + e.len();
+            },
+        }
+        i = i + 1;
+    }
+    oks * 1000 + errs
+}
+
+fn bytes_loop() -> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 5 {
+        match produce_bytes(i) {
+            Ok(b) => {
+                total = total + b.len();
+            },
+            Err(e) => {
+                total = total - e.len();
+            },
+        }
+        i = i + 1;
+    }
+    total
+}
+
+fn main() {
+    println(f"string={string_loop()}");
+    println(f"bytes={bytes_loop()}");
+}

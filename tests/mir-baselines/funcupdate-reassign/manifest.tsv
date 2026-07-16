@@ -1,0 +1,46 @@
+# Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
+#
+# generating-revision: d5fbb9c86288c79fe56427ddb20e4d4918c053eb (origin/main, the rebase base)
+#   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
+#   regenerated to carry the A240 string copy-on-write drop plan — string shares
+#   are now Read/retain, so the source binding keeps a scope-exit drop and every
+#   shared heap-string local drops via the cow_heap(hew_string_drop) destructor.
+#   The two owned-record fixtures are byte-identical across both revisions.)
+# dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
+# normalization: two run-variance normalizations — (1) the dump's function
+#   ORDER is nondeterministic (map iteration), so the harness splits both
+#   sides into per-function chunks (column-0 `fn ` lines) and sorts by
+#   signature line; (2) within each chunk, BindingId/SiteId values are
+#   renumbered in first-occurrence order. Within-chunk content order is
+#   preserved, so a reordered drop inside a chunk remains detectable.
+#
+# Purpose: the Coarse freshness summary (`compute_fn_returns_fresh_owner` /
+# `return_value_may_alias_borrow`) feeds the destructive-funcupdate base gate
+# (`expr_is_materialized_owner`) and the #2420 reassign-overwrite gate
+# (`reassign_rhs_may_alias_binding`). The frozen-reference differential pins the
+# boolean verdicts; THIS manifest pins the emitted elaborated MIR (including
+# drop plans) of the fixtures that exercise those two consumers, so a Coarse
+# drift that somehow escaped the boolean pin still fails here.
+#
+# Fixture universe (recorded justification, plan §Interface pin / manifest
+# universe): the named fixtures below are the corpus inputs that exercise the
+# funcupdate (`{ ..base, f }`) and var-reassign-overwrite consumers —
+# funcupdate_owned_field_drop_test (funcupdate owner gate),
+# var_record_reassign_ownership_test (#2420 reassign gate),
+# closure_consume_reassign_overwrite_release and
+# gen_fn_consume_reassign_overwrite_release (reassign gate inside closure / gen
+# fn bodies). tests/corpus/v05-value-model/{03,18} also contain the surface
+# syntax but do NOT compile at the generating revision (aspirational corpus:
+# `..base` not last in field list), so they cannot reach either consumer and
+# are excluded. A fixture that newly exercises these consumers must be added
+# here WITH a regenerated baseline (an unmapped baseline file fails the test).
+#
+# Regeneration is an explicit, reviewed step only: rebuild `hew` at the wanted
+# revision, re-run the dump-mode command per row, and record the new revision
+# above. The harness (hew-cli/tests/funcupdate_mir_baselines.rs) never writes.
+#
+# fixture<TAB>baseline
+tests/hew/funcupdate_owned_field_drop_test.hew	funcupdate_owned_field_drop_test.elab.mir
+tests/hew/var_record_reassign_ownership_test.hew	var_record_reassign_ownership_test.elab.mir
+tests/vertical-slice/accept/closure_consume_reassign_overwrite_release.hew	closure_consume_reassign_overwrite_release.elab.mir
+tests/vertical-slice/accept/gen_fn_consume_reassign_overwrite_release.hew	gen_fn_consume_reassign_overwrite_release.elab.mir

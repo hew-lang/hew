@@ -13,6 +13,7 @@ pub mod liveness;
 pub mod lower;
 pub mod model;
 pub mod ownership;
+pub mod return_provenance;
 pub mod runtime_call;
 pub mod runtime_symbols;
 pub mod state_clone;

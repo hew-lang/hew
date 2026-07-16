@@ -717,3 +717,228 @@ fn method_call_forwarder_move_out_rejects_with_no_owner_or_neutralize() {
         "a rejected method-call forwarder must emit NO NeutralizePayloadSlot"
     );
 }
+
+// ---------------------------------------------------------------------------
+// S2c — child-builder provenance threading: closure / generator bodies are
+// USER code and must see the same #2648 verdicts as top-level bodies (the
+// cross-review P0: a child builder falling back to `Builder::default()` sent
+// `match wrap(s)` inside a closure through the unknown-item legacy fail-open
+// mint — a reproduced double-free under the poisoned allocator).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn closure_match_forwarder_over_capture_rejects() {
+    // The cross-review repro: a ParamsOnly forwarder matched over a captured
+    // heap value inside a closure invoked twice. Must reject with exactly one
+    // diagnostic and NO owner mint in any lowered function (including the
+    // closure shim) — never compile into a double-freeing binary.
+    let src = r"
+        fn wrap(s: Vec<i64>) -> Result<Vec<i64>, Vec<i64>> { Ok(s) }
+        fn runner(s: Vec<i64>) {
+            let f = || {
+                match wrap(s) {
+                    Ok(_) => match Ok(1) { Ok(_) => {}, Err(_) => {} },
+                    Err(_) => {},
+                }
+            };
+            f();
+            f();
+        }
+    ";
+    let p = pipeline(src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "a forwarder over a captured heap value inside a closure must reject: {:#?}",
+        p.diagnostics
+    );
+    assert!(
+        !any_owner_minted(&p),
+        "no __hew_call_scrutinee owner may be minted in ANY lowered function \
+         (including the closure shim)"
+    );
+    assert!(!any_neutralize(&p), "and no NeutralizePayloadSlot");
+}
+
+#[test]
+fn closure_match_params_only_literal_arg_admits() {
+    // The provenance thread must not blanket-reject closures: a ParamsOnly
+    // callee over an inline literal inside a closure is still a fresh sole
+    // owner — admitted, one owner minted in the shim.
+    let src = r#"
+        fn wrap(s: string) -> Result<string, string> { Ok(s) }
+        fn use_it() -> i64 {
+            let f = || {
+                match wrap("lit") { Ok(_) => 1, Err(_) => 0 }
+            };
+            f()
+        }
+    "#;
+    let p = pipeline(src);
+    assert_eq!(
+        reject_count(&p),
+        0,
+        "an inline-literal ParamsOnly scrutinee inside a closure admits: {:#?}",
+        p.diagnostics
+    );
+    assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
+    assert_eq!(
+        count_owner_mints(&p),
+        1,
+        "exactly one owner, minted in the closure shim"
+    );
+}
+
+#[test]
+fn closure_local_arg_is_not_admitted_fail_closed() {
+    // A closure-body local is NOT in any freshness map (child builders keep
+    // the empty fail-closed facts — a child body can run any number of times
+    // per parent execution), so a local argument inside a closure rejects
+    // even though the same shape admits at top level.
+    let src = r#"
+        fn wrap(s: string) -> Result<string, string> { Ok(s) }
+        fn use_it() -> i64 {
+            let f = || {
+                let v = "x";
+                match wrap(v) { Ok(_) => 1, Err(_) => 0 }
+            };
+            f()
+        }
+    "#;
+    let p = pipeline(src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "a closure-body local arg fails closed: {:#?}",
+        p.diagnostics
+    );
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn closure_while_let_forwarder_rejects() {
+    let src = format!(
+        "{FORWARDER}\n\
+         fn use_it(r: Result<string, string>) {{\n\
+            let f = || {{\n\
+                while let Ok(_v) = passthru(r) {{ break; }}\n\
+            }};\n\
+            f();\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(reject_count(&p), 1, "diags: {:#?}", p.diagnostics);
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn closure_let_else_forwarder_rejects() {
+    let src = format!(
+        "{FORWARDER}\n\
+         fn use_it(r: Result<string, string>) -> i64 {{\n\
+            let f = || {{\n\
+                let Ok(_v) = passthru(r) else {{ return 0 }};\n\
+                1\n\
+            }};\n\
+            f()\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(reject_count(&p), 1, "diags: {:#?}", p.diagnostics);
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn closure_if_let_forwarder_rejects() {
+    let src = format!(
+        "{FORWARDER}\n\
+         fn use_it(r: Result<string, string>) -> i64 {{\n\
+            let f = || {{\n\
+                if let Ok(_v) = passthru(r) {{ 1 }} else {{ 0 }}\n\
+            }};\n\
+            f()\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(reject_count(&p), 1, "diags: {:#?}", p.diagnostics);
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn closure_discarded_forwarder_rejects() {
+    let src = format!(
+        "{FORWARDER}\n\
+         fn use_it(r: Result<string, string>) {{\n\
+            let f = || {{\n\
+                passthru(r);\n\
+            }};\n\
+            f();\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(reject_count(&p), 1, "diags: {:#?}", p.diagnostics);
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn generator_body_matches_mint_no_owner() {
+    // A generator body is lowered by a child builder that carries NO
+    // `enum_layouts`, so `ty_is_heap_owning_enum_composite` is false for every
+    // scrutinee there: the from-call owner is NEVER minted in a gen body (the
+    // pre-existing leak-biased posture — the Result temp is not released) and
+    // the preflight's ty-gate returns `NotApplicable` for the same reason.
+    // The load-bearing safety fact is NO OWNER MINT — with no owner there is
+    // no second release authority, so the #2648 double-free class cannot fire
+    // in a gen body. Pinned for both a local-arg forwarder shape and an
+    // inline-literal shape; when generator bodies gain enum layouts (and with
+    // them scrutinee owners), these pins must flip to the closure-shim
+    // verdicts (reject / admit-with-one-mint).
+    for scrutinee_src in [
+        r#"
+        fn wrap(s: string) -> Result<string, string> { Ok(s) }
+        fn use_it() -> i64 {
+            var total = 0;
+            for v in gen {
+                let s = "x";
+                let n = match wrap(s) { Ok(_) => 1, Err(_) => 0 };
+                yield n;
+            } {
+                total = total + v;
+            }
+            total
+        }
+        "#,
+        r#"
+        fn wrap(s: string) -> Result<string, string> { Ok(s) }
+        fn use_it() -> i64 {
+            var total = 0;
+            for v in gen {
+                let n = match wrap("lit") { Ok(_) => 1, Err(_) => 0 };
+                yield n;
+            } {
+                total = total + v;
+            }
+            total
+        }
+        "#,
+    ] {
+        let p = pipeline(scrutinee_src);
+        assert_eq!(
+            unrelated_diag_count(&p),
+            0,
+            "gen-body sources must lower clean: {:#?}",
+            p.diagnostics
+        );
+        assert_eq!(
+            count_owner_mints(&p),
+            0,
+            "no __hew_call_scrutinee owner may exist in a gen body (no layouts, no mint,              no double-free surface)"
+        );
+        assert_eq!(
+            reject_count(&p),
+            0,
+            "the ty-gate returns NotApplicable in gen bodies today: {:#?}",
+            p.diagnostics
+        );
+    }
+}

@@ -27733,6 +27733,10 @@ impl Builder {
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            // #2648 — synthetic call wrapper (no user match scrutinees), but the
+            // provenance context is threaded uniformly: no child builder falls
+            // back to the legacy fail-open default.
+            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
             ..Builder::default()
         };
 
@@ -33879,6 +33883,23 @@ impl Builder {
             // globally-unique bindings a closure can capture and embed in a
             // funcupdate base, so the child must see them to reject the borrow.
             funcupdate_param_ids: self.funcupdate_param_ids.clone(),
+            // #2648 — the module return-provenance context MUST reach every
+            // child builder: without it the preflight classifies a resolved
+            // module fn as an unknown item → interim `LegacyModuleCall`
+            // fail-open → a `match wrap(captured)` INSIDE a closure minted an
+            // owner the enclosing frame also releases (a reproduced
+            // double-free). Never `Builder::default()` for this field on a
+            // user-body child.
+            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
+            // `call_scrutinee_local_freshness` is deliberately NOT inherited
+            // (the spread leaves it the empty fail-closed default): the
+            // parent's single-read/unaliased facts are computed for ONE
+            // execution of the parent body, while a child body (closure /
+            // lambda-actor / generator) can run any number of times per
+            // parent execution — a captured local that looks single-read in
+            // the parent may be re-read on every invocation. An empty map
+            // admits NO local argument inside child bodies; literal /
+            // fresh-ctor / Fresh-call arguments still admit.
             ..Builder::default()
         }
     }
@@ -34127,6 +34148,10 @@ impl Builder {
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            // #2648 — synthetic call wrapper (no user match scrutinees), but the
+            // provenance context is threaded uniformly: no child builder falls
+            // back to the legacy fail-open default.
+            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
             ..Builder::default()
         };
 
@@ -35353,6 +35378,12 @@ impl Builder {
             current_function_call_conv: crate::model::FunctionCallConv::Default,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             in_gen_body: true,
+            // #2648 — the generator body is USER code: the preflight needs the
+            // module provenance context or a `match wrap(x)` inside a gen body
+            // silently takes the unknown-item legacy fail-open mint (the same
+            // closure-shim double-free class). Local-freshness facts stay the
+            // fail-closed empty default — see `child_builder_tables`.
+            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
             ..Builder::default()
         };
         // Propagate the inadmissible-capture poison set into the body builder so

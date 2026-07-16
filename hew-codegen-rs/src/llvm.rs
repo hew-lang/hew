@@ -2297,7 +2297,7 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // of the slot (ownership transfer), or an empty triple if no Data deposit.
         // Returns the AAPCS/SysV two-eightbyte `[2 x i64]` the Rust
         // `#[repr(C)] BytesTriple` uses — reconstructed into the `{ptr,i32,i32}`
-        // dest by a raw 16-byte store (mirrors `is_bytes_triple_return_producer`).
+        // dest by a raw 16-byte store (the register-pair aggregate-return shape).
         "hew_read_slot_take" => i64_ty.array_type(2).fn_type(&[ptr_ty.into()], false),
         // hew_read_slot_set_await_cancel(slot: *mut HewReadSlot,
         //   reg: *mut HewAwaitCancel) -> void (read_slot.rs:275). Attaches the
@@ -3146,15 +3146,6 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             let result_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
             result_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false)
         }
-        // hew_supervisor_child_get_raw(sup: *mut HewSupervisor, key: u32,
-        //     handle_out: *mut u64) -> u64
-        // (`hew-runtime/src/supervisor.rs`). Decomposed variant that avoids
-        // the Windows x64 MSVC sret ABI mismatch: returns word0 (tag in
-        // bits[7:0], reason in bits[15:8]) as a plain `u64`; writes the actor
-        // handle to `*handle_out`.  Used by codegen on all platforms.
-        "hew_supervisor_child_get_raw" | "hew_supervisor_nested_get_raw" => {
-            i64_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false)
-        }
         // hew_supervisor_pool_add_slot(sup: *mut HewSupervisor, name: *const c_char,
         //     strategy: c_int, max_members: usize) -> c_int
         // (`hew-runtime/src/supervisor.rs`). Allocates a pool slot and returns its
@@ -3429,21 +3420,6 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_dealloc" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
-        // ── BytesTriple `_raw` out-pointer variants (Windows x64 MSVC sret fix) ──
-        "hew_read_slot_take_raw" => ctx
-            .void_type()
-            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        "hew_bytes_slice_raw" => ctx.void_type().fn_type(
-            &[
-                ptr_ty.into(),
-                i32_ty.into(),
-                i32_ty.into(),
-                i64_ty.into(),
-                i64_ty.into(),
-                ptr_ty.into(),
-            ],
-            false,
-        ),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -3855,38 +3831,57 @@ fn declare_catalog_ffi<'ctx>(
         };
         param_tys.push(metadata_type_from_basic(llvm_param));
     }
+    // A `-> bytes` producer returns a `#[repr(C)] BytesTriple` (16 bytes, two
+    // eightbytes). Classify the return per target via the R5 ABI classifier:
+    // RegisterPair on SysV/AAPCS, sret (Indirect) on MSVC/wasm32. The call edge
+    // dispatches on the shared `ExternRecordRet` decision (RegisterPair →
+    // Carrier, Sret → sret), replacing the per-symbol `{symbol}_raw` void+out-ptr
+    // twin that hand-faked the MSVC/wasm32 sret ABI. (LESSONS:
+    // aggregate-abi-by-classifier-not-per-symbol.)
+    if matches!(entry.return_ty, BuiltinTy::Bytes) {
+        let bytes_triple_ty = bytes_triple_llvm_ty(ctx);
+        let triple = llvm_mod.get_triple();
+        let triple_str = triple.as_str().to_string_lossy();
+        let (value, return_abi) = crate::abi_class::declare_aggregate_return(
+            ctx,
+            llvm_mod,
+            target_data,
+            &triple_str,
+            symbol,
+            bytes_triple_ty,
+            &param_tys,
+        )?;
+        let extern_record_ret = match return_abi {
+            crate::abi_class::AggregateReturnAbi::RegisterPair { .. } => ExternRecordRet::Carrier {
+                pointee: bytes_triple_ty,
+            },
+            crate::abi_class::AggregateReturnAbi::Sret => ExternRecordRet::Sret {
+                pointee: bytes_triple_ty,
+            },
+        };
+        return Ok(FnSymbol::Real {
+            value,
+            return_ty: bytes_triple_ty.into(),
+            returns_unit: false,
+            extern_record_ret: Some(extern_record_ret),
+            extern_malloc_string_ret: false,
+        });
+    }
     // Declare the extern at the runtime's true C-ABI return width when it is
     // narrower than the Hew-facing catalog type. The call boundary
     // (`Terminator::Call` → `FnSymbol::Real`) reconciles the narrow result up to
     // the Hew dest width with sign-extension. See `runtime_ffi_return_abi_bits`.
-    // For bytes-triple producers, declare `{symbol}_raw` (void + out-ptr) to
-    // avoid the Windows x64 MSVC sret mismatch. Sentinel [2 x i64] return_ty
-    // preserved for bytes_raw_dest_ptr detection at Terminator::Call.
-    let bytes_return =
-        matches!(entry.return_ty, BuiltinTy::Bytes) && is_bytes_triple_return_producer(symbol);
-    let return_ty = if bytes_return {
-        Some(ctx.i64_type().array_type(2).into())
-    } else {
-        match runtime_ffi_return_abi_bits(symbol) {
-            Some(32) => Some(ctx.i32_type().into()),
-            Some(bits) => {
-                return Err(CodegenError::FailClosed(format!(
-                    "runtime FFI ABI width {bits} for `{symbol}` is unsupported"
-                )));
-            }
-            None => builtin_return_to_llvm(ctx, target_data, entry.return_ty, record_layouts)?,
+    let return_ty = match runtime_ffi_return_abi_bits(symbol) {
+        Some(32) => Some(ctx.i32_type().into()),
+        Some(bits) => {
+            return Err(CodegenError::FailClosed(format!(
+                "runtime FFI ABI width {bits} for `{symbol}` is unsupported"
+            )));
         }
+        None => builtin_return_to_llvm(ctx, target_data, entry.return_ty, record_layouts)?,
     };
-    let value = if bytes_return {
-        let raw_name = format!("{}_raw", symbol);
-        let mut raw_param_tys = param_tys.clone();
-        raw_param_tys.push(ctx.ptr_type(AddressSpace::default()).into());
-        let raw_fn_ty = ctx.void_type().fn_type(&raw_param_tys, false);
-        get_or_declare_catalog_ffi(llvm_mod, &raw_name, raw_fn_ty, None, &raw_param_tys)?
-    } else {
-        let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
-        get_or_declare_catalog_ffi(llvm_mod, symbol, fn_ty, return_ty, &param_tys)?
-    };
+    let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
+    let value = get_or_declare_catalog_ffi(llvm_mod, symbol, fn_ty, return_ty, &param_tys)?;
     Ok(FnSymbol::Real {
         value,
         return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
@@ -4346,19 +4341,20 @@ fn predeclare_extern_decls<'ctx>(
 
         // ── bytes boundary fail-closed gate ──────────────────────────────────
         //
-        // Every extern whose Hew-side signature involves `bytes` (return OR
-        // param) must be explicitly registered in one of three lists:
-        //   • `is_bytes_triple_return_producer` — returns BytesTriple by value
+        // A `-> bytes` return is classified by the R5 aggregate ABI classifier
+        // below (no per-symbol allowlist; it fails closed on an unmodelled
+        // target). A `bytes` PARAM must still be registered in one of two
+        // consumer lists that shape its C-ABI crossing:
         //   • `is_bytes_by_pointer_consumer`    — takes bytes as *const BytesTriple
         //   • `is_bytes_struct_expansion_consumer` — takes bytes via field expansion
         //
-        // A symbol in NONE of these lists and with `bytes` in its signature
-        // is an unclassified extern whose codegen ABI is unknown. Rather than
+        // A symbol with a `bytes` PARAM in NEITHER list (and that is not itself a
+        // classified `-> bytes` producer) has an unknown param ABI. Rather than
         // silently miscompile (the msgpack class of latent bug), we fail closed
         // here so the author is forced to classify the symbol.
         //
-        // To resolve the error: verify the Rust impl's actual `bytes` ABI and
-        // add the symbol to the matching list above with a brief WHY comment.
+        // To resolve the error: verify the Rust impl's actual `bytes` param ABI
+        // and add the symbol to the matching list above with a brief WHY comment.
         // LESSONS: `boundary-fail-closed` (P0).
         let has_bytes_return = matches!(decl.return_ty, ResolvedTy::Bytes);
         let has_bytes_param = decl
@@ -4366,23 +4362,16 @@ fn predeclare_extern_decls<'ctx>(
             .iter()
             .any(|t| matches!(t, ResolvedTy::Bytes));
 
-        if has_bytes_return && !is_bytes_triple_return_producer(&decl.name) {
-            return Err(CodegenError::FailClosed(format!(
-                "extern `{}` declares `-> bytes` but is not in \
-                 `is_bytes_triple_return_producer`. Add it to that list if the \
-                 Rust impl returns `#[repr(C)] BytesTriple` by value, or migrate \
-                 the Rust side to return `BytesTriple`. \
-                 See also `is_bytes_by_pointer_consumer` for `bytes` params. \
-                 (LESSONS: boundary-fail-closed)",
-                decl.name
-            )));
-        }
+        // A `-> bytes` extern is always classified by the R5 aggregate ABI
+        // classifier at declaration (below); the classifier fails closed on an
+        // unmodelled target, so there is no unclassified `-> bytes` path to gate
+        // here.
 
-        // A symbol in `is_bytes_triple_return_producer` is already classified
-        // (it always uses struct-expansion for its `bytes` params too).
-        // Only check remaining unknowns for `bytes` params.
+        // A `-> bytes` producer is a known classified aggregate; it always uses
+        // struct-expansion for its own `bytes` params, so it is exempt from the
+        // param gate. Only check remaining unknowns for `bytes` params.
         if has_bytes_param
-            && !is_bytes_triple_return_producer(&decl.name)
+            && !has_bytes_return
             && !crate::runtime_abi::is_bytes_by_pointer_consumer(&decl.name)
             && !crate::runtime_abi::is_bytes_struct_expansion_consumer(&decl.name)
         {
@@ -4417,10 +4406,51 @@ fn predeclare_extern_decls<'ctx>(
                 record_layouts,
             )?));
         }
+        // A `-> bytes` extern returns a `#[repr(C)] BytesTriple` classified per
+        // target by the R5 ABI classifier (RegisterPair on SysV/AAPCS, sret on
+        // MSVC/wasm32). The call edge dispatches on the shared `ExternRecordRet`
+        // decision (RegisterPair → Carrier, Sret → sret), replacing the
+        // `{name}_raw` void+out-ptr twin. (LESSONS:
+        // aggregate-abi-by-classifier-not-per-symbol.)
+        if matches!(decl.return_ty, ResolvedTy::Bytes) {
+            let bytes_triple_ty = bytes_triple_llvm_ty(ctx);
+            let triple = llvm_mod.get_triple();
+            let triple_str = triple.as_str().to_string_lossy();
+            let (value, return_abi) = crate::abi_class::declare_aggregate_return(
+                ctx,
+                llvm_mod,
+                target_data,
+                &triple_str,
+                &decl.name,
+                bytes_triple_ty,
+                &param_tys,
+            )?;
+            let extern_record_ret = match return_abi {
+                crate::abi_class::AggregateReturnAbi::RegisterPair { .. } => {
+                    ExternRecordRet::Carrier {
+                        pointee: bytes_triple_ty,
+                    }
+                }
+                crate::abi_class::AggregateReturnAbi::Sret => ExternRecordRet::Sret {
+                    pointee: bytes_triple_ty,
+                },
+            };
+            fn_symbols.insert(
+                decl.name.clone(),
+                FnSymbol::Real {
+                    value,
+                    return_ty: bytes_triple_ty.into(),
+                    returns_unit: false,
+                    extern_record_ret: Some(extern_record_ret),
+                    extern_malloc_string_ret: false,
+                },
+            );
+            continue;
+        }
         // ── extern record-return C-ABI classification (#2399) ─────────────────
         //
         // A user extern returning a `#[repr(C)]` record (an LLVM StructType —
-        // EXCLUDING `bytes`, handled by the `_raw`/`[2 x i64]` path below, and
+        // EXCLUDING `bytes`, handled by the classified branch above, and
         // `Unit`) routes its return through the ABI classifier. LLVM's bare
         // aggregate-return ABI diverges from the C ABI whenever the aggregate
         // exceeds the direct-return threshold (>16 B → indirect/sret) OR
@@ -4458,43 +4488,20 @@ fn predeclare_extern_decls<'ctx>(
                 // generic declaration below (unchanged).
             }
         }
-        // A `bytes`-returning Rust extern returns a `#[repr(C)] BytesTriple`
-        // (16 bytes, two eightbytes) in the AAPCS/SysV register pair (x0:x1 /
-        // rax:rdx). LLVM's `{ptr, i32, i32}` return type, by contrast, is
-        // classified as THREE return registers (x0, w1, w2) on AArch64, so the
-        // caller reads `len` from the wrong register and stores garbage when the
-        // result is spilled to memory. Declare the boundary return as
-        // `[2 x i64]` — which LLVM returns in the same two-register pair Rust
-        // uses — and reconstruct the `{ptr, i32, i32}` triple at the call's
-        // return-store site (a raw 16-byte store; byte layouts match). See the
-        // `[2 x i64]`/bytes branch in the `FnSymbol::Real` return handling.
-        // All `-> bytes` externs are now in `is_bytes_triple_return_producer`
-        // (the fail-closed gate above prevents unknown `-> bytes` externs).
-        // Windows x64 MSVC sret: use _raw (void + out-ptr) stored under original key.
-        let bytes_return = is_bytes_triple_return_producer(&decl.name);
         let return_ty = if matches!(decl.return_ty, ResolvedTy::Unit) {
             None
         } else {
-            Some(if bytes_return {
-                ctx.i64_type().array_type(2).into()
-            } else {
-                resolve_ty(ctx, target_data, &decl.return_ty, record_layouts)?
-            })
+            Some(resolve_ty(
+                ctx,
+                target_data,
+                &decl.return_ty,
+                record_layouts,
+            )?)
         };
-        let value = if bytes_return {
-            let raw_name = format!("{}_raw", &decl.name);
-            let mut raw_param_tys = param_tys.clone();
-            raw_param_tys.push(ctx.ptr_type(AddressSpace::default()).into());
-            let raw_fn_ty = ctx.void_type().fn_type(&raw_param_tys, false);
-            llvm_mod.get_function(&raw_name).unwrap_or_else(|| {
-                llvm_mod.add_function(&raw_name, raw_fn_ty, Some(Linkage::External))
-            })
-        } else {
-            let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
-            llvm_mod.get_function(&decl.name).unwrap_or_else(|| {
-                llvm_mod.add_function(&decl.name, fn_ty, Some(Linkage::External))
-            })
-        };
+        let fn_ty = fn_type_for_return(ctx, return_ty, &param_tys);
+        let value = llvm_mod
+            .get_function(&decl.name)
+            .unwrap_or_else(|| llvm_mod.add_function(&decl.name, fn_ty, Some(Linkage::External)));
         fn_symbols.insert(
             decl.name.clone(),
             FnSymbol::Real {
@@ -18583,25 +18590,15 @@ fn lower_instruction(
                 let len_val = ctx.i32_type().const_int(bytes.len() as u64, false);
                 let ptr_ty = ctx.ptr_type(AddressSpace::default());
                 let i32_ty = ctx.i32_type();
-                let from_static_raw = fn_ctx
-                    .llvm_mod
-                    .get_function("hew_bytes_from_static_raw")
-                    .unwrap_or_else(|| {
-                        fn_ctx.llvm_mod.add_function(
-                            "hew_bytes_from_static_raw",
-                            ctx.void_type()
-                                .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
-                            None,
-                        )
-                    });
-                fn_ctx
-                    .builder
-                    .build_call(
-                        from_static_raw,
-                        &[data_ptr.into(), len_val.into(), dest_ptr.into()],
-                        "bytes_lit_init",
-                    )
-                    .llvm_ctx("BytesLit hew_bytes_from_static_raw")?;
+                // Classified `hew_bytes_from_static(ptr, len) -> BytesTriple`,
+                // landed in the dest triple slot per the target's aggregate ABI.
+                crate::runtime_abi::emit_classified_bytes_return_call(
+                    fn_ctx,
+                    "hew_bytes_from_static",
+                    &[ptr_ty.into(), i32_ty.into()],
+                    &[data_ptr.into(), len_val.into()],
+                    dest_ptr,
+                )?;
             }
         }
         Instr::ConstGlobalLoad { item_id, dest } => {
@@ -20765,21 +20762,16 @@ fn lower_wire_codec_instr<'ctx>(
             let len_i32 = builder
                 .build_int_truncate_or_bit_cast(len_usize, i32_ty, "wire_encode_len_i32")
                 .llvm_ctx("wire encode len truncate")?;
-            let from_raw = declare_codec_prim(
-                ctx,
-                fn_ctx.llvm_mod,
-                "hew_bytes_from_static_raw",
-                ctx.void_type()
-                    .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
-            );
-            builder
-                .build_call(
-                    from_raw,
-                    &[raw.into(), len_i32.into(), dest_ptr.into()],
-                    "wire_encode_bytes",
-                )
-                .llvm_ctx("wire encode bytes_from_static_raw")?;
-            // `hew_bytes_from_static_raw` copied the bytes into its own
+            // Classified `hew_bytes_from_static(ptr, len) -> BytesTriple`,
+            // landed in the dest triple slot per the target's aggregate ABI.
+            crate::runtime_abi::emit_classified_bytes_return_call(
+                fn_ctx,
+                "hew_bytes_from_static",
+                &[ptr_ty.into(), i32_ty.into()],
+                &[raw.into(), len_i32.into()],
+                dest_ptr,
+            )?;
+            // `hew_bytes_from_static` copied the bytes into its own
             // refcounted buffer; free the thunk's intermediate malloc'd buffer.
             let free_buf = declare_codec_prim(
                 ctx,
@@ -24001,52 +23993,6 @@ fn is_hashmap_constructor_symbol(symbol: &str) -> bool {
 /// resolved as a user/runtime symbol.
 fn is_bytes_constructor_symbol(symbol: &str) -> bool {
     symbol == "bytes::new"
-}
-
-/// Runtime producers whose Rust impl returns a `#[repr(C)] BytesTriple` by value
-/// and that codegen therefore declares with the AAPCS/SysV `[2 x i64]` boundary
-/// return type (reconstructed into the `{ptr,i32,i32}` dest at the call's
-/// return-store).
-///
-/// EXHAUSTIVE ALLOWLIST: every `-> bytes` extern in the stdlib has been audited
-/// and all migrate to `BytesTriple`. No legacy `*mut HewVec` `-> bytes` externs
-/// remain. An unknown symbol with `-> bytes` is therefore a build error, not a
-/// silent miscompile. (LESSONS: `boundary-fail-closed`, PR #TBD.)
-fn is_bytes_triple_return_producer(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_tcp_read"
-            | "hew_sha256_hew"
-            | "hew_sha384_hew"
-            | "hew_sha512_hew"
-            | "hew_hmac_sha256_hew"
-            | "hew_random_bytes_hew"
-            | "hew_string_to_bytes"
-            | "hew_bytes_from_str"
-            | "hew_bytes_from_static"
-            | "hew_bytes_concat"
-            | "hew_bytes_slice"
-            | "hew_file_read_bytes"
-            // Ed25519 sign: _hew wrappers that return `bytes` use BytesTriple ABI.
-            | "hew_ed25519_generate_pkcs8_hew"
-            | "hew_ed25519_public_key_from_pkcs8_hew"
-            | "hew_ed25519_sign_hew"
-            // QUIC recv: `-> bytes` FFI wrappers return BytesTriple by value.
-            | "hew_quic_stream_recv"
-            | "hew_quic_stream_recv_timeout_hew"
-            // compress: all _hew wrappers return BytesTriple by value.
-            | "hew_gzip_compress_hew"
-            | "hew_gzip_decompress_hew"
-            | "hew_deflate_compress_hew"
-            | "hew_deflate_decompress_hew"
-            | "hew_zlib_compress_hew"
-            | "hew_zlib_decompress_hew"
-            // msgpack: `-> bytes` _hew wrappers return BytesTriple by value.
-            | "hew_msgpack_from_json_hew"
-            | "hew_msgpack_encode_int_hew"
-            | "hew_msgpack_encode_string_hew"
-            | "hew_msgpack_encode_bytes_hew"
-    )
 }
 
 fn hashmap_constructor_runtime_symbol(symbol: &str) -> CodegenResult<&'static str> {
@@ -33932,28 +33878,6 @@ fn lower_terminator<'ctx>(
                             dest.as_ref(),
                         )?;
                     } else {
-                        // ── Bytes-triple `_raw` path ─────────────────────────────────────────
-                        // [2 x i64] return_ty sentinel means stored value is {callee}_raw:
-                        // void(params..., out_ptr). Detect early to append dest_ptr and skip store.
-                        let bytes_raw_dest_ptr = if return_ty.is_array_type() {
-                            if let Some(dest_place) = dest.as_ref() {
-                                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-                                if matches!(dest_ty, BasicTypeEnum::StructType(_))
-                                    && matches!(
-                                        place_resolved_ty(fn_ctx, *dest_place)?,
-                                        ResolvedTy::Bytes
-                                    )
-                                {
-                                    Some(dest_ptr)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
                         // Reconcile each loaded argument against the callee's
                         // *declared* LLVM parameter type. The Hew place may hold a
                         // wider integer (e.g. an i64 local or the i64 result of a
@@ -33964,13 +33888,9 @@ fn lower_terminator<'ctx>(
                         // rejects the module. Signed narrow/widen keeps negative
                         // values correct for signed operands; unsigned operands
                         // must zero-extend at this boundary.
-                        // NOTE: for _raw, declared_param_tys has trailing ptr; loop
-                        // uses args.len() indices so it never misclassifies it.
                         let declared_param_tys = value.get_type().get_param_types();
                         let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
-                            Vec::with_capacity(
-                                args.len() + usize::from(bytes_raw_dest_ptr.is_some()),
-                            );
+                            Vec::with_capacity(args.len());
                         for (idx, arg) in args.iter().enumerate() {
                             let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
                             // By-pointer bytes consumer: the callee declares this
@@ -34007,17 +33927,11 @@ fn lower_terminator<'ctx>(
                             };
                             arg_vals.push(metadata_value_from_basic(reconciled));
                         }
-                        // Bytes-triple _raw: append dest_ptr as final out-param.
-                        if let Some(dest_ptr) = bytes_raw_dest_ptr {
-                            arg_vals.push(metadata_value_from_basic(dest_ptr.into()));
-                        }
                         let call_site = fn_ctx
                             .builder
                             .build_call(value, &arg_vals, "call_result")
                             .llvm_ctx("build_call")?;
-                        if bytes_raw_dest_ptr.is_some() {
-                            // `_raw` wrote directly to dest_ptr; no further store needed.
-                        } else if let Some(dest_place) = dest {
+                        if let Some(dest_place) = dest {
                             if returns_unit {
                                 return Err(CodegenError::FailClosed(format!(
                                 "Call to unit-returning fn `{callee}` must not carry a Terminator::Call dest"
@@ -43665,20 +43579,18 @@ fn emit_de_value_cbor<'ctx>(
                 .build_load(i32_ty, len_slot, "cbor_de_bytes_lenv")
                 .llvm_ctx("cbor de bytes len load")?
                 .into_int_value();
-            let new_prim = declare_codec_prim(
+            // Classified `hew_bytes_from_static(ptr, len) -> BytesTriple`,
+            // landed in the dest triple slot per the target's aggregate ABI.
+            crate::runtime_abi::emit_classified_bytes_return_call_raw(
                 ctx,
                 llvm_mod,
-                "hew_bytes_from_static_raw",
-                ctx.void_type()
-                    .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
-            );
-            builder
-                .build_call(
-                    new_prim,
-                    &[raw.into(), len.into(), dst.into()],
-                    "cbor_de_bytes_new_raw",
-                )
-                .llvm_ctx("cbor de bytes_from_static_raw")?;
+                target_data,
+                builder,
+                "hew_bytes_from_static",
+                &[ptr_ty.into(), i32_ty.into()],
+                &[raw.into(), len.into()],
+                dst,
+            )?;
             let free_prim = declare_codec_prim(
                 ctx,
                 llvm_mod,

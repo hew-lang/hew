@@ -109,7 +109,7 @@ declare ptr @hew_string_to_lowercase(ptr)
 
 declare ptr @hew_string_to_uppercase(ptr)
 
-declare void @hew_string_to_bytes_raw(ptr, ptr)
+declare [2 x i64] @hew_string_to_bytes(ptr)
 
 declare ptr @hew_string_replace(ptr, ptr, ptr)
 

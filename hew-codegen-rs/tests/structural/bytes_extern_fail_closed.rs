@@ -1,17 +1,19 @@
-//! Fail-closed gate for `bytes`-typed extern declarations.
+//! Fail-closed posture for `bytes`-typed extern declarations.
 //!
-//! Any extern whose signature involves `bytes` (return or param) and whose
-//! symbol is not in the appropriate ABI-shaping allowlist must produce
-//! `CodegenError::FailClosed` naming the symbol. The gate fires in
-//! `predeclare_extern_decls`, before any LLVM IR is emitted, so the error
-//! points at the registration gap rather than surfacing as a miscompile.
+//! A `-> bytes` extern's return crosses the C-ABI boundary as a
+//! `#[repr(C)] BytesTriple`, classified per target by the R5 aggregate ABI
+//! classifier (`abi_class::declare_aggregate_return`): RegisterPair on
+//! SysV/AAPCS, sret (Indirect) on MSVC/wasm32. There is NO per-symbol
+//! return-producer allowlist — every `-> bytes` extern is classified, and the
+//! classifier itself fails closed on an unmodelled target rather than guessing.
 //!
-//! Three allowlists govern bytes ABI shaping:
-//! - `is_bytes_triple_return_producer`   — Rust impl returns BytesTriple by value
+//! A `bytes` PARAM is still governed by the two consumer allowlists (until the
+//! by-pointer-everywhere migration collapses them):
 //! - `is_bytes_by_pointer_consumer`      — Rust impl takes *const BytesTriple
 //! - `is_bytes_struct_expansion_consumer` — Rust impl takes (ptr, offset, len)
 //!
-//! LESSONS applied: `boundary-fail-closed` (P0).
+//! LESSONS applied: `boundary-fail-closed` (P0),
+//! `aggregate-abi-by-classifier-not-per-symbol` (P0).
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
@@ -178,34 +180,48 @@ fn emit_options(label: &str) -> EmitOptions<'static> {
 }
 
 // ---------------------------------------------------------------------------
-// Fail-closed: unknown `-> bytes` return
+// Classified `-> bytes` return: no per-symbol gate, classifier is the backstop
 // ---------------------------------------------------------------------------
 
-/// An extern that returns `bytes` and is not in `is_bytes_triple_return_producer`
-/// must produce `CodegenError::FailClosed` naming the symbol and pointing at
-/// the registry. This is the primary regression guard for Stage 2 of the
-/// bytes-extern-fail-closed hardening.
+/// An arbitrary `-> bytes` extern — one that was never on any allowlist —
+/// declares a classified aggregate return and emits successfully on a modelled
+/// host target. This is the deletion proof for the per-symbol
+/// `is_bytes_triple_return_producer` registry: adding a `-> bytes` runtime
+/// symbol no longer requires an allowlist edit; the classifier composes for
+/// free. (LESSONS: aggregate-abi-by-classifier-not-per-symbol.)
 #[test]
-fn unknown_bytes_return_extern_fails_closed_naming_symbol() {
-    let pipeline =
-        pipeline_with_extern("probe_unregistered_bytes_return", ResolvedTy::Bytes, vec![]);
-    let result = emit_module(&pipeline, &emit_options("bytes_return"));
-    match result {
+fn arbitrary_bytes_return_extern_is_classified_not_gated() {
+    let pipeline = pipeline_with_extern("probe_new_bytes_return", ResolvedTy::Bytes, vec![]);
+    emit_module(&pipeline, &emit_options("bytes_return")).unwrap_or_else(|error| {
+        panic!(
+            "a `-> bytes` extern must classify and emit on a modelled target \
+             (no per-symbol allowlist gate); got {error:?}"
+        )
+    });
+}
+
+/// The fail-closed posture is preserved at the classifier: a `-> bytes` extern
+/// targeting a triple whose aggregate ABI is not modelled fails closed rather
+/// than guessing an ABI. This is the NEGATIVE guard that replaces the old
+/// per-symbol registry rejection. (LESSONS: boundary-fail-closed.)
+#[test]
+fn bytes_return_extern_fails_closed_on_unmodelled_target() {
+    let pipeline = pipeline_with_extern("probe_new_bytes_return", ResolvedTy::Bytes, vec![]);
+    let mut opts = emit_options("bytes_return_unmodelled");
+    // sparc64 has no modelled aggregate ABI in `classify_aggregate`.
+    opts.target_triple = Some("sparc64-unknown-linux-gnu");
+    match emit_module(&pipeline, &opts) {
         Err(CodegenError::FailClosed(msg)) => {
             assert!(
-                msg.contains("probe_unregistered_bytes_return"),
-                "FailClosed must name the offending symbol; got: {msg}"
-            );
-            assert!(
-                msg.contains("is_bytes_triple_return_producer"),
-                "FailClosed must point at the return-producer registry; got: {msg}"
+                msg.contains("not modelled") || msg.contains("sparc64"),
+                "FailClosed must explain the unmodelled aggregate ABI; got: {msg}"
             );
         }
-        Err(other) => panic!(
-            "expected CodegenError::FailClosed for unregistered bytes-return extern, got {other:?}"
-        ),
+        Err(other) => {
+            panic!("expected CodegenError::FailClosed for an unmodelled target, got {other:?}")
+        }
         Ok(_) => panic!(
-            "unregistered bytes-return extern must fail closed; got Ok(_) — \
+            "a `-> bytes` extern on an unmodelled target must fail closed; got Ok(_) — \
              boundary-fail-closed regression"
         ),
     }

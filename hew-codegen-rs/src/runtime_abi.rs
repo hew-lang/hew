@@ -364,6 +364,92 @@ pub(crate) fn store_classified_bytes_return<'ctx>(
     }
 }
 
+/// Declare `symbol` as a classified `-> bytes` producer and issue the call,
+/// landing the returned `BytesTriple` in `dest_ptr` per the target's aggregate
+/// return ABI.
+///
+/// The single flow for every bytes-return runtime/stdlib producer: classify the
+/// `{ptr,i32,i32}` return via [`crate::abi_class::declare_aggregate_return`]
+/// (RegisterPair on SysV/AAPCS, sret-Indirect on MSVC/wasm32), then land the
+/// result with [`store_classified_bytes_return`]. Replaces the per-symbol
+/// `{symbol}_raw` void+out-pointer twin that hand-faked the MSVC/wasm32 sret ABI.
+/// `non_sret_param_tys` are the producer's declared parameter types EXCLUDING any
+/// sret pointer; `non_sret_args` are the matching argument values.
+pub(crate) fn emit_classified_bytes_return_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    symbol: &str,
+    non_sret_param_tys: &[inkwell::types::BasicMetadataTypeEnum<'ctx>],
+    non_sret_args: &[BasicMetadataValueEnum<'ctx>],
+    dest_ptr: inkwell::values::PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    emit_classified_bytes_return_call_raw(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        fn_ctx.target_data,
+        &fn_ctx.builder,
+        symbol,
+        non_sret_param_tys,
+        non_sret_args,
+        dest_ptr,
+    )
+}
+
+/// [`emit_classified_bytes_return_call`] over raw codegen primitives, for the
+/// codec-thunk sites (`emit_de_value_cbor` etc.) that thread `ctx`/`builder`/
+/// `target_data` directly rather than a [`FnCtx`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_classified_bytes_return_call_raw<'ctx>(
+    ctx: &'ctx inkwell::context::Context,
+    llvm_mod: &inkwell::module::Module<'ctx>,
+    target_data: &inkwell::targets::TargetData,
+    builder: &inkwell::builder::Builder<'ctx>,
+    symbol: &str,
+    non_sret_param_tys: &[inkwell::types::BasicMetadataTypeEnum<'ctx>],
+    non_sret_args: &[BasicMetadataValueEnum<'ctx>],
+    dest_ptr: inkwell::values::PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let triple = llvm_mod.get_triple();
+    let triple_str = triple.as_str().to_string_lossy();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let bytes_triple_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+    let (fv, return_abi) = crate::abi_class::declare_aggregate_return(
+        ctx,
+        llvm_mod,
+        target_data,
+        &triple_str,
+        symbol,
+        bytes_triple_ty,
+        non_sret_param_tys,
+    )?;
+    match return_abi {
+        crate::abi_class::AggregateReturnAbi::RegisterPair { .. } => {
+            let call_site = builder
+                .build_call(fv, non_sret_args, &format!("{symbol}_call"))
+                .llvm_ctx("classified bytes-return call")?;
+            let pair = call_site.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "{symbol} returned void unexpectedly (register-pair class)"
+                ))
+            })?;
+            builder
+                .build_store(dest_ptr, pair)
+                .llvm_ctx("classified bytes-return store")?;
+            Ok(())
+        }
+        crate::abi_class::AggregateReturnAbi::Sret => {
+            let mut sret_args: Vec<BasicMetadataValueEnum<'ctx>> =
+                Vec::with_capacity(non_sret_args.len() + 1);
+            sret_args.push(dest_ptr.into());
+            sret_args.extend_from_slice(non_sret_args);
+            builder
+                .build_call(fv, &sret_args, &format!("{symbol}_sret_call"))
+                .llvm_ctx("classified bytes-return (sret) call")?;
+            Ok(())
+        }
+    }
+}
+
 /// interned extern declaration for `call.symbol()`. The per-symbol
 /// dispatch encodes the ABI-shape decisions documented in the E4 plan
 /// (SHIM(E4) comment in `hew-mir/src/lower.rs` ~1220):
@@ -1270,14 +1356,10 @@ pub(crate) fn lower_call_runtime_abi(
                 .llvm_ctx("hew_bytes_len store")?;
             let _ = (i32_ty, i64_ty, ptr_ty);
         }
-        // hew_bytes_slice_raw(ptr, offset, len, start, end, out: *mut BytesTriple) -> void.
-        // A `bytes` receiver is a stack-resident triple; unpack it field-by-field,
-        // pass the scalar runtime ABI with an out-pointer for the result.
-        // Uses `_raw` void-return/out-pointer variant to avoid the Windows x64 MSVC sret
-        // mismatch: `BytesTriple` is 16 bytes and MSVC returns it via a hidden RCX
-        // sret pointer, which conflicts with hew's `[2 x i64]` register-pair
-        // codegen.  The `_raw` variant is `void(ptr, i32, i32, i64, i64, *mut
-        // BytesTriple)` and writes the result directly into the dest alloca.
+        // hew_bytes_slice(ptr, offset, len, start, end) -> BytesTriple. A `bytes`
+        // receiver is a stack-resident triple; unpack it field-by-field, then land
+        // the classified aggregate return (RegisterPair on SysV/AAPCS, sret on
+        // MSVC/wasm32) into the dest slot via `store_classified_bytes_return`.
         F::BytesSlice => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(

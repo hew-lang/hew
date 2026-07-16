@@ -26,6 +26,10 @@ use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy};
 use hew_mir::Place;
 use hew_types::ResolvedTy;
 
+use crate::layout::{
+    get_or_declare_bool_vec_runtime, get_or_declare_owned_vec_runtime,
+    layout_vec_element_needs_descriptor, zext_bool_i1_to_dest,
+};
 #[allow(unused_imports)]
 use crate::llvm::*;
 

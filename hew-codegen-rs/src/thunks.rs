@@ -30,6 +30,7 @@ use hew_mir::{
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
 use hew_types::{BuiltinType, ResolvedTy};
 
+use crate::layout::mix_into_hash_acc;
 #[allow(unused_imports)]
 use crate::llvm::*;
 use crate::runtime_abi::intern_runtime_decl;

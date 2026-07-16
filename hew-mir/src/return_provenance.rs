@@ -2489,9 +2489,9 @@ mod tests {
     /// only raise `compared`), so adding fixtures never breaks it while a
     /// disappearing corpus does.
     /// Floor on the number of `.hew` files discovered under the named roots.
-    const CORPUS_FILE_FLOOR: usize = 700;
+    const CORPUS_FILE_FLOOR: usize = 840;
     /// Floor on the number of inputs that lower standalone and are compared.
-    const COMPARED_FLOOR: usize = 700;
+    const COMPARED_FLOOR: usize = 800;
 
     #[test]
     fn coarse_verdict_differential() {
@@ -2501,6 +2501,7 @@ mod tests {
             .to_path_buf();
         let roots = [
             "std",
+            "tests/hew",
             "tests/vertical-slice/accept",
             "tests/vertical-slice/reject",
             "examples/v05/checked-mir",

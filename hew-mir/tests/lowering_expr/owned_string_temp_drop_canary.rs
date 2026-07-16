@@ -17,8 +17,8 @@
 //!     has no binding, so `apply_nested_fresh_string_temp_drops` splices an
 //!     inline `Instr::Drop` after the borrowing use / producer.
 //!
-//! Fail-closed throughout: a value that escapes (return, store, user-fn call,
-//! container-move insert) earns NO drop — it leaks, never double-frees.
+//! Returns and consuming runtime/container sinks transfer ownership. Ordinary
+//! Hew calls borrow, so their caller-owned string keeps its drop.
 //!
 //! INDEX FORM (`vec-generic-index` lane — LANDED): `xs[i]` over `Vec<string>`
 //! now lowers to the same `hew_vec_get_str` retained owner as `.get(i)`, so this
@@ -262,12 +262,11 @@ fn canary3b_nested_string_producers_release_once() {
 }
 
 // ---------------------------------------------------------------------------
-// Canary 4 — escape / consuming shapes earn NO drop (fail-closed; the owner is
-// transferred, so a drop here would double-free).
+// Canary 4 — returns transfer ownership, while ordinary by-value calls borrow.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn canary4_escaping_and_consuming_shapes_do_not_drop() {
+fn canary4_return_transfers_and_user_call_borrows() {
     let pl = pipeline_with_tc(
         "fn ret_escape(a: string, b: string) -> string {\n    a + b\n}\nfn consume(s: string) -> i64 {\n    s.len() as i64\n}\nfn userfn_escape(a: string, b: string) -> i64 {\n    let y = a + b;\n    consume(y)\n}\n",
     );
@@ -278,12 +277,11 @@ fn canary4_escaping_and_consuming_shapes_do_not_drop() {
         0,
         "a returned fresh string is owned by the caller; the callee must not drop it"
     );
-    // `consume(y)` moves `y` into a user fn — an unproven ownership posture; the
-    // bound owner must NOT be dropped at the call site (fail-closed leak).
+    // `consume(y)` borrows `y`; the caller keeps and releases its owner.
     assert_eq!(
         total_string_drops(&pl, "userfn_escape"),
-        0,
-        "a string moved into a user-fn call must not also drop at the caller (no double-free)"
+        1,
+        "a string passed to a user function remains caller-owned"
     );
 }
 

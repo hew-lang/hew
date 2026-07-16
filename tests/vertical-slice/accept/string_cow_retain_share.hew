@@ -1,0 +1,146 @@
+// String retain-on-share coverage for every remaining co-owner mint.
+
+type Holder {
+    payload: string,
+}
+
+fn duplicate(value: string) -> (string, string) {
+    (value, value)
+}
+
+fn field_load_share() -> i64 {
+    let source = "field-" + "load";
+    let holder = Holder { payload: source };
+    let extracted = holder.payload;
+    extracted.len() + holder.payload.len()
+}
+
+fn container_element_read() -> i64 {
+    let values: Vec<string> = Vec::new();
+    let source = "container-" + "read";
+    values.push(source);
+    let item = values[0];
+    source.len() + item.len() + values.len()
+}
+
+fn live_local_coown() -> i64 {
+    let source = "aggregate-" + "share";
+    let holder = Holder { payload: source };
+    source.len() + holder.payload.len()
+}
+
+fn returned_aggregate_share() -> Holder {
+    let source = "returned-" + "holder";
+    let holder = Holder { payload: source };
+    let _len = source.len();
+    holder
+}
+
+fn stored_then_returned() -> string {
+    let source = "stored-" + "then-returned";
+    let holder = Holder { payload: source };
+    let _len = holder.payload.len();
+    source
+}
+
+fn duplicating_return() -> i64 {
+    let source = "return-" + "share";
+    let returned = duplicate(source);
+    let (left, right) = returned;
+    source.len() + left.len() + right.len()
+}
+
+fn duplicate_local_last_use() -> (string, string) {
+    let source = "local-" + "duplicate";
+    (source, source)
+}
+
+fn local_share() -> i64 {
+    let source = "local-" + "share";
+    let shared = source;
+    source.len() + shared.len()
+}
+
+fn local_handoff() -> i64 {
+    let source = "last-use-" + "handoff";
+    let shared = source;
+    shared.len()
+}
+
+fn sequential_local_shares() -> i64 {
+    let source = "sequential-" + "shares";
+    let first = source;
+    let second = source;
+    first.len() + second.len()
+}
+
+fn chained_local_handoff() -> i64 {
+    let source = "chained-" + "handoff";
+    let first = source;
+    let second = first;
+    source.len() + second.len()
+}
+
+fn conditional_local_handoff(flag: bool) -> i64 {
+    let source = "conditional-" + "handoff";
+    if flag {
+        let alias = source;
+        alias.len()
+    } else {
+        0
+    }
+}
+
+fn hew_borrow(value: string) -> i64 {
+    value.len()
+}
+
+fn param_coown_share(value: string) -> i64 {
+    let alias = value;
+    value.len() + alias.len()
+}
+
+fn owned_partner_escape() -> string {
+    let source = "owned-" + "escape";
+    let alias = source;
+    let _len = alias.len();
+    source
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 20 {
+        let borrowed = "param-" + "coown";
+        let prefixed = "prefixed-" + "user-fn";
+        let escaped = owned_partner_escape();
+        let returned_holder = returned_aggregate_share();
+        let stored_return = stored_then_returned();
+        let duplicated_local = duplicate_local_last_use();
+        let (local_left, local_right) = duplicated_local;
+        total = total
+            + field_load_share()
+            + container_element_read()
+            + live_local_coown()
+            + duplicating_return()
+            + local_share()
+            + local_handoff()
+            + sequential_local_shares()
+            + chained_local_handoff()
+            + conditional_local_handoff(true)
+            + conditional_local_handoff(false)
+            + hew_borrow(prefixed)
+            + param_coown_share(borrowed)
+            + escaped.len()
+            + returned_holder.payload.len()
+            + stored_return.len()
+            + local_left.len()
+            + local_right.len();
+        i = i + 1;
+    }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
+}

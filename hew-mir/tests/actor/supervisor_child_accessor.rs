@@ -12,8 +12,9 @@
 //! - The accessor does NOT trap on a not-live slot: liveness is re-resolved at
 //!   each send/ask (the fungible model), so the accessor emits no
 //!   `Terminator::Trap { kind: SupervisorChildUnavailable }`.
-//! - Pool child access emits `NotYetImplemented` and does NOT emit a
-//!   `CallRuntimeAbi` or `RecordFieldLoad` for that site.
+//! - Pool child field access constructs a first-class `SupervisorPool<S, T>`
+//!   view, including after binding, and safe `.get(i)` lowers through the pool
+//!   runtime lookup plus layout-aware Option construction.
 //! - No supervisor field access reaches the `record_field_orders` path
 //!   (verified by absence of any "unregistered record type" diagnostic).
 
@@ -21,7 +22,7 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
     lower_hir_module, FieldOffset, Instr, MirDiagnosticKind, Place, Terminator, TrapKind,
 };
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker};
 
 /// Lower a Hew source program to MIR, asserting no parse, HIR, or
 /// unintended MIR diagnostics.
@@ -349,58 +350,79 @@ fn fungible_send_has_no_program_killing_trap() {
     );
 }
 
-/// Pool child access is now rejected at HIR pre-pass (Lane FC-P1-C). The MIR
-/// `NotYetImplemented` arm at `hew-mir/src/lower.rs:4413` remains as
-/// defense-in-depth but is no longer reachable from the compile driver because
-/// HIR `into_result()` returns `Err` before MIR lowering begins.
-///
-/// Asserts: the source program emits `SupervisorPoolChildAccessorUnsupported`
-/// at HIR and HIR `into_result()` fails. Reaching MIR is itself a regression.
 #[test]
-fn pool_child_access_rejected_at_hir_before_mir() {
+fn pool_child_field_and_get_lower_end_to_end() {
     let source = r"
         actor Worker { receive fn ping() {} }
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool worker: Worker(count: 2)
+            pool workers: Worker(count: 2)
         }
 
-        fn get_pool_worker(sup_pid: LocalPid<Pool>) -> LocalPid<Worker> {
-            sup_pid.worker
+        fn inspect(sup_pid: LocalPid<Pool>) -> i64 {
+            let workers = sup_pid.workers;
+            let maybe = workers.get(0);
+            let _ = maybe;
+            workers.len()
         }
         ";
 
-    let parsed = hew_parser::parse(source);
+    let pipeline = lower_module(source);
     assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
+        pipeline.diagnostics.is_empty(),
+        "pool field/get lowering diagnostics: {:#?}",
+        pipeline.diagnostics
     );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let tc_output = checker.check_program(&parsed.program);
-    let hir = lower_program(
-        &parsed.program,
-        &tc_output,
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
+    let func = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "inspect")
+        .expect("inspect function lowered");
+    let has_pool_view = func
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .any(|instr| {
+            matches!(
+                instr,
+                Instr::RecordInit {
+                    ty: hew_types::ResolvedTy::Named {
+                        builtin: Some(BuiltinType::SupervisorPool),
+                        ..
+                    },
+                    ..
+                }
+            )
+        });
+    assert!(
+        has_pool_view,
+        "pool field must construct SupervisorPool view"
     );
-
-    // HIR must reject the program with the pool-accessor gate diagnostic.
-    let pool_gate_fired = hir.diagnostics.iter().any(|d| {
+    let has_pool_lookup = func
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .any(|instr| {
+            matches!(
+                instr,
+                Instr::CallRuntimeAbi(call)
+                    if call.symbol() == "hew_supervisor_pool_child_get"
+            )
+        });
+    assert!(
+        has_pool_lookup,
+        "pool.get must emit hew_supervisor_pool_child_get"
+    );
+    let has_option_materialiser = func.blocks.iter().any(|block| {
         matches!(
-            d.kind,
-            hew_hir::HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { .. }
+            &block.terminator,
+            Terminator::Call { callee, .. }
+                if callee == "hew_supervisor_pool_get_option"
         )
     });
     assert!(
-        pool_gate_fired,
-        "Pool child accessor must be rejected by HIR pre-pass gate; \
-         diagnostics: {:#?}",
-        hir.diagnostics
-    );
-    assert!(
-        hir.into_result().is_err(),
-        "HIR into_result() must be Err for pool child accessor (Lane FC-P1-C)"
+        has_option_materialiser,
+        "pool.get must route lookup through the layout-aware Option materialiser"
     );
 }

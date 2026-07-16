@@ -1394,6 +1394,14 @@ run_accept_expect_status "supervisor_literal_only_config_param" 0
 # the empty-pool_slots gap (#2229): codegen now spawns + registers pool members.
 run_accept_expect_status "supervisor_static_pool" 24
 
+# Safe pool lookup: in-range members produce Some live handles with exact
+# payload values, while the negative and end boundary indices produce None.
+run_accept_expect_stdout "supervisor_pool_get_option"
+
+# Whole-field pool access: bind `let workers = sup.workers`, then route len,
+# trapping index, and safe get through the first-class pool view.
+run_accept_expect_stdout "supervisor_pool_field_access"
+
 # v0.6 static pool per-member restart + live re-resolution (A209): a pool member
 # crashes, the SIMPLE_ONE_FOR_ONE restart arm restarts it per-member, and
 # `sup.workers[i]` re-resolves through the LIVE static slot to the restarted
@@ -1881,11 +1889,15 @@ expect_check_fail_error_count \
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 grep -qF 'cannot index into `i64`' "${reject_output}"
 
-if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
-  echo "expected use-after-consume fixture to fail" >&2
-  exit 1
-fi
-grep -q 'UseAfterConsume' "${reject_output}"
+for fixture in \
+  string_local_share_after_copy \
+  string_tuple_share \
+  string_record_share \
+  string_enum_share \
+  string_array_share
+do
+  compile_accept "${fixture}"
+done
 
 reject_check_use_after_consume() {
   local fixture="$1"
@@ -1899,17 +1911,13 @@ reject_check_use_after_consume() {
 }
 
 for fixture in \
-  move_into_tuple_string \
-  move_into_record_string \
   move_into_tuple_vec \
   move_into_record_vec \
   move_into_tuple_owned_record \
   move_into_record_owned_record \
   move_into_tuple_resource \
   move_into_record_resource \
-  move_into_enum_string \
   move_into_enum_vec \
-  move_into_array_string \
   move_into_array_vec \
   actor_nested_handle_tuple_use_after_send \
   actor_nested_handle_bound_tuple_rx_use_after_send

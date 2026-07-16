@@ -36,6 +36,7 @@ fn main -> i64
     return[bb5] ->
       drop _13 ty=string kind=cow_heap(hew_string_drop)
       drop _8 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=string kind=cow_heap(hew_string_drop)
 
 fn i8::fmt -> string
   statements:

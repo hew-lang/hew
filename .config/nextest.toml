@@ -30,13 +30,23 @@ real-timing = { max-threads = 1 }
 # Exclude hew-wasm by default (requires wasmtime). Exclude sandbox parity from
 # generic nextest runs because it spawns the hew-sandbox-vm Node runner; CI
 # enforces it through the provisioned `make sandbox-parity` step.
-# binary(parity) is the standalone parity binary; the parity_ratchet binary also
-# holds VM-dependent work — its live_gate test spawns the Node runner and asserts
-# node_modules is installed, so it is excluded by name here while the binary's
-# structural ratchet tests (which need no VM) keep running. make sandbox-parity
-# runs both via plain `cargo test` (no nextest profile), so the live gate stays
-# enforced where the deps are provisioned.
-default-filter = "not package(hew-wasm) - binary(parity) - test(live_gate_matches_declared_coverage)"
+# Exclusion is whole-binary, not per-test: a binary is excluded here if ANY
+# function it contains spawns the Node runner, regardless of whether every
+# #[test] in that binary reaches it directly, transitively through a helper,
+# or only via some indirection (dynamic dispatch, a function pointer) that
+# static analysis of the call graph cannot prove reaches or does not reach a
+# given test. scripts/check-sandbox-parity-coverage.py enforces this
+# contract: per-test carve-outs inside a VM-touching binary are not trusted.
+# binary(parity) is the standalone parity binary. binary(parity_ratchet)
+# also holds VM-dependent work — its live_gate test spawns the Node runner —
+# so the WHOLE binary is excluded here, including its non-VM structural
+# ratchet tests; those run only under the provisioned `make sandbox-parity`
+# gate now. binary(playground) and binary(ios_subset) are single-test
+# binaries whose only test each spawns the same Node runner.
+# make sandbox-parity runs all four via plain `cargo test` (no nextest profile),
+# so every test in every VM-dependent binary stays enforced where the deps
+# are provisioned.
+default-filter = "not package(hew-wasm) - binary(parity) - binary(parity_ratchet) - binary(playground) - binary(ios_subset)"
 # Global concurrency cap: defaults to all available cores (num-cpus), which is
 # fine for pure in-process tests.  The subprocess-intensive group above provides
 # the finer-grained cap for tests that spawn child processes.
@@ -58,13 +68,19 @@ test-group = "subprocess-intensive"
 # codegen build step.
 # Exclude sandbox parity from generic nextest runs because it needs
 # `npm --prefix hew-sandbox-vm ci`; CI enforces it through the provisioned
-# `make sandbox-parity` step. binary(parity) is the standalone parity binary;
-# the parity_ratchet binary's live_gate test also drives the Node VM and asserts
-# node_modules is present, so it is excluded by name while parity_ratchet's
-# structural ratchet tests (no VM) keep running in this profile. make
-# sandbox-parity runs the live gate via plain `cargo test`, so it stays enforced
-# where the npm deps are provisioned.
-default-filter = "not package(hew-wasm) - binary(test_runner_e2e) - binary(parity) - test(live_gate_matches_declared_coverage)"
+# `make sandbox-parity` step. Exclusion is whole-binary: see profile.default's
+# comment for why per-test carve-outs inside a VM-touching binary are not
+# trusted (scripts/check-sandbox-parity-coverage.py enforces this).
+# binary(parity) is the standalone parity binary. binary(parity_ratchet) also
+# holds VM-dependent work — its live_gate test drives the Node VM — so the
+# WHOLE binary is excluded, including its non-VM structural ratchet tests;
+# those run only under `make sandbox-parity` now. binary(playground) and
+# binary(ios_subset) are single-test binaries whose only test each drives
+# the same Node VM, so the whole binary is excluded here too. make
+# sandbox-parity runs all four via plain `cargo test`, so every test in
+# every VM-dependent binary stays enforced where the npm deps are
+# provisioned.
+default-filter = "not package(hew-wasm) - binary(test_runner_e2e) - binary(parity) - binary(parity_ratchet) - binary(playground) - binary(ios_subset)"
 # Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
 # tests after 3 × 100 s = 300 s without status updates/output.
 slow-timeout = { period = "100s", terminate-after = 3 }
@@ -286,9 +302,10 @@ path = "junit.xml"
 #   eval_e2e     — spawns `hew` binary, needs pre-built runtimes, slow
 #   test_runner_e2e — same (subprocess-intensive)
 #   parity        — needs Node runner + npm install
-#   live_gate_matches_declared_coverage — lives in the `parity_ratchet` binary
-#     (which `binary(parity)` does NOT match), spawns the Node VM and asserts
-#     npm-provisioned coverage; excluded by test name, like the default-filter.
+#   parity_ratchet — lives in the `parity_ratchet` binary (which `binary(parity)`
+#     does NOT match); its live_gate test spawns the Node VM and asserts
+#     npm-provisioned coverage, so the whole binary is excluded, same as
+#     profile.default/profile.ci (whole-binary, not per-test — see there).
 #   hew-wasm      — requires wasmtime
 #
 # Coverage contract: the smoke tier is a FAST FAIL-EARLY gate; the heavy tier
@@ -330,6 +347,12 @@ test-group = "subprocess-intensive"
 #   Excluded by binary(machine_lifecycle) — subprocess; name outside the patterns
 #   Excluded by binary(zeroarg_module_enum_emission) — subprocess; name outside patterns
 #   Excluded by binary(jit_trap_bridge)  — JIT-deferred; name outside the patterns
+#   Excluded by binary(playground), binary(ios_subset) — VM-dependent sandbox
+#     parity binaries, same reason as binary(parity) below
+#   Excluded by binary(parity_ratchet) — its live_gate test spawns the Node VM
+#     (whole binary excluded, not per-test — verified independently failing
+#     against an unprovisioned runner before this exclusion was added; see
+#     scripts/check-sandbox-parity-coverage.py and profile.default's comment)
 #   Already excluded from smoke base:    eval_e2e, test_runner_e2e, parity, hew-wasm
 #
 # Matcher semantics (nextest 0.9.132, verified empirically): a bare string in
@@ -337,7 +360,7 @@ test-group = "subprocess-intensive"
 # no binary name.  Substring exclusion therefore needs the contains matcher
 # `~`: binary(~exec).  The exact-name exclusions below are valid bare strings
 # because those binaries exist.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(parity_ratchet) - binary(playground) - binary(ios_subset) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
 test-threads = "num-cpus"
 slow-timeout = { period = "30s", terminate-after = 2 }
 # Suppress the 3800-line passing-test wall; show only failures during the run

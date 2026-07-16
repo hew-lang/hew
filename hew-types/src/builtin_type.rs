@@ -24,6 +24,9 @@ pub enum BuiltinType {
     Stream,
     Sink,
     Duplex,
+    /// `SupervisorPool<S, T>` — compiler-produced view of pool `T` owned by
+    /// supervisor `S`. Runtime representation is `{ LocalPid<S>, i64 pool_key }`.
+    SupervisorPool,
     LocalPid,
     RemotePid,
     HewActor,
@@ -161,6 +164,7 @@ builtin_types! {
     Stream => "Stream",
     Sink => "Sink",
     Duplex => "Duplex",
+    SupervisorPool => "SupervisorPool",
     LocalPid => "LocalPid",
     RemotePid => "RemotePid",
     HewActor => "HewActor",
@@ -215,6 +219,7 @@ impl BuiltinType {
             | Self::LambdaPid
             | Self::CancellationToken
             | Self::MonitorRef => BuiltinTypeMarker::Resource,
+            Self::SupervisorPool => BuiltinTypeMarker::BitCopy,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             // `CrashInfo` carries an owned `message: string` (M-5), so it is no
             // longer a `BitCopy` aggregate. `None` lets the owned-aggregate
@@ -292,6 +297,7 @@ impl BuiltinType {
             | Self::HashMap
             | Self::StreamPair
             | Self::Duplex
+            | Self::SupervisorPool
             | Self::HewDuplex
             | Self::LambdaActorHandle
             | Self::LambdaPid => 2,

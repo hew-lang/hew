@@ -8,6 +8,8 @@ mod borrow_param_lowering;
 mod bytes_runtime_call_producer;
 #[path = "lowering_calls/dyn_trait_dispatch.rs"]
 mod dyn_trait_dispatch;
+#[path = "lowering_calls/extern_string_ownership.rs"]
+mod extern_string_ownership;
 #[path = "lowering_calls/link_monitor_spawn_binding.rs"]
 mod link_monitor_spawn_binding;
 #[path = "lowering_calls/producer_call_runtime_abi.rs"]

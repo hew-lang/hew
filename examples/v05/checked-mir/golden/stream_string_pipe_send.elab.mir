@@ -355,9 +355,9 @@ fn fs$read -> string
     call[bb9 string::fmt -> bb19] ->
       (none)
     goto[bb10->bb5] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb10] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
     call[bb11 string_concat -> bb12] ->
       (none)
     call[bb12 string_concat -> bb13] ->
@@ -375,7 +375,7 @@ fn fs$read -> string
     goto[bb18->bb10] ->
       (none)
     cancel[bb18] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
     call[bb19 string_concat -> bb20] ->
       (none)
     call[bb20 string_concat -> bb21] ->
@@ -389,7 +389,7 @@ fn fs$read -> string
     goto[bb24->bb10] ->
       (none)
     cancel[bb24] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
 
 fn fs$try_read -> Result<string, IoError>
   statements:
@@ -404,7 +404,6 @@ fn fs$try_read -> Result<string, IoError>
     eval site=SiteId(275) ty=string
     use BindingId(26) errno site=SiteId(279) ty=i32 intent=Read
     use BindingId(24) contents site=SiteId(283) ty=string intent=Read
-    agg_alias BindingId(24) contents site=SiteId(283) ty=string
     use BindingId(25) kind site=SiteId(287) ty=i64 intent=Read
     use BindingId(26) errno site=SiteId(289) ty=i32 intent=Read
     drop BindingId(24) contents ty=string
@@ -965,7 +964,6 @@ fn stream$try_pipe -> Result<(Sink<string>, Stream<string>), string>
     return site=Some(SiteId(533)) ty=Result<(Sink<string>, Stream<string>), string>
     eval site=SiteId(536) ty=()
     use BindingId(71) detail site=SiteId(538) ty=string intent=Read
-    agg_alias BindingId(71) detail site=SiteId(538) ty=string
     return site=Some(SiteId(537)) ty=Result<(Sink<string>, Stream<string>), string>
     bind BindingId(72) sink site=SiteId(541) ty=Sink<string>
     use BindingId(70) pair site=SiteId(545) ty=StreamPair intent=Read
@@ -1086,7 +1084,6 @@ fn stream$try_bytes_pipe -> Result<(Sink<bytes>, Stream<bytes>), string>
     return site=Some(SiteId(592)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     eval site=SiteId(595) ty=()
     use BindingId(79) detail site=SiteId(597) ty=string intent=Read
-    agg_alias BindingId(79) detail site=SiteId(597) ty=string
     return site=Some(SiteId(596)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     bind BindingId(80) sink site=SiteId(600) ty=Sink<bytes>
     use BindingId(78) pair site=SiteId(604) ty=StreamPair intent=Read

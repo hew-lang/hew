@@ -365,6 +365,7 @@ fn string::fmt(string) -> string [conv=default]
   bb0:
     stmt: use BindingId(28) val site=SiteId(166) ty=string intent=Read
     stmt: return site=Some(SiteId(166)) ty=string
+    string.retain _0
     ret = move _0
     return
 

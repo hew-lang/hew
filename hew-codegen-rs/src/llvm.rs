@@ -1774,6 +1774,12 @@ pub(crate) enum FnSymbol<'ctx> {
         /// `Terminator::Call` `FnSymbol::Real` arm dispatches on this BEFORE the
         /// generic by-value path; `None` for every other symbol.
         extern_record_ret: Option<ExternRecordRet<'ctx>>,
+        /// An unclassified raw `extern "C" -> string` returns a malloc-owned C
+        /// string. The `Terminator::Call` edge copies it into Hew's refcounted
+        /// string domain and frees the foreign allocation before storing it.
+        /// Classified Hew runtime/stdlib symbols already return header-aware
+        /// strings and keep this false.
+        extern_malloc_string_ret: bool,
     },
     PrintIntercept {
         runtime_symbol: &'static str,
@@ -1808,6 +1814,7 @@ impl<'ctx> FnSymbol<'ctx> {
                 return_ty,
                 returns_unit,
                 extern_record_ret,
+                extern_malloc_string_ret,
             } => {
                 if extern_record_ret.is_some() {
                     // Every `.real()` consumer (spawn thunks, MakeClosure, drop
@@ -1822,6 +1829,13 @@ impl<'ctx> FnSymbol<'ctx> {
                          it is a user extern returning a `#[repr(C)]` record through a \
                          carrier/sret ABI; only Terminator::Call handles that call edge \
                          (LESSONS: aggregate-abi-by-classifier-not-per-symbol)"
+                    )));
+                }
+                if extern_malloc_string_ret {
+                    return Err(CodegenError::FailClosed(format!(
+                        "{context} expected `{callee}` to be directly callable, but it is a user \
+                         extern returning a malloc-owned C string; only Terminator::Call performs \
+                         the required adoption into Hew string ownership"
                     )));
                 }
                 Ok((value, return_ty, returns_unit))
@@ -3817,6 +3831,7 @@ fn declare_catalog_ffi<'ctx>(
             return_ty,
             returns_unit: matches!(entry.return_ty, BuiltinTy::Unit | BuiltinTy::Never),
             extern_record_ret: None,
+            extern_malloc_string_ret: false,
         });
     }
     let bytes_by_pointer = crate::runtime_abi::is_bytes_by_pointer_consumer(symbol);
@@ -3877,6 +3892,7 @@ fn declare_catalog_ffi<'ctx>(
         return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
         returns_unit: return_ty.is_none(),
         extern_record_ret: None,
+        extern_malloc_string_ret: false,
     })
 }
 
@@ -4322,6 +4338,7 @@ fn predeclare_extern_decls<'ctx>(
                     return_ty,
                     returns_unit: matches!(decl.return_ty, ResolvedTy::Unit),
                     extern_record_ret: None,
+                    extern_malloc_string_ret: false,
                 },
             );
             continue;
@@ -4430,6 +4447,7 @@ fn predeclare_extern_decls<'ctx>(
                             return_ty: struct_ty.into(),
                             returns_unit: false,
                             extern_record_ret: Some(extern_record_ret),
+                            extern_malloc_string_ret: false,
                         },
                     );
                     continue;
@@ -4484,6 +4502,7 @@ fn predeclare_extern_decls<'ctx>(
                 return_ty: return_ty.unwrap_or_else(|| ctx.i8_type().into()),
                 returns_unit: return_ty.is_none(),
                 extern_record_ret: None,
+                extern_malloc_string_ret: decl.malloc_string_return,
             },
         );
     }
@@ -4850,6 +4869,7 @@ fn predeclare_stream_producer_runtime_symbols<'ctx>(
                 return_ty,
                 returns_unit,
                 extern_record_ret: None,
+                extern_malloc_string_ret: false,
             },
         );
     }
@@ -5388,6 +5408,29 @@ pub(crate) fn resolve_ty<'ctx>(
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
     if let ResolvedTy::Named { name, args, .. } = ty {
+        if matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::SupervisorPool),
+                ..
+            }
+        ) {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "SupervisorPool must carry supervisor and child type arguments, got {}",
+                    args.len()
+                )));
+            }
+            return Ok(ctx
+                .struct_type(
+                    &[
+                        ctx.ptr_type(AddressSpace::default()).into(),
+                        ctx.i64_type().into(),
+                    ],
+                    false,
+                )
+                .into());
+        }
         // ── Struct-layout-first (collision-safety invariant) ─────────────
         //
         // A user-declared `type Value { x: i64 }` imported as `laneBmod.Value`
@@ -18121,6 +18164,10 @@ fn lower_instruction(
             retain_bytes_value(fn_ctx, *value, "mir_share")?;
             let _ = ctx;
         }
+        Instr::StringRetain { value } => {
+            retain_string_value(fn_ctx, *value, "mir_share")?;
+            let _ = ctx;
+        }
         Instr::Move { dest, src } => {
             // #46: allocate an `indirect enum` node at its construction site
             // (the tag store) rather than in an entry-block prologue. This puts
@@ -19335,7 +19382,27 @@ pub(crate) fn record_struct_for<'ctx>(
     ty: &ResolvedTy,
 ) -> CodegenResult<StructType<'ctx>> {
     match ty {
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            if *builtin == Some(BuiltinType::SupervisorPool) {
+                if args.len() != 2 {
+                    return Err(CodegenError::FailClosed(format!(
+                        "SupervisorPool record must carry 2 type arguments, got {}",
+                        args.len()
+                    )));
+                }
+                return Ok(fn_ctx.ctx.struct_type(
+                    &[
+                        fn_ctx.ctx.ptr_type(AddressSpace::default()).into(),
+                        fn_ctx.ctx.i64_type().into(),
+                    ],
+                    false,
+                ));
+            }
             let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
                 std::borrow::Cow::Borrowed(name.as_str())
             } else {
@@ -19749,6 +19816,43 @@ fn retain_bytes_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> Code
             &format!("{label}_bytes_retain"),
         )
         .llvm_ctx_with(|| format!("hew_bytes_clone_ref retain for {label}"))?;
+    Ok(())
+}
+
+/// Consume the MIR ownership prover's explicit retain marker for one `string`
+/// co-owner mint. The runtime wrapper handles null and static strings before
+/// touching the refcount header.
+fn retain_string_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> CodegenResult<()> {
+    if !is_codegen_string_ty(place_resolved_ty(fn_ctx, value)?) {
+        return Err(CodegenError::FailClosed(format!(
+            "StringRetain value is not string-typed: {value:?}"
+        )));
+    }
+    let (value_ptr, value_ty) = place_pointer(fn_ctx, value)?;
+    let BasicTypeEnum::PointerType(_) = value_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "StringRetain value has non-pointer slot type: {value_ty:?}"
+        )));
+    };
+    let string = fn_ctx
+        .builder
+        .build_load(value_ty, value_ptr, &format!("{label}_string_load"))
+        .llvm_ctx_with(|| format!("StringRetain load for {label}"))?;
+    let clone_fn = get_or_declare_clone_helper(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &CloneHelper::Allocating {
+            name: "hew_string_clone",
+        },
+    );
+    fn_ctx
+        .builder
+        .build_call(
+            clone_fn,
+            &[string.into()],
+            &format!("{label}_string_retain"),
+        )
+        .llvm_ctx_with(|| format!("hew_string_clone retain for {label}"))?;
     Ok(())
 }
 
@@ -26770,6 +26874,149 @@ fn lower_string_get_option_call(
     Ok(())
 }
 
+/// Materialise `Option<LocalPid<T>>` from a `__HewChildLookupResult`.
+///
+/// MIR emits the pool runtime lookup first, then routes its aggregate result
+/// through this layout-aware call so Option construction follows the same
+/// registered enum layout as source-level `Some` / `None`.
+fn lower_supervisor_pool_get_option_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if args.len() != 1 {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_supervisor_pool_get_option expects 1 child-lookup result, got {}",
+            args.len()
+        )));
+    }
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_supervisor_pool_get_option returns Option<LocalPid<T>>; call needs a dest".into(),
+        )
+    })?;
+    match place_resolved_ty(fn_ctx, *dest_place)? {
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Option),
+            args,
+            ..
+        } if matches!(
+            args.as_slice(),
+            [ResolvedTy::Named {
+                builtin: Some(BuiltinType::LocalPid),
+                ..
+            }]
+        ) => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_supervisor_pool_get_option dest must be Option<LocalPid<T>>, got {other:?}"
+            )));
+        }
+    }
+    match place_resolved_ty(fn_ctx, args[0])? {
+        ResolvedTy::Named { name, args, .. }
+            if name == "__HewChildLookupResult" && args.is_empty() => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_supervisor_pool_get_option arg must be __HewChildLookupResult, got {other:?}"
+            )));
+        }
+    }
+
+    let (lookup_ptr, lookup_ty) = place_pointer(fn_ctx, args[0])?;
+    let BasicTypeEnum::StructType(lookup_struct) = lookup_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_supervisor_pool_get_option lookup slot must be a struct, got {lookup_ty:?}"
+        )));
+    };
+    let word0_ptr = fn_ctx
+        .builder
+        .build_struct_gep(lookup_struct, lookup_ptr, 0, "pool_get_word0_ptr")
+        .llvm_ctx("pool get word0 GEP")?;
+    let handle_ptr = fn_ctx
+        .builder
+        .build_struct_gep(lookup_struct, lookup_ptr, 1, "pool_get_handle_ptr")
+        .llvm_ctx("pool get handle GEP")?;
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let word0 = fn_ctx
+        .builder
+        .build_load(i64_ty, word0_ptr, "pool_get_word0")
+        .llvm_ctx("pool get word0 load")?
+        .into_int_value();
+    let tag = fn_ctx
+        .builder
+        .build_int_truncate(word0, fn_ctx.ctx.i8_type(), "pool_get_tag")
+        .llvm_ctx("pool get tag truncate")?;
+    let is_live = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            tag,
+            fn_ctx.ctx.i8_type().const_zero(),
+            "pool_get_is_live",
+        )
+        .llvm_ctx("pool get tag compare")?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed("pool get Option call has no parent fn".into()))?;
+    let some_bb = fn_ctx.ctx.append_basic_block(parent, "pool_get_some");
+    let none_bb = fn_ctx.ctx.append_basic_block(parent, "pool_get_none");
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_live, some_bb, none_bb)
+        .llvm_ctx("pool get Option condbr")?;
+
+    fn_ctx.builder.position_at_end(some_bb);
+    let handle = fn_ctx
+        .builder
+        .build_load(i64_ty, handle_ptr, "pool_get_handle")
+        .llvm_ctx("pool get handle load")?
+        .into_int_value();
+    let dest_local = composite_dest_local(*dest_place, "hew_supervisor_pool_get_option")?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    let BasicTypeEnum::PointerType(payload_ty) = payload_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "Option<LocalPid<T>>::Some payload must be pointer-shaped, got {payload_ty:?}"
+        )));
+    };
+    let handle = fn_ctx
+        .builder
+        .build_int_to_ptr(handle, payload_ty, "pool_get_handle_ptr_value")
+        .llvm_ctx("pool get handle inttoptr")?;
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, handle)
+        .llvm_ctx("pool get Some payload store")?;
+    emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("pool get Some branch")?;
+
+    fn_ctx.builder.position_at_end(none_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("pool get None branch")?;
+    Ok(())
+}
+
 /// Lower the sentinel-wrapping string inspectors (D46 sentinel -> Option
 /// sweep): `string.find(needle) -> Option<i64>`, `string.char_at(i) ->
 /// Option<char>`, `string.codepoint_at_utf8(i) -> Option<i64>`.
@@ -28152,6 +28399,115 @@ fn emit_borrow_gated_string_clone<'ctx>(
         .llvm_ctx("borrow-gate phi")?;
     phi.add_incoming(&[(&handle, copy_bb), (&cloned, clone_bb)]);
     Ok(phi.as_basic_value())
+}
+
+/// Adopt a malloc-owned C string returned by a user `extern "C"` into Hew's
+/// header-aware string domain. Null stays null; a non-null result is copied
+/// through the UTF-8 codepoint copy helpers and the foreign allocation is
+/// released with `libc::free` before control rejoins the call continuation.
+fn emit_extern_malloc_string_adoption<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    callee: &str,
+    raw: PointerValue<'ctx>,
+    dest_ptr: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm(format!(
+                "{callee}: extern string adoption has no parent function"
+            ))
+        })?;
+    let null_bb = fn_ctx.ctx.append_basic_block(parent, "extern_string_null");
+    let adopt_bb = fn_ctx.ctx.append_basic_block(parent, "extern_string_adopt");
+    let merge_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "extern_string_adopted");
+
+    let is_null = fn_ctx
+        .builder
+        .build_is_null(raw, "extern_string_is_null")
+        .llvm_ctx("extern string null compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_null, null_bb, adopt_bb)
+        .llvm_ctx("extern string adoption branch")?;
+
+    fn_ctx.builder.position_at_end(null_bb);
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, raw)
+        .llvm_ctx("extern string null store")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("extern string null merge")?;
+
+    fn_ctx.builder.position_at_end(adopt_bb);
+    let char_count_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_string_char_count",
+    )?;
+    let char_count = fn_ctx
+        .builder
+        .build_call(char_count_fn, &[raw.into()], "extern_string_char_count")
+        .llvm_ctx("hew_string_char_count extern adoption")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_string_char_count returned void".into()))?
+        .into_int_value();
+    let char_count_i64 = fn_ctx
+        .builder
+        .build_int_s_extend(
+            char_count,
+            fn_ctx.ctx.i64_type(),
+            "extern_string_char_count_i64",
+        )
+        .llvm_ctx("extern string char count widen")?;
+    let slice_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_string_slice_codepoints",
+    )?;
+    let adopted = fn_ctx
+        .builder
+        .build_call(
+            slice_fn,
+            &[
+                raw.into(),
+                fn_ctx.ctx.i64_type().const_zero().into(),
+                char_count_i64.into(),
+            ],
+            "extern_string_copy",
+        )
+        .llvm_ctx("hew_string_slice_codepoints extern adoption")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_string_slice_codepoints returned void".into())
+        })?
+        .into_pointer_value();
+    let free_fn = get_or_declare_libc_free(fn_ctx.ctx, fn_ctx.llvm_mod);
+    fn_ctx
+        .builder
+        .build_call(free_fn, &[raw.into()], "extern_string_free")
+        .llvm_ctx("free extern string")?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, adopted)
+        .llvm_ctx("extern string adopted store")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("extern string adopted merge")?;
+
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
 }
 
 /// Walks `drop_plans` for the entry whose `ExitPath` block id matches
@@ -33478,6 +33834,10 @@ fn lower_terminator<'ctx>(
                 lower_string_get_option_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
+            if callee == "hew_supervisor_pool_get_option" {
+                lower_supervisor_pool_get_option_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
             if matches!(
                 callee.as_str(),
                 "hew_string_find" | "hew_string_char_at" | "hew_string_char_at_utf8"
@@ -33526,6 +33886,7 @@ fn lower_terminator<'ctx>(
                     return_ty,
                     returns_unit,
                     extern_record_ret,
+                    extern_malloc_string_ret,
                 } => {
                     let machine_step_queue = if is_machine_step_symbol(callee) {
                         let queue = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
@@ -33647,29 +34008,50 @@ fn lower_terminator<'ctx>(
                                     .into(),
                             )
                                 })?;
-                            // Reconcile C-ABI return width against Hew dest width.
-                            let stored = if dest_ty == return_ty {
-                                // Reconcile the runtime C-ABI return width against the
-                                // Hew dest width. A runtime function declared `-> i32`
-                                // (e.g. `hew_string_find`, returning the `-1`
-                                // not-found sentinel) must
-                                // sign-extend its result up to the Hew-facing i64 dest,
-                                // so `-1` stays `-1` rather than `4294967295`. Equal
-                                // widths and matching types pass through; genuinely
-                                // incompatible shapes (int vs struct) still fail closed.
-                                ret_val
-                            } else if dest_ty.is_int_type() && return_ty.is_int_type() {
-                                reconcile_int_width(fn_ctx, ret_val, dest_ty, true, "return")?
+                            if extern_malloc_string_ret {
+                                if !matches!(
+                                    place_resolved_ty(fn_ctx, *dest_place)?,
+                                    ResolvedTy::String
+                                ) || !dest_ty.is_pointer_type()
+                                    || !return_ty.is_pointer_type()
+                                {
+                                    return Err(CodegenError::FailClosed(format!(
+                                        "extern `{callee}` is marked as a malloc-owned string \
+                                         return but its call destination is {dest_ty:?} and its \
+                                         declared return is {return_ty:?}"
+                                    )));
+                                }
+                                emit_extern_malloc_string_adoption(
+                                    fn_ctx,
+                                    callee,
+                                    ret_val.into_pointer_value(),
+                                    dest_ptr,
+                                )?;
                             } else {
-                                return Err(CodegenError::FailClosed(format!(
-                                    "Call dest type {dest_ty:?} does not match callee return {:?}",
-                                    return_ty
-                                )));
-                            };
-                            fn_ctx
-                                .builder
-                                .build_store(dest_ptr, stored)
-                                .llvm_ctx("call store")?;
+                                // Reconcile C-ABI return width against Hew dest width.
+                                let stored = if dest_ty == return_ty {
+                                    // Reconcile the runtime C-ABI return width against the
+                                    // Hew dest width. A runtime function declared `-> i32`
+                                    // (e.g. `hew_string_find`, returning the `-1`
+                                    // not-found sentinel) must
+                                    // sign-extend its result up to the Hew-facing i64 dest,
+                                    // so `-1` stays `-1` rather than `4294967295`. Equal
+                                    // widths and matching types pass through; genuinely
+                                    // incompatible shapes (int vs struct) still fail closed.
+                                    ret_val
+                                } else if dest_ty.is_int_type() && return_ty.is_int_type() {
+                                    reconcile_int_width(fn_ctx, ret_val, dest_ty, true, "return")?
+                                } else {
+                                    return Err(CodegenError::FailClosed(format!(
+                                        "Call dest type {dest_ty:?} does not match callee return {:?}",
+                                        return_ty
+                                    )));
+                                };
+                                fn_ctx
+                                    .builder
+                                    .build_store(dest_ptr, stored)
+                                    .llvm_ctx("call store")?;
+                            }
                         } else if !returns_unit {
                             // `dest == None` with `!returns_unit`: the call site is
                             // in statement position and the return value is
@@ -38154,6 +38536,7 @@ fn declare_function<'ctx>(
         return_ty: return_ty_llvm,
         returns_unit: matches!(func.return_ty, ResolvedTy::Unit),
         extern_record_ret: None,
+        extern_malloc_string_ret: false,
     })
 }
 
@@ -50004,6 +50387,7 @@ mod tests {
                 return_ty: conn_ty.into(), // sentinel; unused by drop dispatch
                 returns_unit: true,
                 extern_record_ret: None,
+                extern_malloc_string_ret: false,
             },
         );
         match resolve_drop_fn(
@@ -50043,6 +50427,7 @@ mod tests {
                 return_ty: i64_ty.into(),
                 returns_unit: false,
                 extern_record_ret: None,
+                extern_malloc_string_ret: false,
             },
         );
         let err = resolve_drop_fn(
@@ -58517,6 +58902,7 @@ fn main() {
             return_ty: big.into(),
             returns_unit: false,
             extern_record_ret: Some(ExternRecordRet::Sret { pointee: big }),
+            extern_malloc_string_ret: false,
         };
         let err = sym
             .real("sret_extern", "test consumer")

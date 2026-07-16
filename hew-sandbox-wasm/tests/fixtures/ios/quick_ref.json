@@ -1,0 +1,78 @@
+[
+  {
+    "id": "actor",
+    "snippet": "actor Counter {\n    var count: i64;\n    receive fn increment(by: i64) -> i64 {\n        count = count + by;\n        count\n    }\n}\n\nfn main() {\n    let c = spawn Counter(count: 0);\n    await c.increment(5);\n}\n"
+  },
+  {
+    "id": "spawn",
+    "snippet": "let counter = spawn Counter(count: 0);\n"
+  },
+  {
+    "id": "send-message",
+    "snippet": "// `await` sends a message and waits for the reply (a Result).\nmatch await counter.increment(5) {\n    Ok(total) => println(total),\n    Err(_) => {}\n}\n"
+  },
+  {
+    "id": "receive",
+    "snippet": "actor Greeter {\n    let name: string;\n    receive fn greet() -> i64 {\n        println(f\"Hello from {name}\");\n        0\n    }\n}\n\nfn main() {\n    let g = spawn Greeter(name: \"Hew\");\n    await g.greet();\n}\n"
+  },
+  {
+    "id": "supervisor",
+    "snippet": "actor Worker {\n    let id: i64;\n\n    receive fn work(x: i64) -> i64 {\n        println(f\"Worker {id} processing {x}\");\n        x * 2\n    }\n}\n\nsupervisor WorkerPool {\n    strategy: one_for_one;\n    intensity: 5 within 60s;\n    child w1: Worker(id: 1);\n    child w2: Worker(id: 2);\n}\n\nfn main() {\n    let workers = spawn WorkerPool;\n    let w1 = workers.w1;\n    await w1.work(10);\n}\n"
+  },
+  {
+    "id": "machine",
+    "snippet": "machine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n\nfn main() -> i64 {\n    var light = Light::Off;\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    light.step(Toggle);\n    println(light.state_name());\n    0\n}\n"
+  },
+  {
+    "id": "match",
+    "snippet": "match value {\n    Some(x) => println(x),\n    None => println(\"empty\"),\n}\n"
+  },
+  {
+    "id": "functions",
+    "snippet": "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nfn main() {\n    println(add(2, 3));\n}\n"
+  },
+  {
+    "id": "variables",
+    "snippet": "let name: string = \"Hew\";\nvar total: i64 = 0;\ntotal = total + 1;\nprintln(f\"{name} {total}\");\n"
+  },
+  {
+    "id": "while-let",
+    "snippet": "fn countdown(n: i64) -> Option<i64> {\n    if n > 0 { Some(n - 1) } else { None }\n}\n\nfn main() {\n    var opt: Option<i64> = Some(3);\n    while let Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n}\n"
+  },
+  {
+    "id": "enum",
+    "snippet": "enum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn main() {\n    let shape = Circle(5);\n    match shape {\n        Circle(r) => println(r * r * 3),\n        Rectangle(w, h) => println(w * h),\n    }\n}\n"
+  },
+  {
+    "id": "for-loop",
+    "snippet": "for i in 0..10 {\n    println(i);\n}\n"
+  },
+  {
+    "id": "async-functions",
+    "snippet": "// Hew has no `async fn` — actors are the unit of concurrency.\nactor Fetcher {\n    receive fn get(url: string) -> string {\n        \"response body\"\n    }\n}\n\nfn main() {\n    let fetcher = spawn Fetcher;\n    match await fetcher.get(\"https://example.com\") {\n        Ok(body) => println(body),\n        Err(_) => println(\"request failed\"),\n    }\n}\n"
+  },
+  {
+    "id": "await-future",
+    "snippet": "// `await` returns a Result with the actor's reply.\nmatch await fetcher.get(\"https://example.com\") {\n    Ok(body) => println(body),\n    Err(_) => println(\"request failed\"),\n}\n"
+  },
+  {
+    "id": "machine-step",
+    "snippet": "var light = Light::Off;\nlight.step(Toggle);\n"
+  },
+  {
+    "id": "state-name",
+    "snippet": "println(light.state_name());\n"
+  },
+  {
+    "id": "higher-order-functions",
+    "snippet": "fn double(x: i64) -> i64 { x * 2 }\n\nfn apply(f: fn(i64) -> i64, x: i64) -> i64 {\n    f(x)\n}\n\nfn main() {\n    println(apply(double, 5));\n}\n"
+  },
+  {
+    "id": "option-result",
+    "snippet": "let val: Option<i64> = Some(42);\nmatch val {\n    Some(x) => println(x),\n    None => println(\"nothing\"),\n}\n"
+  },
+  {
+    "id": "import",
+    "snippet": "import std::io;\nimport std::math;\n\nfn main() {\n    println(\"imports are file-level\");\n}\n"
+  }
+]

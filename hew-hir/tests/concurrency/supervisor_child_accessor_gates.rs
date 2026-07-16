@@ -1,31 +1,8 @@
-//! Lane FC-P1-C: HIR fail-closed gates for unsupported supervisor child
-//! accessor patterns.
-//!
-//! One diagnostic kind is still live here:
-//!
-//! - `SupervisorPoolChildAccessorUnsupported` — the bare (unindexed)
-//!   `sup.pool_child` field access, where the named child was declared with
-//!   `pool name: Type`. A pool has no member index to route on without one,
-//!   so this stays fail-closed permanently by design (indexed access,
-//!   `sup.pool_child[i]`, is a separate, shipped path). Currently fail-closed
-//!   at `hew-mir/src/lower.rs` (`ChildKind::Pool` arm) as
-//!   `NotYetImplemented`; this gate moves the rejection to HIR pre-pass so
-//!   the program never reaches MIR.
-//!
-//! `NestedSupervisorAccessorUnsupported` no longer fires: `sup.nested` field
-//! access where the named child is itself a supervisor now lowers through
-//! the `hew_supervisor_nested_get` ABI call (see the "nested supervisor
-//! accessor: now implemented" tests below).
-//!
-//! Positive coverage confirms static (non-pool) and nested child access
-//! continues to compile cleanly.
+//! HIR coverage for supervisor child accessors.
 
-use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
+use hew_hir::{lower_program, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
-/// Parse, type-check, and HIR-lower a Hew source program at the host target
-/// architecture. Asserts parsing succeeds; returns the HIR `LowerOutput` for
-/// inspection of diagnostics + `into_result()` shape.
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
     assert!(
@@ -48,8 +25,6 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
     )
 }
 
-// ── Positive cases ───────────────────────────────────────────────────────────
-
 #[test]
 fn static_child_access_compiles_cleanly() {
     let output = lower(
@@ -68,74 +43,12 @@ fn static_child_access_compiles_cleanly() {
         }
         ",
     );
-    let has_pool_diag = output.diagnostics.iter().any(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { .. }
-        )
-    });
-    let has_nested_diag = output.diagnostics.iter().any(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
-        )
-    });
-    assert!(
-        !has_pool_diag && !has_nested_diag,
-        "static child access must not trigger pool/nested gate; diagnostics: {:#?}",
-        output.diagnostics
-    );
-    assert!(
-        output.into_result().is_ok(),
-        "static child access must lower successfully"
-    );
-}
-
-#[test]
-fn multiple_static_children_compile_cleanly() {
-    let output = lower(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
-
-        actor Logger {
-            receive fn log() {}
-        }
-
-        supervisor App {
-            strategy: one_for_one,
-            child worker: Worker,
-            child logger: Logger
-        }
-
-        fn setup(app: LocalPid<App>) {
-            let w = app.worker;
-            let l = app.logger;
-            let _ = w;
-            let _ = l;
-        }
-        ",
-    );
-    let has_gate_diag = output.diagnostics.iter().any(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { .. }
-                | HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
-        )
-    });
-    assert!(
-        !has_gate_diag,
-        "multiple static child accesses must not trigger any gate; diagnostics: {:#?}",
-        output.diagnostics
-    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert!(output.into_result().is_ok());
 }
 
-// ── Negative case: pool child accessor ───────────────────────────────────────
-
 #[test]
-fn pool_child_access_rejected_at_hir() {
+fn pool_field_access_lowers_as_first_class_view() {
     let output = lower(
         r"
         actor Worker {
@@ -144,88 +57,25 @@ fn pool_child_access_rejected_at_hir() {
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool worker: Worker(count: 2)
+            pool workers: Worker(count: 2)
         }
 
-        fn get_pool_worker(sup: LocalPid<Pool>) -> LocalPid<Worker> {
-            sup.worker
-        }
-        ",
-    );
-    let pool_diag = output.diagnostics.iter().find(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { .. }
-        )
-    });
-    assert!(
-        pool_diag.is_some(),
-        "pool child access must emit SupervisorPoolChildAccessorUnsupported; diagnostics: {:#?}",
-        output.diagnostics
-    );
-    // Confirm the diagnostic carries the expected supervisor + child names.
-    if let Some(d) = pool_diag {
-        if let HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { supervisor, child } =
-            &d.kind
-        {
-            assert_eq!(supervisor, "Pool", "supervisor name preserved");
-            assert_eq!(child, "worker", "child name preserved");
-        }
-    }
-    // The fatal-set wiring must reject the program.
-    assert!(
-        output.into_result().is_err(),
-        "pool child accessor diagnostic must be fatal (into_result() Err)"
-    );
-}
-
-// ── Nested supervisor accessor: now implemented (no longer gated) ────────────
-
-#[test]
-fn nested_supervisor_accessor_lowers_without_gate() {
-    let output = lower(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
-
-        supervisor SubSupervisor {
-            strategy: one_for_one,
-            child worker: Worker
-        }
-
-        supervisor RootSupervisor {
-            strategy: one_for_one,
-            child sub: SubSupervisor
-        }
-
-        fn get_sub(root: LocalPid<RootSupervisor>) -> LocalPid<SubSupervisor> {
-            root.sub
+        fn inspect(sup: LocalPid<Pool>) -> i64 {
+            let workers = sup.workers;
+            let first = workers[0];
+            let maybe = workers.get(1);
+            let _ = first;
+            let _ = maybe;
+            workers.len()
         }
         ",
     );
-    // A nested-supervisor accessor now lowers through `hew_supervisor_nested_get`
-    // (MIR `lower_supervisor_nested_get`), so the HIR gate must NOT fire.
-    let nested_diag = output.diagnostics.iter().find(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
-        )
-    });
-    assert!(
-        nested_diag.is_none(),
-        "nested supervisor accessor must lower cleanly, not emit \
-         NestedSupervisorAccessorUnsupported; diagnostics: {:#?}",
-        output.diagnostics
-    );
-    assert!(
-        output.into_result().is_ok(),
-        "nested supervisor accessor must no longer be a fatal error"
-    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    assert!(output.into_result().is_ok());
 }
 
 #[test]
-fn nested_supervisor_chained_accessor_lowers_without_gate() {
+fn nested_supervisor_chained_accessor_lowers_cleanly() {
     let output = lower(
         r"
         actor Worker {
@@ -247,137 +97,6 @@ fn nested_supervisor_chained_accessor_lowers_without_gate() {
         }
         ",
     );
-    // The chained `root.sub.worker` resolves the nested supervisor on the first
-    // hop and the leaf actor on the second; neither hop is gated any longer.
-    let nested_diag = output.diagnostics.iter().find(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
-        )
-    });
-    assert!(
-        nested_diag.is_none(),
-        "chained `root.sub.worker` must lower cleanly; diagnostics: {:#?}",
-        output.diagnostics
-    );
-    assert!(
-        output.into_result().is_ok(),
-        "chained nested-supervisor access must no longer be fatal"
-    );
-}
-
-// ── Disambiguation: two children of the same actor type ──────────────────────
-
-#[test]
-fn pool_child_accessor_disambiguated_with_two_same_type_children() {
-    // `simple_one_for_one` constrains each supervisor to exactly one pool
-    // child, so we exercise disambiguation across two supervisors whose
-    // pool children share the same actor type. Accessing `sup_a.worker`
-    // must produce a diagnostic naming supervisor `PoolA` and child
-    // `worker` — NOT supervisor `PoolB`, which is what the pre-revision
-    // reverse-by-type lookup would arbitrarily return when multiple
-    // (sup, child) pairs match `slot.child_ty == "Worker"`.
-    let output = lower(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
-
-        supervisor PoolA {
-            strategy: simple_one_for_one,
-            pool worker: Worker(count: 2)
-        }
-
-        supervisor PoolB {
-            strategy: simple_one_for_one,
-            pool worker: Worker(count: 2)
-        }
-
-        fn route(sup_a: LocalPid<PoolA>, sup_b: LocalPid<PoolB>) -> LocalPid<Worker> {
-            sup_b.worker;
-            sup_a.worker
-        }
-        ",
-    );
-    let pool_diags: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter_map(|d| match &d.kind {
-            HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { supervisor, child } => {
-                Some((supervisor.clone(), child.clone()))
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        pool_diags.len(),
-        2,
-        "one pool gate diagnostic per access expected; got: {pool_diags:?}"
-    );
-    // Both supervisors must appear, each exactly once — confirming the gate
-    // attributes each access to its own supervisor rather than collapsing
-    // them under whichever (sup, child) the reverse-by-type lookup hit first.
-    assert!(
-        pool_diags
-            .iter()
-            .any(|(s, c)| s == "PoolA" && c == "worker"),
-        "expected diagnostic for PoolA.worker; got: {pool_diags:?}"
-    );
-    assert!(
-        pool_diags
-            .iter()
-            .any(|(s, c)| s == "PoolB" && c == "worker"),
-        "expected diagnostic for PoolB.worker; got: {pool_diags:?}"
-    );
-    assert!(
-        output.into_result().is_err(),
-        "pool child accessor diagnostics must be fatal"
-    );
-}
-
-#[test]
-fn nested_supervisor_accessor_two_same_type_subs_lowers_without_gate() {
-    // Two nested-supervisor children of the same supervisor type. Both accessors
-    // now lower through `hew_supervisor_nested_get`; neither is gated.
-    let output = lower(
-        r"
-        actor Worker {
-            receive fn ping() {}
-        }
-
-        supervisor SubSupervisor {
-            strategy: one_for_one,
-            child worker: Worker
-        }
-
-        supervisor RootSupervisor {
-            strategy: one_for_one,
-            child sub_a: SubSupervisor,
-            child sub_b: SubSupervisor
-        }
-
-        fn get_sub_a(root: LocalPid<RootSupervisor>) -> LocalPid<SubSupervisor> {
-            root.sub_a
-        }
-        ",
-    );
-    let nested_diags: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            matches!(
-                d.kind,
-                HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
-            )
-        })
-        .collect();
-    assert!(
-        nested_diags.is_empty(),
-        "nested supervisor accessors must lower cleanly with no gate diagnostic; \
-         got: {nested_diags:#?}"
-    );
-    assert!(
-        output.into_result().is_ok(),
-        "nested supervisor accessor must no longer be fatal"
-    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    assert!(output.into_result().is_ok());
 }

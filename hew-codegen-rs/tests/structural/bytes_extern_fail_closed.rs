@@ -145,6 +145,8 @@ fn pipeline_with_extern(
             abi: "C".to_string(),
             param_tys,
             return_ty,
+            provenance: hew_hir::ExternProvenance::Root,
+            malloc_string_return: false,
         }],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],

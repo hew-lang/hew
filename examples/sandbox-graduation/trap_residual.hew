@@ -1,0 +1,76 @@
+fn repeat_value() -> i64 {
+    println("repeat-value");
+    7
+}
+
+fn repeat_count() -> i64 {
+    println("repeat-count");
+    3
+}
+
+fn result_ok() -> Result<i64, string> {
+    Ok(41)
+}
+
+fn result_err() -> Result<i64, string> {
+    Err("boom")
+}
+
+fn try_result_ok() -> Result<i64, string> {
+    let value = result_ok()?;
+    Ok(value + 1)
+}
+
+fn try_result_err() -> Result<i64, string> {
+    let value = result_err()?;
+    Ok(value + 1)
+}
+
+fn try_option_some() -> Option<i64> {
+    let input: Option<i64> = Some(5);
+    let value = input?;
+    Some(value + 1)
+}
+
+fn try_option_none() -> Option<i64> {
+    let input: Option<i64> = None;
+    let value = input?;
+    Some(value + 1)
+}
+
+fn main() {
+    let repeated = [repeat_value(); repeat_count()];
+    println(repeated.len());
+    println(repeated[0]);
+    println(repeated[1]);
+    println(repeated[2]);
+    let negative: i8 = -1;
+    println(negative as u16);
+    let negative_wide: i64 = -1;
+    let unsigned_max = negative_wide as u64;
+    println(unsigned_max);
+    println(unsigned_max as i64);
+    let high_float: f64 = 300.9;
+    println(high_float as u8);
+    println(true as i32);
+    let two: i64 = 2;
+    println(two as bool);
+    let letter: char = 'A';
+    println(letter as u32);
+    match try_result_ok() {
+        Ok(value) => println(value),
+        Err(error) => println(error),
+    }
+    match try_result_err() {
+        Ok(value) => println(value),
+        Err(error) => println(error),
+    }
+    match try_option_some() {
+        Some(value) => println(value),
+        None => println("none"),
+    }
+    match try_option_none() {
+        Some(value) => println(value),
+        None => println("none"),
+    }
+}

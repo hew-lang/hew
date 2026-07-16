@@ -185,13 +185,10 @@ fn awaited_actor_ask_lowers_to_ask_terminator_with_no_diagnostics() {
 }
 
 #[test]
-fn call_arg_source_excluded_so_call_result_is_freed_once() {
-    // W5-011 P3, the double-free fix. `let _t = id(s)` shares `s` by value
-    // into `id`, which returns its argument *unretained* — so `s` and `_t`
-    // alias the same `rc==1` buffer. The pre-P3 (BLOCKED) attempt dropped
-    // *both* and double-freed. The conservative exclusion suppresses the
-    // argument source `s`'s drop, leaving exactly ONE `CowHeap` release (for
-    // the result `_t`) — the shared buffer is freed once, not twice.
+fn call_arg_source_and_retained_result_are_both_freed() {
+    // By-value string parameters borrow. Returning that parameter mints a
+    // retained owner in `id`, so the caller keeps `s`'s drop and `_t` carries
+    // its own balancing drop.
     let p = pipeline(
         r#"fn id(x: string) -> string { return x; }
            fn main() { let s = "hello"; let _t = id(s); }"#,
@@ -213,10 +210,8 @@ fn call_arg_source_excluded_so_call_result_is_freed_once() {
         .filter(|d| matches!(d.kind, DropKind::CowHeap { .. }))
         .count();
     assert_eq!(
-        cow_drops, 1,
-        "exactly one CowHeap drop must survive: the argument source `s` is \
-         excluded (alias-escape), the call result `_t` is freed once — \
-         dropping both would double-free; got {:?}",
+        cow_drops, 2,
+        "the borrowed argument source and retained result each own one drop; got {:?}",
         return_plan.1.drops
     );
 }
@@ -268,8 +263,9 @@ fn user_record_string_field_drops_record_once() {
         return_plan.1.drops
     );
     assert_eq!(
-        cow_drops, 0,
-        "strings moved into/read through the record must not also get standalone CowHeap drops"
+        cow_drops, 2,
+        "the borrowed concat operands keep their drops; the last-use `full` handoff \
+         is owned only by the record"
     );
 }
 
@@ -410,17 +406,16 @@ fn if_expression_result_keeps_single_owner() {
 }
 
 #[test]
-fn call_argument_alias_excludes_source_string() {
-    // `s` passed by value into a user fn is read as a call-arg source operand
-    // and therefore excluded; the unretained return aliases the same buffer
-    // and is the live owner.
+fn call_argument_borrow_keeps_source_and_retained_result() {
+    // `s` remains caller-owned across the by-value borrow, while `id` retains
+    // the value it returns as a second owner.
     let p = pipeline(
         r#"fn id(x: string) -> string { return x; }
            fn main() { let s = "z"; let _t = id(s); }"#,
     );
     assert_eq!(
         main_cow_drop_count(&p),
-        1,
-        "call-arg source excluded; only the result owner is freed"
+        2,
+        "the caller source and retained result are both freed"
     );
 }

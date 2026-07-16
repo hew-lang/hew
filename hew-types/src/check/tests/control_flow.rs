@@ -153,6 +153,55 @@ mod supervisor_child_slot_tests {
         assert_eq!(slot.index, 0, "first pool child gets pool slot index 0");
     }
 
+    #[test]
+    fn pool_field_view_preserves_accessor_types_after_binding() {
+        let output = parse_and_check(
+            r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            supervisor Pool {
+                strategy: simple_one_for_one,
+                pool workers: Worker(count: 2)
+            }
+
+            fn inspect(sup: LocalPid<Pool>) {
+                let workers: SupervisorPool<Pool, Worker> = sup.workers;
+                let count: i64 = workers.len();
+                let first: LocalPid<Worker> = workers[0];
+                let maybe: Option<LocalPid<Worker>> = workers.get(1);
+                let _ = count;
+                let _ = first;
+                let _ = maybe;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "bound pool field access should type-check end-to-end: {:#?}",
+            output.errors
+        );
+        let mut kinds = output
+            .pool_accessor_sites
+            .values()
+            .map(|accessor| accessor.kind)
+            .collect::<Vec<_>>();
+        kinds.sort_by_key(|kind| match kind {
+            PoolAccessorKind::Index => 0,
+            PoolAccessorKind::Get => 1,
+            PoolAccessorKind::Len => 2,
+        });
+        assert_eq!(
+            kinds,
+            vec![
+                PoolAccessorKind::Index,
+                PoolAccessorKind::Get,
+                PoolAccessorKind::Len
+            ]
+        );
+    }
+
     /// In a supervisor with both static and pool children, their slot indices
     /// must be disjoint: the static child has `(Static, 0)` and the pool child
     /// has `(Pool, 0)`. Neither borrows an index from the other space.

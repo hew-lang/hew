@@ -333,6 +333,44 @@ fn await_recv_continue_source(frames: usize) -> String {
     )
 }
 
+/// Owned-payload send loop: every frame sends a FRESH heap string
+/// (`f"item-{i}"` — an owned f-string allocation per iteration), then
+/// drains via `for await`. The other shapes in this suite send string
+/// LITERALS, which are immortal rodata (no header, no drop obligation)
+/// — they exercise only the recv side. This shape covers the SEND seam
+/// for owned payloads: the per-iteration owned string flows through the
+/// `tx.send(s)` wrapper param into the intercepted borrow-contract call,
+/// and the sender-side binding `s` must still be released exactly once
+/// per iteration. An unreleased sender-side owner (or a retained copy
+/// the borrow contract failed to balance) shows up as 1.0 leak / frame.
+fn owned_send_source(frames: usize) -> String {
+    format!(
+        "import std::channel::channel;\n\
+         \n\
+         actor OwnedSend {{\n\
+         \x20   receive fn run(unused: i64) {{\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       var i: i64 = 0;\n\
+         \x20       while i < {frames} {{\n\
+         \x20           let s = f\"item-{{i}}\";\n\
+         \x20           tx.send(s);\n\
+         \x20           i = i + 1;\n\
+         \x20       }}\n\
+         \x20       tx.close();\n\
+         \x20       for await item in rx {{\n\
+         \x20           println(\"got\");\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() {{\n\
+         \x20   let w = spawn OwnedSend;\n\
+         \x20   w.run(0);\n\
+         \x20   sleep(3000ms);\n\
+         }}\n"
+    )
+}
+
 // ── leak measurement plumbing ─────────────────────────────────────────────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and
@@ -578,6 +616,21 @@ fn try_recv_continue_loop_no_per_frame_leak_slope() {
 #[test]
 fn await_recv_continue_loop_no_per_frame_leak_slope() {
     assert_per_frame_slope_below_tolerance("await_recv_continue", await_recv_continue_source);
+}
+
+/// Owned f-string payload sent per frame (`let s = f"item-{i}";
+/// tx.send(s);`): no per-frame leak node growth on EITHER side of the
+/// channel. The literal-sending shapes above prove only the recv side
+/// (a literal has no send-side drop obligation); this shape proves the
+/// send seam — the owned string's shared ownership across the
+/// `Sender::send` wrapper param and the intercepted borrow-contract
+/// call must balance to exactly one release per iteration. Measured on
+/// the string retain-on-share branch: LOW(3)=5, HIGH(50)=5 leak nodes
+/// (slope 0; the channel ring buffer grows in bytes, not nodes). An
+/// unbalanced send-side owner would show slope 1.0 = +47 nodes.
+#[test]
+fn owned_payload_send_loop_no_per_frame_leak_slope() {
+    assert_per_frame_slope_below_tolerance("owned_send", owned_send_source);
 }
 
 // ── Stream<bytes> per-frame leak oracle ───────────────────────────────────

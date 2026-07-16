@@ -689,9 +689,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::SpawnedClosureNonSendCapture { .. } => "SpawnedClosureNonSendCapture",
         K::ForkBlockBodyUnsupported { .. } => "ForkBlockBodyUnsupported",
         K::DeadlineBodyUnsupported { .. } => "DeadlineBodyUnsupported",
-        K::SupervisorPoolChildAccessorUnsupported { .. } => {
-            "SupervisorPoolChildAccessorUnsupported"
-        }
         K::NestedSupervisorAccessorUnsupported { .. } => "NestedSupervisorAccessorUnsupported",
         K::BinaryOperatorUnsupportedInMir { .. } => "BinaryOperatorUnsupportedInMir",
         K::UnaryOperatorUnsupportedInMir { .. } => "UnaryOperatorUnsupportedInMir",

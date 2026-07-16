@@ -7,7 +7,7 @@
 //! reference differential (`hew-mir` `coarse_verdict_differential`) proves the
 //! boolean verdicts byte-identical; this harness proves the EMITTED elaborated
 //! MIR (including drop plans) of the fixtures that exercise those consumers is
-//! identical to baselines generated at the branch base (`3683c2ac5`,
+//! identical to baselines generated at the rebase base (`d5fbb9c86`,
 //! `hew compile --dump-mir elab`) under ONE normalization rule: the dump's
 //! FUNCTION ORDER is nondeterministic (map iteration), so both sides are
 //! split into per-function chunks and sorted by signature line before the
@@ -112,7 +112,7 @@ fn funcupdate_reassign_elab_mir_matches_committed_baselines() {
         assert!(
             live_norm == expected_norm,
             "elaborated MIR for `{fixture}` diverged from the committed baseline \
-             `{baseline}` (generated at 3683c2ac5). A funcupdate/reassign consumer's \
+             `{baseline}` (generated at d5fbb9c86). A funcupdate/reassign consumer's \
              lowering or drop plan CHANGED — this is the Coarse-drift signal the boolean \
              differential cannot see. If the change is intended and reviewed, regenerate \
              the baseline per the manifest header. First differing line (after \

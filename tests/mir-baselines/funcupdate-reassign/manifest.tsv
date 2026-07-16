@@ -1,6 +1,11 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
-# generating-revision: 3683c2ac5db3df2bdaa0dc16ba74012b0d20e9c8 (origin/main, the branch base)
+# generating-revision: d5fbb9c86288c79fe56427ddb20e4d4918c053eb (origin/main, the rebase base)
+#   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
+#   regenerated to carry the A240 string copy-on-write drop plan — string shares
+#   are now Read/retain, so the source binding keeps a scope-exit drop and every
+#   shared heap-string local drops via the cow_heap(hew_string_drop) destructor.
+#   The two owned-record fixtures are byte-identical across both revisions.)
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
 # normalization: two run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both

@@ -10,7 +10,7 @@ fn emit_len -> Generator<i64, ()>
 fn __hew_gen_body_emit_len_0 -> ()
   statements:
     bind BindingId(1) s site=SiteId(0) ty=string
-    use BindingId(1) s site=SiteId(4) ty=string intent=Consume
+    use BindingId(1) s site=SiteId(4) ty=string intent=Read
     bind BindingId(2) moved site=SiteId(4) ty=string
     use BindingId(2) moved site=SiteId(7) ty=string intent=Read
     eval site=SiteId(5) ty=()
@@ -19,6 +19,7 @@ fn __hew_gen_body_emit_len_0 -> ()
     use BindingId(1) s site=SiteId(14) ty=string intent=Read
     eval site=SiteId(12) ty=()
     drop BindingId(2) moved ty=string
+    drop BindingId(1) s ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -29,23 +30,25 @@ fn __hew_gen_body_emit_len_0 -> ()
     branch[bb2: bb6/bb7] ->
       (none)
     return[bb3] ->
-      (none)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     yield[bb4->bb5] ->
-      (none)
+      drop _7 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     goto[bb5->bb3] ->
-      (none)
+      drop _7 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb5] ->
-      (none)
+      drop _7 ty=string kind=cow_heap(hew_string_drop)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     goto[bb6->bb7] ->
       (none)
     call[bb7 hew_string_length -> bb8] ->
       (none)
     yield[bb8->bb9] ->
-      (none)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
     goto[bb9->bb3] ->
       (none)
     cancel[bb9] ->
-      (none)
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
 
 fn main -> i64
   statements:

@@ -828,8 +828,8 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     // direct-MIR paths — WASM-TODO(#1451)).
                     //
                     // `hew_tcp_stream_from_conn` is unreachable through
-                    // `Instr::CallRuntimeAbi`: it is not in
-                    // `MIR_EMITTER_RUNTIME_SYMBOLS`, so `RuntimeCall::new`
+                    // `Instr::CallRuntimeAbi`: no non-pre-staged
+                    // `RuntimeCallFamily` maps to it, so `RuntimeCall::new`
                     // refuses it at construction. std/net's extern-block calls
                     // bypass this scan entirely and rely on the wasm32 runtime
                     // stub. WASM-TODO(#1451): TCP transport gap.
@@ -3423,9 +3423,9 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
-                 symbol {other:?}; the symbol is on the MIR_EMITTER_RUNTIME_SYMBOLS allowlist \
-                 but no codegen arm wires it — extend the signature table or leave \
-                 the producer fail-closed"
+                 symbol {other:?}; the symbol is an admitted runtime-ABI entry \
+                 (a non-pre-staged `RuntimeCallFamily`) but no codegen arm wires it — \
+                 extend the signature table or leave the producer fail-closed"
             )));
         }
     };

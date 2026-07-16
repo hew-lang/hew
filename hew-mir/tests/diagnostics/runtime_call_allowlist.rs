@@ -14,7 +14,7 @@ use hew_types::runtime_call::{
     all_runtime_call_families, all_runtime_drop_descriptors, is_pre_staged_family,
 };
 
-/// Bijection (inverse): every symbol in `MIR_EMITTER_RUNTIME_SYMBOLS`
+/// Bijection (inverse): every symbol in `known_runtime_symbols`
 /// is produced by exactly one family variant. A symbol added to the
 /// allowlist without a matching descriptor variant fails this test,
 /// forcing every future runtime-ABI addition to update both the
@@ -26,12 +26,12 @@ fn every_allowlist_symbol_has_a_family() {
     let mut missing = Vec::new();
     for sym in known_runtime_symbols() {
         if !produced.contains(sym) {
-            missing.push(*sym);
+            missing.push(sym);
         }
     }
     assert!(
         missing.is_empty(),
-        "MIR_EMITTER_RUNTIME_SYMBOLS entries with no RuntimeCallFamily \
+        "known_runtime_symbols entries with no RuntimeCallFamily \
          variant — every allowlist symbol must have a typed descriptor \
          so consumers can dispatch on the family rather than the string. \
          Missing: {missing:?}"
@@ -39,7 +39,7 @@ fn every_allowlist_symbol_has_a_family() {
 }
 
 /// Coverage (forward): every family that is NOT pre-staged produces a
-/// symbol that is in `MIR_EMITTER_RUNTIME_SYMBOLS`. A new variant added
+/// symbol that is in `known_runtime_symbols`. A new variant added
 /// without the matching allowlist entry fails this test (unless the
 /// contributor also adds it to `is_pre_staged_family`, which the
 /// reviewer would catch).
@@ -57,7 +57,7 @@ fn allowlist_subset_round_trips() {
     }
     assert!(
         violations.is_empty(),
-        "Family→c_symbol values not in MIR_EMITTER_RUNTIME_SYMBOLS — \
+        "Family→c_symbol values not in known_runtime_symbols — \
          either add the symbol to the allowlist (preferred) or mark the \
          family pre-staged in `is_pre_staged_family`. Offenders: \
          {violations:?}"
@@ -65,7 +65,7 @@ fn allowlist_subset_round_trips() {
 }
 
 /// Routing-partition disjointness: a pre-staged family's symbol must be
-/// ABSENT from `MIR_EMITTER_RUNTIME_SYMBOLS`. The two routes are
+/// ABSENT from `known_runtime_symbols`. The two routes are
 /// exclusive — pre-staged symbols ride `Terminator::Call` into the
 /// codegen callee intercepts; emitter symbols ride
 /// `Instr::CallRuntimeAbi`. A pre-staged symbol mistakenly added to the
@@ -83,7 +83,7 @@ fn pre_staged_families_are_disjoint_from_the_emitter_allowlist() {
     assert!(
         violations.is_empty(),
         "pre-staged families whose symbol is ALSO in \
-         MIR_EMITTER_RUNTIME_SYMBOLS — the Terminator::Call and \
+         known_runtime_symbols — the Terminator::Call and \
          CallRuntimeAbi routes must stay disjoint; either un-pre-stage \
          the family (wire its CallRuntimeAbi arm) or remove the symbol \
          from the allowlist. Offenders: {violations:?}"
@@ -91,7 +91,7 @@ fn pre_staged_families_are_disjoint_from_the_emitter_allowlist() {
 }
 
 /// Allowlist coverage: every drop-descriptor's `c_symbol()` is in
-/// `MIR_EMITTER_RUNTIME_SYMBOLS`. (`hew_stream_close` /
+/// `known_runtime_symbols`. (`hew_stream_close` /
 /// `hew_sink_close` are not in the allowlist today — the bijection
 /// excludes them with the same `is_pre_staged_*` rationale as the
 /// call-family side.)
@@ -112,7 +112,7 @@ fn drop_descriptor_symbols_in_allowlist_or_pre_staged() {
         }
         assert!(
             is_known_runtime_symbol(sym),
-            "drop descriptor {d:?} → {sym} not in MIR_EMITTER_RUNTIME_SYMBOLS \
+            "drop descriptor {d:?} → {sym} not in known_runtime_symbols \
              and not in the pre-staged set"
         );
     }
@@ -120,7 +120,7 @@ fn drop_descriptor_symbols_in_allowlist_or_pre_staged() {
 
 /// Symbol-existence parity: every family's `c_symbol()` resolves to a
 /// real, verifiable identifier — either an entry in the runtime
-/// allowlist (`MIR_EMITTER_RUNTIME_SYMBOLS`), a codegen-intercept name
+/// allowlist (`known_runtime_symbols`), a codegen-intercept name
 /// (callee-name dispatch in `hew-codegen-rs/src/llvm.rs`), a math
 /// intrinsic user name, or a Stream/Sink `ElementOverload` extension
 /// symbol from `hew-types/src/builtin_names.rs`. NO family is allowed

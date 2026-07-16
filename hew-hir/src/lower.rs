@@ -493,7 +493,7 @@ const SYNTHETIC_DUPLEX_PAIR_ITEM: ItemId = ItemId(u32::MAX / 2 - 11);
 ///      construction) instead of raising the premature `IndirectCallUnsupported`.
 ///   3. MIR's `runtime_symbol_for_call_expr` returns `None` for them (their
 ///      `family.c_symbol()` is a pre-staged symbol absent from the
-///      `MIR_EMITTER_RUNTIME_SYMBOLS` allowlist), so MIR falls through to
+///      `known_runtime_symbols` allowlist), so MIR falls through to
 ///      `module_fn_names` (which this seeding also populates) →
 ///      `lower_direct_call` → `Terminator::Call`, carrying the typed family.
 ///   4. Codegen intercepts the `Terminator::Call` by callee name and emits the

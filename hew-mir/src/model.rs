@@ -3852,7 +3852,7 @@ pub enum CmpPred {
 /// A validated runtime-ABI call payload carried by `Instr::CallRuntimeAbi`.
 ///
 /// Construction is only possible via `RuntimeCall::new`, which enforces that
-/// `symbol` is in the `runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS` allowlist.
+/// `symbol` is in the `runtime_symbols::known_runtime_symbols` allowlist.
 /// Direct struct construction is impossible because the fields are private,
 /// so the allowlist check cannot be bypassed at any call site — including
 /// release builds (LESSONS P0 `boundary-fail-closed`).
@@ -4325,7 +4325,7 @@ pub enum Instr {
     /// Call into a `hew_*` runtime-ABI entry by name. The carried
     /// `symbol` names a `#[no_mangle] extern "C" fn` exported by
     /// `hew-runtime/` (the M2 substrate set is listed in
-    /// `crate::runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS`). One variant
+    /// `crate::runtime_symbols::known_runtime_symbols`). One variant
     /// covers every Duplex / lambda-actor / half-handle runtime
     /// call — codegen disambiguates by the `symbol` string at lower
     /// time. Aligns with the runtime ABI shape: each symbol IS the

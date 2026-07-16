@@ -2691,7 +2691,7 @@ pub fn lower_hir_module_with_facts(
     // `BindingRef { name: "hew_channel_recv_layout", resolved: Builtin(family) }`
     // call through `lower_direct_call` → `Terminator::Call` (not through
     // `lower_runtime_call` / `Instr::CallRuntimeAbi`, which would require
-    // these to be in `runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS`).
+    // these to be in `runtime_symbols::known_runtime_symbols`).
     // Codegen intercepts the `Terminator::Call` by callee name and emits
     // the element-layout-witness ABI.
     for name in [
@@ -10873,7 +10873,7 @@ fn runtime_symbol_for_call_expr(
     // HIR and never reaches this arm.
     //
     // The allowlist gate preserves the producer routing split: families
-    // whose symbol is in `MIR_EMITTER_RUNTIME_SYMBOLS` lower to
+    // whose symbol is in `known_runtime_symbols` lower to
     // `Instr::CallRuntimeAbi`; pre-staged families (codegen
     // `Terminator::Call` callee-name intercepts such as
     // `hew_remote_pid_send`) fall through to `module_fn_names` →

@@ -24,7 +24,7 @@
 //! The bijection enforced by [`RuntimeCallFamily::c_symbol`] and
 //! [`RuntimeCallFamily::from_c_symbol`] is the load-bearing invariant.
 //! Round-trip tests in `hew-mir/tests/runtime_call_allowlist.rs` pin
-//! the substrate against the MIR-side `MIR_EMITTER_RUNTIME_SYMBOLS`
+//! the substrate against the MIR-side `known_runtime_symbols`
 //! allowlist; the local tests in this module pin everything that is
 //! intrinsic to the substrate itself (uniqueness of `c_symbol()`,
 //! constructor fail-closed behaviour, `consumes_receiver` /
@@ -143,7 +143,7 @@ pub enum MathIntrinsic {
 /// call. One variant per `(method, generic-arity)` tuple. Adding a new
 /// runtime symbol that MIR producers can emit means adding a variant
 /// here AND adding the round-trip arm in [`RuntimeCallFamily::c_symbol`]
-/// AND adding the symbol to `MIR_EMITTER_RUNTIME_SYMBOLS` (allowlist-
+/// AND adding the symbol to `known_runtime_symbols` (allowlist-
 /// covered families only). The bijection test catches every drift.
 ///
 /// Variants are grouped by surface family; ordering within a group is
@@ -223,7 +223,7 @@ pub enum RuntimeCallFamily {
     // type; the elem identity travels on the checker-resolved
     // `Option<T>` / value type, never on the symbol). They are
     // pre-staged: codegen intercepts the `Terminator::Call` by callee
-    // identity, so they are not in `MIR_EMITTER_RUNTIME_SYMBOLS`.
+    // identity, so they are not in `known_runtime_symbols`.
     ChannelRecvLayout,
     ChannelSendLayout,
     ChannelTryRecvLayout,
@@ -265,7 +265,7 @@ pub enum RuntimeCallFamily {
     /// `m.keys()` / `m.values()` projection ops. Pre-staged: they ride
     /// the `Terminator::Call` route (checker `MethodTarget.symbol_name`),
     /// not `Instr::CallRuntimeAbi`, so their symbols are not in
-    /// `MIR_EMITTER_RUNTIME_SYMBOLS`. Catalogued so the codegen
+    /// `known_runtime_symbols`. Catalogued so the codegen
     /// layout-fact walker classifies them by family, not symbol prefix.
     HashMapKeysLayout,
     HashMapLenLayout,
@@ -328,7 +328,7 @@ pub enum RuntimeCallFamily {
     // --- Math intrinsics ---------------------------------------------------
     // Pre-staged: dispatched today by user-visible callee name
     // (`"sqrt"`, `"sin"`, …) via codegen's `math_builtin_intrinsic`
-    // lookup; not in `MIR_EMITTER_RUNTIME_SYMBOLS`.
+    // lookup; not in `known_runtime_symbols`.
     MathIntrinsic(MathIntrinsic),
 
     // --- Node operations ---------------------------------------------------
@@ -530,7 +530,7 @@ impl RuntimeCallFamily {
     /// Resolve the C-ABI symbol the family lowers to. Total function;
     /// every variant has exactly one symbol (the bijection guarantee).
     ///
-    /// For families whose symbols are in `MIR_EMITTER_RUNTIME_SYMBOLS`,
+    /// For families whose symbols are in `known_runtime_symbols`,
     /// the returned string is allowlist-recognised (consumer
     /// invariant). For pre-staged families (Channel, Stream, Sink,
     /// Node, Math, `RemotePidSend`, `RemoteActorAsk`, `TcpAttachLocal`), the
@@ -1598,7 +1598,7 @@ impl RuntimeDropDescriptor {
 ///
 /// This is what closes focal-7's pre-staged-family gap: a family that rides
 /// `Terminator::Call` (its `c_symbol()` absent from
-/// `MIR_EMITTER_RUNTIME_SYMBOLS`, so untouched by
+/// `known_runtime_symbols`, so untouched by
 /// `every_allowlist_symbol_has_a_family`) is still counted by this catalog,
 /// hence by the corpus-coverage and bijection tests below. No hand-maintained
 /// row to forget.
@@ -1606,7 +1606,7 @@ impl RuntimeDropDescriptor {
 /// The bijection / round-trip tests in `tests` below and in
 /// `hew-mir/tests/runtime_call_allowlist.rs` iterate this list to assert
 /// every variant has a unique `c_symbol()` and (where applicable) lies in
-/// `MIR_EMITTER_RUNTIME_SYMBOLS`.
+/// `known_runtime_symbols`.
 #[must_use]
 pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
     use RuntimeCallFamily as F;
@@ -1650,7 +1650,7 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 10] {
 /// math intrinsics, `RemotePidSend`, `RemoteActorAsk`, `TcpAttachLocal`,
 /// the `HashMap::new` / `HashSet::new` constructor surface forms, and
 /// the `keys()` / `values()` projection ops).
-/// Their `c_symbol()` is NOT in `MIR_EMITTER_RUNTIME_SYMBOLS` today
+/// Their `c_symbol()` is NOT in `known_runtime_symbols` today
 /// because they go through `Terminator::Call` callee-name intercepts
 /// (codegen callee-name intercept), not `Instr::CallRuntimeAbi`. The bijection test
 /// explicitly excludes them from the allowlist-coverage assertion.

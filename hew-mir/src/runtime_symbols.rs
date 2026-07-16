@@ -1,638 +1,39 @@
-//! Runtime-ABI symbol allowlist for `Instr::CallRuntimeAbi`.
+//! Runtime-ABI symbol admission for `Instr::CallRuntimeAbi`.
 //!
-//! `Instr::CallRuntimeAbi` carries a `String` symbol naming a
-//! `hew_*` C-ABI entry in `hew-runtime/`. Accepting any string at
-//! construction time would invite typos that survive to link-time
-//! (or worse, silently route to a wrong runtime entry). Per
-//! HEW-SPEC §3.7 boundary-fail-closed and LESSONS row P0
-//! `boundary-fail-closed` (49), the producer validates every
-//! symbol against this allowlist BEFORE the `Instr` enters the
-//! `BasicBlock::instructions` stream. A symbol absent from the
-//! allowlist surfaces as a hard `MirDiagnostic` so the failure
-//! lands at MIR construction, not at codegen link-time.
+//! `Instr::CallRuntimeAbi` carries a `String` symbol naming a `hew_*`
+//! C-ABI entry in `hew-runtime/`. Accepting any string at construction
+//! time would invite typos that survive to link-time (or worse, silently
+//! route to a wrong runtime entry). Per HEW-SPEC §3.7
+//! boundary-fail-closed and LESSONS row P0 `boundary-fail-closed` (49),
+//! the producer validates every symbol BEFORE the `Instr` enters the
+//! `BasicBlock::instructions` stream; an unrecognised symbol surfaces as a
+//! hard `MirDiagnostic` so the failure lands at MIR construction, not at
+//! codegen link-time.
 //!
-//! Source of truth: `scripts/jit-symbol-classification.toml`'s
-//! `stable` and `codegen-stable` lists. The full toml is parsed by
-//! `hew-runtime`'s build script — `hew-mir` carries the M2-substrate
-//! subset inline so the allowlist check does not require a build-time
-//! fixture or parsing step. When a new runtime-ABI symbol becomes
-//! producer-emittable from MIR, add it to both lists in the same change
-//! (`stable` if user-callable via `extern "rt"`, `codegen-stable` if
-//! emitted only by the compiler).
-//! The drift-test in `tests/runtime_symbols_classification.rs` —
-//! TODO when a producer for a non-substrate symbol lands — would
-//! cross-verify the two lists; for now the substrate list is
-//! short enough to maintain by hand.
+//! Single admission authority: the typed `RuntimeCallFamily` catalog in
+//! `hew-types/src/runtime_call.rs`. There is no second symbol list here.
+//! [`is_known_runtime_symbol`] lifts a symbol back to its family via
+//! [`RuntimeCallFamily::from_c_symbol`] and admits it only when that
+//! family lowers through `Instr::CallRuntimeAbi`, i.e. it is NOT a
+//! pre-staged family ([`is_pre_staged_family`]). Pre-staged families
+//! (channel/stream/sink close and layout ops, `HashMap::new` /
+//! `HashSet::new`, the math intrinsics, `hew_remote_pid_send`,
+//! `hew_tcp_attach_local`, the actor generator-sink pair, …) reach codegen
+//! through `Terminator::Call` callee-name intercepts, never this
+//! instruction; admitting them here would flip the producer-routing split
+//! in `runtime_symbol_for_call_expr`. Adding a runtime-ABI producer is now
+//! one enum edit whose admission, symbol string, and codegen lowering
+//! cannot disagree.
 //!
-//! WHY (M2 slice 4.5c shim): the typecheck→MIR bridge that maps
-//! `Duplex<S, R>::send(msg)` (a `MethodCallRewrite` side-table entry
-//! in `hew-types`) to a free-function call on a runtime ABI symbol
-//! does not yet reach the Rust MIR pipeline (`hew compile`).
-//! Producers in `hew-mir` therefore have no callsite today; the
-//! allowlist + the `Instr::CallRuntimeAbi` variant land first so
-//! slice 5 codegen (LLVM IR emission) has a target to wire and
-//! the producer-side bridge work that lights up callers can land
-//! in a follow-up slice without retrofitting the `Instr` enum.
-//! WHEN-OBSOLETE: when the typecheck→HIR/MIR bridge lands (a
-//! 4.5b-follow-up slice owning the bridge decision), the unit
-//! tests in this module become the discovery surface for "did the
-//! bridge wire every symbol on the allowlist". WHAT: a real
-//! consumer of `is_known_runtime_symbol` from the HIR-to-MIR
-//! Call-lowering arm in `hew-mir/src/lower.rs`.
+//! The ownership-contract table below (`callee_ownership_contract`) is a
+//! separate, broader positive-membership authority over callee spellings
+//! (it also covers `Terminator::Call` builtin spellings) and is
+//! deliberately not folded into the admission predicate.
 
-/// M2-substrate runtime-ABI symbols that an `Instr::CallRuntimeAbi`
-/// may name. Sorted lexicographically for stable diffs and
-/// binary-searchable membership.
-///
-/// Each entry is a `#[no_mangle] extern "C" fn` exported by
-/// `hew-runtime/src/duplex.rs` (or the lambda-actor sibling
-/// module). The full set in `scripts/jit-symbol-classification.toml`
-/// `stable` is broader (per-actor / per-mailbox / per-IO entries);
-/// the substrate subset that MIR producers can emit today is the
-/// list below.
-// Lexicographically sorted: `hew_actor_*` < `hew_bytes_*` < `hew_duplex_*`
-// < `hew_lambda_actor_*` < `hew_recv_half_*` < `hew_regex_*`
-// < `hew_reply_channel_*` < `hew_send_half_*`.
-// Section comments mark the substrate-grouping for readability; the binary-search
-// invariant is over the flat ordering.
-const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
-    // --- Actor cooperate/link/monitor surface -------------------------------
-    "hew_actor_ask",
-    // `hew_actor_ask_with_channel(actor, msg_type, data, size, ch) -> i32`
-    // (`hew-runtime/src/actor.rs:3259`). Sends a request with a caller-
-    // provided reply channel. Returns 0 (HewError::Ok) on success;
-    // non-zero indicates failure. Used by `Terminator::Select`
-    // codegen to issue per-arm asks before `hew_select_first` decides
-    // the winner.
-    "hew_actor_ask_with_channel",
-    // `hew_actor_cooperate() -> c_int` — reduction-budget safepoint injected
-    // by codegen at Checked MIR cooperate sites. Implemented by both native
-    // and WASM schedulers.
-    "hew_actor_cooperate",
-    // `hew_actor_demonitor(ref_id: u64) -> void` — cancels a monitor
-    // previously registered by `hew_actor_monitor`. The `MonitorRef::close`
-    // drop path extracts `ref_id` from the struct alloca and calls this
-    // directly (struct-field extraction path in `lower_drop_runtime`).
-    "hew_actor_demonitor",
-    // `hew_actor_link(parent, child)` — bidirectional link; void return. The
-    // Hew `link()` builtin wraps the call in `Ok(())` unconditionally because
-    // the current runtime does not surface AlreadyLinked as a return code.
-    // Codegen composite-return synthesis (Result<(), LinkError>) is wired via
-    // the value-needed MIR path; the codegen ActorLink arm calls emit_result_ok.
-    "hew_actor_link",
-    // `hew_actor_monitor(watcher, target) -> u64` — returns a ref_id. Dead
-    // targets return immediately with a DOWN signal; ref_id is still non-zero.
-    // Codegen wraps the i64 ref_id into MonitorRef { ref_id } via RecordInit.
-    "hew_actor_monitor",
-    // `hew_actor_self() -> *mut HewActor` (`hew-runtime/src/actor.rs:3862`).
-    // Returns the actor installed in the current dispatch context, or null
-    // when called outside one. The MIR producer synthesizes this as ABI
-    // arg0 (the implicit `self` subject) for the 1-arg `link`/`monitor`
-    // builtins; the borrowed handle carries no drop obligation.
-    "hew_actor_self",
-    "hew_actor_send_by_id",
-    "hew_actor_spawn",
-    // `hew_actor_unlink(a, b)` — removes the bidirectional process link
-    // between `a` and `b`. The Hew user-facing name is `unlink(target)`;
-    // the linking subject is the implicit calling actor (`self`), mirroring
-    // the `link` ABI. The 2-arg runtime ABI is satisfied by synthesizing
-    // `hew_actor_self()` as arg0 and the user target as arg1. Implemented
-    // at `hew-runtime/src/link.rs:148`.
-    "hew_actor_unlink",
-    // --- Auto-injected mutex substrate  -----------------
-    // `hew_auto_mutex_alloc() -> *mut HewAutoMutex`
-    // (`hew-runtime/src/auto_mutex.rs`). Allocates one opaque mutex
-    // handle; the compiler emits one call per populated
-    // `ClosureEnvLayout::lock_slot_for` slot at closure-env /
-    // generator-state materialisation. Compiler-only emission per
-    // Per substrate decision ( no user-visible `Mutex<T>`).
-    "hew_auto_mutex_alloc",
-    // `hew_auto_mutex_free(mtx: *mut HewAutoMutex)` — frees one
-    // handle. Idempotent on null. The compiler emits this once per
-    // `_alloc` at env destructor time; the LIFO drop stream guarantees
-    // every `unlock` precedes the matching `free` for the same handle
-    // (release-before-free invariant).
-    "hew_auto_mutex_free",
-    // `hew_auto_mutex_lock(mtx: *mut HewAutoMutex)` — acquire. The
-    // compiler emits this immediately BEFORE each cross-suspend access
-    // of the shared capture; suspend points themselves sit OUTSIDE
-    // the bracket (avoids classic async-mutex deadlock).
-    "hew_auto_mutex_lock",
-    // `hew_auto_mutex_unlock(mtx: *mut HewAutoMutex)` — release. The
-    // compiler emits this immediately AFTER the access completes.
-    "hew_auto_mutex_unlock",
-    // --- Bytes value collection substrate -----------------------------------
-    // `hew_bytes_append(&mut BytesTriple, src_ptr, src_offset, src_len)`
-    //   appends the source region onto the destination (CoW-aware). Emitted for
-    //   `bytes.append(bytes)`; codegen unpacks the source triple into the
-    //   scalar (ptr, offset, len) args.
-    "hew_bytes_append",
-    // `hew_bytes_clear(&mut BytesTriple)` releases the receiver's reference to
-    //   its backing buffer (refcount-aware, so a shared buffer survives its
-    //   co-owners) and resets the triple to the canonical empty value. Emitted
-    //   for `bytes.clear()`.
-    "hew_bytes_clear",
-    // `hew_bytes_contains(*const BytesTriple, byte: u8) -> bool` linear-scans
-    //   the active region. Emitted for `bytes.contains(i64)`; codegen truncates
-    //   the element to u8.
-    "hew_bytes_contains",
-    // `hew_bytes_get` is the non-trapping `bytes.get(index) -> Option<u8>`
-    //   accessor (de-aliased from the trapping `b[i]` `hew_bytes_index`). It
-    //   carries no runtime export: codegen intercepts the `Terminator::Call`
-    //   callee, performs the bounds check over the stack triple, and
-    //   materialises `Some(byte)` / `None`. Listed here so the HIR method
-    //   rewrite routes through the `lower_runtime_call` producer.
-    "hew_bytes_get",
-    // `hew_bytes_index(ptr, offset, len, index) -> u8`
-    //   (`hew-runtime/src/bytes.rs`). O(1) byte load over a (ptr,offset,len)
-    //   `BytesTriple`. Aborts on negative index or index >= len. Emitted by
-    //   the MIR producer arm for `b[i]` over `Ty::Bytes` receivers.
-    "hew_bytes_index",
-    // `hew_bytes_is_empty(*const BytesTriple) -> bool` reads the active length
-    //   directly. Emitted for `bytes.is_empty()`.
-    "hew_bytes_is_empty",
-    // `hew_bytes_len(triple: *const BytesTriple) -> i64`
-    //   (`hew-runtime/src/bytes.rs`). Reads the logical byte length from the
-    //   stack-resident triple. Emitted for `bytes.len()` and open-end bytes
-    //   ranges `b[a..]` / `b[..]` so MIR materialises the end bound before
-    //   calling `hew_bytes_slice`.
-    "hew_bytes_len",
-    // `hew_bytes_pop(&mut BytesTriple) -> i64` removes and returns the last
-    //   byte, updating the caller's triple (CoW-aware). Aborts on an empty
-    //   buffer. Emitted for `bytes.pop()`.
-    "hew_bytes_pop",
-    // `hew_bytes_push(&mut BytesTriple, byte: u8)` appends one byte, updating
-    // the caller's stack-resident triple after CoW/growth. Emitted for
-    // `bytes.push(i32)` receiver methods; codegen truncates the element to u8.
-    "hew_bytes_push",
-    // `hew_bytes_set(&mut BytesTriple, index: i64, byte: u8)` overwrites the
-    //   byte at `index` (CoW-aware). Aborts on an out-of-range index. Emitted
-    //   for `bytes.set(i64, i64)`; codegen truncates the element to u8.
-    "hew_bytes_set",
-    // `hew_bytes_slice(ptr, offset, len, start, end) -> BytesTriple`
-    //   (`hew-runtime/src/bytes.rs`). O(1) byte-range slice that bumps the
-    //   underlying refcount for non-empty results (empty slice returns a
-    //   null/0/0 triple). Aborts on invalid bounds. Emitted for `b[a..b]`.
-    "hew_bytes_slice",
-    // --- Cancellation-token retain/release (ABI pin) -------------
-    // `hew_cancel_token_is_requested(token: *mut HewCancellationToken) -> bool`
-    // (`hew-runtime/src/task_scope.rs:272`). Non-blocking poll: returns
-    // true if the token's cancel flag has been set. Generator cancel-poll
-    // and `CancellationToken.is_cancelled()` observation both emit this
-    // symbol; the observation call borrows the token and does not release it.
-    "hew_cancel_token_is_requested",
-    // `hew_cancel_token_release(token: *mut HewCancellationToken) -> void`
-    // (`hew-runtime/src/task_scope.rs`). Decrements the token's refcount;
-    // frees when it reaches zero, releasing the parent reference recursively.
-    "hew_cancel_token_release",
-    // `hew_cancel_token_retain(token: *mut HewCancellationToken) -> void`
-    // (`hew-runtime/src/task_scope.rs`). Increments the token's refcount.
-    // Null-safe.
-    "hew_cancel_token_retain",
-    // --- Duplex<S, R> dual-queue substrate ----------------------
-    "hew_duplex_clone",
-    "hew_duplex_close",
-    "hew_duplex_close_half",
-    "hew_duplex_pair",
-    "hew_duplex_payload_free",
-    "hew_duplex_recv",
-    "hew_duplex_recv_half",
-    "hew_duplex_send",
-    "hew_duplex_send_half",
-    "hew_duplex_try_recv",
-    "hew_duplex_try_send",
-    // --- Monomorphic time canaries ------------------------------------------
-    "hew_duration_abs",
-    "hew_duration_hours",
-    "hew_duration_is_zero",
-    "hew_duration_micros",
-    "hew_duration_millis",
-    "hew_duration_mins",
-    "hew_duration_nanos",
-    "hew_duration_secs",
-    // --- Trait-object heap-box storage ABI (W3.031 Stage 0) -----
-    // `hew_dyn_box_alloc(size: usize, align: usize) -> *mut u8`
-    // `hew_dyn_box_free(ptr: *mut u8, size: usize, align: usize)`
-    // (`hew-runtime/src/trait_object.rs`). Heap storage for
-    // return-by-value `dyn Trait` values: the callee allocates,
-    // memcpy's the concrete value in, and returns the fat pointer;
-    // the receiving `DropKind::TraitObject { storage: HeapBoxed }`
-    // ritual runs vtable slot 0 then frees the buffer (size/align
-    // sourced from vtable prefix slots 1 and 2). Both entries fail
-    // closed on align==0 / null ptr / invalid Layout — see the
-    // module doc in trait_object.rs for the convention. Companion
-    // dispatch diagnostic `hew_vtable_dispatch_panic_on_oob` lives
-    // further down this list under its own `hew_v*` block; the
-    // surfaces share a design (W3.031 §1.7.3) but the allowlist
-    // is sorted lex for binary-search correctness.
-    "hew_dyn_box_alloc",
-    "hew_dyn_box_free",
-    // --- Layout-backed HashMap surface (W3.003 C-1b) ------------
-    // Variable-stride open-addressing map keyed by opaque blobs whose
-    // identity is delegated to caller-supplied hash/eq thunks. Sibling
-    // of the string-keyed `hew_hashmap_*_impl` entries in
-    // `scripts/jit-symbol-classification.toml`; codegen for the layout
-    // path lands in C-3 and will reach `Instr::CallRuntimeAbi` then.
-    "hew_hashmap_contains_key_layout",
-    "hew_hashmap_free_layout",
-    "hew_hashmap_get_layout",
-    "hew_hashmap_insert_layout",
-    "hew_hashmap_len_layout",
-    "hew_hashmap_new_with_layout",
-    "hew_hashmap_remove_layout",
-    // --- Layout-backed HashSet surface (W3.003 C-1c) -------------
-    // Thin wrapper over the layout HashMap that fixes val_layout to the
-    // ZST (size=0, align=1) marker. All probe/hash/eq work is delegated
-    // to the C-1b ABI above; codegen for the layout path lands in C-3.
-    "hew_hashset_contains_layout",
-    "hew_hashset_free_layout",
-    "hew_hashset_insert_layout",
-    "hew_hashset_is_empty_layout",
-    "hew_hashset_len_layout",
-    "hew_hashset_new_with_layout",
-    "hew_hashset_remove_layout",
-    "hew_instant_duration_since",
-    "hew_instant_elapsed",
-    "hew_instant_now",
-    // --- Lambda-actor surface (overlays Duplex<Msg, Reply>) -----
-    "hew_lambda_actor_ask",
-    "hew_lambda_actor_clone",
-    "hew_lambda_actor_downgrade",
-    "hew_lambda_actor_new",
-    "hew_lambda_actor_release",
-    "hew_lambda_actor_send",
-    "hew_lambda_actor_weak_clone",
-    "hew_lambda_actor_weak_drop",
-    "hew_lambda_actor_weak_send",
-    // hew_lambda_body_alloc_reply_buf: ALLOC counterpart to the
-    // internal `free_body_reply_buf`; called by compiler-emitted body
-    // fns when materialising an ask-shape reply payload. Single
-    // `usize` arg → `*mut u8`. Allocator-paired with the runtime's
-    // `Box::from_raw` free; never libc-tracked (the tracker guards
-    // against accidental libc::malloc reaching `free_body_reply_buf`).
-    "hew_lambda_body_alloc_reply_buf",
-    // hew_lambda_drain_all: codegen-emitted at `main` exit so a
-    // non-actor-using program that spawned lambda actors still drains
-    // their dispatch threads before the process exits (the existing
-    // `hew_shutdown_wait` waits only for scheduler workers; lambda
-    // actors run on dedicated OS threads outside that pool). Single
-    // `i64` arg (timeout_ms, 0 = 5 s default) → `i32` (0 = clean
-    // drain, 1 = timed out). Always safe to call: returns immediately
-    // when no lambda actors have ever been spawned.
-    "hew_lambda_drain_all",
-    // --- user metrics (#1862) ------------------------------------------------
-    // std::metrics emit path: register-or-get a counter/gauge/histogram (and
-    // their labelled `*Vec` forms), then mutate by integer handle. Symbols are
-    // declared via `extern "C"` in `std/metrics.hew` (the semaphore/observe
-    // model) and are also producer-emittable through this allowlist so codegen
-    // may lower the calls directly. Bodies live in `hew-runtime/src/metrics.rs`.
-    "hew_metric_counter_add",
-    "hew_metric_counter_inc",
-    "hew_metric_counter_register",
-    "hew_metric_gauge_add",
-    "hew_metric_gauge_dec",
-    "hew_metric_gauge_inc",
-    "hew_metric_gauge_register",
-    "hew_metric_gauge_set",
-    "hew_metric_histogram_record",
-    "hew_metric_histogram_register",
-    "hew_metric_histogram_register_simple",
-    "hew_metric_vec_register",
-    "hew_metric_vec_with",
-    // --- end user metrics (#1862) --------------------------------------------
-    // --- Cross-node link/monitor surface --------------------------------------
-    // `hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64`
-    // establishes a cross-node link: the calling actor links the remote actor
-    // and the remote's death fires the per-link PartitionPolicy. Returns the
-    // link ref_id. The current node + calling actor are resolved internally.
-    "hew_node_link_remote",
-    // `hew_node_monitor(target_pid: i64) -> i64` registers a distributed
-    // monitor for a remote actor. Positive returns are ref_ids; negative returns
-    // encode MonitorError as `-(variant + 1)`. `hew_node_monitor_recv(ref_id:
-    // i64, timeout_ms: i64) -> i64` blocks for that monitor's terminal signal
-    // and returns the carried down-reason. The current node is resolved
-    // internally (like `hew_actor_self`), so neither carries a node argument.
-    "hew_node_monitor",
-    "hew_node_monitor_recv",
-    // --- Observe read surface ------------------------------------------------
-    "hew_observe_barrier",
-    "hew_observe_read_u64",
-    "hew_observe_scrape",
-    "hew_observe_series",
-    // --- Rc allocation for task-owned closure environments --------------------
-    "hew_rc_new",
-    // --- RecvHalf<T> ---------------------------------------------
-    "hew_recv_half_recv",
-    "hew_recv_half_try_recv",
-    // --- Regex runtime ABI (slice 4 allowlist; codegen/FFI wired in slice 5) -
-    // `hew_regex_capture(scrutinee: *const u8, literal_id: i64, capture_idx: i64)
-    //   -> *mut u8` — returns a heap-allocated (strdup-style) NUL-terminated
-    //   C string for the capture group at `capture_idx`, or null if the group
-    //   did not participate in the match. MIR lowering emits this for each named
-    //   capture in a regex arm; the null check drives a branch to the next arm
-    //   (fail-closed: missing capture ≠ empty string).
-    //   WHY not `hew_regex_match` returns captures: keeping match and extraction
-    //   separate lets codegen materialise only the captures the arm body actually
-    //   reads. WHEN-OBSOLETE: if the runtime gains a single-call
-    //   match-and-capture-all API the producer would switch; the MIR shape
-    //   (one CallRuntimeAbi per capture + null check) would still be correct.
-    //   WHAT: `hew-runtime/src/regex.rs` `extern "C" fn hew_regex_capture` (slice 5).
-    "hew_regex_capture",
-    // `hew_regex_compile(pattern: *const u8, len: i64) -> *mut HewRegex` — called
-    //   from module-init (slice 5) to compile each pattern and store the handle
-    //   in the corresponding global slot. Allowlisted here (slice 4) so the MIR
-    //   module-init emission in slice 5 can validate the symbol at construction.
-    //   MIR lowering in `lower_match` does NOT emit this call; the lit-id i64
-    //   constant is the indirection that slice 5 resolves to the global handle.
-    //   WHY separate from `hew_regex_match`: compile once at module init, match
-    //   many times at call sites. WHEN-OBSOLETE: never for the compile/match
-    //   split — the split is substrate-correct.
-    "hew_regex_compile",
-    // `hew_regex_free_capture(ptr: *mut u8) -> void` — frees a capture string
-    //   returned by `hew_regex_capture`. MIR lowering emits this call at arm-body
-    //   exit (for each non-null capture that was extracted on the success path) and
-    //   on the null-fail paths when earlier captures were already allocated before a
-    //   later capture returned null. Mirrors `libc::free` but isolates the alloc ABI.
-    //   WHY a wrapper: if the runtime's string allocator changes, only this wrapper
-    //   needs updating, not codegen. WHEN-OBSOLETE: if MIR gains a typed
-    //   `Instr::CStringDrop` the producer switches to that and this symbol is retired.
-    //   SHIM: body-exit free only covers straight-line arm bodies; bodies with early
-    //   returns or trap paths would leak. Real fix requires scope-exit cleanup
-    //   primitives in MIR (v0.6 substrate lane).
-    "hew_regex_free_capture",
-    // `hew_regex_handle(literal_id: i64) -> *HewRegex` — synthetic emitter symbol
-    //   for the value-position regex literal (`let pat = re"..."`). It is NOT a
-    //   real runtime extern: codegen's `RuntimeCallFamily::RegexHandle` arm
-    //   resolves it entirely by GEP-loading the compiled handle from
-    //   `@hew_regex_handles[literal_id]`, cloning it via `hew_regex_clone`, and
-    //   storing the clone into the destination local's `Pattern.handle` field —
-    //   the same load `hew_regex_match` / `hew_regex_capture` perform before
-    //   their actual runtime call, plus the clone every other `Pattern`
-    //   producer performs — so no `hew_regex_handle` function is ever declared
-    //   or called. Allowlisted because the MIR producer (`lower_value`'s
-    //   `RegexLiteralRef` arm) emits it via `Instr::CallRuntimeAbi` and
-    //   `RuntimeCall::new` validates the symbol against this list.
-    //   WHY a synthetic CallRuntimeAbi symbol not a new MIR `Place`: the
-    //   module-static array slot is a borrowed `*const HewRegex` with no owner
-    //   of its own, but the destination is an ordinary resource-typed `Pattern`
-    //   local that already goes through the same drop elaboration as any other
-    //   `Pattern` producer (the clone gives it its own owned handle) — reusing
-    //   the existing GEP-load-plus-clone avoids a new `Place` variant the drop
-    //   elaborator, dataflow, and verify passes would each have to grow an arm
-    //   for. WHAT: the GEP-load-and-clone arm in
-    //   `hew-codegen-rs/src/runtime_abi.rs` (`F::RegexHandle`).
-    "hew_regex_handle",
-    // `hew_regex_match(scrutinee: *const u8, literal_id: i64) -> i32` — returns
-    //   1 if the pattern for `literal_id` matches, 0 otherwise. `literal_id`
-    //   is the 0-based index into the module's regex-literal global array; the
-    //   runtime resolves it to the compiled `*HewRegex` handle and calls
-    //   `regex_is_match`. Returning i32 (not bool/i1) to match the C ABI
-    //   convention used by other predicate-returning runtime entries.
-    //   WHY id-keyed not handle-keyed: MIR does not yet have a `Place::RegexHandle`
-    //   primitive; the id-to-handle resolution inside the runtime is the slice-5
-    //   concern (module-init global array). WHEN-OBSOLETE: if MIR gains a global
-    //   slot place the producer would pass the handle directly and the id indirection
-    //   would be removed. WHAT: `hew-runtime/src/regex.rs` (slice 5).
-    "hew_regex_match",
-    // --- Reply channel surface (select{} actor-ask arm) ----------
-    // `hew_reply_channel_cancel(ch) -> void`
-    // (`hew-runtime/src/reply_channel.rs:440`). Marks a reply channel
-    // cancelled so a late replier observes the flag and releases its
-    // sender-side ref without UAF. Codegen invokes this on every
-    // loser arm of a `Terminator::Select` BEFORE freeing the channel
-    // (cancel-then-free is the Risk R4 ordering invariant).
-    "hew_reply_channel_cancel",
-    // `hew_reply_channel_free(ch) -> void`
-    // (`hew-runtime/src/reply_channel.rs:409`). Releases one reference;
-    // frees the channel when refcount reaches zero. Symmetric with
-    // `hew_reply_channel_new`.
-    "hew_reply_channel_free",
-    // `hew_reply_channel_new() -> *mut HewReplyChannel`
-    // (`hew-runtime/src/reply_channel.rs:78`). Allocates a fresh
-    // single-shot reply channel with one caller-side reference.
-    "hew_reply_channel_new",
-    // hew_reply_payload_free: libc free for ask reply payloads
-    // delivered through `hew_lambda_actor_ask` / `hew_reply_wait`.
-    // Codegen calls this on the ask call-site reply_out slot after
-    // decoding the payload into the user's dest. Allocator-paired
-    // with `alloc_reply_buffer` (libc::malloc) inside the reply
-    // channel.
-    "hew_reply_payload_free",
-    // `hew_reply_wait(ch) -> *mut c_void`
-    // (`hew-runtime/src/reply_channel.rs:296`). Blocks until the reply
-    // arrives; returns the reply pointer (caller frees with libc::free)
-    // or null on orphaned-ask. Does NOT consume the channel ref.
-    "hew_reply_wait",
-    // --- Select winner-picker -----------------------------------
-    // `hew_select_first(channels, count, timeout_ms) -> i32`
-    // (`hew-runtime/src/reply_channel.rs:484`). Polls multiple reply
-    // channels; returns the index of the first ready channel, or -1
-    // on timeout. `timeout_ms < 0` waits indefinitely. Codegen
-    // marshals the per-arm channel array + AfterTimer duration into
-    // this call.
-    "hew_select_first",
-    // --- SendHalf<T> ---------------------------------------------
-    "hew_send_half_send",
-    "hew_send_half_try_send",
-    // --- String char-count/concat/codepoint index/slice substrate ------------
-    // `hew_string_char_at(s, i) -> i32` (`hew-runtime/src/string.rs`).
-    //   Byte at byte-offset i, `-1` OOB. Surfaces as
-    //   `string.char_at(i) -> Option<char>`: codegen intercepts the
-    //   `Terminator::Call` callee, calls the runtime, and wraps the `-1`
-    //   sentinel as `None` / a non-negative byte as `Some(char)`.
-    "hew_string_char_at",
-    // `hew_string_char_at_utf8(s, i) -> i32` (`hew-runtime/src/string.rs`).
-    //   Codepoint at codepoint-offset i, `-1` OOB/invalid. Surfaces as
-    //   `string.codepoint_at_utf8(i) -> Option<i64>` via the same
-    //   codegen-intercepted sentinel wrap.
-    "hew_string_char_at_utf8",
-    // `hew_string_char_count(s) -> i32` (`hew-runtime/src/string.rs`).
-    //   Counts UTF-8 codepoints. Emitted for open-end string ranges `s[a..]` /
-    //   `s[..]`; MIR widens the i32 result to i64 before passing it to
-    //   `hew_string_slice_codepoints`.
-    "hew_string_char_count",
-    // `hew_string_concat(a, b) -> *mut c_char` (`hew-runtime/src/string.rs`).
-    //   Fresh owned concatenation result. Emitted for `string + string`;
-    //   drop-safety follows the existing `String` value-class discipline.
-    "hew_string_concat",
-    // `hew_string_find(s, needle) -> i32` (`hew-runtime/src/string.rs`).
-    //   Byte index of the first occurrence, `-1` miss. Surfaces as
-    //   `string.find(needle) -> Option<i64>` via the codegen-intercepted
-    //   sentinel wrap (`-1` -> `None`, `n >= 0` -> `Some(n)`).
-    "hew_string_find",
-    // `hew_string_get` is the non-trapping `string.get(index) -> Option<char>`
-    //   accessor (de-aliased from the trapping `s[i]` `hew_string_index`). It
-    //   carries no runtime export: codegen intercepts the `Terminator::Call`
-    //   callee, bounds-checks the index against `hew_string_char_count`, and
-    //   materialises `Some(char)` / `None`. Listed here so the HIR method
-    //   rewrite routes through the `lower_runtime_call` producer.
-    "hew_string_get",
-    // `hew_string_index(s, i) -> i32` (`hew-runtime/src/string.rs`).
-    //   Codepoint at codepoint offset i; O(n). Aborts on null / invalid
-    //   UTF-8 / negative / OOB. NO -1 sentinel. Emitted by the MIR
-    //   producer arm for `s[i]` over `Ty::String` receivers.
-    "hew_string_index",
-    // `hew_string_slice_codepoints(s, start, end) -> *mut c_char`
-    //   (`hew-runtime/src/string.rs`). Fresh malloc'd codepoint slice
-    //   [start, end). Aborts on null / invalid UTF-8 / negative /
-    //   start>end / end>char_count. Emitted for `s[a..b]`. Disjoint
-    //   from the input pointer (drop-safety: fresh allocation).
-    "hew_string_slice_codepoints",
-    // --- Supervisor static-child slot lookup ---------------------------------
-    // `hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32) -> ChildLookupResult`
-    // (`hew-runtime/src/supervisor.rs`). Non-blocking typed slot lookup for
-    // static (non-pool) supervisor children. Returns a 16-byte discriminated
-    // result: tag 0=Live (handle non-null), 1=Transient, 2=Dead. The MIR
-    // producer arm for dotted-access lowering is deferred until the
-    // `Instr::CallRuntimeAbi` emitter shape is established.
-    "hew_supervisor_child_get",
-    // `hew_supervisor_nested_get(sup: *mut HewSupervisor, key: u32) -> ChildLookupResult`
-    // (`hew-runtime/src/supervisor.rs`). Same as hew_supervisor_child_get but
-    // over child_supervisors; the handle field carries a *mut HewSupervisor
-    // bit-pattern for multi-segment dotted access (`app.api.auth`).
-    "hew_supervisor_nested_get",
-    // `hew_supervisor_pool_child_get(sup: *mut HewSupervisor, pool_key: u32,
-    //  index: u64) -> ChildLookupResult` (`hew-runtime/src/supervisor.rs`).
-    // Resolves static-pool member `index` through its live static slot; same
-    // 16-byte by-value result as `hew_supervisor_child_get`. The MIR static-pool
-    // accessor (`sup.pool[i]` / `.get(i)`) emits this. `index` is `u64` (wider
-    // than the `u32` supervisor/pool key) so the runtime can bounds-check the
-    // caller's real, untruncated index instead of a narrowed value that could
-    // wrap back in range (hew-lang/hew#2244). (Sorted: `pool_c` <
-    // `pool_l` < `restart`.)
-    "hew_supervisor_pool_child_get",
-    // `hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_key: u32) -> i64`
-    // (`hew-runtime/src/supervisor.rs`). The static-pool member count;
-    // `sup.pool.len()` emits this.
-    "hew_supervisor_pool_len",
-    // `hew_supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32) -> void`
-    // (`hew-runtime/src/supervisor.rs`). The CONTEXTLESS `await_restart` path:
-    // blocks the calling thread on the supervisor restart Condvar until the
-    // static child slot is Live or permanently Dead, then returns. Used only by
-    // a `Default`-callconv caller (`main` / free fn); an actor handler uses the
-    // suspending `hew_supervisor_restart_await_suspend` observer instead (a
-    // codegen-interned suspend-ramp symbol, not an `Instr::CallRuntimeAbi`).
-    // (Sorted before `_stop`: `restart` < `stop` — the list is binary-searched.)
-    "hew_supervisor_restart_await_blocking",
-    // `hew_supervisor_stop(sup: *mut HewSupervisor) -> void`
-    // (`hew-runtime/src/supervisor.rs:1944`). Graceful shutdown: requests
-    // shutdown of all children and initiates teardown. Void return — the
-    // Hew `supervisor_stop(sup)` builtin discards the result. Requires
-    // the native preemptive scheduler; WASM-excluded (same family rule as
-    // `hew_supervisor_child_get`).
-    "hew_supervisor_stop",
-    // --- Task ABI (scope{}/spawn/await) — Phase 2, rows 2/3/4 ----------------
-    // `hew_task_await_blocking(task: *mut HewTask) -> *mut c_void`
-    // (`hew-runtime/src/task_scope.rs:411`). Blocks the calling thread until
-    // the task completes, then returns the result pointer (or null if no
-    // result). Needed for `await task` (row 4).
-    "hew_task_await_blocking",
-    "hew_task_complete_threaded",
-    "hew_task_completion_observe",
-    "hew_task_completion_unobserve",
-    // `hew_task_free(task: *mut HewTask) -> void`
-    // (`hew-runtime/src/task_scope.rs:237`). Frees a Box-allocated HewTask
-    // and its result buffer. Called by the scope teardown path and by the
-    // await-sequence after consuming the result. Part of row 4.
-    "hew_task_free",
-    "hew_task_get_env",
-    "hew_task_get_error",
-    // `hew_task_get_result(task: *mut HewTask) -> *mut c_void`
-    // (`hew-runtime/src/task_scope.rs:283`). Returns the task's result
-    // pointer if done, null otherwise. Must be called after
-    // `hew_task_await_blocking` which guarantees the task is done.
-    // Part of row 4.
-    "hew_task_get_result",
-    // `hew_task_new() -> *mut HewTask`
-    // (`hew-runtime/src/task_scope.rs:214`). Box-allocates and returns a
-    // new HewTask in the Ready state with all fields zeroed/null. Needed
-    // for spawned calls (row 3) — producer calls this before
-    // `hew_task_spawn_thread`.
-    "hew_task_new",
-    "hew_task_scope_cancel_after_ns",
-    "hew_task_scope_destroy",
-    "hew_task_scope_join_all",
-    "hew_task_scope_new",
-    "hew_task_scope_set_current",
-    "hew_task_scope_spawn",
-    "hew_task_set_env",
-    // `hew_task_set_result(task: *mut HewTask, result: *mut c_void, size: usize)
-    //  -> void` (`hew-runtime/src/task_scope.rs`). Deep-copies the value
-    // representation into a task-owned malloc buffer. Emitted by the codegen
-    // task wrapper to publish a value-returning task's body result before
-    // `hew_task_complete_threaded`; the awaiter reads it via
-    // `hew_task_get_result` on the resume edge. Part of value-task await.
-    "hew_task_set_result",
-    // `hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void`
-    // (`hew-runtime/src/task_scope.rs:368`). Spawns `task_fn(task)` on a
-    // new OS thread. `TaskFn = unsafe extern "C" fn(*mut HewTask)`. The
-    // function pointer arg has no precedent in the current Place/arg-load
-    // pattern; the codegen arm is fail-closed with a SHIM comment naming
-    // the producer-contract decision. Needed for spawned calls (row 3).
-    "hew_task_spawn_thread",
-    // --- Vec<T> indexing (C-2) ----------------------------------
-    // hew_vec_get_T(v: *mut HewVec, index: i64) -> T — one per element type.
-    // Element types supported: bool, i32, i64, f64, ptr (handle/opaque), str (returns
-    // a retained/header-aware owner; caller balances with hew_string_drop).
-    // Vec<String> for-in lowering emits hew_vec_get_str only when the retained
-    // per-iteration owner is paired with an explicit hew_string_drop.
-    // hew_vec_get_layout(v, index, layout) -> *const c_void — layout-descriptor
-    // path for BitCopy Named records and tuples; codegen reads the element back
-    // through the dest-place type. Emitted by subscript (xs[i]) and for-in
-    // lowering for value-record element types.
-    // Lexicographic note: hew_vec_get_* < hew_vec_len (g < l).
-    "hew_vec_get_bool",
-    "hew_vec_get_f32",
-    "hew_vec_get_f64",
-    "hew_vec_get_i16",
-    "hew_vec_get_i32",
-    "hew_vec_get_i64",
-    "hew_vec_get_i8",
-    "hew_vec_get_layout",
-    // W5.016 owned-element borrow getter: returns a borrowed pointer into the
-    // live buffer for an owned (non-Copy) record/enum/tuple element. The for-in
-    // / index getter routes owned elements here instead of `hew_vec_get_layout`
-    // (which aborts on an owned descriptor) or `hew_vec_get_ptr` (8-byte stride).
-    "hew_vec_get_owned",
-    "hew_vec_get_ptr",
-    "hew_vec_get_str",
-    "hew_vec_get_u16",
-    "hew_vec_get_u8",
-    // hew_vec_len(v: *mut HewVec) -> i64
-    "hew_vec_len",
-    // --- Vec<T> range-slice (C-3) -------------------------------
-    // hew_vec_slice_range_T(v, start, end) -> *mut HewVec<T> — allocates
-    // a fresh Vec<T> populated from [start, end) on `v`. The MIR emitter
-    // bounds-checks `start <= end` and `end <= len(v)` with trap-on-OOB
-    // before calling; runtime defends-in-depth with the same checks.
-    // Element types covered: i32, i64, f64, ptr (handle/opaque), str
-    // (header-aware copy per element; result vec owns and releases via
-    // existing ElemKind::String free-on-drop path in hew_vec_free).
-    // Lexicographic note: hew_vec_len < hew_vec_slice_range_* (l < s).
-    "hew_vec_slice_range_bytesize",
-    "hew_vec_slice_range_f64",
-    "hew_vec_slice_range_i32",
-    "hew_vec_slice_range_i64",
-    "hew_vec_slice_range_layout",
-    "hew_vec_slice_range_owned",
-    "hew_vec_slice_range_ptr",
-    "hew_vec_slice_range_str",
-    // --- Trait-object dispatch diagnostics (TO-1) ---------------
-    // `hew_vtable_dispatch_panic_on_oob(slot: u32, max: u32) -> !`
-    // (`hew-runtime/src/trait_object.rs`). Diagnostic trap codegen
-    // wires on the unreachable arm of a vtable-slot match (LESSONS
-    // P0 `exhaustive-coverage`: no wildcard fallthrough in dispatch).
-    // Also the wire target for a null-vtable fail-closed. Design notes
-    // `runtime-trait-object-abi.md` design D-4 rejects routing the
-    // *actual* dispatch through a runtime helper — codegen emits
-    // GEP+load+call inline — so this is the only trait-object symbol
-    // the runtime exposes today; per-trait dispatch sites name it
-    // only on the OOB / null-vtable arms.
-    "hew_vtable_dispatch_panic_on_oob",
-];
+use hew_types::runtime_call::{all_runtime_call_families, is_pre_staged_family, RuntimeCallFamily};
 
 /// Error returned when a `RuntimeCall` is constructed with a symbol that
-/// is not in the M2 runtime-ABI allowlist.
+/// is not a recognised runtime-ABI entry.
 ///
 /// Carrying the rejected symbol string lets callers emit diagnostics that
 /// name the exact offender (`MirDiagnosticKind::NotYetImplemented`,
@@ -644,26 +45,40 @@ impl std::fmt::Display for UnknownRuntimeSymbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "symbol `{}` is not in the M2 runtime-ABI allowlist \
-             (see `runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS`)",
+            "symbol `{}` is not a recognised runtime-ABI entry \
+             (no non-pre-staged `RuntimeCallFamily` in `hew_types::runtime_call` \
+             maps to it)",
             self.0
         )
     }
 }
 
-/// Return `true` if `symbol` is a recognised runtime-ABI entry
-/// `Instr::CallRuntimeAbi` may name. Binary search; the static
-/// list is sorted in `MIR_EMITTER_RUNTIME_SYMBOLS`.
+/// Return `true` if `symbol` is a runtime-ABI entry an
+/// `Instr::CallRuntimeAbi` may name. Derived from the single
+/// [`RuntimeCallFamily`] catalog: the symbol must lift to a family
+/// ([`RuntimeCallFamily::from_c_symbol`]) whose lowering is
+/// `Instr::CallRuntimeAbi` — a pre-staged family ([`is_pre_staged_family`],
+/// lowered via a `Terminator::Call` callee-name intercept) is deliberately
+/// not admissible here, so the producer-routing split stays intact.
 #[must_use]
 pub fn is_known_runtime_symbol(symbol: &str) -> bool {
-    MIR_EMITTER_RUNTIME_SYMBOLS.binary_search(&symbol).is_ok()
+    RuntimeCallFamily::from_c_symbol(symbol).is_some_and(|family| !is_pre_staged_family(family))
 }
 
-/// Borrow the full static allowlist. Useful for tests and dump
-/// surfaces that want to enumerate the recognised symbols.
+/// Enumerate every runtime-ABI symbol an `Instr::CallRuntimeAbi` may name,
+/// sorted lexicographically for stable diffs. Catalog-derived: every
+/// non-pre-staged [`RuntimeCallFamily`]'s
+/// [`c_symbol`](RuntimeCallFamily::c_symbol). Useful for tests and dump
+/// surfaces that enumerate the admissible symbols.
 #[must_use]
-pub fn known_runtime_symbols() -> &'static [&'static str] {
-    MIR_EMITTER_RUNTIME_SYMBOLS
+pub fn known_runtime_symbols() -> Vec<&'static str> {
+    let mut symbols: Vec<&'static str> = all_runtime_call_families()
+        .into_iter()
+        .filter(|family| !is_pre_staged_family(*family))
+        .map(RuntimeCallFamily::c_symbol)
+        .collect();
+    symbols.sort_unstable();
+    symbols
 }
 
 /// Candidate-scoped receiver-borrow scans that may use a callee's arg[0]
@@ -1202,7 +617,6 @@ const TOML_RESULT_CONSISTENCY: &[(&str, &str, ResultOwnership)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hew_types::runtime_call::RuntimeCallFamily;
     use std::collections::BTreeSet;
 
     const CONTRACT_SYMBOLS: &[&str] = &[
@@ -1380,29 +794,34 @@ mod tests {
     ];
 
     #[test]
-    fn allowlist_is_sorted_for_binary_search() {
-        // Binary-search correctness depends on the list being sorted.
-        // A future contributor adding an entry out of order would
-        // silently break membership for some symbols; pin the
-        // invariant.
-        for window in MIR_EMITTER_RUNTIME_SYMBOLS.windows(2) {
+    fn known_substrate_symbols_recognised() {
+        // Every catalog-derived admissible symbol must round-trip through
+        // the admission predicate. `known_runtime_symbols()` is sorted, so
+        // this also pins the stable-diff ordering.
+        let listed = known_runtime_symbols();
+        assert!(listed.windows(2).all(|w| w[0] < w[1]), "not sorted/unique");
+        for sym in listed {
             assert!(
-                window[0] < window[1],
-                "MIR_EMITTER_RUNTIME_SYMBOLS is not lexicographically sorted: \
-                 {} >= {}",
-                window[0],
-                window[1],
+                is_known_runtime_symbol(sym),
+                "catalog-derived symbol {sym} should be recognised",
             );
         }
     }
 
     #[test]
-    fn known_substrate_symbols_recognised() {
-        // Every entry in the allowlist must round-trip.
-        for sym in MIR_EMITTER_RUNTIME_SYMBOLS {
-            assert!(
-                is_known_runtime_symbol(sym),
-                "allowlist entry {sym} should be recognised",
+    fn pre_staged_families_are_not_admitted() {
+        // The admission boundary IS the routing boundary: every family maps
+        // to exactly one admission verdict, and a pre-staged family (routed
+        // via `Terminator::Call`) must never be admitted onto the
+        // `Instr::CallRuntimeAbi` path — admitting it would flip
+        // `runtime_symbol_for_call_expr`'s producer routing.
+        for family in all_runtime_call_families() {
+            let admitted = is_known_runtime_symbol(family.c_symbol());
+            assert_eq!(
+                admitted,
+                !is_pre_staged_family(family),
+                "family {family:?} ({}) admission disagrees with its routing class",
+                family.c_symbol(),
             );
         }
     }
@@ -1515,9 +934,8 @@ mod tests {
         // Spelling-based tripwire for the emitter surface outside the closed
         // runtime-call catalog: release-like names default to no borrow/result
         // ownership contract unless deliberately classified elsewhere.
-        let release_symbols = MIR_EMITTER_RUNTIME_SYMBOLS
-            .iter()
-            .copied()
+        let release_symbols = known_runtime_symbols()
+            .into_iter()
             .filter(|symbol| {
                 ["drop", "free", "close", "release", "destroy", "dispose"]
                     .iter()

@@ -3656,10 +3656,10 @@ pub(crate) fn lower_call_runtime_abi(
             )?;
         }
 
-        // Allowlisted but not wired (no codegen lowering arm yet), plus the
+        // Admitted but not wired (no codegen lowering arm yet), plus the
         // pre-staged intercept families whose calls ride `Terminator::Call`
-        // and can never legally arrive as `Instr::CallRuntimeAbi` (their
-        // symbols are not in `MIR_EMITTER_RUNTIME_SYMBOLS`, so
+        // and can never legally arrive as `Instr::CallRuntimeAbi` (no
+        // non-pre-staged `RuntimeCallFamily` maps to their symbol, so
         // `RuntimeCall::new` refuses them at construction — this arm is
         // their unreachable-by-construction backstop). Exhaustively
         // enumerated, NO wildcard: a new family cannot land without an

@@ -202,13 +202,12 @@ fn forwarder_discarded_statement_rejects() {
 }
 
 #[test]
-fn forwarder_over_fresh_ctor_arg_rejects_interim() {
-    // `match forwarder(fresh_ctor())` — the callee summary is `{PARAM}`, so the
-    // interim PARAM-present gate REJECTS even though the argument is inline-fresh.
-    // This is the documented interim over-reject: the arg-scan rescue (ParamsOnly
-    // + every heap arg fresh → ADMIT) lands with the trusted-root work. Pinning
-    // the interim reject makes the later flip to ADMIT an explicit, reviewed
-    // behaviour change rather than a silent one.
+fn forwarder_over_fresh_ctor_arg_admits_with_arg_scan() {
+    // `match forwarder(fresh_ctor())` — the callee summary is `{PARAM}`-only and
+    // the argument is inline-fresh, so the S2b caller arg-scan ADMITS: the
+    // forwarded return can only alias the fresh ctor result, a fresh sole owner.
+    // (This flips the interim over-reject pin — the explicit, reviewed
+    // behaviour change the old test's comment promised.)
     let src = format!(
         "{FORWARDER}\n\
          fn fresh_ctor() -> Result<string, string> {{ Ok(\"x\") }}\n\
@@ -219,11 +218,234 @@ fn forwarder_over_fresh_ctor_arg_rejects_interim() {
     let p = pipeline(&src);
     assert_eq!(
         reject_count(&p),
+        0,
+        "a ParamsOnly forwarder over an inline-fresh arg admits (arg-scan rescue): {:#?}",
+        p.diagnostics
+    );
+    assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
+    assert_eq!(
+        count_owner_mints(&p),
         1,
-        "interim: a PARAM forwarder over an inline-fresh arg rejects (arg-scan rescue is deferred): {:#?}",
+        "the admitted scrutinee mints EXACTLY ONE owner"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S2b — the ParamsOnly caller arg-scan (template/semver-shaped admits + the
+// fail-closed arg rejects)
+// ---------------------------------------------------------------------------
+
+/// A `ParamsOnly` stdlib-parser shape: the result embeds the string parameter
+/// (`Ok(Template { src: src })` — summary `{PARAM}`).
+const PARSER: &str = r"
+    fn wrap(s: string) -> Result<string, string> { Ok(s) }
+";
+
+#[test]
+fn params_only_inline_literal_arg_admits_and_mints_owner() {
+    // `match template.try_parse("hello {{.name")` — the template fixture shape.
+    let src = format!(
+        "{PARSER}\n\
+         fn use_it() -> i64 {{\n\
+            match wrap(\"hello\") {{ Ok(_) => 1, Err(_) => 0 }}\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        0,
+        "a ParamsOnly callee over an inline literal admits: {:#?}",
+        p.diagnostics
+    );
+    assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
+    assert_eq!(count_owner_mints(&p), 1, "exactly one owner over the admit");
+}
+
+#[test]
+fn params_only_let_bound_fresh_local_arg_admits() {
+    // `let v = "x"; match parse(v)` — the semver_test shape: a plain `let`
+    // local whose S1 bits are `∅`, unaliased, read exactly once.
+    let src = format!(
+        "{PARSER}\n\
+         fn use_it() -> i64 {{\n\
+            let v = \"1.2.3\";\n\
+            match wrap(v) {{ Ok(_) => 1, Err(_) => 0 }}\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        0,
+        "a let-bound provably-fresh local arg admits: {:#?}",
+        p.diagnostics
+    );
+    assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
+    assert_eq!(count_owner_mints(&p), 1, "exactly one owner over the admit");
+}
+
+#[test]
+fn params_only_mixed_fresh_and_borrowed_args_reject() {
+    // One fresh literal + one borrowed place: the place could be the forwarded
+    // buffer, so the scan fails closed.
+    let src = r#"
+        type Holder { b: string; }
+        fn wrap2(a: string, b: string) -> Result<string, string> { Ok(a) }
+        fn use_it(h: Holder) -> i64 {
+            match wrap2("lit", h.b) { Ok(_) => 1, Err(_) => 0 }
+        }
+    "#;
+    let p = pipeline(src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "mixed fresh + borrowed-place args must reject: {:#?}",
         p.diagnostics
     );
     assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn params_only_param_of_caller_arg_rejects() {
+    // The caller's own by-value heap param is a borrow ITS caller still owns —
+    // never provably fresh.
+    let src = format!(
+        "{PARSER}\n\
+         fn use_it(s: string) -> i64 {{\n\
+            match wrap(s) {{ Ok(_) => 1, Err(_) => 0 }}\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "a param-of-caller arg must reject: {:#?}",
+        p.diagnostics
+    );
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn params_only_unknown_callee_arg_rejects() {
+    // An argument produced by an un-audited heap extern is not provably fresh.
+    let src = format!(
+        "{PARSER}\n\
+         extern \"C\" {{\n\
+            fn ext_make() -> string;\n\
+         }}\n\
+         fn use_it() -> i64 {{\n\
+            match wrap(ext_make()) {{ Ok(_) => 1, Err(_) => 0 }}\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "an unknown/extern-produced arg must reject: {:#?}",
+        p.diagnostics
+    );
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn params_only_aliased_local_arg_rejects() {
+    // `let w = v` — both alias one value; a second in-scope release authority
+    // exists, so neither is admissible as a fresh argument.
+    let src = format!(
+        "{PARSER}\n\
+         fn use_it() -> i64 {{\n\
+            let v = \"x\";\n\
+            let w = v;\n\
+            match wrap(w) {{ Ok(_) => 1, Err(_) => 0 }}\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "an aliased local arg must reject: {:#?}",
+        p.diagnostics
+    );
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn params_only_reread_local_arg_rejects() {
+    // The local is read again after the scrutinee — the minted owner would
+    // free the buffer the later read still derives from.
+    let src = format!(
+        "{PARSER}\n\
+         fn take(s: string) -> i64 {{ 1 }}\n\
+         fn use_it() -> i64 {{\n\
+            let v = \"x\";\n\
+            let n = match wrap(v) {{ Ok(_) => 1, Err(_) => 0 }};\n\
+            n + take(v)\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "a re-read local arg must reject: {:#?}",
+        p.diagnostics
+    );
+    assert!(!any_owner_minted(&p));
+}
+
+#[test]
+fn params_only_pattern_binder_arg_rejects() {
+    // A match-payload binder aliases a payload slot another owner may release —
+    // never treated as an independently-owned fresh value.
+    let src = format!(
+        "{PARSER}\n\
+         fn make() -> Result<string, string> {{ Ok(\"x\") }}\n\
+         fn use_it() -> i64 {{\n\
+            match make() {{\n\
+                Ok(inner) => match wrap(inner) {{ Ok(_) => 1, Err(_) => 0 }},\n\
+                Err(_) => 0,\n\
+            }}\n\
+         }}\n"
+    );
+    let p = pipeline(&src);
+    assert_eq!(
+        reject_count(&p),
+        1,
+        "a pattern-binder arg must reject: {:#?}",
+        p.diagnostics
+    );
+}
+
+#[test]
+fn extern_result_bound_module_fn_takes_legacy_path() {
+    // The jwt/encrypt shape END-TO-END: a module fn binding an extern result
+    // and returning it through a catch-all error arm is `OPAQUE`-only (the
+    // extern-name id-collision and the catch-all `err =>` binder both stay out
+    // of the PARAM channel) → interim LegacyModuleCall: compiles and mints the
+    // owner as today.
+    let src = r#"
+        extern "C" {
+            fn ext_encode(payload: string) -> string;
+        }
+        fn last_err() -> Result<string, string> { Err("e") }
+        fn try_encode(payload: string) -> Result<string, string> {
+            let token = ext_encode(payload);
+            match last_err() {
+                Ok(_) => Ok(token),
+                err => err,
+            }
+        }
+        fn use_it() -> i64 {
+            match try_encode("{}") { Ok(_) => 1, Err(_) => 0 }
+        }
+    "#;
+    let p = pipeline(src);
+    assert_eq!(
+        reject_count(&p),
+        0,
+        "an OPAQUE-only extern-result module fn must take the legacy path: {:#?}",
+        p.diagnostics
+    );
+    assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
+    assert!(any_owner_minted(&p), "legacy mint preserved");
 }
 
 #[test]

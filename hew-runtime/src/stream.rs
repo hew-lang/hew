@@ -5049,6 +5049,9 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn factory_returns_pair_for_valid_conn() {
+        // `hew_tcp_connect` (in `make_loopback_conn`) offloads the resolve onto
+        // the current runtime's blocking pool, so a runtime must be installed.
+        let _guard = crate::runtime_test_guard();
         let (conn_handle, _peer) = make_loopback_conn();
 
         // SAFETY: conn_handle is a valid registered connection.
@@ -5099,6 +5102,9 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn factory_consumes_original_conn_handle() {
+        // See `factory_returns_pair_for_valid_conn`: the connect offload needs a
+        // runtime-owned blocking pool.
+        let _guard = crate::runtime_test_guard();
         let (conn_handle, _peer) = make_loopback_conn();
 
         // SAFETY: conn_handle is valid.

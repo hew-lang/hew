@@ -97,6 +97,17 @@ pub(crate) struct RuntimeInner {
     /// (the `hew_node_monitor_recv` observation slots) and target-side remote
     /// watchers (the terminal-sweep fan-out list).
     pub(crate) dist_monitors: crate::dist_monitor::DistMonitorState,
+    /// Blocking-work thread pool for deadline-bounded syscall offload (DNS,
+    /// TCP connect). Was the process-global `blocking_pool::SHARED_POOL`
+    /// singleton; resolved through `rt_current()` by `shared_blocking_pool()`.
+    /// Lazily created on the first offload — a runtime that never touches
+    /// DNS/TCP spawns no pool threads — and stopped (queue drained, workers
+    /// joined) when this runtime drops. `hew_runtime_cleanup` has already joined
+    /// every submitting thread (reactor, ticker, workers) by then, so the pool's
+    /// `Drop` cannot strand a parked submitter (see the `hew_runtime_cleanup`
+    /// ordering). Two runtimes no longer share (or leak) one process-lifetime
+    /// pool.
+    pub(crate) blocking_pool: std::sync::OnceLock<crate::blocking_pool::OwnedBlockingPool>,
     /// Per-instance drop observer for the "exactly once" teardown oracles.
     ///
     /// Replaces the former process-global `RUNTIME_INNER_DROPS` counter, whose
@@ -126,6 +137,7 @@ impl RuntimeInner {
             metrics: crate::metrics::MetricsState::new(),
             monitors: crate::monitor::MonitorState::new(),
             dist_monitors: crate::dist_monitor::DistMonitorState::new(),
+            blocking_pool: std::sync::OnceLock::new(),
             #[cfg(test)]
             drop_probe: std::sync::Mutex::new(None),
         }
@@ -163,6 +175,18 @@ impl RuntimeInner {
     )]
     pub(crate) fn runtime_id(&self) -> RuntimeId {
         self.id
+    }
+
+    /// This runtime's blocking pool, created on first use.
+    ///
+    /// The [`OnceLock`](std::sync::OnceLock) keeps the pool private to the
+    /// runtime while `blocking_pool::shared_blocking_pool()` reads the raw
+    /// pointer through this accessor. First call spawns the pool's worker
+    /// threads; the pool is stopped when this runtime drops.
+    pub(crate) fn blocking_pool(&self) -> *mut crate::blocking_pool::HewBlockingPool {
+        self.blocking_pool
+            .get_or_init(crate::blocking_pool::OwnedBlockingPool::new)
+            .as_ptr()
     }
 }
 

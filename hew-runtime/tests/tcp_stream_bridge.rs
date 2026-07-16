@@ -26,6 +26,9 @@ use hew_runtime::transport::{hew_tcp_connect, hew_tcp_set_read_timeout};
 /// Bind a loopback listener, connect via `hew_tcp_connect` (so the handle is
 /// registered in `TCP_API_STATE`), and return (`conn_handle`, `peer_stream`).
 fn make_bridge_pair() -> (i32, TcpStream) {
+    // `hew_tcp_connect` offloads the resolve onto the current runtime's blocking
+    // pool, so a runtime must be installed first (idempotent across tests).
+    hew_runtime_testkit::ensure_scheduler();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
@@ -245,6 +248,8 @@ fn compose_with_chunks_adapter() {
 /// can then call `hew_stream_last_errno()` to tell the pause from clean EOF.
 #[test]
 fn read_timeout_sets_nonzero_errno() {
+    // `hew_tcp_connect` needs a runtime-owned blocking pool (idempotent init).
+    hew_runtime_testkit::ensure_scheduler();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();

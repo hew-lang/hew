@@ -1481,8 +1481,10 @@ fn resolve_addr_via_pool(
         #[expect(clippy::cast_sign_loss, reason = "checked > 0 above")]
         Some(std::time::Duration::from_millis(deadline_ms as u64))
     };
-    // SAFETY: shared_blocking_pool returns a process-lifetime, never-stopped
-    // pool whose pointer stays valid for this call.
+    // SAFETY: shared_blocking_pool returns the current runtime's pool, valid
+    // for that runtime's lifetime; this offload runs on a scheduler/reactor
+    // thread that cleanup joins before the runtime (and its pool) is dropped,
+    // so the pointer stays valid for this call.
     unsafe {
         spawn_blocking_result(
             shared_blocking_pool(),

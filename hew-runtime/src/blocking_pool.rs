@@ -8,7 +8,7 @@
 )]
 
 use std::ffi::c_void;
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -284,46 +284,75 @@ where
     }
 }
 
-/// Process-lifetime singleton wrapper around `*mut HewBlockingPool`.
+/// Per-runtime owner of a `*mut HewBlockingPool`.
 ///
-/// `*mut T` is neither `Send` nor `Sync`. This wrapper asserts both based on
-/// the pool's internal Mutex/Condvar synchronization. The pointer's allocation
-/// lives for the duration of the process — the singleton is never stopped, so
-/// the inner pointer never dangles.
-struct SharedPoolHandle(*mut HewBlockingPool);
+/// Held in a [`OnceLock`] field on the runtime (`RuntimeInner::blocking_pool`);
+/// created lazily on the first blocking offload and dropped with its runtime.
+/// `*mut T` is neither `Send` nor `Sync`; this wrapper asserts both based on the
+/// pool's internal Mutex/Condvar synchronization. The pointer is valid for the
+/// owning runtime's lifetime — it is stopped (queue drained, workers joined)
+/// only when this field drops, by which point cleanup has already joined every
+/// dispatch/reactor/worker thread that could submit to it.
+pub(crate) struct OwnedBlockingPool(*mut HewBlockingPool);
 
 // SAFETY: `HewBlockingPool` is heap-allocated by `hew_blocking_pool_new` and
-// internally synchronized via Mutex+Condvar. The singleton lives for the
-// lifetime of the process and is never freed via `hew_blocking_pool_stop`,
-// so the raw pointer remains valid for any thread that observes it.
-unsafe impl Send for SharedPoolHandle {}
+// internally synchronized via Mutex+Condvar. The handle is owned by exactly one
+// runtime and every access goes through the pool's own internal locks, so the
+// raw pointer can cross threads (worker/reactor submitters) safely.
+unsafe impl Send for OwnedBlockingPool {}
 // SAFETY: see Send. All access goes through the pool's own internal locks.
-unsafe impl Sync for SharedPoolHandle {}
+unsafe impl Sync for OwnedBlockingPool {}
 
-static SHARED_POOL: OnceLock<SharedPoolHandle> = OnceLock::new();
+impl OwnedBlockingPool {
+    /// Spawn a fresh blocking pool (its worker threads) and take ownership.
+    pub(crate) fn new() -> Self {
+        // SAFETY: `hew_blocking_pool_new` is safe to call (no preconditions); it
+        // returns a heap-allocated pool this handle now owns and stops on drop.
+        Self(unsafe { hew_blocking_pool_new() })
+    }
 
-/// Return the process-wide blocking pool, creating it on first call.
+    /// The raw pool pointer, valid for the owning runtime's lifetime.
+    pub(crate) fn as_ptr(&self) -> *mut HewBlockingPool {
+        self.0
+    }
+}
+
+impl Drop for OwnedBlockingPool {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: `self.0` came from `hew_blocking_pool_new` and is owned solely
+        // by this field, so it is stopped exactly once — when the runtime that
+        // owns it drops. `hew_runtime_cleanup` joins the reactor, ticker, and
+        // scheduler workers (the only submitters) BEFORE dropping `RuntimeInner`
+        // (`cleanup-all-exits`), so no submitting thread is parked on a pool slot
+        // here; `hew_blocking_pool_stop` drains the queue and joins the pool's
+        // own worker threads.
+        unsafe { hew_blocking_pool_stop(self.0) };
+    }
+}
+
+/// Return the calling runtime's blocking pool, creating it on first use.
 ///
-/// The returned pointer is valid for the lifetime of the process. It is
-/// shared across all transport callers (DNS, TCP, HTTP, etc.) that need to
-/// offload blocking syscalls with a deadline. Callers MUST NOT pass this
-/// pointer to [`hew_blocking_pool_stop`] — the singleton is never stopped.
+/// Resolves the pool through the current runtime (`rt_current().blocking_pool()`)
+/// and is therefore an init/mutate site: it spawns worker threads and requires a
+/// runtime to be installed (`deglobalize-reads-stay-tolerant` — this is not a
+/// tolerant read/sweep caller, so the fail-closed `rt_current()` is correct).
+/// The returned pointer is valid for that runtime's lifetime and is shared
+/// across its transport callers (DNS, TCP, HTTP, etc.) that offload blocking
+/// syscalls with a deadline. Callers MUST NOT pass this pointer to
+/// [`hew_blocking_pool_stop`] — the owning runtime stops it on drop.
 ///
-/// Idempotent: subsequent calls return the same pointer.
+/// Idempotent within a runtime: subsequent calls under the same runtime return
+/// the same pointer.
 ///
 /// WASM-TODO(#1451): there is no blocking pool on WASM; transport callers
 /// on WASM keep their pre-existing unguarded blocking shape until a
 /// WASM-compatible deadline primitive exists.
+#[must_use]
 pub fn shared_blocking_pool() -> *mut HewBlockingPool {
-    SHARED_POOL
-        .get_or_init(|| {
-            // SAFETY: hew_blocking_pool_new is safe to call (no preconditions);
-            // it returns a heap-allocated pool that is owned by the singleton
-            // and never freed.
-            let raw = unsafe { hew_blocking_pool_new() };
-            SharedPoolHandle(raw)
-        })
-        .0
+    crate::runtime::rt_current().blocking_pool()
 }
 
 /// Stop the pool: reject new work, wake all workers, and join threads.
@@ -613,20 +642,122 @@ mod tests {
         }
     }
 
-    /// `shared_blocking_pool` returns the same pointer on every call and
-    /// the pool is usable.
+    /// `shared_blocking_pool` returns the same pointer on every call within one
+    /// runtime, and the pool is usable.
     #[test]
     fn shared_blocking_pool_is_idempotent_and_usable() {
+        // The pool now resolves through `rt_current()`, so a runtime must be
+        // installed; the guard installs a worker-less default and reclaims it
+        // (stopping the pool) on drop.
+        let _runtime = crate::runtime_test_guard();
+
         let p1 = shared_blocking_pool();
         let p2 = shared_blocking_pool();
-        assert_eq!(p1, p2, "shared pool must be a singleton");
-        assert!(!p1.is_null(), "shared pool must be allocated");
+        assert_eq!(p1, p2, "the pool is a per-runtime singleton");
+        assert!(!p1.is_null(), "the pool must be allocated");
 
-        // Submit through the shared pool and observe the result. This proves
-        // the singleton is wired through `spawn_blocking_result` correctly.
-        // SAFETY: shared_blocking_pool returns a valid, never-stopped pool.
+        // Submit through the pool and observe the result. This proves it is
+        // wired through `spawn_blocking_result` correctly.
+        // SAFETY: shared_blocking_pool returns a valid pool for the installed
+        // runtime; it stays valid until the guard drops it below.
         let result = unsafe { spawn_blocking_result(p1, || 1729_u32, None) };
         assert_eq!(result, Ok(1729));
+    }
+
+    /// Two live runtimes own DIFFERENT blocking pools — the deglob's core teeth.
+    /// Before CAP-09's residual close, a process-global `SHARED_POOL` singleton
+    /// served both; now each `RuntimeInner` lazily owns its own, and both are
+    /// independently usable. Completing under the lane timeout is the join proof:
+    /// dropping each runtime stops its own pool without hanging.
+    #[test]
+    fn two_runtimes_do_not_share_the_blocking_pool() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+
+        let rt_a = crate::runtime::RuntimeInner::new(crate::scheduler::worker_less_scheduler());
+        let rt_b = crate::runtime::RuntimeInner::new(crate::scheduler::worker_less_scheduler());
+
+        // Resolve each runtime's pool while it is the entered current runtime.
+        let pool_a = {
+            // SAFETY: rt_a is a stack local that outlives this enter guard.
+            let _enter = unsafe { crate::runtime::enter(&rt_a) };
+            shared_blocking_pool()
+        };
+        let pool_b = {
+            // SAFETY: rt_b is a stack local that outlives this enter guard.
+            let _enter = unsafe { crate::runtime::enter(&rt_b) };
+            shared_blocking_pool()
+        };
+
+        assert!(!pool_a.is_null() && !pool_b.is_null());
+        assert_ne!(
+            pool_a, pool_b,
+            "each runtime must own a distinct blocking pool, not share one global"
+        );
+
+        // Both pools are live and independently usable.
+        // SAFETY: pool_a came from rt_a's live pool; rt_a is still in scope.
+        let ran_a = unsafe { spawn_blocking_result(pool_a, || 41_i32 + 1, None) };
+        // SAFETY: pool_b came from rt_b's live pool; rt_b is still in scope.
+        let ran_b = unsafe { spawn_blocking_result(pool_b, || 20_i32 + 22, None) };
+        assert_eq!(ran_a, Ok(42));
+        assert_eq!(ran_b, Ok(42));
+
+        // Dropping rt_a then rt_b stops each pool (joins its workers); reaching
+        // the end of the test without hanging is the teardown-ordering proof.
+    }
+
+    /// Dropping a runtime stops its pool; a subsequent runtime gets a fresh,
+    /// usable pool rather than a stale/stopped handle. The drop must not hang
+    /// (its pool joins its own workers), and the fresh pool must accept work —
+    /// a stopped handle would return `PoolStopped`.
+    #[test]
+    fn runtime_drop_stops_its_pool_then_fresh_runtime_gets_a_live_pool() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+
+        {
+            let rt = crate::runtime::RuntimeInner::new(crate::scheduler::worker_less_scheduler());
+            // SAFETY: rt is a stack local that outlives its enter guard.
+            let _enter = unsafe { crate::runtime::enter(&rt) };
+            let pool = shared_blocking_pool();
+            // SAFETY: pool is this runtime's live pool.
+            let ran = unsafe { spawn_blocking_result(pool, || 7_i32, None) };
+            assert_eq!(ran, Ok(7));
+            // rt drops here: its pool is stopped (workers joined) without hanging.
+        }
+
+        let rt2 = crate::runtime::RuntimeInner::new(crate::scheduler::worker_less_scheduler());
+        // SAFETY: rt2 is a stack local that outlives its enter guard.
+        let _enter = unsafe { crate::runtime::enter(&rt2) };
+        let pool2 = shared_blocking_pool();
+        assert!(
+            !pool2.is_null(),
+            "the fresh runtime lazily creates a new pool"
+        );
+        // A stale/stopped handle would reject work; a live fresh pool accepts it.
+        // SAFETY: pool2 is rt2's live pool.
+        let ran = unsafe { spawn_blocking_result(pool2, || 99_i32, None) };
+        assert_eq!(ran, Ok(99));
+    }
+
+    /// `shared_blocking_pool()` is an init/mutate site (it spawns threads), so it
+    /// resolves through the fail-closed `rt_current()`. With no runtime installed
+    /// it panics rather than fabricating a process-global pool — pinning the
+    /// `deglobalize-reads-stay-tolerant` / `no-fail-open-fallback-after-authority`
+    /// classification. If this panic is ever seen from a production path, that is
+    /// scope-guard condition 1 (a no-runtime caller).
+    #[test]
+    fn shared_blocking_pool_without_runtime_fails_closed() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the default runtime slot to be empty"
+        );
+
+        let panicked = std::panic::catch_unwind(shared_blocking_pool).is_err();
+        assert!(
+            panicked,
+            "shared_blocking_pool with no runtime installed must fail closed (panic)"
+        );
     }
 
     /// Null pool: caller gets `PoolStopped` without leaking the boxed task

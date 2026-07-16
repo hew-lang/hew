@@ -40,6 +40,9 @@ use hew_runtime::transport::{
 /// registered in `TCP_API_STATE`), and return `(conn_handle, peer_stream)`.
 /// Mirrors `tcp_stream_bridge.rs::make_bridge_pair`.
 fn make_bridge_pair() -> (i32, TcpStream) {
+    // `hew_tcp_connect` offloads the resolve onto the current runtime's blocking
+    // pool, so a runtime must be installed first (idempotent across tests).
+    hew_runtime_testkit::ensure_scheduler();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();

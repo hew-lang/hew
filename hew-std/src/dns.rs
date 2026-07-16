@@ -33,8 +33,10 @@ fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
         #[expect(clippy::cast_sign_loss, reason = "deadline_ms is checked > 0 above")]
         Some(Duration::from_millis(deadline_ms as u64))
     };
-    // SAFETY: shared_blocking_pool returns a process-lifetime pool that is
-    // never stopped; the pointer is valid for the call.
+    // SAFETY: shared_blocking_pool returns the current runtime's pool, valid for
+    // that runtime's lifetime; the resolve runs on a scheduler thread that
+    // cleanup joins before the runtime (and its pool) drops, so the pointer is
+    // valid for the call.
     let result = unsafe {
         spawn_blocking_result(
             shared_blocking_pool(),
@@ -169,6 +171,11 @@ mod tests {
     use super::*;
     use std::ffi::{CStr, CString};
 
+    // Resolving through the blocking pool now requires an installed runtime
+    // (`shared_blocking_pool()` reads `rt_current()`); this guard installs a
+    // real scheduler under a process-wide lock and stops the pool on drop.
+    use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
+
     /// Helper: read a C string pointer and free it.
     unsafe fn read_and_free(ptr: *mut c_char) -> String {
         assert!(!ptr.is_null());
@@ -181,6 +188,7 @@ mod tests {
 
     #[test]
     fn resolve_localhost() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("localhost").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
@@ -207,6 +215,7 @@ mod tests {
 
     #[test]
     fn lookup_host_localhost() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("localhost").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
@@ -240,6 +249,7 @@ mod tests {
 
     #[test]
     fn resolve_invalid_hostname_returns_empty() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("this-host-does-not-exist.invalid.test").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
@@ -252,6 +262,7 @@ mod tests {
 
     #[test]
     fn lookup_host_invalid_returns_null() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("this-host-does-not-exist.invalid.test").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
@@ -283,6 +294,7 @@ mod tests {
     /// well-known local host. Proves the delegating shim is wired right.
     #[test]
     fn resolve_timed_zero_means_no_deadline() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("localhost").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let vec = unsafe { hew_dns_resolve_timed(host.as_ptr(), 0) };
@@ -314,11 +326,16 @@ mod tests {
         use std::sync::Barrier;
         use std::time::{Duration, Instant};
 
+        // `shared_blocking_pool()` now resolves the current runtime's pool, so a
+        // runtime must be installed for the duration of the offload.
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+
         let release = std::sync::Arc::new(Barrier::new(2));
         let release_clone = std::sync::Arc::clone(&release);
 
         let start = Instant::now();
-        // SAFETY: shared_blocking_pool returns a process-lifetime pool.
+        // SAFETY: shared_blocking_pool returns the current runtime's pool, valid
+        // while `_runtime` is held.
         let result = unsafe {
             spawn_blocking_result(
                 shared_blocking_pool(),

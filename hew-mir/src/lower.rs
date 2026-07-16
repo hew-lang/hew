@@ -17112,22 +17112,23 @@ impl Builder {
                 if let Some(slot) = self.supervisor_child_slots.get(&expr.site).cloned() {
                     match slot.kind {
                         ChildKind::Pool => {
-                            // Pool children are not supported in v0.5; the
-                            // dedicated `hew_supervisor_pool_route` ABI call
-                            // lands in v0.6 when pool routing is fully designed.
-                            // Discard the object expression to avoid misleading
-                            // "unused value" diagnostics further up the chain.
-                            let _ = self.lower_value(object);
-                            self.diagnostics.push(MirDiagnostic {
-                                kind: MirDiagnosticKind::NotYetImplemented {
-                                    construct: "pool child accessor (v0.6)".to_string(),
-                                    site: expr.site,
-                                },
-                                note: "pool child slot routing is not yet implemented; \
-                                       use a static child or wait for v0.6"
-                                    .to_string(),
+                            let sup_place = self.lower_value(object)?;
+                            let key_place = self.alloc_local(ResolvedTy::I64);
+                            self.push_instr(Instr::ConstI64 {
+                                dest: key_place,
+                                value: i64::from(slot.index),
                             });
-                            return None;
+                            let pool_ty = self.subst_ty(&expr.ty);
+                            let pool_place = self.alloc_local(pool_ty.clone());
+                            self.push_instr(Instr::RecordInit {
+                                ty: pool_ty,
+                                fields: vec![
+                                    (FieldOffset(0), sup_place),
+                                    (FieldOffset(1), key_place),
+                                ],
+                                dest: pool_place,
+                            });
+                            return Some(pool_place);
                         }
                         ChildKind::Static => {
                             // Nested-supervisor result: when the RESULT of the
@@ -29912,10 +29913,8 @@ impl Builder {
         Some(handle_place)
     }
 
-    /// Lower a static-pool accessor: `sup.pool[i]`, `sup.pool.get(i)`, or
-    /// `sup.pool.len()`. The expression is an `Index` or `MethodCall` whose
-    /// (inner) receiver is a `sup.pool` field access; the checker resolved the
-    /// `(supervisor, pool_key)` and form into `accessor`.
+    /// Lower a static-pool accessor through a first-class
+    /// `SupervisorPool<S, T>` receiver.
     ///
     /// - `Index` → `hew_supervisor_pool_child_get(sup, key, i)`; tag != 0 (not
     ///   Live) traps `SupervisorChildUnavailable` (`Vec[i]` OOB parity).
@@ -29929,29 +29928,14 @@ impl Builder {
     ) -> Option<Place> {
         use hew_types::PoolAccessorKind;
 
-        // Extract the supervisor object + (for Index/Get) the index expr. The
-        // checker/HIR produce two shapes: `Index { container: sup.pool, index }`
-        // for `sup.pool[i]`, and `Call { args: [sup.pool, index?] }` for
-        // `sup.pool.get(i)` / `sup.pool.len()` (the synthetic-callee form HIR
-        // emits for pool methods).
-        let (sup_obj, index_expr): (&HirExpr, Option<&HirExpr>) = match &expr.kind {
-            HirExprKind::Index { container, index } => {
-                let HirExprKind::FieldAccess { object, .. } = &container.kind else {
-                    self.pool_accessor_shape_error(expr.site, "index container is not `sup.pool`");
-                    return None;
-                };
-                (object.as_ref(), Some(index.as_ref()))
-            }
+        let (pool_expr, index_expr): (&HirExpr, Option<&HirExpr>) = match &expr.kind {
+            HirExprKind::Index { container, index } => (container.as_ref(), Some(index.as_ref())),
             HirExprKind::Call { args, .. } => {
                 let Some(receiver) = args.first() else {
                     self.pool_accessor_shape_error(expr.site, "pool method call has no receiver");
                     return None;
                 };
-                let HirExprKind::FieldAccess { object, .. } = &receiver.kind else {
-                    self.pool_accessor_shape_error(expr.site, "method receiver is not `sup.pool`");
-                    return None;
-                };
-                (object.as_ref(), args.get(1))
+                (receiver, args.get(1))
             }
             _ => {
                 self.pool_accessor_shape_error(expr.site, "accessor is neither index nor call");
@@ -29959,17 +29943,40 @@ impl Builder {
             }
         };
 
-        let sup_place = self.lower_value(sup_obj)?;
-        let pool_key = accessor.pool_key;
+        let pool_ty = self.subst_ty(&pool_expr.ty);
+        let supervisor_ty = match &pool_ty {
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::SupervisorPool),
+                args,
+                ..
+            } if args.len() == 2 => args[0].clone(),
+            _ => {
+                self.pool_accessor_shape_error(expr.site, "receiver is not `SupervisorPool<S, T>`");
+                return None;
+            }
+        };
+        let pool_place = self.lower_value(pool_expr)?;
+        let sup_place = self.alloc_local(ResolvedTy::Named {
+            name: "LocalPid".to_string(),
+            args: vec![supervisor_ty],
+            builtin: Some(hew_types::BuiltinType::LocalPid),
+            is_opaque: false,
+        });
+        self.push_instr(Instr::RecordFieldLoad {
+            record: pool_place,
+            field_offset: FieldOffset(0),
+            dest: sup_place,
+        });
+        let key_place = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: pool_place,
+            field_offset: FieldOffset(1),
+            dest: key_place,
+        });
 
         match accessor.kind {
             PoolAccessorKind::Len => {
                 let dest = self.alloc_local(ResolvedTy::I64);
-                let key_place = self.alloc_local(ResolvedTy::I64);
-                self.push_instr(Instr::ConstI64 {
-                    dest: key_place,
-                    value: i64::from(pool_key),
-                });
                 self.push_instr(Instr::CallRuntimeAbi(
                     crate::model::RuntimeCall::new(
                         "hew_supervisor_pool_len",
@@ -29985,52 +29992,41 @@ impl Builder {
                 let idx_place = self.lower_value(index_expr)?;
                 Some(self.lower_pool_index(
                     sup_place,
-                    pool_key,
+                    key_place,
                     idx_place,
                     &self.subst_ty(&expr.ty),
                 ))
             }
             PoolAccessorKind::Get => {
-                // SHIM: `sup.pool.get(i)` → `Option<LocalPid<T>>`. The result
-                // type is a niche-optimised Option (LocalPid is a non-null PID,
-                // so Some carries no separate payload field — `variant 1 has 0
-                // fields`), which a hand-built EnumTag/EnumVariant write cannot
-                // assemble correctly.
-                // WHY fail-closed: the trapping `sup.pool[i]` and `.len()` forms
-                //   are fully wired (and cover the index round-trip + count); the
-                //   niche-Option construction for `.get` is a contained follow-up.
-                // WHEN obsolete: when `.get` builds the Option through the
-                //   layout-aware Option-construction path (the same one user
-                //   `Some(x)`/`None` lowering uses) rather than raw variant writes.
-                // WHAT: route the tag→Option through the checker-recorded Option
-                //   layout so a niche or tagged representation both work.
-                //
-                // Fail closed (not a wrong Option): a `.get` call refuses to
-                // compile with a clear diagnostic. Use `sup.pool[i]` (trapping)
-                // until this lands.
-                let _ = index_expr;
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "static-pool `sup.pool.get(i)` Option result".to_string(),
-                        site: expr.site,
-                    },
-                    note: "`sup.pool.get(i)` (returning Option<LocalPid<T>>) is not yet \
-                           emitted; use the trapping `sup.pool[i]` for now"
-                        .to_string(),
+                let Some(index_expr) = index_expr else {
+                    self.pool_accessor_shape_error(expr.site, "pool get call has no index");
+                    return None;
+                };
+                let idx_place = self.lower_value(index_expr)?;
+                let lookup = self.emit_pool_child_get(sup_place, key_place, idx_place);
+                let result = self.alloc_local(self.subst_ty(&expr.ty));
+                let next = self.alloc_block();
+                self.finish_current_block(Terminator::Call {
+                    callee: "hew_supervisor_pool_get_option".to_string(),
+                    builtin: None,
+                    args: vec![lookup],
+                    dest: Some(result),
+                    next,
                 });
-                None
+                self.start_block(next);
+                Some(result)
             }
         }
     }
 
     /// Emit `hew_supervisor_pool_child_get(sup, pool_key, index)` and return the
     /// `__HewChildLookupResult` result place (tag in field 0, handle in field 1).
-    fn emit_pool_child_get(&mut self, sup_place: Place, pool_key: u32, idx_place: Place) -> Place {
-        let key_place = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::ConstI64 {
-            dest: key_place,
-            value: i64::from(pool_key),
-        });
+    fn emit_pool_child_get(
+        &mut self,
+        sup_place: Place,
+        key_place: Place,
+        idx_place: Place,
+    ) -> Place {
         let result_place = self.alloc_local(ResolvedTy::Named {
             name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
             args: vec![],
@@ -30055,11 +30051,11 @@ impl Builder {
     fn lower_pool_index(
         &mut self,
         sup_place: Place,
-        pool_key: u32,
+        key_place: Place,
         idx_place: Place,
         result_ty: &ResolvedTy,
     ) -> Place {
-        let result_place = self.emit_pool_child_get(sup_place, pool_key, idx_place);
+        let result_place = self.emit_pool_child_get(sup_place, key_place, idx_place);
         let tag = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::RecordFieldLoad {
             record: result_place,

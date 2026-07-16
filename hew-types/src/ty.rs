@@ -34,6 +34,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::HashMap
             | BuiltinType::HashSet
             | BuiltinType::Task
+            | BuiltinType::SupervisorPool
             | BuiltinType::StreamPair
             | BuiltinType::Generator
             | BuiltinType::AsyncGenerator
@@ -854,6 +855,12 @@ impl Ty {
         Self::builtin_named(BuiltinType::LocalPid, vec![inner])
     }
 
+    /// Construct `SupervisorPool<supervisor, child>`.
+    #[must_use]
+    pub fn supervisor_pool(supervisor: Ty, child: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::SupervisorPool, vec![supervisor, child])
+    }
+
     /// Construct `RemotePid<inner>` — actor pid on a remote node.
     #[must_use]
     pub fn remote_pid(inner: Ty) -> Ty {
@@ -899,6 +906,19 @@ impl Ty {
         match self {
             Ty::Named {
                 builtin: Some(BuiltinType::Duplex),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
+            _ => None,
+        }
+    }
+
+    /// Extract `(S, T)` from `SupervisorPool<S, T>`.
+    #[must_use]
+    pub fn as_supervisor_pool(&self) -> Option<(&Ty, &Ty)> {
+        match self {
+            Ty::Named {
+                builtin: Some(BuiltinType::SupervisorPool),
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),

@@ -259,3 +259,78 @@ fn supervisor_child_get_classified_as_wasm_excluded() {
         "fail-closed error must name hew_supervisor_child_get or WasmUnsupported; got: {msg}"
     );
 }
+
+const POOL_ACCESS: &str = r"
+actor Worker {
+    receive fn ping() {}
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one,
+    pool workers: Worker(count: 2)
+}
+
+fn inspect(sup: LocalPid<Pool>) -> i64 {
+    let workers = sup.workers;
+    match workers.get(0) {
+        Some(_) => workers.len(),
+        None => -1,
+    }
+}
+";
+
+#[test]
+fn supervisor_pool_get_materialises_option_and_bound_pool_view() {
+    let parsed = hew_parser::parse(POOL_ACCESS);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(tc_output.errors.is_empty(), "{:#?}", tc_output.errors);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let pipeline = hew_mir::lower_hir_module(&hir.module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "{:#?}",
+        pipeline.diagnostics
+    );
+    let tmp = std::env::temp_dir().join("hew-supervisor-pool-get-option");
+    std::fs::create_dir_all(&tmp).expect("create tmp dir");
+    let options = EmitOptions {
+        module_name: "pool-option",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+        target_triple: Some(SYSV_TRIPLE),
+        debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: None,
+    };
+    let artefacts = emit_module(&pipeline, &options).expect("pool Option emission must succeed");
+    let ll_path = artefacts
+        .ll_path
+        .as_deref()
+        .expect("emit_module must populate ll_path");
+    let ir = std::fs::read_to_string(ll_path).expect("read emitted .ll");
+    assert!(
+        ir.contains("call [2 x i64] @hew_supervisor_pool_child_get("),
+        "pool get must call the canonical aggregate-return runtime ABI:\n{ir}"
+    );
+    assert!(
+        ir.contains("pool_get_some") && ir.contains("pool_get_none"),
+        "pool get must branch to exact Some/None construction blocks:\n{ir}"
+    );
+    assert!(
+        ir.contains("pool_get_handle_ptr_value = inttoptr i64"),
+        "the live handle must populate the LocalPid payload through inttoptr:\n{ir}"
+    );
+    assert!(
+        ir.contains("store i8 0") && ir.contains("store i8 1"),
+        "layout-aware Option construction must write both Some and None tags:\n{ir}"
+    );
+}

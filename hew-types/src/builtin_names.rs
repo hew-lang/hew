@@ -376,6 +376,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::HashMap
             | BuiltinType::HashSet
             | BuiltinType::Task
+            | BuiltinType::SupervisorPool
             | BuiltinType::StreamPair
             | BuiltinType::Generator
             | BuiltinType::AsyncGenerator

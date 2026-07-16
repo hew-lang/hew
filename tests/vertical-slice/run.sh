@@ -1394,6 +1394,14 @@ run_accept_expect_status "supervisor_literal_only_config_param" 0
 # the empty-pool_slots gap (#2229): codegen now spawns + registers pool members.
 run_accept_expect_status "supervisor_static_pool" 24
 
+# Safe pool lookup: in-range members produce Some live handles with exact
+# payload values, while the negative and end boundary indices produce None.
+run_accept_expect_stdout "supervisor_pool_get_option"
+
+# Whole-field pool access: bind `let workers = sup.workers`, then route len,
+# trapping index, and safe get through the first-class pool view.
+run_accept_expect_stdout "supervisor_pool_field_access"
+
 # v0.6 static pool per-member restart + live re-resolution (A209): a pool member
 # crashes, the SIMPLE_ONE_FOR_ONE restart arm restarts it per-member, and
 # `sup.workers[i]` re-resolves through the LIVE static slot to the restarted

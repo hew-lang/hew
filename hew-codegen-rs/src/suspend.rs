@@ -833,7 +833,7 @@ pub(crate) fn emit_suspending_read_terminator<'ctx>(
 
 /// Resume-bind continuation of [`emit_suspending_read_terminator`]: the reactor
 /// resumed us (enqueue_resume). The bytes are already deposited in `slot`;
-/// `hew_read_slot_take_raw` writes them into `result_dest` on the fast path.
+/// `hew_read_slot_take` writes them into `result_dest` on the fast path.
 /// On a deadline carrier the deadline-vs-read arbiter runs first (timeout binds
 /// `Err(NetError::TimedOut)`). Release the creator ref and branch to the MIR
 /// resume block. Split out so the suspend-point seam owns the suspend + abandon

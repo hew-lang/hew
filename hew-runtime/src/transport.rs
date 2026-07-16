@@ -1846,22 +1846,6 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> crate::bytes::BytesTriple {
     }
 }
 
-/// Out-pointer variant of [`hew_tcp_read`] that avoids the Windows x64 MSVC
-/// sret mismatch for the 16-byte `BytesTriple` return.
-///
-/// Writes the result to `out` and returns void. The called `hew_tcp_read`
-/// already handles the null-connection case by returning an empty triple.
-///
-/// # Safety
-///
-/// `out` must point to a valid, writable `BytesTriple` slot (caller-allocated).
-#[no_mangle]
-pub unsafe extern "C" fn hew_tcp_read_raw(conn: c_int, out: *mut crate::bytes::BytesTriple) {
-    let triple = hew_tcp_read(conn);
-    // SAFETY: caller guarantees `out` points to a valid BytesTriple slot.
-    unsafe { out.write(triple) };
-}
-
 /// Write a `bytes` value to a TCP connection.
 ///
 /// Takes a POINTER to the caller's [`crate::bytes::BytesTriple`] (the address of

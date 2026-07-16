@@ -4617,7 +4617,7 @@ pub enum Instr {
     ///
     /// Produced from `HirLiteral::Bytes`. Codegen emits an LLVM global
     /// constant holding the raw byte data, then calls
-    /// `hew_bytes_from_static_raw(ptr, len, dst)` to build the
+    /// `hew_bytes_from_static(ptr, len)` to build the
     /// refcounted `BytesTriple` at `dest`. The dest local carries
     /// `ResolvedTy::Bytes`.
     BytesLit {

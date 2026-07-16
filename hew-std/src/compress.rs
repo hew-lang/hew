@@ -525,8 +525,8 @@ unsafe fn decompress_triple(
 /// Gzip-compress `data` (`bytes`), returning a new `BytesTriple`.
 ///
 /// Receives `data` as `*const BytesTriple` (by-pointer consumer convention).
-/// Returns a `BytesTriple` by value; see `hew_gzip_compress_hew_raw` for the
-/// out-pointer variant used by some codegen paths.
+/// Returns a `BytesTriple` by value; codegen classifies the aggregate return
+/// per target (register pair on SysV/AAPCS, sret on MSVC/wasm32).
 ///
 /// # Safety
 ///
@@ -536,23 +536,6 @@ unsafe fn decompress_triple(
 pub unsafe extern "C" fn hew_gzip_compress_hew(data: *const BytesTriple) -> BytesTriple {
     // SAFETY: data is null-or-valid per caller contract.
     unsafe { compress_triple(data, hew_gzip_compress) }
-}
-
-/// Out-pointer sibling for `hew_gzip_compress_hew`.
-///
-/// # Safety
-///
-/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
-/// writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_gzip_compress_hew_raw(
-    data: *const BytesTriple,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_gzip_compress_hew(data) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
 }
 
 /// Gzip-decompress `data` (`bytes`), returning a new `BytesTriple`.
@@ -570,24 +553,6 @@ pub unsafe extern "C" fn hew_gzip_decompress_hew(
     unsafe { decompress_triple(data, max_output_len, hew_gzip_decompress) }
 }
 
-/// Out-pointer sibling for `hew_gzip_decompress_hew`.
-///
-/// # Safety
-///
-/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
-/// writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_gzip_decompress_hew_raw(
-    data: *const BytesTriple,
-    max_output_len: i64,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_gzip_decompress_hew(data, max_output_len) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
-}
-
 /// Deflate-compress `data` (`bytes`), returning a new `BytesTriple`.
 ///
 /// # Safety
@@ -597,23 +562,6 @@ pub unsafe extern "C" fn hew_gzip_decompress_hew_raw(
 pub unsafe extern "C" fn hew_deflate_compress_hew(data: *const BytesTriple) -> BytesTriple {
     // SAFETY: data is null-or-valid per caller contract.
     unsafe { compress_triple(data, hew_deflate_compress) }
-}
-
-/// Out-pointer sibling for `hew_deflate_compress_hew`.
-///
-/// # Safety
-///
-/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
-/// writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_deflate_compress_hew_raw(
-    data: *const BytesTriple,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_deflate_compress_hew(data) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
 }
 
 /// Deflate-decompress `data` (`bytes`), returning a new `BytesTriple`.
@@ -631,24 +579,6 @@ pub unsafe extern "C" fn hew_deflate_decompress_hew(
     unsafe { decompress_triple(data, max_output_len, hew_deflate_decompress) }
 }
 
-/// Out-pointer sibling for `hew_deflate_decompress_hew`.
-///
-/// # Safety
-///
-/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
-/// writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_deflate_decompress_hew_raw(
-    data: *const BytesTriple,
-    max_output_len: i64,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_deflate_decompress_hew(data, max_output_len) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
-}
-
 /// Zlib-compress `data` (`bytes`), returning a new `BytesTriple`.
 ///
 /// # Safety
@@ -658,23 +588,6 @@ pub unsafe extern "C" fn hew_deflate_decompress_hew_raw(
 pub unsafe extern "C" fn hew_zlib_compress_hew(data: *const BytesTriple) -> BytesTriple {
     // SAFETY: data is null-or-valid per caller contract.
     unsafe { compress_triple(data, hew_zlib_compress) }
-}
-
-/// Out-pointer sibling for `hew_zlib_compress_hew`.
-///
-/// # Safety
-///
-/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
-/// writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_zlib_compress_hew_raw(
-    data: *const BytesTriple,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_zlib_compress_hew(data) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
 }
 
 /// Zlib-decompress `data` (`bytes`), returning a new `BytesTriple`.
@@ -690,24 +603,6 @@ pub unsafe extern "C" fn hew_zlib_decompress_hew(
 ) -> BytesTriple {
     // SAFETY: data is null-or-valid per caller contract.
     unsafe { decompress_triple(data, max_output_len, hew_zlib_decompress) }
-}
-
-/// Out-pointer sibling for `hew_zlib_decompress_hew`.
-///
-/// # Safety
-///
-/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
-/// writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_zlib_decompress_hew_raw(
-    data: *const BytesTriple,
-    max_output_len: i64,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_zlib_decompress_hew(data, max_output_len) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
 }
 
 #[cfg(test)]

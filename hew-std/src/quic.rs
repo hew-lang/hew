@@ -1264,24 +1264,6 @@ pub unsafe extern "C" fn hew_quic_stream_recv(stream: *mut HewQuicStream) -> Byt
     }
 }
 
-/// Out-pointer variant of [`hew_quic_stream_recv`] for Windows x64 MSVC sret
-/// compatibility.
-///
-/// # Safety
-///
-/// - `stream` must be null or a live stream pointer returned by this module.
-/// - `out` must be a valid, writable pointer to a `BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_quic_stream_recv_raw(
-    stream: *mut HewQuicStream,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_quic_stream_recv(stream) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
-}
-
 #[no_mangle]
 /// Send bytes on a QUIC stream with a per-call deadline.
 ///
@@ -1510,25 +1492,6 @@ pub unsafe extern "C" fn hew_quic_stream_recv_timeout_hew(
             empty_bytes_triple()
         }
     }
-}
-
-/// Out-pointer variant of [`hew_quic_stream_recv_timeout_hew`] for Windows
-/// x64 MSVC sret compatibility.
-///
-/// # Safety
-///
-/// - `stream` must be null or a live stream pointer returned by this module.
-/// - `out` must be a valid, writable pointer to a `BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_quic_stream_recv_timeout_hew_raw(
-    stream: *mut HewQuicStream,
-    deadline_ms: i32,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_quic_stream_recv_timeout_hew(stream, deadline_ms) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
 }
 
 #[no_mangle]

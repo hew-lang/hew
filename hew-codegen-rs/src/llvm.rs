@@ -18545,14 +18545,13 @@ fn lower_instruction(
         }
         Instr::BytesLit { bytes, dest } => {
             // Emit an LLVM global constant for the raw byte data and call
-            // `hew_bytes_from_static_raw(ptr, len, out)` to build the
-            // refcounted `BytesTriple` into the dest slot.
+            // `hew_bytes_from_static(ptr, len)` to build the refcounted
+            // `BytesTriple` into the dest slot.
             //
             // The dest local carries `ResolvedTy::Bytes` —
             // `primitive_to_llvm` maps it to the struct `{ptr, i32, i32}`.
-            // `hew_bytes_from_static_raw` writes the completed triple through
-            // the out-pointer directly (Windows x64 MSVC sret-safe variant),
-            // so no post-call struct copy is needed.
+            // The aggregate return is classified per target (register pair on
+            // SysV/AAPCS, sret on MSVC/wasm32) and lands in the dest slot.
             //
             // For the empty literal (`bytes[]` or `b""`) we store the zero
             // struct directly, matching `bytes::new` and avoiding a null-ptr
@@ -20682,7 +20681,7 @@ fn lower_actor_state_field_store(
 ///
 /// - `Encode`: pass the operand value's address and an `out_len` slot; the thunk
 ///   returns a `libc::malloc`'d byte buffer (length in `*out_len`). Wrap it into
-///   a refcounted `bytes` value via `hew_bytes_from_static_raw` (which copies),
+///   a refcounted `bytes` value via `hew_bytes_from_static` (which copies),
 ///   then free the thunk's intermediate buffer with `hew_ser_free_bytes`.
 /// - `Decode`: read `(base_ptr, offset, len)` from the operand `bytes` triple,
 ///   pass `base_ptr + offset` and `len` plus an `out_struct_size` slot; the
@@ -20756,7 +20755,7 @@ fn lower_wire_codec_instr<'ctx>(
                 out_len,
                 "wire_encode_out_len_lt_end",
             )?;
-            // `hew_bytes_from_static_raw` takes a u32 length; narrow the usize
+            // `hew_bytes_from_static` takes a u32 length; narrow the usize
             // out-length to i32 (the BytesTriple length field is i32 — a wire
             // payload exceeding 4 GiB is not a supported shape).
             let len_i32 = builder

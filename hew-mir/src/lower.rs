@@ -19515,7 +19515,7 @@ impl Builder {
                 // Bytes literal — `bytes[0x41, 0x42]` or `b"AB"`.
                 // Allocate a `ResolvedTy::Bytes` local and emit `Instr::BytesLit`.
                 // Codegen will emit an LLVM global constant for the raw bytes and
-                // call `hew_bytes_from_static_raw(ptr, len, dst)` to build the
+                // call `hew_bytes_from_static(ptr, len)` to build the
                 // refcounted `BytesTriple` at runtime.
                 let dest = self.alloc_local(ty.clone());
                 self.push_instr(Instr::BytesLit {

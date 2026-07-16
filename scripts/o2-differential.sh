@@ -23,16 +23,29 @@
 #   scripts/o2-differential.sh            # uses target/debug/hew (or HEW_BIN)
 #   HEW_BIN=/path/to/hew scripts/o2-differential.sh
 #   scripts/o2-differential.sh --tests-dir <dir>
+#   scripts/o2-differential.sh --o0-outcomes <path>
+#
+# --o0-outcomes <path> skips this gate's own O0 pass and reuses a pre-captured
+# outcome file instead (produced by scripts/hew-suite-ratchet.sh's
+# --emit-o0-outcomes, which runs the byte-identical `hew test $TESTS_DIR`
+# invocation at O0 one step earlier in the same CI job). This is the CI-only
+# fast path; a
+# standalone invocation (no flag) always runs its own O0 pass so the gate
+# behaves identically when run outside the ratchet→differential handoff. The
+# file must exist and be non-empty when the flag is given — a missing/empty
+# handoff file is a wiring bug, not a reason to silently fall back and mask it.
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
 TESTS_DIR="$REPO_ROOT/tests/hew"
+O0_OUTCOMES_FILE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tests-dir) shift; TESTS_DIR="$1"; shift ;;
+        --o0-outcomes) shift; O0_OUTCOMES_FILE="$1"; shift ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -76,8 +89,20 @@ echo "    binary:  $HEW_BIN"
 echo "    corpus:  $TESTS_DIR"
 echo ""
 
-echo "--> baseline run (O0, default)"
-O0_OUTCOMES="$(run_outcomes 0)"
+if [[ -n "$O0_OUTCOMES_FILE" ]]; then
+    echo "--> baseline (O0) reused from pre-captured outcomes: $O0_OUTCOMES_FILE"
+    if [[ ! -s "$O0_OUTCOMES_FILE" ]]; then
+        echo "error: --o0-outcomes file missing or empty: $O0_OUTCOMES_FILE" >&2
+        echo "       The ratchet->differential handoff did not produce a usable file." >&2
+        echo "       Refusing to silently fall back to a fresh O0 run for a caller that" >&2
+        echo "       explicitly requested the handoff — fix the wiring instead." >&2
+        exit 1
+    fi
+    O0_OUTCOMES="$(sort "$O0_OUTCOMES_FILE")"
+else
+    echo "--> baseline run (O0, default)"
+    O0_OUTCOMES="$(run_outcomes 0)"
+fi
 echo "--> optimized run (O2, HEW_OPT_LEVEL=2)"
 O2_OUTCOMES="$(run_outcomes 2)"
 

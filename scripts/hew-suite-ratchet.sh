@@ -21,9 +21,18 @@
 # Usage:
 #   scripts/hew-suite-ratchet.sh [--help]
 #   scripts/hew-suite-ratchet.sh [--expected-failures <path>]
+#   scripts/hew-suite-ratchet.sh [--emit-o0-outcomes <path>]
 #
 # Options:
 #   --expected-failures <path>   Override default expected-failures file path.
+#   --emit-o0-outcomes <path>    Write the sorted per-test outcome lines (the
+#                                same "test <name> ... ok|PASSED|FAILED|ignored"
+#                                format scripts/o2-differential.sh compares) to
+#                                <path>. This script's `hew test` run is O0 (its
+#                                default opt level), so a CI job can hand the
+#                                captured file to o2-differential.sh's
+#                                --o0-outcomes flag instead of re-running the
+#                                identical O0 pass a second time.
 
 set -euo pipefail
 
@@ -33,10 +42,11 @@ EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-suite-expected-failures.txt"
 # captured runner output); production callers use the default.
 HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
 TESTS_DIR="$REPO_ROOT/tests/hew"
+EMIT_O0_OUTCOMES_FILE=""
 
 usage() {
     cat <<'EOF'
-Usage: scripts/hew-suite-ratchet.sh [--expected-failures <path>]
+Usage: scripts/hew-suite-ratchet.sh [--expected-failures <path>] [--emit-o0-outcomes <path>]
 
 Run `hew test tests/hew/` and assert the result matches the tracked expected-failures list.
 
@@ -46,6 +56,8 @@ Exits 1 on any unexpected failure (not in list) or unexpected pass (was in list,
 Options:
   --expected-failures <path>   Override the default expected-failures file.
                                Default: scripts/hew-suite-expected-failures.txt
+  --emit-o0-outcomes <path>    Write the full sorted per-test outcome set to <path>
+                               for a downstream gate to reuse instead of re-running.
 EOF
 }
 
@@ -55,6 +67,12 @@ while [[ $# -gt 0 ]]; do
             shift
             [[ $# -gt 0 ]] || { echo "error: --expected-failures requires a path" >&2; exit 1; }
             EXPECTED_FAILURES_FILE="$1"
+            shift
+            ;;
+        --emit-o0-outcomes)
+            shift
+            [[ $# -gt 0 ]] || { echo "error: --emit-o0-outcomes requires a path" >&2; exit 1; }
+            EMIT_O0_OUTCOMES_FILE="$1"
             shift
             ;;
         --help|-h)
@@ -115,6 +133,19 @@ if ! printf '%s\n' "$CLEAN_OUTPUT" | grep -q "^test result:"; then
     echo "error: no 'test result:' summary in hew test output; refusing to ratchet" >&2
     printf '%s\n' "$RAW_OUTPUT"
     exit 1
+fi
+
+# Emit the full per-test outcome set for the O2-differential gate to reuse as
+# its O0 baseline (C1: dedup the identical O0 re-run). Same extraction pattern
+# as scripts/o2-differential.sh's run_outcomes(): every "test <name> ...
+# ok|PASSED|FAILED|ignored" line, sorted. Written before the ratchet verdict is
+# known — the outcome set is valid regardless of whether the ratchet itself
+# passes or fails; only a missing summary line (handled above) makes it unsafe
+# to emit.
+if [[ -n "$EMIT_O0_OUTCOMES_FILE" ]]; then
+    printf '%s\n' "$CLEAN_OUTPUT" \
+        | grep -E "^test .* \.\.\. (ok|PASSED|FAILED|ignored)" \
+        | sort > "$EMIT_O0_OUTCOMES_FILE"
 fi
 
 # Extract names of failing tests from lines matching "test <name> ... FAILED".

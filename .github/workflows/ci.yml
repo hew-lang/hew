@@ -290,6 +290,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Build & test (Linux)
+    needs: changes
     runs-on: ubuntu-24.04
     # Was 60. Successful runs on main land at 51-56 min wall time (checked
     # 2026-07-04 across 5 recent green runs), leaving only 4-9 min of
@@ -306,10 +307,28 @@ jobs:
       # coverage-nightly, sanitizers) that run on runners without mold are
       # unaffected.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      # platform_smoke gates the whole Linux build+test required check, same
+      # boundary Windows/macOS already use (ci.yml:547-548,647-648) — it
+      # covers every glob that can affect Linux behaviour ('**/*.rs',
+      # 'tests/**', 'std/**', 'examples/**', 'Cargo.*', 'Makefile', workflow
+      # files), so a docs/comment-only PR (matching none of those globs)
+      # skips this job's ~51-90 min of work. STEP-LEVEL gating, not a
+      # job-level `if:` — a job whose `if:` is false reports skipped/missing,
+      # not a satisfied required context (LESSONS.md
+      # ci-required-gate-sequencing), so every step below carries its own
+      # `if: env.RUN_CODE_PATH == 'true'` and the no-op step below still
+      # reports a green required check on skip.
+      RUN_CODE_PATH: ${{ needs.changes.outputs.platform_smoke }}
     steps:
+      - name: No-op for docs-only changes
+        if: env.RUN_CODE_PATH != 'true'
+        run: echo "No code changes detected; skipping heavy Linux CI while satisfying the required check."
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        if: env.RUN_CODE_PATH == 'true'
 
       - name: Free runner disk
+        if: env.RUN_CODE_PATH == 'true'
         # This job installs LLVM 22.1.5 (~1.5 GB), builds the release hew-runtime
         # + hew-lsp binaries, the wasm32-wasip1 runtime, and runs the full debug
         # workspace nextest suite — all on one ubuntu-24.04 runner (~14 GB free).
@@ -324,24 +343,29 @@ jobs:
           df -h /
 
       - name: Install build tools
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config mold zlib1g-dev libzstd-dev
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
+        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
+        if: env.RUN_CODE_PATH == 'true'
         with:
           tools: nextest
           cache-shared-key: build-test-linux
 
       - name: Build Rust runtime and frontend (release)
+        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime -p hew-lsp --release
 
       - name: Smoke test hew-lsp
+        if: env.RUN_CODE_PATH == 'true'
         # Drive the shipped release binary through a real initialize → didOpen →
         # publishDiagnostics session, not just --version. HEW_LSP_BIN points the
         # protocol test at the artifact built above.
@@ -351,11 +375,13 @@ jobs:
             cargo nextest run -p hew-lsp --test protocol_smoke
 
       - name: Build WASM runtime
+        if: env.RUN_CODE_PATH == 'true'
         run: |
           rustup target add wasm32-wasip1
           cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
       - name: Install wasmtime
+        if: env.RUN_CODE_PATH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -368,6 +394,7 @@ jobs:
           "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run WASM runtime actual-target libtests
+        if: env.RUN_CODE_PATH == 'true'
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
         run: cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
@@ -388,6 +415,7 @@ jobs:
       # maintained CI_BUILD_AND_TEST_STEPS list in the parity script is now
       # derived from here instead of a hand-maintained copy.
       - name: Run Rust workspace tests
+        if: env.RUN_CODE_PATH == 'true'
         # line-tables-only: the release build + wasm build + full debug
         # workspace nextest run together leave the runner disk-marginal
         # (ENOSPC twice on this exact job — see PR #1994). Full debug info
@@ -402,12 +430,15 @@ jobs:
           --profile ci
 
       - name: Run vertical-slice end-to-end oracle
+        if: env.RUN_CODE_PATH == 'true'
         run: make test-vertical-slice
 
       - name: Run cross-module package-import oracle
+        if: env.RUN_CODE_PATH == 'true'
         run: make test-pkg-import
 
       - name: Run fuzz-to-run completeness oracle (ratcheted)
+        if: env.RUN_CODE_PATH == 'true'
         # Compiles and runs every checker-valid program in the regressions
         # corpus and the vertical-slice accept fixtures.  Known failures are
         # tracked in tests/fuzz-oracle/expected-failures.txt (ratchet contract:
@@ -417,26 +448,52 @@ jobs:
         run: make fuzz-oracle
 
       - name: Run Hew language test suite (ratcheted)
+        if: env.RUN_CODE_PATH == 'true'
         # Runs tests/hew/ through scripts/hew-suite-ratchet.sh.
         # Known failures are tracked in scripts/hew-suite-expected-failures.txt;
         # any unexpected failure OR unexpected pass (ratchet forward) exits 1.
         # When all entries in the expected-failures file are cleared, this step
         # gates on a fully-green suite with no special handling.
+        #
+        # HEW_O0_OUTCOMES_FILE captures this run's O0 outcome set so the
+        # differential-exec gate below reuses it instead of re-running the
+        # byte-identical `hew test tests/hew/` invocation at O0 a second time.
+        env:
+          HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
         run: make test-hew-ratchet
 
       - name: Run -O0-vs-O2 differential-exec parity gate
+        if: env.RUN_CODE_PATH == 'true'
         # Every compiled `.hew` program must behave identically at -O0 and -O2;
         # a divergence is a miscompile in the LLVM middle-end optimizer pipeline.
         # Runs the Linux/x86_64 portion of the cross-platform parity matrix
         # tracked in #2104; Windows-MSVC and wasm32 remain separate platform gates.
+        #
+        # Reuses the O0 outcome set the ratchet step above just captured
+        # (same env var) instead of re-running the O0 leg — the redundant
+        # re-run was ~9-10 min of the ~19 min this step used to cost.
+        env:
+          HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
         run: make test-o2-differential
 
+      - name: Run O2-differential gate self-test
+        if: env.RUN_CODE_PATH == 'true'
+        # Proves the differential gate itself has teeth: three independently
+        # failable cases (a forced O0/O2 outcome divergence, an identical
+        # baseline, and a runner-crash no-summary case) run against a stub
+        # binary, asserting the gate exits non-zero on divergence and zero on
+        # a matching outcome set. Guards against a future refactor silently
+        # reducing the gate to a no-op.
+        run: make o2-differential-selftest
+
       - name: Run stdlib type-check suite (ratcheted)
+        if: env.RUN_CODE_PATH == 'true'
         # Type-checks every std/*.hew file through scripts/stdlib-ratchet.sh.
         # Known failures tracked in scripts/stdlib-expected-failures.txt.
         run: make test-stdlib-ratchet
 
       - name: Run doc-fence typecheck suite (ratcheted)
+        if: env.RUN_CODE_PATH == 'true'
         # Extracts every ```hew fence from docs/ and runs `hew check` on each.
         # Known failures are tracked in scripts/doc-test-expected-failures.txt;
         # any unexpected failure OR unexpected pass (ratchet forward) exits 1.
@@ -446,6 +503,7 @@ jobs:
         run: make test-doc-examples
 
       - name: Setup Node.js for sandbox parity
+        if: env.RUN_CODE_PATH == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: 24
@@ -453,6 +511,7 @@ jobs:
           cache-dependency-path: hew-sandbox-vm/package-lock.json
 
       - name: Run sandbox VM parity
+        if: env.RUN_CODE_PATH == 'true'
         # make sandbox-parity provisions hew-sandbox-vm's npm dependencies
         # (sandbox-vm-deps) and then runs all four VM-dependent test binaries
         # (parity, parity_ratchet, playground, ios_subset) directly via plain
@@ -462,6 +521,7 @@ jobs:
         run: make sandbox-parity
 
       - name: Verify checked-MIR golden corpus
+        if: env.RUN_CODE_PATH == 'true'
         # Re-dumps every examples/v05/checked-mir/*.hew fixture through
         # --dump-mir and byte-diffs against the committed goldens.  A drift
         # here means either the renderer changed without regenerating the
@@ -470,6 +530,7 @@ jobs:
         run: make checked-mir-verify
 
       - name: Verify per-function .ll byte-identity corpus
+        if: env.RUN_CODE_PATH == 'true'
         # Recompiles every tests/ll-oracle/corpus/*.hew fixture (native and
         # wasm32) and diffs the normalised per-function IR against the committed
         # goldens.  A drift here means emitted LLVM IR changed: either an
@@ -481,6 +542,7 @@ jobs:
         run: make ll-diff
 
       - name: Run repo-wide hew check corpus sweep (ratcheted)
+        if: env.RUN_CODE_PATH == 'true'
         # Runs `hew check` over every tracked .hew file (excluding intentional
         # reject fixtures already covered by test-vertical-slice/test-pkg-import
         # /fuzz-oracle).  Known failures tracked in
@@ -493,10 +555,11 @@ jobs:
       # <<< CI-PARITY-STEPS
 
       - name: Run hew observe functional harness
+        if: env.RUN_CODE_PATH == 'true'
         run: make observe-functional-test
 
       - name: Upload test reports
-        if: always()
+        if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: target/nextest/ci/junit.xml

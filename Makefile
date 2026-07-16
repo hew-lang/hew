@@ -826,16 +826,22 @@ test-hew: hew runtime stdlib
 # pass causes the gate to exit 1.  When the converging lanes land and the
 # tracked failures drop to zero, delete the list entries; the ratchets then
 # pass with no tracking overhead.
+#
+# HEW_O0_OUTCOMES_FILE, when set, wires the ratchet's O0 outcome capture into
+# test-o2-differential's O0 baseline so the differential gate does not re-run
+# the identical O0 pass a second time (CI sets this across both targets in the
+# same job; plain `make test-hew-ratchet` / `make test-o2-differential` with no
+# env var keep their original standalone behaviour).
 test-hew-ratchet: hew runtime stdlib
 	@echo "==> Running Hew test suite (ratcheted)"
-	scripts/hew-suite-ratchet.sh
+	scripts/hew-suite-ratchet.sh $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 # The -O0-vs-O2 differential-exec parity gate: every compiled `.hew` program
 # must behave identically at -O0 and -O2. The no-miscompile oracle for the LLVM
 # middle-end pipeline (RC9). A divergence is a miscompile and a full stop.
 test-o2-differential: hew runtime stdlib
 	@echo "==> Running -O0-vs-O2 differential-exec parity gate"
-	scripts/o2-differential.sh
+	scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 o2-differential-selftest:
 	bash scripts/o2-differential-selftest.sh

@@ -1604,11 +1604,61 @@ pub(crate) enum CborVecElemKind {
     /// (`Vec layout-aware operation is not implemented`). The descriptor is a
     /// thunk-less `{size, align, ownership_kind=0}` matching `layout_descriptor_ptr`.
     LayoutBitCopy,
-    /// Owned-compound element (bytes / heap-owning record / nested collection):
-    /// the standalone emitter cannot synthesise the owned clone/drop descriptor
-    /// the backing vec would need, so the codec fails closed (a failable
-    /// sub-shape, not a silent partial).
+    /// Heap-owning record / enum element that resolves an owned clone/drop thunk
+    /// key: an OWNED (thunk-bearing) Vec (`hew_vec_new_with_elem_layout` /
+    /// `hew_vec_push_owned_move` / `hew_vec_get_owned`,
+    /// `ownership_kind = LayoutManaged`). This is the SAME ABI `Vec::new` builds
+    /// for a `Vec<owned>` (`VecCtor::Owned`), and the descriptor global
+    /// dedup-collapses onto the constructor's via the single
+    /// `owned_elem_layout_descriptor_ptr` authority. `hew_vec_free` walks the
+    /// per-element `drop_fn`, so a partially decoded vec releases exactly once.
+    /// Nested-collection elements (`Vec<Vec<…>>`) are excluded — that base ABI is
+    /// NYI (see the `Defer` arm) — so this covers records/enums with owned scalar
+    /// leaf fields (`string` today).
+    Owned,
+    /// Element outside the supported wire-body floor (bytes / indirect enum /
+    /// `Option`-with-heap / nested collection `Vec<Vec>`/`Vec<HashMap>`/
+    /// `Vec<HashSet>` / no resolvable owned thunk key): the codec fails closed
+    /// (a failable sub-shape, not a silent partial).
     Defer,
+}
+
+/// Owns the record field-type table the wire codec reconstructs from the
+/// threaded `pipeline_records`, so an [`OwnedElemRegistries`] borrow can be handed
+/// to the single owned-descriptor authority (`owned_elem_thunk_key` /
+/// `owned_elem_layout_descriptor_ptr`). The reconstructed map is byte-identical to
+/// the one `build_module` gives `FnCtx` (both are `pipeline.record_layouts` keyed
+/// by name), so the codec's owned-element resolution can never disagree with the
+/// constructor's.
+struct CborOwnedElemRegistries<'a, 'ctx> {
+    record_field_resolved_tys: std::collections::HashMap<String, Vec<ResolvedTy>>,
+    enum_layouts: &'a [EnumLayout],
+    machine_layouts: &'a MachineLayoutMap<'ctx>,
+}
+
+impl<'ctx> CborOwnedElemRegistries<'_, 'ctx> {
+    fn registries(&self) -> OwnedElemRegistries<'_, 'ctx> {
+        OwnedElemRegistries {
+            enum_layouts: self.enum_layouts,
+            machine_layouts: self.machine_layouts,
+            record_field_resolved_tys: &self.record_field_resolved_tys,
+        }
+    }
+}
+
+fn cbor_owned_elem_registries<'a, 'ctx>(
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &'a [EnumLayout],
+    machine_layouts: &'a MachineLayoutMap<'ctx>,
+) -> CborOwnedElemRegistries<'a, 'ctx> {
+    CborOwnedElemRegistries {
+        record_field_resolved_tys: pipeline_records
+            .iter()
+            .map(|r| (r.name.clone(), r.field_tys.clone()))
+            .collect(),
+        enum_layouts,
+        machine_layouts,
+    }
 }
 
 /// Classify a CBOR Vec element type into the backing-store kind its codec needs.
@@ -1620,7 +1670,12 @@ pub(crate) fn cbor_vec_elem_kind(
     elem: &ResolvedTy,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    machine_layouts: &MachineLayoutMap<'_>,
 ) -> CborVecElemKind {
+    // Reach the single owned-descriptor authority via the same registries
+    // `Vec::new` uses (reconstructed from the threaded `pipeline_records`).
+    let owned_regs = cbor_owned_elem_registries(pipeline_records, enum_layouts, machine_layouts);
+    let regs = owned_regs.registries();
     match elem {
         ResolvedTy::Bool
         | ResolvedTy::I8
@@ -1638,24 +1693,49 @@ pub(crate) fn cbor_vec_elem_kind(
         | ResolvedTy::F32
         | ResolvedTy::F64 => CborVecElemKind::Plain,
         ResolvedTy::String => CborVecElemKind::Str,
-        // Non-`Option` builtins (`Vec` / `HashMap` / `HashSet` / `Generator` /
-        // `Result` / `Range` / `Rc` / …) need the owned (thunk-bearing) Vec ABI
-        // the standalone codec cannot synthesise: fail closed. This preserves the
-        // retired `cbor_ty_owns_heap` walker's coarse `_ => true` builtin rule
-        // EXACTLY. The single authority's finer arg-recursion (which would admit
-        // a heap-free `Result<i64, i64>` as BitCopy) is intentionally NOT applied
-        // here: enabling those element shapes needs matching codec support and is
-        // deferred to a future consolidation, so reachable behaviour stays byte-identical.
+        // Non-`Option` builtins stay fail-closed. A nested collection element
+        // (`Vec<Vec<…>>`, `Vec<HashMap>`, `Vec<HashSet>`) would need the base
+        // language's recursive owned clone/drop thunk synthesis for a
+        // collection-of-collections, which is NOT implemented yet: the checker
+        // already rejects the analogous `Vec<record-with-a-collection-field>` with
+        // "recursive owned clone/drop thunk synthesis … not implemented yet", and a
+        // direct `Vec<Vec<string>>` (which the checker does not yet gate) aborts at
+        // runtime with a missing element-layout descriptor even OUTSIDE the codec.
+        // Admitting it here would emit codec code that runtime-panics rather than
+        // fails closed, so the codec keeps `Defer` until the base owned nested-Vec
+        // ABI lands. `HashMap`/`HashSet` values additionally have no
+        // `emit_ser_value_cbor` arm; every other builtin (`Generator` / `Result` /
+        // `Range` / `Rc` / …) has no codec support.
         ResolvedTy::Named {
             builtin: Some(b), ..
         } if !matches!(b, BuiltinType::Option) => CborVecElemKind::Defer,
-        // `Option<T>` and user record / enum elements: route the heap-ownership
-        // question through the single `hew_mir::ty_owns_heap` authority (was the
-        // parallel `cbor_ty_owns_heap` walker). A heap-owning element needs the
-        // owned (thunk-bearing) Vec ABI the standalone codec cannot synthesise →
-        // fail closed; a heap-free record/enum element is the layout-aware
-        // BitCopy vec `Vec::new` constructs (`hew_vec_new_with_layout`), so the
-        // codec MUST round-trip it through the layout-aware accessors.
+        // `Option<T>` element: a heap-free payload (`Option<i64>`) is the
+        // layout-aware BitCopy vec; a heap-owning payload (`Option<string>`) stays
+        // fail-closed. Option resolves an enum thunk key (it lowers to an enum),
+        // but its null-encoding + owned-element ABI is a distinct, unproven shape —
+        // out of scope for this floor, so it does NOT take the `Owned` path the
+        // user-record/enum arm below does.
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Option),
+            ..
+        } => {
+            #[allow(deprecated)]
+            let owns_heap = cbor_ty_owns_heap(elem, pipeline_records, enum_layouts);
+            if owns_heap {
+                CborVecElemKind::Defer
+            } else {
+                CborVecElemKind::LayoutBitCopy
+            }
+        }
+        // User record / enum elements: route the heap-ownership question through
+        // the single `hew_mir::ty_owns_heap` authority (was the parallel
+        // `cbor_ty_owns_heap` walker). A heap-free record/enum element is the
+        // layout-aware BitCopy vec `Vec::new` constructs (`hew_vec_new_with_layout`).
+        // A heap-OWNING record/enum element takes the OWNED (thunk-bearing) Vec ABI
+        // — the same authority `Vec::new`'s `VecCtor::Owned` uses — provided it
+        // resolves an owned thunk key; a heap-owning element with no resolvable key
+        // (and every indirect enum, whose pointer ABI is a separate store family)
+        // stays fail-closed.
         ResolvedTy::Named { .. } => {
             // SEALED retired-walker seam: the sole sanctioned caller.
             #[allow(deprecated)]
@@ -1666,12 +1746,18 @@ pub(crate) fn cbor_vec_elem_kind(
             // element is nonetheless a heap-owned pointer — the `Vec` constructor
             // and the CBOR decoder both use pointer ABI for it — so fail closed
             // for any element that IS or transitively contains one, never
-            // BitCopying a heap-owned node.
+            // BitCopying (or owned-ABI-mishandling) a heap-owned node.
             let mut visiting = std::collections::HashSet::new();
             let contains_indirect_enum =
                 cbor_ty_contains_indirect_enum(elem, pipeline_records, enum_layouts, &mut visiting);
-            if owns_heap || contains_indirect_enum {
+            if contains_indirect_enum {
                 CborVecElemKind::Defer
+            } else if owns_heap {
+                if crate::thunks::owned_elem_thunk_key(regs, elem).is_some() {
+                    CborVecElemKind::Owned
+                } else {
+                    CborVecElemKind::Defer
+                }
             } else {
                 CborVecElemKind::LayoutBitCopy
             }
@@ -1739,14 +1825,16 @@ fn emit_ser_vec_cbor<'ctx>(
     enum_layouts: &[EnumLayout],
     target_data: &TargetData,
 ) -> CodegenResult<()> {
-    let kind = cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts);
+    let kind = cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts, machine_layouts);
     if kind == CborVecElemKind::Defer {
         return Err(CodegenError::FailClosed(format!(
-            "wire CBOR serialize: Vec<{elem_ty:?}> has an owned-compound element \
-             (bytes / heap-owning record / nested collection) outside the \
-             supported wire-body floor"
+            "wire CBOR serialize: Vec<{elem_ty:?}> has an element outside the \
+             supported wire-body floor (bytes / indirect enum / Option-with-heap / \
+             nested collection / HashMap or HashSet element / no resolvable owned \
+             thunk key)"
         )));
     }
+    let owned = kind == CborVecElemKind::Owned;
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
     let i64_ty = ctx.i64_type();
@@ -1768,6 +1856,27 @@ fn emit_ser_vec_cbor<'ctx>(
     } else {
         None
     };
+
+    // An owned (heap-owning) element rides an OWNED vec
+    // (`ownership_kind = LayoutManaged`), whose slots are borrowed through
+    // `hew_vec_get_owned`. Build the owned descriptor via the SAME single
+    // authority `Vec::new` uses so the global dedup-collapses onto the
+    // constructor's (and it validates the element resolves an owned thunk key at
+    // encode too, symmetric with decode). The element is encoded in place from
+    // its borrowed slot exactly as the LayoutBitCopy arm does.
+    if owned {
+        let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
+        let regs = cbor_owned_elem_registries(pipeline_records, enum_layouts, machine_layouts);
+        crate::layout::owned_elem_layout_descriptor_ptr(
+            ctx,
+            llvm_mod,
+            target_data,
+            regs.registries(),
+            elem_ty,
+            elem_llvm,
+            "wire_vec",
+        )?;
+    }
 
     let vec_ptr = builder
         .build_load(ptr_ty, value_ptr, "cbor_ser_vec_ptr")
@@ -1824,7 +1933,28 @@ fn emit_ser_vec_cbor<'ctx>(
         .llvm_ctx("cbor ser vec head br")?;
 
     builder.position_at_end(body_bb);
-    let elem_ptr = if let Some(layout_ptr) = layout_ptr {
+    let elem_ptr = if owned {
+        // Owned vec: borrow the element slot (`hew_vec_get_owned` returns the slot
+        // pointer without transferring ownership) and encode it in place. The
+        // slot's heap owners stay with the vec — the codec never frees them.
+        let get_owned = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_vec_get_owned",
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        );
+        builder
+            .build_call(
+                get_owned,
+                &[vec_ptr.into(), i_cur.into()],
+                "cbor_ser_vec_get_owned",
+            )
+            .llvm_ctx("cbor ser vec get_owned")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_owned void".into()))?
+            .into_pointer_value()
+    } else if let Some(layout_ptr) = layout_ptr {
         let get_layout = declare_codec_prim(
             ctx,
             llvm_mod,
@@ -1917,14 +2047,16 @@ fn emit_de_vec_cbor<'ctx>(
     enum_layouts: &[EnumLayout],
     target_data: &TargetData,
 ) -> CodegenResult<()> {
-    let kind = cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts);
+    let kind = cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts, machine_layouts);
     if kind == CborVecElemKind::Defer {
         return Err(CodegenError::FailClosed(format!(
-            "wire CBOR deserialize: Vec<{elem_ty:?}> has an owned-compound element \
-             (bytes / heap-owning record / nested collection) outside the \
-             supported wire-body floor"
+            "wire CBOR deserialize: Vec<{elem_ty:?}> has an element outside the \
+             supported wire-body floor (bytes / indirect enum / Option-with-heap / \
+             nested collection / HashMap or HashSet element / no resolvable owned \
+             thunk key)"
         )));
     }
+    let owned = kind == CborVecElemKind::Owned;
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
     let i64_ty = ctx.i64_type();
@@ -1941,6 +2073,28 @@ fn emit_de_vec_cbor<'ctx>(
             ctx,
             llvm_mod,
             target_data,
+            elem_llvm,
+            "wire_vec",
+        )?)
+    } else {
+        None
+    };
+
+    // A heap-owning element is reconstructed into an OWNED vec
+    // (`ownership_kind = LayoutManaged`), matching `Vec::new` → `VecCtor::Owned`,
+    // so element indexing and scope-exit `hew_vec_free` (which walks the per-
+    // element `drop_fn`) see the same ABI a directly-constructed `Vec<owned>`
+    // has. Built via the SAME single authority `Vec::new` uses, so the descriptor
+    // global dedup-collapses onto the constructor's.
+    let owned_layout_ptr = if owned {
+        let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
+        let regs = cbor_owned_elem_registries(pipeline_records, enum_layouts, machine_layouts);
+        Some(crate::layout::owned_elem_layout_descriptor_ptr(
+            ctx,
+            llvm_mod,
+            target_data,
+            regs.registries(),
+            elem_ty,
             elem_llvm,
             "wire_vec",
         )?)
@@ -1996,6 +2150,30 @@ fn emit_de_vec_cbor<'ctx>(
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| CodegenError::FailClosed("hew_vec_new_with_layout void".into()))?
+                .into_pointer_value()
+        }
+        CborVecElemKind::Owned => {
+            let owned_layout_ptr = owned_layout_ptr.ok_or_else(|| {
+                CodegenError::FailClosed("owned Vec decode missing owned descriptor".into())
+            })?;
+            let new_owned = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_vec_new_with_elem_layout",
+                ptr_ty.fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(
+                    new_owned,
+                    &[owned_layout_ptr.into()],
+                    "cbor_de_vec_new_owned",
+                )
+                .llvm_ctx("cbor de vec new_with_elem_layout")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_vec_new_with_elem_layout void".into())
+                })?
                 .into_pointer_value()
         }
         CborVecElemKind::Defer => unreachable!("Defer handled above"),
@@ -2164,6 +2342,55 @@ fn emit_de_vec_cbor<'ctx>(
                     "cbor_de_vec_push_layout",
                 )
                 .llvm_ctx("cbor de vec push_layout")?;
+        }
+        CborVecElemKind::Owned => {
+            let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
+            let temp = builder
+                .build_alloca(elem_llvm, "cbor_de_vec_elem_owned")
+                .llvm_ctx("cbor de vec owned elem alloca")?;
+            // Zero the slot BEFORE decoding so a fail-closed partial element is a
+            // defined value whose unwritten heap fields are null — the owned
+            // `drop_fn` short-circuits on null, giving exactly-once on the failure
+            // path.
+            builder
+                .build_store(temp, elem_llvm.const_zero())
+                .llvm_ctx("cbor de vec owned elem zero")?;
+            emit_de_value_cbor(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                elem_ty,
+                temp,
+                reader,
+                wire_layouts,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+                target_data,
+            )?;
+            // MOVE the decoded element into the vec UNCONDITIONALLY — including on
+            // a latched-failure iteration. `hew_vec_push_owned_move` byte-copies
+            // the temp's heap owners into the vec slot (the temp goes dead, no
+            // clone). On the failure path the thunk's `fail_bb` then frees the vec
+            // via `hew_vec_free`, whose owned drop walks `drop_fn` per element and
+            // short-circuits the zeroed-null partial fields — exactly-once on BOTH
+            // success and failure, with no separate temp drop (which would
+            // double-free the moved-out heap).
+            let push_owned = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_vec_push_owned_move",
+                void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+            );
+            builder
+                .build_call(
+                    push_owned,
+                    &[vec_ptr.into(), temp.into()],
+                    "cbor_de_vec_push_owned",
+                )
+                .llvm_ctx("cbor de vec push_owned_move")?;
         }
         CborVecElemKind::Defer => unreachable!("Defer handled above"),
     }

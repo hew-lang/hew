@@ -8899,6 +8899,20 @@ fn lower_function(
                     diagnostics.push(diag);
                 }
             }
+            // CAP-08 consume/extraction sibling: refuse an explicit close of a
+            // handle held in actor state (the double-free the new state-held
+            // Stream/Sink surface would otherwise reach). The state_drop_fn is
+            // the single owner.
+            for check in detect_actor_state_handle_consume(
+                &raw.blocks,
+                kinds,
+                &layout.state_field_names,
+                &layout.state_field_tys,
+            ) {
+                if let Some(diag) = check_to_diagnostic(&check) {
+                    diagnostics.push(diag);
+                }
+            }
         }
     }
 
@@ -49180,6 +49194,137 @@ fn detect_actor_state_resource_overwrite(
                 owner: AggregateOwner::ActorState,
             });
         }
+    }
+    findings
+}
+
+/// CAP-08 fail-closed gate: refuse an explicit CONSUMING close on an owned
+/// builtin-handle held in ACTOR STATE (`sink.close()` on the bare state field —
+/// an `Instr::ActorStateFieldLoad` whose `dest` becomes the receiver of a
+/// `consumes_receiver` runtime call, e.g. `hew_sink_close` / `hew_stream_close`).
+///
+/// The handle is owned by the actor's synthesised `state_drop_fn`, which closes
+/// it EXACTLY ONCE at teardown (Stream→`hew_stream_close` / Sink→`hew_sink_close`;
+/// the runtime close is an UNGUARDED `Box::from_raw`). A handler that also closes
+/// it frees the one runtime context twice → a double-free (verified: exit 139
+/// under `MallocScribble`; two `hew_sink_close` sites in the emitted IR). This is
+/// the consume/extraction sibling of [`detect_actor_state_resource_overwrite`]
+/// (the store/overwrite gate) — the SAME exactly-once-close invariant, the SAME
+/// fail-closed posture, and it mirrors the `#[resource]` handle posture
+/// (`detect_opaque_resource_field_misuse` refuses `h.dq.close()`): a resource
+/// handle in actor state is closed only by teardown.
+///
+/// The consuming close is a `Terminator::Call` whose `builtin` family reports
+/// `consumes_receiver()`; the receiver is `args[0]`, traced back (through
+/// whole-value `Move`) to the `ActorStateFieldLoad` dest. Reuses the same
+/// authoritative per-field classification the overwrite gate consumes
+/// (`ActorLayout::state_field_clone_kinds` → `actor_state_kind_leaks_on_overwrite`)
+/// so the two gates fence exactly the same close-bearing handle set.
+///
+/// Direction: refuse rather than emit the double-free (over-refusal is a compile
+/// error, never a UAF). To signal EOF, close a sink owned as a LOCAL, or let the
+/// actor's teardown close the state-held half.
+///
+/// LESSONS: boundary-fail-closed, raii-null-after-move, cleanup-all-exits,
+/// lifecycle-symmetry.
+fn detect_actor_state_handle_consume(
+    blocks: &[BasicBlock],
+    state_field_clone_kinds: &[crate::state_clone::StateFieldCloneKind],
+    state_field_names: &[String],
+    state_field_tys: &[ResolvedTy],
+) -> Vec<MirCheck> {
+    if state_field_clone_kinds.is_empty() {
+        return Vec::new();
+    }
+    // Locals carrying a close-bearing handle loaded out of an actor state field,
+    // mapped to their field offset; grown forward through whole-value `Move`.
+    let mut handle_field_local: HashMap<u32, u32> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::ActorStateFieldLoad {
+                field_offset, dest, ..
+            } = instr
+            {
+                let idx = field_offset.0;
+                let Some(kind) = state_field_clone_kinds.get(idx as usize) else {
+                    continue;
+                };
+                if !actor_state_kind_leaks_on_overwrite(kind) {
+                    continue;
+                }
+                if let Some(dl) = base_local(*dest) {
+                    handle_field_local.insert(dl, idx);
+                }
+            }
+        }
+    }
+    if handle_field_local.is_empty() {
+        return Vec::new();
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if let Some(&idx) = handle_field_local.get(&sl) {
+                            if handle_field_local.insert(dl, idx).is_none() {
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut findings = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        let Terminator::Call {
+            builtin: Some(family),
+            args,
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        if !family.consumes_receiver() {
+            continue;
+        }
+        let Some(receiver) = args.first() else {
+            continue;
+        };
+        let Some(rl) = base_local(*receiver) else {
+            continue;
+        };
+        let Some(&idx) = handle_field_local.get(&rl) else {
+            continue;
+        };
+        if !seen.insert(idx) {
+            continue;
+        }
+        let name = state_field_names
+            .get(idx as usize)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| {
+                state_field_tys
+                    .get(idx as usize)
+                    .map_or_else(|| format!("field{idx}"), render_owned_handle_ty)
+            });
+        let handle_ty = state_field_tys
+            .get(idx as usize)
+            .map_or_else(|| name.clone(), render_owned_handle_ty);
+        findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
+            binding: BindingId(idx),
+            name,
+            handle_ty,
+            overwrite: false,
+            owner: AggregateOwner::ActorState,
+        });
     }
     findings
 }

@@ -15231,11 +15231,15 @@ impl Builder {
         else_body: &hew_hir::HirBlock,
     ) {
         // #2648 preflight — run BEFORE any allocation or scrutinee lowering. A
-        // reject pushes one diagnostic and returns with no partial MIR.
-        if let Err(diag) = self.classify_call_scrutinee_admission(scrutinee) {
-            self.diagnostics.push(*diag);
-            return;
-        }
+        // reject pushes one diagnostic and returns with no partial MIR; the
+        // admission token also gates the #2429 from-call owner mint below.
+        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
+            Ok(admission) => admission,
+            Err(diag) => {
+                self.diagnostics.push(*diag);
+                return;
+            }
+        };
         // Entry: evaluate scrutinee, load tag, branch.
         let Some(scrutinee_place) = self.lower_value(scrutinee) else {
             return;
@@ -15257,6 +15261,18 @@ impl Builder {
                 return;
             }
         };
+
+        // #2429 — give a FROM-CALL enum-composite let-else scrutinee an owner,
+        // symmetric with `lower_match_enum_tag`/`lower_if_let`. Registered BEFORE
+        // the branch and the payload-predicate checks that route to `else_bb`, so
+        // the synthetic owned local is live on BOTH paths: the match path (payload
+        // moved out into the escaping binders, shell composite drop) and the
+        // divergent else path (`return`/`break`/`continue`/`panic` — no move-out,
+        // so the FULL temp drops once on that edge). The scope-exit drop
+        // elaboration frees it on whichever edge leaves the enclosing scope,
+        // including the divergent-else edges. No-op for the non-Call / carrier
+        // shapes per `register_from_call_scrutinee_owner`.
+        self.register_from_call_scrutinee_owner(scrutinee_admission, scrutinee, scrutinee_local);
 
         let tag_local = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::Move {
@@ -25324,13 +25340,18 @@ impl Builder {
         else_body: Option<&hew_hir::HirBlock>,
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
-        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. If-let
-        // mints no from-call owner but DOES classify the #2523 projected-payload
-        // origin; the reject short-circuits that too (no partial MIR).
-        if let Err(diag) = self.classify_call_scrutinee_admission(scrutinee) {
-            self.diagnostics.push(*diag);
-            return None;
-        }
+        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. A
+        // reject short-circuits with no partial MIR; the admission token also
+        // gates the #2429 from-call owner mint below (symmetric with
+        // `lower_match_enum_tag`/`lower_while_let`), so it is threaded through
+        // rather than discarded.
+        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
+            Ok(admission) => admission,
+            Err(diag) => {
+                self.diagnostics.push(*diag);
+                return None;
+            }
+        };
         let result_place = self.alloc_local(self.subst_ty(result_ty));
 
         // Entry: evaluate scrutinee, load tag, branch.
@@ -25352,6 +25373,22 @@ impl Builder {
                 return None;
             }
         };
+
+        // #2429 — give a FROM-CALL enum-composite if-let scrutinee an owner so
+        // its payload is released on EVERY exit edge, exactly as
+        // `lower_match_enum_tag`/`lower_while_let` already do. Registered here,
+        // BEFORE the branch and the mid-then `emit_payload_variant_predicate_checks`
+        // that route to `else_bb`, so the synthetic owned local is live on the
+        // matched edge (payload moved out, shell composite drop), the refuted
+        // `else_bb` edge, AND any nested-predicate fallthrough — the scope-exit
+        // drop elaboration then frees it once on whichever edge leaves the
+        // enclosing scope. No-op for binding-ref scrutinees, runtime-symbol
+        // producers, and the recv/iter-next shapes carrying their own release.
+        // Non-loop: the return is discarded (mirroring `lower_match_enum_tag`);
+        // the scope-exit machinery handles every edge, so no explicit
+        // per-iteration owner-drop plumbing is needed (that is `lower_while_let`'s
+        // loop-only concern).
+        self.register_from_call_scrutinee_owner(scrutinee_admission, scrutinee, scrutinee_local);
 
         let tag_local = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::Move {

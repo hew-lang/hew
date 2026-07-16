@@ -168,6 +168,132 @@ fn escape_binding_loop_source(frames: usize) -> String {
     )
 }
 
+// ── non-string composite arm bindings (regression guards) ───────────────────
+//
+// A select/recv arm binding of a non-`string` composite (`Option<string>`,
+// `Option<record>`, a record) is registered as an owned local of its true type
+// and released exactly once by the general owned-local drop elaboration — the
+// leaf-`string` COW provers (`derive_cow_sole_owner` /
+// `derive_cow_fresh_borrowed_owner`) are NOT the release authority for these
+// shapes. These pins lock that in: a future `derive_cow` change that
+// accidentally routed a non-string arm binding through the string-only path
+// (suppressing its drop, or double-releasing it) would re-open a per-iteration
+// slope here. Escape, unused, and heap-owning-field-record shapes are covered.
+
+/// `Option<string>` reply from an ask select-arm, ESCAPING as the select
+/// result and consumed by a downstream `match` — released once per iteration
+/// as the `let`-bound composite, not stranded and not double-freed.
+fn opt_string_escape_loop_source(frames: usize) -> String {
+    format!(
+        "actor Maker {{\n\
+         \x20   receive fn make(n: i64) -> Option<string> {{\n\
+         \x20       Some(to_string(n).to_upper())\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let m = spawn Maker;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let x = select {{\n\
+         \x20           r from m.make(i) => r,\n\
+         \x20       }};\n\
+         \x20       match x {{\n\
+         \x20           Some(s) => {{ total = total + s.len(); }}\n\
+         \x20           None => {{}}\n\
+         \x20       }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total > 0 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
+/// `Option<Row>` (record with an owned `string` field) reply from an ask
+/// select-arm, ESCAPING as the select result — the composite carries its
+/// interior owned field through the same one release.
+fn opt_record_escape_loop_source(frames: usize) -> String {
+    format!(
+        "type Row {{ name: string; id: i64; }}\n\
+         \n\
+         actor Maker {{\n\
+         \x20   receive fn make(n: i64) -> Option<Row> {{\n\
+         \x20       Some(Row {{ name: to_string(n).to_upper(), id: n }})\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let m = spawn Maker;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let x = select {{\n\
+         \x20           r from m.make(i) => r,\n\
+         \x20       }};\n\
+         \x20       match x {{\n\
+         \x20           Some(row) => {{ total = total + row.name.len(); }}\n\
+         \x20           None => {{}}\n\
+         \x20       }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total > 0 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
+/// Owned `Row` record reply from an ask select-arm, binding UNUSED — the
+/// scope-exit drop releases the whole record (and its owned field) exactly
+/// once on the loop-body edge; a suppressed drop re-opens a per-iteration leak.
+fn record_unused_binding_loop_source(frames: usize) -> String {
+    format!(
+        "type Row {{ name: string; id: i64; }}\n\
+         \n\
+         actor Maker {{\n\
+         \x20   receive fn make(n: i64) -> Row {{\n\
+         \x20       Row {{ name: to_string(n).to_upper(), id: n }}\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let m = spawn Maker;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var hits: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let r = select {{\n\
+         \x20           _row from m.make(i) => 1,\n\
+         \x20       }};\n\
+         \x20       hits = hits + r;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if hits == {frames} {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
+/// Straight-line `Option<string>` escape: the arm-body move carries the owned
+/// composite into the select result; its interior `string` reads back verbatim
+/// and the run exits clean under the poisoned allocator (a double-free of the
+/// interior payload aborts; a use-after-free garbles the read-back).
+const OPT_STRING_ESCAPE_SCRIBBLE_SOURCE: &str = "\
+actor Maker {\n\
+\x20   receive fn make() -> Option<string> {\n\
+\x20       Some(\"opt-escape-owned-reply\".to_upper())\n\
+\x20   }\n\
+}\n\
+\n\
+fn main() -> i64 {\n\
+\x20   let m = spawn Maker;\n\
+\x20   let x = select {\n\
+\x20       r from m.make() => r,\n\
+\x20   };\n\
+\x20   match x {\n\
+\x20       Some(s) => { print(s); }\n\
+\x20       None => {}\n\
+\x20   }\n\
+\x20   0\n\
+}\n";
+
 // ── scribble exactly-once pins ──────────────────────────────────────────────
 
 /// Select-loser race (the `ask_reply_owned_select_loser.hew` design): the fast
@@ -325,5 +451,39 @@ fn unused_owned_binding_no_double_free_under_malloc_scribble() {
         "g1875_unused_binding_scribble",
         UNUSED_BINDING_SCRIBBLE_SOURCE,
         "k",
+    );
+}
+
+// ── non-string composite regression guards ──────────────────────────────────
+
+/// `Option<string>` ask-reply escaping the select arm: released once per
+/// iteration as the `let`-bound composite — flat slope.
+#[test]
+fn opt_string_escape_loop_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("owned_opt_string_escape", opt_string_escape_loop_source);
+}
+
+/// `Option<Row>` (owned-field record) ask-reply escaping the select arm — flat
+/// slope; the interior owned field rides the one composite release.
+#[test]
+fn opt_record_escape_loop_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("owned_opt_record_escape", opt_record_escape_loop_source);
+}
+
+/// Owned `Row` record ask-reply, binding unused: whole-record scope-exit
+/// release once per iteration — flat slope.
+#[test]
+fn record_unused_binding_loop_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("owned_record_unused", record_unused_binding_loop_source);
+}
+
+/// Exactly-once wall for the `Option<string>` escape: the interior payload
+/// reads back verbatim and the run exits clean under the poisoned allocator.
+#[test]
+fn opt_string_escape_no_double_free_under_malloc_scribble() {
+    assert_exact_under_malloc_scribble(
+        "owned_opt_string_escape_scribble",
+        OPT_STRING_ESCAPE_SCRIBBLE_SOURCE,
+        "OPT-ESCAPE-OWNED-REPLY",
     );
 }

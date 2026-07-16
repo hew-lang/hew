@@ -2020,15 +2020,16 @@ fn check_match_destructure_wildcard_closure_field_fails_closed() {
     );
 }
 
-/// Fail-closed boundary (#2359): a generator yielding `Vec<indirect-enum>`
-/// is rejected at check time. The element's per-element node free is
-/// unwired, so the consuming body's per-frame release could only be the
-/// buffer-only `hew_vec_free` — a per-frame element-node leak (previously
-/// 2 nodes x N iterations, compiling clean). The refusal must fire at the
-/// yield/recv release-verdict consultation: the consumer binding is
-/// retracted from `owned_locals` before the end-of-pass
-/// `unsupported_vec_element_diagnostics` scan, so a scan-only check never
-/// sees it.
+/// Fail-closed boundary (#2359 / #2647): a generator yielding
+/// `Vec<indirect-enum>` is rejected at check time. The element's per-element
+/// node free is unwired, so the consuming body's per-frame release could only
+/// be the buffer-only `hew_vec_free` — a per-frame element-node leak
+/// (previously 2 nodes x N iterations, compiling clean). As of #2647 the
+/// `Vec<indirect-enum>` construction is rejected at the type-checker boundary
+/// (the earliest fail-closed point), which preempts the generator yield-seam
+/// release-verdict refusal for this fixture; the yield/recv seam refusal
+/// remains in MIR as a backstop for any shape that reaches it without local
+/// construction.
 #[test]
 fn check_gen_yield_vec_indirect_enum_fails_closed() {
     require_codegen();
@@ -2053,8 +2054,8 @@ fn check_gen_yield_vec_indirect_enum_fails_closed() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("every yielded or received frame would leak its heap nodes"),
-        "expected the yield/recv fail-closed diagnostic; got: {combined}"
+        combined.contains("indirect enum whose per-element release protocol is not yet wired"),
+        "expected the #2647 checker-boundary release-protocol reject; got: {combined}"
     );
 }
 

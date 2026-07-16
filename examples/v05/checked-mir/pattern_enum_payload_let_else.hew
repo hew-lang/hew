@@ -1,0 +1,34 @@
+// Stage-0 pattern-discharge pin: let-else over an enum struct variant with one
+// bound owned field and one wildcarded owned sibling.
+//
+// The local `Packet` scrutinee retains its EnumInPlace release on the success
+// and divergent failure paths. The escaped binder is only a borrowed payload
+// alias, so each dynamic exit executes exactly one composite release.
+enum Packet {
+    Data { a: string, b: string };
+    Empty;
+}
+
+fn make(good: bool) -> Packet {
+    if good {
+        Packet::Data { a: "let-else-a".to_upper(), b: "let-else-b".to_upper() }
+    } else {
+        Packet::Empty
+    }
+}
+
+fn probe(good: bool) -> i64 {
+    let p = make(good);
+    let Packet::Data { a, b: _ } = p else {
+        return 0;
+    };
+    a.len()
+}
+
+fn main() -> i64 {
+    if probe(true) > 0 && probe(false) == 0 {
+        0
+    } else {
+        1
+    }
+}

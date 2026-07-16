@@ -61,11 +61,11 @@ pub use self::types::{
     ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
     ExecutionContextReader, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PayloadBinding,
-    PayloadVariantPattern, PoolAccessor, PoolAccessorKind, SpanKey, StackHint, TryConversionKind,
-    TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
-    VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
-    WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PatternPlan, PayloadBinding,
+    PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind, SpanKey, StackHint,
+    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
+    WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -770,6 +770,15 @@ impl Checker {
                         pb.ty = self.subst.resolve(&pb.ty).materialize_literal_defaults();
                     }
                     (k, arm)
+                })
+                .collect(),
+            pattern_plans: std::mem::take(&mut self.pending_pattern_plans)
+                .into_iter()
+                .map(|(key, mut plan)| {
+                    for field in &mut plan.fields {
+                        field.ty = self.subst.resolve(&field.ty).materialize_literal_defaults();
+                    }
+                    (key, plan)
                 })
                 .collect(),
             lang_items: std::mem::take(&mut self.lang_items),

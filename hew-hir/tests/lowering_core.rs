@@ -39,6 +39,8 @@ mod machine_walker_coverage;
 mod nested_match_payload_lower;
 #[path = "lowering_core/numeric_cast_lowering.rs"]
 mod numeric_cast_lowering;
+#[path = "lowering_core/pattern_plan_lowering.rs"]
+mod pattern_plan_lowering;
 #[path = "lowering_core/raw_pointer_no_lowering.rs"]
 mod raw_pointer_no_lowering;
 #[path = "lowering_core/record_registry_collision_guard.rs"]

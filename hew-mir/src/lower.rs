@@ -24931,6 +24931,41 @@ impl Builder {
                 return None;
             }
         };
+        // Fail-closed: a `while let` over an enum variant that leaves an OWNED
+        // payload field unaccounted for (a `..` rest or a bare `_` sibling)
+        // cannot release that field's heap on the loop back-edge. The header
+        // re-evaluates the scrutinee every iteration, and the skipped owner has
+        // no per-iteration release site — a reassigned scrutinee leaks the
+        // prior iteration's skipped payload. The bound and nested-matched
+        // siblings ride the composite/back-edge drop; a skipped owned field
+        // does not. `match`, `if let`, `let ... else`, and record/tuple
+        // destructure DO discharge this shape (the enum composite drop / the
+        // field-drop safety loop), so this refusal is `while let`-specific.
+        // Run before any block allocation so a reject leaves no partial CFG.
+        if let Some((idx, field_ty)) = self.while_let_skipped_owned_payload_field(
+            scrutinee,
+            variant_idx,
+            bindings,
+            payload_variant_predicates,
+        ) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "while-let skipped owned enum payload field".to_string(),
+                    site: scrutinee.site,
+                },
+                note: format!(
+                    "payload field {idx} (`{}`) of this variant is owned but neither \
+                     bound nor matched, so `while let` cannot release it on the loop \
+                     back-edge — each re-entry would leak the prior iteration's value. \
+                     Bind every owned payload field explicitly (use a name instead of \
+                     `_`, and list every field instead of `..`), or destructure with \
+                     `match` / `if let` / `let ... else`, which release the skipped \
+                     owned sibling through the enum composite drop",
+                    field_ty.user_facing(),
+                ),
+            });
+            return None;
+        }
         let header_bb = self.alloc_block();
         let body_bb = self.alloc_block();
         let exit_bb = self.alloc_block();
@@ -25196,6 +25231,50 @@ impl Builder {
 
         // Exit: subsequent lowering continues here.
         self.start_block(exit_bb);
+        None
+    }
+
+    /// Detect a `while let` enum-variant pattern that leaves an OWNED payload
+    /// field unaccounted for — skipped by a `..` rest or a bare `_` sibling.
+    /// Returns the first such `(field_idx, field_ty)`, or `None` when every
+    /// owned payload field is bound or nested-matched (`BitCopy` skips are
+    /// safe: there is no heap to leak). Drives the `while let`-specific
+    /// fail-closed refusal in [`Self::lower_while_let`]. "Owned" is the same
+    /// non-`BitCopy` drop-seed predicate the record/tuple discharge uses
+    /// ([`Self::binding_seeds_drop_elaboration`]); a field is accounted for
+    /// when a top-level binding or a nested payload predicate covers it.
+    fn while_let_skipped_owned_payload_field(
+        &self,
+        scrutinee: &HirExpr,
+        variant_idx: u32,
+        bindings: &[hew_hir::HirMatchArmBinding],
+        payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
+    ) -> Option<(u32, ResolvedTy)> {
+        use crate::model::HeapOwnershipLayouts as _;
+        let subst = self.subst_ty(&scrutinee.ty);
+        let ResolvedTy::Named { name, args, .. } = &subst else {
+            return None;
+        };
+        let layouts = crate::model::MirHeapLayouts {
+            record_field_orders: &self.record_field_orders,
+            enum_layouts: &self.enum_layouts,
+        };
+        let variants = layouts.enum_variant_field_tys(name, args)?;
+        let payload = variants.get(variant_idx as usize)?;
+        let mut accounted: HashSet<u32> = bindings.iter().map(|b| b.field_idx).collect();
+        accounted.extend(payload_variant_predicates.iter().map(|p| p.field_idx));
+        for (idx, field_ty) in payload.iter().enumerate() {
+            let Ok(idx) = u32::try_from(idx) else {
+                continue;
+            };
+            if accounted.contains(&idx) {
+                continue;
+            }
+            let substituted = self.subst_ty(field_ty);
+            if self.binding_seeds_drop_elaboration(&substituted) {
+                return Some((idx, substituted));
+            }
+        }
         None
     }
 

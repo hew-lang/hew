@@ -5,7 +5,9 @@ use crate::module_registry::ModuleRegistry;
 use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
-use hew_parser::ast::{NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility};
+use hew_parser::ast::{
+    Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
+};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -447,13 +449,16 @@ pub struct TypeCheckOutput {
     /// resolution context, which is a HIR diagnostic (analogous to
     /// `MethodCallNoRewrite`).
     ///
-    /// `Pattern::Or` arms are intentionally absent from this table; or-pattern
-    /// lowering is a future lane.  A missing entry for an or-pattern arm must
-    /// surface a typed diagnostic, not a silent fallthrough.
+    /// Or-patterns publish one entry per leaf span; the enclosing or-node is not
+    /// itself classified.
     ///
     /// WHEN-OBSOLETE: never; this table is the checker's authoritative
     /// output for match semantics downstream.
     pub pattern_resolutions: HashMap<SpanKey, ArmResolution>,
+    /// Canonical declaration-order field plans for every accepted record-shaped
+    /// pattern. Omitted fields under `..` are materialised as wildcard entries,
+    /// so downstream consumers never need to distinguish rest syntax from `_`.
+    pub pattern_plans: HashMap<SpanKey, PatternPlan>,
     /// Compiler-recognised lang-item registry built from `#[lang_item("…")]`
     /// attributes on traits and trait methods during trait registration.
     /// HIR lowering consults this table to discover the trait/method names
@@ -901,10 +906,7 @@ pub(crate) struct SupervisorChildren {
 /// Checker-resolved classification of one match arm's top-level pattern.
 ///
 /// Populated by the checker during `check_match_stmt` / `check_match_expr` for
-/// every arm whose pattern is accepted.  `Pattern::Or` arms are absent by
-/// design: or-pattern lowering is a follow-on lane; HIR lowering must treat a
-/// missing entry for an or-pattern arm as a fail-closed diagnostic, not a
-/// silent fallthrough.
+/// every accepted non-or arm and every accepted or-pattern leaf.
 ///
 /// This is the top-level kind only — sub-patterns (e.g. the inner pattern of
 /// `Some(x)`) are not recorded separately; per-arm is the granularity the
@@ -939,6 +941,31 @@ pub enum PatternKind {
     /// HIR lowering reads this to populate `HirMatchArm::kind` for the
     /// regex arm and to know which capture names (and indices) to bind before the body.
     Regex { captures: Vec<(String, u32)> },
+}
+
+/// Canonical checker classification of one record-pattern field.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanSub {
+    Binding(String),
+    Wildcard,
+    Literal(Literal),
+    Nested(SpanKey),
+}
+
+/// One declaration-order field in a [`PatternPlan`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanField {
+    pub name: String,
+    pub decl_idx: u32,
+    pub ty: Ty,
+    pub sub: PlanSub,
+    pub span: Span,
+}
+
+/// Checker-authored normal form for a record-shaped pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternPlan {
+    pub fields: Vec<PlanField>,
 }
 
 /// Checker-resolved identity of the matched enum variant.
@@ -1108,6 +1135,7 @@ impl Default for TypeCheckOutput {
             actor_protocol_descriptors: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
             pattern_resolutions: HashMap::new(),
+            pattern_plans: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
@@ -2901,6 +2929,11 @@ pub struct Checker {
     /// records its env delta into `pattern_bound_names`; nested sub-pattern
     /// binds are already part of that single delta.
     pub(super) bind_pattern_recording: bool,
+    /// Record-pattern normal forms accumulated while checking.
+    pub(super) pending_pattern_plans: HashMap<SpanKey, PatternPlan>,
+    /// Invalid record patterns never publish a plan; this set prevents recovery
+    /// binding from re-running the same field diagnostics.
+    pub(super) invalid_pattern_plan_spans: HashSet<SpanKey>,
     /// Whether we are currently inside an actor receive function body.
     /// Used to warn about blocking calls that can starve the scheduler.
     pub(super) in_receive_fn: bool,
@@ -3344,6 +3377,8 @@ impl Checker {
             in_for_binding: false,
             pattern_bound_names: HashMap::new(),
             bind_pattern_recording: false,
+            pending_pattern_plans: HashMap::new(),
+            invalid_pattern_plan_spans: HashSet::new(),
             in_receive_fn: false,
             in_actor_handler_context: false,
             in_lambda_actor_body: false,

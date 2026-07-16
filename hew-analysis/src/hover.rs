@@ -767,14 +767,14 @@ fn find_pattern_binding_type(
                     })
             })
         }
-        Pattern::Struct { name, fields } => fields.iter().find_map(|field| {
+        Pattern::Struct { name, fields, .. } => fields.iter().find_map(|field| {
             let field_ty = struct_pattern_field_ty(source_ty, name, &field.name, type_defs)?;
             field.pattern.as_ref().and_then(|pattern| {
                 find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
             })
         }),
         // For shorthand, look up field type from the scrutinee type directly.
-        Pattern::RecordShorthand { fields } => fields.iter().find_map(|field| {
+        Pattern::RecordShorthand { fields, .. } => fields.iter().find_map(|field| {
             // Derive field type from source_ty by name, same as bind_pattern does.
             let type_name = source_ty.type_name()?;
             let field_ty = struct_pattern_field_ty(source_ty, type_name, &field.name, type_defs)?;
@@ -821,7 +821,7 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
         Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
             .iter()
             .find_map(|pattern| find_binding_name(pattern, word, offset)),
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             fields.iter().find_map(|field| {
                 field
                     .pattern
@@ -1352,6 +1352,7 @@ mod tests {
             listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
+            pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
@@ -1641,6 +1642,7 @@ mod tests {
             listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
+            pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
@@ -1753,6 +1755,7 @@ mod tests {
             listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
+            pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
@@ -1825,6 +1828,7 @@ mod tests {
             listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
+            pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
@@ -1951,6 +1955,7 @@ mod tests {
             listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
+            pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
@@ -2127,6 +2132,7 @@ mod tests {
             listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
+            pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),

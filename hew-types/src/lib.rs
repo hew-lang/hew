@@ -47,11 +47,11 @@ pub use check::{
     LintSources, LookupError, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, MethodTarget, MethodTargetFamily, NumericMethodFamily,
     NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth, OptionResultMethod,
-    PatternKind, PayloadBinding, PayloadVariantPattern, PoolAccessor, PoolAccessorKind,
-    ResolvedCall, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering, TyPattern,
-    TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind,
-    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry, WireLayoutTable,
-    WireTextFormat,
+    PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField, PlanSub,
+    PoolAccessor, PoolAccessorKind, ResolvedCall, RuntimeAbi, SpanKey, TryConversionKind,
+    TryWidthCastLowering, TyPattern, TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp,
+    VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
+    WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

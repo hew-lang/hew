@@ -408,7 +408,7 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
         Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
             .iter()
             .any(|(pattern, _)| pattern_binds_name(pattern, name)),
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             fields.iter().any(|field| {
                 field
                     .pattern
@@ -463,7 +463,7 @@ impl RefsVisitor<'_> {
                     self.push_pattern_matches(p, s);
                 }
             }
-            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
                 for field in fields {
                     if let Some((p, s)) = &field.pattern {
                         self.push_pattern_matches(p, s);

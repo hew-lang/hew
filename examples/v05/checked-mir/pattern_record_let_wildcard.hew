@@ -1,0 +1,27 @@
+// Stage-0 irrefutable-record-let reconfirmation.
+//
+// HIR materialises both listed fields as projections, including `b: _`.
+// Drop elaboration retains the record composite release while the projected
+// string aliases receive their existing balancing releases.
+type Pair {
+    a: string;
+    b: string;
+}
+
+fn make() -> Pair {
+    Pair { a: "record-let-a".to_upper(), b: "record-let-b".to_upper() }
+}
+
+fn probe() -> i64 {
+    let p = make();
+    let Pair { a, b: _ } = p;
+    a.len()
+}
+
+fn main() -> i64 {
+    if probe() > 0 {
+        0
+    } else {
+        1
+    }
+}

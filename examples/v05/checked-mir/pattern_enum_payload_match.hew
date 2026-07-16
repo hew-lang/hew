@@ -1,0 +1,35 @@
+// Stage-0 pattern-discharge pin: enum struct-variant match with one bound
+// owned field and one wildcarded owned sibling.
+//
+// The wildcard is absent from the payload-binding list. The bound `a` is a
+// non-owning MachineVariant alias used only through a borrow, so the owning
+// `Packet` local must retain its EnumInPlace drop. Each dynamic exit executes
+// exactly one such composite release.
+enum Packet {
+    Data { a: string, b: string };
+    Empty;
+}
+
+fn make(good: bool) -> Packet {
+    if good {
+        Packet::Data { a: "match-a".to_upper(), b: "match-b".to_upper() }
+    } else {
+        Packet::Empty
+    }
+}
+
+fn probe(good: bool) -> i64 {
+    let p = make(good);
+    match p {
+        Packet::Data { a, b: _ } => a.len(),
+        Packet::Empty => 0,
+    }
+}
+
+fn main() -> i64 {
+    if probe(true) > 0 && probe(false) == 0 {
+        0
+    } else {
+        1
+    }
+}

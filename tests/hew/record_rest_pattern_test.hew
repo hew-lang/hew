@@ -1,0 +1,87 @@
+//! Exec coverage for record rest-patterns and or-pattern struct leaves.
+//!
+//! Rest (`..`) erases to explicit wildcards at the classification boundary, so
+//! these run through the same lowering as their fully-listed equivalents. The
+//! or-pattern struct-leaf cases pin the widening from the single arm-resolution
+//! producer: struct leaves inside an or-pattern classify against the scrutinee
+//! type and lower cleanly (they were fail-closed before the or-leaf
+//! reclassifier was deleted).
+
+import std::testing;
+
+type Point {
+    x: i64;
+    y: i64;
+}
+
+type Inner {
+    a: i64;
+    b: i64;
+}
+
+type Outer {
+    inner: Inner;
+    tag: i64;
+}
+
+enum Shape {
+    Corner { x: i64, y: i64 };
+    Origin;
+}
+
+/// A record match with `..` binds the listed field and ignores the rest.
+#[test]
+fn match_record_rest_binds_listed_field() {
+    let p = Point { x: 3, y: 4 };
+    let got = match p {
+        Point { x, .. } => x,
+    };
+    testing.assert_eq(got, 3);
+}
+
+/// `let` with `..` projects only the listed field.
+#[test]
+fn let_record_rest_projects_listed_field() {
+    let p = Point { x: 7, y: 9 };
+    let Point { y, .. } = p;
+    testing.assert_eq(y, 9);
+}
+
+/// `{ .. }` alone matches and binds nothing.
+#[test]
+fn match_record_all_rest_matches() {
+    let p = Point { x: 1, y: 2 };
+    let got = match p {
+        Point { .. } => 42,
+    };
+    testing.assert_eq(got, 42);
+}
+
+/// Nested rest: the omitted inner field is erased; the outer and listed inner
+/// fields bind correctly.
+#[test]
+fn nested_record_rest_binds_correctly() {
+    let o = Outer { inner: Inner { a: 5, b: 6 }, tag: 8 };
+    let Outer { inner: Inner { a, .. }, tag } = o;
+    testing.assert_eq(a + tag, 13);
+}
+
+/// Or-pattern struct leaves with rest lower through the single producer:
+/// `Corner { x: 1, .. } | Corner { x: 2, .. }` matches either literal.
+#[test]
+fn or_pattern_struct_leaves_match_either_literal() {
+    let first = classify(Shape::Corner { x: 1, y: 9 });
+    let second = classify(Shape::Corner { x: 2, y: 8 });
+    let other = classify(Shape::Corner { x: 7, y: 7 });
+    testing.assert_eq(first, 100);
+    testing.assert_eq(second, 100);
+    testing.assert_eq(other, 7);
+}
+
+fn classify(s: Shape) -> i64 {
+    match s {
+        Shape::Corner { x: 1, .. } | Shape::Corner { x: 2, .. } => 100,
+        Shape::Corner { x, .. } => x,
+        Shape::Origin => 0,
+    }
+}

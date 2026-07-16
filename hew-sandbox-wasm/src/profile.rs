@@ -1010,7 +1010,7 @@ impl<'a> ProfileChecker<'a> {
                     self.check_pattern(pattern);
                 }
             }
-            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
                 for field in fields {
                     if let Some(pattern) = &field.pattern {
                         self.check_pattern(pattern);
@@ -1230,7 +1230,7 @@ fn let_pattern_is_unconditional(pattern: &Pattern) -> bool {
         Pattern::Tuple(patterns) => patterns
             .iter()
             .all(|pattern| let_pattern_is_unconditional(&pattern.0)),
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
             fields.iter().all(|field| {
                 field
                     .pattern

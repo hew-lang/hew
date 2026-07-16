@@ -3289,16 +3289,13 @@ impl<'a> Formatter<'a> {
                     self.write(")");
                 }
             }
-            Pattern::Struct { name, fields } => {
+            Pattern::Struct { name, fields, rest } => {
                 self.write(name);
-                self.write(" { ");
-                self.comma_sep(fields, Self::format_pattern_field);
-                self.write(" }");
+                self.write(" ");
+                self.format_record_pattern_fields(fields, rest.as_ref());
             }
-            Pattern::RecordShorthand { fields } => {
-                self.write("{ ");
-                self.comma_sep(fields, Self::format_pattern_field);
-                self.write(" }");
+            Pattern::RecordShorthand { fields, rest } => {
+                self.format_record_pattern_fields(fields, rest.as_ref());
             }
             Pattern::Tuple(patterns) => {
                 self.write("(");
@@ -3324,6 +3321,22 @@ impl<'a> Formatter<'a> {
             self.write(": ");
             self.format_pattern(&pat.0);
         }
+    }
+
+    fn format_record_pattern_fields(
+        &mut self,
+        fields: &[PatternField],
+        rest: Option<&Range<usize>>,
+    ) {
+        self.write("{ ");
+        self.comma_sep(fields, Self::format_pattern_field);
+        if rest.is_some() {
+            if !fields.is_empty() {
+                self.write(", ");
+            }
+            self.write("..");
+        }
+        self.write(" }");
     }
 }
 

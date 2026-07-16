@@ -44,7 +44,6 @@ fn main() {
     println(repeated[0]);
     println(repeated[1]);
     println(repeated[2]);
-
     let negative: i8 = -1;
     println(negative as u16);
     let negative_wide: i64 = -1;
@@ -58,7 +57,6 @@ fn main() {
     println(two as bool);
     let letter: char = 'A';
     println(letter as u32);
-
     match try_result_ok() {
         Ok(value) => println(value),
         Err(error) => println(error),

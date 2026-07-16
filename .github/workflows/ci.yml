@@ -196,6 +196,14 @@ jobs:
         # preflights.
         run: scripts/check-preflight-ci-parity.sh
 
+      - name: ll-byte-identity normaliser self-test
+        # Prove the ll-diff oracle's normaliser still catches real IR changes
+        # (string-content edits, numeric-const NAME changes) while staying
+        # transparent to pool-id reorderings.  No compiler build required —
+        # exercises scripts/ll-byte-identity.sh against synthetic .ll snippets.
+        # Guards the ll-diff gate itself from silently degrading into a no-op.
+        run: make ll-identity-selftest
+
       - name: Sandbox parity coverage check
         # Assert every VM-dependent hew-sandbox-wasm test binary (one
         # containing a function that spawns the hew-sandbox-vm Node runner)
@@ -460,6 +468,17 @@ jobs:
         # corpus (make checked-mir-golden) or a non-determinism bug crept
         # into dump_mir.  The hew binary is already built by this point.
         run: make checked-mir-verify
+
+      - name: Verify per-function .ll byte-identity corpus
+        # Recompiles every tests/ll-oracle/corpus/*.hew fixture (native and
+        # wasm32) and diffs the normalised per-function IR against the committed
+        # goldens.  A drift here means emitted LLVM IR changed: either an
+        # intentional codegen change that must regenerate the goldens in the
+        # same commit (make ll-golden, diff justified in the body), or an
+        # unintended regression.  This is a byte-identity gate — it stays green
+        # only while codegen output is unchanged.  The hew binary is already
+        # built by this point.
+        run: make ll-diff
 
       - name: Run repo-wide hew check corpus sweep (ratcheted)
         # Runs `hew check` over every tracked .hew file (excluding intentional

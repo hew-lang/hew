@@ -26,6 +26,7 @@ fn Inbox__recv__run -> ()
     use BindingId(8) msg site=SiteId(41) ty=string intent=Read
     eval site=SiteId(50) ty=()
     drop BindingId(8) msg ty=string
+    drop BindingId(7) again ty=Option<string>
     drop BindingId(2) __tuple_1 ty=(Sender<string>, Receiver<string>)
   drop_plans:
     call[bb0 channel$new -> bb1] ->
@@ -85,25 +86,25 @@ fn Inbox__recv__run -> ()
     call[bb22 hew_channel_receiver_close -> bb31] ->
       (none)
     goto[bb23->bb22] ->
-      (none)
+      drop _28 ty=Option<string> kind=enum_in_place
     cancel[bb23] ->
-      (none)
+      drop _28 ty=Option<string> kind=enum_in_place
     call[bb24 println_str -> bb28] ->
       (none)
     call[bb25 println_str -> bb29] ->
       (none)
     panic[bb26] ->
-      (none)
+      drop _28 ty=Option<string> kind=enum_in_place
     branch[bb27: bb25/bb26] ->
       (none)
     goto[bb28->bb23] ->
       (none)
     cancel[bb28] ->
-      (none)
+      drop _28 ty=Option<string> kind=enum_in_place
     goto[bb29->bb23] ->
       (none)
     cancel[bb29] ->
-      (none)
+      drop _28 ty=Option<string> kind=enum_in_place
     goto[bb30->bb22] ->
       (none)
     cancel[bb30] ->

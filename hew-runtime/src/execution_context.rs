@@ -159,13 +159,21 @@ pub fn set_current_partition_policy(policy: PartitionPolicy) -> bool {
 
 /// C-ABI surface for configuring the current dispatch's partition policy.
 ///
-/// `tag` is a [`PartitionPolicy`] discriminant; an unrecognised tag decodes to
-/// the `FailFast` default rather than fabricating a policy. Returns `false`
-/// when no execution context is installed (the slot cannot be set outside a
-/// dispatch boundary). Symmetric with the reader surface.
+/// `tag` is a [`PartitionPolicy`] discriminant, declared at a fixed 64-bit
+/// width (`i64`) so the extern is target-stable: `usize` is 32-bit on wasm32
+/// and would truncate the 64-bit argument the Hew extern pushes
+/// (`std/link_monitor.hew`: `fn hew_set_partition_policy(tag: i64) -> bool`;
+/// `ffi-abi-width-mirror`). An unrecognised tag — including a negative one, or
+/// (on a 32-bit target) one above `usize::MAX` — maps via the saturating
+/// `try_from` to `usize::MAX`, which `from_slot` fails closed to the `FailFast`
+/// default rather than fabricating a policy. Returns `false` when no execution
+/// context is installed (the slot cannot be set outside a dispatch boundary).
 #[no_mangle]
-pub extern "C" fn hew_set_partition_policy(tag: usize) -> bool {
-    set_current_partition_policy(PartitionPolicy::from_slot(tag as *const c_void))
+pub extern "C" fn hew_set_partition_policy(tag: i64) -> bool {
+    // A negative or out-of-range tag saturates to `usize::MAX`, an
+    // unrecognised slot value that `from_slot` decodes as `FailFast`.
+    let slot = usize::try_from(tag).unwrap_or(usize::MAX);
+    set_current_partition_policy(PartitionPolicy::from_slot(slot as *const c_void))
 }
 
 /// Target-architecture-aware byte size of [`HewExecutionContext`].
@@ -909,7 +917,9 @@ mod tests {
     }
 
     /// The C-ABI setter decodes the integer tag and writes the installed slot;
-    /// the reader projects the same policy back.
+    /// the reader projects the same policy back. The tag is passed at the
+    /// extern's `i64` width (`std/link_monitor.hew`), and a negative/unknown tag
+    /// fails closed to `FailFast`.
     #[test]
     fn hew_set_partition_policy_writes_slot_via_tag() {
         let _runtime_guard = crate::runtime_test_guard();
@@ -918,11 +928,30 @@ mod tests {
         let mut ctx = HewExecutionContext::default();
         let installed = &raw mut ctx;
         let prev = set_current_context(installed);
-        assert!(hew_set_partition_policy(
-            PartitionPolicy::Quarantine as usize
-        ));
+        assert!(hew_set_partition_policy(PartitionPolicy::Quarantine as i64));
         assert_eq!(current_partition_policy(), PartitionPolicy::Quarantine);
+        // A negative/unrecognised tag decodes to the FailFast default rather
+        // than fabricating a policy; the call still succeeds (a context is
+        // installed) and overwrites the slot.
+        assert!(hew_set_partition_policy(-1));
+        assert_eq!(current_partition_policy(), PartitionPolicy::FailFast);
         let _ = set_current_context(prev);
+    }
+
+    /// With no execution context installed the C-ABI setter fails closed:
+    /// it returns exactly `false` (not merely "not true"), because a partition
+    /// policy has no meaning outside an actor dispatch. This pins the
+    /// fail-closed contract the Hew wrapper (`set_partition_policy`) relies on.
+    #[test]
+    fn hew_set_partition_policy_fails_closed_without_context() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+
+        // No context installed for this dispatch.
+        assert!(current_context().is_null());
+        assert!(!hew_set_partition_policy(
+            PartitionPolicy::Quarantine as i64
+        ));
     }
 
     /// SEC-1 regression: a scoped reply-channel swap must transfer BOTH the

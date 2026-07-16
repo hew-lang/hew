@@ -5708,6 +5708,69 @@ mod tests {
         unsafe { assert_eq!(hew_node_stop(node_handle.as_ptr()), 0) };
     }
 
+    /// The `hew_set_partition_policy` C-ABI symbol — the exact export the Hew
+    /// surface (`std/link_monitor.hew`: `set_partition_policy`) lowers to —
+    /// flips the real send gate. This is the policy-takes-effect leg: driving
+    /// the setter (rather than pre-baking the slot as the test above does)
+    /// proves the FFI entry point installed on the dispatch context is what the
+    /// quarantine consult reads.
+    #[test]
+    fn set_partition_policy_symbol_drives_the_quarantine_gate() {
+        use crate::execution_context::{
+            hew_set_partition_policy, HewExecutionContext, PartitionPolicy, TestExecutionContext,
+        };
+        const PEER: u16 = 612;
+
+        // Position IS the ABI: the C-ABI tag is the discriminant, and the two
+        // Hew-side declarations that mirror it (`std/link_monitor.hew`'s
+        // `PartitionPolicy` and the `MONITOR_REF_HEW` prelude enum in
+        // `hew-types` `check::registration`) must keep this exact order. A drift
+        // here would silently misroute a policy tag across the FFI boundary
+        // (`builtin-enum-variant-mirror-discipline`).
+        assert_eq!(PartitionPolicy::FailFast as i64, 0);
+        assert_eq!(PartitionPolicy::Deadline as i64, 1);
+        assert_eq!(PartitionPolicy::MonitorLost as i64, 2);
+        assert_eq!(PartitionPolicy::CrashLinked as i64, 3);
+        assert_eq!(PartitionPolicy::Quarantine as i64, 4);
+
+        let _guard = crate::runtime_test_guard();
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this test.
+        let node_handle = unsafe { TestNode::new(611, &bind_addr) };
+        assert!(!node_handle.as_ptr().is_null());
+        // SAFETY: pointer came from TestNode::new and is valid until drop.
+        unsafe { assert_eq!(hew_node_start(node_handle.as_ptr()), 0) };
+        // SAFETY: started node has a non-null cluster.
+        let node = unsafe { &*node_handle.as_ptr() };
+        assert!(!node.cluster.is_null());
+        // SAFETY: cluster is valid while the node is running.
+        let cluster = unsafe { &*node.cluster };
+        cluster.seed_member_for_test(PEER, crate::cluster::MEMBER_DEAD, 5);
+        quarantine_insert(PEER, 5);
+
+        // Install a dispatch context with the DEFAULT (null) policy slot, then
+        // drive the policy purely through the C-ABI setter.
+        let _ctx_guard = TestExecutionContext::install(HewExecutionContext::default());
+
+        // Quarantine (tag 4) installed via the setter blocks the buried peer.
+        assert!(hew_set_partition_policy(4));
+        assert!(
+            quarantine_blocks_send(node, PEER),
+            "Quarantine set via hew_set_partition_policy must block the buried peer"
+        );
+
+        // Overwriting with FailFast (tag 0) via the same setter clears the block:
+        // the slot is writable repeatedly within one dispatch, not one-shot.
+        assert!(hew_set_partition_policy(0));
+        assert!(
+            !quarantine_blocks_send(node, PEER),
+            "FailFast set via hew_set_partition_policy must not consult the set"
+        );
+
+        // SAFETY: stop the node before drop.
+        unsafe { assert_eq!(hew_node_stop(node_handle.as_ptr()), 0) };
+    }
+
     /// Initialise a real, worker-backed scheduler for a node test (delegates to
     /// the scheduler-side helper, which sees the module-private `stealers` and
     /// safely retires a `runtime_test_guard()` placeholder before init).

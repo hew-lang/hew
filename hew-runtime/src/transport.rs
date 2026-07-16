@@ -20,7 +20,7 @@ use std::sync::{
     LazyLock, OnceLock,
 };
 
-use crate::blocking_pool::{shared_blocking_pool, spawn_blocking_result, BlockingPoolError};
+use crate::blocking_pool::{shared_blocking_pool_opt, spawn_blocking_result, BlockingPoolError};
 use crate::lifetime::poison_safe::{PoisonSafe, PoisonSafeRw};
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
@@ -1481,13 +1481,19 @@ fn resolve_addr_via_pool(
         #[expect(clippy::cast_sign_loss, reason = "checked > 0 above")]
         Some(std::time::Duration::from_millis(deadline_ms as u64))
     };
-    // SAFETY: shared_blocking_pool returns the current runtime's pool, valid
+    // Fail closed when no runtime is installed: reaching this offload without a
+    // runtime is a programming error, but it must return a defined error to the
+    // C caller rather than abort in `rt_current()` across the ABI boundary.
+    let Some(pool) = shared_blocking_pool_opt() else {
+        return Err(BlockingPoolError::NoRuntime);
+    };
+    // SAFETY: shared_blocking_pool_opt returns the current runtime's pool, valid
     // for that runtime's lifetime; this offload runs on a scheduler/reactor
     // thread that cleanup joins before the runtime (and its pool) is dropped,
     // so the pointer stays valid for this call.
     unsafe {
         spawn_blocking_result(
-            shared_blocking_pool(),
+            pool,
             move || {
                 target
                     .to_socket_addrs()
@@ -1560,6 +1566,16 @@ pub unsafe extern "C" fn hew_tcp_connect_timed(addr: *const c_char, deadline_ms:
             hew_cabi::sink::set_last_error_with_errno(
                 String::from("hew_tcp_connect: DNS resolution failed"),
                 0,
+            );
+            return -1;
+        }
+        Err(BlockingPoolError::NoRuntime) => {
+            // Fail closed: no runtime installed, so no blocking pool to offload
+            // DNS onto. Clean -1 with EINVAL rather than a SIGABRT across the ABI.
+            tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
+            hew_cabi::sink::set_last_error_with_errno(
+                String::from("hew_tcp_connect: no runtime installed"),
+                22, // EINVAL: entrypoint called before hew_sched_init
             );
             return -1;
         }
@@ -1748,6 +1764,16 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
             return -1;
         }
         Err(BlockingPoolError::PoolStopped) => {
+            return -1;
+        }
+        Err(BlockingPoolError::NoRuntime) => {
+            // Fail closed: no runtime installed, so no blocking pool to offload
+            // DNS onto. Clean -1 with EINVAL rather than a SIGABRT across the ABI.
+            tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
+            hew_cabi::sink::set_last_error_with_errno(
+                String::from("hew_tcp_connect_timeout: no runtime installed"),
+                22, // EINVAL: entrypoint called before hew_sched_init
+            );
             return -1;
         }
     };
@@ -2451,6 +2477,49 @@ mod tests {
                 unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
                 remove_stream(handle);
             },
+        );
+    }
+
+    /// A blocking-pool FFI entrypoint reached with NO runtime installed must
+    /// fail closed with a clean errno return, never abort in `rt_current()`
+    /// across the C ABI. This is the negative test the original blocking-pool
+    /// inventory lacked: `hew_tcp_connect*` reached the pool unguarded and would
+    /// SIGABRT when called before `hew_sched_init` installs a runtime.
+    #[test]
+    fn tcp_connect_without_runtime_fails_closed() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the default runtime slot to be empty"
+        );
+        let _ = hew_cabi::sink::take_last_errno();
+
+        let addr = std::ffi::CString::new("example.com:80").expect("valid C string");
+        // SAFETY: `addr` is a valid, NUL-terminated C string; the entrypoint must
+        // return -1 with no runtime installed, never abort.
+        let rc = unsafe { hew_tcp_connect(addr.as_ptr()) };
+        assert_eq!(
+            rc, -1,
+            "connect with no runtime installed must return -1, not abort"
+        );
+        assert_eq!(
+            hew_cabi::sink::take_last_errno(),
+            22,
+            "a no-runtime blocking offload must surface EINVAL (22)"
+        );
+
+        // The port-form entrypoint fails closed on the same guarded path.
+        let host = std::ffi::CString::new("example.com").expect("valid C string");
+        // SAFETY: `host` is a valid, NUL-terminated C string.
+        let rc = unsafe { hew_tcp_connect_timeout(host.as_ptr(), 80, 1000) };
+        assert_eq!(
+            rc, -1,
+            "connect_timeout with no runtime installed must return -1, not abort"
+        );
+        assert_eq!(
+            hew_cabi::sink::take_last_errno(),
+            22,
+            "a no-runtime blocking offload must surface EINVAL (22)"
         );
     }
 

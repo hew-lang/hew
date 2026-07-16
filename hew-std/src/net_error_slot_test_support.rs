@@ -44,6 +44,19 @@ impl Drop for NetErrorSlotRuntimeGuard {
     }
 }
 
+/// Acquire the shared scheduler lock WITHOUT installing a runtime.
+///
+/// The fail-closed no-runtime tests need the guarantee that no runtime is
+/// installed while they exercise a blocking-pool FFI entrypoint. Holding this
+/// lock excludes every [`NetErrorSlotRuntimeGuard`]-based test from installing a
+/// scheduler on the single process-global slot for the returned guard's
+/// lifetime, so `shared_blocking_pool_opt()` observes `None`.
+pub(crate) fn lock_without_runtime() -> MutexGuard<'static, ()> {
+    NET_ERROR_SLOT_RUNTIME_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Spawn a minimal, never-scheduled actor solely to obtain a stable,
 /// dereferenceable actor identity for `hew_actor_current_id()`. The dispatch
 /// stub is never invoked — this actor receives no messages.

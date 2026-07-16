@@ -5,7 +5,9 @@
 //! `libc::malloc` and NUL-terminated.
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use hew_cabi::vec::HewVec;
-use hew_runtime::blocking_pool::{shared_blocking_pool, spawn_blocking_result, BlockingPoolError};
+use hew_runtime::blocking_pool::{
+    shared_blocking_pool_opt, spawn_blocking_result, BlockingPoolError,
+};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::os::raw::c_char;
 use std::time::Duration;
@@ -23,7 +25,9 @@ use std::time::Duration;
 ///   The pool thread keeps running `getaddrinfo` until it returns; its
 ///   result is discarded when the worker publishes it (no leak; see
 ///   `spawn_blocking_result` saturation note).
-/// - `Err(false)` — `getaddrinfo` itself errored, or the pool was stopped.
+/// - `Err(false)` — `getaddrinfo` itself errored, the pool was stopped, or no
+///   runtime is installed (fail closed: the entrypoint returns its empty/null
+///   sentinel rather than aborting across the ABI).
 fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
     let host = format!("{host}:0");
     let deadline = if deadline_ms <= 0 {
@@ -33,13 +37,19 @@ fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
         #[expect(clippy::cast_sign_loss, reason = "deadline_ms is checked > 0 above")]
         Some(Duration::from_millis(deadline_ms as u64))
     };
-    // SAFETY: shared_blocking_pool returns the current runtime's pool, valid for
-    // that runtime's lifetime; the resolve runs on a scheduler thread that
+    // Fail closed when no runtime is installed: reaching this offload without a
+    // runtime is a programming error, but it must return the empty/null sentinel
+    // to the C caller rather than abort in `rt_current()` across the ABI.
+    let Some(pool) = shared_blocking_pool_opt() else {
+        return Err(false);
+    };
+    // SAFETY: shared_blocking_pool_opt returns the current runtime's pool, valid
+    // for that runtime's lifetime; the resolve runs on a scheduler thread that
     // cleanup joins before the runtime (and its pool) drops, so the pointer is
     // valid for the call.
     let result = unsafe {
         spawn_blocking_result(
-            shared_blocking_pool(),
+            pool,
             move || {
                 // Collect inside the closure so the iterator (which is not
                 // Send) doesn't escape; the result is `Vec<IpAddr>` which is.
@@ -53,7 +63,9 @@ fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
     match result {
         Ok(Ok(addrs)) => Ok(addrs),
         Err(BlockingPoolError::TimedOut) => Err(true),
-        Ok(Err(())) | Err(BlockingPoolError::PoolStopped) => Err(false),
+        Ok(Err(())) | Err(BlockingPoolError::PoolStopped | BlockingPoolError::NoRuntime) => {
+            Err(false)
+        }
     }
 }
 
@@ -238,6 +250,44 @@ mod tests {
         assert_eq!(unsafe { hew_cabi::vec::hew_vec_len(vec) }, 0);
         // SAFETY: vec was allocated by hew_dns_resolve and has not been freed.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
+    }
+
+    /// A DNS entrypoint reached with a real hostname but NO runtime installed
+    /// must fail closed with the empty/null sentinel, never abort in
+    /// `rt_current()` across the C ABI. This is the negative test the original
+    /// blocking-pool inventory lacked: the production entrypoints reached the
+    /// pool unguarded and would SIGABRT when called before `hew_sched_init`.
+    #[test]
+    fn resolve_without_runtime_fails_closed() {
+        // Hold the shared scheduler lock so no concurrent guard installs a
+        // runtime; do NOT install one ourselves.
+        let _lock = crate::net_error_slot_test_support::lock_without_runtime();
+        assert!(
+            shared_blocking_pool_opt().is_none(),
+            "test requires no runtime installed"
+        );
+
+        let host = CString::new("example.com").unwrap();
+        // SAFETY: host is a valid NUL-terminated C string; reaching the offload
+        // with no runtime must return an empty vec, not abort.
+        let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
+        assert!(!vec.is_null(), "must return an empty vec, not null/abort");
+        // SAFETY: vec is a valid HewVec returned by hew_dns_resolve.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+        assert_eq!(
+            len, 0,
+            "no runtime installed => empty resolution, fail closed"
+        );
+        // SAFETY: vec was allocated by hew_dns_resolve and has not been freed.
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+
+        // The lookup variant fails closed to null on the same path.
+        // SAFETY: host is a valid NUL-terminated C string.
+        let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
+        assert!(
+            result.is_null(),
+            "lookup with no runtime must return null, not abort"
+        );
     }
 
     #[test]

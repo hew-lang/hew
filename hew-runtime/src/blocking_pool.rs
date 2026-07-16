@@ -116,6 +116,12 @@ pub enum BlockingPoolError {
     TimedOut,
     /// The pool was null or has been stopped; the task was never enqueued.
     PoolStopped,
+    /// No runtime is installed, so there is no pool to offload onto. Surfaced by
+    /// the fail-closed [`shared_blocking_pool_opt`] path when a C-ABI offload
+    /// entrypoint is reached before `hew_sched_init` (production) or without a
+    /// runtime test guard (tests). The task was never enqueued; the entrypoint
+    /// returns a clean error to the C caller instead of aborting.
+    NoRuntime,
 }
 
 /// Result slot shared between the caller (waits) and the worker (writes).
@@ -353,6 +359,23 @@ impl Drop for OwnedBlockingPool {
 #[must_use]
 pub fn shared_blocking_pool() -> *mut HewBlockingPool {
     crate::runtime::rt_current().blocking_pool()
+}
+
+/// Return the calling runtime's blocking pool, or `None` when no runtime is
+/// installed.
+///
+/// This is the fail-closed sibling of [`shared_blocking_pool`]: it resolves
+/// through the non-panicking [`crate::runtime::rt_current_opt`] instead of the
+/// trapping `rt_current()`. C-ABI entrypoints that offload blocking syscalls
+/// (DNS resolve, TCP connect) call this so a request issued before
+/// `hew_sched_init` installs a runtime — or after teardown drops it — returns a
+/// defined error to the C caller instead of aborting across the ABI boundary.
+///
+/// Reaching a blocking-pool offload with no runtime installed is a programming
+/// error, but it must surface as a clean error return, never a SIGABRT.
+#[must_use]
+pub fn shared_blocking_pool_opt() -> Option<*mut HewBlockingPool> {
+    crate::runtime::rt_current_opt().map(crate::runtime::RuntimeInner::blocking_pool)
 }
 
 /// Stop the pool: reject new work, wake all workers, and join threads.
@@ -758,6 +781,32 @@ mod tests {
             panicked,
             "shared_blocking_pool with no runtime installed must fail closed (panic)"
         );
+    }
+
+    /// `shared_blocking_pool_opt` is the fail-closed sibling C-ABI offload
+    /// entrypoints resolve through: `None` with no runtime installed (so the
+    /// entrypoint returns a clean error instead of aborting), `Some` live pool
+    /// once a runtime is installed.
+    #[test]
+    fn shared_blocking_pool_opt_reflects_runtime_presence() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the default runtime slot to be empty"
+        );
+        assert!(
+            shared_blocking_pool_opt().is_none(),
+            "no runtime installed must resolve to None, not a fabricated pool"
+        );
+
+        let rt = crate::runtime::RuntimeInner::new(crate::scheduler::worker_less_scheduler());
+        // SAFETY: rt is a stack local that outlives its enter guard.
+        let _enter = unsafe { crate::runtime::enter(&rt) };
+        let pool = shared_blocking_pool_opt().expect("a runtime is installed");
+        assert!(!pool.is_null(), "an installed runtime yields a live pool");
+        // SAFETY: pool is the installed runtime's live pool.
+        let ran = unsafe { spawn_blocking_result(pool, || 7_u32, None) };
+        assert_eq!(ran, Ok(7));
     }
 
     /// Null pool: caller gets `PoolStopped` without leaking the boxed task

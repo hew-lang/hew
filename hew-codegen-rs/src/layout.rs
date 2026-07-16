@@ -1083,20 +1083,29 @@ pub(crate) fn layout_descriptor_ptr<'ctx>(
 ///
 /// Fails closed for any element with no resolvable thunk path — the owned ABI
 /// must never reference a non-existent thunk (`boundary-fail-closed`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "narrowed off FnCtx so the wire codec (no per-function FnCtx) can \
+              reach the same owned-descriptor authority; the raw ctx/llvm_mod/\
+              target_data + the three-registry borrow replace the single FnCtx arg"
+)]
 pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    regs: OwnedElemRegistries<'_, 'ctx>,
     elem_resolved_ty: &ResolvedTy,
     elem_llvm_ty: BasicTypeEnum<'ctx>,
     label: &str,
 ) -> CodegenResult<PointerValue<'ctx>> {
-    let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(fn_ctx, elem_resolved_ty) else {
+    let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(regs, elem_resolved_ty) else {
         return Err(CodegenError::FailClosed(format!(
             "owned Vec element `{elem_resolved_ty:?}` has no resolvable record/enum \
              in-place thunk path at `{label}`; the checker must not route a \
              non-thunkable element through the owned ABI"
         )));
     };
-    let (size, align) = abi_size_align(elem_llvm_ty, Some(fn_ctx.target_data))?;
+    let (size, align) = abi_size_align(elem_llvm_ty, Some(target_data))?;
     let kind_tag = match kind {
         OwnedElemThunkKind::Record => "rec",
         OwnedElemThunkKind::Enum => "enum",
@@ -1104,17 +1113,17 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
         OwnedElemThunkKind::Collection => "coll",
     };
     let global_name = format!("__hew_vec_elem_layout_{kind_tag}_{key}_{size}_{align}");
-    if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
+    if let Some(g) = llvm_mod.get_global(&global_name) {
         return Ok(g.as_pointer_value());
     }
     let (clone_fn, drop_fn) = match kind {
         OwnedElemThunkKind::Record => (
-            get_or_declare_record_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+            get_or_declare_record_clone_inplace(ctx, llvm_mod, &key),
+            get_or_declare_record_drop_inplace(ctx, llvm_mod, &key),
         ),
         OwnedElemThunkKind::Enum => (
-            get_or_declare_enum_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+            get_or_declare_enum_clone_inplace(ctx, llvm_mod, &key),
+            get_or_declare_enum_drop_inplace(ctx, llvm_mod, &key),
         ),
         OwnedElemThunkKind::Tuple => {
             // The tuple thunk BODY is synthesized eagerly here (it has no
@@ -1131,10 +1140,17 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
                     )));
                 }
             };
-            crate::thunks::emit_tuple_inplace_thunk_bodies(fn_ctx, &key, elems, elem_llvm_ty)?;
+            crate::thunks::emit_tuple_inplace_thunk_bodies(
+                ctx,
+                llvm_mod,
+                regs,
+                &key,
+                elems,
+                elem_llvm_ty,
+            )?;
             (
-                get_or_declare_tuple_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-                get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+                get_or_declare_tuple_clone_inplace(ctx, llvm_mod, &key),
+                get_or_declare_tuple_drop_inplace(ctx, llvm_mod, &key),
             )
         }
         OwnedElemThunkKind::Collection => {
@@ -1142,23 +1158,24 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
             // here (like the tuple thunk — no registry-driven seeding): a
             // collection element is referenced only through this descriptor.
             // Idempotent: the emitter no-ops if the body already exists.
-            let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(fn_ctx, elem_resolved_ty)
+            let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(elem_resolved_ty)
                 .ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "owned collection descriptor at `{label}`: element \
+                    CodegenError::FailClosed(format!(
+                        "owned collection descriptor at `{label}`: element \
                          {elem_resolved_ty:?} has no canonical clone/free primitive \
                          (closure-pair Vec elements are a separate lane)"
-                ))
-            })?;
-            crate::thunks::emit_collection_handle_thunk_bodies(fn_ctx, &key, clone_sym, drop_sym)?;
+                    ))
+                })?;
+            crate::thunks::emit_collection_handle_thunk_bodies(
+                ctx, llvm_mod, &key, clone_sym, drop_sym,
+            )?;
             (
-                get_or_declare_collection_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-                get_or_declare_collection_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+                get_or_declare_collection_clone_inplace(ctx, llvm_mod, &key),
+                get_or_declare_collection_drop_inplace(ctx, llvm_mod, &key),
             )
         }
     };
-    let ctx = fn_ctx.ctx;
-    let usize_ty = crate::llvm::runtime_size_ty(ctx, fn_ctx.llvm_mod);
+    let usize_ty = crate::llvm::runtime_size_ty(ctx, llvm_mod);
     let i8_ty = ctx.i8_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let layout_ty = ctx.struct_type(
@@ -1179,7 +1196,7 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
         clone_fn.as_global_value().as_pointer_value().into(),
         drop_fn.as_global_value().as_pointer_value().into(),
     ]);
-    let g = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
+    let g = llvm_mod.add_global(layout_ty, None, &global_name);
     g.set_constant(true);
     g.set_linkage(Linkage::Private);
     g.set_initializer(&init);
@@ -1291,7 +1308,15 @@ pub(crate) fn channel_elem_layout_witness_ptr<'ctx>(
                 elem_ty,
                 fn_ctx.record_layouts,
             )?;
-            owned_elem_layout_descriptor_ptr(fn_ctx, elem_ty, elem_llvm_ty, label)
+            owned_elem_layout_descriptor_ptr(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                fn_ctx.target_data,
+                fn_ctx.owned_elem_registries(),
+                elem_ty,
+                elem_llvm_ty,
+                label,
+            )
         }
         _ => {
             // Plain: scalars (i8..i64, u8..u64, f32/f64, bool, char) and
@@ -1872,7 +1897,7 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
         .is_some_and(|rty| resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()))
     {
         let rty = resolved_ty.expect("heap-leaf check requires a resolved type");
-        match crate::thunks::owned_elem_thunk_key(fn_ctx, rty) {
+        match crate::thunks::owned_elem_thunk_key(fn_ctx.owned_elem_registries(), rty) {
             Some((OwnedElemThunkKind::Record, record_key)) => Some(
                 get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &record_key),
             ),
@@ -2022,7 +2047,9 @@ fn hashmap_owned_value_layout_descriptor_ptr<'ctx>(
     val_resolved_ty: &ResolvedTy,
     val_llvm_ty: BasicTypeEnum<'ctx>,
 ) -> CodegenResult<PointerValue<'ctx>> {
-    let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(fn_ctx, val_resolved_ty) else {
+    let Some((kind, key)) =
+        crate::thunks::owned_elem_thunk_key(fn_ctx.owned_elem_registries(), val_resolved_ty)
+    else {
         return Err(CodegenError::FailClosed(format!(
             "owned HashMap value `{val_resolved_ty:?}` has no resolvable clone/drop \
              thunk path; checker admission must reject non-POD values without a \
@@ -2060,21 +2087,34 @@ fn hashmap_owned_value_layout_descriptor_ptr<'ctx>(
                     )));
                 }
             };
-            crate::thunks::emit_tuple_inplace_thunk_bodies(fn_ctx, &key, elems, val_llvm_ty)?;
+            crate::thunks::emit_tuple_inplace_thunk_bodies(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                fn_ctx.owned_elem_registries(),
+                &key,
+                elems,
+                val_llvm_ty,
+            )?;
             (
                 get_or_declare_tuple_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
                 get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
             )
         }
         OwnedElemThunkKind::Collection => {
-            let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(fn_ctx, val_resolved_ty)
+            let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(val_resolved_ty)
                 .ok_or_else(|| {
                     CodegenError::FailClosed(format!(
                         "owned HashMap collection value `{val_resolved_ty:?}` has no canonical \
                          clone/free primitive"
                     ))
                 })?;
-            crate::thunks::emit_collection_handle_thunk_bodies(fn_ctx, &key, clone_sym, drop_sym)?;
+            crate::thunks::emit_collection_handle_thunk_bodies(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &key,
+                clone_sym,
+                drop_sym,
+            )?;
             (
                 get_or_declare_collection_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
                 get_or_declare_collection_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
@@ -3364,7 +3404,10 @@ pub(crate) fn lower_vec_constructor_call(
         }
         VecCtor::Owned(elem_llvm_ty) => {
             let layout_ptr = crate::layout::owned_elem_layout_descriptor_ptr(
-                fn_ctx,
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                fn_ctx.target_data,
+                fn_ctx.owned_elem_registries(),
                 elem_ty,
                 elem_llvm_ty,
                 "new",
@@ -3905,7 +3948,7 @@ fn emit_insert_overwrite_key_release(
     let release = match key_ty {
         ResolvedTy::String => Some(KeyRelease::StringPtr),
         rty if resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()) => {
-            match crate::thunks::owned_elem_thunk_key(fn_ctx, rty) {
+            match crate::thunks::owned_elem_thunk_key(fn_ctx.owned_elem_registries(), rty) {
                 Some((OwnedElemThunkKind::Record, record_key)) => Some(KeyRelease::RecordInPlace(
                     get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &record_key),
                 )),

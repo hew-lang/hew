@@ -1526,6 +1526,23 @@ pub(crate) struct CoroState<'ctx> {
     pub(crate) is_generator: bool,
 }
 
+/// The exact set of module-wide registries the owned-Vec-element thunk-key
+/// resolver and descriptor builder need — the THREE lookups `owned_elem_thunk_key`
+/// consults (enum layouts, machine layouts, the codegen record field-type table).
+///
+/// Threading this narrow borrow instead of a full `FnCtx` lets the wire CBOR
+/// codec — which emits in the module pass with no per-function `FnCtx` — call the
+/// SAME owned-descriptor authority `Vec::new` uses. That single authority is what
+/// makes the codec's `__hew_vec_elem_layout_*` descriptor global dedup-collapse
+/// onto `Vec::new`'s for the same element type; a mirrored builder would mint a
+/// second descriptor and break the runtime's layout-equality check.
+#[derive(Clone, Copy)]
+pub(crate) struct OwnedElemRegistries<'a, 'ctx> {
+    pub(crate) enum_layouts: &'a [EnumLayout],
+    pub(crate) machine_layouts: &'a MachineLayoutMap<'ctx>,
+    pub(crate) record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+}
+
 pub(crate) struct FnCtx<'a, 'ctx> {
     pub(crate) ctx: &'ctx Context,
     pub(crate) llvm_mod: &'a LlvmModule<'ctx>,
@@ -18094,7 +18111,6 @@ fn emit_tuple_kind_drop_inplace_body<'ctx>(
 /// Vec's constructor uses (`resolved_ty_element_owns_heap_for_owned_vec`), so
 /// the clone primitive can never disagree with the inner Vec's actual ABI.
 pub(crate) fn collection_elem_clone_drop_syms(
-    _fn_ctx: &FnCtx<'_, '_>,
     elem_ty: &ResolvedTy,
 ) -> Option<(&'static str, &'static str)> {
     match elem_ty {
@@ -18173,7 +18189,7 @@ fn tuple_field_clone_kind(
 /// (owned-Vec element path) and the drop-only emitter (W5.021 owned-tuple drop
 /// spine), so both consume the same classification authority.
 pub(crate) fn tuple_inplace_field_kinds<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
+    regs: OwnedElemRegistries<'_, 'ctx>,
     tuple_key: &str,
     elems: &[ResolvedTy],
     tuple_llvm_ty: BasicTypeEnum<'ctx>,
@@ -18186,7 +18202,7 @@ pub(crate) fn tuple_inplace_field_kinds<'ctx>(
     // Needs the MIR record/enum layout slices; codegen carries the LLVM record
     // map, so reconstruct a minimal RecordLayout slice from the resolved-field
     // table for the classifier.
-    let record_layouts: Vec<hew_mir::RecordLayout> = fn_ctx
+    let record_layouts: Vec<hew_mir::RecordLayout> = regs
         .record_field_resolved_tys
         .iter()
         .map(|(name, tys)| hew_mir::RecordLayout {
@@ -18201,7 +18217,7 @@ pub(crate) fn tuple_inplace_field_kinds<'ctx>(
         kinds.push(tuple_field_clone_kind(
             elem,
             &record_layouts,
-            fn_ctx.enum_layouts,
+            regs.enum_layouts,
         )?);
     }
     Ok((tuple_struct, kinds))
@@ -18228,7 +18244,12 @@ pub(crate) fn emit_tuple_drop_inplace_body_only<'ctx>(
     if drop_fn.count_basic_blocks() > 0 {
         return Ok(());
     }
-    let (tuple_struct, kinds) = tuple_inplace_field_kinds(fn_ctx, tuple_key, elems, tuple_llvm_ty)?;
+    let (tuple_struct, kinds) = tuple_inplace_field_kinds(
+        fn_ctx.owned_elem_registries(),
+        tuple_key,
+        elems,
+        tuple_llvm_ty,
+    )?;
     emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds)
 }
 

@@ -2858,8 +2858,8 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // hew_bytes_len(triple: *const BytesTriple) -> i64
         // (`hew-runtime/src/bytes.rs`). The canonical `bytes.len()` entry: a
         // `bytes` value is a `BytesTriple`, not a `*mut HewVec`. Passed BY
-        // POINTER (the caller's triple alloca address) — the by-pointer bytes-
-        // consumer convention (`is_bytes_by_pointer_consumer`); by value the
+        // POINTER (the caller's triple alloca address) — the uniform by-pointer
+        // bytes-param convention; by value the
         // `{ptr,i32,i32}` arg is not reliably ABI-portable. Returns `len` as i64.
         "hew_bytes_len" => i64_ty.fn_type(&[ptr_ty.into()], false),
         // hew_bytes_slice(ptr, offset, len, start, end) -> BytesTriple.
@@ -3810,13 +3810,14 @@ fn declare_catalog_ffi<'ctx>(
             extern_malloc_string_ret: false,
         });
     }
-    let bytes_by_pointer = crate::runtime_abi::is_bytes_by_pointer_consumer(symbol);
     let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(entry.params.len());
     for (idx, param) in entry.params.iter().enumerate() {
-        // A `bytes` parameter of a by-pointer consumer lowers to a plain `ptr`
-        // (the address of the caller's BytesTriple alloca). See
-        // `is_bytes_by_pointer_consumer`.
-        if bytes_by_pointer && matches!(param, BuiltinTy::Bytes) {
+        // Every `bytes` parameter lowers to a plain `ptr` — the address of the
+        // caller's `{ptr, i32, i32}` BytesTriple alloca. A 16-byte triple passed
+        // by value is not reliably ABI-portable in any argument position, so the
+        // runtime always reads the triple through the pointer. The call edge
+        // passes the alloca address for any `ptr`-declared bytes param.
+        if matches!(param, BuiltinTy::Bytes) {
             param_tys.push(ctx.ptr_type(AddressSpace::default()).into());
             continue;
         }
@@ -4228,12 +4229,12 @@ fn emit_extern_record_return_call<'ctx>(
     }
     for (idx, arg) in args.iter().enumerate() {
         let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-        // By-pointer bytes consumer (e.g. `hew_tls_write_result`'s
-        // `data: bytes`): the callee declares this parameter as `ptr` while the
-        // Hew argument is a `bytes` value (a `{ptr, i32, i32}` alloca). Pass
-        // the alloca ADDRESS so the runtime reads the triple through the
-        // pointer — the same branch as the generic arm, read at the SHIFTED
-        // declared index. See `is_bytes_by_pointer_consumer`.
+        // By-pointer bytes param (e.g. `hew_tls_write_result`'s `data: bytes`):
+        // the callee declares this parameter as `ptr` while the Hew argument is a
+        // `bytes` value (a `{ptr, i32, i32}` alloca). Pass the alloca ADDRESS so
+        // the runtime reads the triple through the pointer — the same branch as
+        // the generic arm, read at the SHIFTED declared index. Every `bytes`
+        // param is `ptr`-declared, so this branch fires for all of them.
         if matches!(
             declared_param_tys.get(idx + param_index_shift),
             Some(BasicMetadataTypeEnum::PointerType(_))
@@ -4339,63 +4340,24 @@ fn predeclare_extern_decls<'ctx>(
             continue;
         }
 
-        // ── bytes boundary fail-closed gate ──────────────────────────────────
+        // ── bytes boundary: one unconditional rule ───────────────────────────
         //
         // A `-> bytes` return is classified by the R5 aggregate ABI classifier
         // below (no per-symbol allowlist; it fails closed on an unmodelled
-        // target). A `bytes` PARAM must still be registered in one of two
-        // consumer lists that shape its C-ABI crossing:
-        //   • `is_bytes_by_pointer_consumer`    — takes bytes as *const BytesTriple
-        //   • `is_bytes_struct_expansion_consumer` — takes bytes via field expansion
-        //
-        // A symbol with a `bytes` PARAM in NEITHER list (and that is not itself a
-        // classified `-> bytes` producer) has an unknown param ABI. Rather than
-        // silently miscompile (the msgpack class of latent bug), we fail closed
-        // here so the author is forced to classify the symbol.
-        //
-        // To resolve the error: verify the Rust impl's actual `bytes` param ABI
-        // and add the symbol to the matching list above with a brief WHY comment.
-        // LESSONS: `boundary-fail-closed` (P0).
-        let has_bytes_return = matches!(decl.return_ty, ResolvedTy::Bytes);
-        let has_bytes_param = decl
-            .param_tys
-            .iter()
-            .any(|t| matches!(t, ResolvedTy::Bytes));
+        // target). Every `bytes` PARAM lowers to a plain `ptr` — the address of
+        // the caller's `{ptr, i32, i32}` BytesTriple alloca — regardless of the
+        // symbol. A 16-byte triple passed by value is not reliably ABI-portable
+        // in any argument position, so the runtime always reads it through the
+        // pointer. There is no unclassified `bytes` ABI to gate: a bytes param is
+        // always `ptr`, a bytes return is always classified.
+        // LESSONS: `boundary-fail-closed` (P0), `inline-collection-param-aliases-by-pointer`.
 
-        // A `-> bytes` extern is always classified by the R5 aggregate ABI
-        // classifier at declaration (below); the classifier fails closed on an
-        // unmodelled target, so there is no unclassified `-> bytes` path to gate
-        // here.
-
-        // A `-> bytes` producer is a known classified aggregate; it always uses
-        // struct-expansion for its own `bytes` params, so it is exempt from the
-        // param gate. Only check remaining unknowns for `bytes` params.
-        if has_bytes_param
-            && !has_bytes_return
-            && !crate::runtime_abi::is_bytes_by_pointer_consumer(&decl.name)
-            && !crate::runtime_abi::is_bytes_struct_expansion_consumer(&decl.name)
-        {
-            return Err(CodegenError::FailClosed(format!(
-                "extern `{}` has `bytes` param(s) but is not in \
-                 `is_bytes_by_pointer_consumer` or `is_bytes_struct_expansion_consumer`. \
-                 If the Rust impl takes `*const BytesTriple`, add to the pointer-consumer \
-                 list. If it takes `(ptr: *mut u8, offset: u32, len: u32)` field-expansion, \
-                 add to the struct-expansion list. \
-                 See both lists in llvm.rs near this function. \
-                 (LESSONS: boundary-fail-closed)",
-                decl.name
-            )));
-        }
-        // ── end bytes boundary gate ───────────────────────────────────────────
-
-        let bytes_by_pointer = crate::runtime_abi::is_bytes_by_pointer_consumer(&decl.name);
         let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(decl.param_tys.len());
         for ty in &decl.param_tys {
-            // A `bytes` parameter of a by-pointer consumer is lowered to a plain
-            // `ptr` (the address of the caller's BytesTriple alloca); the generic
-            // Call path passes the alloca address rather than the loaded struct.
-            // See `is_bytes_by_pointer_consumer` for why.
-            if bytes_by_pointer && matches!(ty, ResolvedTy::Bytes) {
+            // A `bytes` parameter lowers to a plain `ptr` (the address of the
+            // caller's BytesTriple alloca); the generic Call path passes the
+            // alloca address rather than the loaded struct.
+            if matches!(ty, ResolvedTy::Bytes) {
                 param_tys.push(ctx.ptr_type(AddressSpace::default()).into());
                 continue;
             }
@@ -33892,12 +33854,12 @@ fn lower_terminator<'ctx>(
                             Vec::with_capacity(args.len());
                         for (idx, arg) in args.iter().enumerate() {
                             let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-                            // By-pointer bytes consumer: the callee declares this
+                            // By-pointer bytes param: the callee declares this
                             // parameter as `ptr` while the Hew argument is a `bytes`
                             // value (a `{ptr, i32, i32}` alloca). Pass the alloca
                             // ADDRESS so the runtime reads the triple through the
                             // pointer — sidesteps the non-first by-value small-struct
-                            // ABI coercion gap. See `is_bytes_by_pointer_consumer`.
+                            // ABI coercion gap. Every `bytes` param is `ptr`-declared.
                             if matches!(
                                 declared_param_tys.get(idx),
                                 Some(BasicMetadataTypeEnum::PointerType(_))

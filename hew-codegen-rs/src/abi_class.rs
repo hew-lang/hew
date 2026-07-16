@@ -47,14 +47,15 @@
 //!   by-value struct argument/return via a pointer when it is not a single
 //!   element. We classify multi-field aggregates as indirect on wasm32.
 
-// SHIM(R5): the classification layer lands additively. The return path is wired
-// (`declare_aggregate_return` drives `hew_supervisor_child_get`'s classified
-// return in `runtime_abi.rs`); the argument path (`apply_arg_attrs`) and the
-// `CoercedInt` variant land with the by-value `bytes`-arg migration. Until every
-// helper has a production consumer the not-yet-wired ones read as dead code.
-// WHEN OBSOLETE: removed the commit the last consumer (the `bytes`-arg migration)
-// lands.
-#![allow(dead_code)]
+// The RETURN path is the production consumer: `declare_aggregate_return` drives
+// every `-> bytes` producer's classified return (RegisterPair/Sret) in
+// `runtime_abi.rs`/`llvm.rs`. The ARGUMENT path is by design NOT wired for the
+// runtime corpus — every `bytes` argument crosses the C-ABI boundary as a plain
+// `ptr` (the caller's BytesTriple alloca address), which is ABI-portable on every
+// target without a `byval` attribute, so `apply_arg_attrs` and the `CoercedInt`
+// variant stay modelled-but-unused. They remain here (with narrowed per-item
+// `allow(dead_code)`) as the complete ABI vocabulary a future non-pointer
+// aggregate-argument site would compose on; they are exercised by unit tests.
 
 use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
@@ -94,6 +95,7 @@ pub(crate) enum AbiClass {
     /// into one register, this variant carries it. WHAT: a real coerced-int
     /// classification arm in `classify_aggregate` keyed on the eightbyte
     /// classification, not just total size.
+    #[allow(dead_code)] // Modelled for completeness; never produced today (see variant doc).
     CoercedInt { bits: u32 },
     /// The aggregate is passed/returned INDIRECTLY via a caller-allocated hidden
     /// pointer. At a return site this lowers to an `sret(T)` parameter
@@ -263,6 +265,11 @@ pub(crate) fn apply_return_attrs<'ctx>(
 /// caller-owned copy and the callee receives it `byval(pointee_ty)` — LLVM emits
 /// the ABI-correct copy. For Direct/RegisterPair/CoercedInt arguments this is a
 /// no-op (the value is passed by value / in registers).
+///
+/// The runtime corpus passes every aggregate `bytes` argument by plain `ptr`, so
+/// no production site calls this yet; it is exercised by unit tests and kept as
+/// the arg-site half of the ABI vocabulary.
+#[allow(dead_code)]
 pub(crate) fn apply_arg_attrs<'ctx>(
     ctx: &'ctx Context,
     fn_value: FunctionValue<'ctx>,
@@ -282,6 +289,10 @@ pub(crate) fn apply_arg_attrs<'ctx>(
 /// Expose the aggregate's ABI size for callers that need it independently of the
 /// class (e.g. to choose the `[N x i64]` register-pair carrier shape). Pure
 /// passthrough to `TargetData::get_abi_size`.
+///
+/// No production site calls this yet — `declare_aggregate_return` derives the
+/// carrier shape internally — so it is kept as part of the ABI vocabulary.
+#[allow(dead_code)]
 pub(crate) fn aggregate_abi_size(struct_ty: StructType<'_>, target_data: &TargetData) -> u64 {
     target_data.get_abi_size(&struct_ty)
 }

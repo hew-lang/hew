@@ -3,10 +3,10 @@
 //! Pure relocation (R4 god-module carve) of the runtime-call lowering edge out
 //! of llvm.rs: [`lower_call_runtime_abi`] — the single dispatch that lowers
 //! every `Instr::CallRuntimeAbi` to its C-ABI extern declaration and call,
-//! covering the entire `RuntimeCallFamily` surface — plus the two bytes-ABI
-//! consumer-convention predicates ([`is_bytes_by_pointer_consumer`],
-//! [`is_bytes_struct_expansion_consumer`]) that the catalog FFI declaration
-//! and the call edge both consult.
+//! covering the entire `RuntimeCallFamily` surface. Every `bytes` parameter
+//! crosses the C-ABI boundary as a plain `ptr` (the caller's BytesTriple alloca
+//! address); the declaration edges and the call edge apply that one rule with
+//! no per-symbol allowlist.
 //!
 //! Mirrors the `crate::coro` carve: shared codegen context and the per-family
 //! emit helpers are imported from `crate::llvm`; `crate::llvm` calls back via
@@ -22,91 +22,6 @@ use hew_types::ResolvedTy;
 
 #[allow(unused_imports)]
 use crate::llvm::*;
-
-/// Runtime consumers that take a `bytes` value BY POINTER (`*const BytesTriple`)
-/// rather than by value.
-///
-/// WHY: a 16-byte `BytesTriple {ptr, i32, i32}` passed by value as a NON-first
-/// argument loses its second eightbyte (offset/len) at the C-ABI boundary in
-/// the current codegen — the in-register small-struct coercion is only reliable
-/// for a single/first by-value struct argument (e.g. `hew_bytes_to_string`).
-/// These consumers all take the bytes value after a leading handle argument
-/// (`conn`/`sink`), so codegen passes the address of the caller's triple alloca
-/// (a plain `ptr`, always ABI-portable) and the runtime reads through it —
-/// exactly the proven `hew_bytes_push(&mut BytesTriple, ..)` pattern. The Hew
-/// surface still declares these params as `bytes`; only the C-ABI lowering
-/// differs. WHEN OBSOLETE: when codegen emits the correct C-ABI coercion for a
-/// by-value struct in any argument position (e.g. via the `byval`/coerced-int
-/// frontend lowering), these can revert to by-value `bytes` params.
-pub(crate) fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_tcp_write"
-            | "hew_sink_write_bytes"
-            | "hew_sink_try_write_bytes"
-            | "hew_bytes_to_string"
-            | "hew_bytes_len"
-            | "hew_file_write_bytes"
-            // TCP broadcast: `message: bytes` passed as *const BytesTriple.
-            // (Previous *const c_char signature ignored `offset` — only worked
-            // when offset==0. Fixed to take *const BytesTriple.)
-            | "hew_tcp_broadcast_except"
-            // TLS write bridge: `data: bytes` passed as *const BytesTriple.
-            // (Previous (*const u8, usize) pair ignored `offset`; fixed.)
-            | "hew_tls_write_result"
-            // Ed25519 sign: all _hew wrappers that accept `bytes` inputs pass
-            // them as *const BytesTriple (by-pointer consumer convention).
-            | "hew_ed25519_public_key_from_pkcs8_hew"
-            | "hew_ed25519_sign_hew"
-            | "hew_ed25519_verify_hew"
-            // QUIC send: `data: bytes` passed as *const BytesTriple.
-            | "hew_quic_stream_send"
-            | "hew_quic_stream_send_timeout_hew"
-            // compress: all _hew wrappers accept `bytes` inputs via *const BytesTriple.
-            | "hew_gzip_compress_hew"
-            | "hew_gzip_decompress_hew"
-            | "hew_deflate_compress_hew"
-            | "hew_deflate_decompress_hew"
-            | "hew_zlib_compress_hew"
-            | "hew_zlib_decompress_hew"
-            // msgpack: `bytes` inputs passed as *const BytesTriple.
-            | "hew_msgpack_to_json_hew"
-            | "hew_msgpack_encode_bytes_hew"
-    )
-}
-
-/// Runtime consumers that take a `bytes` value BY STRUCT EXPANSION — the Rust
-/// side expects `(ptr: *mut u8, offset: u32, len: u32)` as three separate
-/// parameters matching the `#[repr(C)] BytesTriple` field layout.
-///
-/// WHY this is a separate category: these functions take `bytes` as the FIRST
-/// (or only) argument. On AArch64 and SysV x86-64, a `{ptr, i32, i32}` struct
-/// passed by value as the first argument expands into three registers matching
-/// the Rust `(ptr, offset, len)` signature exactly. This is confirmed correct
-/// for the listed symbols; do NOT list a symbol here unless the Rust impl
-/// literally receives `(ptr: *mut u8, offset: u32, len: u32)` (or repeated
-/// triples for multiple `bytes` params).
-///
-/// WHEN OBSOLETE: same as `is_bytes_by_pointer_consumer` — once codegen emits
-/// proper `byval`/coerced-int lowering for struct params this distinction
-/// collapses. The list is an explicit registry so unknown symbols fail closed
-/// rather than silently mismatching.
-pub(crate) fn is_bytes_struct_expansion_consumer(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        // crypto: input `bytes` params expand to (ptr, offset, len).
-        "hew_sha256_hew"
-            | "hew_sha384_hew"
-            | "hew_sha512_hew"
-            | "hew_hmac_sha256_hew"
-            | "hew_constant_time_eq_hew"
-            // encrypt: `key: bytes` and optional `ciphertext: bytes` each expand.
-            | "hew_encrypt_seal_base64_hew"
-            | "hew_encrypt_open_hew"
-            | "hew_encrypt_try_open_hew"
-            | "hew_encrypt_must_open_hew"
-    )
-}
 
 /// Decode a setup ABI whose positive return is an internal ref id and whose
 /// negative return encodes an error enum as `-(variant + 1)`.
@@ -2205,8 +2120,8 @@ pub(crate) fn lower_call_runtime_abi(
             // `BytesTriple { ptr, offset, len }`, NOT a `*mut HewVec`, so the
             // `hew_vec_len(*mut HewVec)` C ABI cannot apply. Route a bytes
             // receiver to `hew_bytes_len(*const BytesTriple) -> i64`, passing the
-            // triple alloca's ADDRESS (a plain `ptr`) — the by-pointer bytes-
-            // consumer convention (`is_bytes_by_pointer_consumer`). By value the
+            // triple alloca's ADDRESS (a plain `ptr`) — the uniform by-pointer
+            // bytes-param convention. By value the
             // `{ptr,i32,i32}` arg is not reliably ABI-portable (LLVM's 3-register
             // small-struct classification vs Rust's repr(C) two-register pair).
             // Checker-authority: branch on `args[0]`'s `ResolvedTy::Bytes`.

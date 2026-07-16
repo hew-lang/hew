@@ -7,13 +7,16 @@
 //! return-producer allowlist — every `-> bytes` extern is classified, and the
 //! classifier itself fails closed on an unmodelled target rather than guessing.
 //!
-//! A `bytes` PARAM is still governed by the two consumer allowlists (until the
-//! by-pointer-everywhere migration collapses them):
-//! - `is_bytes_by_pointer_consumer`      — Rust impl takes *const BytesTriple
-//! - `is_bytes_struct_expansion_consumer` — Rust impl takes (ptr, offset, len)
+//! A `bytes` PARAM crosses the C-ABI boundary by ONE unconditional rule: it is
+//! declared as a plain `ptr` (the caller's `{ptr, i32, i32}` BytesTriple alloca
+//! address). There is no per-symbol param allowlist and no "unclassified bytes
+//! param" state — a `bytes` param is always `ptr`, so the old fail-closed param
+//! gate is gone. The runtime reads the triple through the pointer; a 16-byte
+//! triple by value is not reliably ABI-portable in any argument position.
 //!
 //! LESSONS applied: `boundary-fail-closed` (P0),
-//! `aggregate-abi-by-classifier-not-per-symbol` (P0).
+//! `aggregate-abi-by-classifier-not-per-symbol` (P0),
+//! `inline-collection-param-aliases-by-pointer` (P0).
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
@@ -179,6 +182,17 @@ fn emit_options(label: &str) -> EmitOptions<'static> {
     }
 }
 
+/// Emit `pipeline` and return the textual LLVM IR of the emitted module.
+fn emit_ir(pipeline: &IrPipeline, label: &str) -> String {
+    let artefacts = emit_module(pipeline, &emit_options(label))
+        .unwrap_or_else(|error| panic!("emit_module must succeed for {label}: {error:?}"));
+    let ll_path = artefacts
+        .ll_path
+        .as_deref()
+        .expect("emit_module must populate ll_path");
+    std::fs::read_to_string(ll_path).expect("read emitted .ll")
+}
+
 // ---------------------------------------------------------------------------
 // Classified `-> bytes` return: no per-symbol gate, classifier is the backstop
 // ---------------------------------------------------------------------------
@@ -228,55 +242,39 @@ fn bytes_return_extern_fails_closed_on_unmodelled_target() {
 }
 
 // ---------------------------------------------------------------------------
-// Fail-closed: unknown `bytes` param
+// `bytes` param: one unconditional rule — declared `ptr`, never gated
 // ---------------------------------------------------------------------------
 
-/// An extern that takes a `bytes` param and is not in any bytes-param registry
-/// must produce `CodegenError::FailClosed` naming the symbol. This guards the
-/// param-side of the ABI boundary symmetrically with the return side.
+/// An arbitrary `bytes`-param extern — one that was never on any allowlist —
+/// declares its `bytes` parameter as a plain `ptr` and emits successfully. There
+/// is no longer any "unclassified bytes param" fail-closed state: the by-pointer
+/// rule is unconditional. This is the deletion proof for the two consumer
+/// allowlists (`is_bytes_by_pointer_consumer` /
+/// `is_bytes_struct_expansion_consumer`).
 #[test]
-fn unknown_bytes_param_extern_fails_closed_naming_symbol() {
+fn arbitrary_bytes_param_extern_declares_pointer_not_gated() {
     let pipeline = pipeline_with_extern(
         "probe_unregistered_bytes_param",
         ResolvedTy::I32,
         vec![ResolvedTy::Bytes],
     );
-    let result = emit_module(&pipeline, &emit_options("bytes_param"));
-    match result {
-        Err(CodegenError::FailClosed(msg)) => {
-            assert!(
-                msg.contains("probe_unregistered_bytes_param"),
-                "FailClosed must name the offending symbol; got: {msg}"
-            );
-            // Gate points at either the pointer-consumer or struct-expansion list.
-            assert!(
-                msg.contains("is_bytes_by_pointer_consumer")
-                    || msg.contains("is_bytes_struct_expansion_consumer"),
-                "FailClosed must point at one of the bytes-param registries; got: {msg}"
-            );
-        }
-        Err(other) => panic!(
-            "expected CodegenError::FailClosed for unregistered bytes-param extern, got {other:?}"
-        ),
-        Ok(_) => panic!(
-            "unregistered bytes-param extern must fail closed; got Ok(_) — \
-             boundary-fail-closed regression"
-        ),
-    }
+    let ir = emit_ir(&pipeline, "bytes_param");
+    // The single `bytes` parameter must be declared as `ptr` (the caller's
+    // BytesTriple alloca address), NOT as an expanded `{ptr, i32, i32}` struct or
+    // a field-expansion triple. Teeth: assert the exact declared signature.
+    assert!(
+        ir.contains("declare i32 @probe_unregistered_bytes_param(ptr)"),
+        "a `bytes` param must be declared as a single `ptr`;\ngot:\n{ir}"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Regression: a known bytes-return producer must still compile
+// Regression: known bytes producers/consumers still compile
 // ---------------------------------------------------------------------------
 
-/// `hew_sha256_hew` is in `is_bytes_struct_expansion_consumer` (bytes param)
-/// and the bytes value it receives is handled by field-expansion ABI.
-/// Verify it does NOT trigger the fail-closed gate — the gate must only reject
-/// symbols that are in neither list.
-///
-/// We test the param side: `hew_sha256_hew(data: bytes) -> bytes`. Because
-/// `hew_sha256_hew` is in `is_bytes_triple_return_producer` (return side) AND
-/// `is_bytes_struct_expansion_consumer` (param side), both guards pass.
+/// `hew_sha256_hew(data: bytes) -> bytes` must still emit: its `bytes` param
+/// declares `ptr` (by-pointer rule) and its `-> bytes` return is classified by
+/// the R5 aggregate ABI classifier. Neither side is gated by an allowlist.
 fn assert_known_bytes_extern_does_not_fail_closed(
     symbol: &str,
     return_ty: ResolvedTy,
@@ -289,7 +287,7 @@ fn assert_known_bytes_extern_does_not_fail_closed(
 
 #[test]
 fn known_bytes_extern_does_not_fail_closed() {
-    // hew_sha256_hew takes bytes and returns bytes — both sides are registered.
+    // hew_sha256_hew takes bytes (declared `ptr`) and returns bytes (classified).
     assert_known_bytes_extern_does_not_fail_closed(
         "hew_sha256_hew",
         ResolvedTy::Bytes,
@@ -299,8 +297,8 @@ fn known_bytes_extern_does_not_fail_closed() {
 
 #[test]
 fn quic_bytes_externs_do_not_fail_closed() {
-    // QUIC receive wrappers produce BytesTriple, and send wrappers consume a
-    // pointer to the caller's BytesTriple. Every direction must stay registered.
+    // QUIC receive wrappers produce a classified BytesTriple, and send wrappers
+    // consume a `bytes` param declared as `ptr`. Every direction emits cleanly.
     assert_known_bytes_extern_does_not_fail_closed(
         "hew_quic_stream_recv",
         ResolvedTy::Bytes,

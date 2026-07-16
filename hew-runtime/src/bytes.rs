@@ -765,7 +765,7 @@ pub unsafe extern "C" fn hew_bytes_eq(
 /// stack slot). By-pointer (not by-value): a `{ptr,i32,i32}` passed by value is
 /// not reliably ABI-portable at the LLVM↔Rust C boundary (LLVM's three-register
 /// small-struct classification vs Rust's repr(C) two-register pair), so codegen
-/// passes the triple's address (`is_bytes_by_pointer_consumer`).
+/// passes the triple's address (the uniform by-pointer bytes-param convention).
 ///
 /// Invalid UTF-8 sequences are replaced with U+FFFD. The returned pointer is
 /// allocated via `libc::malloc`; the caller (typically the Hew string GC)
@@ -872,7 +872,8 @@ pub unsafe extern "C" fn hew_bytes_from_str(str_ptr: *const u8) -> BytesTriple {
 /// reads the `len` field. By-pointer (not by-value): a `{ptr,i32,i32}` passed by
 /// value is not reliably ABI-portable at the LLVM↔Rust C boundary (LLVM's
 /// three-register small-struct classification vs Rust's repr(C) two-register
-/// pair), so codegen passes the triple's address (`is_bytes_by_pointer_consumer`).
+/// pair), so codegen passes the triple's address (the uniform by-pointer
+/// bytes-param convention).
 ///
 /// # Safety
 ///

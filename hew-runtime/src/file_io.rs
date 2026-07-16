@@ -339,7 +339,7 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> crate::byte
 /// Write a `BytesTriple` to a file, overwriting any existing content.
 ///
 /// `data` is the address of the caller's `BytesTriple` alloca, passed via the
-/// by-pointer bytes consumer convention (`is_bytes_by_pointer_consumer`).
+/// uniform by-pointer bytes-param convention.
 ///
 /// Returns 0 on success, -1 on error.
 ///

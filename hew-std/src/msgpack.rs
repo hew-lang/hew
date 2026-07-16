@@ -371,9 +371,9 @@ pub unsafe extern "C" fn hew_msgpack_free(ptr: *mut u8) {
 // the codegen boundary (a `*mut HewVec` pointer reinterpreted as
 // `{ptr, offset, len}`), so `bytes.len()` on a from_json result read garbage —
 // passing the `len() > 0` round-trip assertions but failing the `len() == 0`
-// invalid-input assertion. Registering these symbols in the codegen
-// `is_bytes_triple_return_producer` / `is_bytes_by_pointer_consumer` allowlists
-// completes the migration.
+// invalid-input assertion. Codegen now classifies every `-> bytes` return and
+// passes every `bytes` argument by pointer unconditionally — no per-symbol
+// allowlist — so these symbols are handled by that uniform rule.
 // ---------------------------------------------------------------------------
 
 /// Extract a byte slice from a `BytesTriple` by-pointer consumer argument.

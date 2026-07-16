@@ -15,7 +15,7 @@ fn abort_crypto_failure() -> ! {
 }
 
 /// Copy a Hew `bytes` value's active region out of a caller-provided
-/// [`BytesTriple`] pointer (`is_bytes_by_pointer_consumer` convention).
+/// [`BytesTriple`] pointer (the uniform by-pointer bytes-param convention).
 ///
 /// A null triple pointer, or a triple whose `ptr` is null with a non-zero
 /// `len`, is rejected (`None`); an empty triple yields an empty `Vec`. The

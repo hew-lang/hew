@@ -2280,7 +2280,7 @@ pub unsafe extern "C" fn hew_stream_take(stream: *mut HewStream, n: i64) -> *mut
 /// argument loses its offset/len eightbyte at the current codegen C-ABI
 /// boundary; passing the address is ABI-portable (mirrors `hew_bytes_push`).
 /// Codegen passes the triple alloca's address for the `data: bytes` parameter
-/// (`is_bytes_by_pointer_consumer`).
+/// (the uniform by-pointer bytes-param convention).
 ///
 /// # Safety
 ///
@@ -2788,7 +2788,7 @@ unsafe fn sink_channel_core<'a>(
 /// region is BORROWED for the duration of the call and the caller retains
 /// ownership (the Hew drop spine releases it via `hew_bytes_drop`). By-pointer
 /// (not by-value) for the same ABI reason as [`hew_sink_write_bytes`]
-/// (`is_bytes_by_pointer_consumer`).
+/// (the uniform by-pointer bytes-param convention).
 ///
 /// # Safety
 ///

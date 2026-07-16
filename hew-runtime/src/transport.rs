@@ -1859,7 +1859,7 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> crate::bytes::BytesTriple {
 /// argument loses its offset/len eightbyte at the current codegen C-ABI
 /// boundary; passing the address is ABI-portable (mirrors `hew_bytes_push`).
 /// Codegen passes the triple alloca's address for the `data: bytes` parameter
-/// (`is_bytes_by_pointer_consumer`).
+/// (the uniform by-pointer bytes-param convention).
 ///
 /// Returns number of bytes written, or -1 on error.
 ///
@@ -3116,7 +3116,7 @@ mod tests {
 ///
 /// `msg` must be a valid, non-null pointer to a `BytesTriple` whose active
 /// region `[offset, offset + len)` contains valid UTF-8 text.
-/// (`is_bytes_by_pointer_consumer` in codegen passes the triple's alloca
+/// (codegen passes the triple's alloca
 /// address rather than the struct value — the previous `*const c_char`
 /// signature ignored `offset` and only worked by accident when offset==0.)
 #[no_mangle]

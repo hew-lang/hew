@@ -1171,7 +1171,7 @@ pub unsafe extern "C" fn hew_quic_conn_last_error(conn: *const HewQuicConn) -> *
 /// Send a `bytes` value over a QUIC stream.
 ///
 /// `data` is the address of the caller's `BytesTriple` alloca, passed via the
-/// by-pointer bytes consumer convention (`is_bytes_by_pointer_consumer`).
+/// uniform by-pointer bytes-param convention.
 ///
 /// # Safety
 ///

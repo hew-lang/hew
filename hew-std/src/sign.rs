@@ -18,16 +18,16 @@
 //! `std/crypto/crypto` (commit d2bd9ba8) and `hew-runtime/src/file_io.rs`
 //! (commit d4e7f4c7):
 //!
-//! - **Input** `bytes` values arrive as `*const BytesTriple` (by-pointer
-//!   consumer convention; `is_bytes_by_pointer_consumer` in codegen).
+//! - **Input** `bytes` values arrive as `*const BytesTriple` (the uniform
+//!   by-pointer bytes-param convention codegen applies to every bytes argument).
 //!   Each callee reads `{ ptr, offset, len }` from the pointer without taking
 //!   ownership; the caller retains the allocation.
 //! - **Output** `bytes` values are returned as `BytesTriple` by value.
-//!   Codegen uses the `_raw` out-pointer variant on all platforms to avoid
-//!   the Windows x64 MSVC sret mismatch.  `is_bytes_triple_return_producer`
-//!   in codegen controls which functions use this path.
+//!   Codegen classifies every `-> bytes` return per target via the aggregate
+//!   ABI classifier (register-pair on SysV/AAPCS, sret on Windows x64 MSVC /
+//!   wasm32), so no per-symbol handling is needed.
 //! - `hew_ed25519_verify_hew` returns `i32` (0/1); its inputs still use the
-//!   by-pointer consumer convention.
+//!   by-pointer bytes-param convention.
 //! - The raw C-ABI variants (`hew_ed25519_*` without `_hew` suffix) are
 //!   provided for direct use from other native Rust code or future FFI callers;
 //!   they do not touch `BytesTriple` at all.
@@ -317,13 +317,13 @@ pub unsafe extern "C" fn hew_ed25519_verify(
 // (d2bd9ba8) and the file I/O fix (d4e7f4c7):
 //
 //   - `bytes` inputs: `*const BytesTriple` (by-pointer consumer convention).
-//     Codegen passes the address of the caller's BytesTriple alloca.
-//     `is_bytes_by_pointer_consumer` in `hew-codegen-rs/src/llvm.rs` must
-//     list every function that receives bytes this way.
-//   - `bytes` outputs: `BytesTriple` by value.  Codegen uses the `_raw`
-//     out-pointer sibling on all platforms to avoid the Windows x64 MSVC sret
-//     mismatch.  `is_bytes_triple_return_producer` in codegen must list every
-//     function that returns bytes this way.
+//     Codegen passes the address of the caller's BytesTriple alloca. Every
+//     bytes argument crosses by pointer unconditionally — no per-symbol
+//     allowlist in `hew-codegen-rs/src/llvm.rs`.
+//   - `bytes` outputs: `BytesTriple` by value.  Codegen classifies every
+//     `-> bytes` return per target via the aggregate ABI classifier
+//     (register-pair on SysV/AAPCS, sret on Windows x64 MSVC / wasm32) — no
+//     per-symbol allowlist.
 
 /// Generate an Ed25519 PKCS#8 v2 document and return it as an 83-byte
 /// `bytes` value (`BytesTriple`).

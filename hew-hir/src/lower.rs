@@ -6019,6 +6019,40 @@ impl LowerCtx {
         SpanKey::in_module(span, self.current_module_idx)
     }
 
+    /// Fail-closed guard for the refutable enum-struct consumers (`if let` /
+    /// `while let` / `let ... else`). These consume the AST-derived
+    /// `ArmResolution` for their binding/skipped descriptors, but the checker's
+    /// `PatternPlan` is the authoritative field-list source for every
+    /// record-shaped pattern — including an enum struct-variant like
+    /// `Packet::Data { a, .. }` (the checker builds a plan for every
+    /// `Struct`/`RecordShorthand` pattern). Its absence for a plan-covered shape
+    /// is a checker-boundary violation and must fail closed uniform with the
+    /// record-let path, never silently fall back to the AST resolution. Returns
+    /// `true` (and pushes the boundary-violation diagnostic) when the pattern is
+    /// record-shaped and the plan is missing; the caller then bails on its own
+    /// fail-closed path.
+    fn record_shape_missing_plan(&mut self, pattern: &Spanned<Pattern>) -> bool {
+        if !matches!(
+            pattern.0,
+            Pattern::Struct { .. } | Pattern::RecordShorthand { .. }
+        ) {
+            return false;
+        }
+        let key = self.mk_key(&pattern.1);
+        if self.pattern_plans.contains_key(&key) {
+            return false;
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "record-shaped pattern".into(),
+                reason: "missing checker PatternPlan".into(),
+            },
+            pattern.1.clone(),
+            "checker did not provide a canonical plan for this record-shaped enum/record pattern",
+        ));
+        true
+    }
+
     /// W4.047 P1.2 — the totality assert net (zero behaviour change).
     ///
     /// At a fail-open / boundary-violation lowering site, prove that the typed
@@ -12442,6 +12476,32 @@ impl LowerCtx {
                     };
                 };
 
+                // Uniform plan authority: a record-shaped pattern (incl. enum
+                // struct-variant `Packet::Data { a, .. }`) with no checker
+                // `PatternPlan` fails closed here rather than lowering off the
+                // AST-derived resolution.
+                if self.record_shape_missing_plan(pattern) {
+                    self.push_scope();
+                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    self.pop_scope();
+                    let unsupported_expr = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        ty: ResolvedTy::Unit,
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "while-let record-shaped pattern missing PatternPlan".into(),
+                        ),
+                        span: span.clone(),
+                    };
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(unsupported_expr),
+                        span: span.clone(),
+                    };
+                }
+
                 if let PatternKind::Literal = resolution.pattern_kind {
                     let Pattern::Literal(lit) = &pattern.0 else {
                         self.unsupported(
@@ -13239,6 +13299,14 @@ impl LowerCtx {
             return None;
         };
 
+        // Uniform plan authority: a record-shaped pattern (incl. enum
+        // struct-variant `Packet::Data { a, .. }`) with no checker `PatternPlan`
+        // fails closed here rather than lowering off the AST-derived resolution.
+        if self.record_shape_missing_plan(pattern) {
+            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
+            return None;
+        }
+
         let (PatternKind::VariantCtor, Some(variant_match)) =
             (resolution.pattern_kind, resolution.variant_match)
         else {
@@ -13424,6 +13492,19 @@ impl LowerCtx {
             }
             return None;
         };
+
+        // Uniform plan authority: a record-shaped pattern (incl. enum
+        // struct-variant `Packet::Data { a, .. }`) with no checker `PatternPlan`
+        // fails closed here rather than lowering off the AST-derived resolution.
+        if self.record_shape_missing_plan(pattern) {
+            self.push_scope();
+            let _ = self.lower_block(body, &ResolvedTy::Unit);
+            self.pop_scope();
+            if let Some(eb) = else_body {
+                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+            }
+            return None;
+        }
 
         if let PatternKind::Literal = resolution.pattern_kind {
             let Pattern::Literal(lit) = &pattern.0 else {

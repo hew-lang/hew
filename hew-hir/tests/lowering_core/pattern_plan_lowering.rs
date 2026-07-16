@@ -281,3 +281,69 @@ fn main() -> i64 {
         "nested rest must project the omitted `b` field as a wildcard; projected: {projected_fields:?}"
     );
 }
+
+#[test]
+fn missing_enum_struct_plan_fails_closed_in_refutable_positions() {
+    // The refutable consumers (if-let / while-let / let-else) consume the
+    // AST-derived ArmResolution for their binding/skipped descriptors, but the
+    // checker's PatternPlan is the authoritative field-list source for every
+    // record-shaped pattern — including an enum struct-variant `Packet::Data
+    // { a, .. }`. A cleared/missing plan for that shape must fail closed with a
+    // boundary violation in ALL positions, never silently fall back to the AST
+    // resolution (the same contract the record-let path enforces).
+    let cases = [
+        (
+            "if_let",
+            r#"
+enum Packet { Data { a: string, b: string }; Empty; }
+fn make() -> Packet { Packet::Data { a: "a".to_upper(), b: "b".to_upper() } }
+fn main() -> i64 {
+    let p = make();
+    if let Packet::Data { a, .. } = p { a.len() } else { 0 }
+}"#,
+        ),
+        (
+            "while_let",
+            r#"
+enum Packet { Data { a: string, b: string }; Empty; }
+fn make() -> Packet { Packet::Data { a: "a".to_upper(), b: "b".to_upper() } }
+fn main() {
+    var p = make();
+    while let Packet::Data { a, .. } = p {
+        let _ = a.len();
+        p = Packet::Empty;
+    }
+}"#,
+        ),
+        (
+            "let_else",
+            r#"
+enum Packet { Data { a: string, b: string }; Empty; }
+fn make() -> Packet { Packet::Data { a: "a".to_upper(), b: "b".to_upper() } }
+fn main() -> i64 {
+    let Packet::Data { a, .. } = make() else { return 0 };
+    a.len()
+}"#,
+        ),
+    ];
+    for (position, source) in cases {
+        let (parsed, mut output) = checked(source);
+        // The AST-derived resolution survives; only the plan is cleared. A
+        // fail-OPEN handoff would lower off the resolution with no diagnostic.
+        output.pattern_plans.clear();
+        let lowered = lower_program_host_target(&parsed.program, &output, &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| {
+                matches!(
+                    &diagnostic.kind,
+                    HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                        if name == "record-shaped pattern"
+                            && reason.contains("missing checker PatternPlan")
+                )
+            }),
+            "enum-struct `{{ a, .. }}` in {position} must fail closed on a missing \
+             PatternPlan; diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+    }
+}

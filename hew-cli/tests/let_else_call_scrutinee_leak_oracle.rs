@@ -141,7 +141,7 @@ fn f() -> Option<string> {\n\
 \n\
 fn main() {\n\
 \x20   let Some(b) = f() else { return; };\n\
-\x20   if b.len() == 21 { print(\"m\"); }\n\
+\x20   if b.len() == 20 { print(\"m\"); }\n\
 }\n";
 
 fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) {

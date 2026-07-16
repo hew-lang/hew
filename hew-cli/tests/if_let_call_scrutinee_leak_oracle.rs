@@ -164,7 +164,7 @@ fn f() -> Option<string> {\n\
 \n\
 fn main() {\n\
 \x20   if let Some(b) = f() {\n\
-\x20       if b.len() == 17 { print(\"m\"); }\n\
+\x20       if b.len() == 18 { print(\"m\"); }\n\
 \x20   }\n\
 }\n";
 

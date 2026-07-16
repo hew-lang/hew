@@ -12,9 +12,10 @@
 //! `Some("")` and the loop continues — the empty-item drain here is the
 //! regression for that invariant.
 //!
-//! `Sink<string>::send` is not on the suspending-sink-send path in v0.5
-//! (only `Sink<bytes>` is); the producer uses the blocking call and the
-//! pipe capacity absorbs the small burst.
+//! `Sink<string>::send` is now on the suspending-sink-send path too (every
+//! describable element suspends, not just `Sink<bytes>`): each
+//! `await sink.send(item)` writes a frame, suspending on a full ring
+//! (backpressure-aware). The `Sink`/`Stream` halves are locals in this handler.
 
 import std::stream;
 
@@ -22,10 +23,10 @@ actor StringPipeline {
     receive fn run(unused: i64) {
         let (sink, input) = stream.pipe(8);
         // Send three normal frames, one empty frame between them, then EOF.
-        sink.send("frame-0");
-        sink.send("");
-        sink.send("frame-1");
-        sink.send("frame-2");
+        await sink.send("frame-0");
+        await sink.send("");
+        await sink.send("frame-1");
+        await sink.send("frame-2");
         sink.close();
 
         // Consumer: each recv suspends until a frame is ready; None == EOF.

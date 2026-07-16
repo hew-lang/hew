@@ -17,7 +17,7 @@ fn Echo__recv__run -> ()
       (none)
     cancel[bb0] ->
       (none)
-    call[bb1 hew_sink_write_string -> bb2] ->
+    suspend[bb1 resume=bb2 cleanup=bb2] ->
       (none)
     call[bb2 hew_sink_close -> bb3] ->
       (none)

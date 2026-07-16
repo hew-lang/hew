@@ -26,7 +26,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     _6 = _3.1
     _7 = move _6
     _8 = string_lit "hi"
-    call hew_sink_write_string(_5, _8) [builtin=SinkWrite(String)] -> bb2
+    suspend [stream_send] is_final=false -> resume=bb2 cleanup=bb2
   bb2:
     stmt: eval site=SiteId(7) ty=()
     stmt: use BindingId(3) sink site=SiteId(12) ty=Sink<string> intent=Consume

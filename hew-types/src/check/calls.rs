@@ -500,6 +500,23 @@ impl Checker {
                 self.record_type(span, &Ty::Error);
                 return Some(Ty::Error);
             }
+            // #2647 — converge the MIR indirect-enum reject here. An indirect
+            // enum takes the `Ptr` token, so it bypasses the `Layout`-gated
+            // admissibility check below and is admitted today, then fails closed
+            // deep in MIR. Reject it at the checker boundary with the same
+            // release-protocol reason.
+            if let Some(reason) = self.indirect_enum_vec_element_reject_reason(&elem_ty) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "`{}` cannot be a `Vec` element: {reason}",
+                        elem_ty.user_facing()
+                    ),
+                );
+                self.record_type(span, &Ty::Error);
+                return Some(Ty::Error);
+            }
             if crate::vec_authority::classify_element(&elem_ty, &self.type_defs)
                 == Some(crate::vec_authority::VecElementToken::Layout)
                 && matches!(elem_ty, Ty::Named { .. })
@@ -1004,6 +1021,20 @@ impl Checker {
                 };
                 let elem_ty = lowered.remove(0);
                 let resolved_elem = self.subst.resolve(&elem_ty);
+                // #2647 — converge the MIR indirect-enum reject at the checker
+                // boundary (the `Ptr`-token element bypasses the `Layout` gate
+                // below). Same reason MIR fails closed with.
+                if let Some(reason) = self.indirect_enum_vec_element_reject_reason(&resolved_elem) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`{}` cannot be a `Vec` element: {reason}",
+                            resolved_elem.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                }
                 // Inherit the layout+Copy guard from check_call_against_expected_constructor.
                 if crate::vec_authority::classify_element(&resolved_elem, &self.type_defs)
                     == Some(crate::vec_authority::VecElementToken::Layout)

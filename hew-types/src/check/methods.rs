@@ -4718,6 +4718,47 @@ impl Checker {
         "it has no clone/drop thunk path for the owned-element Vec runtime".to_string()
     }
 
+    /// #2647 — converge the MIR indirect-enum Vec-element reject at the checker
+    /// boundary. An `indirect enum` element takes the `Ptr` token in
+    /// [`classify_element`](crate::vec_authority::classify_element) (its `Vec`
+    /// buffer is one heap-boxed node pointer per slot, built by codegen's
+    /// `hew_vec_new_ptr` arm), so it never reaches the `Layout`-gated
+    /// admissibility check the record/enum arms consult — the checker admits it
+    /// today, then MIR rejects it with `Unsupported(NoReleaseProtocol)` because
+    /// the per-element node free is unwired. The two verdicts diverge: the
+    /// authoritative type-checker reports no error while the downstream MIR pass
+    /// fails closed.
+    ///
+    /// This surfaces the SAME release-protocol reason at the checker boundary
+    /// (where the element type is already known), matching MIR's reject for
+    /// EVERY indirect enum — scalar OR heap payload — because the indirect boxing
+    /// is a heap node the plain pointer-ABI buffer cannot release element by
+    /// element. It does NOT change the pointer-token ABI routing: `classify_element`
+    /// still tokens the element `Ptr`, so a pointer-backed element can never
+    /// select an owned Vec ABI family; this reject sits ABOVE that routing, not
+    /// in place of it.
+    ///
+    /// Returns `Some(reason)` for an indirect-enum element, `None` otherwise.
+    pub(super) fn indirect_enum_vec_element_reject_reason(&self, elem_ty: &Ty) -> Option<String> {
+        let Ty::Named {
+            name,
+            builtin: None,
+            ..
+        } = elem_ty
+        else {
+            return None;
+        };
+        let type_def = self.type_defs.get(name)?;
+        if type_def.is_indirect && matches!(type_def.kind, TypeDefKind::Enum) {
+            return Some(
+                "it is an indirect enum whose per-element release protocol is not yet wired, \
+                 so its heap nodes would leak at scope exit"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
     /// Channel/stream element admission for the layout-witness queue path
     /// (`Sender<T>`/`Receiver<T>`/`Stream<T>` recv/send). An element is
     /// admissible when the codegen element witness can describe it:

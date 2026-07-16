@@ -3,10 +3,11 @@
 // consuming body must release, but the indirect-enum element's per-element
 // node free is unwired — the only available release is the buffer-only
 // `hew_vec_free`, which would leak every element node, once per frame.
-// The refusal fires at the yield/recv release seam itself (the picker
-// consultation), not the end-of-pass owned-locals scan: the consumer binding
-// is retracted from `owned_locals` before that scan runs, so a scan-only
-// check never sees it (the bypass that let this shape compile and leak).
+// As of #2647 the `Vec<indirect-enum>` construction is rejected at the
+// type-checker boundary (the earliest fail-closed point), which fires before
+// the value can reach the generator yield seam. The MIR yield/recv
+// release-verdict refusal remains as a backstop for any shape that reaches it
+// without local construction.
 indirect enum Wrapped {
     Val(i64);
 }

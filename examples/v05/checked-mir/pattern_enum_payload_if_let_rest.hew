@@ -1,0 +1,33 @@
+// Rest-erasure pin: identical to pattern_enum_payload_if_let.hew but the skipped
+// owned sibling is written as `..` rather than `b: _`. The classifier erases the
+// rest into an explicit wildcard field, so the checked-MIR must be byte-identical
+// to the `b: _` golden (modulo the fixture name) — proving `..` ≡ `_`.
+enum Packet {
+    Data { a: string, b: string };
+    Empty;
+}
+
+fn make(good: bool) -> Packet {
+    if good {
+        Packet::Data { a: "if-let-a".to_upper(), b: "if-let-b".to_upper() }
+    } else {
+        Packet::Empty
+    }
+}
+
+fn probe(good: bool) -> i64 {
+    let p = make(good);
+    if let Packet::Data { a, .. } = p {
+        a.len()
+    } else {
+        0
+    }
+}
+
+fn main() -> i64 {
+    if probe(true) > 0 && probe(false) == 0 {
+        0
+    } else {
+        1
+    }
+}

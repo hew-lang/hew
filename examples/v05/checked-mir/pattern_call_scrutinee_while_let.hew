@@ -1,0 +1,31 @@
+// Stage checkpoint pin: `while let` over a CALL scrutinee re-evaluated every
+// iteration. Each header re-entry mints/releases the from-call owner, and the
+// false-arm cleanup block releases it on the tag-mismatch exit. Every owned
+// payload field is bound (no skipped owned sibling), so this rides the owner
+// mint + back-edge release rather than the `while let` skipped-owned refusal.
+enum Feed {
+    Item { a: string, b: string };
+    Done;
+}
+
+fn step(n: i64) -> Feed {
+    if n > 0 {
+        Feed::Item { a: "feed-cs-a".to_upper(), b: "feed-cs-b".to_upper() }
+    } else {
+        Feed::Done
+    }
+}
+
+fn main() -> i64 {
+    var i = 3;
+    var total = 0;
+    while let Feed::Item { a, b } = step(i) {
+        total = total + a.len() + b.len();
+        i = i - 1;
+    }
+    if total > 0 {
+        0
+    } else {
+        1
+    }
+}

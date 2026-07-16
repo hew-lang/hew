@@ -27,6 +27,13 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
+        // Each f32 operation rounds immediately. Carrying the chain as f64 and
+        // rounding only at the final cast would incorrectly print 16777218.
+        test_name: "f32_arithmetic_precision",
+        source_rel: "examples/sandbox-graduation/f32_arithmetic_precision.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         // Float division and remainder (IEEE-754, never trap-on-zero).
         test_name: "float_division",
         source_rel: "examples/playground/basics/float_division.hew",
@@ -259,6 +266,13 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
+        // This suite compares against host-native `hew run`, whose supported
+        // targets are 64-bit. A wasm32 build would truncate both values to zero.
+        test_name: "pointer_width_native64",
+        source_rel: "examples/sandbox-graduation/pointer_width_native64.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         // `#[wire]` is now the sole canonical declaration surface for wire types
         // (bare `wire`/`wire type`/`wire enum` keyword forms removed in 60c50dae;
         // the `struct` keyword itself later removed in favour of `#[wire] type`).
@@ -417,6 +431,14 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/regex_clone.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // Array repeat evaluates value then count exactly once and clones the
+        // value into every slot; casts cover width/sign/saturation/bool/char;
+        // postfix-try covers Result and Option success plus early propagation.
+        test_name: "trap_residual",
+        source_rel: "examples/sandbox-graduation/trap_residual.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -461,6 +483,38 @@ fn minimum_parity_set_is_enforced_by_test_name() {
     assert_eq!(
         actual, required,
         "native↔sandbox parity cases must exactly cover the required playground set"
+    );
+}
+
+#[test]
+fn sandbox_graduation_corpus_is_fully_covered() {
+    let graduation_dir = repo_root().join("examples").join("sandbox-graduation");
+    let expected: BTreeSet<PathBuf> = std::fs::read_dir(&graduation_dir)
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to read sandbox graduation directory {}: {err}",
+                graduation_dir.display()
+            )
+        })
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|err| panic!("failed to read sandbox graduation entry: {err}"))
+                .path()
+        })
+        .filter(|path| path.extension().is_some_and(|extension| extension == "hew"))
+        .collect();
+    let actual: BTreeSet<PathBuf> = PARITY_CASES
+        .iter()
+        .filter_map(|case| {
+            case.source_rel
+                .strip_prefix("examples/sandbox-graduation/")
+                .map(|source_rel| graduation_dir.join(source_rel))
+        })
+        .collect();
+
+    assert_eq!(
+        actual, expected,
+        "every sandbox-graduation Hew source must have a native↔sandbox parity case"
     );
 }
 
@@ -521,6 +575,26 @@ fn assert_case(case: &ParityCase) {
     let sandbox = run_sandbox(&bytecode_path);
     assert_exit_code_parity(case, &native, &sandbox);
     assert_stdout_parity(case, &native, &sandbox);
+    assert_exact_stdout(case, &native);
+}
+
+fn assert_exact_stdout(case: &ParityCase, native: &Output) {
+    let expected = match case.test_name {
+        "trap_residual" => Some(
+            "repeat-value\nrepeat-count\n3\n7\n7\n7\n65535\n18446744073709551615\n-1\n255\n1\ntrue\n65\n42\nboom\n6\nnone\n",
+        ),
+        "f32_arithmetic_precision" => Some("16777216\n"),
+        "pointer_width_native64" => Some("4294967296\n4294967296\n"),
+        _ => None,
+    };
+    if let Some(expected) = expected {
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            expected,
+            "{} native stdout changed from its exact-value contract",
+            case.test_name
+        );
+    }
 }
 
 fn assert_accepted_divergences(case: &ParityCase, diagnostics: &[Diagnostic]) {

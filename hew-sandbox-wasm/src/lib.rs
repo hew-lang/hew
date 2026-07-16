@@ -44,6 +44,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // statement-position if/match/if-let now lower and run. Each name is backed
     // by a `parity.rs` case asserting full stdout+exit parity under HEW_SEED=42.
     "float_arithmetic",
+    // f32 literals and every arithmetic result round at single precision via
+    // const.f32/f32.* rather than carrying hidden f64 precision until a cast.
+    "f32_arithmetic_precision",
     "float_division",
     "float_nonfinite_compare",
     "mixed_numeric",
@@ -87,6 +90,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // f-string interpolation for all canonical integer and char primitives that
     // gained Display impls: i8/i16/i32, u8/u16/u32, u64, isize, usize, char.
     "display_scalars",
+    // The parity oracle is native `hew run` on supported 64-bit hosts, so
+    // isize/usize casts retain values above the wasm32 boundary.
+    "pointer_width_native64",
     // `#[wire]` type declaration with tagged fields now uses the sole canonical
     // surface (`#[wire]` attribute on TypeDecl; bare `wire` keyword removed).
     // Verifies the sandbox profile and emitter treat `#[wire]` TypeDecl as a
@@ -141,6 +147,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // its source lives outside the curated playground manifest scope (see
     // `regex_clone` in tests/parity.rs).
     "regex_clone",
+    // AST-emitter residuals: array repeat, checker-admitted scalar casts, and
+    // Result/Option postfix-try now execute at native parity.
+    "trap_residual",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

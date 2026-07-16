@@ -53,27 +53,13 @@
 //!     must be ~0. Pre-fix the unknown-tag path took an inline trap that unwound
 //!     past the thunk's reader + shell free (~5 nodes/frame).
 //!
-//! ## Isolating the codec from two pre-existing, out-of-scope drop confounds
+//! ## Isolating the codec from a pre-existing, out-of-scope drop confound
 //!
-//! Both fixtures are written to measure ONLY the codec's own drop glue. Two
-//! unrelated, pre-existing leak/suppression behaviours would otherwise mask or
-//! forge a codec result:
+//! The round-trip fixtures are written to measure ONLY the codec's own drop
+//! glue. One unrelated, pre-existing suppression behaviour would otherwise mask
+//! or forge a codec result:
 //!
-//!   1. **Unnamed `bytes` temporary scope-exit drop.** A `bytes` value produced
-//!      by a call and consumed as an UNNAMED temporary (e.g.
-//!      `T.decode(v.encode())` or the unrelated `"x".to_bytes().len()`) is not
-//!      released at the end of its statement — one leaked buffer per frame.
-//!      This reproduces on a clean base build with `.to_bytes()` (no codec on
-//!      the path), so it is a general MIR temporary-drop derivation gap, NOT a
-//!      codec defect: the existing `derive_local_bytes_drop_allowed` admission
-//!      in `hew-mir/src/lower.rs` covers NAMED bytes locals (see
-//!      `bytes_drop_leak_oracle::bytes_local_loop_no_per_frame_leak_slope`) but
-//!      not anonymous temporaries. The round-trip fixture therefore BINDS the
-//!      encoded bytes to a named local (`let raw = p.encode();`) so the buffer
-//!      drops on the loop back-edge and the slope reflects only the decoded
-//!      value's drop.
-//!
-//!   2. **Managed-aggregate field-read drop suppression** (the `string_field_load`
+//!   1. **Managed-aggregate field-read drop suppression** (the `string_field_load`
 //!      confound). Reading an owned field OUT of an owned aggregate suppresses
 //!      that aggregate's own in-place field drop (documented out-of-scope in
 //!      `string_field_load_leak_oracle`). The fixture therefore reads ONLY a
@@ -133,10 +119,12 @@ const SLOPE_TOLERANCE: usize = 5;
 /// Round-trip fixture: build a struct carrying an owned `string`, an owned
 /// `Vec<string>` (with owned elements), an owned nested `#[wire]` struct (with
 /// an owned nested string), plus a scalar `seq` field. Encode it to a NAMED
-/// bytes local (so the encoded buffer drops on the back-edge — see confound 1),
-/// decode it back, and read ONLY the scalar `back.seq` keep-alive (so the
-/// decoded value is held live to scope exit without the field-read drop
-/// suppression — see confound 2). The decoded value's owned string / Vec /
+/// bytes local (the binding path — its scope-exit drop releases the encoded
+/// buffer on the back-edge), decode it back, and read ONLY the scalar
+/// `back.seq` keep-alive (so the decoded value is held live to scope exit
+/// without the field-read drop suppression — see confound 1). The anonymous
+/// form (`Packet.decode(p.encode())`) is now also released — see
+/// `anonymous_encode_temp_round_trip_leaks_exactly_zero`. The decoded value's owned string / Vec /
 /// nested fields must be released by the synthesised value drop on every frame;
 /// a missing drop is a >= 1 leak/frame slope.
 fn round_trip_source(frames: usize) -> String {
@@ -177,10 +165,11 @@ fn round_trip_source(frames: usize) -> String {
 ///
 /// The decoded value is held live by reading the SCALAR sibling field `seq`
 /// (not the `items` Vec) — reading the Vec field itself (`.len()` / `[i]`)
-/// triggers the pre-existing field-read drop-suppression confound that the
-/// existing `round_trip` oracle dodges the same way (it reads `back.seq`, never
-/// `back.tags`). The `raw` encode buffer is a NAMED local so the anonymous-bytes
-/// temporary confound (confound 1) does not add its own per-frame node.
+/// triggers the pre-existing field-read drop-suppression confound (confound 1)
+/// that the existing `round_trip` oracle dodges the same way (it reads
+/// `back.seq`, never `back.tags`). The `raw` encode buffer is a NAMED local
+/// (the binding path); the anonymous form is covered by
+/// `anonymous_encode_temp_round_trip_leaks_exactly_zero`.
 fn vec_struct_round_trip_source(frames: usize) -> String {
     format!(
         "#[wire]\n\
@@ -200,6 +189,95 @@ fn vec_struct_round_trip_source(frames: usize) -> String {
          \x20       let raw = c.encode();\n\
          \x20       let back = Container.decode(raw);\n\
          \x20       total = total + back.seq;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Anchor-2 fixture — the ANONYMOUS encode temporary. The round-trip binds the
+/// encode result inline (`Packet.decode(p.encode())`) with NO `let raw`, so the
+/// fresh CBOR buffer is a bare temporary consumed only as the decode operand.
+/// Before the fresh-temp-drop admission this leaked exactly one buffer per frame
+/// (Probe B: 50 leaks/50 frames); the named-binding control measured 0, proving
+/// 0 is the real floor — so this asserts an EXACT `== 0` at both frame counts,
+/// not a slope tolerance (a slope form would pass a constant-leak regression).
+fn anonymous_encode_temp_round_trip_source(frames: usize) -> String {
+    format!(
+        "#[wire]\n\
+         type Packet {{ label: string @1; seq: i64 @2; }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let p = Packet {{ label: \"payload-label-value\", seq: i }};\n\
+         \x20       let back = Packet.decode(p.encode());\n\
+         \x20       total = total + back.seq;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Anchor-2 fixture — the `mk()` CALL-producer encode temporary. A helper
+/// returns fresh `bytes`; `Packet.decode(mk())` consumes the anonymous call
+/// result straight into the decode. The producer is a `Terminator::Call` (not a
+/// `WireCodec` instruction), so the collector admits it through the terminator-def
+/// path; the decode still borrows the operand. Must leak EXACTLY 0 per frame.
+fn call_producer_temp_round_trip_source(frames: usize) -> String {
+    format!(
+        "#[wire]\n\
+         type Packet {{ label: string @1; seq: i64 @2; }}\n\
+         \n\
+         fn mk(n: i64) -> bytes {{\n\
+         \x20   let p = Packet {{ label: \"payload-label-value\", seq: n }};\n\
+         \x20   p.encode()\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let back = Packet.decode(mk(i));\n\
+         \x20       total = total + back.seq;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Anchor-2 fixture — the STRING-side anonymous temporary. `to_json` mints a
+/// fresh `string`; `Scalar.from_json(p.to_json())` consumes it inline as the
+/// parse operand. The fresh JSON string is a C-heap allocation visible to
+/// `leaks`, so a missing drop of the `to_json` temp shows up as one leaked
+/// buffer per frame. Must leak EXACTLY 0 per frame (the string collector's
+/// `WireCodec` extension).
+///
+/// The wire type is SCALAR-ONLY (no owned fields) on purpose: the JSON *decode*
+/// path does not yet release a decoded value's owned `string` fields (a
+/// pre-existing text-codec drop gap, distinct from this anchor and independent
+/// of the anonymous-temp admission — a NAMED `let s = p.to_json()` control leaks
+/// identically). A scalar-only decoded value owns no heap, so the ONLY per-frame
+/// owned allocation is the `to_json` string this collector must release — the
+/// isolated measurement of the string-collector extension.
+fn anonymous_to_json_temp_round_trip_source(frames: usize) -> String {
+    format!(
+        "#[wire]\n\
+         type Scalar {{ seq: i64 @1; flag: bool @2; }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let p = Scalar {{ seq: i, flag: true }};\n\
+         \x20       match Scalar.from_json(p.to_json()) {{\n\
+         \x20           Ok(back) => {{ total = total + back.seq; }},\n\
+         \x20           Err(_) => {{ total = total + 0; }},\n\
+         \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   total\n\
@@ -235,11 +313,10 @@ const DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
 ///
 /// The decoded value is held live to scope exit by a wildcard `match` (which
 /// neither moves an owned field out — avoiding the field-read drop suppression
-/// confound — nor reads a scalar that does not exist on an enum). The owned
-/// payload must be released by the enum value drop on every frame; a missing
-/// variant-field drop is a >= 1 leak/frame slope. The encoded buffer is bound
-/// to a NAMED local (`raw`) so the anonymous-bytes-temporary confound does not
-/// add its own per-frame node (see confound 1).
+/// confound (confound 1) — nor reads a scalar that does not exist on an enum).
+/// The owned payload must be released by the enum value drop on every frame; a
+/// missing variant-field drop is a >= 1 leak/frame slope. The encoded buffer is
+/// bound to a NAMED local (`raw`, the binding path).
 fn enum_owned_payload_round_trip_source(frames: usize) -> String {
     format!(
         "#[wire]\n\
@@ -520,6 +597,34 @@ fn assert_frame_slope_below_tolerance(
     );
 }
 
+/// Build the shape at `low_frames` and `high_frames`, measure leak NODE counts,
+/// and assert BOTH are EXACTLY zero. Used for the anonymous codec-temporary
+/// shapes whose named-binding control measured a 0-leak floor: a slope tolerance
+/// would silently pass a constant per-frame leak, so the exact form is the one
+/// with teeth.
+fn assert_frame_leaks_exactly_zero(
+    shape_name: &str,
+    source_fn: fn(usize) -> String,
+    low_frames: usize,
+    high_frames: usize,
+) {
+    let Some((low_leaks, high_leaks)) =
+        frame_leak_counts(shape_name, source_fn, low_frames, high_frames)
+    else {
+        return;
+    };
+    assert_eq!(
+        (low_leaks, high_leaks),
+        (0, 0),
+        "{shape_name}: an anonymous codec temporary leaked — expected EXACTLY 0 \
+         leaks at both {low_frames} and {high_frames} frames (the named-binding \
+         control proves 0 is the floor), got low_leaks={low_leaks} \
+         high_leaks={high_leaks}. The fresh codec temp (encode buffer / to_json \
+         string) is not released after the borrowing decode/parse — re-run a \
+         standalone build under `MallocStackLogging=1 leaks --atExit -- <bin>`."
+    );
+}
+
 // ── oracles ───────────────────────────────────────────────────────────────
 
 /// Decode-owned field drop: round-tripping a struct with an owned `string`,
@@ -547,6 +652,48 @@ fn vec_struct_round_trip_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
         "wire_cbor_vec_struct_round_trip",
         vec_struct_round_trip_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Anchor 2 — the anonymous encode temporary round-trips with EXACTLY zero
+/// leaks. `Packet.decode(p.encode())` with no `let raw`: the fresh CBOR buffer
+/// is a bare temporary released once after the borrowing decode. Probe B leaked
+/// exactly one buffer per frame here before the fresh-temp-drop admission; the
+/// named-binding control measured 0, so this asserts an exact `== 0`.
+#[test]
+fn anonymous_encode_temp_round_trip_leaks_exactly_zero() {
+    assert_frame_leaks_exactly_zero(
+        "wire_cbor_anon_encode_temp",
+        anonymous_encode_temp_round_trip_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Anchor 2 — the `mk()` call-producer encode temporary round-trips with
+/// EXACTLY zero leaks. `Packet.decode(mk(i))`: the anonymous `Terminator::Call`
+/// bytes result is borrowed by the decode and released once after it.
+#[test]
+fn call_producer_encode_temp_round_trip_leaks_exactly_zero() {
+    assert_frame_leaks_exactly_zero(
+        "wire_cbor_call_producer_temp",
+        call_producer_temp_round_trip_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Anchor 2 (string side) — the anonymous `to_json` temporary round-trips with
+/// EXACTLY zero leaks. `Packet.from_json(p.to_json())`: the fresh JSON string is
+/// borrowed by the parse and released once after it. Pins the string collector's
+/// `WireCodec` extension (the JSON codec's C-heap allocs are `leaks`-visible).
+#[test]
+fn anonymous_to_json_temp_round_trip_leaks_exactly_zero() {
+    assert_frame_leaks_exactly_zero(
+        "wire_cbor_anon_to_json_temp",
+        anonymous_to_json_temp_round_trip_source,
         LOW_FRAMES,
         HIGH_FRAMES,
     );

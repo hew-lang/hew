@@ -33,6 +33,7 @@ use hew_types::ResolvedTy;
 use crate::llvm::CoroState;
 #[allow(unused_imports)]
 use crate::llvm::*;
+use crate::runtime_abi::{fn_type_for_return, intern_runtime_decl, reconcile_int_width_signed};
 use crate::wire::declare_codec_prim;
 
 pub(crate) struct RemoteAskEmit<'a> {

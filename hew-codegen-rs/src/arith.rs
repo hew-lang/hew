@@ -26,9 +26,10 @@ use hew_mir::{IntArithOp, IntSignedness, Place, RawMirFunction};
 use hew_types::ResolvedTy;
 
 use crate::llvm::{
-    expect_int_type, intern_runtime_decl, place_pointer, primitive_to_llvm, CodegenError,
-    CodegenResult, FnCtx, LlvmResultExt, RuntimeDeclMap,
+    expect_int_type, place_pointer, primitive_to_llvm, CodegenError, CodegenResult, FnCtx,
+    LlvmResultExt, RuntimeDeclMap,
 };
+use crate::runtime_abi::intern_runtime_decl;
 
 pub(crate) fn overflow_intrinsic_name(op: IntArithOp, signed: IntSignedness) -> &'static str {
     match (op, signed) {

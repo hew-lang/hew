@@ -26,7 +26,8 @@
 //! the CODEGEN authority's view, derived independently of the MIR admission
 //! list, so agreement is not tautological.
 
-use crate::llvm::{intern_runtime_decl, RuntimeDeclMap};
+use crate::llvm::RuntimeDeclMap;
+use crate::runtime_abi::intern_runtime_decl;
 use hew_types::runtime_call::{all_runtime_call_families, is_pre_staged_family};
 use inkwell::context::Context;
 

@@ -8458,6 +8458,15 @@ fn lower_function(
     builder.lower_params(func);
     builder.funcupdate_base_proven =
         compute_funcupdate_base_provenance(func, funcupdate_fn_returns_fresh);
+    // #2648 S2b — the caller arg-scan's per-function local freshness facts,
+    // computed under the SAME module tables the S1 fixpoint used.
+    builder.call_scrutinee_local_freshness =
+        crate::return_provenance::compute_local_binding_freshness(
+            func,
+            &call_scrutinee_provenance.provenance,
+            &call_scrutinee_provenance.extern_table,
+            &call_scrutinee_provenance.may_mutate,
+        );
     builder.function_body(func);
 
     // Effective return type after type-parameter substitution.
@@ -9883,6 +9892,13 @@ struct Builder {
     /// preserves today's mint, never a wrongly-Fresh admit). See
     /// `crate::return_provenance::CallScrutineeProvenance`.
     call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance>,
+    /// Per-function local-binding freshness facts (#2648 S2b) consumed by the
+    /// caller-side argument scan: which of the CURRENT function's locals are
+    /// provably solely-owned fresh values (S1 bits `∅`, plain `let`, not
+    /// aliased, single read). Computed once per lowered function in
+    /// `lower_function`; the empty default (synthetic machine-step builders,
+    /// child builders, tests) admits NO local argument — fail-closed.
+    call_scrutinee_local_freshness: crate::return_provenance::LocalBindingFreshness,
     /// Module-global RAII-2 param-ownership facts: which affine
     /// `#[resource]` free-fn params are CONSUME (callee owns + drops) vs
     /// BORROW (caller keeps + drops), and the call-arg `SiteId`s whose
@@ -11060,7 +11076,7 @@ impl Builder {
         // `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place, an
         // aggregate) is `NotApplicable` ON KIND — exactly `call_scrutinee_owned_ty`'s
         // early `None`, before any runtime-identity resolution can be consulted.
-        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
+        let HirExprKind::Call { callee, args } = &scrutinee.kind else {
             return Ok(CallScrutineeAdmission::NotApplicable);
         };
         if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
@@ -11102,6 +11118,18 @@ impl Builder {
                 // precise summary ONLY for the interim `PARAM`-present reject.
                 if let Some(bits) = prov.provenance.get(id) {
                     if bits.contains(AliasBits::PARAM) {
+                        // S2b — the ParamsOnly caller arg-scan. A `{PARAM}`-only
+                        // summary means the return can alias ONLY the callee's
+                        // by-value heap parameters, so when EVERY argument is
+                        // provably fresh at this call site the returned value
+                        // derives exclusively from fresh inputs — a fresh sole
+                        // owner: ADMIT (the template/semver stdlib shape). A
+                        // mixed `PARAM|OPAQUE` summary stays an unconditional
+                        // reject — the `OPAQUE` component is never
+                        // arg-rescuable.
+                        if bits.is_params_only() && self.params_only_args_provably_fresh(args) {
+                            return Ok(CallScrutineeAdmission::Admit);
+                        }
                         return Err(Box::new(Self::call_scrutinee_reject(
                             scrutinee,
                             "the called function may return one of its by-value heap parameters \
@@ -11140,6 +11168,97 @@ impl Builder {
                 "#2648: {why}. Bind the call result to a `let` and match on the binding, or \
                  return a freshly-constructed value from the callee."
             ),
+        }
+    }
+
+    /// #2648 S2b — the caller-side argument scan for a `ParamsOnly` callee
+    /// (plan Fix-design (2), pulled forward from S4b by the ratchet evidence:
+    /// the interim PARAM-present reject falsely rejected genuine `ParamsOnly`
+    /// stdlib callers — `template.try_parse("…")` and friends). True iff EVERY
+    /// argument is provably fresh, in which case the callee's `PARAM`-aliasing
+    /// return can only alias fresh inputs — a fresh sole owner.
+    ///
+    /// Consulted ONLY for a `{PARAM}`-only summary; an `OPAQUE`-carrying
+    /// summary is never arg-rescuable.
+    fn params_only_args_provably_fresh(&self, args: &[HirExpr]) -> bool {
+        args.iter().all(|a| self.scrutinee_arg_provably_fresh(a))
+    }
+
+    /// The inline-fresh recursion. Fresh shapes ADMIT:
+    /// - a scalar-typed argument (owns no heap — cannot be the forwarded
+    ///   buffer);
+    /// - a literal / record clone (fresh by construction);
+    /// - an aggregate (`StructInit`/`TupleLiteral`/`MachineVariantCtor`) whose
+    ///   EVERY operand is recursively fresh;
+    /// - a nested call to a Fresh-summary module fn, or to a `ParamsOnly`
+    ///   module fn whose own arguments are recursively fresh;
+    /// - a builtin-collection method that lowers to a proved-owner EMITTED
+    ///   symbol (clone/retain/take — the F1 contract);
+    /// - a local binding proven solely-owned fresh by the per-function
+    ///   freshness facts (S1 bits `∅`, plain `let`, unaliased, single read).
+    ///
+    /// EVERYTHING ELSE fails closed — notably a heap-owning PLACE
+    /// (`h.b`, the primary #2648 forwarder repro), a bare parameter, an
+    /// aliased or re-read local, an extern call, and any unmodelled form.
+    fn scrutinee_arg_provably_fresh(&self, arg: &HirExpr) -> bool {
+        use crate::return_provenance::{method_return_provenance, ty_is_scalar_non_heap};
+        if ty_is_scalar_non_heap(&self.subst_ty(&arg.ty)) {
+            return true;
+        }
+        match &arg.kind {
+            HirExprKind::Literal(_) | HirExprKind::RecordCloneCall { .. } => true,
+            HirExprKind::StructInit { fields, base, .. } => {
+                fields
+                    .iter()
+                    .all(|(_, v)| self.scrutinee_arg_provably_fresh(v))
+                    && base
+                        .as_deref()
+                        .is_none_or(|b| self.scrutinee_arg_provably_fresh(b))
+            }
+            HirExprKind::TupleLiteral { elements } => elements
+                .iter()
+                .all(|e| self.scrutinee_arg_provably_fresh(e)),
+            HirExprKind::MachineVariantCtor { payload, .. } => payload
+                .as_ref()
+                .is_none_or(|fs| fs.iter().all(|(_, v)| self.scrutinee_arg_provably_fresh(v))),
+            HirExprKind::Call { callee, args } => {
+                let HirExprKind::BindingRef {
+                    name,
+                    resolved: ResolvedRef::Item(id),
+                } = &callee.kind
+                else {
+                    return false;
+                };
+                // An extern call dispatches by NAME (placeholder ItemId) and no
+                // heap-returning extern is trusted fresh in the interim.
+                if self.call_scrutinee_provenance.extern_names.contains(name) {
+                    return false;
+                }
+                match self.call_scrutinee_provenance.provenance.get(id) {
+                    Some(bits) if bits.is_fresh() => true,
+                    Some(bits) if bits.is_params_only() => {
+                        self.params_only_args_provably_fresh(args)
+                    }
+                    Some(_) => false,
+                    // An audited builtin collection constructor (`Vec::new()`)
+                    // is a fresh empty allocation — the same clause the
+                    // Precise policy's `classify_call` applies.
+                    None => crate::return_provenance::is_builtin_fresh_ctor(name),
+                }
+            }
+            // A builtin-collection getter is fresh iff the EMITTED symbol is a
+            // proved-owner clone/retain/take (the F1 contract) — never the HIR
+            // placeholder.
+            HirExprKind::ResolvedImplCall { .. } => self
+                .method_scrutinee_emitted_symbol(arg)
+                .is_some_and(|sym| method_return_provenance(&sym).is_fresh()),
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => self
+                .call_scrutinee_local_freshness
+                .local_is_provably_fresh(*id),
+            _ => false,
         }
     }
 
@@ -23606,25 +23725,36 @@ impl Builder {
 
     /// Group A plain-`Call` arm: apply the interim module-fn PARAM-present reject
     /// (the same rule the preflight admission classifier applies upstream — this
-    /// is the one-authority defence-in-depth for the #2523 twin). A resolved
-    /// module-fn callee whose precise summary contains PARAM forwards a by-value
-    /// heap parameter (a caller-retained borrow) → Reject. Every other callee
-    /// (`∅`/`OPAQUE`-only module fn, unknown/cross-module item, extern, builtin,
-    /// indirect/closure) keeps today's `EphemeralTemp` — the interim legacy
-    /// fail-open window; the FULL `OPAQUE`-only reject lands at S4b.
+    /// is the one-authority defence-in-depth for the #2523 twin), rescued by the
+    /// SAME S2b caller arg-scan: a `{PARAM}`-only summary whose every argument is
+    /// provably fresh is a fresh sole owner → `EphemeralTemp` (the twin agrees
+    /// with the preflight's `Admit`). A PARAM-carrying summary that the arg-scan
+    /// cannot rescue (a place/param/aliased-local argument, or a mixed
+    /// `PARAM|OPAQUE` return) → Reject. Every other callee (`∅`/`OPAQUE`-only
+    /// module fn, unknown/cross-module item, extern, builtin, indirect/closure)
+    /// keeps today's `EphemeralTemp` — the interim legacy fail-open window; the
+    /// FULL `OPAQUE`-only reject lands at S4b.
     fn classify_call_arm_scrutinee_origin(&self, scrutinee: &HirExpr) -> ProjectedPayloadOrigin {
         use crate::return_provenance::AliasBits;
-        if let HirExprKind::Call { callee, .. } = &scrutinee.kind {
+        if let HirExprKind::Call { callee, args } = &scrutinee.kind {
             if let HirExprKind::BindingRef {
+                name,
                 resolved: ResolvedRef::Item(id),
-                ..
             } = &callee.kind
             {
-                if let Some(bits) = self.call_scrutinee_provenance.provenance.get(id) {
-                    if bits.contains(AliasBits::PARAM) {
-                        return ProjectedPayloadOrigin::Reject(
-                            ProjectedPayloadRejectReason::AliasesCallerStorage,
-                        );
+                // An extern callee carries the PLACEHOLDER `ItemId(0)` — never
+                // consult the module summary for it (id collision); the
+                // preflight already rejected any heap-extern scrutinee.
+                if !self.call_scrutinee_provenance.extern_names.contains(name) {
+                    if let Some(bits) = self.call_scrutinee_provenance.provenance.get(id) {
+                        if bits.contains(AliasBits::PARAM) {
+                            if bits.is_params_only() && self.params_only_args_provably_fresh(args) {
+                                return ProjectedPayloadOrigin::EphemeralTemp;
+                            }
+                            return ProjectedPayloadOrigin::Reject(
+                                ProjectedPayloadRejectReason::AliasesCallerStorage,
+                            );
+                        }
                     }
                 }
             }
@@ -61492,6 +61622,7 @@ mod twin_gate_classifier {
             provenance,
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -61500,16 +61631,100 @@ mod twin_gate_classifier {
             },
             ResolvedTy::Unit,
         );
+        // `passthru(h.b)` — the forwarded argument is a re-readable heap PLACE,
+        // so the S2b arg-scan cannot rescue the `{PARAM}` summary.
+        let place_arg = expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(binding_ref("h", 0, ResolvedTy::String)),
+                field: "b".to_string(),
+            },
+            ResolvedTy::String,
+        );
         let call = expr(
             HirExprKind::Call {
                 callee: Box::new(callee),
-                args: vec![],
+                args: vec![place_arg],
             },
             ResolvedTy::String,
         );
         assert!(
             is_alias_reject(&b.classify_scrutinee_origin(&call)),
-            "a PARAM-forwarding module-fn call scrutinee must reject"
+            "a PARAM-forwarding module-fn call scrutinee over a place arg must reject"
+        );
+    }
+
+    #[test]
+    fn call_forwarding_a_param_summary_over_fresh_arg_admits() {
+        // S2b — the arg-scan rescue: the SAME `{PARAM}`-only callee over an
+        // inline string literal is a fresh sole owner (the template/semver
+        // stdlib shape) → the twin gate agrees with the preflight's Admit.
+        let mut b = Builder::default();
+        let mut provenance = HashMap::new();
+        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM);
+        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
+            provenance,
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
+        });
+        let callee = expr(
+            HirExprKind::BindingRef {
+                name: "try_parse".to_string(),
+                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+            },
+            ResolvedTy::Unit,
+        );
+        let literal_arg = expr(
+            HirExprKind::Literal(hew_hir::HirLiteral::String("hello {{.name".to_string())),
+            ResolvedTy::String,
+        );
+        let call = expr(
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: vec![literal_arg],
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_ephemeral(&b.classify_scrutinee_origin(&call)),
+            "a ParamsOnly callee over an inline-fresh literal arg is a fresh sole owner"
+        );
+    }
+
+    #[test]
+    fn call_with_mixed_param_opaque_summary_rejects_despite_fresh_args() {
+        // A mixed `PARAM|OPAQUE` summary is never arg-rescuable — the OPAQUE
+        // component can alias a capture/global regardless of the arguments.
+        let mut b = Builder::default();
+        let mut provenance = HashMap::new();
+        provenance.insert(hew_hir::ItemId(7), AliasBits::PARAM | AliasBits::OPAQUE);
+        b.call_scrutinee_provenance = Rc::new(CallScrutineeProvenance {
+            provenance,
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
+        });
+        let callee = expr(
+            HirExprKind::BindingRef {
+                name: "mixed".to_string(),
+                resolved: ResolvedRef::Item(hew_hir::ItemId(7)),
+            },
+            ResolvedTy::Unit,
+        );
+        let literal_arg = expr(
+            HirExprKind::Literal(hew_hir::HirLiteral::String("x".to_string())),
+            ResolvedTy::String,
+        );
+        let call = expr(
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: vec![literal_arg],
+            },
+            ResolvedTy::String,
+        );
+        assert!(
+            is_alias_reject(&b.classify_scrutinee_origin(&call)),
+            "a PARAM|OPAQUE summary must reject even over fresh args"
         );
     }
 
@@ -61524,6 +61739,7 @@ mod twin_gate_classifier {
             provenance,
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
         });
         let callee = expr(
             HirExprKind::BindingRef {

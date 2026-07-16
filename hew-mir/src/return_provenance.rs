@@ -423,9 +423,25 @@ pub fn method_return_provenance(emitted_symbol: &str) -> AliasBits {
 #[derive(Debug, Default, Clone)]
 pub struct ExternContractTable {
     rows: HashMap<hew_hir::ItemId, ReturnProvenance>,
+    /// Every declared `extern "C"` fn NAME. An extern CALL dispatches by name —
+    /// its call-site `ResolvedRef::Item` carries the PLACEHOLDER `ItemId(0)`,
+    /// NOT the declaration's id — so any id-keyed lookup for an extern callee
+    /// is an id COLLISION with the module-fn summary space (a real fn with the
+    /// colliding id could leak its `PARAM` bits into an extern caller's
+    /// summary, the jwt/encrypt contamination). The Precise walk therefore
+    /// checks the callee NAME here BEFORE any id lookup.
+    names: HashSet<String>,
 }
 
 impl ExternContractTable {
+    /// True when `name` is a declared `extern "C"` fn — the callee must be
+    /// classified by the extern contract (interim: `{OPAQUE}` for every
+    /// heap-or-unknown return), never by an id lookup.
+    #[must_use]
+    pub fn is_extern_name(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+
     /// Return-provenance of a resolved extern `ItemId`. An extern absent from the
     /// table (every heap-returning extern in the interim) is `{OPAQUE}` —
     /// fail-closed.
@@ -455,14 +471,16 @@ impl ExternContractTable {
 #[must_use]
 pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContractTable {
     let mut rows: HashMap<hew_hir::ItemId, ReturnProvenance> = HashMap::new();
+    let mut names: HashSet<String> = HashSet::new();
     for item in &module.items {
         if let hew_hir::HirItem::ExternFn(ef) = item {
+            names.insert(ef.name.clone());
             if ty_is_scalar_non_heap(&ef.return_ty) {
                 rows.insert(ef.id, AliasBits::EMPTY);
             }
         }
     }
-    ExternContractTable { rows }
+    ExternContractTable { rows, names }
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +514,14 @@ pub struct CallScrutineeProvenance {
     /// The audited owned-return extern contract table (interim: scalar → Fresh,
     /// every heap extern → `{OPAQUE}`). Consumed by the precise fixpoint.
     pub extern_table: ExternContractTable,
+    /// The interprocedural may-mutate-heap-param summary [F2], retained so the
+    /// per-function local binding-provenance (the S2b caller arg-scan's
+    /// fresh-local resolver) can be recomputed at the lowering seam under the
+    /// SAME mutation taint the module fixpoint used. Empty default fails
+    /// closed via `callee_is_proven_pure_item`'s `unwrap_or(false)` — but the
+    /// arg-scan's fresh-local admit additionally requires an entry in the
+    /// freshness map, so an empty context never widens an admit.
+    pub may_mutate: HashMap<hew_hir::ItemId, bool>,
 }
 
 /// Build the module-global preflight context: the precise return-provenance
@@ -526,6 +552,7 @@ pub fn build_call_scrutinee_provenance(
         provenance,
         extern_names,
         extern_table,
+        may_mutate,
     }
 }
 
@@ -1139,6 +1166,12 @@ struct LocalDefs<'f> {
     /// bindings tainted `{OPAQUE}` by a mutation channel (their whole alias class
     /// is poisoned).
     tainted: HashSet<BindingId>,
+    /// bindings introduced by a PATTERN (match arm / if-let / while-let /
+    /// let-else destructure). A pattern binder aliases a payload slot of its
+    /// scrutinee — a value another owner (a minted scrutinee owner, an
+    /// `OwnedBinding` move) may also release — so the S2b arg-scan never
+    /// treats one as an independently-owned fresh value.
+    pattern_binders: HashSet<BindingId>,
 }
 
 /// Per-function local binding-provenance with MANDATORY alias closure [F2].
@@ -1159,6 +1192,94 @@ pub fn compute_local_binding_provenance(
     extern_table: &ExternContractTable,
     may_mutate: &HashMap<hew_hir::ItemId, bool>,
 ) -> HashMap<BindingId, AliasBits> {
+    local_binding_provenance_impl(f, provenance, extern_table, may_mutate).0
+}
+
+/// The CURRENT function's local-binding freshness facts for the S2b caller
+/// arg-scan — the S1 binding-provenance bits PLUS the shape facts the
+/// fresh-local admit requires (`local_is_provably_fresh`).
+///
+/// The empty `Default` fails closed: a binding absent from `bits` is never
+/// provably fresh, so a `Builder` that never computed the facts (a synthetic
+/// machine-step / test builder) admits no local argument.
+#[derive(Debug, Default, Clone)]
+pub struct LocalBindingFreshness {
+    /// S1 local binding-provenance bits (alias-closed, mutation-tainted).
+    pub bits: HashMap<BindingId, AliasBits>,
+    /// Bindings participating in ANY whole-value alias edge (`let y = x`).
+    /// An aliased binding has a second in-scope release authority over the
+    /// same value, so it is never admitted as a fresh argument.
+    pub aliased: HashSet<BindingId>,
+    /// Bindings introduced by a match/if-let/while-let/let-else pattern.
+    pub pattern_binders: HashSet<BindingId>,
+    /// TOTAL `BindingRef` occurrence count per binding across the whole body
+    /// (initializer positions do not count; every read does, including match
+    /// guards and closure/generator capture ledgers).
+    pub ref_counts: HashMap<BindingId, u32>,
+    /// True when the body contains a non-scalar expression form the counter
+    /// does not model — the count may be an undercount, so NO local is
+    /// admitted (fail-closed, mirroring `Reachable::unknown`).
+    pub saw_unknown_form: bool,
+}
+
+impl LocalBindingFreshness {
+    /// True when `id` is provably a solely-owned FRESH local at the call
+    /// site: its S1 bits are `∅` (no `PARAM`, no `OPAQUE`, no mutation
+    /// taint), it is a plain `let`/`var` local (not a pattern binder), it is
+    /// not whole-value aliased, and this argument position is its ONLY read
+    /// in the whole body — so the minted scrutinee owner is the single
+    /// release authority over the value it carries (the exactly-once
+    /// invariant; a second read would re-derive the buffer after the owner
+    /// released it).
+    #[must_use]
+    pub fn local_is_provably_fresh(&self, id: BindingId) -> bool {
+        !self.saw_unknown_form
+            && self.bits.get(&id).copied().is_some_and(AliasBits::is_fresh)
+            && !self.aliased.contains(&id)
+            && !self.pattern_binders.contains(&id)
+            && self.ref_counts.get(&id).copied() == Some(1)
+    }
+}
+
+/// Compute the [`LocalBindingFreshness`] facts for one function — the S2b
+/// arg-scan seam, run once per lowered function beside the funcupdate base
+/// provenance. Uses the SAME module tables the S1 fixpoint used so the local
+/// bits agree with the module summary.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "consumed with the pipeline's default-hasher summary maps"
+)]
+pub fn compute_local_binding_freshness(
+    f: &HirFn,
+    provenance: &HashMap<hew_hir::ItemId, AliasBits>,
+    extern_table: &ExternContractTable,
+    may_mutate: &HashMap<hew_hir::ItemId, bool>,
+) -> LocalBindingFreshness {
+    let (bits, aliased, pattern_binders) =
+        local_binding_provenance_impl(f, provenance, extern_table, may_mutate);
+    let mut ref_counts: HashMap<BindingId, u32> = HashMap::new();
+    let mut saw_unknown_form = false;
+    count_binding_refs_in_block(&f.body, &mut ref_counts, &mut saw_unknown_form);
+    LocalBindingFreshness {
+        bits,
+        aliased,
+        pattern_binders,
+        ref_counts,
+        saw_unknown_form,
+    }
+}
+
+fn local_binding_provenance_impl(
+    f: &HirFn,
+    provenance: &HashMap<hew_hir::ItemId, AliasBits>,
+    extern_table: &ExternContractTable,
+    may_mutate: &HashMap<hew_hir::ItemId, bool>,
+) -> (
+    HashMap<BindingId, AliasBits>,
+    HashSet<BindingId>,
+    HashSet<BindingId>,
+) {
     let mut collector = LocalDefs::default();
     for p in &f.params {
         collector.params.insert(p.id, !ty_is_scalar_non_heap(&p.ty));
@@ -1239,7 +1360,208 @@ pub fn compute_local_binding_provenance(
             break;
         }
     }
-    bits
+    let aliased: HashSet<BindingId> = collector
+        .alias_edges
+        .iter()
+        .flat_map(|&(a, b)| [a, b])
+        .collect();
+    (bits, aliased, collector.pattern_binders)
+}
+
+/// TOTAL `BindingRef` occurrence counter over one function body — the S2b
+/// single-read fact. Mirrors the [`reachable_bindings`] surface (aggregates,
+/// projections, wrappers with ALL block statements, calls/methods, capture
+/// ledgers) plus `Scope` bodies and match-arm guards; any non-scalar form it
+/// does not model sets `unknown` so the caller fails closed (an undercount
+/// must never manufacture a "single use").
+#[allow(
+    clippy::match_same_arms,
+    clippy::too_many_lines,
+    reason = "the counter mirrors the sealed HirExprKind surface; structurally-similar arms stay separate for auditability"
+)]
+fn count_binding_refs(expr: &HirExpr, counts: &mut HashMap<BindingId, u32>, unknown: &mut bool) {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => {
+            *counts.entry(*id).or_insert(0) += 1;
+        }
+        HirExprKind::BindingRef { .. } => {}
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, v) in fields {
+                count_binding_refs(v, counts, unknown);
+            }
+            if let Some(base) = base.as_deref() {
+                count_binding_refs(base, counts, unknown);
+            }
+        }
+        HirExprKind::TupleLiteral { elements } => {
+            for e in elements {
+                count_binding_refs(e, counts, unknown);
+            }
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, v) in fields {
+                    count_binding_refs(v, counts, unknown);
+                }
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => count_binding_refs(object, counts, unknown),
+        HirExprKind::TupleIndex { tuple, .. } => count_binding_refs(tuple, counts, unknown),
+        HirExprKind::Index { container, index } => {
+            count_binding_refs(container, counts, unknown);
+            count_binding_refs(index, counts, unknown);
+        }
+        HirExprKind::Slice { container, .. } => count_binding_refs(container, counts, unknown),
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::TryWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => {
+            count_binding_refs(value, counts, unknown);
+        }
+        HirExprKind::Block(block) => count_binding_refs_in_block(block, counts, unknown),
+        HirExprKind::Scope { body } => count_binding_refs_in_block(body, counts, unknown),
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            count_binding_refs(condition, counts, unknown);
+            count_binding_refs(then_expr, counts, unknown);
+            if let Some(e) = else_expr.as_deref() {
+                count_binding_refs(e, counts, unknown);
+            }
+        }
+        HirExprKind::Match {
+            scrutinee, arms, ..
+        } => {
+            count_binding_refs(scrutinee, counts, unknown);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    count_binding_refs(guard, counts, unknown);
+                }
+                count_binding_refs(&arm.body, counts, unknown);
+            }
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            count_binding_refs(scrutinee, counts, unknown);
+            count_binding_refs_in_block(body, counts, unknown);
+            if let Some(else_body) = else_body {
+                count_binding_refs_in_block(else_body, counts, unknown);
+            }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            count_binding_refs(scrutinee, counts, unknown);
+            count_binding_refs_in_block(body, counts, unknown);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            count_binding_refs(callee, counts, unknown);
+            for a in args {
+                count_binding_refs(a, counts, unknown);
+            }
+        }
+        HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            count_binding_refs(receiver, counts, unknown);
+            for a in args {
+                count_binding_refs(a, counts, unknown);
+            }
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            count_binding_refs(receiver, counts, unknown);
+            count_binding_refs(arg, counts, unknown);
+        }
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            count_binding_refs(left, counts, unknown);
+            count_binding_refs(right, counts, unknown);
+        }
+        HirExprKind::Unary { operand, .. } => count_binding_refs(operand, counts, unknown),
+        HirExprKind::Return { value } => {
+            if let Some(v) = value.as_deref() {
+                count_binding_refs(v, counts, unknown);
+            }
+        }
+        // A capture is a read that survives into the callable — count it so a
+        // captured local can never look single-use at an argument position.
+        HirExprKind::Closure { captures, .. } => {
+            for cap in captures {
+                *counts.entry(cap.binding).or_insert(0) += 1;
+            }
+        }
+        HirExprKind::GenBlock { captures, .. } => {
+            for cap in captures {
+                *counts.entry(cap.binding).or_insert(0) += 1;
+            }
+        }
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::RecordCloneCall { .. }
+        | HirExprKind::ActorSelf
+        | HirExprKind::ContextReader { .. } => {}
+        // Any other form: fail closed if it could carry heap (an unmodelled
+        // read would undercount).
+        other => {
+            let _ = other;
+            if !ty_is_scalar_non_heap(&expr.ty) {
+                *unknown = true;
+            }
+        }
+    }
+}
+
+/// Block-level counting: every statement form and the tail (mirrors
+/// [`reachable_bindings_in_block`]).
+#[allow(
+    clippy::match_same_arms,
+    reason = "statement arms mirror the sealed HirStmtKind surface exhaustively"
+)]
+fn count_binding_refs_in_block(
+    block: &HirBlock,
+    counts: &mut HashMap<BindingId, u32>,
+    unknown: &mut bool,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            hew_hir::HirStmtKind::Let(_, Some(init)) => count_binding_refs(init, counts, unknown),
+            hew_hir::HirStmtKind::Let(_, None) => {}
+            hew_hir::HirStmtKind::Assign { target, value } => {
+                count_binding_refs(target, counts, unknown);
+                count_binding_refs(value, counts, unknown);
+            }
+            hew_hir::HirStmtKind::Expr(e) => count_binding_refs(e, counts, unknown),
+            hew_hir::HirStmtKind::Return(Some(e)) => count_binding_refs(e, counts, unknown),
+            hew_hir::HirStmtKind::Return(None) => {}
+            hew_hir::HirStmtKind::Defer { body, .. } => count_binding_refs(body, counts, unknown),
+            hew_hir::HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                count_binding_refs(scrutinee, counts, unknown);
+                for s in success_prelude {
+                    if let hew_hir::HirStmtKind::Let(_, Some(v)) = &s.kind {
+                        count_binding_refs(v, counts, unknown);
+                    }
+                }
+                count_binding_refs_in_block(else_body, counts, unknown);
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        count_binding_refs(tail, counts, unknown);
+    }
 }
 
 /// A minimal union-find over `BindingId`s for the alias closure.
@@ -1338,6 +1660,7 @@ impl<'f> DefCollector<'_, 'f> {
                     ..
                 } => {
                     for b in bindings {
+                        self.defs.pattern_binders.insert(b.binding);
                         self.defs
                             .defs
                             .entry(b.binding)
@@ -1377,7 +1700,23 @@ impl<'f> DefCollector<'_, 'f> {
                 scrutinee, arms, ..
             } => {
                 for arm in arms {
+                    // A catch-all binding arm (`err => …`) carries its binder in
+                    // the PREDICATE, not `arm.bindings` — missing it left the
+                    // binder out of the local map, whose fail-closed leaf reads
+                    // an absent local as `{PARAM}` (the jwt/encrypt `err =>
+                    // Err(err)` PARAM contamination).
+                    if let hew_hir::HirMatchArmPredicate::Binding { binding_id, .. } =
+                        &arm.predicate
+                    {
+                        self.defs.pattern_binders.insert(*binding_id);
+                        self.defs
+                            .defs
+                            .entry(*binding_id)
+                            .or_default()
+                            .push(DefSource::Value(scrutinee));
+                    }
                     for b in &arm.bindings {
+                        self.defs.pattern_binders.insert(b.binding);
                         self.defs
                             .defs
                             .entry(b.binding)
@@ -1399,6 +1738,7 @@ impl<'f> DefCollector<'_, 'f> {
                 ..
             } => {
                 for b in bindings {
+                    self.defs.pattern_binders.insert(b.binding);
                     self.defs
                         .defs
                         .entry(b.binding)
@@ -1418,6 +1758,7 @@ impl<'f> DefCollector<'_, 'f> {
                 ..
             } => {
                 for b in bindings {
+                    self.defs.pattern_binders.insert(b.binding);
                     self.defs
                         .defs
                         .entry(b.binding)
@@ -1558,6 +1899,23 @@ fn callee_is_proven_pure_item(
 // Precise policy + the module return-provenance fixpoint [Sol-3]
 // ---------------------------------------------------------------------------
 
+/// The audited builtin collection constructors — checker-resolved static calls
+/// (`Vec::new()` / `HashMap::new()` / `HashSet::new()`) that lower to a fresh
+/// empty allocation (`hew_vec_new_*` / `hew_hashmap_new` / `hew_hashset_new`).
+///
+/// These reach HIR as a `Call` whose callee `BindingRef` carries the qualified
+/// static name and a SYNTHETIC `ItemId` (no analysable body), so they miss the
+/// module summary and would otherwise fail closed to `{OPAQUE}` — which turned
+/// every `Ctx`-style stdlib producer (`template.new_ctx()`) opaque and broke the
+/// S2b fresh-local arg-scan for its consumers. Name-keying is sound here: `::`
+/// is not a declarable module-fn or extern identifier, and a user impl method
+/// emitted under a qualified name carries a REAL `ItemId` that the module
+/// summary (consulted FIRST) resolves.
+#[must_use]
+pub fn is_builtin_fresh_ctor(name: &str) -> bool {
+    matches!(name, "Vec::new" | "HashMap::new" | "HashSet::new")
+}
+
 /// The Precise `LeafPolicy`: consumes the module provenance table (for the
 /// three-way `Call` resolution), the audited extern table, and the CURRENT
 /// function's local binding-provenance.
@@ -1587,12 +1945,23 @@ impl LeafPolicy for PrecisePolicy<'_> {
         // A non-item callee (closure value, fn-pointer param, dynamic dispatch,
         // const, builtin) can hand back a captured heap param → Opaque.
         let HirExprKind::BindingRef {
+            name,
             resolved: ResolvedRef::Item(id),
-            ..
         } = &callee.kind
         else {
             return CallClass::Opaque;
         };
+        // Clause 0: an extern call dispatches by NAME — its call-site id is the
+        // PLACEHOLDER `ItemId(0)`, so an id lookup would collide with a real
+        // module fn's summary (leaking that fn's `PARAM` bits into the extern
+        // caller — the jwt/encrypt false-reject contamination). No
+        // heap-returning extern is trusted in the interim → `{OPAQUE}`; a
+        // scalar-returning extern also lands here (sound: over-approximation
+        // only widens toward Opaque, and its consumers' scalar results are
+        // short-circuited by type at the leaves).
+        if self.extern_table.is_extern_name(name) {
+            return CallClass::Opaque;
+        }
         // Clause 1: a resolved module fn → its summary (with arg substitution).
         if let Some(bits) = self.provenance.get(id) {
             if bits.is_fresh() {
@@ -1602,11 +1971,13 @@ impl LeafPolicy for PrecisePolicy<'_> {
             } else {
                 CallClass::Opaque
             }
-        // Clauses 2+3: an extern (scalar row → Fresh; heap/omitted → Opaque) or an
-        // unknown/missing item (absent from the table → Opaque). Never
-        // `unwrap_or(true)`.
-        } else if self.extern_table.provenance_of(*id).is_fresh() {
+        // Clause 2: an extern (scalar row → Fresh; heap/omitted → Opaque), or
+        // Clause 3: an audited builtin collection constructor (`Vec::new()`
+        // inside `new_ctx()`-style producers) — a fresh empty allocation.
+        } else if self.extern_table.provenance_of(*id).is_fresh() || is_builtin_fresh_ctor(name) {
             CallClass::Fresh
+        // Clause 4: an unknown/missing item (absent from every table → Opaque).
+        // Never `unwrap_or(true)`.
         } else {
             CallClass::Opaque
         }

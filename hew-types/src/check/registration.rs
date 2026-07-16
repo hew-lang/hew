@@ -282,57 +282,6 @@ fn is_intrinsic_floor_module(module: Option<&str>) -> bool {
     module.is_some_and(|m| INTRINSIC_FLOOR_MODULES.contains(&m))
 }
 
-/// Raw TOML text of `scripts/jit-symbol-classification.toml`, embedded at
-/// compile time so `extern "rt"` validation does not require a runtime file
-/// read and works in test environments without a workspace checkout.
-const JIT_CLASSIFICATION_TOML: &str =
-    include_str!("../../../scripts/jit-symbol-classification.toml");
-
-/// Parse the `stable = [ ... ]` and `stable-stdlib = [ ... ]` blocks from
-/// `JIT_CLASSIFICATION_TOML` and return their union.
-///
-/// Returns a `HashSet<&'static str>` so membership checks are O(1).
-/// The parsing is line-based (no full TOML dep): each quoted string inside
-/// either block is extracted. The `codegen-stable` and `internal` blocks
-/// are excluded — those tiers are not user-callable via `extern "rt"`.
-///
-/// `stable` covers runtime exports; `stable-stdlib` covers sibling stdlib
-/// crate exports (e.g. `hew_datetime_*`) that user code is permitted to
-/// name from an `extern "rt"` block and that the native linker pulls in.
-///
-/// WHY no dep: the block format is simple and has been stable since the file
-/// was introduced; adding a toml dep to hew-types for a single string-list
-/// parse is unjustified overhead.
-fn jit_stable_symbols() -> &'static std::collections::HashSet<&'static str> {
-    static SET: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| {
-        let mut set = std::collections::HashSet::new();
-        for header in ["stable = [", "stable-stdlib = ["] {
-            let mut inside = false;
-            for line in JIT_CLASSIFICATION_TOML.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with(header) {
-                    inside = true;
-                    continue;
-                }
-                if inside && trimmed == "]" {
-                    break;
-                }
-                if inside {
-                    if let Some(rest) = trimmed.strip_prefix('"') {
-                        if let Some(sym) = rest.split('"').next() {
-                            if !sym.is_empty() {
-                                set.insert(sym);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        set
-    })
-}
-
 impl Checker {
     fn mark_import_module_used_for_owner(&self, owner: Option<String>, imported_module: &str) {
         self.used_modules
@@ -7527,7 +7476,7 @@ impl Checker {
         // validation). Other ABI strings are not yet defined by the language
         // and fall through to fn_sigs registration unchanged.
         if eb.abi == "rt" {
-            let stable = jit_stable_symbols();
+            let stable = crate::jit_symbols::stable_symbols();
             for f in &eb.functions {
                 if !stable.contains(f.name.as_str()) {
                     self.errors.push(TypeError {

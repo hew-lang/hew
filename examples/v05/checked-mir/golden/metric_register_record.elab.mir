@@ -155,7 +155,6 @@ fn metrics$try_counter -> Result<Counter, MetricsError>
     bind BindingId(17) id site=SiteId(96) ty=i64
     use BindingId(17) id site=SiteId(102) ty=i64 intent=Read
     use BindingId(16) name site=SiteId(107) ty=string intent=Read
-    agg_alias BindingId(16) name site=SiteId(107) ty=string
     use BindingId(17) id site=SiteId(111) ty=i64 intent=Read
     return site=Some(SiteId(100)) ty=Result<Counter, MetricsError>
   drop_plans:
@@ -208,7 +207,6 @@ fn metrics$try_gauge -> Result<Gauge, MetricsError>
     bind BindingId(21) id site=SiteId(135) ty=i64
     use BindingId(21) id site=SiteId(141) ty=i64 intent=Read
     use BindingId(20) name site=SiteId(146) ty=string intent=Read
-    agg_alias BindingId(20) name site=SiteId(146) ty=string
     use BindingId(21) id site=SiteId(150) ty=i64 intent=Read
     return site=Some(SiteId(139)) ty=Result<Gauge, MetricsError>
   drop_plans:
@@ -261,7 +259,6 @@ fn metrics$try_histogram -> Result<Histogram, MetricsError>
     bind BindingId(25) id site=SiteId(174) ty=i64
     use BindingId(25) id site=SiteId(180) ty=i64 intent=Read
     use BindingId(24) name site=SiteId(185) ty=string intent=Read
-    agg_alias BindingId(24) name site=SiteId(185) ty=string
     use BindingId(25) id site=SiteId(189) ty=i64 intent=Read
     return site=Some(SiteId(178)) ty=Result<Histogram, MetricsError>
   drop_plans:

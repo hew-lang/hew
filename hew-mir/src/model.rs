@@ -422,6 +422,98 @@ pub struct ExternDecl {
     pub abi: String,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
+    /// Total defining-module provenance carried from the HIR
+    /// [`hew_hir::HirExternFn`]. This is the PRIMARY authority for classifying a
+    /// C-ABI string return's ownership ([`ExternDecl::malloc_string_return`]),
+    /// carried here as a proven fact so codegen never re-derives it by absence.
+    pub provenance: hew_hir::ExternProvenance,
+    /// True only for a raw root/package `extern "C" -> string` whose C ABI
+    /// transfers a plain malloc-owned pointer that codegen must copy into Hew's
+    /// header-aware refcounted domain and then `free`. Standard-library modules
+    /// and classified Hew runtime/stdlib symbols already return header-aware
+    /// strings and keep this false.
+    ///
+    /// Derived from [`ExternDecl::provenance`] via
+    /// [`classify_extern_string_ownership`] at MIR lowering — NEVER inferred by
+    /// absence from `HirModule::diagnostic_source_modules`. An
+    /// [`ExternStringOwnership::Unresolved`] provenance fails closed with a MIR
+    /// diagnostic instead of guessing a direction.
+    pub malloc_string_return: bool,
+}
+
+/// Ownership disposition of a C-ABI `extern` string return — the classification
+/// [`classify_extern_string_ownership`] produces from an
+/// [`hew_hir::ExternProvenance`].
+///
+/// Both wrong classifications corrupt memory, so this is a total, fail-closed
+/// three-state result rather than a bare `bool`: an unrepresentable provenance
+/// must surface a diagnostic, never a guessed direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternStringOwnership {
+    /// The return is already a Hew header-aware, refcounted string; codegen must
+    /// NOT adopt or free it (`malloc_string_return = false`). Standard-library
+    /// provenance and classified Hew runtime/stdlib symbols land here.
+    HeaderAware,
+    /// The return is a raw malloc-owned foreign C string; codegen copies it into
+    /// the Hew string domain and frees the foreign allocation
+    /// (`malloc_string_return = true`). Root and user/package provenance land
+    /// here unless the name catalog suppresses adoption.
+    ForeignAdopt,
+    /// The carried provenance names no usable module identity, so ownership
+    /// cannot be decided. Neither direction is memory safe by default, so the
+    /// caller must emit a diagnostic and fail closed — never guess.
+    Unresolved,
+}
+
+/// Classify whether a C-ABI `extern` string return is a header-aware Hew string
+/// or a raw malloc-owned foreign C string that codegen must adopt.
+///
+/// PRIMARY authority: the extern's carried defining-module
+/// [`hew_hir::ExternProvenance`].
+/// - Standard-library provenance → [`ExternStringOwnership::HeaderAware`]: the
+///   Hew runtime/stdlib allocates these as header-aware strings.
+/// - Root / user-package provenance → [`ExternStringOwnership::ForeignAdopt`]:
+///   the C ABI transfers a plain malloc-owned pointer.
+///
+/// SECONDARY, MONOTONIC guard: the JIT symbol catalog
+/// ([`hew_types::jit_symbols::is_classified_hew_ffi_symbol`]). It can only
+/// SUPPRESS adoption for a symbol already known to be a Hew runtime/stdlib
+/// producer (turn `ForeignAdopt` → `HeaderAware`); it never enables adoption and
+/// never overrides standard-library provenance. It is name-keyed and INCOMPLETE
+/// for std string producers (`hew_uuid_v4`, `hew_password_hash`, … are absent),
+/// so it can never be the primary ownership authority — provenance is.
+///
+/// A [`hew_hir::ExternProvenance::Module`] with an empty name carries no module
+/// identity and is [`ExternStringOwnership::Unresolved`]: a corrupt/unrepresentable
+/// provenance must fail closed at the caller, not be guessed as user-foreign.
+///
+/// Only meaningful for `abi == "C"` with a `string` return; the caller gates on
+/// that before consulting this classification.
+#[must_use]
+pub fn classify_extern_string_ownership(
+    provenance: &hew_hir::ExternProvenance,
+    symbol: &str,
+) -> ExternStringOwnership {
+    match provenance {
+        // A named module with no identity is unrepresentable provenance. Refuse
+        // to guess — both ownership directions corrupt memory.
+        hew_hir::ExternProvenance::Module(name) if name.is_empty() => {
+            ExternStringOwnership::Unresolved
+        }
+        // Standard-library provenance is header-aware, unconditionally. The name
+        // catalog is incomplete for std producers, so it must not gate this.
+        _ if provenance.is_stdlib() => ExternStringOwnership::HeaderAware,
+        // Root and user/package provenance transfer a raw malloc-owned C string,
+        // UNLESS the symbol is a classified Hew runtime/stdlib producer (the
+        // monotonic secondary guard, which only ever suppresses adoption).
+        hew_hir::ExternProvenance::Root | hew_hir::ExternProvenance::Module(_) => {
+            if hew_types::jit_symbols::is_classified_hew_ffi_symbol(symbol) {
+                ExternStringOwnership::HeaderAware
+            } else {
+                ExternStringOwnership::ForeignAdopt
+            }
+        }
+    }
 }
 
 /// One `dyn Trait` vtable instance — see [`IrPipeline::dyn_vtable_registry`].
@@ -4192,6 +4284,10 @@ pub enum Instr {
     /// minted. This marker is emitted only by the MIR bytes ownership prover;
     /// codegen must not infer the retain from the LLVM storage type.
     BytesRetain { value: Place },
+    /// Increment the refcount of a `string` value before a genuine co-owner is
+    /// minted. Existing retained producers (field loads and `Vec<string>` gets)
+    /// already return `+1`; this marker covers the remaining share points.
+    StringRetain { value: Place },
     /// Explicit checker-admitted numeric `as` cast.
     ///
     /// `from_ty` and `to_ty` are carried from HIR so codegen can choose the
@@ -6318,6 +6414,13 @@ pub enum MirDiagnosticKind {
     /// D10: a named user type had no known `ValueClass` at the MIR boundary.
     /// Only builtin types are supported in slice 1.
     UnknownType { name: String },
+    /// A C-ABI `extern` fn returning `string` reached MIR with a defining-module
+    /// provenance that cannot classify its return ownership (see
+    /// [`classify_extern_string_ownership`] → [`ExternStringOwnership::Unresolved`]).
+    /// Adopting a header-aware Hew string frees `base + 16`; treating a foreign C
+    /// string as Hew reads a phantom header — so an unresolved provenance fails
+    /// closed here rather than guessing a memory-unsafe direction.
+    ExternStringOwnershipUnresolved { symbol: String },
     /// W3.029: a declared user record/type aggregate reached the MIR
     /// decision boundary, but its field closure is not entirely `BitCopy`.
     UnsupportedUserRecordValueClass { name: String, reason: String },

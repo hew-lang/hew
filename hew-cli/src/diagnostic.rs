@@ -138,6 +138,7 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
+        | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. }
         | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
@@ -553,6 +554,9 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::DecisionMapTotal { .. } => "DecisionMapTotal",
         hew_mir::MirDiagnosticKind::MustConsume { .. } => "MustConsume",
         hew_mir::MirDiagnosticKind::UnknownType { .. } => "UnknownType",
+        hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. } => {
+            "ExternStringOwnershipUnresolved"
+        }
         hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. } => {
             "UnsupportedUserRecordValueClass"
         }
@@ -659,6 +663,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
+        | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
@@ -711,6 +716,11 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         hew_mir::MirDiagnosticKind::UnknownType { name } => {
             format!("unknown type `{name}` at the MIR boundary")
         }
+        hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { symbol } => format!(
+            "extern \"C\" fn `{symbol}` returns a string whose ownership cannot be classified \
+             from its defining-module provenance; neither adopting it nor treating it as a \
+             header-aware Hew string is memory safe by default"
+        ),
         hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { name, .. } => format!(
             "record type `{name}` has a value class that MIR cannot lower yet"
         ),
@@ -952,6 +962,7 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         }
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
+        | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
         | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }

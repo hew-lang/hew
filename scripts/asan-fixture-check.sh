@@ -47,6 +47,10 @@
 #       mints multiple references to one bytes buffer; a missing retain-on-share
 #       double-frees under ASan (the underflow macOS `leaks` cannot see). All
 #       must remain ASan/LSan-clean.
+#   string retain-on-share
+#       Existing retained field/container reads plus aggregate ingress,
+#       duplicating return, local co-own, borrowed-param co-own, and an escaping
+#       partner. Missing retains surface as refcount UAF; excess retains leak.
 #   composite-drop leak-oracle shapes (#2488)
 #       Three already-clean vertical-slice fixtures covering the #2439 composite
 #       yield-release and #2462 match-scrutinee enum-payload-release drop
@@ -319,6 +323,7 @@ LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
 # before the abort.
 CRASH_RESTART_SRC="${ROOT}/tests/vertical-slice/accept/on_crash_action_restart_real_crash.hew"
 BYTES_COW_SRC="${ROOT}/tests/vertical-slice/accept/bytes_cow_retain_s1.hew"
+STRING_COW_SRC="${ROOT}/tests/vertical-slice/accept/string_cow_retain_share.hew"
 # Composite-drop leak-oracle shapes (#2488): three already-clean vertical-slice
 # fixtures that exercise the drop mechanisms #2439 (composite yield release via
 # in-place drop thunks) and #2462 (match-scrutinee enum payload release). Prior
@@ -358,6 +363,9 @@ compile_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_SRC}
 
 BYTES_COW_BIN="${WORK_DIR}/bytes_cow_retain_s1"
 compile_asan_fixture "bytes COW retain-on-share (A240 S1)" "${BYTES_COW_SRC}" "${BYTES_COW_BIN}"
+
+STRING_COW_BIN="${WORK_DIR}/string_cow_retain_share"
+compile_asan_fixture "string retain-on-share" "${STRING_COW_SRC}" "${STRING_COW_BIN}"
 
 # ── Step 3e: compile the composite-drop leak-oracle fixtures (#2488) ──────
 # Three already-clean vertical-slice fixtures covering the #2439 composite
@@ -451,7 +459,14 @@ else
   fail=$((fail + 1))
 fi
 
-# ── Gate 6–8: composite-drop leak-oracle shapes MUST be ASan/LSan-clean (#2488) ─
+# ── Gate 6: string retain-on-share mint points MUST be ASan/LSan-clean ────
+if run_asan_fixture "string retain-on-share" "${STRING_COW_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+# ── Gate 7–9: composite-drop leak-oracle shapes MUST be ASan/LSan-clean (#2488) ─
 # Each fixture exercises a merged drop mechanism that is otherwise unguarded on
 # Linux: an owned enum payload crossing the generator pump's yield send path
 # (#2439 tag-dispatched in-place drop thunk), the break-edge release of an owned

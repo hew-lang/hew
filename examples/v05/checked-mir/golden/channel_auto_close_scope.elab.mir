@@ -167,7 +167,6 @@ fn channel$try_new -> Result<(Sender, Receiver), string>
     return site=Some(SiteId(84)) ty=Result<(Sender, Receiver), string>
     eval site=SiteId(87) ty=()
     use BindingId(17) detail site=SiteId(89) ty=string intent=Read
-    agg_alias BindingId(17) detail site=SiteId(89) ty=string
     return site=Some(SiteId(88)) ty=Result<(Sender, Receiver), string>
     bind BindingId(18) tx site=SiteId(92) ty=Sender
     use BindingId(16) pair site=SiteId(96) ty=ChannelPair intent=Read

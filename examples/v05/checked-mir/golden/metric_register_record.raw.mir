@@ -228,11 +228,11 @@ fn metrics$try_counter(string) -> Result<Counter, MetricsError> [conv=default]
     branch _6 ? bb1 : bb2
   bb1:
     stmt: use BindingId(16) name site=SiteId(107) ty=string intent=Read
-    stmt: agg_alias BindingId(16) name site=SiteId(107) ty=string
     _8 = const.i64 1
     mtag7 = move _8
     _10 = const.i64 0
     mtag9 = move _10
+    string.retain _0
     mvar9.0.0 = move _0
     mvar7.1.0 = move _9
     _11 = move _7
@@ -332,11 +332,11 @@ fn metrics$try_gauge(string) -> Result<Gauge, MetricsError> [conv=default]
     branch _6 ? bb1 : bb2
   bb1:
     stmt: use BindingId(20) name site=SiteId(146) ty=string intent=Read
-    stmt: agg_alias BindingId(20) name site=SiteId(146) ty=string
     _8 = const.i64 1
     mtag7 = move _8
     _10 = const.i64 0
     mtag9 = move _10
+    string.retain _0
     mvar9.0.0 = move _0
     mvar7.1.0 = move _9
     _11 = move _7
@@ -436,11 +436,11 @@ fn metrics$try_histogram(string) -> Result<Histogram, MetricsError> [conv=defaul
     branch _6 ? bb1 : bb2
   bb1:
     stmt: use BindingId(24) name site=SiteId(185) ty=string intent=Read
-    stmt: agg_alias BindingId(24) name site=SiteId(185) ty=string
     _8 = const.i64 1
     mtag7 = move _8
     _10 = const.i64 0
     mtag9 = move _10
+    string.retain _0
     mvar9.0.0 = move _0
     mvar7.1.0 = move _9
     _11 = move _7
@@ -644,6 +644,7 @@ fn string::fmt(string) -> string [conv=default]
   bb0:
     stmt: use BindingId(48) val site=SiteId(305) ty=string intent=Read
     stmt: return site=Some(SiteId(305)) ty=string
+    string.retain _0
     ret = move _0
     return
 

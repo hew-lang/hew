@@ -2483,6 +2483,306 @@ mod tests {
         );
     }
 
+    /// Mirror `hew_sched_init`'s process-wide SIGPIPE ignore so a broadcast
+    /// write to a reset peer fails closed with EPIPE instead of killing the
+    /// isolated test process (broadcast writes use plain cloned `TcpStream`s
+    /// with no per-send `MSG_NOSIGNAL`).
+    #[cfg(unix)]
+    fn ignore_sigpipe() {
+        // SAFETY: installing SIG_IGN carries no handler state.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    }
+
+    /// Force an RST on close: `SO_LINGER{on, 0}` then drop. The registered peer
+    /// then observes ECONNRESET on read and its writes fail deterministically
+    /// (a plain FIN close would let the first post-close write succeed into
+    /// the kernel buffer).
+    #[cfg(unix)]
+    fn reset_client(client: TcpStream) {
+        let sock = Socket::from(client);
+        sock.set_linger(Some(std::time::Duration::ZERO))
+            .expect("set SO_LINGER{on,0}");
+        drop(sock);
+    }
+
+    /// Clone a probe of the server stream and bound its reads BEFORE the peer
+    /// is reset: macOS rejects `setsockopt(SO_RCVTIMEO)` with EINVAL once the
+    /// connection has already been torn down.
+    #[cfg(unix)]
+    fn probe_with_timeout(server: &TcpStream) -> TcpStream {
+        let probe = server.try_clone().expect("clone server probe");
+        probe
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set probe read timeout");
+        probe
+    }
+
+    /// Block until `probe` (a clone of the registered server stream, with a
+    /// read timeout already set) observes the peer reset, so a subsequent
+    /// broadcast write fails deterministically instead of racing the
+    /// in-flight RST.
+    #[cfg(unix)]
+    fn await_peer_reset(probe: &mut TcpStream) {
+        let mut buf = [0u8; 16];
+        loop {
+            match probe.read(&mut buf) {
+                Ok(0) => break, // EOF: peer closed
+                Ok(_) => {}
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    panic!("peer reset not observed within the probe timeout")
+                }
+                Err(_) => break, // ECONNRESET: reset observed
+            }
+        }
+    }
+
+    /// Wrap `hew_tcp_broadcast_except` for the delivery tests: build a
+    /// caller-owned `BytesTriple` over `payload`, broadcast, drop the buffer,
+    /// return the status.
+    fn broadcast_bytes(exclude: c_int, payload: &[u8]) -> c_int {
+        // SAFETY: `payload` is valid for `payload.len()` bytes.
+        let bytes = unsafe {
+            crate::bytes::hew_bytes_from_static(
+                payload.as_ptr(),
+                u32::try_from(payload.len()).expect("payload length fits in u32"),
+            )
+        };
+        // SAFETY: `bytes` is a valid caller-owned BytesTriple.
+        let status = unsafe { hew_tcp_broadcast_except(exclude, std::ptr::addr_of!(bytes)) };
+        // SAFETY: `bytes` owns a refcount-1 buffer allocated above.
+        unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
+        status
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broadcast_all_recipients_fail_returns_neg1_with_errno() {
+        run_in_isolated_test_process(
+            "transport::tests::broadcast_all_recipients_fail_returns_neg1_with_errno",
+            "HEW_RUNTIME_TCP_BROADCAST_ALL_FAIL",
+            || {
+                let _guard = crate::runtime_test_guard();
+                ignore_sigpipe();
+                let (server, client) = connected_streams();
+                let mut probe = probe_with_timeout(&server);
+                let handle = register_stream(server);
+                reset_client(client);
+                await_peer_reset(&mut probe);
+                let _ = hew_cabi::sink::take_last_errno();
+
+                let status = broadcast_bytes(-1, b"payload after reset");
+
+                assert_eq!(
+                    status, -1,
+                    "a broadcast whose only eligible recipient's write failed must \
+                     report -1, not collapse into a success-shaped count"
+                );
+                assert_ne!(
+                    hew_cabi::sink::take_last_errno(),
+                    0,
+                    "the failed write's OS errno must be recorded in the shared thread-local"
+                );
+                remove_stream(handle);
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broadcast_partial_failure_still_delivers_healthy_and_reports_neg1() {
+        run_in_isolated_test_process(
+            "transport::tests::broadcast_partial_failure_still_delivers_healthy_and_reports_neg1",
+            "HEW_RUNTIME_TCP_BROADCAST_PARTIAL",
+            || {
+                let _guard = crate::runtime_test_guard();
+                ignore_sigpipe();
+                let (healthy_server, mut healthy_client) = connected_streams();
+                let healthy_handle = register_stream(healthy_server);
+                let (dead_server, dead_client) = connected_streams();
+                let mut probe = probe_with_timeout(&dead_server);
+                let dead_handle = register_stream(dead_server);
+                reset_client(dead_client);
+                await_peer_reset(&mut probe);
+                let _ = hew_cabi::sink::take_last_errno();
+
+                let status = broadcast_bytes(-1, b"partial fan-out");
+
+                assert_eq!(
+                    status, -1,
+                    "any eligible recipient's failure must surface as -1 even when \
+                     other recipients were delivered to"
+                );
+                assert_ne!(
+                    hew_cabi::sink::take_last_errno(),
+                    0,
+                    "the failed write's OS errno must be recorded in the shared thread-local"
+                );
+
+                // Best-effort delivery preserved: the healthy peer still
+                // received the message with the appended newline.
+                healthy_client
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .expect("set healthy client read timeout");
+                let expected = b"partial fan-out\n";
+                let mut received = vec![0u8; expected.len()];
+                healthy_client
+                    .read_exact(&mut received)
+                    .expect("healthy recipient must still receive the broadcast");
+                assert_eq!(
+                    received, expected,
+                    "healthy recipient must receive the exact message + newline"
+                );
+
+                remove_stream(healthy_handle);
+                remove_stream(dead_handle);
+            },
+        );
+    }
+
+    #[test]
+    fn broadcast_all_success_returns_delivered_count() {
+        run_in_isolated_test_process(
+            "transport::tests::broadcast_all_success_returns_delivered_count",
+            "HEW_RUNTIME_TCP_BROADCAST_SUCCESS",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let (server_a, mut client_a) = connected_streams();
+                let handle_a = register_stream(server_a);
+                let (server_b, mut client_b) = connected_streams();
+                let excluded_handle = register_stream(server_b);
+                let _ = hew_cabi::sink::take_last_errno();
+
+                let status = broadcast_bytes(excluded_handle, b"hello room");
+
+                assert_eq!(
+                    status, 1,
+                    "exactly one eligible recipient must be counted as delivered"
+                );
+                assert_eq!(
+                    hew_cabi::sink::take_last_errno(),
+                    0,
+                    "a fully successful broadcast must not record an errno"
+                );
+
+                client_a
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .expect("set recipient read timeout");
+                let expected = b"hello room\n";
+                let mut received = vec![0u8; expected.len()];
+                client_a
+                    .read_exact(&mut received)
+                    .expect("the eligible recipient must receive the broadcast");
+                assert_eq!(
+                    received, expected,
+                    "message must arrive with the appended newline"
+                );
+
+                // The excluded connection receives nothing: a bounded read
+                // times out instead of yielding data.
+                client_b
+                    .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+                    .expect("set excluded client read timeout");
+                let mut buf = [0u8; 8];
+                let excluded_read = client_b.read(&mut buf);
+                assert!(
+                    matches!(
+                        &excluded_read,
+                        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    ),
+                    "excluded connection must receive nothing, got {excluded_read:?}"
+                );
+
+                remove_stream(handle_a);
+                remove_stream(excluded_handle);
+            },
+        );
+    }
+
+    #[test]
+    fn broadcast_zero_eligible_recipients_returns_zero() {
+        run_in_isolated_test_process(
+            "transport::tests::broadcast_zero_eligible_recipients_returns_zero",
+            "HEW_RUNTIME_TCP_BROADCAST_ZERO",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let (handle, _client) = tcp_socketpair_conn_for_test();
+                let _ = hew_cabi::sink::take_last_errno();
+
+                // The only registered connection is the excluded one.
+                let status = broadcast_bytes(handle, b"nobody eligible");
+
+                assert_eq!(
+                    status, 0,
+                    "no eligible recipients is clean success (0), distinct from failure (-1)"
+                );
+                assert_eq!(
+                    hew_cabi::sink::take_last_errno(),
+                    0,
+                    "nothing-to-do must not record an errno"
+                );
+                tcp_close_raw_for_test(handle);
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broadcast_clone_failure_returns_neg1() {
+        run_in_isolated_test_process(
+            "transport::tests::broadcast_clone_failure_returns_neg1",
+            "HEW_RUNTIME_TCP_BROADCAST_CLONE_FAIL",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let (server, _client) = connected_streams();
+                let handle = register_stream(server);
+                let _ = hew_cabi::sink::take_last_errno();
+
+                // Drop the fd soft limit below current usage so `try_clone`
+                // (dup) fails with EMFILE. Safe here because this body runs in
+                // its own isolated process.
+                let mut lim = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                // SAFETY: `lim` is a valid out-pointer for getrlimit.
+                let got = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) };
+                assert_eq!(got, 0, "getrlimit(RLIMIT_NOFILE) must succeed");
+                let saved = lim;
+                lim.rlim_cur = 1;
+                // SAFETY: `lim` is a valid rlimit value for setrlimit.
+                let lowered = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim) };
+                assert_eq!(lowered, 0, "lowering RLIMIT_NOFILE must succeed");
+
+                let status = broadcast_bytes(-1, b"no fds left");
+
+                // SAFETY: `saved` is the previously read valid rlimit.
+                let restored = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const saved) };
+                assert_eq!(restored, 0, "restoring RLIMIT_NOFILE must succeed");
+
+                assert_eq!(
+                    status, -1,
+                    "a clone failure on an eligible recipient must report -1"
+                );
+                // The exact errno is platform-variable (EMFILE on Linux;
+                // macOS's fcntl(F_DUPFD_CLOEXEC) reports EINVAL at the fd
+                // limit), so pin the branch by non-zero errno + the clone
+                // failure's message prefix instead of an exact value.
+                assert_ne!(
+                    hew_cabi::sink::take_last_errno(),
+                    0,
+                    "the dup failure's OS errno must be surfaced"
+                );
+                let msg = hew_cabi::sink::take_last_error()
+                    .expect("the clone failure's message must be recorded");
+                assert!(
+                    msg.starts_with("hew_tcp_broadcast_except: clone failed"),
+                    "the recorded message must come from the clone branch, got: {msg}"
+                );
+                remove_stream(handle);
+            },
+        );
+    }
+
     #[cfg(feature = "profiler")]
     #[test]
     fn tcp_read_stays_at_zero_rust_allocs_across_payload_sizes() {
@@ -2744,8 +3044,18 @@ mod tests {
 
 /// Broadcast one message to all open TCP connections except `exclude_conn`.
 ///
-/// Appends `\n` if not already present.
-/// Returns number of recipients written to, or -1 on error.
+/// Appends `\n` if not already present. Delivery is best-effort: every
+/// eligible recipient is attempted even after an earlier one fails, so a
+/// single dead peer never denies delivery to the healthy ones.
+///
+/// Returns:
+/// - `n > 0` — delivered to `n` eligible recipients; no eligible write failed.
+/// - `0` — no eligible recipients (empty table, or only the excluded
+///   connection); clean success, nothing to do.
+/// - `-1` — at least one eligible recipient's clone or write failed; the
+///   first failure's message and OS errno are recorded in the shared
+///   thread-local (read via `hew_stream_last_error` /
+///   `hew_stream_last_errno`).
 ///
 /// # Safety
 ///
@@ -2783,35 +3093,60 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
         );
         return -1;
     };
-    TCP_API_STATE.access(|state| {
+    let (recipients, first_failure) = TCP_API_STATE.access(|state| {
         let mut recipients = 0usize;
+        let mut first_failure: Option<(String, i32)> = None;
+        let mut note_failure = |msg: String, e: &std::io::Error| {
+            if first_failure.is_none() {
+                first_failure = Some((msg, e.raw_os_error().unwrap_or(0)));
+            }
+        };
         for (conn, stream) in &state.streams {
             if *conn == exclude_conn {
                 continue;
             }
-            let Ok(mut cloned) = stream.try_clone() else {
-                continue;
+            let mut cloned = match stream.try_clone() {
+                Ok(cloned) => cloned,
+                Err(e) => {
+                    note_failure(format!("hew_tcp_broadcast_except: clone failed: {e}"), &e);
+                    continue;
+                }
             };
-            if cloned.write_all(text.as_bytes()).is_err() {
+            if let Err(e) = cloned.write_all(text.as_bytes()) {
+                note_failure(format!("hew_tcp_broadcast_except: {e}"), &e);
                 continue;
             }
-            if !text.ends_with('\n') && cloned.write_all(b"\n").is_err() {
-                continue;
+            // The appended-newline write feeds the same failure accounting as
+            // the body write: a newline that fails after a successful body
+            // write still marks the broadcast failed (`-1`).
+            if !text.ends_with('\n') {
+                if let Err(e) = cloned.write_all(b"\n") {
+                    note_failure(format!("hew_tcp_broadcast_except: {e}"), &e);
+                    continue;
+                }
             }
             recipients += 1;
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "recipient count is small in demos"
-        )]
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "recipient count is small in demos"
-        )]
-        {
-            recipients as c_int
-        }
-    })
+        (recipients, first_failure)
+    });
+    // Record the first failure OUTSIDE the table lock: the thread-local error
+    // write does not need the lock, and keeping the lock scope minimal matches
+    // the transport's errno hygiene elsewhere.
+    if let Some((msg, errno)) = first_failure {
+        hew_cabi::sink::set_last_error_with_errno(msg, errno);
+        return -1;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "recipient count is small in demos"
+    )]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "recipient count is small in demos"
+    )]
+    {
+        recipients as c_int
+    }
 }
 
 /// Attach a TCP connection to an actor for active-mode delivery.

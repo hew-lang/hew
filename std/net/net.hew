@@ -632,7 +632,11 @@ pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Con
 
 /// Broadcast a message to all connections except the sender.
 ///
-/// Used in chat-server patterns to fan out messages.
+/// Used in chat-server patterns to fan out messages. Delivery is
+/// best-effort: every eligible connection is attempted even after one
+/// fails. Returns the delivered count (0 when there are no eligible
+/// connections), or -1 when at least one eligible connection's write
+/// failed. Use `try_broadcast_except` for a structured `NetError`.
 pub fn broadcast_except(sender: Connection, message: bytes) -> i64 {
     unsafe {
         hew_tcp_broadcast_except(sender, message) as i64
@@ -641,7 +645,12 @@ pub fn broadcast_except(sender: Connection, message: bytes) -> i64 {
 
 /// Broadcast a message to all connections except the sender.
 ///
-/// Used in chat-server patterns to fan out messages.
+/// Used in chat-server patterns to fan out messages. Delivery is
+/// best-effort: every eligible connection is attempted even after one
+/// fails. `Ok(n)` means n connections received the message and none
+/// failed (`Ok(0)` means there was nothing to deliver to); `Err`
+/// carries the `NetError` for the first failed write — healthy
+/// connections were still delivered to.
 pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<i64, NetError> {
     let n: i32 = unsafe {
         hew_tcp_broadcast_except(sender, message)
@@ -690,6 +699,9 @@ extern "C" {
     fn hew_tcp_close(conn: Connection) -> i32;
     fn hew_tcp_set_read_timeout(conn: Connection, ms: i32) -> i32;
     fn hew_tcp_set_write_timeout(conn: Connection, ms: i32) -> i32;
+    // Returns the delivered count (0 = no eligible recipients), or -1 when any
+    // eligible recipient's write failed, with the OS errno recorded in the
+    // shared thread-local (read via hew_stream_last_errno).
     fn hew_tcp_broadcast_except(sender: Connection, message: bytes) -> i32;
     fn hew_listener_is_valid(ln: Listener) -> bool;
     fn hew_connection_is_valid(conn: Connection) -> bool;

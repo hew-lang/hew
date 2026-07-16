@@ -4628,8 +4628,19 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     // transport is allowed. While the public node lifecycle owns the state
     // (Starting/Running) the started node already froze its snapshot, so leave
     // the env write to preserve legacy behaviour for any low-level node.
+    //
+    // Hold PEER_AUTH_STATE across the staged-credential check, the HEW_TRANSPORT
+    // env write, AND the Building-config pin as ONE critical section. The check
+    // and the pin must be atomic: if the guard were released between them, a
+    // concurrent `Node::allow_peer` / `Node::load_keys` could stage a credential
+    // under the old transport in the gap and have it silently reinterpreted
+    // under the newly-pinned transport — the exact credential confusion the
+    // check exists to prevent. ENV_LOCK is acquired *inside* the PEER_AUTH_STATE
+    // guard, matching the PEER_AUTH_STATE → ENV_LOCK order that
+    // `merge_start_env_into_config` already establishes (so the two paths cannot
+    // deadlock against each other).
     {
-        let guard = PEER_AUTH_STATE
+        let mut guard = PEER_AUTH_STATE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let ConfigState::Building(cfg) = &guard.state {
@@ -4644,18 +4655,14 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
                 return -1;
             }
         }
-    }
 
-    // Set the process-global selection and pin it into the Building config so
-    // `Node::start` (and `identity_key()`) use the stored selection and a later
-    // start-time env merge does not override it.
-    // SAFETY: ENV_LOCK synchronises access to the process-global environ array;
-    // set_var is safe under exclusive write access.
-    crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", normalized) });
-    {
-        let mut guard = PEER_AUTH_STATE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Still holding PEER_AUTH_STATE: set the process-global selection and pin
+        // it into the Building config so `Node::start` (and `identity_key()`) use
+        // the stored selection and a later start-time env merge does not override
+        // it. Env write and pin are one indivisible step under the guard.
+        // SAFETY: ENV_LOCK synchronises access to the process-global environ array;
+        // set_var is safe under exclusive write access.
+        crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", normalized) });
         if let ConfigState::Building(cfg) = &mut guard.state {
             cfg.transport = Some(requested);
         }
@@ -4804,6 +4811,24 @@ fn stage_loaded_identity(
         );
         return -1;
     };
+    // Fail closed if a concurrent `Node::set_transport` re-pinned the selection
+    // between the env read that chose which identity file to load (Noise vs
+    // mesh) and this stage under the lock. The loaded identity is for
+    // `selection`; staging it while the config is pinned to a different
+    // transport would present the wrong stable identity at start (issue #2652).
+    // The pinned config selection is authoritative — refuse rather than stage a
+    // mismatched identity.
+    if let Some(pinned) = cfg.transport {
+        if pinned != selection {
+            drop(guard);
+            node_peer_auth_setup_failed(
+                "Node::load_keys: the transport was changed concurrently while this \
+                 identity was being loaded — select the transport before loading keys \
+                 (fail-closed)",
+            );
+            return -1;
+        }
+    }
     apply(cfg);
     // Early transport pin: loading a stable identity commits this node to the
     // operator's selected transport, so `identity_key()` can export the pinned
@@ -4912,6 +4937,24 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
         );
         return -1;
     };
+    // Fail closed if a concurrent `Node::set_transport` re-pinned the selection
+    // between the env read above (which typed `credential`) and this staging
+    // under the lock. `credential` was interpreted as the type of `transport`;
+    // staging it while the config is pinned to a different transport is exactly
+    // the credential confusion issue #2652 guards against (a NoiseKey bound
+    // while the node is pinned to quic-mesh, or vice versa). The pinned config
+    // selection is authoritative — refuse rather than reinterpret.
+    if let Some(pinned) = cfg.transport {
+        if pinned != transport.as_peer_transport() {
+            drop(guard);
+            node_peer_auth_setup_failed(
+                "Node::allow_peer: the transport was changed concurrently while this \
+                 credential was being interpreted — select the transport before staging \
+                 peer credentials (fail-closed)",
+            );
+            return -1;
+        }
+    }
     // A given credential may bind to exactly one NodeId: the same credential
     // pinned to a different NodeId is a conflict (rotation overlap binds two
     // *credentials* to one NodeId, never one credential to two NodeIds).
@@ -7486,6 +7529,111 @@ mod tests {
             // SAFETY: exclusive process-global env access via ENV_LOCK.
             unsafe { std::env::remove_var("HEW_TRANSPORT") };
         });
+    }
+
+    /// Issue #2666 (concurrency): `Node::set_transport` folds its staged-credential
+    /// check, the `HEW_TRANSPORT` write, and the config pin into ONE
+    /// `PEER_AUTH_STATE` critical section, and `Node::allow_peer` / `Node::load_keys`
+    /// re-verify the pinned selection under that same lock. Together these close
+    /// the check-then-pin race: a credential is only ever staged when its type
+    /// agrees with the pinned transport, so a concurrent `set_transport` can never
+    /// leave a `NoiseKey` bound while the config is pinned to quic-mesh (or an SPKI
+    /// bound under tcp-noise) — the credential confusion issue #2652 guards.
+    ///
+    /// This drives all four concurrency edge classes for the race: two racing
+    /// writers (`set_transport` vs `allow_peer`), both establish orderings
+    /// (set-wins-then-stage and stage-wins-then-set), and the stale-typing case
+    /// (a credential typed under the old transport meeting a freshly pinned new
+    /// one). The terminal invariant — never a torn pin — must hold on every
+    /// interleaving, so the test hammers the window and asserts consistency after
+    /// each round rather than depending on a fixed sleep.
+    #[cfg(feature = "quic")]
+    #[test]
+    fn set_transport_credential_typing_atomic_under_concurrent_allow_peer() {
+        let _guard = crate::runtime_test_guard();
+
+        let reset_clean = || {
+            {
+                let mut g = PEER_AUTH_STATE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                g.state = ConfigState::default();
+            }
+            crate::env::ENV_LOCK.access(|()| {
+                // SAFETY: exclusive process-global env access via ENV_LOCK.
+                unsafe {
+                    std::env::remove_var("HEW_TRANSPORT");
+                    std::env::remove_var("HEW_NODE_ID");
+                }
+            });
+        };
+
+        // 32-byte credential: a valid Noise pubkey under tcp AND a valid SPKI
+        // under quic-mesh, so the SAME argument types differently by transport —
+        // exactly the confusion a torn pin would create.
+        let cred_hex = "11".repeat(32);
+
+        for _ in 0..300 {
+            reset_clean();
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let set_barrier = std::sync::Arc::clone(&barrier);
+            let set_thread = thread::spawn(move || {
+                let name = CString::new("quic-mesh").expect("valid transport name");
+                set_barrier.wait();
+                // SAFETY: name is a valid C string for this call.
+                unsafe { hew_node_api_set_transport(name.as_ptr()) }
+            });
+
+            let allow_hex = cred_hex.clone();
+            let allow_thread = thread::spawn(move || {
+                let hex = CString::new(allow_hex).expect("valid hex credential");
+                barrier.wait();
+                // SAFETY: hex is a valid C string for this call.
+                unsafe { hew_node_api_allow_peer(2, hex.as_ptr()) }
+            });
+
+            let _ = set_thread.join().expect("set_transport thread panicked");
+            let _ = allow_thread.join().expect("allow_peer thread panicked");
+
+            // Terminal invariant: every staged credential's type must agree with
+            // the pinned transport. A torn pin (pre-fix) leaves a NoiseKey bound
+            // while the config is pinned to quic-mesh, or an SPKI under tcp.
+            let g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ConfigState::Building(cfg) = &g.state else {
+                panic!("staging must remain Building; no node was started");
+            };
+            for creds in cfg.bindings.values() {
+                for cred in creds {
+                    match cred {
+                        PeerCredential::NoiseKey(_) => assert_eq!(
+                            cfg.transport,
+                            Some(PeerTransport::Tcp),
+                            "a staged NoiseKey requires the config to be pinned to tcp \
+                             (torn pin: credential typed under tcp but transport re-pinned)"
+                        ),
+                        PeerCredential::Spki(_) => assert_eq!(
+                            cfg.transport,
+                            Some(PeerTransport::QuicMesh),
+                            "a staged SPKI requires the config to be pinned to quic-mesh \
+                             (torn pin: credential typed under quic-mesh but transport re-pinned)"
+                        ),
+                    }
+                }
+            }
+            // Whenever a credential is staged, the transport must be pinned (never
+            // left None): the stage and the pin are one atomic step under the lock.
+            if !cfg.bindings.is_empty() {
+                assert!(
+                    cfg.transport.is_some(),
+                    "a staged credential must leave the transport pinned"
+                );
+            }
+        }
+
+        reset_clean();
     }
 
     /// Issue #2652 (item 2): a node's exported stable identity (`identity_key()`)

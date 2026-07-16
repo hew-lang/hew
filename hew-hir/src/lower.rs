@@ -12021,19 +12021,21 @@ impl LowerCtx {
     }
 
     /// True when the `await`'s inner expression is a suspending typed-stream
-    /// `send()` over a `Sink<bytes>` — i.e. the checker-resolved descriptor's
-    /// family classifies as [`AsyncSuspendKind::SinkSendBytes`]
-    /// (`hew_sink_write_bytes`). `await sink.send(x)` is a unit-returning
+    /// `send()` over any describable `Sink<T>` — i.e. the checker-resolved
+    /// descriptor's family classifies as [`AsyncSuspendKind::SinkSend`]
+    /// (`hew_sink_write_bytes`, `hew_sink_write_string`, or the layout-witness
+    /// `hew_stream_send_layout`). `await sink.send(x)` is a unit-returning
     /// statement-position await (NEW-7): it lowers to the inner send call
-    /// whose MIR `SuspendingStreamSend` suspends on a full ring.
+    /// whose MIR `SuspendingStreamSend` suspends on a full ring. The element
+    /// type rides the checker-resolved value type, never the symbol name.
     ///
-    /// [`AsyncSuspendKind::SinkSendBytes`]: hew_types::runtime_call::AsyncSuspendKind
+    /// [`AsyncSuspendKind::SinkSend`]: hew_types::runtime_call::AsyncSuspendKind
     fn is_stream_send_await(&self, inner_key: &SpanKey) -> bool {
         matches!(
             self.method_call_rewrites.get(inner_key),
             Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
                 if d.is_async_suspending()
-                    == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSendBytes)
+                    == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSend)
         )
     }
 

@@ -28811,9 +28811,12 @@ impl Builder {
 
         // `await sink.send(x)`: SUSPENDS on a full ring (backpressure-aware); a
         // non-full ring binds immediately (the runtime fast path). Context-free
-        // callers keep the blocking call.
+        // callers keep the blocking call. Fires for every describable element
+        // (bytes/string/layout) — the `[sink, value]` arg shape holds for all
+        // three `(sink, data)` symbols; codegen selects the runtime entry from
+        // the value's `ResolvedTy`.
         if builtin.as_ref().and_then(|f| f.is_async_suspending())
-            == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSendBytes)
+            == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSend)
         {
             if let [sink, value] = arg_places {
                 let next = self.alloc_block();

@@ -123,19 +123,13 @@ declare ptr @hew_string_split(ptr, ptr)
 
 declare ptr @hew_string_lines(ptr)
 
-declare i32 @hew_string_find(ptr, ptr)
-
 declare ptr @hew_string_slice(ptr, i64, i64)
 
 declare ptr @hew_string_repeat(ptr, i64)
 
-declare i32 @hew_string_char_at(ptr, i32)
-
 declare ptr @hew_string_chars(ptr)
 
 declare i32 @hew_string_char_count(ptr)
-
-declare i32 @hew_string_char_at_utf8(ptr, i32)
 
 declare void @hew_vec_push_bool(ptr, i1)
 
@@ -300,6 +294,22 @@ declare i32 @hew_node_api_register_by_pid(ptr, i64)
 declare i64 @hew_remote_pid_from_raw(i64, i64)
 
 declare i64 @hew_node_api_lookup(ptr)
+
+declare ptr @hew_stream_channel(i64)
+
+declare ptr @hew_stream_pair_sink(ptr)
+
+declare ptr @hew_stream_pair_stream(ptr)
+
+declare void @hew_stream_pair_free(ptr)
+
+declare void @hew_sink_close(ptr)
+
+declare i32 @hew_sink_peer_closed(ptr)
+
+declare void @hew_actor_gen_sink_register(ptr, ptr)
+
+declare void @hew_actor_gen_sink_complete(ptr, ptr)
 
 define i8 @__original_main() {
 entry:
@@ -747,14 +757,20 @@ bb45:                                             ; preds = %bb44
   %"hew_string_drop drop" = load ptr, ptr %local_61, align 4
   call void @hew_string_drop(ptr %"hew_string_drop drop")
   store ptr null, ptr %local_61, align 4
+  %"hew_string_drop drop132" = load ptr, ptr %local_59, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop132")
+  store ptr null, ptr %local_59, align 4
+  %"hew_string_drop drop133" = load ptr, ptr %local_57, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop133")
+  store ptr null, ptr %local_57, align 4
   %"hew_hashset_free_layout drop" = load ptr, ptr %local_48, align 4
   call void @hew_hashset_free_layout(ptr %"hew_hashset_free_layout drop")
   store ptr null, ptr %local_48, align 4
-  %"hew_hashmap_free_layout drop132" = load ptr, ptr %local_20, align 4
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop132")
+  %"hew_hashmap_free_layout drop134" = load ptr, ptr %local_20, align 4
+  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop134")
   store ptr null, ptr %local_20, align 4
-  %"hew_vec_free drop133" = load ptr, ptr %local_1, align 4
-  call void @hew_vec_free(ptr %"hew_vec_free drop133")
+  %"hew_vec_free drop135" = load ptr, ptr %local_1, align 4
+  call void @hew_vec_free(ptr %"hew_vec_free drop135")
   store ptr null, ptr %local_1, align 4
   ret i8 0
 
@@ -1118,20 +1134,21 @@ after_cooperate:                                  ; preds = %entry
   br label %bb0
 }
 
-define internal ptr @"isize::fmt"(i64 %0) {
+define internal ptr @"isize::fmt"(i32 %0) {
 entry:
   %return_slot = alloca ptr, align 4
-  %local_0 = alloca i64, align 8
+  %local_0 = alloca i32, align 4
   %local_1 = alloca i64, align 8
   %local_2 = alloca ptr, align 4
-  store i64 %0, ptr %local_0, align 8
+  store i32 %0, ptr %local_0, align 4
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
-  %cast_int_src = load i64, ptr %local_0, align 8
-  store i64 %cast_int_src, ptr %local_1, align 8
+  %cast_int_src = load i32, ptr %local_0, align 4
+  %cast_int_sext = sext i32 %cast_int_src to i64
+  store i64 %cast_int_sext, ptr %local_1, align 8
   %call_arg = load i64, ptr %local_1, align 8
   %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
   store ptr %call_result, ptr %local_2, align 4
@@ -1150,20 +1167,21 @@ after_cooperate:                                  ; preds = %entry
   br label %bb0
 }
 
-define internal ptr @"usize::fmt"(i64 %0) {
+define internal ptr @"usize::fmt"(i32 %0) {
 entry:
   %return_slot = alloca ptr, align 4
-  %local_0 = alloca i64, align 8
+  %local_0 = alloca i32, align 4
   %local_1 = alloca i64, align 8
   %local_2 = alloca ptr, align 4
-  store i64 %0, ptr %local_0, align 8
+  store i32 %0, ptr %local_0, align 4
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
-  %cast_int_src = load i64, ptr %local_0, align 8
-  store i64 %cast_int_src, ptr %local_1, align 8
+  %cast_int_src = load i32, ptr %local_0, align 4
+  %cast_int_zext = zext i32 %cast_int_src to i64
+  store i64 %cast_int_zext, ptr %local_1, align 8
   %call_arg = load i64, ptr %local_1, align 8
   %call_result = call ptr @hew_u64_to_string(i64 %call_arg)
   store ptr %call_result, ptr %local_2, align 4
@@ -1310,6 +1328,8 @@ entry:
   br label %bb0
 
 bb0:                                              ; preds = %entry
+  %mir_share_string_load = load ptr, ptr %local_0, align 4
+  %mir_share_string_retain = call ptr @hew_string_clone(ptr %mir_share_string_load)
   %move_load = load ptr, ptr %local_0, align 4
   store ptr %move_load, ptr %return_slot, align 4
   %ret_val = load ptr, ptr %return_slot, align 4
@@ -1488,6 +1508,9 @@ bb1:                                              ; preds = %bb0
   %"hew_string_concat arg1" = load ptr, ptr %local_3, align 4
   %hew_string_concat_call = call ptr @hew_string_concat(ptr %"hew_string_concat arg0", ptr %"hew_string_concat arg1")
   store ptr %hew_string_concat_call, ptr %local_4, align 4
+  %"hew_string_drop drop" = load ptr, ptr %local_2, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop")
+  store ptr null, ptr %local_2, align 4
   %move_load = load ptr, ptr %local_4, align 4
   store ptr %move_load, ptr %return_slot, align 4
   %ret_val = load ptr, ptr %return_slot, align 4

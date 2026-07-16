@@ -1,9 +1,12 @@
 ; ModuleID = 'r4_layout'
 source_filename = "r4_layout"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+target triple = "aarch64-apple-macosx13.0"
 
 %Point = type { i64, i64 }
 %Color = type { i8, [1 x i8] }
 %"Option$$Point" = type { i8, [2 x i64] }
+%CrashInfo = type { i64, ptr }
 
 @__hew_layout_new_16_8_plain = private constant { i64, i64, i8 } { i64 16, i64 8, i8 0 }
 @__hew_layout_push_16_8_plain = private constant { i64, i64, i8 } { i64 16, i64 8, i8 0 }
@@ -12,7 +15,11 @@ source_filename = "r4_layout"
 @__hew_map_value_layout_16_8_plain = private constant { i64, i64, i8, ptr, ptr } { i64 16, i64 8, i8 0, ptr null, ptr null }
 @str_lit = private unnamed_addr constant [7 x i8] c"origin\00", align 1
 @str_lit.1 = private unnamed_addr constant [7 x i8] c"origin\00", align 1
+@str_lit.2 = private unnamed_addr constant [3 x i8] c"ns\00", align 1
 
+declare void @hew_sleep_ns(i64)
+
+declare void @hew_sleep_until_ns(i64)
 
 declare void @hew_exit(i64)
 
@@ -28,7 +35,7 @@ declare ptr @hew_i64_to_string(i64)
 
 declare ptr @hew_u8_to_string(i8)
 
-declare ptr @hew_uint_to_string(i16)
+declare ptr @hew_uint_to_string(i32)
 
 declare ptr @hew_u64_to_string(i64)
 
@@ -116,21 +123,13 @@ declare ptr @hew_string_split(ptr, ptr)
 
 declare ptr @hew_string_lines(ptr)
 
-declare i32 @hew_string_find(ptr, ptr)
-
-declare i32 @hew_string_index_of_start(ptr, ptr)
-
 declare ptr @hew_string_slice(ptr, i64, i64)
 
 declare ptr @hew_string_repeat(ptr, i64)
 
-declare i32 @hew_string_char_at(ptr, i32)
-
 declare ptr @hew_string_chars(ptr)
 
 declare i32 @hew_string_char_count(ptr)
-
-declare i32 @hew_string_char_at_utf8(ptr, i32)
 
 declare void @hew_vec_push_bool(ptr, i1)
 
@@ -236,7 +235,27 @@ declare ptr @hew_bytes_to_string(ptr)
 
 declare void @hew_vec_append(ptr, ptr)
 
-declare void @hew_vec_remove_at(ptr, i64)
+declare i1 @hew_vec_remove_at_bool(ptr, i64)
+
+declare i8 @hew_vec_remove_at_i8(ptr, i64)
+
+declare i8 @hew_vec_remove_at_u8(ptr, i64)
+
+declare i16 @hew_vec_remove_at_i16(ptr, i64)
+
+declare i16 @hew_vec_remove_at_u16(ptr, i64)
+
+declare i32 @hew_vec_remove_at_i32(ptr, i64)
+
+declare i64 @hew_vec_remove_at_i64(ptr, i64)
+
+declare float @hew_vec_remove_at_f32(ptr, i64)
+
+declare double @hew_vec_remove_at_f64(ptr, i64)
+
+declare ptr @hew_vec_remove_at_str(ptr, i64)
+
+declare ptr @hew_vec_remove_at_ptr(ptr, i64)
 
 declare ptr @hew_vec_clone(ptr)
 
@@ -262,6 +281,12 @@ declare void @hew_node_api_connect(ptr)
 
 declare void @hew_node_api_shutdown()
 
+declare void @hew_node_api_load_keys(ptr)
+
+declare void @hew_node_api_allow_peer(i16, ptr)
+
+declare ptr @hew_node_api_identity_key()
+
 declare i64 @hew_actor_pid(ptr)
 
 declare i32 @hew_node_api_register_by_pid(ptr, i64)
@@ -270,26 +295,42 @@ declare i64 @hew_remote_pid_from_raw(i64, i64)
 
 declare i64 @hew_node_api_lookup(ptr)
 
+declare ptr @hew_stream_channel(i64)
+
+declare ptr @hew_stream_pair_sink(ptr)
+
+declare ptr @hew_stream_pair_stream(ptr)
+
+declare void @hew_stream_pair_free(ptr)
+
+declare void @hew_sink_close(ptr)
+
+declare i32 @hew_sink_peer_closed(ptr)
+
+declare void @hew_actor_gen_sink_register(ptr, ptr)
+
+declare void @hew_actor_gen_sink_complete(ptr, ptr)
+
 define internal %Point @make_point(i64 %0, i64 %1) {
 entry:
   %return_slot = alloca %Point, align 8
   %local_0 = alloca i64, align 8
   %local_1 = alloca i64, align 8
   %local_2 = alloca %Point, align 8
-  store i64 %0, ptr %local_0, align 4
-  store i64 %1, ptr %local_1, align 4
+  store i64 %0, ptr %local_0, align 8
+  store i64 %1, ptr %local_1, align 8
   br label %bb0
 
 bb0:                                              ; preds = %entry
   %field_0_init_ptr = getelementptr inbounds nuw %Point, ptr %local_2, i32 0, i32 0
-  %field_0_init_src = load i64, ptr %local_0, align 4
-  store i64 %field_0_init_src, ptr %field_0_init_ptr, align 4
+  %field_0_init_src = load i64, ptr %local_0, align 8
+  store i64 %field_0_init_src, ptr %field_0_init_ptr, align 8
   %field_1_init_ptr = getelementptr inbounds nuw %Point, ptr %local_2, i32 0, i32 1
-  %field_1_init_src = load i64, ptr %local_1, align 4
-  store i64 %field_1_init_src, ptr %field_1_init_ptr, align 4
-  %move_load = load %Point, ptr %local_2, align 4
-  store %Point %move_load, ptr %return_slot, align 4
-  %ret_val = load %Point, ptr %return_slot, align 4
+  %field_1_init_src = load i64, ptr %local_1, align 8
+  store i64 %field_1_init_src, ptr %field_1_init_ptr, align 8
+  %move_load = load %Point, ptr %local_2, align 8
+  store %Point %move_load, ptr %return_slot, align 8
+  %ret_val = load %Point, ptr %return_slot, align 8
   ret %Point %ret_val
 }
 
@@ -317,10 +358,10 @@ bb0:                                              ; preds = %after_cooperate
   %machine_tag_ptr = getelementptr inbounds nuw %Color, ptr %local_0, i32 0, i32 0
   %move_iN_load = load i8, ptr %machine_tag_ptr, align 1
   %move_iN_zext = zext i8 %move_iN_load to i64
-  store i64 %move_iN_zext, ptr %local_2, align 4
-  store i64 0, ptr %local_3, align 4
-  %cmp_lhs = load i64, ptr %local_2, align 4
-  %cmp_rhs = load i64, ptr %local_3, align 4
+  store i64 %move_iN_zext, ptr %local_2, align 8
+  store i64 0, ptr %local_3, align 8
+  %cmp_lhs = load i64, ptr %local_2, align 8
+  %cmp_rhs = load i64, ptr %local_3, align 8
   %cmp_bit = icmp eq i64 %cmp_lhs, %cmp_rhs
   %cmp_zext = zext i1 %cmp_bit to i8
   store i8 %cmp_zext, ptr %local_4, align 1
@@ -329,31 +370,31 @@ bb0:                                              ; preds = %after_cooperate
   br i1 %cond_nz, label %bb2, label %bb6
 
 bb1:                                              ; preds = %after_cooperate15, %after_cooperate10, %after_cooperate5
-  %move_load = load i64, ptr %local_1, align 4
-  store i64 %move_load, ptr %return_slot, align 4
-  %ret_val = load i64, ptr %return_slot, align 4
+  %move_load = load i64, ptr %local_1, align 8
+  store i64 %move_load, ptr %return_slot, align 8
+  %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
 bb2:                                              ; preds = %bb0
-  store i64 0, ptr %local_9, align 4
-  %move_load1 = load i64, ptr %local_9, align 4
-  store i64 %move_load1, ptr %local_1, align 4
+  store i64 0, ptr %local_9, align 8
+  %move_load1 = load i64, ptr %local_9, align 8
+  store i64 %move_load1, ptr %local_1, align 8
   %hew_actor_cooperate2 = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel3 = icmp eq i32 %hew_actor_cooperate2, 2
   br i1 %hew_cooperate_is_cancel3, label %cancel_exit4, label %after_cooperate5
 
 bb3:                                              ; preds = %bb6
-  store i64 1, ptr %local_10, align 4
-  %move_load6 = load i64, ptr %local_10, align 4
-  store i64 %move_load6, ptr %local_1, align 4
+  store i64 1, ptr %local_10, align 8
+  %move_load6 = load i64, ptr %local_10, align 8
+  store i64 %move_load6, ptr %local_1, align 8
   %hew_actor_cooperate7 = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel8 = icmp eq i32 %hew_actor_cooperate7, 2
   br i1 %hew_cooperate_is_cancel8, label %cancel_exit9, label %after_cooperate10
 
 bb4:                                              ; preds = %bb7
-  store i64 2, ptr %local_11, align 4
-  %move_load11 = load i64, ptr %local_11, align 4
-  store i64 %move_load11, ptr %local_1, align 4
+  store i64 2, ptr %local_11, align 8
+  %move_load11 = load i64, ptr %local_11, align 8
+  store i64 %move_load11, ptr %local_1, align 8
   %hew_actor_cooperate12 = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel13 = icmp eq i32 %hew_actor_cooperate12, 2
   br i1 %hew_cooperate_is_cancel13, label %cancel_exit14, label %after_cooperate15
@@ -364,9 +405,9 @@ bb5:                                              ; preds = %bb7
   unreachable
 
 bb6:                                              ; preds = %bb0
-  store i64 1, ptr %local_5, align 4
-  %cmp_lhs16 = load i64, ptr %local_2, align 4
-  %cmp_rhs17 = load i64, ptr %local_5, align 4
+  store i64 1, ptr %local_5, align 8
+  %cmp_lhs16 = load i64, ptr %local_2, align 8
+  %cmp_rhs17 = load i64, ptr %local_5, align 8
   %cmp_bit18 = icmp eq i64 %cmp_lhs16, %cmp_rhs17
   %cmp_zext19 = zext i1 %cmp_bit18 to i8
   store i8 %cmp_zext19, ptr %local_6, align 1
@@ -375,9 +416,9 @@ bb6:                                              ; preds = %bb0
   br i1 %cond_nz21, label %bb3, label %bb7
 
 bb7:                                              ; preds = %bb6
-  store i64 2, ptr %local_7, align 4
-  %cmp_lhs22 = load i64, ptr %local_2, align 4
-  %cmp_rhs23 = load i64, ptr %local_7, align 4
+  store i64 2, ptr %local_7, align 8
+  %cmp_lhs22 = load i64, ptr %local_2, align 8
+  %cmp_rhs23 = load i64, ptr %local_7, align 8
   %cmp_bit24 = icmp eq i64 %cmp_lhs22, %cmp_rhs23
   %cmp_zext25 = zext i1 %cmp_bit24 to i8
   store i8 %cmp_zext25, ptr %local_8, align 1
@@ -455,41 +496,39 @@ entry:
   %local_39 = alloca i64, align 8
   %local_40 = alloca i8, align 1
   %local_41 = alloca i64, align 8
-  %local_42 = alloca i64, align 8
-  %local_43 = alloca i8, align 1
-  %local_44 = alloca %Color, align 8
+  %local_42 = alloca %Color, align 8
+  %local_43 = alloca i64, align 8
+  %local_44 = alloca i64, align 8
   %local_45 = alloca i64, align 8
-  %local_46 = alloca i64, align 8
-  %local_47 = alloca i64, align 8
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
-  store i64 3, ptr %local_0, align 4
-  store i64 4, ptr %local_1, align 4
-  %call_arg = load i64, ptr %local_0, align 4
-  %call_arg1 = load i64, ptr %local_1, align 4
+  store i64 3, ptr %local_0, align 8
+  store i64 4, ptr %local_1, align 8
+  %call_arg = load i64, ptr %local_0, align 8
+  %call_arg1 = load i64, ptr %local_1, align 8
   %call_result = call %Point @make_point(i64 %call_arg, i64 %call_arg1)
-  store %Point %call_result, ptr %local_2, align 4
+  store %Point %call_result, ptr %local_2, align 8
   br label %bb1
 
 bb1:                                              ; preds = %bb0
-  %move_load = load %Point, ptr %local_2, align 4
-  store %Point %move_load, ptr %local_3, align 4
+  %move_load = load %Point, ptr %local_2, align 8
+  store %Point %move_load, ptr %local_3, align 8
   %field_0_load_ptr = getelementptr inbounds nuw %Point, ptr %local_3, i32 0, i32 0
-  %field_0_load = load i64, ptr %field_0_load_ptr, align 4
-  store i64 %field_0_load, ptr %local_4, align 4
+  %field_0_load = load i64, ptr %field_0_load_ptr, align 8
+  store i64 %field_0_load, ptr %local_4, align 8
   %field_1_load_ptr = getelementptr inbounds nuw %Point, ptr %local_3, i32 0, i32 1
-  %field_1_load = load i64, ptr %field_1_load_ptr, align 4
-  store i64 %field_1_load, ptr %local_5, align 4
-  %checked_lhs = load i64, ptr %local_4, align 4
-  %checked_rhs = load i64, ptr %local_5, align 4
+  %field_1_load = load i64, ptr %field_1_load_ptr, align 8
+  store i64 %field_1_load, ptr %local_5, align 8
+  %checked_lhs = load i64, ptr %local_4, align 8
+  %checked_rhs = load i64, ptr %local_5, align 8
   %with_overflow = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
   %checked_result = extractvalue { i64, i1 } %with_overflow, 0
   %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
   %checked_overflow_widen = zext i1 %checked_overflow to i8
-  store i64 %checked_result, ptr %local_6, align 4
+  store i64 %checked_result, ptr %local_6, align 8
   store i8 %checked_overflow_widen, ptr %local_7, align 1
   %cond_load = load i8, ptr %local_7, align 1
   %cond_nz = icmp ne i8 %cond_load, 0
@@ -501,7 +540,7 @@ bb2:                                              ; preds = %bb1
   unreachable
 
 bb3:                                              ; preds = %bb1
-  %print_arg = load i64, ptr %local_6, align 4
+  %print_arg = load i64, ptr %local_6, align 8
   call void @hew_print_value(i8 1, i64 %print_arg, i1 true)
   br label %bb4
 
@@ -513,38 +552,38 @@ bb4:                                              ; preds = %bb3
 bb5:                                              ; preds = %bb4
   %move_load2 = load ptr, ptr %local_8, align 8
   store ptr %move_load2, ptr %local_9, align 8
-  store i64 10, ptr %local_10, align 4
-  store i64 20, ptr %local_11, align 4
+  store i64 10, ptr %local_10, align 8
+  store i64 20, ptr %local_11, align 8
   %field_0_init_ptr = getelementptr inbounds nuw %Point, ptr %local_12, i32 0, i32 0
-  %field_0_init_src = load i64, ptr %local_10, align 4
-  store i64 %field_0_init_src, ptr %field_0_init_ptr, align 4
+  %field_0_init_src = load i64, ptr %local_10, align 8
+  store i64 %field_0_init_src, ptr %field_0_init_ptr, align 8
   %field_1_init_ptr = getelementptr inbounds nuw %Point, ptr %local_12, i32 0, i32 1
-  %field_1_init_src = load i64, ptr %local_11, align 4
-  store i64 %field_1_init_src, ptr %field_1_init_ptr, align 4
+  %field_1_init_src = load i64, ptr %local_11, align 8
+  store i64 %field_1_init_src, ptr %field_1_init_ptr, align 8
   %"hew_vec_push_layout arg0" = load ptr, ptr %local_9, align 8
   call void @hew_vec_push_layout(ptr %"hew_vec_push_layout arg0", ptr %local_12, ptr @__hew_layout_push_16_8_plain)
   br label %bb6
 
 bb6:                                              ; preds = %bb5
-  store i64 5, ptr %local_13, align 4
-  store i64 5, ptr %local_14, align 4
+  store i64 5, ptr %local_13, align 8
+  store i64 5, ptr %local_14, align 8
   %field_0_init_ptr3 = getelementptr inbounds nuw %Point, ptr %local_15, i32 0, i32 0
-  %field_0_init_src4 = load i64, ptr %local_13, align 4
-  store i64 %field_0_init_src4, ptr %field_0_init_ptr3, align 4
+  %field_0_init_src4 = load i64, ptr %local_13, align 8
+  store i64 %field_0_init_src4, ptr %field_0_init_ptr3, align 8
   %field_1_init_ptr5 = getelementptr inbounds nuw %Point, ptr %local_15, i32 0, i32 1
-  %field_1_init_src6 = load i64, ptr %local_14, align 4
-  store i64 %field_1_init_src6, ptr %field_1_init_ptr5, align 4
+  %field_1_init_src6 = load i64, ptr %local_14, align 8
+  store i64 %field_1_init_src6, ptr %field_1_init_ptr5, align 8
   %"hew_vec_push_layout arg07" = load ptr, ptr %local_9, align 8
   call void @hew_vec_push_layout(ptr %"hew_vec_push_layout arg07", ptr %local_15, ptr @__hew_layout_push_16_8_plain)
   br label %bb7
 
 bb7:                                              ; preds = %bb6
-  store i64 0, ptr %local_16, align 4
+  store i64 0, ptr %local_16, align 8
   %"hew_vec_len arg0" = load ptr, ptr %local_9, align 8
   %hew_vec_len_call = call i64 @hew_vec_len(ptr %"hew_vec_len arg0")
-  store i64 %hew_vec_len_call, ptr %local_17, align 4
-  %cmp_lhs = load i64, ptr %local_16, align 4
-  %cmp_rhs = load i64, ptr %local_17, align 4
+  store i64 %hew_vec_len_call, ptr %local_17, align 8
+  %cmp_lhs = load i64, ptr %local_16, align 8
+  %cmp_rhs = load i64, ptr %local_17, align 8
   %cmp_bit = icmp uge i64 %cmp_lhs, %cmp_rhs
   %cmp_zext = zext i1 %cmp_bit to i8
   store i8 %cmp_zext, ptr %local_18, align 1
@@ -562,16 +601,16 @@ bb8:                                              ; preds = %bb7
 
 bb9:                                              ; preds = %bb7
   %"hew_vec_get_layout arg0" = load ptr, ptr %local_9, align 8
-  %"hew_vec_get_layout arg1" = load i64, ptr %local_16, align 4
+  %"hew_vec_get_layout arg1" = load i64, ptr %local_16, align 8
   %hew_vec_get_layout_call = call ptr @hew_vec_get_layout(ptr %"hew_vec_get_layout arg0", i64 %"hew_vec_get_layout arg1", ptr @__hew_layout_get_16_8_plain)
-  %hew_vec_get_layout_load = load %Point, ptr %hew_vec_get_layout_call, align 4
-  store %Point %hew_vec_get_layout_load, ptr %local_19, align 4
-  %move_load10 = load %Point, ptr %local_19, align 4
-  store %Point %move_load10, ptr %local_20, align 4
+  %hew_vec_get_layout_load = load %Point, ptr %hew_vec_get_layout_call, align 8
+  store %Point %hew_vec_get_layout_load, ptr %local_19, align 8
+  %move_load10 = load %Point, ptr %local_19, align 8
+  store %Point %move_load10, ptr %local_20, align 8
   %field_0_load_ptr11 = getelementptr inbounds nuw %Point, ptr %local_20, i32 0, i32 0
-  %field_0_load12 = load i64, ptr %field_0_load_ptr11, align 4
-  store i64 %field_0_load12, ptr %local_21, align 4
-  %print_arg13 = load i64, ptr %local_21, align 4
+  %field_0_load12 = load i64, ptr %field_0_load_ptr11, align 8
+  store i64 %field_0_load12, ptr %local_21, align 8
+  %print_arg13 = load i64, ptr %local_21, align 8
   call void @hew_print_value(i8 1, i64 %print_arg13, i1 true)
   br label %bb10
 
@@ -584,33 +623,35 @@ bb11:                                             ; preds = %bb10
   %move_load14 = load ptr, ptr %local_22, align 8
   store ptr %move_load14, ptr %local_23, align 8
   store ptr @str_lit, ptr %local_24, align 8
-  store i64 0, ptr %local_25, align 4
-  store i64 0, ptr %local_26, align 4
+  store i64 0, ptr %local_25, align 8
+  store i64 0, ptr %local_26, align 8
   %field_0_init_ptr15 = getelementptr inbounds nuw %Point, ptr %local_27, i32 0, i32 0
-  %field_0_init_src16 = load i64, ptr %local_25, align 4
-  store i64 %field_0_init_src16, ptr %field_0_init_ptr15, align 4
+  %field_0_init_src16 = load i64, ptr %local_25, align 8
+  store i64 %field_0_init_src16, ptr %field_0_init_ptr15, align 8
   %field_1_init_ptr17 = getelementptr inbounds nuw %Point, ptr %local_27, i32 0, i32 1
-  %field_1_init_src18 = load i64, ptr %local_26, align 4
-  store i64 %field_1_init_src18, ptr %field_1_init_ptr17, align 4
+  %field_1_init_src18 = load i64, ptr %local_26, align 8
+  store i64 %field_1_init_src18, ptr %field_1_init_ptr17, align 8
   %"hew_hashmap_insert_layout arg0" = load ptr, ptr %local_23, align 8
   %hew_hashmap_insert_layout_call = call i1 @hew_hashmap_insert_layout(ptr %"hew_hashmap_insert_layout arg0", ptr %local_24, ptr %local_27)
-  br label %bb12
+  %insert_existed = icmp eq i1 %hew_hashmap_insert_layout_call, false
+  br i1 %insert_existed, label %insert_overwrite_key_release, label %insert_overwrite_key_cont
 
-bb12:                                             ; preds = %bb11
+bb12:                                             ; preds = %insert_overwrite_key_cont
   store ptr @str_lit.1, ptr %local_29, align 8
   %"hew_hashmap_get_layout arg0" = load ptr, ptr %local_23, align 8
-  %hew_hashmap_get_layout_call = call ptr @hew_hashmap_get_layout(ptr %"hew_hashmap_get_layout arg0", ptr %local_29)
-  %hashmap_get_is_some = icmp ne ptr %hew_hashmap_get_layout_call, null
-  br i1 %hashmap_get_is_some, label %hashmap_get_some, label %hashmap_get_none
+  %machine_payload_ptr = getelementptr inbounds nuw %"Option$$Point", ptr %local_30, i32 0, i32 1
+  %machine_variant_field_ptr = getelementptr inbounds nuw { %Point }, ptr %machine_payload_ptr, i32 0, i32 0
+  %hew_hashmap_get_clone_layout_call = call i1 @hew_hashmap_get_clone_layout(ptr %"hew_hashmap_get_layout arg0", ptr %local_29, ptr %machine_variant_field_ptr)
+  br i1 %hew_hashmap_get_clone_layout_call, label %hashmap_get_some, label %hashmap_get_none
 
 bb13:                                             ; preds = %hashmap_get_some, %hashmap_get_none
   %machine_tag_ptr20 = getelementptr inbounds nuw %"Option$$Point", ptr %local_30, i32 0, i32 0
   %move_iN_load = load i8, ptr %machine_tag_ptr20, align 1
   %move_iN_zext = zext i8 %move_iN_load to i64
-  store i64 %move_iN_zext, ptr %local_31, align 4
-  store i64 0, ptr %local_32, align 4
-  %cmp_lhs21 = load i64, ptr %local_31, align 4
-  %cmp_rhs22 = load i64, ptr %local_32, align 4
+  store i64 %move_iN_zext, ptr %local_31, align 8
+  store i64 0, ptr %local_32, align 8
+  %cmp_lhs21 = load i64, ptr %local_31, align 8
+  %cmp_rhs22 = load i64, ptr %local_32, align 8
   %cmp_bit23 = icmp eq i64 %cmp_lhs21, %cmp_rhs22
   %cmp_zext24 = zext i1 %cmp_bit23 to i8
   store i8 %cmp_zext24, ptr %local_33, align 1
@@ -618,134 +659,111 @@ bb13:                                             ; preds = %hashmap_get_some, %
   %cond_nz26 = icmp ne i8 %cond_load25, 0
   br i1 %cond_nz26, label %bb15, label %bb18
 
-bb14:                                             ; preds = %after_cooperate69, %after_cooperate60
-  store i64 1, ptr %local_45, align 4
-  %machine_tag_ptr27 = getelementptr inbounds nuw %Color, ptr %local_44, i32 0, i32 0
-  %move_iN_load_wide = load i64, ptr %local_45, align 4
+bb14:                                             ; preds = %after_cooperate65, %after_cooperate59
+  store i64 1, ptr %local_43, align 8
+  %machine_tag_ptr27 = getelementptr inbounds nuw %Color, ptr %local_42, i32 0, i32 0
+  %move_iN_load_wide = load i64, ptr %local_43, align 8
   %move_iN_trunc = trunc i64 %move_iN_load_wide to i8
   store i8 %move_iN_trunc, ptr %machine_tag_ptr27, align 1
-  %call_arg28 = load %Color, ptr %local_44, align 1
+  %call_arg28 = load %Color, ptr %local_42, align 1
   %call_result29 = call i64 @color_code(%Color %call_arg28)
-  store i64 %call_result29, ptr %local_46, align 4
-  br label %bb25
+  store i64 %call_result29, ptr %local_44, align 8
+  br label %bb23
 
 bb15:                                             ; preds = %bb13
   %machine_payload_ptr30 = getelementptr inbounds nuw %"Option$$Point", ptr %local_30, i32 0, i32 1
   %machine_variant_field_ptr31 = getelementptr inbounds nuw { %Point }, ptr %machine_payload_ptr30, i32 0, i32 0
-  %move_load32 = load %Point, ptr %machine_variant_field_ptr31, align 4
-  store %Point %move_load32, ptr %local_36, align 4
+  %move_load32 = load %Point, ptr %machine_variant_field_ptr31, align 8
+  store %Point %move_load32, ptr %local_36, align 8
   %field_0_load_ptr33 = getelementptr inbounds nuw %Point, ptr %local_36, i32 0, i32 0
-  %field_0_load34 = load i64, ptr %field_0_load_ptr33, align 4
-  store i64 %field_0_load34, ptr %local_37, align 4
+  %field_0_load34 = load i64, ptr %field_0_load_ptr33, align 8
+  store i64 %field_0_load34, ptr %local_37, align 8
   %field_1_load_ptr35 = getelementptr inbounds nuw %Point, ptr %local_36, i32 0, i32 1
-  %field_1_load36 = load i64, ptr %field_1_load_ptr35, align 4
-  store i64 %field_1_load36, ptr %local_38, align 4
-  %checked_lhs37 = load i64, ptr %local_37, align 4
-  %checked_rhs38 = load i64, ptr %local_38, align 4
+  %field_1_load36 = load i64, ptr %field_1_load_ptr35, align 8
+  store i64 %field_1_load36, ptr %local_38, align 8
+  %checked_lhs37 = load i64, ptr %local_37, align 8
+  %checked_rhs38 = load i64, ptr %local_38, align 8
   %with_overflow39 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs37, i64 %checked_rhs38)
   %checked_result40 = extractvalue { i64, i1 } %with_overflow39, 0
   %checked_overflow41 = extractvalue { i64, i1 } %with_overflow39, 1
   %checked_overflow_widen42 = zext i1 %checked_overflow41 to i8
-  store i64 %checked_result40, ptr %local_39, align 4
+  store i64 %checked_result40, ptr %local_39, align 8
   store i8 %checked_overflow_widen42, ptr %local_40, align 1
   %cond_load43 = load i8, ptr %local_40, align 1
   %cond_nz44 = icmp ne i8 %cond_load43, 0
   br i1 %cond_nz44, label %bb19, label %bb20
 
 bb16:                                             ; preds = %bb18
-  store i64 1, ptr %local_41, align 4
-  %ineg_operand = load i64, ptr %local_41, align 4
-  %neg_with_overflow = call { i64, i1 } @llvm.ssub.with.overflow.i64(i64 0, i64 %ineg_operand)
-  %neg_result = extractvalue { i64, i1 } %neg_with_overflow, 0
-  %neg_overflow = extractvalue { i64, i1 } %neg_with_overflow, 1
-  %neg_overflow_widen = zext i1 %neg_overflow to i8
-  store i64 %neg_result, ptr %local_42, align 4
-  store i8 %neg_overflow_widen, ptr %local_43, align 1
-  %cond_load45 = load i8, ptr %local_43, align 1
-  %cond_nz46 = icmp ne i8 %cond_load45, 0
-  br i1 %cond_nz46, label %bb22, label %bb23
+  store i64 -1, ptr %local_41, align 8
+  %print_arg45 = load i64, ptr %local_41, align 8
+  call void @hew_print_value(i8 1, i64 %print_arg45, i1 true)
+  br label %bb22
 
 bb17:                                             ; preds = %bb18
   %"hew_hashmap_free_layout drop" = load ptr, ptr %local_23, align 8
   call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop")
   store ptr null, ptr %local_23, align 8
-  %"hew_vec_free drop47" = load ptr, ptr %local_9, align 8
-  call void @hew_vec_free(ptr %"hew_vec_free drop47")
+  %"hew_vec_free drop46" = load ptr, ptr %local_9, align 8
+  call void @hew_vec_free(ptr %"hew_vec_free drop46")
   store ptr null, ptr %local_9, align 8
   call void @hew_trap_with_code(i32 208)
   call void @llvm.trap()
   unreachable
 
 bb18:                                             ; preds = %bb13
-  store i64 1, ptr %local_34, align 4
-  %cmp_lhs48 = load i64, ptr %local_31, align 4
-  %cmp_rhs49 = load i64, ptr %local_34, align 4
-  %cmp_bit50 = icmp eq i64 %cmp_lhs48, %cmp_rhs49
-  %cmp_zext51 = zext i1 %cmp_bit50 to i8
-  store i8 %cmp_zext51, ptr %local_35, align 1
-  %cond_load52 = load i8, ptr %local_35, align 1
-  %cond_nz53 = icmp ne i8 %cond_load52, 0
-  br i1 %cond_nz53, label %bb16, label %bb17
+  store i64 1, ptr %local_34, align 8
+  %cmp_lhs47 = load i64, ptr %local_31, align 8
+  %cmp_rhs48 = load i64, ptr %local_34, align 8
+  %cmp_bit49 = icmp eq i64 %cmp_lhs47, %cmp_rhs48
+  %cmp_zext50 = zext i1 %cmp_bit49 to i8
+  store i8 %cmp_zext50, ptr %local_35, align 1
+  %cond_load51 = load i8, ptr %local_35, align 1
+  %cond_nz52 = icmp ne i8 %cond_load51, 0
+  br i1 %cond_nz52, label %bb16, label %bb17
 
 bb19:                                             ; preds = %bb15
-  %"hew_hashmap_free_layout drop54" = load ptr, ptr %local_23, align 8
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop54")
+  %"hew_hashmap_free_layout drop53" = load ptr, ptr %local_23, align 8
+  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop53")
   store ptr null, ptr %local_23, align 8
-  %"hew_vec_free drop55" = load ptr, ptr %local_9, align 8
-  call void @hew_vec_free(ptr %"hew_vec_free drop55")
+  %"hew_vec_free drop54" = load ptr, ptr %local_9, align 8
+  call void @hew_vec_free(ptr %"hew_vec_free drop54")
   store ptr null, ptr %local_9, align 8
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
 bb20:                                             ; preds = %bb15
-  %print_arg56 = load i64, ptr %local_39, align 4
-  call void @hew_print_value(i8 1, i64 %print_arg56, i1 true)
+  %print_arg55 = load i64, ptr %local_39, align 8
+  call void @hew_print_value(i8 1, i64 %print_arg55, i1 true)
   br label %bb21
 
 bb21:                                             ; preds = %bb20
-  %hew_actor_cooperate57 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel58 = icmp eq i32 %hew_actor_cooperate57, 2
-  br i1 %hew_cooperate_is_cancel58, label %cancel_exit59, label %after_cooperate60
+  %hew_actor_cooperate56 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel57 = icmp eq i32 %hew_actor_cooperate56, 2
+  br i1 %hew_cooperate_is_cancel57, label %cancel_exit58, label %after_cooperate59
 
 bb22:                                             ; preds = %bb16
-  %"hew_hashmap_free_layout drop63" = load ptr, ptr %local_23, align 8
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop63")
-  store ptr null, ptr %local_23, align 8
-  %"hew_vec_free drop64" = load ptr, ptr %local_9, align 8
-  call void @hew_vec_free(ptr %"hew_vec_free drop64")
-  store ptr null, ptr %local_9, align 8
-  call void @hew_trap_with_code(i32 201)
-  call void @llvm.trap()
-  unreachable
+  %hew_actor_cooperate62 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel63 = icmp eq i32 %hew_actor_cooperate62, 2
+  br i1 %hew_cooperate_is_cancel63, label %cancel_exit64, label %after_cooperate65
 
-bb23:                                             ; preds = %bb16
-  %print_arg65 = load i64, ptr %local_42, align 4
-  call void @hew_print_value(i8 1, i64 %print_arg65, i1 true)
+bb23:                                             ; preds = %bb14
+  %print_arg68 = load i64, ptr %local_44, align 8
+  call void @hew_print_value(i8 1, i64 %print_arg68, i1 true)
   br label %bb24
 
 bb24:                                             ; preds = %bb23
-  %hew_actor_cooperate66 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel67 = icmp eq i32 %hew_actor_cooperate66, 2
-  br i1 %hew_cooperate_is_cancel67, label %cancel_exit68, label %after_cooperate69
-
-bb25:                                             ; preds = %bb14
-  %print_arg72 = load i64, ptr %local_46, align 4
-  call void @hew_print_value(i8 1, i64 %print_arg72, i1 true)
-  br label %bb26
-
-bb26:                                             ; preds = %bb25
-  store i64 0, ptr %local_47, align 4
-  %move_load73 = load i64, ptr %local_47, align 4
-  store i64 %move_load73, ptr %return_slot, align 4
-  %"hew_hashmap_free_layout drop74" = load ptr, ptr %local_23, align 8
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop74")
+  store i64 0, ptr %local_45, align 8
+  %move_load69 = load i64, ptr %local_45, align 8
+  store i64 %move_load69, ptr %return_slot, align 8
+  %"hew_hashmap_free_layout drop70" = load ptr, ptr %local_23, align 8
+  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop70")
   store ptr null, ptr %local_23, align 8
-  %"hew_vec_free drop75" = load ptr, ptr %local_9, align 8
-  call void @hew_vec_free(ptr %"hew_vec_free drop75")
+  %"hew_vec_free drop71" = load ptr, ptr %local_9, align 8
+  call void @hew_vec_free(ptr %"hew_vec_free drop71")
   store ptr null, ptr %local_9, align 8
   %hew_lambda_drain_all_call = call i32 @hew_lambda_drain_all(i64 0)
-  %ret_val = load i64, ptr %return_slot, align 4
+  %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
 cancel_exit:                                      ; preds = %entry
@@ -753,6 +771,14 @@ cancel_exit:                                      ; preds = %entry
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
+
+insert_overwrite_key_release:                     ; preds = %bb11
+  %"hew_hashmap_insert_layout overwrite key" = load ptr, ptr %local_24, align 8
+  call void @hew_string_drop(ptr %"hew_hashmap_insert_layout overwrite key")
+  br label %insert_overwrite_key_cont
+
+insert_overwrite_key_cont:                        ; preds = %insert_overwrite_key_release, %bb11
+  br label %bb12
 
 hashmap_get_none:                                 ; preds = %bb12
   %machine_tag_ptr = getelementptr inbounds nuw %"Option$$Point", ptr %local_30, i32 0, i32 0
@@ -762,34 +788,97 @@ hashmap_get_none:                                 ; preds = %bb12
 hashmap_get_some:                                 ; preds = %bb12
   %machine_tag_ptr19 = getelementptr inbounds nuw %"Option$$Point", ptr %local_30, i32 0, i32 0
   store i8 0, ptr %machine_tag_ptr19, align 1
-  %machine_payload_ptr = getelementptr inbounds nuw %"Option$$Point", ptr %local_30, i32 0, i32 1
-  %machine_variant_field_ptr = getelementptr inbounds nuw { %Point }, ptr %machine_payload_ptr, i32 0, i32 0
-  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %machine_variant_field_ptr, ptr align 8 %hew_hashmap_get_layout_call, i64 16, i1 false)
   br label %bb13
 
-cancel_exit59:                                    ; preds = %bb21
-  %"hew_hashmap_free_layout drop61" = load ptr, ptr %local_23, align 8
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop61")
+cancel_exit58:                                    ; preds = %bb21
+  %"hew_hashmap_free_layout drop60" = load ptr, ptr %local_23, align 8
+  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop60")
   store ptr null, ptr %local_23, align 8
-  %"hew_vec_free drop62" = load ptr, ptr %local_9, align 8
-  call void @hew_vec_free(ptr %"hew_vec_free drop62")
+  %"hew_vec_free drop61" = load ptr, ptr %local_9, align 8
+  call void @hew_vec_free(ptr %"hew_vec_free drop61")
   store ptr null, ptr %local_9, align 8
   ret i64 0
 
-after_cooperate60:                                ; preds = %bb21
+after_cooperate59:                                ; preds = %bb21
   br label %bb14
 
-cancel_exit68:                                    ; preds = %bb24
-  %"hew_hashmap_free_layout drop70" = load ptr, ptr %local_23, align 8
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop70")
+cancel_exit64:                                    ; preds = %bb22
+  %"hew_hashmap_free_layout drop66" = load ptr, ptr %local_23, align 8
+  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop66")
   store ptr null, ptr %local_23, align 8
-  %"hew_vec_free drop71" = load ptr, ptr %local_9, align 8
-  call void @hew_vec_free(ptr %"hew_vec_free drop71")
+  %"hew_vec_free drop67" = load ptr, ptr %local_9, align 8
+  call void @hew_vec_free(ptr %"hew_vec_free drop67")
   store ptr null, ptr %local_9, align 8
   ret i64 0
 
-after_cooperate69:                                ; preds = %bb24
+after_cooperate65:                                ; preds = %bb22
   br label %bb14
+}
+
+define internal ptr @"i8::fmt"(i8 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i8, align 1
+  %local_1 = alloca i32, align 4
+  %local_2 = alloca ptr, align 8
+  store i8 %0, ptr %local_0, align 1
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_int_src = load i8, ptr %local_0, align 1
+  %cast_int_sext = sext i8 %cast_int_src to i32
+  store i32 %cast_int_sext, ptr %local_1, align 4
+  %call_arg = load i32, ptr %local_1, align 4
+  %call_result = call ptr @hew_int_to_string(i32 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"i16::fmt"(i16 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i16, align 2
+  %local_1 = alloca i32, align 4
+  %local_2 = alloca ptr, align 8
+  store i16 %0, ptr %local_0, align 2
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_int_src = load i16, ptr %local_0, align 2
+  %cast_int_sext = sext i16 %cast_int_src to i32
+  store i32 %cast_int_sext, ptr %local_1, align 4
+  %call_arg = load i32, ptr %local_1, align 4
+  %call_result = call ptr @hew_int_to_string(i32 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
 }
 
 define internal ptr @"i32::fmt"(i32 %0) {
@@ -826,14 +915,73 @@ entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i64, align 8
   %local_1 = alloca ptr, align 8
-  store i64 %0, ptr %local_0, align 4
+  store i64 %0, ptr %local_0, align 8
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
-  %call_arg = load i64, ptr %local_0, align 4
+  %call_arg = load i64, ptr %local_0, align 8
   %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"u8::fmt"(i8 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i8, align 1
+  %local_1 = alloca ptr, align 8
+  store i8 %0, ptr %local_0, align 1
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i8, ptr %local_0, align 1
+  %call_result = call ptr @hew_u8_to_string(i8 %call_arg)
+  store ptr %call_result, ptr %local_1, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"u16::fmt"(i16 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i16, align 2
+  %local_1 = alloca ptr, align 8
+  store i16 %0, ptr %local_0, align 2
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %call_arg = load i16, ptr %local_0, align 2
+  %ffi_zext = zext i16 %call_arg to i32
+  %call_result = call ptr @hew_uint_to_string(i32 %ffi_zext)
   store ptr %call_result, ptr %local_1, align 8
   br label %bb1
 
@@ -862,8 +1010,7 @@ entry:
 
 bb0:                                              ; preds = %after_cooperate
   %call_arg = load i32, ptr %local_0, align 4
-  %ffi_arg_trunc = trunc i32 %call_arg to i16
-  %call_result = call ptr @hew_uint_to_string(i16 %ffi_arg_trunc)
+  %call_result = call ptr @hew_uint_to_string(i32 %call_arg)
   store ptr %call_result, ptr %local_1, align 8
   br label %bb1
 
@@ -885,19 +1032,83 @@ entry:
   %return_slot = alloca ptr, align 8
   %local_0 = alloca i64, align 8
   %local_1 = alloca ptr, align 8
-  store i64 %0, ptr %local_0, align 4
+  store i64 %0, ptr %local_0, align 8
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
-  %call_arg = load i64, ptr %local_0, align 4
+  %call_arg = load i64, ptr %local_0, align 8
   %call_result = call ptr @hew_u64_to_string(i64 %call_arg)
   store ptr %call_result, ptr %local_1, align 8
   br label %bb1
 
 bb1:                                              ; preds = %bb0
   %move_load = load ptr, ptr %local_1, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"isize::fmt"(i64 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca ptr, align 8
+  store i64 %0, ptr %local_0, align 8
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_int_src = load i64, ptr %local_0, align 8
+  store i64 %cast_int_src, ptr %local_1, align 8
+  %call_arg = load i64, ptr %local_1, align 8
+  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
+define internal ptr @"usize::fmt"(i64 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca ptr, align 8
+  store i64 %0, ptr %local_0, align 8
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_int_src = load i64, ptr %local_0, align 8
+  store i64 %cast_int_src, ptr %local_1, align 8
+  %call_arg = load i64, ptr %local_1, align 8
+  %call_result = call ptr @hew_u64_to_string(i64 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
   ret ptr %ret_val
@@ -996,6 +1207,39 @@ after_cooperate:                                  ; preds = %entry
   br label %bb0
 }
 
+define internal ptr @"f32::fmt"(float %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca float, align 4
+  %local_1 = alloca double, align 8
+  %local_2 = alloca ptr, align 8
+  store float %0, ptr %local_0, align 4
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %cast_float_src = load float, ptr %local_0, align 4
+  %cast_float_ext = fpext float %cast_float_src to double
+  store double %cast_float_ext, ptr %local_1, align 8
+  %call_arg = load double, ptr %local_1, align 8
+  %call_result = call ptr @hew_float_to_string(double %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  %move_load = load ptr, ptr %local_2, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
+}
+
 define internal ptr @"string::fmt"(ptr %0) {
 entry:
   %return_slot = alloca ptr, align 8
@@ -1004,10 +1248,199 @@ entry:
   br label %bb0
 
 bb0:                                              ; preds = %entry
+  %mir_share_string_load = load ptr, ptr %local_0, align 8
+  %mir_share_string_retain = call ptr @hew_string_clone(ptr %mir_share_string_load)
   %move_load = load ptr, ptr %local_0, align 8
   store ptr %move_load, ptr %return_slot, align 8
   %ret_val = load ptr, ptr %return_slot, align 8
   ret ptr %ret_val
+}
+
+define internal i64 @"duration::from_nanos"(i64 %0) {
+entry:
+  %return_slot = alloca i64, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca i64, align 8
+  %local_3 = alloca i8, align 1
+  store i64 %0, ptr %local_0, align 8
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i64 1, ptr %local_1, align 8
+  %checked_lhs = load i64, ptr %local_0, align 8
+  %checked_rhs = load i64, ptr %local_1, align 8
+  %with_overflow = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_2, align 8
+  store i8 %checked_overflow_widen, ptr %local_3, align 1
+  %cond_load = load i8, ptr %local_3, align 1
+  %cond_nz = icmp ne i8 %cond_load, 0
+  br i1 %cond_nz, label %bb1, label %bb2
+
+bb1:                                              ; preds = %bb0
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+bb2:                                              ; preds = %bb0
+  %move_load = load i64, ptr %local_2, align 8
+  store i64 %move_load, ptr %return_slot, align 8
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
+}
+
+define internal i64 @"duration::from_micros"(i64 %0) {
+entry:
+  %return_slot = alloca i64, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca i64, align 8
+  %local_3 = alloca i8, align 1
+  store i64 %0, ptr %local_0, align 8
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i64 1000, ptr %local_1, align 8
+  %checked_lhs = load i64, ptr %local_0, align 8
+  %checked_rhs = load i64, ptr %local_1, align 8
+  %with_overflow = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_2, align 8
+  store i8 %checked_overflow_widen, ptr %local_3, align 1
+  %cond_load = load i8, ptr %local_3, align 1
+  %cond_nz = icmp ne i8 %cond_load, 0
+  br i1 %cond_nz, label %bb1, label %bb2
+
+bb1:                                              ; preds = %bb0
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+bb2:                                              ; preds = %bb0
+  %move_load = load i64, ptr %local_2, align 8
+  store i64 %move_load, ptr %return_slot, align 8
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
+}
+
+define internal i64 @"duration::from_millis"(i64 %0) {
+entry:
+  %return_slot = alloca i64, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca i64, align 8
+  %local_3 = alloca i8, align 1
+  store i64 %0, ptr %local_0, align 8
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i64 1000000, ptr %local_1, align 8
+  %checked_lhs = load i64, ptr %local_0, align 8
+  %checked_rhs = load i64, ptr %local_1, align 8
+  %with_overflow = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_2, align 8
+  store i8 %checked_overflow_widen, ptr %local_3, align 1
+  %cond_load = load i8, ptr %local_3, align 1
+  %cond_nz = icmp ne i8 %cond_load, 0
+  br i1 %cond_nz, label %bb1, label %bb2
+
+bb1:                                              ; preds = %bb0
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+bb2:                                              ; preds = %bb0
+  %move_load = load i64, ptr %local_2, align 8
+  store i64 %move_load, ptr %return_slot, align 8
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
+}
+
+define internal i64 @"duration::from_secs"(i64 %0) {
+entry:
+  %return_slot = alloca i64, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca i64, align 8
+  %local_3 = alloca i8, align 1
+  store i64 %0, ptr %local_0, align 8
+  br label %bb0
+
+bb0:                                              ; preds = %entry
+  store i64 1000000000, ptr %local_1, align 8
+  %checked_lhs = load i64, ptr %local_0, align 8
+  %checked_rhs = load i64, ptr %local_1, align 8
+  %with_overflow = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
+  %checked_result = extractvalue { i64, i1 } %with_overflow, 0
+  %checked_overflow = extractvalue { i64, i1 } %with_overflow, 1
+  %checked_overflow_widen = zext i1 %checked_overflow to i8
+  store i64 %checked_result, ptr %local_2, align 8
+  store i8 %checked_overflow_widen, ptr %local_3, align 1
+  %cond_load = load i8, ptr %local_3, align 1
+  %cond_nz = icmp ne i8 %cond_load, 0
+  br i1 %cond_nz, label %bb1, label %bb2
+
+bb1:                                              ; preds = %bb0
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+bb2:                                              ; preds = %bb0
+  %move_load = load i64, ptr %local_2, align 8
+  store i64 %move_load, ptr %return_slot, align 8
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
+}
+
+define internal ptr @"duration::fmt"(i64 %0) {
+entry:
+  %return_slot = alloca ptr, align 8
+  %local_0 = alloca i64, align 8
+  %local_1 = alloca i64, align 8
+  %local_2 = alloca ptr, align 8
+  %local_3 = alloca ptr, align 8
+  %local_4 = alloca ptr, align 8
+  store i64 %0, ptr %local_0, align 8
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+bb0:                                              ; preds = %after_cooperate
+  %hew_duration_nanos = load i64, ptr %local_0, align 8
+  %hew_duration_nanos_call = call i64 @hew_duration_nanos(i64 %hew_duration_nanos)
+  store i64 %hew_duration_nanos_call, ptr %local_1, align 8
+  %call_arg = load i64, ptr %local_1, align 8
+  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
+  store ptr %call_result, ptr %local_2, align 8
+  br label %bb1
+
+bb1:                                              ; preds = %bb0
+  store ptr @str_lit.2, ptr %local_3, align 8
+  %"hew_string_concat arg0" = load ptr, ptr %local_2, align 8
+  %"hew_string_concat arg1" = load ptr, ptr %local_3, align 8
+  %hew_string_concat_call = call ptr @hew_string_concat(ptr %"hew_string_concat arg0", ptr %"hew_string_concat arg1")
+  store ptr %hew_string_concat_call, ptr %local_4, align 8
+  %"hew_string_drop drop" = load ptr, ptr %local_2, align 8
+  call void @hew_string_drop(ptr %"hew_string_drop drop")
+  store ptr null, ptr %local_2, align 8
+  %move_load = load ptr, ptr %local_4, align 8
+  store ptr %move_load, ptr %return_slot, align 8
+  %ret_val = load ptr, ptr %return_slot, align 8
+  ret ptr %ret_val
+
+cancel_exit:                                      ; preds = %entry
+  ret ptr null
+
+after_cooperate:                                  ; preds = %entry
+  br label %bb0
 }
 
 define internal i32 @__hew_record_clone_inplace_Point(ptr %0, ptr %1) {
@@ -1034,9 +1467,74 @@ done:                                             ; preds = %do_drop, %entry
   ret void
 }
 
+define internal i32 @__hew_record_clone_inplace_CrashInfo(ptr %0, ptr %1) {
+entry:
+  br label %step_0_clone
+
+success:                                          ; preds = %step_0_store
+  ret i32 0
+
+fail:                                             ; preds = %rb_step_0
+  ret i32 1
+
+rb_step_0:                                        ; preds = %step_0_clone
+  br label %fail
+
+step_0_store:                                     ; preds = %step_0_clone
+  %dst_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
+  store ptr %clone_helper_f1, ptr %dst_f1_ptr, align 8
+  br label %success
+
+step_0_clone:                                     ; preds = %entry
+  %src_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
+  %src_f1 = load ptr, ptr %src_f1_ptr, align 8
+  %clone_helper_f1 = call ptr @hew_string_clone(ptr %src_f1)
+  %cloned_f1_int = ptrtoint ptr %clone_helper_f1 to i64
+  %cloned_f1_null = icmp eq i64 %cloned_f1_int, 0
+  br i1 %cloned_f1_null, label %rb_step_0, label %step_0_store
+}
+
+define internal void @__hew_record_drop_inplace_CrashInfo(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  %drop_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
+  %drop_f1 = load ptr, ptr %drop_f1_ptr, align 8
+  call void @hew_string_drop(ptr %drop_f1)
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
+
+declare void @hew_string_drop(ptr)
+
 define internal void @__hew_record_overwrite_release_Point(ptr %0, ptr %1) {
 entry:
   call void @__hew_record_drop_inplace_Point(ptr %0)
+  ret void
+}
+
+define internal void @__hew_record_overwrite_release_CrashInfo(ptr %0, ptr %1) {
+entry:
+  %ow_slot_0 = alloca ptr, align 8
+  store ptr null, ptr %ow_slot_0, align 8
+  %ow_new_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
+  %ow_new_d0_f1_leaf = load ptr, ptr %ow_new_d0_f1_ptr, align 8
+  store ptr %ow_new_d0_f1_leaf, ptr %ow_slot_0, align 8
+  %ow_old_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
+  %ow_old_d0_f1_val = load ptr, ptr %ow_old_d0_f1_ptr, align 8
+  %ow_old_d0_f1_int = ptrtoint ptr %ow_old_d0_f1_val to i64
+  %ow_old_d0_f1_cmp0_leaf = load ptr, ptr %ow_slot_0, align 8
+  %ow_old_d0_f1_cmp0_int = ptrtoint ptr %ow_old_d0_f1_cmp0_leaf to i64
+  %ow_old_d0_f1_cmp0_eq = icmp eq i64 %ow_old_d0_f1_int, %ow_old_d0_f1_cmp0_int
+  %ow_old_d0_f1_matched0 = or i1 false, %ow_old_d0_f1_cmp0_eq
+  %ow_old_d0_f1_neutralized = select i1 %ow_old_d0_f1_matched0, ptr null, ptr %ow_old_d0_f1_val
+  store ptr %ow_old_d0_f1_neutralized, ptr %ow_old_d0_f1_ptr, align 8
+  call void @__hew_record_drop_inplace_CrashInfo(ptr %0)
   ret void
 }
 
@@ -1062,18 +1560,14 @@ declare ptr @hew_hashmap_new_with_layout(ptr, ptr)
 
 declare i1 @hew_hashmap_insert_layout(ptr, ptr, ptr)
 
-declare ptr @hew_hashmap_get_layout(ptr, ptr)
-
-; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: readwrite)
-declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly captures(none), ptr noalias readonly captures(none), i64, i1 immarg) #2
-
-; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
-declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64) #1
+declare i1 @hew_hashmap_get_clone_layout(ptr, ptr, ptr)
 
 declare void @hew_hashmap_free_layout(ptr)
 
 declare i32 @hew_lambda_drain_all(i64)
 
+; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #1
+
 attributes #0 = { cold noreturn nounwind memory(inaccessiblemem: write) }
 attributes #1 = { nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none) }
-attributes #2 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }

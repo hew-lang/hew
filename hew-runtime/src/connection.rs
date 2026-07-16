@@ -5515,6 +5515,62 @@ mod tests {
         });
     }
 
+    /// Issue #2655: a connection's monitor/link retirement fan-out must honour
+    /// the publication token. `retire_connection_publication` fires
+    /// `fan_out_monitor_lost_for_node` (arming `MonitorLost` for every pending
+    /// cross-node watcher of the peer) ONLY when the retiring connection is the
+    /// current publication owner. A superseded connection — one whose claim was
+    /// overwritten by a same-credential reconnect while the peer stays live under
+    /// the newer claim — retires nothing and must NOT drive the loss fan-out: the
+    /// peer is still reachable through its healthy replacement, so a `MonitorLost`
+    /// there is a false loss.
+    ///
+    /// This drives `retire_connection_publication` directly against a registered
+    /// watcher — the observation point is connection-level (a superseded vs owning
+    /// retire of ONE peer's claim), which the §14 `sim_transport_property` harness
+    /// cannot express because it is transport-seam-only and brings up no `HewNode`.
+    /// A non-owner retire leaves the watcher pending; the subsequent owner retire
+    /// arms it, proving the gate discriminates on ownership, not merely that the
+    /// fan-out can fire.
+    #[test]
+    fn retire_fans_out_monitor_lost_only_for_the_owning_connection() {
+        let _rt_guard = crate::runtime_test_guard();
+        let rt = crate::runtime::rt_current_opt().expect("test guard installs a runtime");
+        let peer: u16 = 42;
+        let target_serial: u64 = 7;
+        let ref_id = rt.dist_monitors.register_watcher(peer, target_serial);
+
+        with_reserved_claim(peer, 95, 400, true, |mgr| {
+            // SAFETY: mgr is live for the whole closure.
+            unsafe {
+                assert!(
+                    publish_claim(&*mgr, peer, 95, 400),
+                    "the owning connection's claim must publish"
+                );
+                let publication_sync = Arc::new(Mutex::new(()));
+
+                // A superseded (non-owner) retire: `retire_claim` denies, so the
+                // fan-out never runs and the watcher stays pending.
+                retire_connection_publication(&*mgr, peer, 96, 500, &publication_sync);
+                assert_eq!(
+                    rt.dist_monitors.recv_down(ref_id, Duration::ZERO),
+                    crate::dist_monitor::MONITOR_REASON_TIMEOUT,
+                    "a superseded (non-owner) connection's retire must NOT fan out \
+                     MonitorLost while the peer is live under a newer claim"
+                );
+
+                // The owning connection's retire: `retire_claim` grants, so the
+                // fan-out arms the pending watcher with MonitorLost.
+                retire_connection_publication(&*mgr, peer, 95, 400, &publication_sync);
+                assert_eq!(
+                    rt.dist_monitors.recv_down(ref_id, Duration::ZERO),
+                    crate::dist_monitor::MONITOR_REASON_LOST,
+                    "the owning connection's retire must fan out MonitorLost"
+                );
+            }
+        });
+    }
+
     /// Shared state for the failed-flush regression test: fails the first
     /// `fail_remaining` sends, records the rest.
     struct FailingOnceSends {

@@ -53,7 +53,8 @@
 //! unconditionally trusts its own SPKI to preserve self-loopback (a peer
 //! that obtains the cert cannot authenticate without the private key).
 //!
-//! The Noise allowlist (`ACTIVE_ALLOWLIST` in `encryption.rs`) is intentionally
+//! The per-node Noise peer authority (bound via `Node::allow_peer` in
+//! `peer_binding.rs`) is intentionally
 //! NOT unified with the mesh-SPKI allowlist: Noise uses raw X25519 DH keys
 //! that cannot directly sign X.509 certificates (X25519 is for DH; signing
 //! would require Ed25519). Fully unifying the two identities requires

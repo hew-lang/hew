@@ -94,7 +94,36 @@ impl MonitorRef {
     }
 }
 
+/// Select the partition-resolution policy for the current dispatch.
+///
+/// The policy governs how the remote `send`/`ask` failure path resolves a
+/// route that is unavailable or suspect (see `PartitionPolicy`). It is scoped
+/// to the current execution context — the dispatch of one actor message — so a
+/// handler can choose a policy for the remote calls it is about to make.
+///
+/// Returns `true` when the policy was recorded, `false` (fail-closed) when
+/// there is no execution context to record it in — i.e. the call was made
+/// outside an actor dispatch, where a partition policy has no meaning.
+///
+/// The tag mapping is exhaustive: every `PartitionPolicy` variant maps to the
+/// runtime discriminant it mirrors (`execution_context::PartitionPolicy`). A
+/// new variant is a compile error here until it is mapped, so the surface can
+/// never silently send an unmapped policy.
+pub fn set_partition_policy(policy: PartitionPolicy) -> bool {
+    let tag = match policy {
+        PartitionPolicy::FailFast => 0,
+        PartitionPolicy::Deadline => 1,
+        PartitionPolicy::MonitorLost => 2,
+        PartitionPolicy::CrashLinked => 3,
+        PartitionPolicy::Quarantine => 4,
+    };
+    unsafe {
+        hew_set_partition_policy(tag)
+    }
+}
+
 extern "C" {
     fn hew_actor_demonitor(ref_id: i64);
     fn hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64;
+    fn hew_set_partition_policy(tag: i64) -> bool;
 }

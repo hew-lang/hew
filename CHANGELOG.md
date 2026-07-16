@@ -91,6 +91,12 @@ ad-hoc per-shape heap walkers.
   handler loops around `sleep`/`sleep_until` without an in-handler exit path, and
   the guide documents the cancellable `#[every(duration)]` + flag pattern.
   (closes #2271)
+- **`set_partition_policy`.** `std::link_monitor::set_partition_policy(policy)`
+  selects the partition-resolution policy for the current actor dispatch — the
+  first `.hew`-callable surface over the runtime's per-dispatch policy slot. The
+  variant-to-discriminant mapping is exhaustive and fail-closed; the call returns
+  `false` when made outside a dispatch, where no execution context exists to
+  record it.
 
 ## [0.5.1] — 2026-06-14
 

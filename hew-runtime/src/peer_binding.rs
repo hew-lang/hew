@@ -5,8 +5,8 @@
 //! # Why this module exists
 //!
 //! Historically the distributed runtime authenticated a *key* against a flat
-//! process-global allowlist (`encryption::ACTIVE_ALLOWLIST`,
-//! `quic_mesh::ACTIVE_MESH_SPKI_ALLOWLIST`) and, *independently*, checked that a
+//! process-global allowlist (a single set of admitted Noise/SPKI credentials
+//! shared across every node) and, *independently*, checked that a
 //! peer's self-declared handshake `NodeId` was numerically plausible
 //! (`connection::peer_identity_compatible`). Nothing bound the two: any admitted
 //! key could claim any `NodeId`. This module is the authority that closes that

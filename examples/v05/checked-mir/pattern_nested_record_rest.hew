@@ -1,0 +1,24 @@
+// F3 pin: a nested record rest (`Inner { a, .. }`) is materialized through the
+// same PatternPlan as the top-level record-let, so the omitted owned field `b`
+// projects as a wildcard rather than vanishing from the field list — one
+// field-list source, no erasure-ordering divergence. The nested __rec temp's
+// composite drop discharges the wildcarded field exactly once.
+type Inner { a: string, b: string }
+type Outer { inner: Inner, tag: i64 }
+
+fn make() -> Outer {
+    Outer { inner: Inner { a: "nested-a".to_upper(), b: "nested-b".to_upper() }, tag: 7 }
+}
+
+fn probe() -> i64 {
+    let Outer { inner: Inner { a, .. }, tag } = make();
+    a.len() + tag
+}
+
+fn main() -> i64 {
+    if probe() > 0 {
+        0
+    } else {
+        1
+    }
+}

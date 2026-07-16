@@ -878,7 +878,6 @@ struct ConstEntry {
 #[derive(Debug)]
 struct RecordEntry {
     id: ItemId,
-    owner: RecordRegistryOwner,
     /// Source-declared generic type-parameter names, in order. Empty for
     /// monomorphic record/type declarations.
     type_params: Vec<String>,
@@ -887,63 +886,6 @@ struct RecordEntry {
     /// record-layout registry walks these and substitutes per
     /// instantiation.
     fields: Vec<(String, ResolvedTy)>,
-}
-
-/// Which pre-pass populated a `RecordEntry`.
-///
-/// A root-local entry intentionally overwrites an imported bare entry with the
-/// same name, matching the checker's local-over-import precedence rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RecordRegistryOwner {
-    Imported,
-    RootLocal,
-}
-
-/// Resolve a record declaration by source name against `record_registry`,
-/// self-guarding the bare fallback against cross-module bare-name collisions.
-///
-/// #2534: `record_registry` is keyed by BARE `decl.name` at every insert
-/// site (see the type-decl pre-pass), so two same-bare-name records from
-/// different modules collapse to last-writer in the map. An exact
-/// (possibly module-qualified) key hits directly and is unambiguous. Only
-/// the bare fallback is at risk: if the bare name is a known cross-module
-/// collision (`colliding`), returning the last-writer entry would silently
-/// resolve the wrong module's record layout. Fail closed there instead of
-/// relying solely on the upstream checker's ambiguity guard to have fired
-/// first, so a future checker gap cannot leak a wrong-record layout through
-/// the HIR bare fallback. A root-local entry is the exception: root registration
-/// intentionally overwrites imported bare entries and must retain the checker's
-/// local-over-import precedence.
-fn lookup_record_entry_guarded<'a>(
-    record_registry: &'a HashMap<String, RecordEntry>,
-    colliding: &HashSet<String>,
-    type_name: &str,
-) -> Option<&'a RecordEntry> {
-    // A bare (unqualified) name that is a known cross-module collision is
-    // ambiguous no matter how it reaches us: the `record_registry` bare key
-    // holds only the last-writer entry. Fail closed before the direct hit
-    // so we never resolve the wrong module's layout through the bare key.
-    let bare_stem = type_name
-        .rsplit_once('.')
-        .map_or(type_name, |(_, bare)| bare);
-    let is_bare_input = !type_name.contains('.');
-    if let Some(entry) = record_registry.get(type_name) {
-        if !is_bare_input
-            || !colliding.contains(bare_stem)
-            || entry.owner == RecordRegistryOwner::RootLocal
-        {
-            return Some(entry);
-        }
-        return None;
-    }
-    if type_name == bare_stem {
-        // No qualifier to strip; the direct lookup above was the only route.
-        return None;
-    }
-    if colliding.contains(bare_stem) {
-        return None;
-    }
-    record_registry.get(bare_stem)
 }
 
 /// Pre-collected inherent-impl `close` method signature for a `#[resource]`
@@ -2173,7 +2115,6 @@ pub fn lower_program_with_mono_cap(
                                 format!("{module_short}.{}", decl.name),
                                 RecordEntry {
                                     id,
-                                    owner: RecordRegistryOwner::Imported,
                                     type_params: type_params.clone(),
                                     fields: fields.clone(),
                                 },
@@ -2182,7 +2123,6 @@ pub fn lower_program_with_mono_cap(
                                 decl.name.clone(),
                                 RecordEntry {
                                     id,
-                                    owner: RecordRegistryOwner::Imported,
                                     type_params,
                                     fields,
                                 },
@@ -2205,7 +2145,6 @@ pub fn lower_program_with_mono_cap(
                                 format!("{module_short}.{}", decl.name),
                                 RecordEntry {
                                     id,
-                                    owner: RecordRegistryOwner::Imported,
                                     type_params: type_params.clone(),
                                     fields: fields.clone(),
                                 },
@@ -2214,7 +2153,6 @@ pub fn lower_program_with_mono_cap(
                                 decl.name.clone(),
                                 RecordEntry {
                                     id,
-                                    owner: RecordRegistryOwner::Imported,
                                     type_params,
                                     fields,
                                 },
@@ -2339,7 +2277,6 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
-                        owner: RecordRegistryOwner::RootLocal,
                         type_params,
                         fields,
                     },
@@ -2368,7 +2305,6 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
-                        owner: RecordRegistryOwner::RootLocal,
                         type_params,
                         fields,
                     },
@@ -11400,27 +11336,6 @@ impl LowerCtx {
         }
     }
 
-    /// Finds a record declaration by its source name, accepting the
-    /// module-qualified spelling assigned by the type checker for imports.
-    ///
-    /// #2534: the `record_registry` is keyed by BARE `decl.name` at every
-    /// insert site, so two same-bare-name records from different modules
-    /// collapse to last-writer in the map. When the qualified spelling is
-    /// present we resolve it exactly; only the bare fallback is ambiguous.
-    /// Rather than trust the checker's upstream ambiguity guard to have
-    /// fired first, self-guard here: if the bare name is a known
-    /// cross-module collision (`colliding_imported_record_names`), fail
-    /// closed on an imported bare entry instead of silently returning the
-    /// last-writer entry, which may be the wrong module's record. A root-local
-    /// entry intentionally wins over imported collisions.
-    fn lookup_record_entry(&self, type_name: &str) -> Option<&RecordEntry> {
-        lookup_record_entry_guarded(
-            &self.record_registry,
-            &self.colliding_imported_record_names,
-            type_name,
-        )
-    }
-
     /// Lower a statement, returning zero or more `HirStmt`s.
     ///
     /// Most statements produce exactly one `HirStmt` (delegated to `lower_stmt`).
@@ -11872,42 +11787,81 @@ impl LowerCtx {
         stmts: &mut Vec<HirStmt>,
         span: Span,
     ) {
-        let declared_fields: Vec<(String, ResolvedTy)> =
-            if let ResolvedTy::Named { name, args, .. } = value_ty {
-                if let Some(entry) = self.lookup_record_entry(name) {
-                    let subst: HashMap<String, ResolvedTy> = entry
-                        .type_params
-                        .iter()
-                        .zip(args.iter())
-                        .map(|(param, arg)| (param.clone(), arg.clone()))
-                        .collect();
-                    entry
-                        .fields
-                        .iter()
-                        .map(|(fname, fty)| (fname.clone(), substitute_ty(fty, &subst)))
-                        .collect()
-                } else {
+        // Consume the checker's canonical `PatternPlan` — the SAME field-list
+        // source the top-level record-let desugar reads — so a nested rest
+        // (`Outer { inner: Inner { a, .. } }`) materialises a wildcard
+        // projection for every omitted field, byte-identical to the explicit
+        // `Inner { a, b: _ }`. Without this the loop iterated the AST field
+        // list and omitted-field projections silently disappeared: a second
+        // field-list source and the erasure-ordering hazard the plan forbids.
+        // A record-shaped pattern with no plan FAILS CLOSED, same as the
+        // top-level path.
+        let key = self.mk_key(&span);
+        let Some(plan) = self.pattern_plans.get(&key).cloned() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "nested record pattern".into(),
+                    reason: "missing checker PatternPlan".into(),
+                },
+                span.clone(),
+                "checker did not provide a canonical plan for this nested record pattern",
+            ));
+            let name = format!("__unsupported_{}", stmts.len());
+            self.push_pattern_binding_stmt(name, value_ty.clone(), value, stmts, span);
+            return;
+        };
+
+        let mut planned_fields: Vec<(String, ResolvedTy, Spanned<Pattern>)> =
+            Vec::with_capacity(plan.fields.len());
+        for field in plan.fields {
+            let field_ty = match ResolvedTy::from_ty(&field.ty) {
+                Ok(ty) => ty,
+                Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: name.clone(),
-                        reason: "record type not in HIR registry".into(),
-                    },
-                    span.clone(),
-                    "record type missing from HIR registry; cannot desugar nested record pattern",
-                ));
-                    Vec::new()
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: field.name.clone(),
+                            reason: format!("PatternPlan field type is unresolved ({err:?})"),
+                        },
+                        field.span.clone(),
+                        "nested record pattern plan contains an unresolved field type",
+                    ));
+                    let name = format!("__unsupported_{}", stmts.len());
+                    self.push_pattern_binding_stmt(name, value_ty.clone(), value, stmts, span);
+                    return;
                 }
-            } else {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: "nested record pattern on non-named type".into(),
-                        owning_pass: "pattern-lowering".into(),
-                    },
-                    span.clone(),
-                    "nested record destructure requires a named record type",
-                ));
-                Vec::new()
             };
+            let field_pattern = match field.sub {
+                hew_types::PlanSub::Binding(name) => {
+                    (Pattern::Identifier(name), field.span.clone())
+                }
+                hew_types::PlanSub::Wildcard => (Pattern::Wildcard, field.span.clone()),
+                hew_types::PlanSub::Literal(literal) => {
+                    (Pattern::Literal(literal), field.span.clone())
+                }
+                hew_types::PlanSub::Nested(_) => {
+                    let Some(source_pattern) = fields
+                        .iter()
+                        .find(|source| source.name == field.name)
+                        .and_then(|source| source.pattern.clone())
+                    else {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: field.name.clone(),
+                                reason: "nested PatternPlan field has no source subpattern".into(),
+                            },
+                            field.span.clone(),
+                            "nested record pattern plan cannot be materialised",
+                        ));
+                        let name = format!("__unsupported_{}", stmts.len());
+                        self.push_pattern_binding_stmt(name, value_ty.clone(), value, stmts, span);
+                        return;
+                    };
+                    source_pattern
+                }
+            };
+            planned_fields.push((field.name, field_ty, field_pattern));
+        }
+
         let temp_name = format!("__rec_nested_{}", self.ids.binding().0);
         let temp_binding = self.bind(temp_name.clone(), value_ty.clone(), false, span.clone());
         let temp_id = temp_binding.id;
@@ -11916,15 +11870,7 @@ impl LowerCtx {
             kind: HirStmtKind::Let(temp_binding, Some(value)),
             span: span.clone(),
         });
-        for field in fields {
-            let field_ty = declared_fields
-                .iter()
-                .find(|(fname, _)| fname == &field.name)
-                .map_or(ResolvedTy::Unit, |(_, fty)| fty.clone());
-            let field_span = field
-                .pattern
-                .as_ref()
-                .map_or_else(|| span.clone(), |(_, ps)| ps.clone());
+        for (field_name, field_ty, field_pattern) in planned_fields {
             let temp_ref =
                 self.binding_ref_expr(temp_name.clone(), temp_id, value_ty.clone(), span.clone());
             let projection = HirExpr {
@@ -11935,14 +11881,10 @@ impl LowerCtx {
                 intent: IntentKind::Consume,
                 kind: HirExprKind::FieldAccess {
                     object: Box::new(temp_ref),
-                    field: field.name.clone(),
+                    field: field_name.clone(),
                 },
-                span: field_span.clone(),
+                span: field_pattern.1.clone(),
             };
-            let field_pattern = field
-                .pattern
-                .clone()
-                .unwrap_or_else(|| (Pattern::Identifier(field.name.clone()), field_span));
             self.lower_pattern_value_into_stmts(
                 &field_pattern,
                 projection,
@@ -31232,82 +31174,6 @@ mod tests {
                  or an unresolved bare name"
             );
         }
-    }
-
-    // ---- #2534: record_registry bare-key collision self-guard ----
-
-    fn record_entry(id: u32) -> RecordEntry {
-        RecordEntry {
-            id: ItemId(id),
-            owner: RecordRegistryOwner::Imported,
-            type_params: Vec::new(),
-            fields: Vec::new(),
-        }
-    }
-
-    /// An exact (module-qualified) key resolves directly regardless of
-    /// whether the bare stem is a known collision — the qualified spelling
-    /// is unambiguous, so the guard must never suppress it.
-    #[test]
-    fn lookup_record_entry_resolves_qualified_key_even_when_bare_collides() {
-        let mut registry: HashMap<String, RecordEntry> = HashMap::new();
-        registry.insert("a.Thing".to_string(), record_entry(1));
-        registry.insert("b.Thing".to_string(), record_entry(2));
-        // Bare last-writer (whichever module lowered last).
-        registry.insert("Thing".to_string(), record_entry(2));
-        let mut colliding: HashSet<String> = HashSet::new();
-        colliding.insert("Thing".to_string());
-
-        assert_eq!(
-            lookup_record_entry_guarded(&registry, &colliding, "a.Thing").map(|e| e.id),
-            Some(ItemId(1)),
-            "qualified key must resolve to its own module's entry"
-        );
-        assert_eq!(
-            lookup_record_entry_guarded(&registry, &colliding, "b.Thing").map(|e| e.id),
-            Some(ItemId(2)),
-        );
-    }
-
-    /// A bare lookup of a known cross-module collision fails closed rather
-    /// than returning the last-writer entry, which may be the wrong
-    /// module's record layout.
-    #[test]
-    fn lookup_record_entry_bare_collision_fails_closed() {
-        let mut registry: HashMap<String, RecordEntry> = HashMap::new();
-        registry.insert("a.Thing".to_string(), record_entry(1));
-        registry.insert("b.Thing".to_string(), record_entry(2));
-        registry.insert("Thing".to_string(), record_entry(2));
-        let mut colliding: HashSet<String> = HashSet::new();
-        colliding.insert("Thing".to_string());
-
-        assert!(
-            lookup_record_entry_guarded(&registry, &colliding, "Thing").is_none(),
-            "bare fallback on a known cross-module collision must fail \
-             closed, not silently resolve the last-writer entry"
-        );
-    }
-
-    /// A bare lookup of a NON-colliding name still resolves through the
-    /// bare fallback — the common single-definition case is unaffected.
-    #[test]
-    fn lookup_record_entry_bare_non_collision_resolves() {
-        let mut registry: HashMap<String, RecordEntry> = HashMap::new();
-        registry.insert("Solo".to_string(), record_entry(7));
-        let colliding: HashSet<String> = HashSet::new();
-
-        assert_eq!(
-            lookup_record_entry_guarded(&registry, &colliding, "Solo").map(|e| e.id),
-            Some(ItemId(7)),
-        );
-        // A qualified spelling whose bare stem is not registered as a
-        // collision still falls back to the bare entry.
-        assert_eq!(
-            lookup_record_entry_guarded(&registry, &colliding, "m.Solo").map(|e| e.id),
-            Some(ItemId(7)),
-            "qualified spelling of a non-colliding name resolves via the \
-             bare fallback"
-        );
     }
 }
 

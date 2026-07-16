@@ -1,0 +1,301 @@
+fn make -> Outer
+  statements:
+    return site=Some(SiteId(0)) ty=Outer
+  drop_plans:
+    call[bb0 hew_string_to_uppercase -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_string_to_uppercase -> bb2] ->
+      (none)
+    return[bb2] ->
+      (none)
+
+fn probe -> i64
+  statements:
+    bind BindingId(1) __rec_0 site=SiteId(9) ty=Outer
+    use BindingId(1) __rec_0 site=SiteId(11) ty=Outer intent=Read
+    bind BindingId(3) __rec_nested_2 site=SiteId(12) ty=Inner
+    use BindingId(3) __rec_nested_2 site=SiteId(13) ty=Inner intent=Read
+    bind BindingId(4) a site=SiteId(14) ty=string
+    use BindingId(3) __rec_nested_2 site=SiteId(15) ty=Inner intent=Read
+    bind BindingId(5) _3 site=SiteId(16) ty=string
+    use BindingId(1) __rec_0 site=SiteId(17) ty=Outer intent=Read
+    bind BindingId(6) tag site=SiteId(18) ty=i64
+    use BindingId(4) a site=SiteId(21) ty=string intent=Read
+    use BindingId(6) tag site=SiteId(23) ty=i64 intent=Read
+    return site=Some(SiteId(19)) ty=i64
+    drop BindingId(5) _3 ty=string
+    drop BindingId(4) a ty=string
+    drop BindingId(1) __rec_0 ty=Outer
+  drop_plans:
+    call[bb0 make -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_string_length -> bb2] ->
+      (none)
+    branch[bb2: bb3/bb4] ->
+      (none)
+    panic[bb3] ->
+      drop _7 ty=string kind=cow_heap(hew_string_drop)
+      drop _5 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Outer kind=record_in_place
+    return[bb4] ->
+      drop _7 ty=string kind=cow_heap(hew_string_drop)
+      drop _5 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Outer kind=record_in_place
+
+fn main -> i64
+  statements:
+    return site=Some(SiteId(24)) ty=i64
+  drop_plans:
+    call[bb0 probe -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    branch[bb1: bb2/bb3] ->
+      (none)
+    goto[bb2->bb4] ->
+      (none)
+    goto[bb3->bb4] ->
+      (none)
+    return[bb4] ->
+      (none)
+
+fn i8::fmt -> string
+  statements:
+    use BindingId(15) val site=SiteId(103) ty=i8 intent=Read
+    return site=Some(SiteId(101)) ty=string
+  drop_plans:
+    call[bb0 to_string_i32 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn i16::fmt -> string
+  statements:
+    use BindingId(16) val site=SiteId(107) ty=i16 intent=Read
+    return site=Some(SiteId(105)) ty=string
+  drop_plans:
+    call[bb0 to_string_i32 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn i32::fmt -> string
+  statements:
+    use BindingId(17) val site=SiteId(110) ty=i32 intent=Read
+    return site=Some(SiteId(109)) ty=string
+  drop_plans:
+    call[bb0 to_string_i32 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn i64::fmt -> string
+  statements:
+    use BindingId(18) val site=SiteId(113) ty=i64 intent=Read
+    return site=Some(SiteId(112)) ty=string
+  drop_plans:
+    call[bb0 to_string_i64 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn u8::fmt -> string
+  statements:
+    use BindingId(19) val site=SiteId(116) ty=u8 intent=Read
+    return site=Some(SiteId(115)) ty=string
+  drop_plans:
+    call[bb0 to_string_u8 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn u16::fmt -> string
+  statements:
+    use BindingId(20) val site=SiteId(119) ty=u16 intent=Read
+    return site=Some(SiteId(118)) ty=string
+  drop_plans:
+    call[bb0 to_string_u16 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn u32::fmt -> string
+  statements:
+    use BindingId(21) val site=SiteId(122) ty=u32 intent=Read
+    return site=Some(SiteId(121)) ty=string
+  drop_plans:
+    call[bb0 to_string_u32 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn u64::fmt -> string
+  statements:
+    use BindingId(22) val site=SiteId(125) ty=u64 intent=Read
+    return site=Some(SiteId(124)) ty=string
+  drop_plans:
+    call[bb0 to_string_u64 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn isize::fmt -> string
+  statements:
+    use BindingId(23) val site=SiteId(129) ty=isize intent=Read
+    return site=Some(SiteId(127)) ty=string
+  drop_plans:
+    call[bb0 to_string_i64 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn usize::fmt -> string
+  statements:
+    use BindingId(24) val site=SiteId(133) ty=usize intent=Read
+    return site=Some(SiteId(131)) ty=string
+  drop_plans:
+    call[bb0 to_string_u64 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn bool::fmt -> string
+  statements:
+    use BindingId(25) val site=SiteId(136) ty=bool intent=Read
+    return site=Some(SiteId(135)) ty=string
+  drop_plans:
+    call[bb0 to_string_bool -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn char::fmt -> string
+  statements:
+    use BindingId(26) val site=SiteId(139) ty=char intent=Read
+    return site=Some(SiteId(138)) ty=string
+  drop_plans:
+    call[bb0 to_string_char -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn f64::fmt -> string
+  statements:
+    use BindingId(27) val site=SiteId(142) ty=f64 intent=Read
+    return site=Some(SiteId(141)) ty=string
+  drop_plans:
+    call[bb0 to_string_f64 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn f32::fmt -> string
+  statements:
+    use BindingId(28) val site=SiteId(146) ty=f32 intent=Read
+    return site=Some(SiteId(144)) ty=string
+  drop_plans:
+    call[bb0 to_string_f64 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+
+fn string::fmt -> string
+  statements:
+    use BindingId(29) val site=SiteId(148) ty=string intent=Read
+    return site=Some(SiteId(148)) ty=string
+  drop_plans:
+    return[bb0] ->
+      (none)
+
+fn duration::from_nanos -> duration
+  statements:
+    use BindingId(30) n site=SiteId(150) ty=i64 intent=Read
+    return site=Some(SiteId(149)) ty=duration
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    panic[bb1] ->
+      (none)
+    return[bb2] ->
+      (none)
+
+fn duration::from_micros -> duration
+  statements:
+    use BindingId(31) n site=SiteId(153) ty=i64 intent=Read
+    return site=Some(SiteId(152)) ty=duration
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    panic[bb1] ->
+      (none)
+    return[bb2] ->
+      (none)
+
+fn duration::from_millis -> duration
+  statements:
+    use BindingId(32) n site=SiteId(156) ty=i64 intent=Read
+    return site=Some(SiteId(155)) ty=duration
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    panic[bb1] ->
+      (none)
+    return[bb2] ->
+      (none)
+
+fn duration::from_secs -> duration
+  statements:
+    use BindingId(33) n site=SiteId(159) ty=i64 intent=Read
+    return site=Some(SiteId(158)) ty=duration
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    panic[bb1] ->
+      (none)
+    return[bb2] ->
+      (none)
+
+fn duration::fmt -> string
+  statements:
+    use BindingId(34) val site=SiteId(164) ty=duration intent=Read
+    return site=Some(SiteId(161)) ty=string
+  drop_plans:
+    call[bb0 to_string_i64 -> bb1] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    return[bb1] ->
+      (none)
+

@@ -123,13 +123,14 @@ fn funcupdate_reassign_elab_mir_matches_committed_baselines() {
 }
 
 /// Split a dump into per-function chunks (a chunk starts at a column-0
-/// `fn ` line), canonicalize the run-varying ids inside each chunk, sort the
-/// chunks by signature line, and rejoin. The two recorded normalizations
-/// (see the manifest header): (1) dump FUNCTION ORDER is nondeterministic
-/// (map iteration); (2) `BindingId(n)` / `SiteId(n)` values depend on module
-/// iteration order, so each is renumbered per chunk in first-occurrence
-/// order. Everything else must match byte-for-byte — opcodes, drop plans,
-/// local structure.
+/// `fn ` line), apply the two recorded normalizations (see the manifest
+/// header), and rejoin: (1) sort chunks by signature line because dump
+/// FUNCTION ORDER is nondeterministic (map iteration); (2) renumber
+/// `BindingId(n)` / `SiteId(n)` values within each chunk in first-occurrence
+/// order because they depend on module iteration order. Within-chunk content
+/// order is preserved, so a reordered drop inside a chunk remains detectable;
+/// everything else must match byte-for-byte — opcodes, drop plans, local
+/// structure.
 fn normalize_fn_order(dump: &str) -> String {
     let mut chunks: Vec<String> = Vec::new();
     let mut current = String::new();

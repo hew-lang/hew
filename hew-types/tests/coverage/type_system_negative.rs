@@ -1,8 +1,71 @@
 use crate::common;
 
+use common::parse_and_typecheck_isolated;
 use common::typecheck_isolated as typecheck;
-use hew_types::error::TypeErrorKind;
+use hew_parser::ast::{Item, Span};
+use hew_types::error::{TypeError, TypeErrorKind};
 use hew_types::Ty;
+
+/// Assert exactly one `DuplicateDefinition` error, pointing at the SECOND
+/// occurrence's declaration span, whose first `notes` entry carries the
+/// FIRST occurrence's declaration span, with a message naming `name`. A bare
+/// `kind == DuplicateDefinition` presence check would still pass if the
+/// diagnostic pointed at the wrong declaration or named the wrong
+/// identifier — this pins the sole coverage of the corresponding
+/// `register_type_namespace_name` call site to the exact span+kind+name.
+fn expect_duplicate_definition_span_kind_name(source: &str, name: &str) {
+    let (program, output) = parse_and_typecheck_isolated(source);
+    let colliding: Vec<&Span> = program
+        .items
+        .iter()
+        .filter(|(item, _)| item_declares_name(item, name))
+        .map(|(_, span)| span)
+        .collect();
+    assert_eq!(
+        colliding.len(),
+        2,
+        "expected exactly 2 top-level declarations named `{name}` in the fixture, found {}",
+        colliding.len()
+    );
+    let (first_span, second_span) = (colliding[0].clone(), colliding[1].clone());
+
+    let dup_errors: Vec<&TypeError> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == TypeErrorKind::DuplicateDefinition)
+        .collect();
+    assert_eq!(
+        dup_errors.len(),
+        1,
+        "expected exactly 1 DuplicateDefinition error, got errors: {:?}",
+        output.errors
+    );
+    let err = dup_errors[0];
+
+    assert_eq!(
+        err.span, second_span,
+        "DuplicateDefinition primary span should point at the SECOND `{name}` declaration"
+    );
+    assert_eq!(
+        err.notes.first().map(|(span, _)| span.clone()),
+        Some(first_span),
+        "DuplicateDefinition related span should point at the FIRST `{name}` declaration"
+    );
+    assert!(
+        err.message.contains(name),
+        "DuplicateDefinition message should name `{name}`, got: {}",
+        err.message
+    );
+}
+
+fn item_declares_name(item: &Item, name: &str) -> bool {
+    match item {
+        Item::Trait(td) => td.name == name,
+        Item::Actor(ad) => ad.name == name,
+        Item::TypeAlias(ta) => ta.name == name,
+        _ => false,
+    }
+}
 
 fn generic_param(name: &str) -> Ty {
     Ty::Named {
@@ -407,45 +470,24 @@ fn duplicate_definition_same_struct() {
     );
 }
 
-// ── 6c. DuplicateDefinition — define same enum twice ────────────────
-
-#[test]
-fn duplicate_definition_same_enum() {
-    let output = typecheck(
-        r"
-        enum Colour { Red; }
-        enum Colour { Green; }
-        fn main() {}
-    ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
-        "Expected DuplicateDefinition, got errors: {:?}",
-        output.errors
-    );
-}
+// Note: no separate "define same enum twice" case here. `enum` and `struct`
+// both parse to `Item::TypeDecl` (hew-parser/src/ast.rs) and hit the SAME
+// match arm in registration.rs, calling `register_type_namespace_name`
+// with no kind branch between them — `duplicate_definition_same_struct`
+// above already exercises that exact source line for `Item::TypeDecl`, so an
+// enum-flavoured duplicate is redundant coverage of the identical code path.
 
 // ── 6d. DuplicateDefinition — define same trait twice ───────────────
 
 #[test]
 fn duplicate_definition_same_trait() {
-    let output = typecheck(
+    expect_duplicate_definition_span_kind_name(
         r"
         trait Printable { fn render(val: Self) -> i64; }
         trait Printable { fn print(val: Self) -> i64; }
         fn main() {}
     ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
-        "Expected DuplicateDefinition, got errors: {:?}",
-        output.errors
+        "Printable",
     );
 }
 
@@ -453,20 +495,13 @@ fn duplicate_definition_same_trait() {
 
 #[test]
 fn duplicate_definition_same_actor() {
-    let output = typecheck(
+    expect_duplicate_definition_span_kind_name(
         r"
         actor Worker { let id: i64; }
         actor Worker { let count: i64; }
         fn main() {}
     ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
-        "Expected DuplicateDefinition, got errors: {:?}",
-        output.errors
+        "Worker",
     );
 }
 
@@ -656,20 +691,13 @@ fn duplicate_definition_same_wire_type() {
 
 #[test]
 fn duplicate_definition_same_type_alias() {
-    let output = typecheck(
+    expect_duplicate_definition_span_kind_name(
         r"
         type Foo = i64;
         type Foo = i64;
         fn main() {}
     ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::DuplicateDefinition),
-        "Expected DuplicateDefinition, got errors: {:?}",
-        output.errors
+        "Foo",
     );
 }
 

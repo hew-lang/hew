@@ -649,6 +649,11 @@ run_accept_expect_stdout "on_start_suspension_resumes"
 run_accept_expect_stdout "on_start_multi_suspension_resumes"
 run_accept_expect_stdout "init_suspension_resumes"
 
+# A Sink<string> half moved into actor state is accepted: the actor's
+# state_drop_fn is the single free site (closed exactly once at teardown), so
+# the handle is not double-freed. Exact-stdout oracle prints the drained item.
+run_accept_expect_stdout "sink_half_in_actor_state"
+
 # Static trait dispatch through supertrait bounds:
 # - reject missing concrete dispatch target at checker time, before MIR;
 # - accept inline supermethod provision on the direct impl;

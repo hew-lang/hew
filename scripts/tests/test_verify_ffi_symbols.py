@@ -21,7 +21,6 @@ IO_RUNTIME_FFI_FILES = (
 CODEGEN_STABLE_IO_EXPORTS = {
     "hew_conn_await_read",
     "hew_listener_await_accept",
-    "hew_tcp_read_raw",
 }
 C_UNWIND_MACHINE_EMIT_EXPORTS = {
     "hew_machine_emit_step_enter",

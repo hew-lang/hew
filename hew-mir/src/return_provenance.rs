@@ -173,6 +173,19 @@ pub trait LeafPolicy {
     /// returns `{OPAQUE}` unconditionally (today's `_ => true`); Precise applies
     /// the delta leaf rules.
     fn leaf_bits(&self, expr: &HirExpr) -> AliasBits;
+
+    /// Bits contributed by an ABSENT value position inside `enclosing` — a
+    /// tail-less block (a diverging `{ return …; }` match arm), an else-less
+    /// `if`, a value-less `return`, an empty `match`. Coarse keeps the
+    /// pre-refactor `{OPAQUE}` (byte-identical `is_none_or` semantics); Precise
+    /// applies the type short-circuit — a `Unit`/`Never`/scalar-typed enclosing
+    /// expression carries no heap value, so the absent position contributes `∅`
+    /// (a diverging arm must not poison a `ParamsOnly` summary to
+    /// `PARAM|OPAQUE`), while any heap-typed enclosing form stays fail-closed.
+    fn missing_position_bits(&self, enclosing: &HirExpr) -> AliasBits {
+        let _ = enclosing;
+        AliasBits::OPAQUE
+    }
 }
 
 /// The single structural walk. Structural arms are identical for every policy;
@@ -187,7 +200,7 @@ pub fn return_alias_bits<P: LeafPolicy>(expr: &HirExpr, policy: &P) -> AliasBits
         // Value-passthrough wrappers: the value flows from the tail / both
         // branches / every arm — aliases iff ANY reachable value aliases.
         HirExprKind::Block(block) => match &block.tail {
-            None => AliasBits::OPAQUE,
+            None => policy.missing_position_bits(expr),
             Some(tail) => return_alias_bits(tail, policy),
         },
         HirExprKind::If {
@@ -197,14 +210,14 @@ pub fn return_alias_bits<P: LeafPolicy>(expr: &HirExpr, policy: &P) -> AliasBits
         } => {
             let mut bits = return_alias_bits(then_expr, policy);
             bits |= match else_expr.as_deref() {
-                None => AliasBits::OPAQUE,
+                None => policy.missing_position_bits(expr),
                 Some(e) => return_alias_bits(e, policy),
             };
             bits
         }
         HirExprKind::Match { arms, .. } => {
             if arms.is_empty() {
-                AliasBits::OPAQUE
+                policy.missing_position_bits(expr)
             } else {
                 arms.iter().fold(AliasBits::EMPTY, |acc, arm| {
                     acc | return_alias_bits(&arm.body, policy)
@@ -212,7 +225,7 @@ pub fn return_alias_bits<P: LeafPolicy>(expr: &HirExpr, policy: &P) -> AliasBits
             }
         }
         HirExprKind::Return { value } => match value.as_deref() {
-            None => AliasBits::OPAQUE,
+            None => policy.missing_position_bits(expr),
             Some(v) => return_alias_bits(v, policy),
         },
         // Fresh leaves — never a caller-owned alias. A `.clone()` is a deep copy;
@@ -2017,6 +2030,17 @@ impl LeafPolicy for PrecisePolicy<'_> {
             _ => AliasBits::OPAQUE,
         }
     }
+
+    fn missing_position_bits(&self, enclosing: &HirExpr) -> AliasBits {
+        // A diverging `{ return …; }` arm / else-less `if` / value-less
+        // `return` in a `Unit`/`Never`/scalar position carries no heap value —
+        // it must not poison a `ParamsOnly` summary to `PARAM|OPAQUE`.
+        if ty_is_scalar_non_heap(&enclosing.ty) {
+            AliasBits::EMPTY
+        } else {
+            AliasBits::OPAQUE
+        }
+    }
 }
 
 /// The module return-provenance summary: `ItemId → ReturnProvenance`, a monotone
@@ -2611,6 +2635,37 @@ mod tests {
         assert!(
             prov[&fn_id(&m, "wrap")].is_fresh(),
             "a chain of fresh producers is Fresh"
+        );
+    }
+
+    #[test]
+    fn diverging_return_arm_does_not_poison_params_only() {
+        // A `{ return …; }` arm's body is a Unit-typed tail-less block; it
+        // carries no value, so it must contribute `∅` under the Precise
+        // policy — a param-embedding producer with a diverging arm stays
+        // `ParamsOnly` (arg-rescuable), not `PARAM|OPAQUE`
+        // (`match_diverging_arm_result_type` regression).
+        let (m, prov) = provenance_of_source(
+            r"
+            enum Status {
+                Good(string);
+                Bad;
+            }
+            fn parse(input: string, fail: bool) -> Status {
+                let result = match fail {
+                    true => {
+                        return Status::Bad;
+                    },
+                    false => Status::Good(input),
+                };
+                result
+            }
+            ",
+        );
+        assert!(
+            prov[&fn_id(&m, "parse")].is_params_only(),
+            "a diverging return-only arm contributes no bits: {:?}",
+            prov[&fn_id(&m, "parse")]
         );
     }
 

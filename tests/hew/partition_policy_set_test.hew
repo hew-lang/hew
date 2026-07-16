@@ -1,0 +1,59 @@
+//! Language-surface coverage for `std::link_monitor::set_partition_policy`.
+//!
+//! `set_partition_policy(policy)` selects the partition-resolution policy for
+//! the current dispatch's execution context. It is only meaningful inside an
+//! actor `receive fn` (a real dispatch), where the runtime has an execution
+//! context to record the policy in; outside a dispatch it fails closed and
+//! returns `false`.
+//!
+//! This exercises the whole surface: importing the setter, calling it with
+//! every `PartitionPolicy` variant from within a dispatch, and confirming the
+//! exhaustive variant->tag mapping accepts each one and the setter reports
+//! success. The variant->discriminant mapping itself mirrors the runtime
+//! `execution_context::PartitionPolicy` order, which the runtime unit tests
+//! round-trip.
+
+import std::link_monitor::{PartitionPolicy, set_partition_policy};
+
+import std::testing;
+
+actor PolicyProbe {
+    var all_ok: bool = true;
+
+    // Runs inside a dispatch, so an execution context exists: every variant
+    // must be accepted by the mapping and recorded (returns true). A single
+    // `false` — an unmapped variant or a missing context — clears `all_ok`.
+    receive fn probe_every_policy() {
+        if !set_partition_policy(PartitionPolicy::FailFast) {
+            all_ok = false;
+        }
+        if !set_partition_policy(PartitionPolicy::Deadline) {
+            all_ok = false;
+        }
+        if !set_partition_policy(PartitionPolicy::MonitorLost) {
+            all_ok = false;
+        }
+        if !set_partition_policy(PartitionPolicy::CrashLinked) {
+            all_ok = false;
+        }
+        if !set_partition_policy(PartitionPolicy::Quarantine) {
+            all_ok = false;
+        }
+    }
+    receive fn all_accepted() -> bool {
+        all_ok
+    }
+}
+
+#[test]
+fn set_partition_policy_accepts_every_variant_in_a_dispatch() {
+    let p = spawn PolicyProbe;
+    p.probe_every_policy();
+    // The fire-and-forget probe drains through the mailbox; the ask serialises
+    // behind it so the observation reflects the completed probe.
+    sleep(100ms);
+    match await p.all_accepted() {
+        Ok(ok) => testing.assert_true(ok),
+        Err(_) => testing.assert_true(false),
+    }
+}

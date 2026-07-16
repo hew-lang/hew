@@ -99,6 +99,27 @@ fn test_try_run_argv_missing_command_returns_launch_failed() {
 }
 
 #[test]
+fn test_try_run_argv_missing_command_preserves_real_error() {
+    // Regression for #2506: the cooperative-yield checkpoint at
+    // last_process_error's function entry must not clobber the real
+    // launch-failure text with the "execution context not installed"
+    // sentinel when main() has no installed execution context.
+    // Cross-platform: a nonexistent command fails to launch
+    // (ENOENT-equivalent) on every OS, so no Unix-only tool is used.
+    let args: Vec<string> = Vec::new();
+    match process.try_run_argv("hew-process-command-that-does-not-exist-2506", args) {
+        Ok(_) => panic("expected missing command to fail to launch"),
+        Err(err) => match err {
+            ProcessError::LaunchFailed(message) => {
+                testing.assert_true(!message.contains("execution context not installed"));
+                testing.assert_true(message.contains("failed to execute"));
+            },
+            _ => panic("expected ProcessError::LaunchFailed"),
+        },
+    }
+}
+
+#[test]
 fn test_child_drop_reaps_running_process() {
     let pid_path = f"tests/hew/_process_drop_{datetime.now_nanos()}.pid";
     cleanup_file(pid_path);

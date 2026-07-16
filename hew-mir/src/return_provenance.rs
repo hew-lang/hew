@@ -378,7 +378,7 @@ pub fn ty_is_scalar_non_heap(ty: &ResolvedTy) -> bool {
 /// `hew_vec_get_owned`/`_ptr`), and lowering picks the actual owned callee at
 /// emission time (`hew_vec_get_clone` for owned-value elements,
 /// `hew_hashmap_get_clone_layout` always for `HashMap` get). Keying on the HIR
-/// symbol/family would admit the receiver-alias class this lane rejects, so the
+/// symbol/family would admit the receiver-alias class this check rejects, so the
 /// contract keys on the EMITTED symbol the site will actually lower to.
 const PROVED_OWNER_METHOD_SYMBOLS: &[&str] = &[
     "hew_vec_get_clone",
@@ -583,7 +583,7 @@ pub fn build_call_scrutinee_provenance(
 /// minted), whereas a user-declared `extern "C" fn hew_channel_recv_layout(..)`
 /// resolves to `ResolvedRef::Item` → does NOT match → falls through to the
 /// three-way `Call` resolution → `{OPAQUE}` → REJECT (fail-closed; closes the
-/// name-forgeable bypass this lane fixes).
+/// name-forgeable bypass this admission check fixes).
 #[must_use]
 pub fn is_typed_recv_callee(callee: &HirExpr) -> bool {
     use hew_types::runtime_call::RuntimeCallFamily as F;

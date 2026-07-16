@@ -68,7 +68,7 @@ fn fn_body_returns_fresh_owner_ref(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, b
 }
 
 /// Verbatim copy of the pre-refactor `return_value_may_alias_borrow` — the leaf
-/// this lane parameterizes. This is the transfer the differential pins.
+/// this module parameterizes. This is the transfer the differential pins.
 fn return_value_may_alias_borrow_ref(
     expr: &HirExpr,
     fresh: &HashMap<hew_hir::ItemId, bool>,

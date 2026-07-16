@@ -950,7 +950,7 @@ fn guard_buried_return_forwarder_rejects() {
     // straight-line return is fresh. Missing the guard from the return-value
     // collection read `evil` as Fresh(∅) — the preflight admitted and minted
     // an owner over the forwarded borrow (REJECTS=0 MINTS=1, the double-free
-    // class this lane closes). The guard path must union {PARAM} → REJECT.
+    // class this check closes). The guard path must union {PARAM} → REJECT.
     let src = r#"
         fn evil(p: Result<string, string>, k: i64) -> Result<string, string> {
             let d = match k {

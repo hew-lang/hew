@@ -4,27 +4,26 @@
 //! All returned strings and connection handles are allocated with `libc::malloc`
 //! / `Box` so callers can free them with the corresponding free function.
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
-use std::cell::RefCell;
 use std::os::raw::c_char;
 
 use lettre::message::{header::ContentType, Mailbox};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 
-std::thread_local! {
-    static LAST_SMTP_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
 fn set_smtp_last_error(msg: impl Into<String>) {
-    LAST_SMTP_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
+        msg,
+    );
 }
 
 fn clear_smtp_last_error() {
-    LAST_SMTP_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_error(hew_runtime::parse_error_slot::ErrorSlotKind::Smtp);
 }
 
 fn get_smtp_last_error() -> String {
-    LAST_SMTP_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+    hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Smtp)
+        .unwrap_or_default()
 }
 
 fn smtp_error_result(msg: impl Into<String>) -> i32 {
@@ -449,6 +448,7 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::ffi::{CStr, CString};
     use std::ptr;
     use std::rc::Rc;
@@ -794,5 +794,95 @@ mod tests {
         );
         assert_eq!(rc, -1);
         assert!(events.borrow().is_empty());
+    }
+
+    /// An SMTP error recorded by the REAL `hew_smtp_send` failure path —
+    /// while a given actor is the installed dispatch context on OS thread A —
+    /// must be readable through the REAL public `hew_smtp_last_error`
+    /// accessor when that SAME actor is the installed dispatch context on a
+    /// DIFFERENT OS thread B.
+    ///
+    /// This is the actual #2659 regression: an actor parked mid-send and
+    /// resumed on another scheduler worker must not lose its recorded error.
+    /// Driving the module's own producer (`hew_smtp_send`) and public
+    /// accessor (`hew_smtp_last_error`) — rather than poking the shared
+    /// `parse_error_slot` map directly — means this test is RED against the
+    /// predecessor `thread_local!` implementation: a plain `thread_local!`
+    /// slot is intrinsically per-OS-thread storage, so thread B's slot would
+    /// stay empty no matter which actor either thread believes is
+    /// dispatching. It is GREEN only because `set_/get_smtp_last_error` now
+    /// key on actor identity via `parse_error_slot`.
+    ///
+    /// Run 3× to satisfy the flake gate.
+    #[test]
+    fn smtp_error_visible_across_worker_threads_regression_2659() {
+        use crate::net_error_slot_test_support::{
+            spawn_error_slot_test_actor, with_actor_context, NetErrorSlotRuntimeGuard,
+        };
+
+        // hew_actor_spawn requires an installed runtime authority; shared
+        // across tls/smtp/quic so their regression tests serialize on the
+        // single process-global scheduler slot instead of racing.
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+
+        for run in 0..3_u32 {
+            let test_actor = spawn_error_slot_test_actor();
+            assert!(!test_actor.is_null(), "test actor should spawn");
+            let actor_addr = test_actor as usize;
+
+            let conn = make_test_conn();
+            let from = CString::new("not-an-email").unwrap();
+            let to = CString::new("recipient@example.com").unwrap();
+            let subject = CString::new("Hello").unwrap();
+            let body = CString::new("Body").unwrap();
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let barrier2 = barrier.clone();
+
+            let handle = std::thread::spawn(move || {
+                // Simulate: the actor resumes on thread B, a different OS
+                // thread than the one that recorded the error.
+                barrier2.wait();
+                let actor_ptr = actor_addr as *mut hew_runtime::actor::HewActor;
+                with_actor_context(actor_ptr, last_error_text)
+            });
+
+            // Thread A: install the SAME actor as the dispatch context and
+            // drive the real hew_smtp_send failure path — the actual
+            // producer, not a direct slot poke.
+            with_actor_context(test_actor, || {
+                // SAFETY: `conn` is a valid test connection and the strings
+                // are valid C strings; the malformed `from` address is the
+                // documented failure path.
+                let rc = unsafe {
+                    hew_smtp_send(
+                        conn,
+                        from.as_ptr(),
+                        to.as_ptr(),
+                        subject.as_ptr(),
+                        body.as_ptr(),
+                    )
+                };
+                assert_eq!(rc, -1);
+            });
+            barrier.wait();
+
+            let result = handle.join().expect("thread B panicked");
+            assert!(
+                result.contains("parse") || result.contains("address"),
+                "run {run}: SMTP error recorded on thread A must be visible on thread B for the same actor, got {result:?}"
+            );
+
+            // SAFETY: `conn` came from `make_test_conn` and has not been freed yet.
+            unsafe { hew_smtp_close(conn) };
+            // SAFETY: test_actor was spawned above and not yet stopped/freed.
+            unsafe { hew_runtime::actor::hew_actor_stop(test_actor) };
+            // hew_actor_free reaps every parse_error_slot entry for this
+            // actor via parse_error_slot::clear_all_for_actor — no manual
+            // clear needed.
+            // SAFETY: test_actor is stopped immediately above; free reclaims
+            // it exactly once.
+            assert_eq!(unsafe { hew_runtime::actor::hew_actor_free(test_actor) }, 0);
+        }
     }
 }

@@ -34,21 +34,20 @@ const EVENT_STREAM_OPENED: i32 = 2;
 const EVENT_STREAM_CLOSED: i32 = 3;
 const EVENT_ERROR: i32 = -1;
 
-std::thread_local! {
-    static LAST_CONSTRUCTOR_ERROR: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 fn set_constructor_last_error(msg: impl Into<String>) {
-    LAST_CONSTRUCTOR_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Quic,
+        msg,
+    );
 }
 
 fn clear_constructor_last_error() {
-    LAST_CONSTRUCTOR_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_error(hew_runtime::parse_error_slot::ErrorSlotKind::Quic);
 }
 
 fn get_constructor_last_error() -> String {
-    LAST_CONSTRUCTOR_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+    hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Quic)
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Default)]
@@ -2415,6 +2414,84 @@ mod tests {
         assert!(unsafe { take_string(hew_quic_last_error()) }.is_empty());
         // SAFETY: ep was just created.
         unsafe { hew_quic_endpoint_close(ep) };
+    }
+
+    /// A QUIC constructor error recorded by the REAL `hew_quic_new_server`
+    /// failure path — while a given actor is the installed dispatch context
+    /// on OS thread A — must be readable through the REAL public
+    /// `hew_quic_last_error` accessor when that SAME actor is the installed
+    /// dispatch context on a DIFFERENT OS thread B.
+    ///
+    /// This is the actual #2659 regression: an actor parked mid-construct
+    /// and resumed on another scheduler worker must not lose its recorded
+    /// error. Driving the module's own producer (`hew_quic_new_server`) and
+    /// public accessor (`hew_quic_last_error`) — rather than poking the
+    /// shared `parse_error_slot` map directly — means this test is RED
+    /// against the predecessor `thread_local!` implementation: a plain
+    /// `thread_local!` slot is intrinsically per-OS-thread storage, so thread
+    /// B's slot would stay empty no matter which actor either thread
+    /// believes is dispatching. It is GREEN only because
+    /// `set_/get_constructor_last_error` now key on actor identity via
+    /// `parse_error_slot`.
+    ///
+    /// Scoped to the constructor slot only — the per-endpoint
+    /// `state.last_error` mechanism is untouched and out of scope for this
+    /// lane.
+    ///
+    /// Run 3× to satisfy the flake gate.
+    #[test]
+    fn quic_constructor_error_visible_across_worker_threads_regression_2659() {
+        use crate::net_error_slot_test_support::{
+            spawn_error_slot_test_actor, with_actor_context, NetErrorSlotRuntimeGuard,
+        };
+
+        // hew_actor_spawn requires an installed runtime authority; shared
+        // across tls/smtp/quic so their regression tests serialize on the
+        // single process-global scheduler slot instead of racing.
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+
+        for run in 0..3_u32 {
+            let test_actor = spawn_error_slot_test_actor();
+            assert!(!test_actor.is_null(), "test actor should spawn");
+            let actor_addr = test_actor as usize;
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let barrier2 = barrier.clone();
+
+            let handle = thread::spawn(move || {
+                // Simulate: the actor resumes on thread B, a different OS
+                // thread than the one that recorded the error.
+                barrier2.wait();
+                let actor_ptr = actor_addr as *mut hew_runtime::actor::HewActor;
+                // SAFETY: the getter returns an owned malloc string.
+                with_actor_context(actor_ptr, || unsafe { take_string(hew_quic_last_error()) })
+            });
+
+            // Thread A: install the SAME actor as the dispatch context and
+            // drive the real hew_quic_new_server failure path — the actual
+            // producer, not a direct slot poke.
+            with_actor_context(test_actor, || {
+                // SAFETY: null is explicitly handled.
+                let ep = unsafe { hew_quic_new_server(std::ptr::null()) };
+                assert!(ep.is_null());
+            });
+            barrier.wait();
+
+            let result = handle.join().expect("thread B panicked");
+            assert_eq!(
+                result, "invalid bind address",
+                "run {run}: QUIC constructor error recorded on thread A must be visible on thread B for the same actor"
+            );
+
+            // SAFETY: test_actor was spawned above and not yet stopped/freed.
+            unsafe { hew_runtime::actor::hew_actor_stop(test_actor) };
+            // hew_actor_free reaps every parse_error_slot entry for this
+            // actor via parse_error_slot::clear_all_for_actor — no manual
+            // clear needed.
+            // SAFETY: test_actor is stopped immediately above; free reclaims
+            // it exactly once.
+            assert_eq!(unsafe { hew_runtime::actor::hew_actor_free(test_actor) }, 0);
+        }
     }
 
     #[test]

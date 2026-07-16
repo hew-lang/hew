@@ -160,6 +160,18 @@ fn compile_expect_refusal(stem: &str, source: &str) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
 
+/// Count direct `call ... @<symbol>(` sites across the WHOLE emitted module.
+/// The moved-handle close fires through the actor's `state_drop_fn`; the
+/// module-wide count must be EXACTLY ONE. A presence oracle (`contains`) is
+/// blind to a double-free masked by the runtime's null-guard — only the count
+/// distinguishes exactly-once.
+fn count_calls_in_module(ir: &str, symbol: &str) -> usize {
+    let needle = format!("@{symbol}(");
+    ir.lines()
+        .filter(|line| line.contains(&needle) && line.contains("call "))
+        .count()
+}
+
 // ── Slice B: awaited non-byte send routing ────────────────────────────────
 
 /// `await sink.send(f"...")` over a `Sink<string>` inside an actor handler
@@ -322,5 +334,362 @@ fn main() {
     assert!(
         stderr.contains("NotYetImplemented") || stderr.contains("not yet"),
         "try_send on Sink<string> must stay refused fail-closed; got:\n{stderr}"
+    );
+}
+
+// ── Slice E: a Stream/Sink half in actor state closes exactly once ─────────
+
+/// Probe A: a `Sink<string>` half moves into actor state (`spawn Writer(sink:
+/// sink)`); the actor's `state_drop_fn` is the single free site. Runs clean
+/// under `MallocScribble` (a double-free would crash), and the emitted IR
+/// contains EXACTLY ONE `hew_sink_close` for the moved half.
+#[test]
+fn sink_half_in_actor_state_closes_exactly_once() {
+    let source = r#"import std::stream;
+
+actor Writer {
+    let sink: stream.Sink<string>;
+
+    receive fn put(item: string) {
+        sink.send(item);
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(4);
+    let w = spawn Writer(sink: sink);
+    w.put("hello");
+    match input.recv() {
+        Some(s) => println(s),
+        None => println("eof"),
+    }
+}
+"#;
+    let stdout = run_hew_source_env("sink_half_scribble", source, true);
+    assert_eq!(
+        stdout, "hello",
+        "sink half in actor state: expected 'hello', got {stdout:?}"
+    );
+    let ir = emit_llvm_ir("sink_half_ir", source);
+    assert_eq!(
+        count_calls_in_module(&ir, "hew_sink_close"),
+        1,
+        "the moved Sink half must be closed EXACTLY once (state_drop_fn); a \
+         second close is a double-free"
+    );
+}
+
+/// Probe A twin: a `Stream<string>` half moves into a consumer actor's state;
+/// the actor awaits `input.recv()` and drains to EOF when the main-side (local)
+/// sink closes. The Stream half is closed exactly once by the consumer's
+/// `state_drop_fn`, and the main-side sink exactly once by its local drop —
+/// both `== 1`, scribble-clean.
+#[test]
+fn stream_half_in_actor_state_closes_exactly_once() {
+    let source = r#"import std::stream;
+
+actor Consumer {
+    let input: stream.Stream<string>;
+
+    receive fn drain() {
+        var count = 0;
+        var done = false;
+        while !done {
+            match await input.recv() {
+                Some(_s) => { count = count + 1; },
+                None => { done = true; },
+            }
+        }
+        println(f"count={count}");
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(2);
+    let c = spawn Consumer(input: input);
+    c.drain();
+    for i in 0 .. 4 {
+        sink.send(f"item-{i}");
+    }
+    sink.close();
+    sleep(400ms);
+    println("done");
+}
+"#;
+    let stdout = run_hew_source_env("stream_half_scribble", source, true);
+    assert_eq!(
+        stdout, "count=4\ndone",
+        "stream half in actor state: expected 'count=4' then 'done', got {stdout:?}"
+    );
+    let ir = emit_llvm_ir("stream_half_ir", source);
+    assert_eq!(
+        count_calls_in_module(&ir, "hew_stream_close"),
+        1,
+        "the moved Stream half must be closed EXACTLY once (state_drop_fn)"
+    );
+    assert_eq!(
+        count_calls_in_module(&ir, "hew_sink_close"),
+        1,
+        "the main-side local sink must be closed EXACTLY once"
+    );
+}
+
+// ── Slice E: concurrency edge classes ─────────────────────────────────────
+
+/// Edge 1 — racing send/recv across actors: a consumer actor awaits recv on a
+/// Stream half it owns in state while `main` concurrently sends N items into
+/// the local sink half. Every item is delivered exactly once, in order,
+/// followed by a single EOF. Scribble-clean.
+#[test]
+fn racing_send_recv_delivers_in_order() {
+    let source = r#"import std::stream;
+
+actor Consumer {
+    let input: stream.Stream<string>;
+
+    receive fn drain() {
+        var done = false;
+        while !done {
+            match await input.recv() {
+                Some(s) => println(s),
+                None => { done = true; },
+            }
+        }
+        println("eof");
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(4);
+    let c = spawn Consumer(input: input);
+    c.drain();
+    for i in 0 .. 6 {
+        sink.send(f"item-{i}");
+    }
+    sink.close();
+    sleep(400ms);
+}
+"#;
+    let stdout = run_hew_source_env("edge_racing", source, true);
+    assert_eq!(
+        stdout, "item-0\nitem-1\nitem-2\nitem-3\nitem-4\nitem-5\neof",
+        "racing send/recv must deliver each item once in order then one EOF; got {stdout:?}"
+    );
+}
+
+/// Edge 2 — drop-during-await: a producer actor owns a Sink half in state and
+/// awaits sends into a capacity-1 ring. `main` drains a single item, leaving
+/// the producer parked on the full ring, then exits — tearing the producer down
+/// mid-await. The abandon edge (`hew_read_slot_cancel` + `hew_sink_detach_await`
+/// + `hew_read_slot_free`) must run cleanly: exit 0, scribble-clean, no hang.
+#[test]
+fn producer_parked_on_full_ring_teardown_is_clean() {
+    let source = r#"import std::stream;
+
+actor Producer {
+    let sink: stream.Sink<string>;
+
+    receive fn run() {
+        var i = 0;
+        while i < 100 {
+            await sink.send(f"v{i}");
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(1);
+    let p = spawn Producer(sink: sink);
+    p.run();
+    sleep(200ms);
+    match input.recv() {
+        Some(s) => println(s),
+        None => println("eof"),
+    }
+    println("main-exit");
+}
+"#;
+    let stdout = run_hew_source_env("edge_drop_during_await", source, true);
+    assert_eq!(
+        stdout, "v0\nmain-exit",
+        "producer parked on a full ring must be torn down cleanly; got {stdout:?}"
+    );
+}
+
+/// Edge 3 — close-during-suspend: a consumer actor parks in `await input.recv()`
+/// on an empty ring; `main` then closes the (local) sink. The recv resumes with
+/// `None` exactly once and the program exits 0.
+#[test]
+fn close_during_suspended_recv_yields_none_once() {
+    let source = r#"import std::stream;
+
+actor Consumer {
+    let input: stream.Stream<string>;
+
+    receive fn drain() {
+        var nones = 0;
+        match await input.recv() {
+            Some(s) => println(s),
+            None => { nones = nones + 1; },
+        }
+        println(f"nones={nones}");
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(2);
+    let c = spawn Consumer(input: input);
+    c.drain();
+    sleep(150ms);
+    sink.close();
+    sleep(200ms);
+    println("done");
+}
+"#;
+    let stdout = run_hew_source_env("edge_close_during_suspend", source, true);
+    assert_eq!(
+        stdout, "nones=1\ndone",
+        "a suspended recv must resume with None exactly once when the sink closes; got {stdout:?}"
+    );
+}
+
+/// Edge 4 — backpressure exactness: a capacity-1 ring with more items than
+/// capacity. Every item is delivered exactly once and EOF (`None`) exactly once
+/// after `close()`. Asserts exact counts (`== 5`, `== 1`), never `> 0`.
+#[test]
+fn backpressure_capacity_one_delivers_each_item_once() {
+    let source = r#"import std::stream;
+
+actor Consumer {
+    let input: stream.Stream<string>;
+
+    receive fn drain() {
+        var count = 0;
+        var eofs = 0;
+        var done = false;
+        while !done {
+            match await input.recv() {
+                Some(_v) => { count = count + 1; },
+                None => { eofs = eofs + 1; done = true; },
+            }
+        }
+        println(f"count={count} eofs={eofs}");
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(1);
+    let c = spawn Consumer(input: input);
+    c.drain();
+    for i in 0 .. 5 {
+        sink.send(f"v{i}");
+    }
+    sink.close();
+    sleep(400ms);
+    println("done");
+}
+"#;
+    let stdout = run_hew_source_env("edge_backpressure", source, true);
+    assert_eq!(
+        stdout, "count=5 eofs=1\ndone",
+        "capacity-1 backpressure must deliver each item once and exactly one EOF; got {stdout:?}"
+    );
+}
+
+// ── Slice D: negative fixtures (fail-closed refusals) ──────────────────────
+
+/// D5 (consume): explicitly closing an owned handle held in ACTOR STATE
+/// (`sink.close()` on the bare state field) is refused fail-closed — the actor's
+/// `state_drop_fn` is the single owner, so an explicit close would double-free.
+#[test]
+fn explicit_close_of_state_field_handle_is_refused() {
+    let source = r#"import std::stream;
+
+actor Producer {
+    let sink: stream.Sink<string>;
+
+    receive fn go() {
+        sink.send("x");
+        sink.close();
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(2);
+    let p = spawn Producer(sink: sink);
+    p.go();
+    sleep(100ms);
+    match input.recv() {
+        Some(s) => println(s),
+        None => println("eof"),
+    }
+}
+"#;
+    let stderr = compile_expect_refusal("state_field_close_refused", source);
+    assert!(
+        stderr.contains("closing an owned handle held in actor state") && stderr.contains("Sink"),
+        "explicit close of a state-held handle must be refused fail-closed; got:\n{stderr}"
+    );
+}
+
+/// D5 (overwrite): reassigning an owned handle actor-state field (`var sink`;
+/// `sink = <fresh>`) is refused fail-closed — the previous handle would leak and
+/// the new one be double-owned by teardown.
+#[test]
+fn overwrite_of_state_field_handle_is_refused() {
+    let source = r#"import std::stream;
+
+actor Writer {
+    var sink: stream.Sink<string>;
+
+    receive fn reset() {
+        let (s, _i) = stream.pipe(4);
+        sink = s;
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(4);
+    let w = spawn Writer(sink: sink);
+    w.reset();
+    match input.recv() {
+        Some(s) => println(s),
+        None => println("eof"),
+    }
+}
+"#;
+    let stderr = compile_expect_refusal("state_field_overwrite_refused", source);
+    assert!(
+        stderr.contains("overwriting an owned handle in actor state"),
+        "overwriting a state-held handle must be refused fail-closed; got:\n{stderr}"
+    );
+}
+
+/// D3 (fail-closed boundary): reusing a handle AFTER it was moved into a spawn
+/// stays a hard move-checker error — the spawn consumed it.
+#[test]
+fn reuse_of_handle_after_spawn_is_refused() {
+    let source = r#"import std::stream;
+
+actor Writer {
+    let sink: stream.Sink<string>;
+    receive fn put(item: string) { sink.send(item); }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(4);
+    let w = spawn Writer(sink: sink);
+    sink.send("after-move");
+    match input.recv() {
+        Some(s) => println(s),
+        None => println("eof"),
+    }
+}
+"#;
+    let stderr = compile_expect_refusal("reuse_after_spawn_refused", source);
+    assert!(
+        stderr.contains("moved value") || stderr.contains("consumed"),
+        "reusing a handle after spawn must stay a move-checker error; got:\n{stderr}"
     );
 }

@@ -1,0 +1,21 @@
+// Reject: a `Vec` whose element is itself a heap-owning collection
+// (`Vec<Vec<string>>`) is outside the supported wire-body floor. Heap-owning
+// record / enum elements ride the owned Vec ABI, but an owned Vec OF collections
+// needs the base language's recursive owned clone/drop thunk synthesis, which is
+// not implemented yet: a direct `Vec<Vec<string>>` aborts at runtime with a
+// missing element-layout descriptor even outside the codec, and the checker
+// already rejects the analogous `Vec<record-with-a-collection-field>`. The CBOR
+// codec fails closed at codegen-front validation rather than emitting an element
+// codec that would runtime-panic on the owned nested-Vec ABI.
+#[wire]
+type Grid {
+    rows: Vec<Vec<string>> @1,
+    n: i64 @2,
+}
+
+fn main() -> i64 {
+    let rows: Vec<Vec<string>> = Vec::new();
+    let g = Grid { rows: rows, n: 5 };
+    let back = Grid.decode(g.encode());
+    back.n
+}

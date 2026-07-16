@@ -7,8 +7,11 @@
 //! reference differential (`hew-mir` `coarse_verdict_differential`) proves the
 //! boolean verdicts byte-identical; this harness proves the EMITTED elaborated
 //! MIR (including drop plans) of the fixtures that exercise those consumers is
-//! byte-identical to baselines generated at the branch base
-//! (`3683c2ac5`, `hew compile --dump-mir elab`, no normalization).
+//! identical to baselines generated at the branch base (`3683c2ac5`,
+//! `hew compile --dump-mir elab`) under ONE normalization rule: the dump's
+//! FUNCTION ORDER is nondeterministic (map iteration), so both sides are
+//! split into per-function chunks and sorted by signature line before the
+//! byte comparison; intra-function text must match exactly.
 //!
 //! Fail-closed manifest discipline:
 //! - every manifest row's fixture AND baseline file must exist (missing →
@@ -104,16 +107,78 @@ fn funcupdate_reassign_elab_mir_matches_committed_baselines() {
         );
         let live = String::from_utf8(output.stdout).expect("utf-8 MIR dump");
 
+        let expected_norm = normalize_fn_order(&expected);
+        let live_norm = normalize_fn_order(&live);
         assert!(
-            live == expected,
+            live_norm == expected_norm,
             "elaborated MIR for `{fixture}` diverged from the committed baseline \
              `{baseline}` (generated at 3683c2ac5). A funcupdate/reassign consumer's \
              lowering or drop plan CHANGED — this is the Coarse-drift signal the boolean \
              differential cannot see. If the change is intended and reviewed, regenerate \
-             the baseline per the manifest header. First differing line:\n{}",
-            first_diff(&expected, &live)
+             the baseline per the manifest header. First differing line (after \
+             fn-order normalization):\n{}",
+            first_diff(&expected_norm, &live_norm)
         );
     }
+}
+
+/// Split a dump into per-function chunks (a chunk starts at a column-0
+/// `fn ` line), canonicalize the run-varying ids inside each chunk, sort the
+/// chunks by signature line, and rejoin. The two recorded normalizations
+/// (see the manifest header): (1) dump FUNCTION ORDER is nondeterministic
+/// (map iteration); (2) `BindingId(n)` / `SiteId(n)` values depend on module
+/// iteration order, so each is renumbered per chunk in first-occurrence
+/// order. Everything else must match byte-for-byte — opcodes, drop plans,
+/// local structure.
+fn normalize_fn_order(dump: &str) -> String {
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for line in dump.lines() {
+        if line.starts_with("fn ") && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    let mut chunks: Vec<String> = chunks
+        .iter()
+        .map(|c| canonicalize_ids(&canonicalize_ids(c, "BindingId("), "SiteId("))
+        .collect();
+    chunks.sort();
+    chunks.concat()
+}
+
+/// Renumber every `<marker>N)` occurrence in first-occurrence order
+/// (`<marker>#0)`, `<marker>#1)`, …) so run-varying id assignment cannot
+/// produce a false diff while any structural change still does.
+fn canonicalize_ids(chunk: &str, marker: &str) -> String {
+    let mut out = String::with_capacity(chunk.len());
+    let mut map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut rest = chunk;
+    while let Some(pos) = rest.find(marker) {
+        let start = pos + marker.len();
+        let digits: String = rest[start..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if digits.is_empty() {
+            out.push_str(&rest[..start]);
+            rest = &rest[start..];
+            continue;
+        }
+        let next = map.len();
+        let id = *map.entry(digits.clone()).or_insert(next);
+        out.push_str(&rest[..pos]);
+        out.push_str(marker);
+        out.push('#');
+        out.push_str(&id.to_string());
+        rest = &rest[start + digits.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn first_diff(expected: &str, live: &str) -> String {

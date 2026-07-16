@@ -2,8 +2,11 @@
 #
 # generating-revision: 3683c2ac5db3df2bdaa0dc16ba74012b0d20e9c8 (origin/main, the branch base)
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
-# normalization: none — the comparison is byte-for-byte; the dump is deterministic
-#   at a fixed revision, so any difference is a real lowering/drop-plan change.
+# normalization: fn-order sort ONLY — the dump's function ORDER is
+#   nondeterministic (map iteration), so the harness splits both sides into
+#   per-function chunks (column-0 `fn ` lines) and sorts by signature line
+#   before comparing; INTRA-function text is compared byte-for-byte, so any
+#   difference is a real lowering/drop-plan change.
 #
 # Purpose: the Coarse freshness summary (`compute_fn_returns_fresh_owner` /
 # `return_value_may_alias_borrow`) feeds the destructive-funcupdate base gate

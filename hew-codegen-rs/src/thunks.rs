@@ -842,13 +842,12 @@ pub(crate) fn tuple_thunk_key(elems: &[ResolvedTy]) -> String {
 /// The drop thunk loads the slot's handle and frees it (the free primitives
 /// no-op on null, so a moved-out/cleared slot is safe).
 pub(crate) fn emit_collection_handle_thunk_bodies<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
     key: &str,
     clone_sym: &'static str,
     drop_sym: &'static str,
 ) -> CodegenResult<()> {
-    let ctx = fn_ctx.ctx;
-    let llvm_mod = fn_ctx.llvm_mod;
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i32_ty = ctx.i32_type();
 
@@ -934,14 +933,14 @@ pub(crate) fn emit_collection_handle_thunk_bodies<'ctx>(
 /// the bodies already exist (a tuple shape may be referenced by multiple owned
 /// Vecs).
 pub(crate) fn emit_tuple_inplace_thunk_bodies<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    regs: OwnedElemRegistries<'_, 'ctx>,
     tuple_key: &str,
     elems: &[ResolvedTy],
     tuple_llvm_ty: BasicTypeEnum<'ctx>,
 ) -> CodegenResult<()> {
-    let ctx = fn_ctx.ctx;
-    let llvm_mod = fn_ctx.llvm_mod;
-    let (tuple_struct, kinds) = tuple_inplace_field_kinds(fn_ctx, tuple_key, elems, tuple_llvm_ty)?;
+    let (tuple_struct, kinds) = tuple_inplace_field_kinds(regs, tuple_key, elems, tuple_llvm_ty)?;
 
     let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
     if clone_fn.count_basic_blocks() == 0 {
@@ -964,7 +963,7 @@ pub(crate) fn emit_tuple_inplace_thunk_bodies<'ctx>(
 /// thunk body is synthesized on demand). Returns `None` for any shape with no
 /// in-place thunk path (primitives, builtins) — the caller must fail closed.
 pub(crate) fn owned_elem_thunk_key(
-    fn_ctx: &FnCtx<'_, '_>,
+    regs: OwnedElemRegistries<'_, '_>,
     elem_ty: &ResolvedTy,
 ) -> Option<(OwnedElemThunkKind, String)> {
     // Tuple element (W5.016 F2): no registry entry — synthesize a structural
@@ -991,7 +990,7 @@ pub(crate) fn owned_elem_thunk_key(
             ),
             ..
         }
-    ) && collection_elem_clone_drop_syms(fn_ctx, elem_ty).is_some()
+    ) && collection_elem_clone_drop_syms(elem_ty).is_some()
     {
         return Some((
             OwnedElemThunkKind::Collection,
@@ -1004,15 +1003,13 @@ pub(crate) fn owned_elem_thunk_key(
     // Enum-first: an owned-payload / recursive enum is the F3/F4 shape.
     let short = short_name(name);
     let enum_key = if args.is_empty() {
-        fn_ctx
-            .enum_layouts
+        regs.enum_layouts
             .iter()
             .find(|el| el.name == *name || short_name(&el.name) == short)
             .map(|el| el.name.clone())
     } else {
         let mangled = mangle_with_shortened_args(short, args);
-        fn_ctx
-            .enum_layouts
+        regs.enum_layouts
             .iter()
             .find(|el| el.name == mangled || el.name == *name)
             .map(|el| el.name.clone())
@@ -1027,7 +1024,7 @@ pub(crate) fn owned_elem_thunk_key(
     // the same short-name registration `resolve_ty`'s fallback resolves the
     // element struct through. State-side machine entries are distinguished
     // from event companions / plain enums by their state-name table.
-    if fn_ctx
+    if regs
         .machine_layouts
         .get(short)
         .is_some_and(|m| m.state_name_table.is_some())
@@ -1042,13 +1039,13 @@ pub(crate) fn owned_elem_thunk_key(
     } else {
         mangle_with_shortened_args(short_name(name), args)
     };
-    if fn_ctx
+    if regs
         .record_field_resolved_tys
         .contains_key(lookup_key.as_str())
     {
         return Some((OwnedElemThunkKind::Record, lookup_key));
     }
-    if fn_ctx.record_field_resolved_tys.contains_key(short) {
+    if regs.record_field_resolved_tys.contains_key(short) {
         return Some((OwnedElemThunkKind::Record, short.to_string()));
     }
     None

@@ -1,0 +1,24 @@
+// Validation: the decode-only owned-Vec-element seeding path. `main` NEVER
+// constructs a `Vec<Item>` local — it only decodes `Batch` from bytes produced
+// by a helper. The decode-side owned descriptor references
+// `__hew_record_drop_inplace_Item`; that thunk body is seeded by walking the
+// wire value type's LAYOUT (`collect_wire_value_owned_vec_element_seeds`), not
+// by scanning MIR locals. Without that seed the thunk would be
+// declared-but-undefined and LLVM verify would reject the module. Exit 11 proves
+// the decode-only program links and round-trips.
+#[wire]
+type Item { name: string @1; }
+#[wire]
+type Batch { items: Vec<Item> @1; seq: i64 @2; }
+
+fn source_bytes() -> bytes {
+    let xs: Vec<Item> = Vec::new();
+    xs.push(Item { name: "seeded-element" });
+    let b = Batch { items: xs, seq: 11 };
+    b.encode()
+}
+
+fn main() -> i64 {
+    let back = Batch.decode(source_bytes());
+    back.seq
+}

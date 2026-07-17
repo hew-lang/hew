@@ -1,20 +1,18 @@
-// Reject: a `Vec` whose element owns heap (here a nested `#[wire]` struct with a
-// `string` field) is outside the supported wire-body floor. The CBOR codec
-// fails closed at codegen-front validation rather than emitting an element
-// codec that could leak or mis-free the owned element heap on a malformed
-// decode. Scalar and heap-free-record `Vec` elements are supported.
-#[wire]
-type Inner {
-    name: string @1,
-}
-
+// Reject: a `Vec` whose element is an `Option` with a heap-owning payload
+// (`Option<string>`) is outside the supported wire-body floor. Heap-owning
+// record / enum / nested-collection elements now ride the owned Vec ABI, but the
+// `Option` null-encoding combined with an owned-element backing store is a
+// distinct, unproven shape — the CBOR codec fails closed at codegen-front
+// validation rather than emitting an element codec that could mis-free the owned
+// payload on a malformed decode. (bytes, indirect-enum, and HashMap/HashSet
+// elements remain rejected the same way.)
 #[wire]
 type Holder {
-    xs: Vec<Inner> @1,
+    xs: Vec<Option<string>> @1,
 }
 
 fn main() -> i64 {
-    let xs: Vec<Inner> = Vec::new();
+    let xs: Vec<Option<string>> = Vec::new();
     let h = Holder { xs: xs };
     let back = Holder.decode(h.encode());
     back.xs.len()

@@ -5260,6 +5260,18 @@ pub(crate) fn intern_runtime_decl<'ctx>(
 }
 
 impl<'a, 'ctx> FnCtx<'a, 'ctx> {
+    /// Borrow the three module-wide registries the owned-Vec-element thunk-key
+    /// resolver / descriptor builder need, as an [`OwnedElemRegistries`]. Lets a
+    /// per-function `FnCtx` caller hand the same authority the wire codec reaches
+    /// via the raw registries.
+    pub(crate) fn owned_elem_registries(&self) -> OwnedElemRegistries<'a, 'ctx> {
+        OwnedElemRegistries {
+            enum_layouts: self.enum_layouts,
+            machine_layouts: self.machine_layouts,
+            record_field_resolved_tys: self.record_field_resolved_tys,
+        }
+    }
+
     /// Declare-then-call the runtime symbol `sym`, returning the raw
     /// `CallSiteValue`. This is the single seam that collapses the canonical
     /// runtime-call idiom

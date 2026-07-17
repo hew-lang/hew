@@ -4493,6 +4493,11 @@ run_accept_expect_status "wire_cbor_option_none" 42
 run_accept_expect_status "wire_cbor_vec_int" 42
 run_accept_expect_status "wire_cbor_vec_struct" 42
 run_accept_expect_status "wire_cbor_vec_string" 42
+# Owned-element Vec bodies (heap-owning record / enum) ride the owned Vec ABI
+# through the CBOR codec.
+run_accept_expect_status "wire_cbor_vec_owned_struct" 7
+run_accept_expect_status "wire_cbor_vec_owned_enum" 2
+run_accept_expect_status "wire_cbor_vec_owned_decode_only" 11
 run_accept_expect_status "wire_cbor_empty_collections" 42
 run_accept_expect_status "wire_cbor_nested_struct" 42
 run_accept_expect_status "wire_cbor_enum_unit" 42
@@ -4527,8 +4532,12 @@ expect_check_fail_contains \
     "wire_cbor_option_option_rejected"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_owned_compound_rejected.hew" \
-    "owned-compound element" \
+    "outside the supported wire-body floor" \
     "wire_cbor_vec_owned_compound_rejected"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_nested_rejected.hew" \
+    "outside the supported wire-body floor" \
+    "wire_cbor_vec_nested_rejected"
 
 # ---------------------------------------------------------------------------
 # Reserved-name shadowing.

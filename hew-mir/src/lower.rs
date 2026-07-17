@@ -42103,6 +42103,30 @@ fn string_field_load_producer_dest(instr: &Instr, locals: &[ResolvedTy]) -> Opti
     }
 }
 
+/// The dest of a wire-codec text serialize (`value.to_json()` / `value.to_yaml()`
+/// → `string`) — a fresh, solely-owned `string` the caller owes exactly one
+/// `hew_string_drop`. Discriminate by the DEST TYPE (`string`), not by direction:
+/// `ToJson`/`ToYaml` are the only text-serialize directions whose dest is a leaf
+/// `string` (`From*`'s dest is `Result<T, string>`, `Encode`'s is `bytes`,
+/// `Decode`'s is the value type). `Packet.from_json(p.to_json())` leaked the
+/// `to_json` temp before this admission.
+fn wire_codec_string_producer_dest(instr: &Instr, locals: &[ResolvedTy]) -> Option<Place> {
+    match instr {
+        Instr::WireCodec { dest, .. } if string_place_is_typed(*dest, locals) => Some(*dest),
+        _ => None,
+    }
+}
+
+/// `true` when `instr` is a wire-codec deserialize (`Type.from_json(s)` /
+/// `Type.from_yaml(s)`) whose `operand` BORROWS the leaf-`string` temp `t`:
+/// codegen's `lower_wire_codec_instr` loads the operand pointer to feed the text
+/// parser and never frees it (model.rs: "The `operand` is borrowed"). So a fresh
+/// `string` temp read only as a `from_json`/`from_yaml` operand keeps its single
+/// drop obligation and is released once, immediately after the parse.
+fn is_wire_codec_borrowing_string_use(instr: &Instr, t: u32) -> bool {
+    matches!(instr, Instr::WireCodec { operand, .. } if place_refs_local(*operand, t))
+}
+
 /// `true` when `instr` is a string comparison (`==`/`!=`/`<`/`<=`/`>`/`>=`)
 /// that **borrows** the leaf-`string` temp `t` as an operand. String compares
 /// lower to `Instr::IntCmp { pred, lhs, rhs }` (see `lower_binary`); codegen
@@ -42657,6 +42681,7 @@ fn collect_nested_fresh_string_temp_drops(
             // load is never seeded.
             if let Some(dest) = fresh_string_producer_dest(instr)
                 .or_else(|| string_field_load_producer_dest(instr, locals))
+                .or_else(|| wire_codec_string_producer_dest(instr, locals))
             {
                 if let Some(t) = base_local(dest) {
                     defs.push((
@@ -42798,6 +42823,7 @@ fn nested_fresh_string_temp_drop(
             let ub = *ub;
             let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
             let borrowing_use = is_borrowing_string_cmp_instr(use_instr, t)
+                || is_wire_codec_borrowing_string_use(use_instr, t)
                 || (is_fresh_string_producer_def(def, blocks, locals, t)
                     && is_borrowing_string_concat_instr_use(use_instr, t));
             if !borrowing_use {
@@ -43055,16 +43081,16 @@ mod nested_fresh_string_temp_drop_admission {
     }
 
     #[test]
-    fn concat_temp_read_only_by_wire_from_json_is_not_discard_dropped() {
+    fn concat_temp_read_only_by_wire_from_json_gets_drop_after_the_parse() {
         // `Packet.from_json(a + b)`: the fresh concat temp's ONLY reader is
-        // `Instr::WireCodec` (FromJson operand) — a borrow-excluded read that
-        // `instr_source_places` hides. A source-places-based use table
-        // registered ZERO uses, took the discard branch, and spliced
-        // `hew_string_drop` immediately after the concat — the parse then read
-        // a freed buffer (silent wrong-result `Err`, while the named
-        // `let joined = a + b` sibling was correct). The reads-based table
-        // sees the WireCodec use-site; it is not an admissible borrowing use,
-        // so the temp fails CLOSED to the leak direction: NO drop is spliced.
+        // `Instr::WireCodec` (FromJson operand), a borrowing use — codegen loads
+        // the operand pointer to feed the text parser and never frees it. The
+        // temp keeps its single drop obligation past the parse, so it is released
+        // exactly once immediately AFTER the WireCodec (idx 2), never at the
+        // discard site (idx 1) before the parse reads it — that ordering is the
+        // UAF this collector must never produce. Before this admission the temp
+        // leaked one buffer per call (the confound the leak oracle worked around
+        // by naming `let raw = …`).
         let blocks = vec![block(
             0,
             vec![
@@ -43079,11 +43105,98 @@ mod nested_fresh_string_temp_drop_admission {
             Terminator::Return,
         )];
         let locals = locals_with(&[(5, user_record_ty())]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(0, 2, Place::Local(2), ResolvedTy::String)],
+            "a fresh string temp borrowed once by a from_json parse must be \
+             dropped exactly once immediately after the parse, never before it"
+        );
+    }
+
+    #[test]
+    fn to_json_temp_read_only_by_from_json_gets_drop_after_the_parse() {
+        // `Packet.from_json(p.to_json())`: `to_json` is a WireCodec text
+        // serialize producing a fresh `string`; `from_json` borrows it. The
+        // producer temp gains exactly one drop after the parse.
+        let blocks = vec![block(
+            0,
+            vec![
+                Instr::WireCodec {
+                    dest: Place::Local(2),
+                    operand: Place::Local(0),
+                    direction: hew_types::WireCodecDirection::ToJson,
+                    value_ty: user_record_ty(),
+                },
+                Instr::WireCodec {
+                    dest: Place::Local(5),
+                    operand: Place::Local(2),
+                    direction: hew_types::WireCodecDirection::FromJson,
+                    value_ty: user_record_ty(),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let locals = locals_with(&[(0, user_record_ty()), (5, user_record_ty())]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(0, 2, Place::Local(2), ResolvedTy::String)],
+            "the to_json temp is a fresh owned string borrowed once by from_json; \
+             it must be dropped once immediately after the parse"
+        );
+    }
+
+    #[test]
+    fn discarded_to_json_temp_dropped_right_after_producer() {
+        // `p.to_json();` — a discarded text-serialize temp (zero uses) drops
+        // immediately after the producer instruction.
+        let blocks = vec![block(
+            0,
+            vec![Instr::WireCodec {
+                dest: Place::Local(2),
+                operand: Place::Local(0),
+                direction: hew_types::WireCodecDirection::ToJson,
+                value_ty: user_record_ty(),
+            }],
+            Terminator::Return,
+        )];
+        let locals = locals_with(&[(0, user_record_ty())]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(0, 1, Place::Local(2), ResolvedTy::String)],
+            "a discarded to_json string temp is dropped right after its producer"
+        );
+    }
+
+    #[test]
+    fn named_to_json_binding_stays_out_of_string_collector() {
+        // `let s = p.to_json(); Packet.from_json(s)` — the to_json result is a
+        // binding local, released by scope-exit derivation; the bare-temp
+        // collector must not double-claim it.
+        let blocks = vec![block(
+            0,
+            vec![
+                Instr::WireCodec {
+                    dest: Place::Local(2),
+                    operand: Place::Local(0),
+                    direction: hew_types::WireCodecDirection::ToJson,
+                    value_ty: user_record_ty(),
+                },
+                Instr::WireCodec {
+                    dest: Place::Local(5),
+                    operand: Place::Local(2),
+                    direction: hew_types::WireCodecDirection::FromJson,
+                    value_ty: user_record_ty(),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let locals = locals_with(&[(0, user_record_ty()), (5, user_record_ty())]);
+        let binding_locals: HashMap<BindingId, Place> =
+            [(BindingId(2), Place::Local(2))].into_iter().collect();
         assert!(
-            collect(&blocks, &locals, &HashMap::new()).is_empty(),
-            "a string temp whose only reader is a WireCodec parse must not take \
-             the discard drop — an immediate post-producer hew_string_drop \
-             would free the buffer before the parse reads it"
+            collect(&blocks, &locals, &binding_locals).is_empty(),
+            "a to_json result bound to a let belongs to scope-exit drop \
+             derivation, not the bare-temp collector"
         );
     }
 
@@ -43476,6 +43589,15 @@ fn fresh_bytes_producer_instr_dest(instr: &Instr) -> Option<Place> {
         {
             call.dest()
         }
+        // A wire-codec serialize hands the caller a fresh, solely-owned CBOR
+        // buffer (`value.encode() -> bytes`, rc==1, one `hew_bytes_drop` owed).
+        // Discriminate by the DEST TYPE at the caller's `bytes_place_is_typed`
+        // gate rather than by direction: `Encode` is the only direction whose
+        // dest is `bytes` (`Decode`'s dest is the value type, `ToJson`/`ToYaml`'s
+        // is `string`, `From*`'s is `Result`), so a bytes-typed WireCodec dest is
+        // exactly the fresh-owned CBOR temp. `Packet.decode(p.encode())` /
+        // `p.encode();` leaked this buffer before this admission.
+        Instr::WireCodec { dest, .. } => Some(*dest),
         _ => None,
     }
 }
@@ -43655,6 +43777,14 @@ fn bytes_temp_instr_use_is_borrow_only(instr: &Instr, t: u32) -> bool {
         Instr::CallRuntimeAbi(call) => {
             bytes_temp_call_use_is_borrow_only(call.symbol(), call.args(), t)
         }
+        // A wire-codec deserialize BORROWS its `operand` bytes: codegen's
+        // `lower_wire_codec_instr` loads the operand pointer to feed
+        // `__hew_deserialize_<key>(data, len, ..)` and never frees it (model.rs:
+        // "The `operand` is borrowed"). So a fresh bytes temp read only as a
+        // decode operand keeps its single drop obligation and is released once
+        // here, immediately after the decode. `Packet.decode(mk())` /
+        // `Packet.decode(p.encode())` leaked the operand before this admission.
+        Instr::WireCodec { operand, .. } => place_refs_local(*operand, t),
         _ => false,
     }
 }
@@ -44123,16 +44253,16 @@ mod nested_fresh_bytes_temp_drop_admission {
     }
 
     #[test]
-    fn usercall_result_read_only_by_wire_decode_is_not_discard_dropped() {
+    fn usercall_result_read_only_by_wire_decode_gets_drop_after_the_decode() {
         // `Packet.decode(mk())`: the fresh bytes temp's ONLY reader is
-        // `Instr::WireCodec` (decode operand). `instr_source_places` deliberately
-        // excludes that read (a borrow-exclusion so NAMED bindings keep their
-        // scope-exit drop) — a source-places-based use table would register ZERO
-        // uses, take the discard branch, and splice `hew_bytes_drop` at the
-        // front of the continuation BEFORE the decode reads the buffer (the
-        // reproduced use-after-free). The reads-based table sees the WireCodec
-        // use-site; it is not an admissible borrowing bytes runtime op, so the
-        // temp fails CLOSED to the leak direction: NO drop is spliced.
+        // `Instr::WireCodec` (decode operand), a borrowing use — codegen loads
+        // the operand pointer to feed `__hew_deserialize_<key>` and never frees
+        // it. The temp keeps its single drop obligation past the decode, so it is
+        // released exactly once immediately AFTER the WireCodec (front of the
+        // single-predecessor continuation, at idx 1), never at a discard site
+        // before the decode reads the buffer — that ordering would be the
+        // use-after-free this collector must never produce. Before this admission
+        // the temp leaked one CBOR buffer per call.
         let blocks = vec![
             block(0, vec![], user_call("mk", 2, 1)),
             block(
@@ -44147,11 +44277,106 @@ mod nested_fresh_bytes_temp_drop_admission {
             ),
         ];
         let locals = bytes_locals_with(&[(5, ResolvedTy::named_user("Packet", vec![]))]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(1, 1, Place::Local(2), ResolvedTy::Bytes)],
+            "a bytes temp borrowed once by a WireCodec decode must be dropped \
+             exactly once immediately after the decode, never before it"
+        );
+    }
+
+    #[test]
+    fn encode_then_decode_anonymous_temp_gets_drop_after_the_decode() {
+        // `Packet.decode(p.encode())`: `p.encode()` is a WireCodec serialize
+        // producing a fresh CBOR bytes temp (_2), immediately borrowed as the
+        // `Packet.decode(_2)` operand in the SAME block. The temp is released once
+        // right after the decode instruction (idx 2). This is the anonymous
+        // round-trip shape the leak oracle measures at exact-zero.
+        let blocks = vec![block(
+            0,
+            vec![
+                Instr::WireCodec {
+                    dest: Place::Local(2),
+                    operand: Place::Local(0),
+                    direction: hew_types::WireCodecDirection::Encode,
+                    value_ty: ResolvedTy::named_user("Packet", vec![]),
+                },
+                Instr::WireCodec {
+                    dest: Place::Local(5),
+                    operand: Place::Local(2),
+                    direction: hew_types::WireCodecDirection::Decode,
+                    value_ty: ResolvedTy::named_user("Packet", vec![]),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let locals = bytes_locals_with(&[
+            (0, ResolvedTy::named_user("Packet", vec![])),
+            (5, ResolvedTy::named_user("Packet", vec![])),
+        ]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(0, 2, Place::Local(2), ResolvedTy::Bytes)],
+            "the encode temp is a fresh owned CBOR buffer borrowed once by decode; \
+             it must be dropped once immediately after the decode"
+        );
+    }
+
+    #[test]
+    fn discarded_encode_temp_dropped_right_after_producer() {
+        // `p.encode();` — a discarded WireCodec serialize temp (zero uses) drops
+        // immediately after the producer instruction (straight-line).
+        let blocks = vec![block(
+            0,
+            vec![Instr::WireCodec {
+                dest: Place::Local(2),
+                operand: Place::Local(0),
+                direction: hew_types::WireCodecDirection::Encode,
+                value_ty: ResolvedTy::named_user("Packet", vec![]),
+            }],
+            Terminator::Return,
+        )];
+        let locals = bytes_locals_with(&[(0, ResolvedTy::named_user("Packet", vec![]))]);
+        assert_eq!(
+            collect(&blocks, &locals, &HashMap::new()),
+            vec![(0, 1, Place::Local(2), ResolvedTy::Bytes)],
+            "a discarded encode CBOR temp is dropped right after its producer"
+        );
+    }
+
+    #[test]
+    fn named_encode_binding_stays_out_of_bytes_collector() {
+        // `let raw = p.encode(); Packet.decode(raw)` — the encode result is a
+        // binding local, released by the scope-exit `derive_local_bytes_drop_allowed`
+        // path; the bare-temp collector must not double-claim it.
+        let blocks = vec![block(
+            0,
+            vec![
+                Instr::WireCodec {
+                    dest: Place::Local(2),
+                    operand: Place::Local(0),
+                    direction: hew_types::WireCodecDirection::Encode,
+                    value_ty: ResolvedTy::named_user("Packet", vec![]),
+                },
+                Instr::WireCodec {
+                    dest: Place::Local(5),
+                    operand: Place::Local(2),
+                    direction: hew_types::WireCodecDirection::Decode,
+                    value_ty: ResolvedTy::named_user("Packet", vec![]),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let locals = bytes_locals_with(&[
+            (0, ResolvedTy::named_user("Packet", vec![])),
+            (5, ResolvedTy::named_user("Packet", vec![])),
+        ]);
+        let binding_locals: HashMap<BindingId, Place> =
+            [(BindingId(2), Place::Local(2))].into_iter().collect();
         assert!(
-            collect(&blocks, &locals, &HashMap::new()).is_empty(),
-            "a bytes temp whose only reader is a WireCodec decode must not take \
-             the discard drop — a front-of-continuation hew_bytes_drop would free \
-             the buffer before the decode reads it (use-after-free)"
+            collect(&blocks, &locals, &binding_locals).is_empty(),
+            "a named `let raw = p.encode()` binding is released by scope-exit \
+             derivation, not the bare-temp collector"
         );
     }
 

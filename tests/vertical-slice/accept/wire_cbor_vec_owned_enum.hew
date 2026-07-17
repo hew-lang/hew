@@ -1,0 +1,30 @@
+// Validation: a `Vec<#[wire] enum>` whose ELEMENT is an owned-payload enum
+// (a `string`-bearing variant) round-trips through the CBOR body codec on the
+// OWNED vec ABI. The enum element's clone/drop route through
+// `__hew_enum_{clone,drop}_inplace_<Payload>`, seeded via the owned descriptor,
+// so `hew_vec_free` releases each decoded variant's owned string. Exit 2 (the
+// count of `Full` payloads) proves the array round-trips with the right shape.
+#[wire]
+enum Payload { Empty; Full(string); }
+#[wire]
+type Bag { items: Vec<Payload> @1; n: i64 @2; }
+
+fn main() -> i64 {
+    let xs: Vec<Payload> = Vec::new();
+    xs.push(Payload::Full("first-owned"));
+    xs.push(Payload::Empty);
+    xs.push(Payload::Full("second-owned"));
+    let b = Bag { items: xs, n: 3 };
+    let back = Bag.decode(b.encode());
+    if back.items.len() != 3 { return 100; }
+    var full: i64 = 0;
+    var i: i64 = 0;
+    while i < 3 {
+        match back.items[i] {
+            Payload::Full(_) => { full = full + 1; }
+            Payload::Empty => {}
+        }
+        i = i + 1;
+    }
+    full
+}

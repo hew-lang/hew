@@ -1,0 +1,21 @@
+// Validation: a `Vec<#[wire] struct>` whose ELEMENT owns heap (a `string`
+// field) round-trips through the CBOR body codec. The element vec is an OWNED
+// vec (`ownership_kind = LayoutManaged`) — the same ABI `Vec::new` builds for a
+// `Vec<owned>` — so the codec reads slots with `hew_vec_get_owned` on encode and
+// reconstructs via `hew_vec_new_with_elem_layout` + `hew_vec_push_owned_move` on
+// decode. The decoded elements' owned strings are released by the vec's per-
+// element `drop_fn`. Exit 7 (the scalar `seq`) proves the round-trip; the
+// element strings are verified by the leak oracle's no-per-frame-leak slope.
+#[wire]
+type Item { name: string @1; }
+#[wire]
+type Batch { items: Vec<Item> @1; seq: i64 @2; }
+
+fn main() -> i64 {
+    let xs: Vec<Item> = Vec::new();
+    xs.push(Item { name: "alpha-owned" });
+    xs.push(Item { name: "beta-owned" });
+    let b = Batch { items: xs, seq: 7 };
+    let back = Batch.decode(b.encode());
+    back.seq
+}

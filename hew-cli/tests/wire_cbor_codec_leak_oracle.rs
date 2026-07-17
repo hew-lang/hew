@@ -42,6 +42,16 @@
 //!     once (no double-free) and that the shell free does not race the field
 //!     drop.
 //!
+//!   * **Owned-Vec-element decode-failure partial free-on-error**
+//!     (`vec_owned_struct_decode_failure_frees_partials_no_double_free` and its
+//!     enum sibling `vec_owned_enum_decode_failure_frees_partials_no_double_free`):
+//!     the headline path of the owned-Vec-element codec change. A container whose
+//!     field 1 is a `Vec<owned>` decodes the full owned Vec (allocating each
+//!     element's heap) before a trailing scalar field latches failure, so the
+//!     `fail_bb` must drop the whole owned Vec — releasing every already-decoded
+//!     element via the vec's per-element `drop_fn` — exactly once before the
+//!     shell free. Same poisoned-allocator trap + no-double-free assertion.
+//!
 //!   * **Out-of-range enum-tag decode free (actor context)**
 //!     (`actor_oob_enum_tag_decode_frees_reader_and_shell_no_excess_slope`): an
 //!     unknown enum wire tag traps fail-closed; inside an actor `receive`
@@ -53,27 +63,13 @@
 //!     must be ~0. Pre-fix the unknown-tag path took an inline trap that unwound
 //!     past the thunk's reader + shell free (~5 nodes/frame).
 //!
-//! ## Isolating the codec from two pre-existing, out-of-scope drop confounds
+//! ## Isolating the codec from a pre-existing, out-of-scope drop confound
 //!
-//! Both fixtures are written to measure ONLY the codec's own drop glue. Two
-//! unrelated, pre-existing leak/suppression behaviours would otherwise mask or
-//! forge a codec result:
+//! The round-trip fixtures are written to measure ONLY the codec's own drop
+//! glue. One unrelated, pre-existing suppression behaviour would otherwise mask
+//! or forge a codec result:
 //!
-//!   1. **Unnamed `bytes` temporary scope-exit drop.** A `bytes` value produced
-//!      by a call and consumed as an UNNAMED temporary (e.g.
-//!      `T.decode(v.encode())` or the unrelated `"x".to_bytes().len()`) is not
-//!      released at the end of its statement — one leaked buffer per frame.
-//!      This reproduces on a clean base build with `.to_bytes()` (no codec on
-//!      the path), so it is a general MIR temporary-drop derivation gap, NOT a
-//!      codec defect: the existing `derive_local_bytes_drop_allowed` admission
-//!      in `hew-mir/src/lower.rs` covers NAMED bytes locals (see
-//!      `bytes_drop_leak_oracle::bytes_local_loop_no_per_frame_leak_slope`) but
-//!      not anonymous temporaries. The round-trip fixture therefore BINDS the
-//!      encoded bytes to a named local (`let raw = p.encode();`) so the buffer
-//!      drops on the loop back-edge and the slope reflects only the decoded
-//!      value's drop.
-//!
-//!   2. **Managed-aggregate field-read drop suppression** (the `string_field_load`
+//!   1. **Managed-aggregate field-read drop suppression** (the `string_field_load`
 //!      confound). Reading an owned field OUT of an owned aggregate suppresses
 //!      that aggregate's own in-place field drop (documented out-of-scope in
 //!      `string_field_load_leak_oracle`). The fixture therefore reads ONLY a
@@ -84,16 +80,25 @@
 //!
 //! ## Error-path under-free disposition
 //!
-//! `.decode()` traps (SIGTRAP/SIGILL) on a malformed stream — it does not
-//! return a `Result` — so `leaks --atExit` (which needs a normal exit to run
-//! its hook) cannot snapshot the failing decode for an UNDER-free slope. The
-//! error-path under-free guarantee is instead established structurally: the
-//! `fail_bb` calls `emit_de_drop_owned(dst)` over the SAME null-safe drop
-//! helpers (`hew_string_drop`, `hew_vec_free`, `__hew_record_drop_inplace_*`)
-//! that the success-path slope proves leak-free, walking every field of the
-//! zero-initialised shell (unwritten fields are null and short-circuit) before
-//! `free(dst)`. The no-DOUBLE-free half is proven dynamically here under the
-//! poisoned-allocator triple.
+//! `.decode()` traps (SIGTRAP/SIGILL) on a malformed stream in `fn main` — it
+//! does not return a `Result` — so `leaks --atExit` (which needs a normal exit
+//! to run its hook) cannot snapshot THAT process for an UNDER-free slope. The
+//! `assert_decode_failure_traps_no_double_free` oracles therefore prove only the
+//! no-DOUBLE-free half (the poisoned-allocator triple aborts on an over-free).
+//!
+//! The UNDER-free half is proven dynamically by
+//! `vec_owned_{struct,enum}_decode_failure_frees_partials_no_under_free`: they
+//! run the SAME failing decode inside an actor `receive` handler, where the
+//! supervisor's crash-recovery `siglongjmp` catches each trap and keeps the
+//! process alive to a normal exit `leaks --atExit` can snapshot. A `fail_bb`
+//! that skipped `emit_de_drop_owned(dst)` leaks the already-decoded owned Vec +
+//! its element strings on every failed message; a DIFFERENTIAL slope against an
+//! in-range (successful-decode) baseline cancels the per-spawn actor-cell floor
+//! and the success-path owned-Vec drop, leaving the `fail_bb`'s own under-free —
+//! which must be ~0. `emit_de_drop_owned` walks the zero-initialised shell over
+//! the SAME null-safe drop helpers (`hew_string_drop`, `hew_vec_free`,
+//! `__hew_record_drop_inplace_*`) the success-path slope proves leak-free
+//! (unwritten fields are null and short-circuit) before `free(dst)`.
 //!
 //! ## Slope methodology + skip behaviour
 //!
@@ -133,10 +138,12 @@ const SLOPE_TOLERANCE: usize = 5;
 /// Round-trip fixture: build a struct carrying an owned `string`, an owned
 /// `Vec<string>` (with owned elements), an owned nested `#[wire]` struct (with
 /// an owned nested string), plus a scalar `seq` field. Encode it to a NAMED
-/// bytes local (so the encoded buffer drops on the back-edge — see confound 1),
-/// decode it back, and read ONLY the scalar `back.seq` keep-alive (so the
-/// decoded value is held live to scope exit without the field-read drop
-/// suppression — see confound 2). The decoded value's owned string / Vec /
+/// bytes local (the binding path — its scope-exit drop releases the encoded
+/// buffer on the back-edge), decode it back, and read ONLY the scalar
+/// `back.seq` keep-alive (so the decoded value is held live to scope exit
+/// without the field-read drop suppression — see confound 1). The anonymous
+/// form (`Packet.decode(p.encode())`) is now also released — see
+/// `anonymous_encode_temp_round_trip_leaks_exactly_zero`. The decoded value's owned string / Vec /
 /// nested fields must be released by the synthesised value drop on every frame;
 /// a missing drop is a >= 1 leak/frame slope.
 fn round_trip_source(frames: usize) -> String {
@@ -177,10 +184,11 @@ fn round_trip_source(frames: usize) -> String {
 ///
 /// The decoded value is held live by reading the SCALAR sibling field `seq`
 /// (not the `items` Vec) — reading the Vec field itself (`.len()` / `[i]`)
-/// triggers the pre-existing field-read drop-suppression confound that the
-/// existing `round_trip` oracle dodges the same way (it reads `back.seq`, never
-/// `back.tags`). The `raw` encode buffer is a NAMED local so the anonymous-bytes
-/// temporary confound (confound 1) does not add its own per-frame node.
+/// triggers the pre-existing field-read drop-suppression confound (confound 1)
+/// that the existing `round_trip` oracle dodges the same way (it reads
+/// `back.seq`, never `back.tags`). The `raw` encode buffer is a NAMED local
+/// (the binding path); the anonymous form is covered by
+/// `anonymous_encode_temp_round_trip_leaks_exactly_zero`.
 fn vec_struct_round_trip_source(frames: usize) -> String {
     format!(
         "#[wire]\n\
@@ -200,6 +208,95 @@ fn vec_struct_round_trip_source(frames: usize) -> String {
          \x20       let raw = c.encode();\n\
          \x20       let back = Container.decode(raw);\n\
          \x20       total = total + back.seq;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Anchor-2 fixture — the ANONYMOUS encode temporary. The round-trip binds the
+/// encode result inline (`Packet.decode(p.encode())`) with NO `let raw`, so the
+/// fresh CBOR buffer is a bare temporary consumed only as the decode operand.
+/// Before the fresh-temp-drop admission this leaked exactly one buffer per frame
+/// (Probe B: 50 leaks/50 frames); the named-binding control measured 0, proving
+/// 0 is the real floor — so this asserts an EXACT `== 0` at both frame counts,
+/// not a slope tolerance (a slope form would pass a constant-leak regression).
+fn anonymous_encode_temp_round_trip_source(frames: usize) -> String {
+    format!(
+        "#[wire]\n\
+         type Packet {{ label: string @1; seq: i64 @2; }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let p = Packet {{ label: \"payload-label-value\", seq: i }};\n\
+         \x20       let back = Packet.decode(p.encode());\n\
+         \x20       total = total + back.seq;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Anchor-2 fixture — the `mk()` CALL-producer encode temporary. A helper
+/// returns fresh `bytes`; `Packet.decode(mk())` consumes the anonymous call
+/// result straight into the decode. The producer is a `Terminator::Call` (not a
+/// `WireCodec` instruction), so the collector admits it through the terminator-def
+/// path; the decode still borrows the operand. Must leak EXACTLY 0 per frame.
+fn call_producer_temp_round_trip_source(frames: usize) -> String {
+    format!(
+        "#[wire]\n\
+         type Packet {{ label: string @1; seq: i64 @2; }}\n\
+         \n\
+         fn mk(n: i64) -> bytes {{\n\
+         \x20   let p = Packet {{ label: \"payload-label-value\", seq: n }};\n\
+         \x20   p.encode()\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let back = Packet.decode(mk(i));\n\
+         \x20       total = total + back.seq;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Anchor-2 fixture — the STRING-side anonymous temporary. `to_json` mints a
+/// fresh `string`; `Scalar.from_json(p.to_json())` consumes it inline as the
+/// parse operand. The fresh JSON string is a C-heap allocation visible to
+/// `leaks`, so a missing drop of the `to_json` temp shows up as one leaked
+/// buffer per frame. Must leak EXACTLY 0 per frame (the string collector's
+/// `WireCodec` extension).
+///
+/// The wire type is SCALAR-ONLY (no owned fields) on purpose: the JSON *decode*
+/// path does not yet release a decoded value's owned `string` fields (a
+/// pre-existing text-codec drop gap, distinct from this anchor and independent
+/// of the anonymous-temp admission — a NAMED `let s = p.to_json()` control leaks
+/// identically). A scalar-only decoded value owns no heap, so the ONLY per-frame
+/// owned allocation is the `to_json` string this collector must release — the
+/// isolated measurement of the string-collector extension.
+fn anonymous_to_json_temp_round_trip_source(frames: usize) -> String {
+    format!(
+        "#[wire]\n\
+         type Scalar {{ seq: i64 @1; flag: bool @2; }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let p = Scalar {{ seq: i, flag: true }};\n\
+         \x20       match Scalar.from_json(p.to_json()) {{\n\
+         \x20           Ok(back) => {{ total = total + back.seq; }},\n\
+         \x20           Err(_) => {{ total = total + 0; }},\n\
+         \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   total\n\
@@ -235,11 +332,10 @@ const DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
 ///
 /// The decoded value is held live to scope exit by a wildcard `match` (which
 /// neither moves an owned field out — avoiding the field-read drop suppression
-/// confound — nor reads a scalar that does not exist on an enum). The owned
-/// payload must be released by the enum value drop on every frame; a missing
-/// variant-field drop is a >= 1 leak/frame slope. The encoded buffer is bound
-/// to a NAMED local (`raw`) so the anonymous-bytes-temporary confound does not
-/// add its own per-frame node (see confound 1).
+/// confound (confound 1) — nor reads a scalar that does not exist on an enum).
+/// The owned payload must be released by the enum value drop on every frame; a
+/// missing variant-field drop is a >= 1 leak/frame slope. The encoded buffer is
+/// bound to a NAMED local (`raw`, the binding path).
 fn enum_owned_payload_round_trip_source(frames: usize) -> String {
     format!(
         "#[wire]\n\
@@ -288,6 +384,62 @@ const ENUM_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
      \x20   let raw = p.encode();\n\
      \x20   let bad = PayloadBad.decode(raw);\n\
      \x20   match bad { PayloadBad::Empty => 0, PayloadBad::Full(_, n, _) => n, }\n\
+     }\n";
+
+/// Decode-failure fixture for a `Vec<#[wire] struct>` whose ELEMENT owns heap
+/// (a `string` field). Encode a `{ items: Vec<Item> @1; tail: string @2 }`
+/// value, then decode the SAME bytes against a `{ items: Vec<Item> @1; tail:
+/// i64 @2 }` layout. Field 1 (`items`) decodes fully — allocating the owned Vec
+/// plus each element's owned `string` — then field 2 reads an `i64` where the
+/// stream holds a CBOR text head, latching reader failure and driving the
+/// `fail_bb`. The partial shell now holds a fully-decoded owned Vec, so
+/// `fail_bb` must drop that Vec (releasing every already-decoded element string
+/// via the vec's per-element `drop_fn`) exactly once before freeing the shell.
+/// This is the owned-Vec-element half of the error path the headline codec
+/// change admits — distinct from the scalar-string `fail_bb` the sibling
+/// `decode_failure_frees_partials_no_double_free` pins.
+const VEC_OWNED_STRUCT_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
+     type Item { name: string @1; }\n\
+     #[wire]\n\
+     type BatchGood { items: Vec<Item> @1; tail: string @2; }\n\
+     #[wire]\n\
+     type BatchBad { items: Vec<Item> @1; tail: i64 @2; }\n\
+     \n\
+     fn main() -> i64 {\n\
+     \x20   let xs: Vec<Item> = Vec::new();\n\
+     \x20   xs.push(Item { name: \"alpha-owned-element\" });\n\
+     \x20   xs.push(Item { name: \"beta-owned-element\" });\n\
+     \x20   let g = BatchGood { items: xs, tail: \"owned-tail-value\" };\n\
+     \x20   let raw = g.encode();\n\
+     \x20   let bad = BatchBad.decode(raw);\n\
+     \x20   bad.tail\n\
+     }\n";
+
+/// Decode-failure fixture for a `Vec<#[wire] enum>` whose ELEMENT is an
+/// owned-payload enum (a `string`-bearing variant). Encode a `{ items:
+/// Vec<Payload> @1; tail: string @2 }` value, then decode the SAME bytes against
+/// a `{ items: Vec<Payload> @1; tail: i64 @2 }` layout. Field 1 decodes the full
+/// owned Vec — each `Full` element allocates its owned `string` through
+/// `__hew_enum_clone_inplace_Payload` — then field 2 latches on the `i64`-where-
+/// text mismatch, driving the `fail_bb`. The partial shell's owned enum Vec must
+/// be dropped exactly once (each element's variant drop releasing its owned
+/// string) before the shell free — the owned-enum-element error path.
+const VEC_OWNED_ENUM_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
+     enum Payload { Empty; Full(string); }\n\
+     #[wire]\n\
+     type BagGood { items: Vec<Payload> @1; tail: string @2; }\n\
+     #[wire]\n\
+     type BagBad { items: Vec<Payload> @1; tail: i64 @2; }\n\
+     \n\
+     fn main() -> i64 {\n\
+     \x20   let xs: Vec<Payload> = Vec::new();\n\
+     \x20   xs.push(Payload::Full(\"first-owned-element\"));\n\
+     \x20   xs.push(Payload::Empty);\n\
+     \x20   xs.push(Payload::Full(\"second-owned-element\"));\n\
+     \x20   let g = BagGood { items: xs, tail: \"owned-tail-value\" };\n\
+     \x20   let raw = g.encode();\n\
+     \x20   let bad = BagBad.decode(raw);\n\
+     \x20   bad.tail\n\
      }\n";
 
 /// Actor-context out-of-range enum-tag fixture, parameterised by the message
@@ -348,6 +500,154 @@ fn actor_oob_enum_decode_source(frames: usize) -> String {
 /// `Narrow::B(1)` — isolates the codec-independent per-spawn actor-cell leak.
 fn actor_in_range_enum_decode_source(frames: usize) -> String {
     actor_enum_decode_source(frames, "Narrow::B(1)")
+}
+
+// ── under-free (leak) teeth for the decode-failure `fail_bb` ─────────────────
+//
+// The `assert_decode_failure_traps_no_double_free` oracles run the failing
+// decode in `fn main`, where the null-return TRAPS the process. That trap
+// catches OVER-free (the scribbled double-free aborts with the cabi guard) but
+// is BLIND to UNDER-free: a `fail_bb` that never dropped the partial owned
+// fields still exits via the same trap, and `leaks --atExit` cannot snapshot a
+// signal-terminated process. Removing `emit_de_drop_owned` therefore leaves the
+// trap-based oracles green while the error path leaks every already-decoded
+// owned element.
+//
+// These fixtures give that path under-free teeth by running the SAME failing
+// decode inside an actor `receive` handler. The supervisor's crash-recovery
+// `siglongjmp` catches each trap and keeps the PROCESS alive, so the leak of a
+// missing `fail_bb` drop ACCUMULATES across frames and survives to a normal
+// exit that `leaks --atExit` can snapshot — the same survive-the-trap mechanism
+// `actor_oob_enum_tag_decode_frees_reader_and_shell_no_excess_slope` relies on.
+// A DIFFERENTIAL slope against an in-range baseline (same spawn-per-frame shape,
+// same owned-Vec decode allocation, but a matching layout that decodes
+// SUCCESSFULLY) cancels the codec-independent per-spawn actor-cell leak; the
+// remainder is the `fail_bb`'s own per-message under-free, which must be ~0.
+// Drop `emit_de_drop_owned` and the failure slope jumps by the owned Vec + its
+// element strings per frame — the teeth these fixtures require.
+
+/// Actor-context owned-Vec-element STRUCT decode, parameterised by whether the
+/// encoded layout MISMATCHES the decode layout. Both shapes decode a
+/// `BatchBad { items: Vec<Item> @1; tail: i64 @2 }` (an owned-string-per-element
+/// Vec) inside the actor handler, spawning one `Decoder` per frame:
+///
+///   * `mismatch = true`: the frame encodes a `BatchGood` (`tail: string`), so
+///     the decode fills the full owned Vec then latches on the `i64`-where-text
+///     tail, driving the `fail_bb`. The actor traps; the supervisor recovers.
+///     A `fail_bb` missing its owned-Vec drop leaks the Vec + every element
+///     string per frame.
+///   * `mismatch = false`: the frame encodes a `BatchBad` directly, so the
+///     decode succeeds; the handler reads only the scalar `bad.tail` keep-alive
+///     and the value drop releases the owned Vec at scope exit (the success-path
+///     drop the round-trip slope oracle already proves leak-free). This isolates
+///     the shared per-spawn actor-cell floor.
+fn actor_vec_owned_struct_decode_source(frames: usize, mismatch: bool) -> String {
+    let build = if mismatch {
+        "let g = BatchGood { items: xs, tail: \"owned-tail-value\" };"
+    } else {
+        "let g = BatchBad { items: xs, tail: 7 };"
+    };
+    format!(
+        "#[wire]\n\
+         type Item {{ name: string @1; }}\n\
+         #[wire]\n\
+         type BatchGood {{ items: Vec<Item> @1; tail: string @2; }}\n\
+         #[wire]\n\
+         type BatchBad {{ items: Vec<Item> @1; tail: i64 @2; }}\n\
+         \n\
+         actor Decoder {{\n\
+         \x20   let seq: i64;\n\
+         \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
+         \x20       let bad = BatchBad.decode(raw);\n\
+         \x20       bad.tail\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let xs: Vec<Item> = Vec::new();\n\
+         \x20       xs.push(Item {{ name: \"alpha-owned-element\" }});\n\
+         \x20       xs.push(Item {{ name: \"beta-owned-element\" }});\n\
+         \x20       {build}\n\
+         \x20       let raw = g.encode();\n\
+         \x20       let a = spawn Decoder(seq: i);\n\
+         \x20       let r = await a.decode_it(raw);\n\
+         \x20       match r {{ Ok(v) => {{ total = total + v; }}, Err(_) => {{ total = total + 1; }}, }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Mismatch (failure) branch of the owned-Vec-element struct actor fixture.
+fn actor_vec_owned_struct_decode_failure_source(frames: usize) -> String {
+    actor_vec_owned_struct_decode_source(frames, true)
+}
+
+/// In-range baseline of the owned-Vec-element struct actor fixture.
+fn actor_vec_owned_struct_decode_baseline_source(frames: usize) -> String {
+    actor_vec_owned_struct_decode_source(frames, false)
+}
+
+/// Actor-context owned-Vec-element ENUM decode, parameterised by mismatch. The
+/// element is a `#[wire]` enum whose `Full` variant owns a `string`, so each
+/// decoded element allocates through `__hew_enum_clone_inplace_Payload`. On the
+/// `mismatch = true` failure the `fail_bb` must drop the owned enum Vec exactly
+/// once (each `Full` element releasing its string); the `mismatch = false`
+/// baseline decodes successfully and drops the owned Vec on the value drop.
+fn actor_vec_owned_enum_decode_source(frames: usize, mismatch: bool) -> String {
+    let build = if mismatch {
+        "let g = BagGood { items: xs, tail: \"owned-tail-value\" };"
+    } else {
+        "let g = BagBad { items: xs, tail: 7 };"
+    };
+    format!(
+        "#[wire]\n\
+         enum Payload {{ Empty; Full(string); }}\n\
+         #[wire]\n\
+         type BagGood {{ items: Vec<Payload> @1; tail: string @2; }}\n\
+         #[wire]\n\
+         type BagBad {{ items: Vec<Payload> @1; tail: i64 @2; }}\n\
+         \n\
+         actor Decoder {{\n\
+         \x20   let seq: i64;\n\
+         \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
+         \x20       let bad = BagBad.decode(raw);\n\
+         \x20       bad.tail\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let xs: Vec<Payload> = Vec::new();\n\
+         \x20       xs.push(Payload::Full(\"first-owned-element\"));\n\
+         \x20       xs.push(Payload::Empty);\n\
+         \x20       xs.push(Payload::Full(\"second-owned-element\"));\n\
+         \x20       {build}\n\
+         \x20       let raw = g.encode();\n\
+         \x20       let a = spawn Decoder(seq: i);\n\
+         \x20       let r = await a.decode_it(raw);\n\
+         \x20       match r {{ Ok(v) => {{ total = total + v; }}, Err(_) => {{ total = total + 1; }}, }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Mismatch (failure) branch of the owned-Vec-element enum actor fixture.
+fn actor_vec_owned_enum_decode_failure_source(frames: usize) -> String {
+    actor_vec_owned_enum_decode_source(frames, true)
+}
+
+/// In-range baseline of the owned-Vec-element enum actor fixture.
+fn actor_vec_owned_enum_decode_baseline_source(frames: usize) -> String {
+    actor_vec_owned_enum_decode_source(frames, false)
 }
 
 // ── leak measurement plumbing (same shape as bytes_drop_leak_oracle) ────────
@@ -520,6 +820,80 @@ fn assert_frame_slope_below_tolerance(
     );
 }
 
+/// Build the shape at `low_frames` and `high_frames`, measure leak NODE counts,
+/// and assert BOTH are EXACTLY zero. Used for the anonymous codec-temporary
+/// shapes whose named-binding control measured a 0-leak floor: a slope tolerance
+/// would silently pass a constant per-frame leak, so the exact form is the one
+/// with teeth.
+fn assert_frame_leaks_exactly_zero(
+    shape_name: &str,
+    source_fn: fn(usize) -> String,
+    low_frames: usize,
+    high_frames: usize,
+) {
+    let Some((low_leaks, high_leaks)) =
+        frame_leak_counts(shape_name, source_fn, low_frames, high_frames)
+    else {
+        return;
+    };
+    assert_eq!(
+        (low_leaks, high_leaks),
+        (0, 0),
+        "{shape_name}: an anonymous codec temporary leaked — expected EXACTLY 0 \
+         leaks at both {low_frames} and {high_frames} frames (the named-binding \
+         control proves 0 is the floor), got low_leaks={low_leaks} \
+         high_leaks={high_leaks}. The fresh codec temp (encode buffer / to_json \
+         string) is not released after the borrowing decode/parse — re-run a \
+         standalone build under `MallocStackLogging=1 leaks --atExit -- <bin>`."
+    );
+}
+
+/// Differential leak-slope teeth for a decode-FAILURE `fail_bb`. Compiles the
+/// failure shape (mismatched layout — traps, caught by the actor supervisor)
+/// and an in-range baseline (matching layout — decodes successfully) at LOW and
+/// HIGH frames, measures each leak-node slope, and asserts the failure slope
+/// does not exceed the baseline slope by more than `SLOPE_TOLERANCE`. Both
+/// shapes spawn one `Decoder` per frame and allocate the same owned Vec on
+/// decode, so subtracting the baseline cancels the per-spawn actor-cell floor
+/// AND the success-path owned-Vec drop; the remainder is the `fail_bb`'s own
+/// per-message under-free, which must be ~0. Dropping `emit_de_drop_owned`
+/// leaks the owned Vec + its element strings per failed frame — an ~N/frame
+/// slope this catches. Skips (logs `skip:`) when the host cannot run `leaks(1)`.
+fn assert_decode_failure_no_underfree_slope(
+    fail_shape: &str,
+    fail_source_fn: fn(usize) -> String,
+    base_shape: &str,
+    base_source_fn: fn(usize) -> String,
+) {
+    let Some((fail_low, fail_high)) =
+        frame_leak_counts(fail_shape, fail_source_fn, LOW_FRAMES, HIGH_FRAMES)
+    else {
+        return;
+    };
+    let Some((base_low, base_high)) =
+        frame_leak_counts(base_shape, base_source_fn, LOW_FRAMES, HIGH_FRAMES)
+    else {
+        return;
+    };
+
+    let fail_slope = fail_high.saturating_sub(fail_low);
+    let base_slope = base_high.saturating_sub(base_low);
+    eprintln!(
+        "{fail_shape} under-free differential: fail_slope={fail_slope} \
+         (fail_low={fail_low} fail_high={fail_high}) base_slope={base_slope} \
+         (base_low={base_low} base_high={base_high}) tolerance={SLOPE_TOLERANCE}"
+    );
+    assert!(
+        fail_slope <= base_slope + SLOPE_TOLERANCE,
+        "{fail_shape}: the decode-failure path leaks (UNDER-frees) per malformed message — \
+         failure slope {fail_slope} exceeds the in-range baseline slope {base_slope} by {} nodes \
+         (tolerance {SLOPE_TOLERANCE}). The `fail_bb` is not dropping every already-decoded owned \
+         field (the owned Vec + its element strings) before freeing the shell — check that \
+         `emit_de_drop_owned` still walks this shape's owned fields on the error path.",
+        fail_slope.saturating_sub(base_slope + SLOPE_TOLERANCE),
+    );
+}
+
 // ── oracles ───────────────────────────────────────────────────────────────
 
 /// Decode-owned field drop: round-tripping a struct with an owned `string`,
@@ -547,6 +921,48 @@ fn vec_struct_round_trip_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
         "wire_cbor_vec_struct_round_trip",
         vec_struct_round_trip_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Anchor 2 — the anonymous encode temporary round-trips with EXACTLY zero
+/// leaks. `Packet.decode(p.encode())` with no `let raw`: the fresh CBOR buffer
+/// is a bare temporary released once after the borrowing decode. Probe B leaked
+/// exactly one buffer per frame here before the fresh-temp-drop admission; the
+/// named-binding control measured 0, so this asserts an exact `== 0`.
+#[test]
+fn anonymous_encode_temp_round_trip_leaks_exactly_zero() {
+    assert_frame_leaks_exactly_zero(
+        "wire_cbor_anon_encode_temp",
+        anonymous_encode_temp_round_trip_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Anchor 2 — the `mk()` call-producer encode temporary round-trips with
+/// EXACTLY zero leaks. `Packet.decode(mk(i))`: the anonymous `Terminator::Call`
+/// bytes result is borrowed by the decode and released once after it.
+#[test]
+fn call_producer_encode_temp_round_trip_leaks_exactly_zero() {
+    assert_frame_leaks_exactly_zero(
+        "wire_cbor_call_producer_temp",
+        call_producer_temp_round_trip_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// Anchor 2 (string side) — the anonymous `to_json` temporary round-trips with
+/// EXACTLY zero leaks. `Packet.from_json(p.to_json())`: the fresh JSON string is
+/// borrowed by the parse and released once after it. Pins the string collector's
+/// `WireCodec` extension (the JSON codec's C-heap allocs are `leaks`-visible).
+#[test]
+fn anonymous_to_json_temp_round_trip_leaks_exactly_zero() {
+    assert_frame_leaks_exactly_zero(
+        "wire_cbor_anon_to_json_temp",
+        anonymous_to_json_temp_round_trip_source,
         LOW_FRAMES,
         HIGH_FRAMES,
     );
@@ -649,6 +1065,67 @@ fn enum_owned_payload_decode_failure_frees_partials_no_double_free() {
     assert_decode_failure_traps_no_double_free(
         "wire_cbor_enum_decode_failure",
         ENUM_DECODE_FAILURE_SOURCE,
+    );
+}
+
+/// Owned-Vec-element struct decode-failure free-on-error. Decoding a
+/// `{ items: Vec<Item> @1; tail: string @2 }` value against a `{ items:
+/// Vec<Item> @1; tail: i64 @2 }` layout decodes the full owned Vec (allocating
+/// each element's owned string) then latches on the `i64`-where-text tail,
+/// driving the `fail_bb`. Must trap fail-closed with no cabi double-free of any
+/// already-decoded owned element — proving the owned Vec (and its per-element
+/// strings) is dropped exactly once before the shell free. This is the headline
+/// owned-Vec-element error path the CBOR Vec codec change admits.
+#[test]
+fn vec_owned_struct_decode_failure_frees_partials_no_double_free() {
+    assert_decode_failure_traps_no_double_free(
+        "wire_cbor_vec_owned_struct_decode_failure",
+        VEC_OWNED_STRUCT_DECODE_FAILURE_SOURCE,
+    );
+}
+
+/// Owned-Vec-element ENUM decode-failure free-on-error. The `Vec<Payload>`
+/// element sibling: the owned-payload enum Vec decodes fully (each `Full`
+/// element allocating its owned string) before the `i64`-where-text tail latches
+/// failure. The `fail_bb` must drop the owned enum Vec exactly once — each
+/// element's variant drop releasing its owned string — with no cabi double-free.
+#[test]
+fn vec_owned_enum_decode_failure_frees_partials_no_double_free() {
+    assert_decode_failure_traps_no_double_free(
+        "wire_cbor_vec_owned_enum_decode_failure",
+        VEC_OWNED_ENUM_DECODE_FAILURE_SOURCE,
+    );
+}
+
+/// UNDER-free teeth for the owned-Vec-element STRUCT decode-failure path. The
+/// `no_double_free` sibling above traps in `fn main` and so is blind to a
+/// leak; this runs the same failing decode inside an actor handler (the
+/// supervisor survives each trap) and asserts the accumulated leak slope stays
+/// at the in-range baseline. Removing `emit_de_drop_owned` from the deserialize
+/// thunk's `fail_bb` leaks the owned Vec + element strings per frame and fails
+/// this — the direction the `no_double_free` oracle cannot see.
+#[test]
+fn vec_owned_struct_decode_failure_frees_partials_no_under_free() {
+    assert_decode_failure_no_underfree_slope(
+        "wire_cbor_vec_owned_struct_decode_failure_underfree",
+        actor_vec_owned_struct_decode_failure_source,
+        "wire_cbor_vec_owned_struct_decode_baseline",
+        actor_vec_owned_struct_decode_baseline_source,
+    );
+}
+
+/// UNDER-free teeth for the owned-Vec-element ENUM decode-failure path — the
+/// `Vec<#[wire] enum>` sibling of the struct under-free oracle above. Each
+/// already-decoded `Full` element owns a `string`; a `fail_bb` that skips the
+/// owned enum Vec drop leaks those strings per malformed message, which the
+/// actor-survived differential slope catches.
+#[test]
+fn vec_owned_enum_decode_failure_frees_partials_no_under_free() {
+    assert_decode_failure_no_underfree_slope(
+        "wire_cbor_vec_owned_enum_decode_failure_underfree",
+        actor_vec_owned_enum_decode_failure_source,
+        "wire_cbor_vec_owned_enum_decode_baseline",
+        actor_vec_owned_enum_decode_baseline_source,
     );
 }
 

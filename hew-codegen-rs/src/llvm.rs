@@ -1526,6 +1526,23 @@ pub(crate) struct CoroState<'ctx> {
     pub(crate) is_generator: bool,
 }
 
+/// The exact set of module-wide registries the owned-Vec-element thunk-key
+/// resolver and descriptor builder need — the THREE lookups `owned_elem_thunk_key`
+/// consults (enum layouts, machine layouts, the codegen record field-type table).
+///
+/// Threading this narrow borrow instead of a full `FnCtx` lets the wire CBOR
+/// codec — which emits in the module pass with no per-function `FnCtx` — call the
+/// SAME owned-descriptor authority `Vec::new` uses. That single authority is what
+/// makes the codec's `__hew_vec_elem_layout_*` descriptor global dedup-collapse
+/// onto `Vec::new`'s for the same element type; a mirrored builder would mint a
+/// second descriptor and break the runtime's layout-equality check.
+#[derive(Clone, Copy)]
+pub(crate) struct OwnedElemRegistries<'a, 'ctx> {
+    pub(crate) enum_layouts: &'a [EnumLayout],
+    pub(crate) machine_layouts: &'a MachineLayoutMap<'ctx>,
+    pub(crate) record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+}
+
 pub(crate) struct FnCtx<'a, 'ctx> {
     pub(crate) ctx: &'ctx Context,
     pub(crate) llvm_mod: &'a LlvmModule<'ctx>,
@@ -8001,6 +8018,146 @@ fn collect_vec_owned_element_seeds(
             .chain(std::iter::once(&func.return_ty))
         {
             scan_ty(ty, &mut visited_ty, &mut on_vec_elem);
+        }
+    }
+
+    (record_seeds, enum_seeds)
+}
+
+/// Seed the owned-Vec ELEMENT record/enum keys reachable through a wire type's
+/// LAYOUT (its record fields / enum payloads) — the decode-only reachability
+/// gap. A wire type materialised ONLY by the CBOR codec (`Batch.decode(bytes)`
+/// with no Hew-side construction) has its `Vec<Item>` field type in no MIR local,
+/// so [`collect_vec_owned_element_seeds`] (which scans MIR function types) never
+/// sees the element. The decode-side owned descriptor
+/// (`owned_elem_layout_descriptor_ptr`) references the element's
+/// `__hew_{record,enum}_{clone,drop}_inplace_<key>` thunk, so without this seed
+/// that thunk is declared-but-undefined and LLVM verify rejects the module (a
+/// loud link-time failure, but this pass converts it to a supported feature).
+///
+/// Walks each wire value type's fields/payloads transitively (expanding records
+/// and enums via their layouts, cycle-guarded on the layout name) and seeds every
+/// `Vec<E>` element `E` that resolves to a registered record/enum — the same
+/// resolution [`collect_vec_owned_element_seeds`] applies to MIR-local Vec types.
+fn collect_wire_value_owned_vec_element_seeds(
+    wire_types: &[ResolvedTy],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> (Vec<String>, Vec<String>) {
+    let mut record_seeds: Vec<String> = Vec::new();
+    let mut enum_seeds: Vec<String> = Vec::new();
+    let mut rec_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enum_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Resolve a `Vec` element to its registered record/enum key and seed it —
+    // enum-first, mirroring `owned_elem_thunk_key` / `collect_vec_owned_element_seeds`.
+    let mut consider_elem =
+        |elem: &ResolvedTy, record_seeds: &mut Vec<String>, enum_seeds: &mut Vec<String>| {
+            let ResolvedTy::Named { name, args, .. } = elem else {
+                return;
+            };
+            let short = short_name(name);
+            let enum_key = if args.is_empty() {
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == *name || short_name(&el.name) == short)
+                    .map(|el| el.name.clone())
+            } else {
+                let mangled = mangle_with_shortened_args(short, args);
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == mangled || el.name == *name)
+                    .map(|el| el.name.clone())
+            };
+            if let Some(key) = enum_key {
+                if enum_seen.insert(key.clone()) {
+                    enum_seeds.push(key);
+                }
+                return;
+            }
+            let rec_key = if args.is_empty() {
+                record_layouts
+                    .iter()
+                    .find(|rl| rl.name == *name || short_name(&rl.name) == short)
+                    .map(|rl| rl.name.clone())
+            } else {
+                let mangled = mangle_with_shortened_args(short, args);
+                record_layouts
+                    .iter()
+                    .find(|rl| rl.name == mangled || rl.name == *name)
+                    .map(|rl| rl.name.clone())
+            };
+            if let Some(key) = rec_key {
+                if rec_seen.insert(key.clone()) {
+                    record_seeds.push(key);
+                }
+            }
+        };
+
+    // Worklist over the wire types' layouts: expand user records/enums into their
+    // field/payload types, seed every `Vec<E>` element, and keep walking through
+    // nested aggregates so a `Vec<Vec<owned>>` or a record-of-record-of-Vec is
+    // reached. Cycle-guarded on the expanded layout name.
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut stack: Vec<ResolvedTy> = wire_types.to_vec();
+    while let Some(ty) = stack.pop() {
+        match &ty {
+            ResolvedTy::Named { name, args, .. } => {
+                let short = short_name(name);
+                if name == "Vec" || matches!(short, "Sender" | "Receiver" | "Stream") {
+                    if let Some(elem) = args.first() {
+                        consider_elem(elem, &mut record_seeds, &mut enum_seeds);
+                        stack.push(elem.clone());
+                    }
+                    continue;
+                }
+                if name == "HashMap"
+                    || short == "HashMap"
+                    || name == "HashSet"
+                    || short == "HashSet"
+                {
+                    for a in args {
+                        stack.push(a.clone());
+                    }
+                    continue;
+                }
+                if matches!(short, "Option" | "Result" | "Range") {
+                    for a in args {
+                        stack.push(a.clone());
+                    }
+                    continue;
+                }
+                // A user record / enum: expand its fields / variant payloads once.
+                if !visited.insert(name.clone()) {
+                    continue;
+                }
+                if let Some(el) = enum_layouts
+                    .iter()
+                    .find(|el| el.name == *name || short_name(&el.name) == short)
+                {
+                    for v in &el.variants {
+                        for ft in &v.field_tys {
+                            stack.push(ft.clone());
+                        }
+                    }
+                } else if let Some(rl) = record_layouts
+                    .iter()
+                    .find(|rl| rl.name == *name || short_name(&rl.name) == short)
+                {
+                    for ft in &rl.field_tys {
+                        stack.push(ft.clone());
+                    }
+                }
+            }
+            ResolvedTy::Tuple(elems) => {
+                for e in elems {
+                    stack.push(e.clone());
+                }
+            }
+            ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+                stack.push((**inner).clone());
+            }
+            _ => {}
         }
     }
 
@@ -18094,7 +18251,6 @@ fn emit_tuple_kind_drop_inplace_body<'ctx>(
 /// Vec's constructor uses (`resolved_ty_element_owns_heap_for_owned_vec`), so
 /// the clone primitive can never disagree with the inner Vec's actual ABI.
 pub(crate) fn collection_elem_clone_drop_syms(
-    _fn_ctx: &FnCtx<'_, '_>,
     elem_ty: &ResolvedTy,
 ) -> Option<(&'static str, &'static str)> {
     match elem_ty {
@@ -18173,7 +18329,7 @@ fn tuple_field_clone_kind(
 /// (owned-Vec element path) and the drop-only emitter (W5.021 owned-tuple drop
 /// spine), so both consume the same classification authority.
 pub(crate) fn tuple_inplace_field_kinds<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
+    regs: OwnedElemRegistries<'_, 'ctx>,
     tuple_key: &str,
     elems: &[ResolvedTy],
     tuple_llvm_ty: BasicTypeEnum<'ctx>,
@@ -18186,7 +18342,7 @@ pub(crate) fn tuple_inplace_field_kinds<'ctx>(
     // Needs the MIR record/enum layout slices; codegen carries the LLVM record
     // map, so reconstruct a minimal RecordLayout slice from the resolved-field
     // table for the classifier.
-    let record_layouts: Vec<hew_mir::RecordLayout> = fn_ctx
+    let record_layouts: Vec<hew_mir::RecordLayout> = regs
         .record_field_resolved_tys
         .iter()
         .map(|(name, tys)| hew_mir::RecordLayout {
@@ -18201,7 +18357,7 @@ pub(crate) fn tuple_inplace_field_kinds<'ctx>(
         kinds.push(tuple_field_clone_kind(
             elem,
             &record_layouts,
-            fn_ctx.enum_layouts,
+            regs.enum_layouts,
         )?);
     }
     Ok((tuple_struct, kinds))
@@ -18228,7 +18384,12 @@ pub(crate) fn emit_tuple_drop_inplace_body_only<'ctx>(
     if drop_fn.count_basic_blocks() > 0 {
         return Ok(());
     }
-    let (tuple_struct, kinds) = tuple_inplace_field_kinds(fn_ctx, tuple_key, elems, tuple_llvm_ty)?;
+    let (tuple_struct, kinds) = tuple_inplace_field_kinds(
+        fn_ctx.owned_elem_registries(),
+        tuple_key,
+        elems,
+        tuple_llvm_ty,
+    )?;
     emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds)
 }
 
@@ -29579,6 +29740,28 @@ fn build_module_for_target<'ctx>(
             vec_owned_record_seeds.push(xnode_rec_seed);
         }
     }
+    // decode-only owned-Vec ELEMENT capstone — a wire type materialised only by
+    // the CBOR codec (`Batch.decode(bytes)`, never constructed) has its
+    // `Vec<Item>` field type in no MIR local, so `collect_vec_owned_element_seeds`
+    // never seeds `Item`. The decode-side owned descriptor references
+    // `__hew_record_drop_inplace_Item`, so seed every owned-Vec element reachable
+    // through a wire value type's layout here or that thunk dangles at LLVM verify.
+    let (wire_vec_elem_record_seeds, wire_vec_elem_enum_seeds) =
+        collect_wire_value_owned_vec_element_seeds(
+            &wire_codec_value_types,
+            &pipeline.record_layouts,
+            &synthesis_enum_layouts,
+        );
+    for enum_seed in wire_vec_elem_enum_seeds {
+        if !enum_inplace_drop_seeds.contains(&enum_seed) {
+            enum_inplace_drop_seeds.push(enum_seed);
+        }
+    }
+    for record_seed in wire_vec_elem_record_seeds {
+        if !vec_owned_record_seeds.contains(&record_seed) {
+            vec_owned_record_seeds.push(record_seed);
+        }
+    }
     // D2 — seed every record/enum that appears as a `dyn Trait` CONCRETE so
     // `emit_state_clone_drop_synthesis` (immediately below) emits its
     // `__hew_{record,enum}_drop_inplace_<key>` body BEFORE
@@ -37148,18 +37331,17 @@ mod tests {
         finish_test_fn(&fn_ctx);
     }
 
-    /// Pin `cbor_vec_elem_kind` over every REACHABLE element shape so the
-    /// retire of the parallel `cbor_ty_owns_heap` walker (now a sealed
-    /// shim over `hew_mir::ty_owns_heap`) is byte-identical: scalars stay
+    /// Pin `cbor_vec_elem_kind` over every REACHABLE element shape: scalars stay
     /// `Plain`, `string` stays `Str`, a heap-free user record stays
-    /// `LayoutBitCopy` (the `Vec<#[wire] struct>` shape), a heap-owning record
-    /// stays `Defer`, `Option<T>` mirrors its payload, and every non-`Option`
-    /// builtin stays `Defer` (the retired walker's coarse `_ => true` rule,
-    /// preserved at the caller rather than routed through the finer authority).
+    /// `LayoutBitCopy` (the `Vec<#[wire] struct>` shape), a heap-OWNING record
+    /// whose thunk key resolves is `Owned` (the new owned-element ABI), a nested
+    /// `Vec` element is `Owned`, `Option<T>` mirrors its payload, and the
+    /// remaining builtins (`HashMap` / `Result` / …) stay `Defer`.
     #[test]
     fn cbor_vec_elem_kind_pins_reachable_classification() {
         let no_recs: Vec<RecordLayout> = vec![];
         let no_enums: Vec<EnumLayout> = vec![];
+        let no_machines: MachineLayoutMap = std::collections::HashMap::new();
 
         // Scalars → Plain (generic, null-layout vec).
         for s in [
@@ -37171,14 +37353,14 @@ mod tests {
             ResolvedTy::Duration,
         ] {
             assert_eq!(
-                cbor_vec_elem_kind(&s, &no_recs, &no_enums),
+                cbor_vec_elem_kind(&s, &no_recs, &no_enums, &no_machines),
                 CborVecElemKind::Plain,
                 "{s:?} must be a Plain element"
             );
         }
         // `string` → Str.
         assert_eq!(
-            cbor_vec_elem_kind(&ResolvedTy::String, &no_recs, &no_enums),
+            cbor_vec_elem_kind(&ResolvedTy::String, &no_recs, &no_enums, &no_machines),
             CborVecElemKind::Str
         );
 
@@ -37192,21 +37374,29 @@ mod tests {
             cbor_vec_elem_kind(
                 &ResolvedTy::named_user("Inner", vec![]),
                 &[inner],
-                &no_enums
+                &no_enums,
+                &no_machines
             ),
             CborVecElemKind::LayoutBitCopy,
             "a heap-free record element is the layout-aware BitCopy vec `Vec::new` builds"
         );
-        // A heap-OWNING user record (a `string` field) → Defer.
+        // A heap-OWNING user record (a `string` field) whose thunk key resolves
+        // (it is a registered record) → Owned, the new owned-element ABI matching
+        // `Vec::new`'s `VecCtor::Owned`.
         let owns = RecordLayout {
             name: "Owns".to_string(),
             field_tys: vec![ResolvedTy::String],
             field_names: vec!["s".to_string()],
         };
         assert_eq!(
-            cbor_vec_elem_kind(&ResolvedTy::named_user("Owns", vec![]), &[owns], &no_enums),
-            CborVecElemKind::Defer,
-            "a string-bearing record element needs the owned Vec ABI → fail closed"
+            cbor_vec_elem_kind(
+                &ResolvedTy::named_user("Owns", vec![]),
+                std::slice::from_ref(&owns),
+                &no_enums,
+                &no_machines
+            ),
+            CborVecElemKind::Owned,
+            "a string-bearing record element rides the owned Vec ABI (thunk key resolves)"
         );
 
         // `Option<scalar>` → LayoutBitCopy; `Option<string>` → Defer (the payload
@@ -37215,7 +37405,8 @@ mod tests {
             cbor_vec_elem_kind(
                 &ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::I64]),
                 &no_recs,
-                &no_enums
+                &no_enums,
+                &no_machines
             ),
             CborVecElemKind::LayoutBitCopy
         );
@@ -37223,17 +37414,30 @@ mod tests {
             cbor_vec_elem_kind(
                 &ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::String]),
                 &no_recs,
-                &no_enums
+                &no_enums,
+                &no_machines
             ),
             CborVecElemKind::Defer
         );
 
-        // Non-`Option` builtins → Defer, preserving the retired walker's coarse
-        // rule. `Result<i64, i64>` is genuinely heap-free, yet stays Defer here
-        // (the authority's finer recursion that would admit it as BitCopy is
-        // deferred to a future consolidation, gated on matching codec support).
+        // A nested `Vec<E>` element stays fail-closed: an owned Vec of collections
+        // needs the base language's recursive owned clone/drop thunk synthesis,
+        // which is NYI (a direct `Vec<Vec<string>>` aborts at runtime even outside
+        // the codec, and the checker already rejects the analogous
+        // `Vec<record-with-a-collection-field>`).
+        assert_eq!(
+            cbor_vec_elem_kind(
+                &ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
+                &no_recs,
+                &no_enums,
+                &no_machines
+            ),
+            CborVecElemKind::Defer,
+            "a nested Vec element fails closed until the base owned nested-Vec ABI lands"
+        );
+        // `HashMap` (no CBOR value arm) and every other non-`Option` builtin stay
+        // fail-closed.
         for b in [
-            ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
             ResolvedTy::named_builtin(
                 "HashMap",
                 BuiltinType::HashMap,
@@ -37246,37 +37450,39 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                cbor_vec_elem_kind(&b, &no_recs, &no_enums),
+                cbor_vec_elem_kind(&b, &no_recs, &no_enums, &no_machines),
                 CborVecElemKind::Defer,
-                "{b:?} must fail closed (coarse non-Option builtin rule)"
+                "{b:?} must fail closed (no CBOR value arm / no owned-vec support)"
             );
         }
     }
 
-    /// G6: routing the CBOR element probe through the single
-    /// `hew_mir::ty_owns_heap` authority fixes a latent under-drop leak. A user
-    /// record whose field is a `CancellationToken` (an owned runtime handle) was
-    /// classified heap-FREE by the retired `cbor_ty_owns_heap` walker — its
-    /// `_ => false` arm did not recognise the `CancellationToken` own-variant —
-    /// so the codec BitCopied (and leaked) the handle as a `LayoutBitCopy`
-    /// element. The authority recognises `CancellationToken` as a leaf, so the
-    /// record owns heap and the codec correctly fails closed (`Defer`).
+    /// A heap-owning record element whose thunk key resolves rides the OWNED Vec
+    /// ABI (`ownership_kind = LayoutManaged`), so the codec never BitCopies (and
+    /// leaks) an owned handle. A `CancellationToken`-bearing record classifies
+    /// `Owned` — the backing vec has a real per-element `drop_fn`, so there is no
+    /// BitCopy leak; the token field itself has no CBOR value arm, so the codec
+    /// fails closed downstream at `emit_ser_value_cbor` (and the checker's
+    /// Serializable gate rejects such a `#[wire]` type up front for real code).
     #[test]
-    fn cbor_retire_fixes_latent_cancellation_token_leak() {
+    fn cbor_owning_record_element_rides_owned_abi_never_bitcopy_leak() {
         let rec = RecordLayout {
             name: "WithTok".to_string(),
             field_tys: vec![ResolvedTy::CancellationToken],
             field_names: vec!["tok".to_string()],
         };
         let no_enums: Vec<EnumLayout> = vec![];
+        let no_machines: MachineLayoutMap = std::collections::HashMap::new();
         assert_eq!(
             cbor_vec_elem_kind(
                 &ResolvedTy::named_user("WithTok", vec![]),
-                &[rec],
-                &no_enums
+                std::slice::from_ref(&rec),
+                &no_enums,
+                &no_machines
             ),
-            CborVecElemKind::Defer,
-            "a CancellationToken-bearing record element must fail closed, not BitCopy-leak the handle"
+            CborVecElemKind::Owned,
+            "a CancellationToken-bearing record rides the owned ABI (real drop_fn, no \
+             BitCopy leak); the unencodable token field fails closed downstream"
         );
     }
 
@@ -37317,6 +37523,7 @@ mod tests {
             is_indirect: true,
         };
         let no_recs: Vec<RecordLayout> = vec![];
+        let no_machines: MachineLayoutMap = std::collections::HashMap::new();
 
         // The indirect enum itself → Defer (NOT LayoutBitCopy).
         assert_eq!(
@@ -37324,6 +37531,7 @@ mod tests {
                 &ResolvedTy::named_user("Node", vec![]),
                 &no_recs,
                 std::slice::from_ref(&indirect),
+                &no_machines,
             ),
             CborVecElemKind::Defer,
             "an indirect-enum element is a heap-owned pointer — must fail closed, not BitCopy"
@@ -37340,6 +37548,7 @@ mod tests {
                 &ResolvedTy::named_user("Wrapper", vec![]),
                 std::slice::from_ref(&wrapper),
                 std::slice::from_ref(&indirect),
+                &no_machines,
             ),
             CborVecElemKind::Defer,
             "a record transitively containing an indirect enum must fail closed"
@@ -37371,6 +37580,7 @@ mod tests {
                 &ResolvedTy::named_user("Flat", vec![]),
                 &no_recs,
                 std::slice::from_ref(&direct),
+                &no_machines,
             ),
             CborVecElemKind::LayoutBitCopy,
             "a heap-free direct enum must stay BitCopy — the fix must not over-defer"

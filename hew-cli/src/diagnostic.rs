@@ -863,11 +863,19 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
                     ),
                 }
             } else {
-                format!(
-                    "extracting an owned handle (`{name}`: {handle_ty}) out of an aggregate in this \
-                     shape is not yet supported — iterate or consume the handle directly, or \
-                     return it without re-aggregating"
-                )
+                match owner {
+                    hew_mir::AggregateOwner::ActorState => format!(
+                        "closing an owned handle held in actor state (`{name}`: {handle_ty}) is \
+                         not supported — the actor's shutdown drop already closes it exactly \
+                         once, so an explicit close here would double-free it; close a sink you \
+                         own as a local, or let the actor's teardown close the state-held half"
+                    ),
+                    hew_mir::AggregateOwner::Record => format!(
+                        "extracting an owned handle (`{name}`: {handle_ty}) out of an aggregate \
+                         in this shape is not yet supported — iterate or consume the handle \
+                         directly, or return it without re-aggregating"
+                    ),
+                }
             }
         }
         hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { name, .. } => {

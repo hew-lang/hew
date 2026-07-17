@@ -1104,7 +1104,14 @@ impl RuntimeCallFamily {
         use RuntimeCallFamily as F;
         match self {
             // The suspending symbols (HIR await-classifier source of truth).
-            F::SinkWrite(StreamElementKind::Bytes) => Some(AsyncSuspendKind::SinkSendBytes),
+            // Every describable sink-send element suspends: the byte and
+            // string sink writes and the layout-witness stream send all
+            // share the backpressure-aware `SuspendKind::StreamSend` ramp.
+            // Codegen discriminates the runtime entry on the value's
+            // `ResolvedTy` (bytes → native `hew_stream_await_send`, else
+            // layout `hew_stream_await_send_layout`), so one kind suffices.
+            F::SinkWrite(StreamElementKind::Bytes | StreamElementKind::String)
+            | F::StreamSendLayout => Some(AsyncSuspendKind::SinkSend),
             F::DuplexClose => Some(AsyncSuspendKind::DuplexClose),
             F::ChannelRecvLayout => Some(AsyncSuspendKind::ChannelRecv),
             F::StreamNextLayout => Some(AsyncSuspendKind::StreamRecv),
@@ -1112,9 +1119,7 @@ impl RuntimeCallFamily {
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
             F::StreamClose
-            | F::StreamSendLayout
             | F::StreamTryNextLayout
-            | F::SinkWrite(StreamElementKind::String)
             | F::SinkTryWrite(_)
             | F::SinkClose
             | F::SinkPeerClosed
@@ -1320,8 +1325,12 @@ impl RuntimeCallFamily {
 /// element-layout-witness `*_layout` symbols outside this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AsyncSuspendKind {
-    /// `await sink.send(x)` over `Sink<bytes>` → `hew_sink_write_bytes`.
-    SinkSendBytes,
+    /// `await sink.send(x)` over any describable `Sink<T>` element —
+    /// `hew_sink_write_bytes`, `hew_sink_write_string`, or the
+    /// layout-witness `hew_stream_send_layout`. All three share the
+    /// backpressure-aware suspend ramp; codegen picks the concrete
+    /// runtime entry from the value's `ResolvedTy`.
+    SinkSend,
     /// `await actor.close()` over a lambda-actor `Duplex` →
     /// `hew_duplex_close`.
     DuplexClose,
@@ -1790,29 +1799,36 @@ mod tests {
 
     /// `is_async_suspending` returns `Some(_)` for EXACTLY the symbols
     /// the HIR await-classifier discriminates through `RuntimeCallFamily`
-    /// today: `hew_sink_write_bytes` and `hew_duplex_close`. The
-    /// channel/stream recv awaits ride the layout-witness `*_layout`
-    /// symbols outside this enum.
+    /// today: the three sink-send families (`hew_sink_write_bytes`,
+    /// `hew_sink_write_string`, `hew_stream_send_layout`) plus
+    /// `hew_duplex_close`, `hew_channel_recv_layout`, and
+    /// `hew_stream_next_layout`. All three sink-send families share the
+    /// single `SinkSend` kind — codegen picks the concrete runtime entry
+    /// from the value's `ResolvedTy`.
     /// Locks the consumer contract for the eventual migration.
     ///
     /// Positive: the symbols listed map to the matching
     /// `AsyncSuspendKind`. Negative: every other family returns `None`,
     /// pinned by enumeration via `all_runtime_call_families`. ESP. the
-    /// historical mis-classifications (`DuplexRecv`, `DuplexSend`,
-    /// `SinkWrite(String)`, every `try_*` peer) MUST be non-suspending.
-    /// The channel/stream recv awaits ride the `*_layout` symbols
-    /// outside `RuntimeCallFamily` and are pinned by the HIR
-    /// await-classifier tests instead.
+    /// `try_*` peers (`SinkTryWrite`, `ChannelSendLayout`, `DuplexSend`,
+    /// …) MUST stay non-suspending: those never touch the backpressure
+    /// ramp.
     #[test]
     fn is_async_suspending_pins_exact_classifier_set() {
         use RuntimeCallFamily as F;
 
-        // Positive: exactly these (family, expected kind) tuples.
+        // Positive: exactly these (family, expected kind) tuples. All
+        // three sink-send families share the single `SinkSend` kind.
         let positives: &[(RuntimeCallFamily, AsyncSuspendKind)] = &[
             (
                 F::SinkWrite(StreamElementKind::Bytes),
-                AsyncSuspendKind::SinkSendBytes,
+                AsyncSuspendKind::SinkSend,
             ),
+            (
+                F::SinkWrite(StreamElementKind::String),
+                AsyncSuspendKind::SinkSend,
+            ),
+            (F::StreamSendLayout, AsyncSuspendKind::SinkSend),
             (F::DuplexClose, AsyncSuspendKind::DuplexClose),
             (F::ChannelRecvLayout, AsyncSuspendKind::ChannelRecv),
             (F::StreamNextLayout, AsyncSuspendKind::StreamRecv),
@@ -1825,20 +1841,18 @@ mod tests {
             );
         }
 
-        // Explicit negative regression set: the families a previous
-        // revision wrongly marked as suspending (DuplexRecv/Send,
-        // SinkWrite(String)) plus the try_* peers the classifier never
-        // touches.
+        // Explicit negative regression set: the non-suspending channel
+        // send, the recv/send try_* peers, and the close families the
+        // classifier never touches. `SinkWrite(String)` and
+        // `StreamSendLayout` are NO LONGER here — they suspend now.
         let must_not_suspend: &[RuntimeCallFamily] = &[
             F::ChannelTryRecvLayout,
             F::ChannelSendLayout,
             F::StreamTryNextLayout,
-            F::StreamSendLayout,
             F::DuplexRecv,
             F::DuplexSend,
             F::DuplexTryRecv,
             F::DuplexTrySend,
-            F::SinkWrite(StreamElementKind::String),
             F::SinkTryWrite(StreamElementKind::Bytes),
             F::SinkTryWrite(StreamElementKind::String),
             F::StreamClose,
@@ -1854,20 +1868,21 @@ mod tests {
         }
 
         // Coverage: walking the full family enumeration, the size of
-        // the suspending set is exactly 4 (sink bytes write, duplex
-        // close, channel recv, stream recv). Adding a new family without a corresponding
-        // decision is caught by the exhaustive match in
-        // `is_async_suspending`; the count assertion below is the belt
-        // to that suspenders.
+        // the suspending set is exactly 6 (three sink-send families —
+        // bytes/string/layout — plus duplex close, channel recv, stream
+        // recv). Adding a new family without a corresponding decision is
+        // caught by the exhaustive match in `is_async_suspending`; the
+        // count assertion below is the belt to that suspenders.
         let suspending_count = all_runtime_call_families()
             .into_iter()
             .filter(|f| f.is_async_suspending().is_some())
             .count();
         assert_eq!(
-            suspending_count, 4,
-            "exactly 4 families should be suspending today (sink bytes \
-             write, duplex close, channel recv, stream recv); declare any \
-             new suspending family explicitly in is_async_suspending"
+            suspending_count, 6,
+            "exactly 6 families should be suspending today (sink bytes/\
+             string/layout send, duplex close, channel recv, stream \
+             recv); declare any new suspending family explicitly in \
+             is_async_suspending"
         );
     }
 

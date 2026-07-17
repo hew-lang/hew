@@ -1,0 +1,21 @@
+// Accept: a Sink<string> half moves into actor state and is closed exactly
+// once by the actor's teardown (state_drop_fn). The handler borrows the field
+// to send; the moved half is proven freed exactly once (no double-free).
+import std::stream;
+
+actor Writer {
+    let sink: stream.Sink<string>;
+    receive fn put(item: string) {
+        sink.send(item);
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(4);
+    let w = spawn Writer(sink: sink);
+    w.put("hello");
+    match input.recv() {
+        Some(s) => println(s),
+        None => println("eof"),
+    }
+}

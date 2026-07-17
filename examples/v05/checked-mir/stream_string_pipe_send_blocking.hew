@@ -1,0 +1,17 @@
+// MIR-corpus fixture: string-element pipe send in a CONTEXT-FREE caller.
+//
+// A non-awaited `sink.send("hi")` over a `Sink<string>` pipe in `fn main`
+// (no execution context — not an actor handler / scope body) keeps the
+// BLOCKING element-overload write entry `hew_sink_write_string`. This is the
+// companion to `stream_string_pipe_send.hew`, whose identical send inside an
+// actor handler suspends instead: every describable sink-send element
+// suspends in a context-carrying caller, but a context-free caller keeps the
+// blocking call so it never parks a non-existent scheduler frame.
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.pipe(2);
+    sink.send("hi");
+    sink.close();
+    input.close();
+}

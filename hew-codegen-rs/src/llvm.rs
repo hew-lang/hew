@@ -10125,8 +10125,11 @@ fn emit_state_clone_drop_synthesis<'ctx>(
 /// }
 /// ```
 ///
-/// For Connection-bearing actors (any field is `IoHandle{Connection}`),
-/// the body is short-circuited to `ret ptr null` — see plan §4.5 B.
+/// For actors holding a non-clonable pointer-backed IoHandle in state (any
+/// field is `IoHandle{Connection | Stream | Sink | Generator | CancellationToken}`),
+/// the body is short-circuited to `ret ptr null` — see plan §4.5 B. These
+/// handles have no dup runtime symbol; direct spawn is move-only and the null
+/// clone fn blocks supervisor restart fail-closed.
 fn emit_actor_state_clone_body<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -10165,18 +10168,25 @@ fn emit_actor_state_clone_body<'ctx>(
         .expect("clone has 1 param")
         .into_pointer_value();
 
-    // ── Connection fail-closed short-circuit §4.5 B) ────────────
-    if has_connection_field(kinds) {
+    // ── Non-clonable IoHandle fail-closed short-circuit §4.5 B) ────────────
+    // Connection, Stream, Sink, Generator, and CancellationToken are
+    // pointer-backed handles with no dup runtime symbol. An actor holding any
+    // of them in state is move-only: direct spawn byte-copies the handle in and
+    // the runtime never invokes the clone fn, so returning null up front is
+    // correct for the spawn path and blocks supervisor restart fail-closed (the
+    // runtime cannot deep-copy a handle it cannot dup). The DROP direction is
+    // fully wired — `state_drop_fn` closes the handle exactly once.
+    if has_nonclonable_io_handle_field(kinds) {
         // Defence-in-depth: Stage 2's supervisor codegen-time gate is
         // the primary fail-closed surface. The synthesised body here is
-        // only reachable from the direct-spawn path (where Connection
+        // only reachable from the direct-spawn path (where the handle
         // byte-copy is move-semantic and the runtime never invokes the
         // clone fn) or as a runtime fallback if a future caller bypasses
         // the codegen gate. Returning null up front blocks the restart
         // per `hew-runtime/src/actor.rs:766` C1 fix block.
         builder
             .build_return(Some(&ptr_ty.const_null()))
-            .llvm_ctx("connection clone null ret")?;
+            .llvm_ctx("nonclonable io-handle clone null ret")?;
         // Drop the unused ret_null_bb to keep the function well-formed.
         unsafe { ret_null_bb.delete().expect("delete empty bb") };
         return Ok(());
@@ -14554,12 +14564,25 @@ fn emit_overwrite_slot_allocas<'ctx>(
 
 /// True if any field in `kinds` is `IoHandle { Connection }`. Drives the
 /// actor-clone short-circuit (return null up front).
-fn has_connection_field(kinds: &[StateFieldCloneKind]) -> bool {
+/// True when any state field is a pointer-backed IoHandle with NO dup runtime
+/// symbol — `Connection`, `Stream`, `Sink`, `Generator`, or `CancellationToken`.
+/// The actor-state clone body short-circuits to `ret ptr null` for these
+/// actors: the handle is move-only (byte-copied into the actor on direct spawn,
+/// never cloned), and a null clone fn blocks supervisor restart fail-closed —
+/// the runtime cannot deep-copy a handle it cannot dup. Only the DROP direction
+/// is wired (the actor's `state_drop_fn` closes the handle exactly once); the
+/// per-field clone loop is never entered for these actors, so the per-kind
+/// `clone_helper_for_kind` arms for these handles stay defensively unreachable.
+fn has_nonclonable_io_handle_field(kinds: &[StateFieldCloneKind]) -> bool {
     kinds.iter().any(|k| {
         matches!(
             k,
             StateFieldCloneKind::IoHandle {
                 kind: IoHandleKind::Connection
+                    | IoHandleKind::Stream
+                    | IoHandleKind::Sink
+                    | IoHandleKind::Generator
+                    | IoHandleKind::CancellationToken
             }
         )
     })

@@ -1,37 +1,36 @@
-//! Status: runnable (v0.5 NEW-7 suspending typed streams over await)
-//! Description: Typed streams — `await sink.send(x)` / `await stream.recv()` on a Stream<bytes>.
+//! Status: runnable (suspending typed streams over await; owned-handle actor state)
+//! Description: Typed streams — a `Stream<bytes>` half owned in actor state, drained with `await stream.recv()`.
 //!
-//! A single actor handler builds a bounded `Stream<bytes>`/`Sink<bytes>` pipe
-//! with the PUBLIC `std::stream.bytes_pipe(capacity)` constructor, then drives
-//! both ends with the suspending terminators: each `await sink.send(item)`
-//! writes a frame (suspending on a full ring — backpressure-aware) and each
-//! `await stream.recv()` yields the next `Option<bytes>` (`Some(frame)` until
-//! EOF, then `None`). Both ends live in the SAME handler because moving an owned
-//! `Stream`/`Sink` handle into actor state is NYI in v0.5 (owned-handle aggregate
-//! state lands in v0.5.1). The canonical method names are `recv()` / `send()`
-//! (not `next()` / `write()`), and only the `Stream<bytes>` / `Sink<bytes>`
-//! element type suspends. Frames are built from text with the public
-//! `string.to_bytes()` surface — no raw extern, no `unsafe`.
+//! A `Stream<bytes>` half MOVES INTO a consumer actor's state and the actor
+//! drains it with the suspending `await stream.recv()` terminator: each recv
+//! suspends until a frame is ready and yields the next `Option<bytes>`
+//! (`Some(frame)` until EOF, then `None`). The actor's teardown closes the
+//! held half exactly once — the compiler proves the handle is freed once
+//! (`hew_stream_close`), never double-freed.
+//!
+//! The `Sink<bytes>` half stays a LOCAL in `main`, which sends frames (each
+//! `sink.send(item)` writes a frame, suspending on a full ring —
+//! backpressure-aware for a context-carrying caller) and then `close()`s it to
+//! deliver EOF to the parked consumer. Closing a half you own as a LOCAL is how
+//! you signal EOF; a half held in actor state is closed only by the actor's
+//! teardown (explicitly closing a state-held handle is refused fail-closed,
+//! because the teardown drop already owns that close).
+//!
+//! The canonical method names are `recv()` / `send()` (not `next()` / `write()`).
+//! Frames are built from text with the public `string.to_bytes()` surface — no
+//! raw extern, no `unsafe`.
 
 import std::stream;
 
-actor Pipeline {
-    let frames: i64;
-    receive fn run(unused: i64) {
-        let (sink, input) = stream.bytes_pipe(8);
-        // Producer: each send suspends on a full ring (backpressure-aware).
-        for i in 0 .. frames {
-            let frame = f"frame-{i}".to_bytes();
-            await sink.send(frame);
-        }
-        sink.close();
+actor Drainer {
+    let input: stream.Stream<bytes>;
+    receive fn run() {
 
         // Consumer: each recv suspends until a frame is ready; None == EOF.
         var received = 0;
         var done = false;
         while !done {
-            let item = await input.recv();
-            match item {
+            match await input.recv() {
                 Some(frame) => {
                     println(f"recv {frame.to_string()}");
                     received = received + 1;
@@ -46,8 +45,16 @@ actor Pipeline {
 }
 
 fn main() {
-    let p = spawn Pipeline(frames: 3);
-    p.run(0);
+    let (sink, input) = stream.bytes_pipe(8);
+    // The Stream half moves into the actor's state; the Sink half stays local.
+    let d = spawn Drainer(input: input);
+    d.run();
+
+    // Producer side: drive the local sink, then close it to signal EOF.
+    for i in 0 .. 3 {
+        sink.send(f"frame-{i}".to_bytes());
+    }
+    sink.close();
     sleep(500ms);
     println("done");
 }

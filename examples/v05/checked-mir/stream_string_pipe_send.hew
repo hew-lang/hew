@@ -1,8 +1,11 @@
 // MIR-corpus fixture: string-element pipe send.
 //
-// A non-awaited `sink.send("hi")` over a `Sink<string>` pipe lowers to
-// the element-overload write entry (`hew_sink_write_string`), not the
-// suspending bytes path.
+// A `sink.send("hi")` over a `Sink<string>` pipe inside a context-carrying
+// caller (an actor handler) lowers to the backpressure-aware suspend ramp
+// (`suspend [stream_send]`), the same path `Sink<bytes>` uses — every
+// describable element suspends now, not just bytes. Even a NON-awaited send
+// suspends in an execution-context caller (it must not block the scheduler
+// thread); a context-free caller (`fn main`) keeps the blocking call.
 import std::stream;
 
 actor Echo {

@@ -34,6 +34,8 @@ mod numeric_methods_exec;
 mod primitive_trait_bound_exec;
 #[path = "exec/recursion_exec.rs"]
 mod recursion_exec;
+#[path = "exec/sink_owned_element_exec.rs"]
+mod sink_owned_element_exec;
 #[path = "exec/structural_eq_exec.rs"]
 mod structural_eq_exec;
 #[path = "exec/user_enum_exec.rs"]

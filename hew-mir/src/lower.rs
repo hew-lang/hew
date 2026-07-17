@@ -8799,8 +8799,20 @@ fn lower_function(
         &builder.record_field_orders,
         &builder.enum_layouts,
     );
+    // Owned handle-leaf bindings moved into an actor initial-state record
+    // consumed by `SpawnActor`: the actor's `state_drop_fn` is the single free
+    // site, so the source binding's standalone drop is removed. Mirrors the
+    // `build_lifo_drops` skip in `elaborate` so the gate's free-count model
+    // matches the drops the elaborator actually emits.
+    let spawn_consumed_handle_members = derive_spawn_consumed_handle_bindings(
+        &raw.blocks,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.locals,
+    );
     let mut source_excluded = returned_aggregate_members;
     source_excluded.extend(consumed_local_aggregate_members);
+    source_excluded.extend(spawn_consumed_handle_members);
     let alias_field_binders = builder.alias_owner_field_binders();
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &raw.blocks,
@@ -8878,6 +8890,20 @@ fn lower_function(
     if let Some(layout) = current_actor_name.and_then(|name| actor_layouts.get(name)) {
         if let Some(kinds) = layout.state_field_clone_kinds.as_deref() {
             for check in detect_actor_state_resource_overwrite(
+                &raw.blocks,
+                kinds,
+                &layout.state_field_names,
+                &layout.state_field_tys,
+            ) {
+                if let Some(diag) = check_to_diagnostic(&check) {
+                    diagnostics.push(diag);
+                }
+            }
+            // CAP-08 consume/extraction sibling: refuse an explicit close of a
+            // handle held in actor state (the double-free the new state-held
+            // Stream/Sink surface would otherwise reach). The state_drop_fn is
+            // the single owner.
+            for check in detect_actor_state_handle_consume(
                 &raw.blocks,
                 kinds,
                 &layout.state_field_names,
@@ -28811,9 +28837,12 @@ impl Builder {
 
         // `await sink.send(x)`: SUSPENDS on a full ring (backpressure-aware); a
         // non-full ring binds immediately (the runtime fast path). Context-free
-        // callers keep the blocking call.
+        // callers keep the blocking call. Fires for every describable element
+        // (bytes/string/layout) — the `[sink, value]` arg shape holds for all
+        // three `(sink, data)` symbols; codegen selects the runtime entry from
+        // the value's `ResolvedTy`.
         if builtin.as_ref().and_then(|f| f.is_async_suspending())
-            == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSendBytes)
+            == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSend)
         {
             if let [sink, value] = arg_places {
                 let next = self.alloc_block();
@@ -38028,6 +38057,19 @@ fn elaborate(
         &builder.enum_layouts,
     );
 
+    // CAP-08 — owned handle-leaf bindings moved into an actor initial-state
+    // record consumed by `SpawnActor`. The actor's synthesised `state_drop_fn`
+    // is the single free site (Stream→`hew_stream_close` / Sink→`hew_sink_close`),
+    // so the source binding's own scope-exit drop is removed here. The W3.053
+    // gate consumes the SAME derivation via `source_excluded` so its free-count
+    // model matches the drop this removal actually elides.
+    let spawn_consumed_handle_members = derive_spawn_consumed_handle_bindings(
+        &checked.blocks,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.locals,
+    );
+
     // Escaping-closure pair env-box drop allow-set. Starts from the
     // `Let`-admitted ownership ledger (heap-mode literal / call result /
     // admitted rebind — see `closure_pair_owned`), then removes every
@@ -38096,6 +38138,7 @@ fn elaborate(
         &tuple_composite_drop_allowed,
         &returned_aggregate_members,
         &consumed_local_aggregate_members,
+        &spawn_consumed_handle_members,
         &closure_pair_drop_allowed,
         &closure_vec_drop_allowed,
         &plain_vec_drop_allowed,
@@ -48092,6 +48135,246 @@ fn derive_consumed_local_aggregate_member_bindings(
     consumed_members
 }
 
+/// Fail-closed value-flow derivation of the owned-HANDLE-LEAF bindings whose
+/// handle is moved into an ACTOR INITIAL-STATE record consumed by a
+/// `SpawnActor`, and which therefore must NOT also drop at their own scope
+/// exit — the actor's synthesised `state_drop_fn` is the single free site
+/// (Stream→`hew_stream_close` / Sink→`hew_sink_close`, the `IoHandle` state
+/// field arm).
+///
+/// This is the spawn-consumed analogue of the two siblings above:
+/// [`derive_returned_aggregate_member_bindings`] excludes a member handed to
+/// the CALLER through the `ReturnSlot`; [`derive_consumed_local_aggregate_member_bindings`]
+/// excludes a member handed to a downstream CONSUMER through a local aggregate.
+/// Here the single owner is the SPAWNED ACTOR: `spawn A(sink: sink)` lowers to
+/// `RecordInit` (the actor initial-state record) → `Instr::SpawnActor`, whose
+/// `state` place IS that record. The M-COW spine byte-copies the handle into
+/// the record with no retain, so the source binding and the actor state alias
+/// one runtime context; exactly-once demands the source's standalone drop be
+/// removed (this set) so only `state_drop_fn` frees it.
+///
+/// A handle-leaf source binding joins the set iff ALL hold:
+///   - its handle local is a field source of a `RecordInit` whose dest is the
+///     `state` place of an `Instr::SpawnActor`;
+///   - its handle local carries EXACTLY that one owning ingress — it does not
+///     also flow (transitively through whole-value `Move`) into the
+///     `ReturnSlot`, a non-spawn aggregate construct, or an inline release
+///     `Drop`. Any second owning path leaves the binding OUT (fail-closed).
+///
+/// Direction (fail-closed): a binding the derivation does not positively clear
+/// keeps its standalone drop, and the W3.053 gate keeps refusing the shape (a
+/// compile error, never a UAF). Adding a binding here removes exactly one free
+/// path; the worst mis-classification is a leak (the `state_drop_fn` is not the
+/// owner), never a double-free. Both the elaborator (`build_lifo_drops`) and
+/// the detector's `source_excluded` consume this SAME set so their exactly-once
+/// accounting stays in lock-step.
+///
+/// LESSONS: drop-allowset-from-value-flow, raii-null-after-move,
+/// cleanup-all-exits, boundary-fail-closed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one fail-closed value-flow derivation: spawn-state collection, \
+              origin propagation through Move, spawn-state field attribution, \
+              and second-owner disqualification must share the same origin map; \
+              splitting scatters the exactly-once accounting (mirrors the two \
+              sibling derivations above)"
+)]
+fn derive_spawn_consumed_handle_bindings(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+    local_tys: &[ResolvedTy],
+) -> HashSet<BindingId> {
+    // The `state` record local of every `SpawnActor` — the actor initial-state
+    // aggregate the handle is moved into.
+    let mut spawn_state_locals: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::SpawnActor {
+                state: Some(state), ..
+            } = instr
+            {
+                if let Some(l) = base_local(*state) {
+                    spawn_state_locals.insert(l);
+                }
+            }
+        }
+    }
+    if spawn_state_locals.is_empty() {
+        return HashSet::new();
+    }
+
+    let is_handle_leaf_local = |local: u32| -> bool {
+        local_tys
+            .get(local as usize)
+            .is_some_and(ty_is_owned_handle_leaf)
+    };
+
+    // Origin propagation: every owned handle-leaf binding local carries itself;
+    // grown forward through whole-value `Move` so a handle copied into a temp
+    // before the state `RecordInit` still carries its source origin. A slot that
+    // would carry two distinct origins is AMBIGUOUS and attributed to neither
+    // (fail-closed — an ambiguous carrier is never used to admit a binding).
+    let mut carries: HashMap<u32, u32> = HashMap::new();
+    let mut ambiguous: HashSet<u32> = HashSet::new();
+    for place in binding_locals.values() {
+        if let Some(local) = base_local(*place) {
+            if is_handle_leaf_local(local) && place_is_owned_handoff_member(*place) {
+                carries.insert(local, local);
+            }
+        }
+    }
+    if carries.is_empty() {
+        return HashSet::new();
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if matches!(src, Place::Local(_)) && matches!(dest, Place::Local(_)) {
+                        if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                            if ambiguous.contains(&dl) {
+                                continue;
+                            }
+                            if let Some(&origin) = carries.get(&sl) {
+                                match carries.get(&dl).copied() {
+                                    Some(existing) if existing != origin => {
+                                        carries.remove(&dl);
+                                        ambiguous.insert(dl);
+                                        changed = true;
+                                    }
+                                    Some(_) => {}
+                                    None => {
+                                        carries.insert(dl, origin);
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let carried_origin = |place: Place| -> Option<u32> {
+        base_local(place).and_then(|l| {
+            if ambiguous.contains(&l) {
+                None
+            } else {
+                carries.get(&l).copied()
+            }
+        })
+    };
+
+    // Origins whose handle is a field source of a spawn-state `RecordInit`.
+    let mut spawn_consumed_origins: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::RecordInit { fields, dest, .. } = instr {
+                let Some(dl) = base_local(*dest) else {
+                    continue;
+                };
+                if !spawn_state_locals.contains(&dl) {
+                    continue;
+                }
+                for (_offset, field) in fields {
+                    if place_is_owned_handoff_member(*field) {
+                        if let Some(origin) = carried_origin(*field) {
+                            spawn_consumed_origins.insert(origin);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if spawn_consumed_origins.is_empty() {
+        return HashSet::new();
+    }
+
+    // Fail-closed disqualification: an origin that ALSO reaches a second owning
+    // sink — the `ReturnSlot`, a NON-spawn aggregate construct, or an inline
+    // release `Drop` — has more than one candidate free path, so leave it
+    // refused (the standalone drop stays and the gate fires). Move-once already
+    // forbids most of these, but the scan is the belt to that discipline.
+    let mut disqualified: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            match instr {
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src,
+                } => {
+                    if let Some(o) = carried_origin(*src) {
+                        disqualified.insert(o);
+                    }
+                }
+                Instr::RecordInit { fields, dest, .. } => {
+                    if base_local(*dest).is_some_and(|d| spawn_state_locals.contains(&d)) {
+                        continue;
+                    }
+                    for (_offset, field) in fields {
+                        if let Some(o) = carried_origin(*field) {
+                            disqualified.insert(o);
+                        }
+                    }
+                }
+                Instr::TupleConstruct { elements, .. } => {
+                    for elem in elements {
+                        if let Some(o) = carried_origin(*elem) {
+                            disqualified.insert(o);
+                        }
+                    }
+                }
+                Instr::ClosureEnvInit { fields, .. } => {
+                    for field in fields
+                        .iter()
+                        .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+                    {
+                        if let Some(o) = carried_origin(field.src) {
+                            disqualified.insert(o);
+                        }
+                    }
+                }
+                Instr::Drop {
+                    place,
+                    drop_fn: Some(_),
+                    ..
+                } => {
+                    if let Some(o) = carried_origin(*place) {
+                        disqualified.insert(o);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut result = HashSet::new();
+    for (binding, _name, ty) in owned_locals {
+        if !ty_is_owned_handle_leaf(ty) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        if !place_is_owned_handoff_member(*place) {
+            continue;
+        }
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        if spawn_consumed_origins.contains(&local) && !disqualified.contains(&local) {
+            result.insert(*binding);
+        }
+    }
+    result
+}
+
 /// W3.053 catch-all FAIL-CLOSED gate for the combinatorial owned-handle
 /// aggregate-extraction double-free class.
 ///
@@ -48911,6 +49194,137 @@ fn detect_actor_state_resource_overwrite(
                 owner: AggregateOwner::ActorState,
             });
         }
+    }
+    findings
+}
+
+/// CAP-08 fail-closed gate: refuse an explicit CONSUMING close on an owned
+/// builtin-handle held in ACTOR STATE (`sink.close()` on the bare state field —
+/// an `Instr::ActorStateFieldLoad` whose `dest` becomes the receiver of a
+/// `consumes_receiver` runtime call, e.g. `hew_sink_close` / `hew_stream_close`).
+///
+/// The handle is owned by the actor's synthesised `state_drop_fn`, which closes
+/// it EXACTLY ONCE at teardown (Stream→`hew_stream_close` / Sink→`hew_sink_close`;
+/// the runtime close is an UNGUARDED `Box::from_raw`). A handler that also closes
+/// it frees the one runtime context twice → a double-free (verified: exit 139
+/// under `MallocScribble`; two `hew_sink_close` sites in the emitted IR). This is
+/// the consume/extraction sibling of [`detect_actor_state_resource_overwrite`]
+/// (the store/overwrite gate) — the SAME exactly-once-close invariant, the SAME
+/// fail-closed posture, and it mirrors the `#[resource]` handle posture
+/// (`detect_opaque_resource_field_misuse` refuses `h.dq.close()`): a resource
+/// handle in actor state is closed only by teardown.
+///
+/// The consuming close is a `Terminator::Call` whose `builtin` family reports
+/// `consumes_receiver()`; the receiver is `args[0]`, traced back (through
+/// whole-value `Move`) to the `ActorStateFieldLoad` dest. Reuses the same
+/// authoritative per-field classification the overwrite gate consumes
+/// (`ActorLayout::state_field_clone_kinds` → `actor_state_kind_leaks_on_overwrite`)
+/// so the two gates fence exactly the same close-bearing handle set.
+///
+/// Direction: refuse rather than emit the double-free (over-refusal is a compile
+/// error, never a UAF). To signal EOF, close a sink owned as a LOCAL, or let the
+/// actor's teardown close the state-held half.
+///
+/// LESSONS: boundary-fail-closed, raii-null-after-move, cleanup-all-exits,
+/// lifecycle-symmetry.
+fn detect_actor_state_handle_consume(
+    blocks: &[BasicBlock],
+    state_field_clone_kinds: &[crate::state_clone::StateFieldCloneKind],
+    state_field_names: &[String],
+    state_field_tys: &[ResolvedTy],
+) -> Vec<MirCheck> {
+    if state_field_clone_kinds.is_empty() {
+        return Vec::new();
+    }
+    // Locals carrying a close-bearing handle loaded out of an actor state field,
+    // mapped to their field offset; grown forward through whole-value `Move`.
+    let mut handle_field_local: HashMap<u32, u32> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::ActorStateFieldLoad {
+                field_offset, dest, ..
+            } = instr
+            {
+                let idx = field_offset.0;
+                let Some(kind) = state_field_clone_kinds.get(idx as usize) else {
+                    continue;
+                };
+                if !actor_state_kind_leaks_on_overwrite(kind) {
+                    continue;
+                }
+                if let Some(dl) = base_local(*dest) {
+                    handle_field_local.insert(dl, idx);
+                }
+            }
+        }
+    }
+    if handle_field_local.is_empty() {
+        return Vec::new();
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if let Some(&idx) = handle_field_local.get(&sl) {
+                            if handle_field_local.insert(dl, idx).is_none() {
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut findings = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        let Terminator::Call {
+            builtin: Some(family),
+            args,
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        if !family.consumes_receiver() {
+            continue;
+        }
+        let Some(receiver) = args.first() else {
+            continue;
+        };
+        let Some(rl) = base_local(*receiver) else {
+            continue;
+        };
+        let Some(&idx) = handle_field_local.get(&rl) else {
+            continue;
+        };
+        if !seen.insert(idx) {
+            continue;
+        }
+        let name = state_field_names
+            .get(idx as usize)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| {
+                state_field_tys
+                    .get(idx as usize)
+                    .map_or_else(|| format!("field{idx}"), render_owned_handle_ty)
+            });
+        let handle_ty = state_field_tys
+            .get(idx as usize)
+            .map_or_else(|| name.clone(), render_owned_handle_ty);
+        findings.push(MirCheck::OwnedHandleAggregateDoubleFree {
+            binding: BindingId(idx),
+            name,
+            handle_ty,
+            overwrite: false,
+            owner: AggregateOwner::ActorState,
+        });
     }
     findings
 }
@@ -50609,6 +51023,7 @@ fn build_lifo_drops(
     tuple_composite_drop_allowed: &HashSet<BindingId>,
     returned_aggregate_members: &HashSet<BindingId>,
     consumed_local_aggregate_members: &HashSet<BindingId>,
+    spawn_consumed_handle_members: &HashSet<BindingId>,
     closure_pair_drop_allowed: &HashSet<BindingId>,
     closure_vec_drop_allowed: &HashSet<BindingId>,
     plain_vec_drop_allowed: &HashSet<BindingId>,
@@ -50634,6 +51049,22 @@ fn build_lifo_drops(
         // bindings` authority). Field-precise, so a no-consume sibling field keeps
         // the source binding's own sole drop. Skip BEFORE any drop-class arm.
         if consumed_local_aggregate_members.contains(binding) {
+            continue;
+        }
+        // CAP-08 — an owned handle-leaf moved into an actor initial-state record
+        // consumed by `SpawnActor` is owned by the spawned actor now: its
+        // synthesised `state_drop_fn` frees the handle exactly once
+        // (Stream→`hew_stream_close` / Sink→`hew_sink_close`). The M-COW spine
+        // byte-copies the handle into the state record with no retain, so the
+        // source binding must NOT also drop it (that is the double-free the
+        // W3.053 gate refuses when this proof is absent). The
+        // `derive_spawn_consumed_handle_bindings` authority admits only a handle
+        // whose single owning ingress is the spawn-state record; the gate
+        // consumes the SAME set via `source_excluded`. Skip BEFORE any drop-class
+        // arm so the unconditional `AffineResource` handle drop below cannot
+        // re-admit it. LESSONS: raii-null-after-move, cleanup-all-exits,
+        // boundary-fail-closed.
+        if spawn_consumed_handle_members.contains(binding) {
             continue;
         }
         // W5.016 — owned-element `Vec<T>` local (an element that owns heap:
@@ -58197,6 +58628,169 @@ mod w3053_aggregate_handle_double_free_gate {
             !is_refused(&findings, h),
             "the borrowed LocalPid handler of `conn.attach` must NOT be refused; \
              got {findings:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod spawn_consumed_handle_exclusion {
+    //! Direct structural tests for `derive_spawn_consumed_handle_bindings` and
+    //! its load-bearing effect on the W3.053 gate. A Sink/Stream half moved into
+    //! an actor initial-state record consumed by `SpawnActor` is owned by the
+    //! actor's synthesised `state_drop_fn`, so its source binding's standalone
+    //! drop is removed and the gate must admit it. The negative control disables
+    //! the derivation (empty `source_excluded`) and confirms the gate then
+    //! REFUSES — proving the exclusion is not a no-op (LESSONS
+    //! drop-allowset-from-value-flow: include a negative control).
+    use super::*;
+
+    fn is_refused(findings: &[MirCheck], binding: BindingId) -> bool {
+        findings.iter().any(|c| {
+            matches!(
+                c,
+                MirCheck::OwnedHandleAggregateDoubleFree { binding: b, .. } if *b == binding
+            )
+        })
+    }
+
+    fn sink_ty() -> ResolvedTy {
+        ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String])
+    }
+
+    fn writer_state_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Writer".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    /// sink(local 1) → state record(local 2) via `RecordInit`, consumed by
+    /// `SpawnActor` (handle local 3). The canonical `spawn Writer(sink: sink)`
+    /// shape.
+    fn spawn_blocks() -> Vec<BasicBlock> {
+        vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::RecordInit {
+                    ty: writer_state_ty(),
+                    fields: vec![(FieldOffset(0), Place::Local(1))],
+                    dest: Place::Local(2),
+                },
+                Instr::SpawnActor {
+                    actor_name: "Writer".to_string(),
+                    state: Some(Place::Local(2)),
+                    init_args: vec![],
+                    dest: Place::ActorHandle(3),
+                    max_heap_bytes: None,
+                    cycle_capable: false,
+                    mailbox_capacity: None,
+                    overflow_policy: None,
+                },
+            ],
+            terminator: Terminator::Return,
+        }]
+    }
+
+    #[allow(
+        clippy::type_complexity,
+        reason = "test fixture returns the four detector inputs as a tuple"
+    )]
+    fn setup() -> (
+        BindingId,
+        HashMap<BindingId, Place>,
+        Vec<(BindingId, String, ResolvedTy)>,
+        Vec<ResolvedTy>,
+    ) {
+        let sink = BindingId(1);
+        let mut binding_locals = HashMap::new();
+        binding_locals.insert(sink, Place::Local(1));
+        let owned = vec![(sink, "sink".to_string(), sink_ty())];
+        let mut local_tys = vec![ResolvedTy::I64; 4];
+        local_tys[1] = sink_ty();
+        local_tys[2] = writer_state_ty();
+        (sink, binding_locals, owned, local_tys)
+    }
+
+    #[test]
+    fn sink_into_spawn_state_is_derived_as_excluded() {
+        let (sink, binding_locals, owned, local_tys) = setup();
+        let excluded = derive_spawn_consumed_handle_bindings(
+            &spawn_blocks(),
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            excluded.contains(&sink),
+            "a Sink half moved into an actor initial-state record consumed by \
+             SpawnActor must be derived as spawn-consumed; got {excluded:?}"
+        );
+    }
+
+    #[test]
+    fn spawn_consumed_sink_admitted_with_exclusion_refused_without() {
+        let (sink, binding_locals, owned, local_tys) = setup();
+        let blocks = spawn_blocks();
+        // Negative control: derivation disabled (empty source_excluded) → the
+        // source's standalone drop is counted and the SpawnActor escape poisons
+        // the origin, so the gate REFUSES.
+        let refused_without = detect_unproven_aggregate_handle_double_free(
+            &blocks,
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &HashMap::new(),
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(
+            is_refused(&refused_without, sink),
+            "without the spawn-consumed exclusion the gate must refuse the moved \
+             handle (negative control); got {refused_without:?}"
+        );
+        // With the derivation feeding `source_excluded` → exactly one free (the
+        // actor state_drop_fn), so the gate ADMITS.
+        let excluded =
+            derive_spawn_consumed_handle_bindings(&blocks, &owned, &binding_locals, &local_tys);
+        let findings = detect_unproven_aggregate_handle_double_free(
+            &blocks,
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &HashMap::new(),
+            &[],
+            &excluded,
+            &HashSet::new(),
+        );
+        assert!(
+            !is_refused(&findings, sink),
+            "with the spawn-consumed exclusion the gate must admit the moved \
+             handle; got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn sink_also_returned_is_not_excluded() {
+        // A handle flowing BOTH into a spawn-state record AND the ReturnSlot has
+        // two candidate owners → left refused fail-closed (not derived).
+        let (sink, binding_locals, owned, local_tys) = setup();
+        let mut blocks = spawn_blocks();
+        blocks[0].instructions.push(Instr::Move {
+            dest: Place::ReturnSlot,
+            src: Place::Local(1),
+        });
+        let excluded =
+            derive_spawn_consumed_handle_bindings(&blocks, &owned, &binding_locals, &local_tys);
+        assert!(
+            !excluded.contains(&sink),
+            "a handle also moved to the ReturnSlot must NOT be spawn-consumed \
+             excluded (fail-closed); got {excluded:?}"
         );
     }
 }

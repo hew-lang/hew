@@ -396,7 +396,7 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
 /// Structural type-encoder heads emitted for non-primitive `ResolvedTy`
 /// shapes (`tuple$x...$g`, `array$x...$g`, `fn$x...$r...$g`, etc.).
 ///
-/// Kept in lockstep with `hew-hir/src/monomorph.rs::mangle_resolved_ty` and
+/// Reserved vocabulary emitted by
 /// `hew-types/src/resolved_ty.rs::mangle_resolved_ty_segment`.
 pub const STRUCTURAL_ENCODER_HEADS: &[&str] = &[
     "tuple",

@@ -8,6 +8,14 @@ fn named(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
 }
 
 #[test]
+fn type_param_probe_key_encoding_is_preserved() {
+    let ty = ResolvedTy::TypeParam {
+        name: "T".to_string(),
+    };
+    assert_eq!(mangle_resolved_ty(&ty), "typeparam$xT$g");
+}
+
+#[test]
 fn nested_type_fragments_distinguish_former_collision_pairs() {
     let foo_i64 = named("Foo", vec![ResolvedTy::I64]);
     let literal_foo_i64 = named("Foo_i64", vec![]);

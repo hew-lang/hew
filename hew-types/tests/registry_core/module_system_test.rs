@@ -425,6 +425,7 @@ fn test_pub_type_accessible_qualified() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     };
     let import = make_user_import(
         &["myapp", "config"],
@@ -470,6 +471,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     };
     let imported_type = TypeDecl {
         visibility: Visibility::Pub,
@@ -484,6 +486,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     };
     let import = make_user_import(
         &["myapp", "config"],
@@ -536,6 +539,7 @@ fn pub_struct(name: &str) -> TypeDecl {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     }
 }
 
@@ -747,6 +751,7 @@ fn pub_struct_with_scalar_field(name: &str, field: &str, scalar: &str) -> TypeDe
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     }
 }
 

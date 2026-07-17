@@ -103,6 +103,7 @@ fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     }
 }
 
@@ -833,6 +834,7 @@ fn user_module_registers_types() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     };
     let import = make_user_import(
         &["myapp", "config"],
@@ -1383,6 +1385,7 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     }
 }
 
@@ -1465,6 +1468,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     };
     let output = check_items(vec![
         (Item::Import(import), 0..0),
@@ -1695,6 +1699,7 @@ fn local_type_impl_no_orphan_warning() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     };
     let impl_decl = ImplDecl {
         type_params: None,
@@ -1845,6 +1850,7 @@ fn test_file_import_private_items_not_visible() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     });
 
     let resolved: Vec<Spanned<Item>> = vec![

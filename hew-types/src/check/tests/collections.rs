@@ -1370,6 +1370,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     };
     let outer = TypeDecl {
         visibility: Visibility::Private,
@@ -1396,6 +1397,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     };
     let plain = TypeDecl {
         visibility: Visibility::Private,
@@ -1422,6 +1424,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         is_opaque: false,
         consuming_methods: Vec::new(),
+        lang_item: None,
     };
 
     checker.register_type_decl(&inner);

@@ -10,6 +10,94 @@ fn parse_simple_function() {
     assert_eq!(result.program.items.len(), 1);
 }
 
+#[test]
+fn parse_stdlib_authority_attributes() {
+    let source = r#"
+#[lang_item("option")]
+pub enum Maybe<T> { Some(T); None; }
+
+#[diagnostic_item("fs")]
+pub fn read_file() {}
+
+#[intrinsic("math.sqrt")]
+pub fn sqrt(x: f64) -> f64;
+
+extern "C" {
+    #[abi(ret = bytes_triple, bytes_param = ptr)]
+    fn hew_read() -> bytes;
+}
+"#;
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let Item::TypeDecl(type_decl) = &result.program.items[0].0 else {
+        panic!("expected type declaration");
+    };
+    assert_eq!(type_decl.lang_item.as_deref(), Some("option"));
+
+    let Item::Function(diagnostic_fn) = &result.program.items[1].0 else {
+        panic!("expected diagnostic function");
+    };
+    assert_eq!(
+        diagnostic_fn.attributes[0].name, "diagnostic_item",
+        "diagnostic attributes remain available to the authority loader"
+    );
+
+    let Item::Function(intrinsic_fn) = &result.program.items[2].0 else {
+        panic!("expected intrinsic function");
+    };
+    assert_eq!(intrinsic_fn.intrinsic.as_deref(), Some("math.sqrt"));
+
+    let Item::ExternBlock(extern_block) = &result.program.items[3].0 else {
+        panic!("expected extern block");
+    };
+    let abi = &extern_block.functions[0].attributes[0];
+    assert_eq!(abi.name, "abi");
+    assert_eq!(
+        abi.args,
+        vec![
+            AttributeArg::KeyValue {
+                key: "ret".to_string(),
+                value: "bytes_triple".to_string(),
+            },
+            AttributeArg::KeyValue {
+                key: "bytes_param".to_string(),
+                value: "ptr".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn malformed_stdlib_authority_attributes_are_rejected() {
+    let source = r#"
+#[lang_item]
+pub trait MissingKey {}
+
+extern "C" {
+    #[abi(bytes_triple)]
+    fn hew_bad();
+}
+"#;
+    let result = parse(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.message.contains("requires exactly one string key")),
+        "missing lang-item key must be diagnosed: {:?}",
+        result.errors
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.message.contains("requires one or more `key = value`")),
+        "positional ABI facts must be diagnosed: {:?}",
+        result.errors
+    );
+}
+
 /// Supervisor child declarations accept the module-qualified dotted type
 /// (`child a: bank.Account`), carrying the qualified actor identity
 /// verbatim; bare child types stay the root/local spelling.

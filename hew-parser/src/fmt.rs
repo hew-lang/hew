@@ -430,6 +430,12 @@ impl<'a> Formatter<'a> {
             self.write_indent();
             self.write("#[opaque]\n");
         }
+        if let Some(lang_item) = &decl.lang_item {
+            self.write_indent();
+            self.write("#[lang_item(\"");
+            self.write(lang_item);
+            self.write("\")]\n");
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         if decl.is_indirect {
@@ -541,6 +547,12 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_wire_type_decl(&mut self, decl: &TypeDecl, wire: &WireMetadata) {
+        if let Some(lang_item) = &decl.lang_item {
+            self.write_indent();
+            self.write("#[lang_item(\"");
+            self.write(lang_item);
+            self.write("\")]\n");
+        }
         // Emit type-level naming attributes
         self.format_naming_attr("json", wire.json_case);
         self.format_naming_attr("yaml", wire.yaml_case);

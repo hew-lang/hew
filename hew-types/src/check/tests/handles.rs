@@ -447,6 +447,7 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
                 resource_marker: hew_parser::ast::ResourceMarker::None,
                 is_opaque: false,
                 consuming_methods: Vec::new(),
+                lang_item: None,
             };
             checker.register_type_decl(&td);
         }
@@ -507,6 +508,7 @@ fn handle_bearing_registration_scales_linearly_not_quadratically() {
                 resource_marker: hew_parser::ast::ResourceMarker::None,
                 is_opaque: false,
                 consuming_methods: Vec::new(),
+                lang_item: None,
             };
             checker.register_type_decl(&td);
         }

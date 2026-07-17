@@ -48,12 +48,11 @@ fn hew_command(repo: &Path) -> Command {
     if bin.exists() {
         return Command::new(bin);
     }
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut command = Command::new(cargo);
-    command
-        .current_dir(repo)
-        .args(["run", "--quiet", "-p", "hew-cli", "--bin", "hew", "--"]);
-    command
+    // Cold `target/`: build `hew` once under the shared serialized build
+    // lock, OUTSIDE any per-test deadline, so a concurrent build-lock holder
+    // cannot make a `cargo run` fallback burn the bounded budget and produce
+    // a false timeout (hew-lang/hew#1887).
+    Command::new(hew_testutil::ensure_hew_bin_built().expect("build hew binary"))
 }
 
 fn ensure_hew_runtime_lib(repo: &Path) {

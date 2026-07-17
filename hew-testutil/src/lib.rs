@@ -645,6 +645,85 @@ fn hew_lib_name() -> &'static str {
     }
 }
 
+/// Serialize `cargo build -p hew-cli --bin hew` across all parallel nextest
+/// processes and return the resolved `hew` binary path.
+///
+/// This mirrors [`ensure_hew_lib_built`] for the compiler-driver binary that the
+/// `*_exec` integration tests invoke. Without it, a cold `target/` lets the
+/// per-test `hew_command` fall back to a `cargo run` INSIDE the bounded
+/// deadline; if a concurrent `cargo`/`nextest` invocation holds the build-lock,
+/// that fallback blocks on `Blocking waiting for file lock on build directory`
+/// and burns the whole budget, producing a false timeout (hew-lang/hew#1887).
+/// Building the binary once here — outside any per-test deadline, under the same
+/// `fd_lock` + `NEXTEST_RUN_ID` stamp serialization — makes the exec corpus
+/// robust to shared-`target/` contention.
+///
+/// # Errors
+///
+/// Returns `Err` if the lock file cannot be opened/locked, if
+/// `cargo build -p hew-cli --bin hew` fails or cannot be spawned, or if the
+/// expected binary artifact is missing after a successful build.
+pub fn ensure_hew_bin_built() -> Result<PathBuf, String> {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")) // = <repo>/hew-testutil
+        .parent()
+        .ok_or("hew-testutil must live under the workspace root")?
+        .to_path_buf();
+    let (target_dir, profile) = target_dir_and_profile();
+    let bin_path = target_dir.join(&profile).join(hew_bin_name());
+    ensure_built_serialized(&target_dir, &profile, &bin_path, |td, prof| {
+        run_cargo_build_hew_bin(&repo_root, td, prof)
+    })?;
+    Ok(bin_path)
+}
+
+fn hew_bin_name() -> &'static str {
+    if cfg!(windows) {
+        "hew.exe"
+    } else {
+        "hew"
+    }
+}
+
+fn run_cargo_build_hew_bin(
+    repo_root: &Path,
+    target_dir: &Path,
+    profile: &str,
+) -> Result<(), String> {
+    let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    cmd.args(["build", "-q", "-p", "hew-cli", "--bin", "hew"])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .current_dir(repo_root);
+    match profile {
+        // dev/test both land in target/debug
+        "debug" => {}
+        "release" => {
+            cmd.arg("--release");
+        }
+        other => {
+            cmd.args(["--profile", other]); // e.g. CI release-lib
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let dep = std::env::var("MACOSX_DEPLOYMENT_TARGET")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "13.0".to_string());
+        cmd.env("MACOSX_DEPLOYMENT_TARGET", dep);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("spawn cargo build -p hew-cli --bin hew: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "cargo build -p hew-cli --bin hew failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
 /// Testable core: `build_fn` is injected so the unit test can stub `cargo`.
 ///
 /// The stamp read, the build, the artifact presence check, and the stamp
@@ -810,6 +889,63 @@ mod hew_lib_bootstrap_tests {
             "build stub should run exactly once across concurrent callers"
         );
         assert!(artifact.is_file(), "stub artifact should be present");
+    }
+
+    /// The `hew` binary bootstrap (hew-lang/hew#1887) shares the exact
+    /// serialization spine as the library bootstrap: concurrent callers racing
+    /// a bin-named artifact must still build exactly once, and every later
+    /// caller must take the stamped fast path rather than re-running the build
+    /// inside a per-test deadline. Guarding this with its own artifact name
+    /// keeps the bin path from silently regressing to a per-call rebuild if the
+    /// stamp/lock wiring is ever changed.
+    #[test]
+    fn concurrent_bin_callers_build_exactly_once() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let target_dir = dir.path().to_path_buf();
+        let artifact = target_dir.join(hew_bin_name());
+        let build_count = AtomicUsize::new(0);
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let target_dir = &target_dir;
+                    let artifact = &artifact;
+                    let build_count = &build_count;
+                    scope.spawn(move || {
+                        ensure_built_serialized(target_dir, "debug", artifact, |_td, _prof| {
+                            build_count.fetch_add(1, Ordering::SeqCst);
+                            fs::write(artifact, b"stub hew binary")
+                                .map_err(|e| format!("write stub binary: {e}"))
+                        })
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle
+                    .join()
+                    .expect("bin bootstrap thread should not panic")
+                    .expect("bin bootstrap thread should succeed");
+            }
+        });
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            1,
+            "bin build stub should run exactly once across concurrent callers"
+        );
+        assert!(artifact.is_file(), "stub bin artifact should be present");
+
+        // A fresh caller after the winner stamped must not rebuild.
+        ensure_built_serialized(&target_dir, "debug", &artifact, |_td, _prof| {
+            build_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("post-stamp caller should short-circuit");
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            1,
+            "a caller after the stamp must take the fast path, not rebuild"
+        );
     }
 }
 

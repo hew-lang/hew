@@ -1652,6 +1652,10 @@ impl<S: std::hash::BuildHasher> HeapOwnershipLayouts for MirHeapLayouts<'_, S> {
                 .collect()
         })
     }
+
+    fn enum_is_indirect(&self, name: &str, args: &[ResolvedTy]) -> bool {
+        find_enum_layout(name, args, self.enum_layouts).is_some_and(|layout| layout.is_indirect)
+    }
 }
 
 /// Record-aware MIR convenience: `ty_owns_heap` over a [`MirHeapLayouts`] built
@@ -1707,6 +1711,39 @@ pub trait HeapOwnershipLayouts {
         name: &str,
         args: &[ResolvedTy],
     ) -> Option<Vec<Vec<ResolvedTy>>>;
+
+    /// Whether the registered enum is represented by an owned heap pointer
+    /// rather than inline tagged-union storage.
+    fn enum_is_indirect(&self, name: &str, args: &[ResolvedTy]) -> bool;
+}
+
+/// Structural heap-ownership facts for a resolved type.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeapOwnership {
+    /// The type is or transitively contains a heap-owning leaf.
+    pub owns_heap: bool,
+    /// The type is or transitively contains an indirect enum represented by an
+    /// owned heap pointer.
+    pub via_indirection: bool,
+}
+
+impl HeapOwnership {
+    const NONE: Self = Self {
+        owns_heap: false,
+        via_indirection: false,
+    };
+
+    const HEAP: Self = Self {
+        owns_heap: true,
+        via_indirection: false,
+    };
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            owns_heap: self.owns_heap || other.owns_heap,
+            via_indirection: self.via_indirection || other.via_indirection,
+        }
+    }
 }
 
 /// The SINGLE structural heap-ownership authority for the whole compiler.
@@ -1753,7 +1790,14 @@ pub trait HeapOwnershipLayouts {
 /// authority would re-derive, so the swap is byte-identical by construction.
 #[must_use]
 pub fn ty_owns_heap(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -> bool {
-    ty_owns_heap_inner(ty, layouts, &mut HashSet::new())
+    ty_heap_ownership(ty, layouts).owns_heap
+}
+
+/// The complete structural heap-ownership fact, including ownership reached
+/// through an indirect enum representation.
+#[must_use]
+pub fn ty_heap_ownership(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -> HeapOwnership {
+    ty_heap_ownership_inner(ty, layouts, &mut HashSet::new())
 }
 
 /// [`HeapOwnershipLayouts`] adapter that supplies enum/machine variant payloads
@@ -1781,13 +1825,17 @@ impl HeapOwnershipLayouts for EnumLayoutsOnly<'_> {
                 .collect()
         })
     }
+
+    fn enum_is_indirect(&self, name: &str, args: &[ResolvedTy]) -> bool {
+        find_enum_layout(name, args, self.0).is_some_and(|layout| layout.is_indirect)
+    }
 }
 
-fn ty_owns_heap_inner(
+fn ty_heap_ownership_inner(
     ty: &ResolvedTy,
     layouts: &impl HeapOwnershipLayouts,
     visited: &mut HashSet<String>,
-) -> bool {
+) -> HeapOwnership {
     match ty {
         // The single heap-leaf set, identical to `ValueClass::of_ty`'s heap
         // classification (`dedup-semantic-boundary`):
@@ -1824,21 +1872,26 @@ fn ty_owns_heap_inner(
                     | hew_types::BuiltinType::HashSet,
                 ),
             ..
-        } => true,
+        } => HeapOwnership::HEAP,
         // A bare function pair has no owned environment. This type-level
         // predicate tracks a closure's captured payload ownership; whether a
         // particular escaping closure has an env box is a construction-site fact
         // handled by the closure slot-drop path.
-        ResolvedTy::Closure { captures, .. } => captures
-            .iter()
-            .any(|capture| ty_owns_heap_inner(capture, layouts, visited)),
-        ResolvedTy::Named { name, args, .. } => {
-            // 1. Type arguments first (fast path: `Option<string>`, etc.).
-            if args
+        ResolvedTy::Closure { captures, .. } => {
+            captures
                 .iter()
-                .any(|arg| ty_owns_heap_inner(arg, layouts, visited))
-            {
-                return true;
+                .fold(HeapOwnership::NONE, |ownership, capture| {
+                    ownership.union(ty_heap_ownership_inner(capture, layouts, visited))
+                })
+        }
+        ResolvedTy::Named { name, args, .. } => {
+            let mut ownership = HeapOwnership {
+                owns_heap: false,
+                via_indirection: layouts.enum_is_indirect(name, args),
+            };
+            // 1. Type arguments first (fast path: `Option<string>`, etc.).
+            for arg in args {
+                ownership = ownership.union(ty_heap_ownership_inner(arg, layouts, visited));
             }
             // 2. Record fields (DIV-1: a bare nested user-record carrying a heap
             //    field, e.g. `type Inner { payload: Vec<i64> }`, that the old A
@@ -1849,15 +1902,12 @@ fn ty_owns_heap_inner(
                 if !visited.insert(key.clone()) {
                     // Recursive value type: the checker rejects these; force the
                     // fail-closed path so the drop fires.
-                    return true;
+                    return ownership.union(HeapOwnership::HEAP);
                 }
-                let owns = fields
-                    .iter()
-                    .any(|ft| ty_owns_heap_inner(ft, layouts, visited));
+                for field in &fields {
+                    ownership = ownership.union(ty_heap_ownership_inner(field, layouts, visited));
+                }
                 visited.remove(&key);
-                if owns {
-                    return true;
-                }
             }
             // 3. Enum / machine variant payloads. Covers non-param heap-owning
             //    fields in generic enums (`Envelope<i64>` where a separate
@@ -1865,25 +1915,25 @@ fn ty_owns_heap_inner(
             if let Some(variants) = layouts.enum_variant_field_tys(name, args) {
                 let key = record_or_enum_visit_key(name, args);
                 if !visited.insert(key.clone()) {
-                    return true;
+                    return ownership.union(HeapOwnership::HEAP);
                 }
-                let owns = variants.iter().any(|fields| {
-                    fields
-                        .iter()
-                        .any(|ft| ty_owns_heap_inner(ft, layouts, visited))
-                });
+                for fields in &variants {
+                    for field in fields {
+                        ownership =
+                            ownership.union(ty_heap_ownership_inner(field, layouts, visited));
+                    }
+                }
                 visited.remove(&key);
-                if owns {
-                    return true;
-                }
             }
-            false
+            ownership
         }
         ResolvedTy::Tuple(elems) => elems
             .iter()
-            .any(|e| ty_owns_heap_inner(e, layouts, visited)),
+            .fold(HeapOwnership::NONE, |ownership, element| {
+                ownership.union(ty_heap_ownership_inner(element, layouts, visited))
+            }),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            ty_owns_heap_inner(inner, layouts, visited)
+            ty_heap_ownership_inner(inner, layouts, visited)
         }
         ResolvedTy::I8
         | ResolvedTy::I16
@@ -1907,7 +1957,7 @@ fn ty_owns_heap_inner(
         | ResolvedTy::Borrow { .. }
         | ResolvedTy::TraitObject { .. }
         | ResolvedTy::Task(_)
-        | ResolvedTy::TypeParam { .. } => false,
+        | ResolvedTy::TypeParam { .. } => HeapOwnership::NONE,
     }
 }
 
@@ -7020,6 +7070,72 @@ mod heap_owning_tests {
         // The exact DIV-2 element shape: `(Generator<i64,()>, i64)`.
         let pair = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
         assert!(ty_owns_heap(&pair, &layouts));
+    }
+
+    #[test]
+    fn heap_ownership_reports_indirectness_without_changing_heap_projection() {
+        let enums = vec![
+            EnumLayout {
+                name: "Node".to_string(),
+                tag_width: 1,
+                variants: vec![MachineVariantLayout {
+                    name: "Value".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
+                }],
+                is_indirect: true,
+            },
+            EnumLayout {
+                name: "TextNode".to_string(),
+                tag_width: 1,
+                variants: vec![MachineVariantLayout {
+                    name: "Text".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
+                }],
+                is_indirect: true,
+            },
+        ];
+        let mut orders = HashMap::new();
+        orders.insert(
+            "Wrapper".to_string(),
+            vec![("node".to_string(), ResolvedTy::named_user("Node", vec![]))],
+        );
+        let layouts = MirHeapLayouts {
+            record_field_orders: &orders,
+            enum_layouts: &enums,
+        };
+
+        let node = ResolvedTy::named_user("Node", vec![]);
+        assert_eq!(
+            ty_heap_ownership(&node, &layouts),
+            HeapOwnership {
+                owns_heap: false,
+                via_indirection: true,
+            }
+        );
+        assert!(
+            !ty_owns_heap(&node, &layouts),
+            "the legacy heap-leaf projection stays byte-identical"
+        );
+
+        let wrapper = ResolvedTy::named_user("Wrapper", vec![]);
+        assert_eq!(
+            ty_heap_ownership(&wrapper, &layouts),
+            HeapOwnership {
+                owns_heap: false,
+                via_indirection: true,
+            }
+        );
+
+        let text_node = ResolvedTy::named_user("TextNode", vec![]);
+        assert_eq!(
+            ty_heap_ownership(&text_node, &layouts),
+            HeapOwnership {
+                owns_heap: true,
+                via_indirection: true,
+            }
+        );
     }
 
     // ── ty_contains_unclonable_opaque (round-4 transitive authority) ────────

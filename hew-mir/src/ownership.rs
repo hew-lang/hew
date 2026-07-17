@@ -7,7 +7,7 @@
 //!
 //! Today ~8 independent shape-walkers each re-answer "does this own heap / how
 //! is it released / how does it cross the ABI?" by matching on the nominal
-//! [`ResolvedTy`] at their own call site (`ty_owns_heap`, `cbor_ty_owns_heap`,
+//! [`ResolvedTy`] at their own call site (`ty_owns_heap`,
 //! `ValueClass::of_ty`, the `derive_*_drop_allowed` family, the
 //! `cow_value_leaf_drop_symbol` / `binding_ty_is_plain_vec` release buckets, …).
 //! Because the answer is re-derived rather than carried, the walkers drift at
@@ -65,7 +65,7 @@
 //! | Walker | Crate · entry | Re-derives | Status |
 //! |---|---|---|---|
 //! | `ty_owns_heap` / `ty_owns_heap_inner` | `hew-mir` · `model.rs` | heap-ownership leaf set + structural recursion | **AUTHORITY** — the single source of truth; [`OwnershipDecision::classify`] and every routed walker resolve the heap axis here. |
-//! | `cbor_ty_owns_heap` | `hew-codegen-rs` · `llvm.rs` | CBOR `Vec` element heap probe (own leaf set, divergent `_ => false`) | **RETIRED** — now a `#[deprecated]` shim delegating to `ty_owns_heap` via `CborHeapLayouts`; sole caller `cbor_vec_elem_kind` is `#[allow(deprecated)]`-listed. The workspace `clippy -D warnings` CI step guards re-entry. Fixed a latent `CancellationToken` / tuple-field under-drop for free. |
+//! | CBOR `Vec` element ownership probe | `hew-codegen-rs` · `wire.rs` | heap ownership + enum indirectness | **ROUTED** — reads `ty_heap_ownership` through `CborHeapLayouts`; the local heap walker, indirect-enum re-walk, and deprecated shim are deleted. |
 //! | `callee_ownership_contract` | `hew-mir` · `runtime_symbols.rs` | runtime-callee receiver borrow, string-argument borrow, and result ownership facts | **LANDED (callee ownership contract consolidation)** — MIR drop-admission provers read the typed [`ReceiverOwnership`](crate::runtime_symbols::ReceiverOwnership), [`StringArgsOwnership`](crate::runtime_symbols::StringArgsOwnership), and [`ResultOwnership`](crate::runtime_symbols::ResultOwnership) projections; unknown callees return the fail-closed `Escapes` / `Escaping` / `Untracked` contract. |
 //! | owned-locals seed gate (`Builder::binding_seeds_drop_elaboration`) | `hew-mir` · `lower.rs` → `hew-hir` · `value_class.rs` | which locals enter drop elaboration | **LANDED (seed-authority consolidation)** — one named authority answers "does this binding's type oblige drop elaboration?" at every `owned_locals` seed site AND the consume-side removal mirror, so the two sides of the ledger cannot desynchronise (a looser consume side keeps a moved-out binding in `owned_locals` and double-frees at function exit; a tighter one leaks). The verdict remains the value-class seed — record-blind via [`ValueClass`] (an unmarked user record classifies `Unknown`, which seeds); a record-aware seed upgrade reads [`ValueOwnership`] at this one seam when it lands. Pinned by a frozen verdict table over every value class plus a source-inventory scan keeping the authority's body the only seed-fact spelling (`seed_gate_matches_value_class_authority` / `seed_fact_comparison_site_inventory_is_closed` in `lower.rs`). |
 //! | `cow_value_leaf_drop_symbol` | `hew-mir` · `lower.rs` | scalar-leaf release symbol (`string` → `hew_string_drop`, else `None`) | **LANDED (release-bucket consolidation)** — routed through the typed decision; see the partition-totality test below. |

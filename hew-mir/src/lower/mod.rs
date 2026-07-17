@@ -2596,9 +2596,10 @@ pub fn lower_hir_module_with_facts(
                                         continue 'fields;
                                     };
                                     let config_ty_name = config_ty_name.clone();
-                                    let owned =
-                                        ValueClass::of_ty(&source_expr.ty, &module.type_classes)
-                                            != ValueClass::BitCopy;
+                                    let owned = self::expr::binding_seeds_drop_elaboration(
+                                        &source_expr.ty,
+                                        &module.type_classes,
+                                    );
                                     // #2238 item 2: keep the MIR self-consistent
                                     // with the checker wall
                                     // (`ty_is_supervisor_init_reproducible`) and

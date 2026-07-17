@@ -22,6 +22,13 @@ use super::{
 #[cfg(test)]
 use super::{FieldLoadClass, PlaceProvenance, Projection, ValueProvenance};
 
+pub(super) fn binding_seeds_drop_elaboration(
+    ty: &ResolvedTy,
+    type_classes: &hew_hir::TypeClassTable,
+) -> bool {
+    ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
+}
+
 impl Builder {
     /// True when a `Vec` element is released through the owned-element ABI
     /// (`hew_vec_free_owned` running the per-element `drop_fn`, #1722): a
@@ -442,7 +449,7 @@ impl Builder {
     /// flat-copyability on its own direct `ValueClass` test (it must not
     /// follow a future seed-rule change).
     pub(crate) fn binding_seeds_drop_elaboration(&self, ty: &ResolvedTy) -> bool {
-        ValueClass::of_ty(ty, &self.type_classes) != ValueClass::BitCopy
+        binding_seeds_drop_elaboration(ty, &self.type_classes)
     }
 
     /// Classify a `Vec<E>` element's scope-exit release by reading the single
@@ -461,6 +468,7 @@ impl Builder {
         if ty_is_closure_pair(elem) {
             return VecElementRelease::ClosurePair;
         }
+
         if self.is_owned_vec_element(elem) {
             return VecElementRelease::OwnedElement;
         }

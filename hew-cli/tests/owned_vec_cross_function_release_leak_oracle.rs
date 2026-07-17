@@ -157,6 +157,7 @@ fn affected_release_sites_emit_owned_symbol() {
     );
 }
 
+// The malloc-slope teeth require a runtime+picker neuter; the IR-symbol assertion is the live fail-without-fix teeth today.
 #[test]
 fn generator_yield_owned_vec_payload_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_vec_generator_yield", generator_yield_source);

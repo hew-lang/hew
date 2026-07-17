@@ -350,6 +350,14 @@ fixtures=(
   # resolves to the root `Payload` (field `tag`, not `code`), and the reply read
   # fails. Prints `1` then `42`.
   root_shadow_actor_ask
+  # Issue #2208 finding 2: an imported actor reply `Result<Unique, Colliding>`
+  # where `Colliding` collides with a root-declared `Colliding` but `Unique` is
+  # unique. Only `Colliding` may be owner-qualified in the checker's reply
+  # identity — a `current_module` scope over the whole signature would qualify
+  # `Unique` too (`Result<mixreply.Unique, mixreply.Colliding>`), diverging from
+  # HIR's collision-gated transform (`Result<Unique, mixreply.Colliding>`) and
+  # tripping MIR's actor-reply equality. Prints `1` then `9`.
+  mixed_collision_reply
 )
 
 for fixture in "${fixtures[@]}"; do

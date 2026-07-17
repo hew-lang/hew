@@ -9067,37 +9067,24 @@ impl Checker {
                     // `{module_short}.{name}` identity directly; no bare key
                     // and no copy-based qualified alias.
                     //
-                    // Scope `current_module` to the DECLARING module while the
-                    // receive-fn signatures are resolved, but ONLY when a
-                    // receive fn returns a genuinely cross-module-colliding
-                    // record (`testffi.Result` vs a file-import `Result`). A
-                    // bare `-> Result` inside an imported actor then re-qualifies
-                    // against the module that declared it — exactly as it did on
-                    // that module's own topo-order registration — so the checker
-                    // assigns the owner-qualified identity CONSISTENTLY across
-                    // the ask-reply type, the `Result<_, AskError>` payload, the
-                    // match scrutinee, and the pattern binding. That agrees with
-                    // the MIR record-layout keying (`type_layout_key` keys a
-                    // colliding record under its qualified identity) and the HIR
-                    // owner-qualification, closing the layout-vs-value mismatch
-                    // (#2208). The gate is mandatory: an UNCONDITIONAL scope
-                    // over-qualifies a NON-colliding stdlib actor record
-                    // (`http.Response`, `xml.Node`) whose layout stays bare,
-                    // creating a mismatch that SIGSEGVs at cabi.rs. Uses the FULL
-                    // dotted path to match the identity the module's own
-                    // registration used, restored immediately after the call.
-                    let scope_declaring_module = self.actor_returns_colliding_record(ad);
-                    let saved_current_module = if scope_declaring_module {
-                        let saved = self.current_module.clone();
-                        self.current_module = Some(module_full_path.to_string());
-                        Some(saved)
-                    } else {
-                        None
-                    };
+                    // Receive-fn reply types register BARE, then a collision-gated
+                    // transform owner-qualifies ONLY the cross-module-colliding
+                    // record names in each reply — recursing exactly as HIR's
+                    // `qualify_colliding_module_record_ty` does. Scoping
+                    // `current_module` for the whole registration instead would
+                    // qualify EVERY nested local type: a reply
+                    // `Result<Unique, Colliding>` becomes
+                    // `Result<pkg.Unique, pkg.Colliding>` in checker state while
+                    // HIR qualifies only `Colliding`, so MIR's actor-reply
+                    // equality rejects the divergence (#2208). Qualifying only
+                    // the colliding name keeps the checker, HIR, and the MIR
+                    // record-layout keying (`type_layout_key` / `collided_type_names`)
+                    // in lockstep: a colliding reply record takes its owner
+                    // identity (`testffi.Result`), a unique one (`http.Response`,
+                    // `xml.Node`, the `Unique` above) keeps its bare identity so
+                    // its layout stays bare too and never SIGSEGVs at cabi.rs.
                     self.register_actor_base(ad, Some(module_short));
-                    if let Some(saved) = saved_current_module {
-                        self.current_module = saved;
-                    }
+                    self.qualify_colliding_receive_reply_tys(ad, module_short);
                     self.record_module_type_export(module_short, &ad.name);
                     // If named import or glob, also register unqualified
                     if Self::should_import_name(&ad.name, spec) {
@@ -9163,55 +9150,76 @@ impl Checker {
         colliding
     }
 
-    /// Whether any of the actor's receive fns declares a return type that names
-    /// a genuinely cross-module-colliding record (#2208). Drives the gated
-    /// `current_module` scope in the imported-actor registration: only such an
-    /// actor's colliding reply record must take the owner-qualified identity;
-    /// an actor whose replies are all unique records (or primitives) keeps its
-    /// bare identities, so a non-colliding stdlib record is never over-qualified.
-    fn actor_returns_colliding_record(&self, ad: &ActorDecl) -> bool {
-        ad.receive_fns.iter().any(|rf| {
-            rf.return_type
-                .as_ref()
-                .is_some_and(|(ty, _)| self.type_expr_names_colliding_record(ty))
-        })
+    /// Owner-qualify the cross-module-colliding record names in every receive
+    /// fn's already-registered reply type, in place. Runs after
+    /// `register_actor_base` for an imported actor so the checker's stored reply
+    /// identity matches HIR's collision-gated handler transform and MIR's
+    /// actor-reply equality (#2208).
+    fn qualify_colliding_receive_reply_tys(&mut self, ad: &ActorDecl, module_short: &str) {
+        let identity = Self::actor_identity(Some(module_short), &ad.name);
+        for rf in &ad.receive_fns {
+            let method_name = format!("{identity}::{}", rf.name);
+            let Some(current) = self
+                .fn_sigs
+                .get(&method_name)
+                .map(|s| s.return_type.clone())
+            else {
+                continue;
+            };
+            let qualified = self.qualify_colliding_reply_ty(&current, module_short);
+            if qualified != current {
+                if let Some(sig) = self.fn_sigs.get_mut(&method_name) {
+                    sig.return_type = qualified;
+                }
+            }
+        }
     }
 
-    /// Whether `ty` references a cross-module-colliding record name anywhere in
-    /// its structure (head or nested generic/tuple/container position) (#2208).
-    fn type_expr_names_colliding_record(&self, ty: &TypeExpr) -> bool {
-        match ty {
-            TypeExpr::Named { name, type_args } => {
-                self.cross_module_colliding_record_names.contains(name)
-                    || type_args.as_ref().is_some_and(|args| {
-                        args.iter()
-                            .any(|(a, _)| self.type_expr_names_colliding_record(a))
-                    })
+    /// Owner-qualify ONLY the cross-module-colliding record names inside a reply
+    /// type, recursing through generic arguments exactly as HIR's
+    /// `qualify_colliding_module_record_ty` does. Builtins, already-qualified
+    /// names, and non-colliding records are returned unchanged, so a reply
+    /// `Result<Unique, Colliding>` becomes `Result<Unique, {module}.Colliding>`
+    /// — the same identity HIR produces — rather than qualifying `Unique` too
+    /// (which MIR's actor-reply equality would reject). Only a name the module
+    /// actually declares (`{module}.{name}` present in `type_defs`) is
+    /// qualified; otherwise the bare name is preserved (#2208).
+    fn qualify_colliding_reply_ty(&self, ty: &Ty, module_short: &str) -> Ty {
+        let Ty::Named {
+            name,
+            args,
+            builtin,
+        } = ty
+        else {
+            return ty.clone();
+        };
+        let args = args
+            .iter()
+            .map(|arg| self.qualify_colliding_reply_ty(arg, module_short))
+            .collect();
+        if builtin.is_some()
+            || name.contains('.')
+            || !self.cross_module_colliding_record_names.contains(name)
+        {
+            return Ty::Named {
+                name: name.clone(),
+                args,
+                builtin: *builtin,
+            };
+        }
+        let qualified = format!("{module_short}.{name}");
+        if self.type_defs.contains_key(&qualified) {
+            Ty::Named {
+                name: qualified,
+                args,
+                builtin: None,
             }
-            TypeExpr::Result { ok, err } => {
-                self.type_expr_names_colliding_record(&ok.0)
-                    || self.type_expr_names_colliding_record(&err.0)
+        } else {
+            Ty::Named {
+                name: name.clone(),
+                args,
+                builtin: *builtin,
             }
-            TypeExpr::Option(inner)
-            | TypeExpr::Slice(inner)
-            | TypeExpr::Borrow(inner)
-            | TypeExpr::Pointer { pointee: inner, .. } => {
-                self.type_expr_names_colliding_record(&inner.0)
-            }
-            TypeExpr::Array { element, .. } => self.type_expr_names_colliding_record(&element.0),
-            TypeExpr::Tuple(elems) => elems
-                .iter()
-                .any(|(e, _)| self.type_expr_names_colliding_record(e)),
-            TypeExpr::Function {
-                params,
-                return_type,
-            } => {
-                params
-                    .iter()
-                    .any(|(p, _)| self.type_expr_names_colliding_record(p))
-                    || self.type_expr_names_colliding_record(&return_type.0)
-            }
-            TypeExpr::TraitObject(_) | TypeExpr::Infer => false,
         }
     }
 

@@ -1,0 +1,22 @@
+// #2208 finding 2: an imported actor reply `Result<Unique, Colliding>` where
+// `Colliding` collides with a root-declared `Colliding` but `Unique` is unique.
+// Only `Colliding` may be owner-qualified in the checker's reply identity, to
+// match HIR's collision-gated transform and MIR's actor-reply equality.
+import hew::mixreply;
+
+type Colliding {
+    c: i64;
+}
+
+fn main() {
+    let root_c = Colliding { c: 1 };
+    println(root_c.c);
+    let s = spawn mixreply.Src(seed: 4);
+    match await s.get() {
+        Ok(inner) => match inner {
+            Ok(u) => println(u.u),
+            Err(cc) => println(cc.c),
+        },
+        Err(_) => println("askerr"),
+    }
+}

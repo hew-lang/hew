@@ -370,6 +370,68 @@ fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
     )
 }
 
+/// F4 / #2208 — actor ASK-REPLY of an `indirect enum`, the ABI-boundary leg.
+///
+/// An `indirect enum` return value is ABI-lowered to a bare heap-node POINTER
+/// (`declare_function`'s `resolve_value_ty` override), so an actor handler
+/// returning one deposits the node pointer into the reply channel buffer — NOT
+/// the inline `{ tag, payload }` tagged union. The channel's registered reply
+/// destructor (`#1739`) reaps a reply that is deposited but never consumed
+/// (timeout / cancel / shutdown race). Before the fix that destructor was the
+/// inline `__hew_enum_drop_inplace_<E>` helper, which reads the pointer bits as
+/// a discriminant tag and frees nothing — the node and its subtree leak. The
+/// fix routes the destructor through the same slot-type authority the per-field
+/// path uses, so a pointer-backed reply frees the subtree through the recursive
+/// `__hew_indirect_enum_free_<E>` thunk.
+///
+/// The ask is a PLAIN `await` inside an actor handler (a suspending context):
+/// that is the `SuspendingAsk` lowering that wires the reply destructor
+/// (`wire_reply_drop_fn`). A blocking `await` in `main` uses the direct
+/// `hew_actor_ask` path and wires no destructor.
+const ASK_REPLY_INDIRECT_ENUM_SOURCE: &str = "\
+indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
+fn val(t: Tree) -> i64 { match t { Leaf(n) => n, Node(l, r) => val(l) + val(r), } }\n\
+actor SlowReplier {\n\
+\x20   receive fn fetch() -> Tree { Node(Leaf(1), Leaf(2)) }\n\
+}\n\
+actor Driver {\n\
+\x20   var slow: LocalPid<SlowReplier>;\n\
+\x20   receive fn run() -> i64 {\n\
+\x20       match await slow.fetch() {\n\
+\x20           Ok(t) => { val(t) }\n\
+\x20           Err(e) => { let _ = e; 0 }\n\
+\x20       }\n\
+\x20   }\n\
+}\n\
+fn main() -> i64 {\n\
+\x20   let slow = spawn SlowReplier;\n\
+\x20   let driver = spawn Driver(slow: slow);\n\
+\x20   match await driver.run() {\n\
+\x20       Ok(v) => { print(\"${v}\"); }\n\
+\x20       Err(e) => { let _ = e; }\n\
+\x20   }\n\
+\x20   0\n\
+}\n";
+
+/// Slice the body text of the LLVM function `@<name>(` from `ir` — from its
+/// `define ... @<name>(` line through the matching closing `}` at column 0.
+/// Returns `None` when the function is not defined in `ir`.
+fn llvm_fn_body<'a>(ir: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("@{name}(");
+    let define_at = ir
+        .match_indices("define ")
+        .find(|(idx, _)| {
+            ir[*idx..]
+                .lines()
+                .next()
+                .is_some_and(|l| l.contains(&needle))
+        })
+        .map(|(idx, _)| idx)?;
+    let rest = &ir[define_at..];
+    let end = rest.find("\n}\n").map(|e| define_at + e + 3)?;
+    Some(&ir[define_at..end])
+}
+
 /// Compile `source`, run under the poisoned-allocator triple, assert clean exit
 /// + exact stdout (the double-free / use-after-free pin).
 fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) {
@@ -566,5 +628,90 @@ fn indirect_enum_tuple_of_inline_enum_no_corruption_under_malloc_scribble() {
         "tuple_of_inline_enum_df",
         &tuple_of_inline_enum_loop_source(50),
         "ok",
+    );
+}
+
+/// F4 / #2208 — the actor ask-reply ABI-boundary leg, pinned at the IR level.
+///
+/// ## Why an IR assertion here, not a `leaks --atExit` slope
+///
+/// The registered reply destructor fires at RUNTIME only on a reply that is
+/// deposited-but-never-consumed — the cancel / timeout / select-loser teardown
+/// legs. Every source construct that abandons a reply that way (`await … |
+/// after d`, `select { reply from … }`) currently FAILS TO COMPILE for an
+/// `indirect enum` reply: the suspending deadline/select consume path moves the
+/// pointer-lowered reply into an inline-`{ tag, payload }`-typed match/result
+/// binder and fails closed (`Move type mismatch: src=ptr dest=%Tree`,
+/// `hew-codegen-rs/src/llvm.rs`). That is a SEPARATE consume-side ABI defect —
+/// the reply DESTRUCTOR routing this oracle pins is independent of it — so a
+/// runtime per-iteration leak slope for the abandoned-reply leg is not
+/// expressible until that consume path is ABI-consistent. The runtime firing of
+/// the channel destructor itself is already proven for a heap reply by
+/// `ask_reply_owned_leak_oracle` (the owned-`string` cancel leg); this oracle
+/// pins the remaining unknown — that a pointer-backed `indirect enum` reply is
+/// routed through the recursive node free, not the inline helper.
+///
+/// ## Teeth (fail-without-fix)
+///
+/// The reply channel must register `__hew_reply_drop_indirect_Tree` (which loads
+/// the node pointer and calls the recursive `__hew_indirect_enum_free_Tree`).
+/// Reverting the routing re-registers the inline `__hew_enum_drop_inplace_Tree`
+/// on the pointer buffer — it reads the node pointer's bits as a tag and frees
+/// nothing — flipping both the registered-symbol assertion and the
+/// recursive-free-in-thunk assertion. Platform-independent (reads emitted IR,
+/// no `leaks(1)`), so it holds the invariant on every codegen target.
+#[test]
+fn indirect_enum_ask_reply_drop_routes_through_recursive_free() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("indirect-enum-ask-reply-")
+        .tempdir()
+        .expect("tempdir");
+    let _bin = compile_to_native(
+        ASK_REPLY_INDIRECT_ENUM_SOURCE,
+        dir.path(),
+        "ask_reply_indirect",
+    );
+    let ir = std::fs::read_to_string(dir.path().join("ask_reply_indirect.ll"))
+        .expect("read emitted LLVM IR for the indirect-enum ask-reply fixture");
+
+    // Every reply-destructor registration for this fixture must name the
+    // indirect-aware wrapper; none may name the inline in-place helper.
+    let registrations: Vec<&str> = ir
+        .lines()
+        .filter(|l| l.contains("call void @hew_reply_channel_set_reply_drop_fn("))
+        .collect();
+    assert!(
+        !registrations.is_empty(),
+        "expected the SuspendingAsk lowering to register a reply destructor \
+         (`hew_reply_channel_set_reply_drop_fn`) for the pointer-backed indirect-enum reply; \
+         found none — the ask no longer wires a destructor, so a never-consumed reply leaks its \
+         heap node unconditionally.\n--- IR ---\n{ir}"
+    );
+    assert!(
+        registrations
+            .iter()
+            .all(|l| l.contains("@__hew_reply_drop_indirect_Tree")),
+        "the indirect-enum reply destructor must be `__hew_reply_drop_indirect_Tree` (loads the \
+         node pointer, frees the subtree via `__hew_indirect_enum_free_Tree`). A registration \
+         naming `__hew_enum_drop_inplace_Tree` runs the inline `{{ tag, payload }}` helper over a \
+         buffer that holds only a heap-node pointer — it misreads the pointer as a tag and frees \
+         nothing, leaking the node (#2208 F4 ask-reply boundary). Registrations found:\n{}",
+        registrations.join("\n")
+    );
+
+    // The wrapper body must reach the recursive node free — not the inline helper.
+    let thunk = llvm_fn_body(&ir, "__hew_reply_drop_indirect_Tree").unwrap_or_else(|| {
+        panic!(
+            "reply channel registered `__hew_reply_drop_indirect_Tree` but its body is not defined \
+             in the module — a dangling reply destructor.\n--- IR ---\n{ir}"
+        )
+    });
+    assert!(
+        thunk.contains("call void @__hew_indirect_enum_free_Tree("),
+        "`__hew_reply_drop_indirect_Tree` must free the reply through the recursive \
+         `__hew_indirect_enum_free_Tree` node walk; its body does not call it, so the subtree \
+         under the reply node leaks:\n{thunk}"
     );
 }

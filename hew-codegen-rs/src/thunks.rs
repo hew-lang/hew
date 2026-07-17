@@ -379,6 +379,52 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
             )
         }
         StateFieldCloneKind::Enum { name } => {
+            // An `indirect enum` reply is ABI-lowered to a bare heap-node
+            // POINTER (`declare_function`'s `resolve_value_ty` override,
+            // llvm.rs), so the reply buffer holds the node pointer — NOT the
+            // inline `{ tag, payload }` tagged union. Running the inline
+            // `__hew_enum_drop_inplace_<E>` helper over that buffer reads the
+            // pointer bits as a discriminant tag and frees nothing: the heap
+            // node and its whole subtree leak on a never-consumed reply
+            // (#2208 F4 — the ask-reply ABI boundary the per-field
+            // slot-discriminator cannot reach, because the callback gets
+            // ABI-lowered storage, not a parent-field slot).
+            //
+            // Route through the SAME slot-type routing authority the per-field
+            // path uses: wrap the buffer as a single-field `{ ptr }` aggregate
+            // and run `emit_field_drop_step` over it. Its `Enum` arm inspects
+            // the ACTUAL slot type — a pointer slot loads the node pointer and
+            // frees the subtree through the recursive
+            // `__hew_indirect_enum_free_<E>` thunk (fail-closed if the enum is
+            // not actually indirect). One routing decision, shared with the
+            // structural authority. A non-indirect enum reply rides the inline
+            // struct by value, so its buffer IS the `{ tag, payload }` union —
+            // the inline helper is correct there and unchanged.
+            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+                let sym = format!(
+                    "__hew_reply_drop_indirect_{}",
+                    hew_hir::mangle_resolved_ty(reply_ty)
+                );
+                if let Some(existing) = fn_ctx.llvm_mod.get_function(&sym) {
+                    return Ok(existing.as_global_value().as_pointer_value());
+                }
+                let wrapper = ctx.struct_type(&[ptr_ty.into()], false);
+                let f = fn_ctx.llvm_mod.add_function(
+                    &sym,
+                    ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                    Some(Linkage::Internal),
+                );
+                let w = crate::llvm::fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+                emit_aggregate_drop_inplace_body(
+                    ctx,
+                    fn_ctx.llvm_mod,
+                    f,
+                    wrapper,
+                    std::slice::from_ref(&kind),
+                    &w,
+                )?;
+                return Ok(f.as_global_value().as_pointer_value());
+            }
             Ok(get_or_declare_enum_drop_inplace(ctx, fn_ctx.llvm_mod, name)
                 .as_global_value()
                 .as_pointer_value())

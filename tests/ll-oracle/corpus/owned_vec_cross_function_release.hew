@@ -1,0 +1,46 @@
+record HeapRow {
+    payload: [i64],
+    value: i64,
+}
+
+record Holder {
+    rows: Vec<HeapRow>,
+    value: i64,
+}
+
+fn make_rows(value: i64) -> Vec<HeapRow> {
+    [HeapRow { payload: [value, value + 1], value: value }]
+}
+
+gen fn batches(count: i64) -> Vec<HeapRow> {
+    for i in 0..count {
+        yield make_rows(i);
+    }
+}
+
+fn consume_generator(count: i64) -> i64 {
+    var total: i64 = 0;
+    for rows in batches(count) {
+        total = total + 1;
+    }
+    total
+}
+
+fn replace_holder(old: Holder, next: Holder) -> Holder {
+    var current = old;
+    current = next;
+    current
+}
+
+fn reassign_field(count: i64) -> i64 {
+    var holder = Holder { rows: make_rows(0), value: 0 };
+    for i in 0..count {
+        let next = Holder { rows: make_rows(i), value: i + 1 };
+        holder = replace_holder(holder, next);
+    }
+    holder.value
+}
+
+fn main() -> i64 {
+    consume_generator(2) + reassign_field(2)
+}

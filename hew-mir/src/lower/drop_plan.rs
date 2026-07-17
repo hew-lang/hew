@@ -5033,18 +5033,16 @@ mod drop_admission_type_shape_pins {
     /// (`Unwired`): the per-element release for those shapes is unwired, so
     /// every consulting site must refuse the construct at compile time —
     /// never emit the buffer-only `hew_vec_free` over owned element nodes.
-    /// Two `Unsupported` sub-domains deliberately KEEP the buffer-only
-    /// verdict, drawing the same boundary as the compile reject
-    /// `unsupported_vec_element_walk`:
+    /// The residual `Unsupported(UnenumeratedShape)` sub-domain deliberately
+    /// keeps the buffer-only verdict, drawing the same boundary as the compile
+    /// reject `unsupported_vec_element_walk`:
     ///   - `UnenumeratedShape` (`Vec<T>` unsubstituted): the element owns no
     ///     heap as a flat element, so the buffer free IS the complete
     ///     release — refusing would reject un-monomorphised generic bodies;
-    ///   - `NoReleaseProtocol` where the element is owned-ABI releasable
-    ///     (a registered heap-owning record observed without this
-    ///     function's harvest key): the release is wired program-wide, and
-    ///     the harvest-independent classification belongs to the
-    ///     type-directed drop-table consolidation (see
-    ///     `vec_release_symbol_verdict`).
+    ///
+    /// A registered heap-owning record observed without this function's
+    /// harvest key is instead classified harvest-independently and released
+    /// through `hew_vec_free_owned`.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -5131,9 +5129,9 @@ mod drop_admission_type_shape_pins {
                 Unwired(FailClosedReason::NoReleaseProtocol),
                 Unwired(FailClosedReason::NoReleaseProtocol),
             ),
-            // Vec arm — Unsupported sub-domains that KEEP the buffer-only
-            // verdict (the boundary `unsupported_vec_element_walk` draws;
-            // see the test doc).
+            // Vec arm — the residual Unsupported sub-domain that keeps the
+            // buffer-only verdict (the boundary
+            // `unsupported_vec_element_walk` draws; see the test doc).
             (
                 "Vec<T> unsubstituted (Unsupported/UnenumeratedShape)",
                 vec_of(ResolvedTy::TypeParam {
@@ -5145,8 +5143,8 @@ mod drop_admission_type_shape_pins {
             (
                 "Vec<HeapRow> unharvested (Unsupported/NoReleaseProtocol, owned-ABI releasable)",
                 vec_of(named("HeapRow")),
-                Wired("hew_vec_free"),
-                Wired("hew_vec_free"),
+                Wired("hew_vec_free_owned"),
+                Wired("hew_vec_free_owned"),
             ),
             // Vec arm — defensive no-type-arg fall-through.
             (

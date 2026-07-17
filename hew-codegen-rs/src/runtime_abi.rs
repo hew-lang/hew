@@ -24,7 +24,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy};
 use hew_mir::Place;
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 use crate::layout::{
     get_or_declare_bool_vec_runtime, get_or_declare_owned_vec_runtime,
@@ -2383,10 +2383,11 @@ pub(crate) fn lower_call_runtime_abi(
                 let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
                 let elem_hew_ty = match &vec_resolved_ty {
                     ResolvedTy::Named {
-                        name,
                         args: vec_args,
                         ..
-                    } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
+                    } if vec_resolved_ty.is_builtin(BuiltinType::Vec) && vec_args.len() == 1 => {
+                        vec_args[0].clone()
+                    }
                     other => {
                         return Err(CodegenError::FailClosed(format!(
                             "hew_vec_slice_range_layout: arg0 must be Vec<T>, got {other:?}"

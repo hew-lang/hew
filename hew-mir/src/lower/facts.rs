@@ -2938,7 +2938,7 @@ mod layout_key_shortening_guard {
     //! the qualifier on a miss.) This scan keeps producer (registration) and
     //! consumer (field load/store) generic keys from silently diverging.
 
-    /// The production (non-test) prefix of `lower.rs`.
+    /// The production (non-test) sources containing record layout-key consumers.
     ///
     /// Normalises CRLF→LF before splitting: on a Windows checkout
     /// (`core.autocrlf=true`) the embedded `include_str!` source carries
@@ -2948,11 +2948,17 @@ mod layout_key_shortening_guard {
     /// breaking the bare-key count guard below. Normalising keeps the guard
     /// deterministic across line-ending conventions.
     fn production_source() -> String {
-        let src = include_str!("mod.rs").replace("\r\n", "\n");
-        src.split("\n#[cfg(test)]\n")
-            .next()
-            .expect("lower.rs has a non-test prefix")
-            .to_string()
+        [include_str!("mod.rs"), include_str!("expr.rs")]
+            .into_iter()
+            .map(|src| {
+                src.replace("\r\n", "\n")
+                    .split("\n#[cfg(test)]\nmod ")
+                    .next()
+                    .expect("lower module source has a non-test prefix")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The field-store AND field-read GENERIC arms each shorten the outer name.

@@ -544,6 +544,7 @@ fn value_task_await_in_default_callconv_caller_fails_closed() {
     assert!(
         has_nyi,
         "value-task await from a Default-callconv caller must emit NotYetImplemented; \
+         capabilities: hew_mir::ModuleCapabilities::EMPTY,
          diagnostics: {:#?}",
         mir.diagnostics
     );

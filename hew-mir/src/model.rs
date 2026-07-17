@@ -108,6 +108,9 @@ pub struct IrPipeline {
     pub checked_mir: Vec<CheckedMirFunction>,
     pub elaborated_mir: Vec<ElaboratedMirFunction>,
     pub diagnostics: Vec<MirDiagnostic>,
+    /// Runtime authorities reached by typed MIR calls in this module. Any pass
+    /// that mutates `raw_mir` after lowering must update this snapshot too.
+    pub capabilities: ModuleCapabilities,
     /// Checker-authored wire layout metadata forwarded from HIR.
     pub wire_layouts: Arc<WireLayoutTable>,
     /// Names of every `#[opaque]` runtime handle declared in the module
@@ -355,6 +358,61 @@ pub struct IrPipeline {
     /// `resource_opaque_close_registry` from the same inputs) or admission and
     /// drop-body synthesis would disagree.
     pub resource_opaque_close: Vec<(String, String)>,
+}
+
+/// Compact set of module-level runtime authorities reached during MIR lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ModuleCapabilities(u8);
+
+impl ModuleCapabilities {
+    pub const EMPTY: Self = Self(0);
+    const METRICS: u8 = 1 << 0;
+    const NODE: u8 = 1 << 1;
+
+    pub(crate) fn insert_family(&mut self, family: hew_types::runtime_call::RuntimeCallFamily) {
+        use hew_types::runtime_call::RuntimeCapability;
+
+        self.0 |= match family.runtime_capability() {
+            Some(RuntimeCapability::Metrics) => Self::METRICS,
+            Some(RuntimeCapability::Node) => Self::NODE,
+            None => 0,
+        };
+    }
+
+    /// Collect module capabilities from typed runtime-call identities in MIR.
+    #[must_use]
+    pub fn from_raw_mir(raw_mir: &[RawMirFunction]) -> Self {
+        let mut capabilities = Self::default();
+        for function in raw_mir {
+            for block in &function.blocks {
+                for instruction in &block.instructions {
+                    if let Instr::CallRuntimeAbi(call) = instruction {
+                        capabilities.insert_family(call.family());
+                    }
+                }
+                if let Terminator::Call {
+                    builtin: Some(family),
+                    ..
+                } = &block.terminator
+                {
+                    capabilities.insert_family(*family);
+                }
+            }
+        }
+        capabilities
+    }
+
+    /// Whether the module reaches the given runtime authority.
+    #[must_use]
+    pub const fn contains(self, capability: hew_types::runtime_call::RuntimeCapability) -> bool {
+        use hew_types::runtime_call::RuntimeCapability;
+
+        let bit = match capability {
+            RuntimeCapability::Metrics => Self::METRICS,
+            RuntimeCapability::Node => Self::NODE,
+        };
+        self.0 & bit != 0
+    }
 }
 
 /// A single warning-severity finding from the MIR-stage lint pass.
@@ -2501,7 +2559,16 @@ pub struct MirScope {
     pub end: u32,
 }
 
-/// PROVEN source attribution for a MIR function's byte-offset spans.
+/// Synthesised actor-handler subkind carried from the lowering mint site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorHandlerKind {
+    Receive,
+    Init,
+    Start,
+    Stop,
+}
+
+/// PROVEN source attribution and synthesised identity for a MIR function.
 ///
 /// A [`RawMirFunction::span`] and the entries in [`RawMirFunction::instr_spans`]
 /// are bare byte offsets (`hew_lexer::Span` carries no source identity). This
@@ -2536,10 +2603,19 @@ pub enum SourceOrigin {
     /// root. The CLI has no buffer for that source, so the diagnostic degrades
     /// to a bare plain-line.
     Foreign(String),
-    /// No source attribution established: synthesised functions (actor
-    /// handlers, machine dispatch, drop shims, closures), monomorphisations of
-    /// a foreign origin, and hand-built test MIR. Degrades to bare — the
-    /// fail-closed default.
+    /// A synthesised actor handler. The dotted actor layout key and handler
+    /// subkind are known before symbol mangling and remain authoritative across
+    /// the MIR boundary.
+    SynthesizedActorHandler {
+        kind: ActorHandlerKind,
+        actor_layout_key: String,
+    },
+    /// A synthesised machine step function. The machine declaration identity is
+    /// carried directly rather than recovered from the emitted symbol.
+    SynthesizedMachineStep { machine_name: String },
+    /// No source attribution or synthesised identity established: drop shims,
+    /// closures, monomorphisations of a foreign origin, and hand-built test MIR.
+    /// Degrades to bare — the fail-closed default.
     #[default]
     Unknown,
 }

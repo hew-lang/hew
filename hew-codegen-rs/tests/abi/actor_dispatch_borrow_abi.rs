@@ -646,7 +646,10 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
     //   Move { dest: MachineVariant{1, variant 0, field 0}, src: local 0 }
     //   Return
     let handler = RawMirFunction {
-        source_origin: hew_mir::SourceOrigin::Unknown,
+        source_origin: hew_mir::SourceOrigin::SynthesizedActorHandler {
+            kind: hew_mir::ActorHandlerKind::Receive,
+            actor_layout_key: "Keeper".to_string(),
+        },
         name: "Keeper__recv__stash".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,
@@ -695,6 +698,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         raw_mir: vec![handler],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: Vec::new(),
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
@@ -779,7 +783,10 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
     // Block 0: EnterContext; Send { actor: ActorHandle(1), value: Local(0) }
     // Block 1: ExitContext; Return
     let handler = RawMirFunction {
-        source_origin: hew_mir::SourceOrigin::Unknown,
+        source_origin: hew_mir::SourceOrigin::SynthesizedActorHandler {
+            kind: hew_mir::ActorHandlerKind::Receive,
+            actor_layout_key: "Relay".to_string(),
+        },
         name: "Relay__recv__forward".to_string(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,
@@ -823,6 +830,7 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
         raw_mir: vec![handler],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: Vec::new(),
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

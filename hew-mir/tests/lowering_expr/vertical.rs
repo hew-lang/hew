@@ -294,6 +294,7 @@ fn resource_inline_close_method_fires_source_unsupported() {
     assert_eq!(
         count, 1,
         "ResourceCloseSourceUnsupported should fire exactly once for `Sock`; \
+         capabilities: hew_mir::ModuleCapabilities::EMPTY,
          diagnostics: {:?}",
         output.diagnostics
     );

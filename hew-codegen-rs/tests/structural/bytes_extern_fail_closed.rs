@@ -135,6 +135,7 @@ fn pipeline_with_extern(
         raw_mir: vec![raw],
         checked_mir: vec![checked],
         elaborated_mir: vec![elab],
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

@@ -485,6 +485,7 @@ fn statement_context_ask_shaped_send_fails_closed() {
     assert!(
         has_unsupported_send_diagnostic(&pipeline),
         "ask-shaped statement `.send` must record the fail-closed diagnostic; \
+         capabilities: hew_mir::ModuleCapabilities::EMPTY,
          diagnostics: {:#?}",
         pipeline.diagnostics
     );

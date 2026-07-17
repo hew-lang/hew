@@ -350,6 +350,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
             coroutine: None,
             lambda_captures: vec![],
         }],
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

@@ -869,6 +869,7 @@ fn supervisor_config_child_unknown_field_reports_invalid_actor_spawn_argument() 
         "an unknown field name on a config-backed supervisor child must report exactly \
          one diagnostic total — InvalidActorSpawnArgument for the bad name, and NO \
          cascaded MissingActorSpawnArgument for the field it was meant to supply; \
+         capabilities: hew_mir::ModuleCapabilities::EMPTY,
          diagnostics: {:#?}",
         pipeline.diagnostics
     );

@@ -3465,12 +3465,15 @@ pub fn lower_hir_module_with_facts(
         })
         .collect();
 
+    let capabilities = crate::model::ModuleCapabilities::from_raw_mir(&raw_mir);
+
     IrPipeline {
         thir,
         raw_mir,
         checked_mir,
         elaborated_mir,
         diagnostics,
+        capabilities,
         wire_layouts: module.wire_layouts.clone(),
         opaque_handle_names: module
             .items

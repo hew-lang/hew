@@ -422,6 +422,7 @@ fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
         // resolves to `None` (the hand-built-pipeline fallback path).
         checked_mir: vec![] as Vec<CheckedMirFunction>,
         elaborated_mir: vec![] as Vec<ElaboratedMirFunction>,
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

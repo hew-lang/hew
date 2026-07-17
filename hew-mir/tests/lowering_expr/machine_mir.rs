@@ -12,7 +12,9 @@ use hew_hir::{
     HirMachineState, HirMachineTransition, HirModule, HirStmt, HirStmtKind, IntentKind,
     ResolvedRef, ValueClass,
 };
-use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator, TrapKind};
+use hew_mir::{
+    lower_hir_module, FunctionCallConv, Instr, Place, SourceOrigin, Terminator, TrapKind,
+};
 use hew_types::ResolvedTy;
 use std::collections::{BTreeSet, HashMap};
 
@@ -764,6 +766,12 @@ fn machine_decl_synthesises_step_function_symbol() {
     assert_eq!(
         step_fn.name, "TrafficLight__step",
         "step function symbol uses double-underscore-step mangling"
+    );
+    assert_eq!(
+        step_fn.source_origin,
+        SourceOrigin::SynthesizedMachineStep {
+            machine_name: "TrafficLight".to_string(),
+        }
     );
 }
 

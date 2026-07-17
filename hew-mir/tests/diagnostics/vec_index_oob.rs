@@ -360,6 +360,7 @@ fn vec_index_mir_wraps_in_pipeline_without_errors() {
         raw_mir: vec![func],
         checked_mir: vec![],
         elaborated_mir: vec![],
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

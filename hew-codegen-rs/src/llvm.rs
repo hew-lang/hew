@@ -67,16 +67,17 @@ use std::sync::{Mutex, OnceLock};
 use hew_hir::stdlib_catalog::PrintKind;
 use hew_hir::{mangle, mangle_dotted_name, ItemId};
 use hew_mir::{
-    instr_source_places, terminator_source_places, validate_context_markers, ActorLayout,
-    ActorStateLoadMode, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite,
+    instr_source_places, terminator_source_places, validate_context_markers, ActorHandlerKind,
+    ActorLayout, ActorStateLoadMode, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite,
     DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset,
     FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
     LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
-    RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
-    SupervisorLayout, SuspendKind, Terminator, TrapKind,
+    RawMirFunction, RecordLayout, RegexLiteral, SourceOrigin, StateFieldCloneKind,
+    SupervisorChildLayout, SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
 use hew_types::{
-    BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable, WireTextFormat,
+    runtime_call::RuntimeCapability, BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection,
+    WireLayoutTable, WireTextFormat,
 };
 // Single source of truth for the trap discriminants codegen emits. Importing
 // these from the runtime makes a renumber on either side a build error rather
@@ -1689,6 +1690,9 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     pub(crate) fn_symbols: &'a FnSymbolMap<'ctx>,
+    /// Symbols of functions carrying typed machine-step provenance in raw MIR.
+    /// Call lowering consults this set instead of interpreting the callee name.
+    pub(crate) machine_step_symbols: &'a HashSet<String>,
     /// Field-bearing `#[resource]` record → `<Type>::close` symbol registry
     /// (`IrPipeline::resource_record_close`). Consulted by the on-demand
     /// record-drop thunk synthesis in `emit_aggregate_recursive_drop` so a
@@ -19640,9 +19644,23 @@ fn classify_move_borrow_sink(dest: &Place) -> MoveBorrowSink {
 /// parallel static discriminator (DI-019/DI-020). Borrow-vs-copy is a *runtime*
 /// property keyed on `borrow_mode`; this set only identifies *which* locals
 /// are string views so the runtime gate is attached at the right sites.
+fn actor_handler_identity(func: &RawMirFunction) -> Option<(ActorHandlerKind, &str)> {
+    match &func.source_origin {
+        SourceOrigin::SynthesizedActorHandler {
+            kind,
+            actor_layout_key,
+        } => Some((*kind, actor_layout_key)),
+        _ => None,
+    }
+}
+
+fn is_receive_handler(func: &RawMirFunction) -> bool {
+    actor_handler_identity(func).is_some_and(|(kind, _)| kind == ActorHandlerKind::Receive)
+}
+
 fn compute_borrow_taint(func: &RawMirFunction) -> HashSet<u32> {
     let mut tainted: HashSet<u32> = HashSet::new();
-    if !(func.call_conv == FunctionCallConv::ActorHandler && func.name.contains("__recv__")) {
+    if !is_receive_handler(func) {
         return tainted;
     }
     // Roots: String-typed parameter locals. Parameters occupy
@@ -22339,12 +22357,6 @@ fn emit_machine_step_exit_call<'ctx>(
         .build_call(step_exit_fn, &[queue.into()], "machine_emit_step_exit_keep")
         .llvm_ctx("hew_machine_emit_step_exit_keep call")?;
     Ok(())
-}
-
-fn is_machine_step_symbol(callee: &str) -> bool {
-    callee
-        .strip_suffix("__step")
-        .is_some_and(|prefix| !prefix.is_empty())
 }
 
 pub(crate) fn emit_trap_with_code(
@@ -25495,7 +25507,7 @@ fn lower_terminator<'ctx>(
                     extern_record_ret,
                     extern_malloc_string_ret,
                 } => {
-                    let machine_step_queue = if is_machine_step_symbol(callee) {
+                    let machine_step_queue = if fn_ctx.machine_step_symbols.contains(callee) {
                         let queue = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
                         emit_machine_step_enter_call(fn_ctx, queue)?;
                         Some(queue)
@@ -27328,7 +27340,7 @@ fn declare_function<'ctx>(
     // trampoline (the sole caller of `__recv__` symbols — proven C4) is the
     // only emitter updated to pass this arg, so only `__recv__` signatures may
     // grow it.
-    if func.call_conv == FunctionCallConv::ActorHandler && func.name.contains("__recv__") {
+    if is_receive_handler(func) {
         param_tys.push(ctx.i32_type().into());
     }
     // W6.010 value routing needs NO extra parameter: a suspendable handler's
@@ -27458,44 +27470,6 @@ fn validate_context_markers_for_codegen(func: &RawMirFunction) -> Vec<hew_mir::M
 /// owned by `RuntimeInner::node`) is touched the moment a program calls
 /// `Node::set_transport`/`start`/`connect`/`register`/`lookup`/`shutdown`.
 /// Those builtins lower to `Terminator::Call` with a typed Node family.
-/// A program can touch the node authority WITHOUT declaring any actor (e.g. a
-/// bare `Node::start` smoke), so node presence is an independent reason to
-/// install the runtime at program entry — actor/supervisor presence does not
-/// imply it. Scans every function body's terminators for a typed Node builtin.
-fn module_uses_node_authority(raw_mir: &[RawMirFunction]) -> bool {
-    raw_mir.iter().any(|func| {
-        func.blocks.iter().any(|block| {
-            matches!(
-                &block.terminator,
-                Terminator::Call {
-                    builtin: Some(family),
-                    ..
-                } if family.is_node_builtin()
-            )
-        })
-    })
-}
-
-/// Does the module reach the user-metrics registry authority?
-///
-/// The de-globalized metrics registry is owned by `RuntimeInner::metrics`.
-/// Registration and mutation remain fail-closed in the runtime, so a metrics-only
-/// program must install the runtime at `main` entry just like node/actor programs
-/// do. Scans every function body's runtime-call instructions for the C-ABI symbols that
-/// `std::metrics` lowers to.
-fn module_uses_metric_authority(raw_mir: &[RawMirFunction]) -> bool {
-    raw_mir.iter().any(|func| {
-        func.blocks.iter().any(|block| {
-            block.instructions.iter().any(|instr| {
-                matches!(
-                    instr,
-                    Instr::CallRuntimeAbi(call) if call.symbol().starts_with("hew_metric_")
-                )
-            })
-        })
-    })
-}
-
 /// Does the module reach a blocking-pool offload authority (net DNS / TCP
 /// connect)?
 ///
@@ -28495,6 +28469,7 @@ fn lower_function<'ctx>(
     target_data: &TargetData,
     func: &RawMirFunction,
     fn_symbols: &FnSymbolMap<'ctx>,
+    machine_step_symbols: &HashSet<String>,
     elab: Option<&ElaboratedMirFunction>,
     checked: Option<&CheckedMirFunction>,
     record_layouts: &RecordLayoutMap<'ctx>,
@@ -29177,26 +29152,20 @@ fn lower_function<'ctx>(
         }
     }
 
-    let actor_state_ty = if func.call_conv == FunctionCallConv::ActorHandler {
-        actor_layout_key_from_handler_symbol(&func.name)
-            .and_then(|actor_key| record_layouts.get(&actor_key).copied())
-    } else {
-        None
-    };
+    let actor_layout_key =
+        actor_handler_identity(func).map(|(_, actor_layout_key)| actor_layout_key);
+    let actor_state_ty =
+        actor_layout_key.and_then(|actor_key| record_layouts.get(actor_key).copied());
     // Per-field clone kinds for the same actor, resolved from the layout
     // registry so `lower_actor_state_field_store` can key its old-value
     // release on the MIR-level field classification (the single authority
     // the state clone/drop synthesis also consumes).
-    let actor_state_field_kinds = if func.call_conv == FunctionCallConv::ActorHandler {
-        actor_layout_key_from_handler_symbol(&func.name).and_then(|actor_key| {
-            actor_layouts
-                .iter()
-                .find(|a| a.name == actor_key)
-                .and_then(|a| a.state_field_clone_kinds.as_deref())
-        })
-    } else {
-        None
-    };
+    let actor_state_field_kinds = actor_layout_key.and_then(|actor_key| {
+        actor_layouts
+            .iter()
+            .find(|a| a.name == actor_key)
+            .and_then(|a| a.state_field_clone_kinds.as_deref())
+    });
 
     // P5-RX Stage 2a (A625): for a receive handler, grab the trailing runtime
     // `borrow_mode` i32 LLVM parameter (threaded by Stage 1's dispatch
@@ -29205,8 +29174,7 @@ fn lower_function<'ctx>(
     // appends this param ONLY for `<Actor>__recv__<handler>` functions, at LLVM
     // index `params.len() + 1` (ctx occupies index 0, params occupy 1..=n).
     // Both stay inert (`None` / empty) for every other function.
-    let is_recv_handler =
-        func.call_conv == FunctionCallConv::ActorHandler && func.name.contains("__recv__");
+    let is_recv_handler = is_receive_handler(func);
     let borrow_mode = if is_recv_handler {
         let bm_idx = u32::try_from(func.params.len() + 1).map_err(|_| {
             CodegenError::FailClosed("receive handler exceeds u32::MAX params — impossible".into())
@@ -29379,6 +29347,7 @@ fn lower_function<'ctx>(
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts,
         fn_symbols,
+        machine_step_symbols,
         resource_record_close,
         resource_opaque_close,
         actor_layouts,
@@ -29781,37 +29750,6 @@ fn lower_function<'ctx>(
     }
 
     Ok(())
-}
-
-fn actor_name_from_handler_symbol(symbol: &str) -> Option<&str> {
-    symbol
-        .split_once("__recv__")
-        .map(|(actor_name, _)| actor_name)
-        .or_else(|| symbol.strip_suffix("__init"))
-        .or_else(|| symbol.strip_suffix("__on_start"))
-        // Indexed stop-hook symbols: `<Actor>__on_stop__<N>`.
-        // Strip the numeric suffix first, then the `__on_stop` infix.
-        .or_else(|| {
-            let after_on_stop = symbol.split_once("__on_stop__")?;
-            // Verify the suffix is a decimal index (no empty or non-numeric).
-            // JUSTIFIED: malformed indexed stop-hook suffixes are not handler symbols.
-            after_on_stop.1.parse::<usize>().ok()?;
-            Some(after_on_stop.0)
-        })
-}
-
-/// Map an actor handler symbol back to the actor's REGISTRY key (the dotted
-/// qualified identity that `ActorLayout.name` and the state-record layout
-/// use).
-///
-/// Handler symbols carry the `$`-mangled base (`bank$Account__recv__deposit`,
-/// from MIR's `actor_symbol_base` / `mangle_dotted_name`). The base is either
-/// a bare root-actor name or `{module_short}${name}` with single-segment
-/// components — Hew identifiers cannot contain `$`, and generic-instantiation
-/// mangles (`Result$$i32$…`) never reach actor handler symbols — so replacing
-/// `$` with `.` is the exact inverse of `mangle_dotted_name` here.
-fn actor_layout_key_from_handler_symbol(symbol: &str) -> Option<String> {
-    actor_name_from_handler_symbol(symbol).map(|base| base.replace('$', "."))
 }
 
 // ---------------------------------------------------------------------------
@@ -30538,9 +30476,20 @@ fn build_module_for_target<'ctx>(
     // registration/mutation, the implicit drain epilogue).
     let module_uses_runtime = !pipeline.actor_layouts.is_empty()
         || !pipeline.supervisor_layouts.is_empty()
-        || module_uses_node_authority(&pipeline.raw_mir)
-        || module_uses_metric_authority(&pipeline.raw_mir)
+        || pipeline.capabilities.contains(RuntimeCapability::Node)
+        || pipeline.capabilities.contains(RuntimeCapability::Metrics)
         || module_uses_blocking_offload(&pipeline.raw_mir);
+    let machine_step_symbols: HashSet<String> = pipeline
+        .raw_mir
+        .iter()
+        .filter(|func| {
+            matches!(
+                func.source_origin,
+                SourceOrigin::SynthesizedMachineStep { .. }
+            )
+        })
+        .map(|func| func.name.clone())
+        .collect();
     for sup in &pipeline.supervisor_layouts {
         emit_supervisor_bootstrap_body(
             ctx,
@@ -30588,6 +30537,7 @@ fn build_module_for_target<'ctx>(
             &target_data,
             func,
             &fn_symbols,
+            &machine_step_symbols,
             elab,
             checked,
             &record_layouts,
@@ -32723,6 +32673,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33351,6 +33302,7 @@ mod tests {
             raw_mir: vec![invoke, main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33439,6 +33391,7 @@ mod tests {
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33579,6 +33532,7 @@ mod tests {
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33694,6 +33648,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33837,6 +33792,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33974,6 +33930,7 @@ mod tests {
             raw_mir: vec![handler],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -34063,6 +34020,7 @@ mod tests {
             raw_mir: vec![handler],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -34146,6 +34104,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -34432,6 +34391,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -34650,6 +34610,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -35443,6 +35404,7 @@ mod tests {
             raw_mir: vec![func],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -35534,6 +35496,7 @@ mod tests {
             raw_mir: vec![gen_body],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -35699,6 +35662,7 @@ mod tests {
             raw_mir: vec![gen_body, enclosing],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -35908,6 +35872,7 @@ mod tests {
             raw_mir: vec![func],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36188,6 +36153,7 @@ mod tests {
             raw_mir: Vec::new(),
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36261,6 +36227,7 @@ mod tests {
             raw_mir: Vec::new(),
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36320,6 +36287,7 @@ mod tests {
             raw_mir: Vec::new(),
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36357,6 +36325,7 @@ mod tests {
             raw_mir: vec![body],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36982,6 +36951,7 @@ mod tests {
             raw_mir: Vec::new(),
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -37067,6 +37037,7 @@ mod tests {
         record_layouts: RecordLayoutMap<'ctx>,
         machine_layouts: MachineLayoutMap<'ctx>,
         fn_symbols: FnSymbolMap<'ctx>,
+        machine_step_symbols: HashSet<String>,
         actor_layouts: Vec<ActorLayout>,
         /// Empty for these fixtures — no struct hash thunks are exercised by
         /// the composite-helper unit tests, so no bool-field defence path is
@@ -37266,6 +37237,7 @@ mod tests {
             record_layouts,
             machine_layouts,
             fn_symbols: HashMap::new(),
+            machine_step_symbols: HashSet::new(),
             actor_layouts: Vec::new(),
             record_field_resolved_tys: HashMap::new(),
             const_globals: HashMap::new(),
@@ -37320,6 +37292,7 @@ mod tests {
             runtime_decls: RefCell::new(HashMap::new()),
             record_layouts: &harness.record_layouts,
             fn_symbols: &harness.fn_symbols,
+            machine_step_symbols: &harness.machine_step_symbols,
             resource_record_close: &[],
             resource_opaque_close: &[],
             actor_layouts: &harness.actor_layouts,
@@ -39968,6 +39941,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: vec![],
             elaborated_mir: vec![],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: vec![],
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: vec![],
@@ -40126,6 +40100,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: vec![],
             elaborated_mir: vec![],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: vec![],
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: vec![],
@@ -40525,6 +40500,7 @@ mod tests {
             raw_mir: vec![raw],
             checked_mir: vec![],
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: vec![],
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: vec![],
@@ -40670,6 +40646,7 @@ mod tests {
             raw_mir: vec![raw],
             checked_mir: vec![],
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: vec![],
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: vec![],
@@ -41055,6 +41032,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -41307,6 +41285,7 @@ mod tests {
             raw_mir: vec![probe],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -41433,6 +41412,7 @@ mod tests {
             raw_mir: vec![probe],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -41633,6 +41613,7 @@ mod tests {
             raw_mir: vec![probe],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -41829,6 +41810,7 @@ mod tests {
             raw_mir: vec![fn_with_non_ptr_return_and_suspend],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -41889,8 +41871,8 @@ mod tests {
     /// execution context and places a non-final `Suspend` (resume → bb1); bb1
     /// places the final `Suspend` (resume → bb2); bb2 exits the context and
     /// returns. The function returns `ptr` (the `coro.begin` handle a ramp must
-    /// return). `__recv__` in the symbol gives it the receive-handler ABI (the
-    /// trailing `borrow_mode: i32` the trampoline always passes).
+    /// return). The fixture pipeline attaches typed receive-handler provenance,
+    /// which gives it the trailing `borrow_mode: i32` ABI parameter.
     fn suspendable_handler_fn(symbol: &str) -> RawMirFunction {
         let ptr_ty = ResolvedTy::Pointer {
             is_mutable: true,
@@ -42014,7 +41996,11 @@ mod tests {
         };
         let mut raw_mir = vec![main];
         let mut handler_layouts = Vec::with_capacity(handlers.len());
-        for (layout, func) in handlers {
+        for (layout, mut func) in handlers {
+            func.source_origin = SourceOrigin::SynthesizedActorHandler {
+                kind: ActorHandlerKind::Receive,
+                actor_layout_key: actor_name.to_string(),
+            };
             handler_layouts.push(layout);
             raw_mir.push(func);
         }
@@ -42046,6 +42032,7 @@ mod tests {
             raw_mir,
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -42527,7 +42514,11 @@ mod tests {
         // Declare a handler fn the trampoline can resolve, so the failure is the
         // missing PREDICATE, not a missing declaration.
         let symbol = "GapActor__recv__work";
-        let handler_fn = run_to_completion_handler_fn(symbol);
+        let mut handler_fn = run_to_completion_handler_fn(symbol);
+        handler_fn.source_origin = SourceOrigin::SynthesizedActorHandler {
+            kind: ActorHandlerKind::Receive,
+            actor_layout_key: "GapActor".to_string(),
+        };
         let mut fn_symbols: FnSymbolMap = HashMap::new();
         let target_data = host_target_data();
         let sym = declare_function(

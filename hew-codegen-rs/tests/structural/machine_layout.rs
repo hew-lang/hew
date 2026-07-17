@@ -11,6 +11,7 @@ fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
         raw_mir: Vec::new(),
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: Vec::new(),
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

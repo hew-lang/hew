@@ -1075,7 +1075,7 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check
+lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate verify-ffi hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check
 	cargo clippy --workspace --tests -- -D warnings
 
 # Assert every VM-dependent hew-sandbox-wasm test binary (one containing a
@@ -1124,6 +1124,10 @@ hew-fmt-check: hew
 hew-check-all: hew
 	@echo "==> hew-check-all: compiling full .hew corpus"
 	scripts/hew-corpus-check.sh
+
+.PHONY: codegen-carried-identity-gate
+codegen-carried-identity-gate:
+	bash scripts/codegen-carried-identity-gate.sh
 
 # Smoke-test the release binary with `hew run` to catch process-exit aborts
 # (e.g. libc++ ABI mismatch at locale destructor — issue #1606).

@@ -76,7 +76,10 @@ fn spawn_pipeline() -> IrPipeline {
     };
 
     let handler_fn = RawMirFunction {
-        source_origin: hew_mir::SourceOrigin::Unknown,
+        source_origin: hew_mir::SourceOrigin::SynthesizedActorHandler {
+            kind: hew_mir::ActorHandlerKind::Receive,
+            actor_layout_key: actor_name.to_string(),
+        },
         name: handler_symbol.clone(),
         return_ty: ResolvedTy::Unit,
         call_conv: FunctionCallConv::ActorHandler,
@@ -140,6 +143,7 @@ fn spawn_pipeline() -> IrPipeline {
         raw_mir: vec![spawn_fn, handler_fn],
         checked_mir: vec![],
         elaborated_mir: vec![],
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

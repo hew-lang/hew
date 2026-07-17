@@ -105,7 +105,9 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
     // The store-back into ReturnSlot and Return let the function exit cleanly
     // (no trap) so the JIT execution test can drive it without sigsetjmp.
     let step_fn = RawMirFunction {
-        source_origin: hew_mir::SourceOrigin::Unknown,
+        source_origin: hew_mir::SourceOrigin::SynthesizedMachineStep {
+            machine_name: machine_name.to_string(),
+        },
         name: format!("{machine_name}__step"),
         return_ty: machine_ty.clone(),
         call_conv: FunctionCallConv::Default,
@@ -207,6 +209,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         raw_mir: vec![step_fn, caller],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: Vec::new(),
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

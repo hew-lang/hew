@@ -1,0 +1,20 @@
+// ll-oracle corpus fixture: nested fresh bytes temp drop.
+//
+// Exercises the MIR ownership/drop derivation in hew-mir/src/lower.rs:
+// `collect_nested_fresh_bytes_temp_drops` / `apply_nested_fresh_bytes_temp_drops`.
+// `"payload".to_bytes()` produces a fresh `{ ptr, len, cap }` bytes temporary
+// passed by borrow to `byte_count` (which reads its length and never consumes
+// it), so the caller owns the temp and must release it via `hew_bytes_drop`.
+// The temp is unbound, so this drop is the bytes collector's sole
+// responsibility — the sibling of the string collector, kept in the same
+// fresh-temp family. Proves that derivation stays byte-identical across the
+// lower.rs file-split.
+fn byte_count(b: bytes) -> i64 {
+    b.len()
+}
+
+fn main() -> i64 {
+    let n = byte_count("payload".to_bytes());
+    println(n);
+    n
+}

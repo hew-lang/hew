@@ -1,0 +1,21 @@
+// ll-oracle corpus fixture: nested fresh string temp drop.
+//
+// Exercises the MIR ownership/drop derivation in hew-mir/src/lower.rs:
+// `collect_nested_fresh_string_temp_drops` / `apply_nested_fresh_string_temp_drops`.
+// `"hello, " + "world"` produces a fresh heap string temporary that is passed
+// by borrow to `measure` (which reads its length and never consumes it), so
+// the caller owns the temp and must release it. Because the temp is NOT bound
+// to a `let`, its `hew_string_drop` cannot come from the scope-exit `derive_cow_*`
+// path — it is spliced by the nested-fresh-temp collector alone. This is the
+// exact shape (`Packet.from_json(a + b)`) the collector's borrow-reader
+// correction guards. Proves that derivation stays byte-identical across the
+// lower.rs file-split.
+fn measure(s: string) -> i64 {
+    s.len()
+}
+
+fn main() -> i64 {
+    let n = measure("hello, " + "world");
+    println(n);
+    n
+}

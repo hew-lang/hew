@@ -1398,24 +1398,6 @@ pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> crate::bytes::
     unsafe { crate::bytes::hew_bytes_from_str(s.cast::<u8>()) }
 }
 
-/// Out-pointer variant of [`hew_string_to_bytes`] for Windows x64 MSVC
-/// sret-safe `BytesTriple` passing.
-///
-/// # Safety
-///
-/// `s` must be a valid NUL-terminated C string (or null).
-/// `out` must point to a valid, writable `BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_to_bytes_raw(
-    s: *const c_char,
-    out: *mut crate::bytes::BytesTriple,
-) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_string_to_bytes(s) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
-}
-
 /// Join a `Vec<String>` into a single string with `sep` between elements.
 ///
 /// Convenience alias for [`hew_vec_join_str`] used by the `string_join` builtin.

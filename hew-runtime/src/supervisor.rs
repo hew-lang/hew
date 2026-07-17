@@ -4898,38 +4898,6 @@ pub unsafe extern "C" fn hew_supervisor_child_get(
     ChildLookupResult::transient(ChildSlotReason::Restarting)
 }
 
-/// Decomposed variant of [`hew_supervisor_child_get`] for LLVM-generated callers.
-///
-/// Returns the packed first word `(tag: u8, reason: u8, _pad: [u8; 6])` as a
-/// plain `u64` in a single register (bits 7:0 = tag, bits 15:8 = reason).
-/// Writes the actor handle as `u64` to `*handle_out` (which must be non-null).
-///
-/// # Why this exists
-///
-/// On Windows x64 (MSVC ABI) Rust returns `ChildLookupResult` (16 bytes) via
-/// a hidden sret pointer in RCX, but the hew LLVM codegen used to emit a
-/// register-return call site — causing the callee to treat the supervisor
-/// pointer as the return buffer and the slot key as the supervisor pointer.
-/// Returning a plain `u64` sidesteps the sret convention on all platforms.
-///
-/// # Safety
-///
-/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
-/// `handle_out` must point to a valid `u64`-aligned memory location.
-/// Behaviour is undefined if either pointer has been freed.
-#[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_child_get_raw(
-    sup: *mut HewSupervisor,
-    key: u32,
-    handle_out: *mut u64,
-) -> u64 {
-    // SAFETY: hew_supervisor_child_get has its own null + bounds checks.
-    let result = unsafe { hew_supervisor_child_get(sup, key) };
-    // SAFETY: caller guarantees handle_out points to a valid u64.
-    unsafe { *handle_out = result.handle as usize as u64 };
-    u64::from(result.tag) | (u64::from(result.reason) << 8)
-}
-
 /// Look up a nested child supervisor by its compile-time-assigned slot index.
 ///
 /// Used for traversing supervision trees one dot segment at a time:
@@ -4989,29 +4957,6 @@ pub unsafe extern "C" fn hew_supervisor_nested_get(
 
     // Null slot — child supervisor is being restarted or was never started.
     ChildLookupResult::transient(ChildSlotReason::Restarting)
-}
-
-/// Decomposed variant of [`hew_supervisor_nested_get`] for LLVM-generated callers.
-///
-/// Mirrors [`hew_supervisor_child_get_raw`]: returns `tag | (reason << 8)` as
-/// `u64` and writes the nested supervisor handle (a `*mut HewSupervisor` cast
-/// to `u64`) to `*handle_out`.  Avoids the Windows x64 sret ABI mismatch.
-///
-/// # Safety
-///
-/// Same as [`hew_supervisor_nested_get`].  `handle_out` must point to a valid
-/// `u64`-aligned location.
-#[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_nested_get_raw(
-    sup: *mut HewSupervisor,
-    key: u32,
-    handle_out: *mut u64,
-) -> u64 {
-    // SAFETY: hew_supervisor_nested_get has its own null + bounds checks.
-    let result = unsafe { hew_supervisor_nested_get(sup, key) };
-    // SAFETY: caller guarantees handle_out points to a valid u64.
-    unsafe { *handle_out = result.handle as usize as u64 };
-    u64::from(result.tag) | (u64::from(result.reason) << 8)
 }
 
 /// Return whether the supervisor is still running (1) or stopped (0).

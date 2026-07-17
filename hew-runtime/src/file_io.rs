@@ -336,31 +336,10 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> crate::byte
     }
 }
 
-/// Out-pointer variant of [`hew_file_read_bytes`] for Windows x64 MSVC sret fix.
-///
-/// Writes the result into `*out` and returns void. Every bytes-triple producer
-/// exports a `_raw` sibling so that codegen can use the out-pointer calling
-/// convention on all platforms and avoid the MSVC sret mismatch.
-///
-/// # Safety
-///
-/// `path` must be a valid, NUL-terminated C string.
-/// `out` must be a valid, writable pointer to a `BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_file_read_bytes_raw(
-    path: *const c_char,
-    out: *mut crate::bytes::BytesTriple,
-) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_file_read_bytes(path) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
-}
-
 /// Write a `BytesTriple` to a file, overwriting any existing content.
 ///
 /// `data` is the address of the caller's `BytesTriple` alloca, passed via the
-/// by-pointer bytes consumer convention (`is_bytes_by_pointer_consumer`).
+/// uniform by-pointer bytes-param convention.
 ///
 /// Returns 0 on success, -1 on error.
 ///

@@ -22,6 +22,8 @@ mod extern_malloc_string_adoption;
 mod fork_spawn_env_drop;
 #[path = "structural/hashmap_layout_ops.rs"]
 mod hashmap_layout_ops;
+#[path = "structural/llvm_module_size.rs"]
+mod llvm_module_size;
 #[path = "structural/machine_layout.rs"]
 mod machine_layout;
 #[path = "structural/periodic_spawn_arming.rs"]

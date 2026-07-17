@@ -466,7 +466,7 @@ pub unsafe extern "C" fn hew_tls_read(
 /// `stream` must be a valid pointer returned by [`hew_tls_connect`].
 /// `data` must be a valid non-null pointer to a `BytesTriple` whose active
 /// region `[offset, offset + len)` is readable.
-/// (`is_bytes_by_pointer_consumer` in codegen passes the alloca address of the
+/// (codegen passes the alloca address of the
 /// Hew `bytes` argument; the previous `(*const u8, usize)` pair ignored
 /// `offset`, which is incorrect for bytes slices with a non-zero offset.)
 #[no_mangle]

@@ -371,9 +371,9 @@ pub unsafe extern "C" fn hew_msgpack_free(ptr: *mut u8) {
 // the codegen boundary (a `*mut HewVec` pointer reinterpreted as
 // `{ptr, offset, len}`), so `bytes.len()` on a from_json result read garbage —
 // passing the `len() > 0` round-trip assertions but failing the `len() == 0`
-// invalid-input assertion. Registering these symbols in the codegen
-// `is_bytes_triple_return_producer` / `is_bytes_by_pointer_consumer` allowlists
-// completes the migration.
+// invalid-input assertion. Codegen now classifies every `-> bytes` return and
+// passes every `bytes` argument by pointer unconditionally — no per-symbol
+// allowlist — so these symbols are handled by that uniform rule.
 // ---------------------------------------------------------------------------
 
 /// Extract a byte slice from a `BytesTriple` by-pointer consumer argument.
@@ -454,20 +454,6 @@ pub unsafe extern "C" fn hew_msgpack_from_json_hew(json: *const c_char) -> Bytes
     unsafe { triple_from_codec_buf(ptr, out_len) }
 }
 
-/// Out-pointer sibling for `hew_msgpack_from_json_hew`.
-///
-/// # Safety
-///
-/// `json` must be null or a valid NUL-terminated C string. `out` must be a
-/// valid, writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_from_json_hew_raw(json: *const c_char, out: *mut BytesTriple) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_msgpack_from_json_hew(json) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
-}
-
 /// Decode a `bytes` `BytesTriple` of `MessagePack` data to a JSON string.
 ///
 /// Returns an empty string on error or null/empty input.
@@ -502,19 +488,6 @@ pub unsafe extern "C" fn hew_msgpack_encode_int_hew(val: i64) -> BytesTriple {
     unsafe { triple_from_codec_buf(ptr, out_len) }
 }
 
-/// Out-pointer sibling for `hew_msgpack_encode_int_hew`.
-///
-/// # Safety
-///
-/// `out` must be a valid, writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_encode_int_hew_raw(val: i64, out: *mut BytesTriple) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_msgpack_encode_int_hew(val) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
-}
-
 /// Encode a C string as `MessagePack` str, returning a `BytesTriple`.
 ///
 /// Returns an empty `BytesTriple` ({null, 0, 0}) on null input or encode failure.
@@ -531,23 +504,6 @@ pub unsafe extern "C" fn hew_msgpack_encode_string_hew(s: *const c_char) -> Byte
     unsafe { triple_from_codec_buf(ptr, out_len) }
 }
 
-/// Out-pointer sibling for `hew_msgpack_encode_string_hew`.
-///
-/// # Safety
-///
-/// `s` must be null or a valid NUL-terminated C string. `out` must be a valid,
-/// writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_encode_string_hew_raw(
-    s: *const c_char,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_msgpack_encode_string_hew(s) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
-}
-
 /// Encode a `bytes` `BytesTriple` as a `MessagePack` bin, returning a `BytesTriple`.
 ///
 /// # Safety
@@ -562,23 +518,6 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew(v: *const BytesTriple) -> 
     let ptr = unsafe { hew_msgpack_encode_bytes(input.as_ptr(), input.len(), &raw mut out_len) };
     // SAFETY: ptr is null-or-valid for out_len bytes.
     unsafe { triple_from_codec_buf(ptr, out_len) }
-}
-
-/// Out-pointer sibling for `hew_msgpack_encode_bytes_hew`.
-///
-/// # Safety
-///
-/// `v` must be null or a valid `*const BytesTriple`. `out` must be a valid,
-/// writable `*mut BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew_raw(
-    v: *const BytesTriple,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: caller contract forwarded.
-    let triple = unsafe { hew_msgpack_encode_bytes_hew(v) };
-    // SAFETY: out is a valid writable slot per caller contract.
-    unsafe { out.write(triple) };
 }
 
 // ---------------------------------------------------------------------------

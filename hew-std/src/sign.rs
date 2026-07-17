@@ -18,16 +18,16 @@
 //! `std/crypto/crypto` (commit d2bd9ba8) and `hew-runtime/src/file_io.rs`
 //! (commit d4e7f4c7):
 //!
-//! - **Input** `bytes` values arrive as `*const BytesTriple` (by-pointer
-//!   consumer convention; `is_bytes_by_pointer_consumer` in codegen).
+//! - **Input** `bytes` values arrive as `*const BytesTriple` (the uniform
+//!   by-pointer bytes-param convention codegen applies to every bytes argument).
 //!   Each callee reads `{ ptr, offset, len }` from the pointer without taking
 //!   ownership; the caller retains the allocation.
 //! - **Output** `bytes` values are returned as `BytesTriple` by value.
-//!   Codegen uses the `_raw` out-pointer variant on all platforms to avoid
-//!   the Windows x64 MSVC sret mismatch.  `is_bytes_triple_return_producer`
-//!   in codegen controls which functions use this path.
+//!   Codegen classifies every `-> bytes` return per target via the aggregate
+//!   ABI classifier (register-pair on SysV/AAPCS, sret on Windows x64 MSVC /
+//!   wasm32), so no per-symbol handling is needed.
 //! - `hew_ed25519_verify_hew` returns `i32` (0/1); its inputs still use the
-//!   by-pointer consumer convention.
+//!   by-pointer bytes-param convention.
 //! - The raw C-ABI variants (`hew_ed25519_*` without `_hew` suffix) are
 //!   provided for direct use from other native Rust code or future FFI callers;
 //!   they do not touch `BytesTriple` at all.
@@ -317,13 +317,13 @@ pub unsafe extern "C" fn hew_ed25519_verify(
 // (d2bd9ba8) and the file I/O fix (d4e7f4c7):
 //
 //   - `bytes` inputs: `*const BytesTriple` (by-pointer consumer convention).
-//     Codegen passes the address of the caller's BytesTriple alloca.
-//     `is_bytes_by_pointer_consumer` in `hew-codegen-rs/src/llvm.rs` must
-//     list every function that receives bytes this way.
-//   - `bytes` outputs: `BytesTriple` by value.  Codegen uses the `_raw`
-//     out-pointer sibling on all platforms to avoid the Windows x64 MSVC sret
-//     mismatch.  `is_bytes_triple_return_producer` in codegen must list every
-//     function that returns bytes this way.
+//     Codegen passes the address of the caller's BytesTriple alloca. Every
+//     bytes argument crosses by pointer unconditionally — no per-symbol
+//     allowlist in `hew-codegen-rs/src/llvm.rs`.
+//   - `bytes` outputs: `BytesTriple` by value.  Codegen classifies every
+//     `-> bytes` return per target via the aggregate ABI classifier
+//     (register-pair on SysV/AAPCS, sret on Windows x64 MSVC / wasm32) — no
+//     per-symbol allowlist.
 
 /// Generate an Ed25519 PKCS#8 v2 document and return it as an 83-byte
 /// `bytes` value (`BytesTriple`).
@@ -342,24 +342,6 @@ pub unsafe extern "C" fn hew_ed25519_generate_pkcs8_hew() -> BytesTriple {
         abort_sign_failure();
     }
     bytes_from_slice(&buf)
-}
-
-/// Out-pointer variant of [`hew_ed25519_generate_pkcs8_hew`] for Windows x64
-/// MSVC sret compatibility.
-///
-/// Writes the result into `*out` and returns void.  Every bytes-triple producer
-/// exports a `_raw` sibling so that codegen can use the out-pointer calling
-/// convention on all platforms.
-///
-/// # Safety
-///
-/// `out` must be a valid, writable pointer to a `BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_ed25519_generate_pkcs8_hew_raw(out: *mut BytesTriple) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_ed25519_generate_pkcs8_hew() };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
 }
 
 /// Extract the 32-byte public key from an Ed25519 PKCS#8 `bytes` value and
@@ -393,24 +375,6 @@ pub unsafe extern "C" fn hew_ed25519_public_key_from_pkcs8_hew(
         panic_msg(b"sign.keypair failed: private_key must be an 83-byte Ed25519 PKCS#8 document\0");
     }
     bytes_from_slice(&pub_buf)
-}
-
-/// Out-pointer variant of [`hew_ed25519_public_key_from_pkcs8_hew`] for Windows
-/// x64 MSVC sret compatibility.
-///
-/// # Safety
-///
-/// - `pkcs8` must be a valid, non-null pointer to a `BytesTriple`.
-/// - `out` must be a valid, writable pointer to a `BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_ed25519_public_key_from_pkcs8_hew_raw(
-    pkcs8: *const BytesTriple,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_ed25519_public_key_from_pkcs8_hew(pkcs8) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
 }
 
 /// Sign `message` (a `bytes` value) with `private_key` (an 83-byte PKCS#8
@@ -452,26 +416,6 @@ pub unsafe extern "C" fn hew_ed25519_sign_hew(
         panic_msg(b"sign.sign failed: private_key must be an 83-byte Ed25519 PKCS#8 document\0");
     }
     bytes_from_slice(&sig_buf)
-}
-
-/// Out-pointer variant of [`hew_ed25519_sign_hew`] for Windows x64 MSVC sret
-/// compatibility.
-///
-/// # Safety
-///
-/// - `message` must be a valid, non-null pointer to a `BytesTriple`.
-/// - `private_key` must be a valid, non-null pointer to a `BytesTriple`.
-/// - `out` must be a valid, writable pointer to a `BytesTriple` slot.
-#[no_mangle]
-pub unsafe extern "C" fn hew_ed25519_sign_hew_raw(
-    message: *const BytesTriple,
-    private_key: *const BytesTriple,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_ed25519_sign_hew(message, private_key) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
 }
 
 /// Verify an Ed25519 `signature` over `message` using `public_key`.
@@ -1058,18 +1002,6 @@ mod tests {
         }
     }
 
-    /// Helper: extract bytes from a `BytesTriple` into a `Vec`.
-    fn triple_to_vec(triple: &BytesTriple) -> Vec<u8> {
-        if triple.ptr.is_null() || triple.len == 0 {
-            return Vec::new();
-        }
-        // SAFETY: triple.ptr + offset is valid for len bytes per BytesTriple invariant.
-        unsafe {
-            std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
-        }
-        .to_vec()
-    }
-
     /// `generate_pkcs8_hew` returns an 83-byte PKCS#8 document.
     #[test]
     fn generate_pkcs8_hew_returns_83_bytes() {
@@ -1085,23 +1017,6 @@ mod tests {
             "generate_pkcs8_hew ptr must be non-null"
         );
         // SAFETY: triple was allocated by generate_pkcs8_hew.
-        unsafe { free_bytes_triple(&triple) };
-    }
-
-    /// `generate_pkcs8_hew_raw` writes an 83-byte PKCS#8 document via out-pointer.
-    #[test]
-    fn generate_pkcs8_hew_raw_matches_by_value() {
-        let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
-        // SAFETY: out is a valid writable BytesTriple slot.
-        unsafe { hew_ed25519_generate_pkcs8_hew_raw(out.as_mut_ptr()) };
-        // SAFETY: generate_pkcs8_hew_raw always initialises out.
-        let triple = unsafe { out.assume_init() };
-        assert_eq!(
-            triple.len,
-            u32::try_from(ED25519_PKCS8_LEN).unwrap(),
-            "_raw variant must also return {ED25519_PKCS8_LEN} bytes"
-        );
-        // SAFETY: triple was allocated by generate_pkcs8_hew_raw.
         unsafe { free_bytes_triple(&triple) };
     }
 
@@ -1215,43 +1130,6 @@ mod tests {
         assert_eq!(result, 0, "null signature must return 0");
         unsafe { free_bytes_triple(&pub_triple) };
         unsafe { free_bytes_triple(&msg_triple) };
-    }
-
-    /// `sign_hew_raw` out-pointer variant writes the same 64-byte signature.
-    #[test]
-    fn sign_hew_raw_matches_by_value() {
-        let pkcs8_triple = unsafe { hew_ed25519_generate_pkcs8_hew() };
-        let msg_triple = make_bytes_triple(b"raw variant test");
-
-        let by_value =
-            unsafe { hew_ed25519_sign_hew(&raw const msg_triple, &raw const pkcs8_triple) };
-
-        let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
-        unsafe {
-            hew_ed25519_sign_hew_raw(
-                &raw const msg_triple,
-                &raw const pkcs8_triple,
-                out.as_mut_ptr(),
-            );
-        };
-        let via_raw = unsafe { out.assume_init() };
-
-        let sig_by_value = triple_to_vec(&by_value);
-        let sig_via_raw = triple_to_vec(&via_raw);
-        assert_eq!(
-            sig_by_value.len(),
-            ED25519_SIG_LEN,
-            "by-value sig must be 64 bytes"
-        );
-        assert_eq!(
-            sig_by_value, sig_via_raw,
-            "_raw must produce identical signature"
-        );
-
-        unsafe { free_bytes_triple(&pkcs8_triple) };
-        unsafe { free_bytes_triple(&msg_triple) };
-        unsafe { free_bytes_triple(&by_value) };
-        unsafe { free_bytes_triple(&via_raw) };
     }
 
     /// FFI signature-parity guard (`uuid.rs`-style scalar pin).

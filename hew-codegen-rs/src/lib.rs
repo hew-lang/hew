@@ -35,8 +35,11 @@ pub mod coro;
 pub(crate) mod layout;
 pub mod llvm;
 pub(crate) mod runtime_abi;
+#[cfg(test)]
+mod runtime_family_parity;
 pub(crate) mod suspend;
 pub(crate) mod thunks;
+pub(crate) mod wire;
 
 pub use llvm::{
     emit_module, emit_module_objects, validate_codegen_front, verify_pipeline, CodegenError,

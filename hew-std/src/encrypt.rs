@@ -8,6 +8,7 @@
 // modules and is excluded from the wasm runtime's ecosystem-FFI link set.
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use hew_runtime::bytes::BytesTriple;
 use ring::{
     aead::{self, Aad, LessSafeKey, Nonce, UnboundKey},
     rand::{SecureRandom, SystemRandom},
@@ -143,17 +144,33 @@ unsafe fn copy_bytes_to_out(out: *mut u8, out_len: usize, bytes: &[u8]) -> usize
     required
 }
 
-unsafe fn bytes_parts_to_vec(ptr: *mut u8, offset: u32, len: u32) -> Option<Vec<u8>> {
-    let len = usize::try_from(len).ok()?;
+/// Copy a Hew `bytes` value's active region out of a caller-provided
+/// [`BytesTriple`] pointer (the uniform by-pointer bytes-param convention).
+///
+/// A null triple pointer, or a triple whose `ptr` is null with a non-zero
+/// `len`, is rejected (`None`); an empty triple yields an empty `Vec`. The
+/// active region is `ptr[offset .. offset + len]`, so the copy is offset-aware.
+///
+/// # Safety
+///
+/// `triple` must be null or point to a valid [`BytesTriple`] whose active
+/// region `[offset, offset + len)` is in bounds for reading.
+unsafe fn bytes_triple_to_vec(triple: *const BytesTriple) -> Option<Vec<u8>> {
+    if triple.is_null() {
+        return None;
+    }
+    // SAFETY: `triple` is non-null and points to the caller's valid triple slot.
+    let triple = unsafe { &*triple };
+    let len = usize::try_from(triple.len).ok()?;
     if len == 0 {
         return Some(Vec::new());
     }
-    if ptr.is_null() {
+    if triple.ptr.is_null() {
         return None;
     }
-    let offset = usize::try_from(offset).ok()?;
-    // SAFETY: caller guarantees the parts represent a valid Hew `bytes` value.
-    let ptr = unsafe { ptr.add(offset) };
+    let offset = usize::try_from(triple.offset).ok()?;
+    // SAFETY: caller guarantees the triple's active region is a valid `bytes` value.
+    let ptr = unsafe { triple.ptr.add(offset) };
     // SAFETY: caller guarantees the active `bytes` region is valid for `len` bytes.
     Some(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
 }
@@ -300,13 +317,11 @@ pub unsafe extern "C" fn hew_encrypt_try_open(
 /// NUL-terminated string pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_encrypt_seal_base64_hew(
-    key_ptr: *mut u8,
-    key_offset: u32,
-    key_len: u32,
+    key: *const BytesTriple,
     plaintext: *const c_char,
 ) -> *mut c_char {
     // SAFETY: Hew caller provides a valid bytes value.
-    let Some(key_bytes) = (unsafe { bytes_parts_to_vec(key_ptr, key_offset, key_len) }) else {
+    let Some(key_bytes) = (unsafe { bytes_triple_to_vec(key) }) else {
         panic_with_message(SEAL_FAILURE_MSG);
     };
     // SAFETY: Hew caller provides a valid string pointer.
@@ -336,22 +351,16 @@ pub unsafe extern "C" fn hew_encrypt_seal_base64_hew(
 /// `key` and `ciphertext` must be valid `bytes` values.
 #[no_mangle]
 pub unsafe extern "C" fn hew_encrypt_try_open_hew(
-    key_ptr: *mut u8,
-    key_offset: u32,
-    key_len: u32,
-    ciphertext_ptr: *mut u8,
-    ciphertext_offset: u32,
-    ciphertext_len: u32,
+    key: *const BytesTriple,
+    ciphertext: *const BytesTriple,
 ) -> *mut c_char {
     // SAFETY: Hew caller provides valid bytes values.
-    let Some(key_bytes) = (unsafe { bytes_parts_to_vec(key_ptr, key_offset, key_len) }) else {
+    let Some(key_bytes) = (unsafe { bytes_triple_to_vec(key) }) else {
         set_last_open_error(HewEncryptError::InvalidKey);
         return ptr::null_mut();
     };
     // SAFETY: Hew caller provides valid bytes values.
-    let Some(ciphertext_bytes) =
-        (unsafe { bytes_parts_to_vec(ciphertext_ptr, ciphertext_offset, ciphertext_len) })
-    else {
+    let Some(ciphertext_bytes) = (unsafe { bytes_triple_to_vec(ciphertext) }) else {
         set_last_open_error(HewEncryptError::AuthFailed);
         return ptr::null_mut();
     };
@@ -383,24 +392,11 @@ pub unsafe extern "C" fn hew_encrypt_try_open_hew(
 /// `key` and `ciphertext` must be valid `bytes` values.
 #[no_mangle]
 pub unsafe extern "C" fn hew_encrypt_open_hew(
-    key_ptr: *mut u8,
-    key_offset: u32,
-    key_len: u32,
-    ciphertext_ptr: *mut u8,
-    ciphertext_offset: u32,
-    ciphertext_len: u32,
+    key: *const BytesTriple,
+    ciphertext: *const BytesTriple,
 ) -> *mut c_char {
     // SAFETY: arguments satisfy `hew_encrypt_try_open_hew`.
-    let ptr = unsafe {
-        hew_encrypt_try_open_hew(
-            key_ptr,
-            key_offset,
-            key_len,
-            ciphertext_ptr,
-            ciphertext_offset,
-            ciphertext_len,
-        )
-    };
+    let ptr = unsafe { hew_encrypt_try_open_hew(key, ciphertext) };
     match last_open_error() {
         HewEncryptError::None if !ptr.is_null() => ptr,
         HewEncryptError::AllocationFailure => panic_with_message(OPEN_ALLOC_FAILURE_MSG),
@@ -415,24 +411,11 @@ pub unsafe extern "C" fn hew_encrypt_open_hew(
 /// `key` and `ciphertext` must be valid `bytes` values.
 #[no_mangle]
 pub unsafe extern "C" fn hew_encrypt_must_open_hew(
-    key_ptr: *mut u8,
-    key_offset: u32,
-    key_len: u32,
-    ciphertext_ptr: *mut u8,
-    ciphertext_offset: u32,
-    ciphertext_len: u32,
+    key: *const BytesTriple,
+    ciphertext: *const BytesTriple,
 ) -> *mut c_char {
     // SAFETY: arguments satisfy `hew_encrypt_open_hew`.
-    unsafe {
-        hew_encrypt_open_hew(
-            key_ptr,
-            key_offset,
-            key_len,
-            ciphertext_ptr,
-            ciphertext_offset,
-            ciphertext_len,
-        )
-    }
+    unsafe { hew_encrypt_open_hew(key, ciphertext) }
 }
 
 #[cfg(test)]

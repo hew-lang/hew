@@ -697,27 +697,6 @@ pub unsafe extern "C" fn hew_bytes_concat(
     }
 }
 
-/// Out-pointer variant of [`hew_bytes_concat`] for Windows x64 MSVC sret fix.
-///
-/// # Safety
-///
-/// Same as [`hew_bytes_concat`]. `out` must point to a valid, writable `BytesTriple`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_bytes_concat_raw(
-    a_ptr: *const u8,
-    a_offset: u32,
-    a_len: u32,
-    b_ptr: *const u8,
-    b_offset: u32,
-    b_len: u32,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_bytes_concat(a_ptr, a_offset, a_len, b_ptr, b_offset, b_len) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
-}
-
 /// Create a `BytesTriple` by copying `len` bytes from a static (or stack) pointer.
 ///
 /// # Safety
@@ -748,23 +727,6 @@ pub unsafe extern "C" fn hew_bytes_from_static(data: *const u8, len: u32) -> Byt
         offset: 0,
         len,
     }
-}
-
-/// Out-pointer variant of [`hew_bytes_from_static`] for Windows x64 MSVC sret fix.
-///
-/// # Safety
-///
-/// Same as [`hew_bytes_from_static`]. `out` must point to a valid, writable `BytesTriple`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_bytes_from_static_raw(
-    data: *const u8,
-    len: u32,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_bytes_from_static(data, len) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
 }
 
 /// Compare two byte regions for equality.
@@ -803,7 +765,7 @@ pub unsafe extern "C" fn hew_bytes_eq(
 /// stack slot). By-pointer (not by-value): a `{ptr,i32,i32}` passed by value is
 /// not reliably ABI-portable at the LLVM↔Rust C boundary (LLVM's three-register
 /// small-struct classification vs Rust's repr(C) two-register pair), so codegen
-/// passes the triple's address (`is_bytes_by_pointer_consumer`).
+/// passes the triple's address (the uniform by-pointer bytes-param convention).
 ///
 /// Invalid UTF-8 sequences are replaced with U+FFFD. The returned pointer is
 /// allocated via `libc::malloc`; the caller (typically the Hew string GC)
@@ -903,19 +865,6 @@ pub unsafe extern "C" fn hew_bytes_from_str(str_ptr: *const u8) -> BytesTriple {
     }
 }
 
-/// Out-pointer variant of [`hew_bytes_from_str`] for Windows x64 MSVC sret fix.
-///
-/// # Safety
-///
-/// Same as [`hew_bytes_from_str`]. `out` must point to a valid, writable `BytesTriple`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_bytes_from_str_raw(str_ptr: *const u8, out: *mut BytesTriple) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_bytes_from_str(str_ptr) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
-}
-
 /// Return the active length of a `bytes` value.
 ///
 /// This is the canonical `bytes.len()` runtime entry. It takes a POINTER to the
@@ -923,7 +872,8 @@ pub unsafe extern "C" fn hew_bytes_from_str_raw(str_ptr: *const u8, out: *mut By
 /// reads the `len` field. By-pointer (not by-value): a `{ptr,i32,i32}` passed by
 /// value is not reliably ABI-portable at the LLVM↔Rust C boundary (LLVM's
 /// three-register small-struct classification vs Rust's repr(C) two-register
-/// pair), so codegen passes the triple's address (`is_bytes_by_pointer_consumer`).
+/// pair), so codegen passes the triple's address (the uniform by-pointer
+/// bytes-param convention).
 ///
 /// # Safety
 ///
@@ -1146,26 +1096,6 @@ pub unsafe extern "C" fn hew_bytes_slice(
         offset: new_offset,
         len: new_len,
     }
-}
-
-/// Out-pointer variant of [`hew_bytes_slice`] for Windows x64 MSVC sret fix.
-///
-/// # Safety
-///
-/// Same as [`hew_bytes_slice`]. `out` must point to a valid, writable `BytesTriple`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_bytes_slice_raw(
-    ptr: *mut u8,
-    offset: u32,
-    len: u32,
-    start: i64,
-    end: i64,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_bytes_slice(ptr, offset, len, start, end) };
-    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
-    unsafe { out.write(triple) };
 }
 
 // ---------------------------------------------------------------------------

@@ -1,3 +1,16 @@
+//! Lane 0 authority inventory verdicts.
+//!
+//! This table is **C (shrink)**: HIR must seed compiler-known substrate
+//! representation/ownership classes before user declarations are available.
+//! Later lanes can remove stdlib-defined error/data rows as attributed `.hew`
+//! declarations become authoritative, but handle-family ABI/drop anchors remain
+//! irreducible.
+//!
+//! `instant` is also **C**, primitive-level like `duration`: it is an i64-backed
+//! `BuiltinType`, erases to `ResolvedTy::I64`, has dedicated duration/instant
+//! operator typing, uses the i64 Vec element ABI, and has explicit MIR ownership
+//! and LLVM representation arms. It therefore stays out of Lane 6 relocation.
+
 use hew_types::builtin_type::{
     BuiltinHandleFamily, BuiltinType, BuiltinTypeMarker, BuiltinTypeRole as BuiltinRegistrationRole,
 };

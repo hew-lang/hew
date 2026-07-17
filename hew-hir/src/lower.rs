@@ -2080,6 +2080,38 @@ pub fn lower_program_with_mono_cap(
         .collect();
     ctx.colliding_imported_record_names
         .clone_from(&colliding_imported_record_names);
+    ctx.file_import_module_names = file_import_modules
+        .iter()
+        .map(|id| id.path.join("."))
+        .collect();
+    // Bare record/type-decl names that genuinely collide across modules,
+    // INCLUDING a file-import vs package collision (the shape the actor-ask
+    // identity coupling needs). Reuses `imported_type_name_collides` — which
+    // already dedups re-exports via `preferred_package_module_ids` subsumption,
+    // so a stdlib module re-imported through two paths (e.g. `std::net::http`
+    // and `std::net::http::http_client` both surfacing `http.Response`) is NOT
+    // counted twice — but with an EMPTY file-import exclusion so a file-import
+    // module counts as a colliding declarant. A name unique to one owner is
+    // absent and never owner-qualified (#2208).
+    ctx.cross_module_colliding_record_names = {
+        let no_file_exclusion: HashSet<hew_parser::module::ModuleId> = HashSet::new();
+        let preferred_all = preferred_package_module_ids(program, &no_file_exclusion);
+        program
+            .module_graph
+            .as_ref()
+            .into_iter()
+            .flat_map(|mg| mg.modules.values())
+            .flat_map(|module| module.items.iter())
+            .filter_map(|(item, _)| match item {
+                Item::TypeDecl(decl) => Some(decl.name.clone()),
+                Item::Record(decl) => Some(decl.name.clone()),
+                _ => None,
+            })
+            .filter(|name| {
+                imported_type_name_collides(program, &no_file_exclusion, &preferred_all, name)
+            })
+            .collect()
+    };
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
@@ -5385,6 +5417,26 @@ struct LowerCtx {
     /// Bare imported record names that have distinct definitions in more than
     /// one canonical module and therefore require module-qualified identities.
     colliding_imported_record_names: HashSet<String>,
+    /// Dotted paths of module-graph modules whose items were spliced into the
+    /// root program by `flatten_file_import_items` (file imports). A file
+    /// import publishes its types into the ROOT namespace with bare identity —
+    /// root constructs and dispatches them bare — so a bare self-record
+    /// reference inside a file-import module must NOT be owner-qualified the
+    /// way a genuine package-module reference is (#2208). Package modules are
+    /// absent from this set and DO owner-qualify.
+    file_import_module_names: HashSet<String>,
+    /// Bare record/type-decl names declared by more than one declaring scope
+    /// across the whole program (any two of: a package module, a file-import
+    /// module, or the root). ONLY these genuinely-colliding names are
+    /// owner-qualified inside their declaring package module: a name unique to
+    /// one module (e.g. stdlib `xml.Node`) keeps its bare identity, byte-
+    /// identical to the pre-#2208 behaviour, so the qualification never touches
+    /// records that have no cross-module ambiguity. Unlike
+    /// `colliding_imported_record_names` (which counts only 2+ PACKAGE modules,
+    /// per `imported_type_name_collides`), this set ALSO counts a file-import /
+    /// root declaration as a colliding scope — the mixed file-import + package
+    /// same-bare-name shape the actor-ask coupling depends on.
+    cross_module_colliding_record_names: HashSet<String>,
     /// Checker-resolved type arguments for generic record-init sites
     /// (`R { ... }` against a `pub type R<T>` or `record R<T>`),
     /// keyed by the struct-init expression span.
@@ -5740,6 +5792,8 @@ impl LowerCtx {
             call_site_type_args: HashMap::new(),
             record_registry: HashMap::new(),
             colliding_imported_record_names: HashSet::new(),
+            file_import_module_names: HashSet::new(),
+            cross_module_colliding_record_names: HashSet::new(),
             record_init_type_args: tc_output.record_init_type_args.clone(),
             record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
             record_layout_cap_diag_emitted: false,
@@ -9506,8 +9560,84 @@ impl LowerCtx {
         let qualified = lowered.qualified_name();
         lowered.protocol_descriptor = self.actor_protocol_descriptors.get(&qualified).cloned();
         lowered.cycle_capable = self.cycle_capable_actors.contains(&qualified);
+        // Owner-qualify each receive handler's return type to the declaring
+        // module (`testffi.Result`) ONLY when the returned record's bare name
+        // genuinely collides across modules — the same collision the MIR
+        // record-layout keying (`type_layout_key` / `collided_type_names`) uses
+        // to key the layout under the qualified identity. Both the ask-reply
+        // type and this handler-layout return type must then agree on that
+        // qualified identity, or `lower_actor_ask` fails closed and codegen
+        // sees a bare value against a qualified layout struct (#2208). A
+        // non-colliding record (stdlib `xml.Node`, `http.Response`) keeps its
+        // bare identity — its layout stays bare too, so qualifying here would
+        // instead CREATE a mismatch.
+        for handler in &mut lowered.receive_handlers {
+            handler.return_ty =
+                self.qualify_colliding_module_record_ty(&handler.return_ty, module_short);
+        }
         self.imported_fn_rewrites = previous_rewrites;
         lowered
+    }
+
+    /// Extract the declaring-module short segment from an imported actor's
+    /// method id (`{module}.{Actor}::{method}` → `module`). Returns `None` for
+    /// a bare/root actor (`Actor::method`, no leading module segment), which
+    /// carries no module identity to qualify against.
+    fn actor_module_short_of_method_id(method_id: &str) -> Option<&str> {
+        let actor_identity = method_id.split("::").next()?;
+        actor_identity
+            .rsplit_once('.')
+            .map(|(module, _actor)| module)
+    }
+
+    /// Qualify a bare user-record type reference to `{module_short}.{name}` when
+    /// that record's bare name genuinely collides across modules AND the named
+    /// module declares it, recursing through generic arguments. Builtins,
+    /// `#[opaque]` handles, already-qualified names, and non-colliding records
+    /// are returned unchanged. The collision gate keeps this aligned with the
+    /// MIR record-layout keying: only a colliding record is keyed by its
+    /// qualified identity, so only its value-flow (actor handler return / ask
+    /// reply) must carry the same identity (#2208).
+    fn qualify_colliding_module_record_ty(
+        &self,
+        ty: &ResolvedTy,
+        module_short: &str,
+    ) -> ResolvedTy {
+        let ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            is_opaque,
+        } = ty
+        else {
+            return ty.clone();
+        };
+        let args = args
+            .iter()
+            .map(|arg| self.qualify_colliding_module_record_ty(arg, module_short))
+            .collect();
+        if builtin.is_some()
+            || *is_opaque
+            || name.contains('.')
+            || !self.cross_module_colliding_record_names.contains(name)
+        {
+            return ResolvedTy::Named {
+                name: name.clone(),
+                args,
+                builtin: *builtin,
+                is_opaque: *is_opaque,
+            };
+        }
+        let qualified = format!("{module_short}.{name}");
+        if self.record_registry.contains_key(&qualified) {
+            return ResolvedTy::named_user(qualified, args);
+        }
+        ResolvedTy::Named {
+            name: name.clone(),
+            args,
+            builtin: *builtin,
+            is_opaque: *is_opaque,
+        }
     }
 
     /// Lower an imported free function while applying the `#[intrinsic]` floor
@@ -14555,7 +14685,7 @@ impl LowerCtx {
                         }
                         _ => (inner, &inner.1),
                     };
-                if let Some(ActorMethodKind::Ask(_, reply_ty)) = self
+                if let Some(ActorMethodKind::Ask(method_id, reply_ty)) = self
                     .actor_method_dispatch
                     .get(&self.mk_key(effective_inner_span))
                     .cloned()
@@ -14574,7 +14704,20 @@ impl LowerCtx {
                     let result_ty = match ResolvedTy::from_ty(&reply_ty) {
                         Ok(r) => ResolvedTy::Named {
                             name: "Result".to_string(),
-                            args: vec![r, ask_error_ty],
+                            // Owner-qualify the reply record identity to the
+                            // asked actor's declaring module when it collides,
+                            // so the `Result<reply, AskError>` layout field and
+                            // the qualified handler-return value the ask
+                            // produces agree (#2208).
+                            args: vec![
+                                Self::actor_module_short_of_method_id(&method_id).map_or_else(
+                                    || r.clone(),
+                                    |module_short| {
+                                        self.qualify_colliding_module_record_ty(&r, module_short)
+                                    },
+                                ),
+                                ask_error_ty,
+                            ],
                             builtin: Some(BuiltinType::Result),
                             is_opaque: false,
                         },
@@ -18592,10 +18735,47 @@ impl LowerCtx {
         if name.contains('.') {
             return name.to_string();
         }
-        // Bare reference to a short name that collides across imported modules:
-        // disambiguate to the current module's copy so the two same-named
-        // records stay distinct.
-        if self.colliding_imported_record_names.contains(name) {
+        // Bare reference inside an imported module to a record that module
+        // itself declares: qualify to the declaring module's owner identity
+        // (`testffi.Result`). A bare `Result` inside `hew::testffi` names
+        // testffi's own record (local-shadows-imported), and its owner
+        // identity — not the bare last-write-wins key — is what the checker's
+        // qualified actor-ask reply type, the imported extern's return
+        // signature, and the record's per-module layout must all agree on.
+        //
+        // The cross-module short-name collision this once gated on
+        // (`colliding_imported_record_names`) is only ONE instance: two
+        // imported packages sharing a short `Result` forced qualification, but
+        // a NON-colliding `-> Result` was left bare — so a mixed file-import
+        // (root, bare `%Result`) + package-import (`testffi.Result`) program
+        // resolved testffi's extern return to the file's struct and failed
+        // closed at codegen (#2208). Owner-qualifying every bare self-record
+        // reference closes that gap without a collision precondition. The
+        // `record_registry` membership check keeps this scoped to records the
+        // current module actually declares: a name imported bare FROM another
+        // module has no `{module_short}.{name}` entry and stays unqualified,
+        // and a root item (`current_module_name` unset) is never rewritten.
+        //
+        // A FILE-import module is excluded: `flatten_file_import_items`
+        // splices its types into the ROOT namespace, where they are
+        // constructed and dispatched with BARE identity. Owner-qualifying a
+        // file-import self-record ref (`{module}.Result`) would diverge from
+        // root's bare `%Result` construction and break same-type dispatch.
+        // Only genuine package modules — whose types are referenced qualified
+        // — take the owner identity.
+        //
+        // Gated on a genuine cross-module bare-name collision: a record unique
+        // to its module (e.g. stdlib `xml.Node`) is never rewritten, so the
+        // qualification is inert for every non-colliding type and only fires
+        // for the same-bare-name shape the actor-ask identity coupling needs.
+        if !self.cross_module_colliding_record_names.contains(name) {
+            return name.to_string();
+        }
+        let current_module_is_file_import = self
+            .current_module_name
+            .as_deref()
+            .is_some_and(|module| self.file_import_module_names.contains(module));
+        if !current_module_is_file_import {
             if let Some(module_short) = self
                 .current_module_name
                 .as_deref()
@@ -21116,16 +21296,34 @@ impl LowerCtx {
                     ResolvedTy::Unit,
                 ),
                 ActorMethodKind::Ask(method_id, reply_ty) => match ResolvedTy::from_ty(&reply_ty) {
-                    Ok(reply_ty) => (
-                        HirExprKind::ActorAsk {
-                            receiver: Box::new(lowered_receiver),
-                            method_id,
-                            args: lowered_args,
-                            reply_ty: reply_ty.clone(),
-                            deadline_ns: None,
-                        },
-                        reply_ty,
-                    ),
+                    Ok(reply_ty) => {
+                        // Owner-qualify the ask-reply record identity to the
+                        // ASKED actor's declaring module when it collides, so
+                        // this reply type and the actor-handler layout return
+                        // type (qualified in `lower_imported_actor` under the
+                        // same collision gate) both resolve to the SAME
+                        // qualified identity the MIR record layout is keyed by.
+                        // `method_id` is `{module}.{Actor}::{method}` for an
+                        // imported actor; a bare/root actor has no leading module
+                        // segment and is left unqualified (#2208).
+                        let reply_ty = Self::actor_module_short_of_method_id(&method_id)
+                            .map_or_else(
+                                || reply_ty.clone(),
+                                |module_short| {
+                                    self.qualify_colliding_module_record_ty(&reply_ty, module_short)
+                                },
+                            );
+                        (
+                            HirExprKind::ActorAsk {
+                                receiver: Box::new(lowered_receiver),
+                                method_id,
+                                args: lowered_args,
+                                reply_ty: reply_ty.clone(),
+                                deadline_ns: None,
+                            },
+                            reply_ty,
+                        )
+                    }
                     Err(err) => {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::CheckerBoundaryViolation {

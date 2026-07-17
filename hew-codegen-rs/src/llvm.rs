@@ -7774,10 +7774,21 @@ fn collect_xnode_codec_drop_seeds(
         };
         let short = short_name(name);
         // Check enum first (mirrors `emit_de_drop_owned` resolution order).
+        // Prefer the EXACT name match over the short-name fallback: when a
+        // package-qualified reply type (`testffi.Result`) collides on its short
+        // name with another module's record (a file-import `Result`), the
+        // short-name fallback would seed the drop body under the WRONG key. The
+        // codec's deserialize fail-path references the drop helper under the
+        // reply type's exact (qualified) identity, so the seed MUST resolve to
+        // that same identity or the helper body is never emitted and LLVM
+        // rejects a dangling declaration (#2208). Short-name matching stays as
+        // the fallback so a unique bare reply type keeps its byte-identical
+        // pre-qualification key.
         let enum_key = if args.is_empty() {
             enum_layouts
                 .iter()
-                .find(|el| el.name == *name || short_name(&el.name) == short)
+                .find(|el| el.name == *name)
+                .or_else(|| enum_layouts.iter().find(|el| short_name(&el.name) == short))
                 .map(|el| el.name.clone())
         } else {
             let mangled = mangle_with_shortened_args(short, args);
@@ -7796,7 +7807,12 @@ fn collect_xnode_codec_drop_seeds(
         let rec_key = if args.is_empty() {
             record_layouts
                 .iter()
-                .find(|rl| rl.name == *name || short_name(&rl.name) == short)
+                .find(|rl| rl.name == *name)
+                .or_else(|| {
+                    record_layouts
+                        .iter()
+                        .find(|rl| short_name(&rl.name) == short)
+                })
                 .map(|rl| rl.name.clone())
         } else {
             let mangled = mangle_with_shortened_args(short, args);

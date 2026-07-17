@@ -1147,6 +1147,48 @@ impl RuntimeCallFamily {
         Some(family)
     }
 
+    /// Recover a family that is intentionally carried on MIR
+    /// `Terminator::Call`.
+    ///
+    /// Codegen-only collection partition variants remain classifiable through
+    /// [`Self::from_c_symbol`] but do not widen the MIR carrier merely because
+    /// codegen gained a typed spelling for an existing direct-call helper.
+    #[must_use]
+    pub fn from_mir_builtin_symbol(sym: &str) -> Option<Self> {
+        Self::from_c_symbol(sym).filter(|family| !family.is_codegen_partition_only())
+    }
+
+    const fn is_codegen_partition_only(self) -> bool {
+        matches!(
+            self,
+            Self::BytesNew
+                | Self::HashMapClearLayout
+                | Self::HashMapCloneLayout
+                | Self::HashSetClearLayout
+                | Self::HashSetCloneLayout
+                | Self::HashSetToVecLayout
+                | Self::VecCloneLayout
+                | Self::VecCloneOwned
+                | Self::VecContainsLayout
+                | Self::VecContainsOwned
+                | Self::VecNew
+                | Self::VecPopBool
+                | Self::VecPopLayout
+                | Self::VecPopOwned
+                | Self::VecPushBool
+                | Self::VecPushLayout
+                | Self::VecPushOwned
+                | Self::VecPushOwnedMove
+                | Self::VecRemoveAtBool
+                | Self::VecRemoveAtLayout
+                | Self::VecRemoveAtOwned
+                | Self::VecSetBool
+                | Self::VecSetI32
+                | Self::VecSetLayout
+                | Self::VecSetOwned
+        )
+    }
+
     /// Broad collection family partition used by codegen routing.
     #[must_use]
     pub const fn is_vec_op(self) -> bool {
@@ -2110,6 +2152,22 @@ mod tests {
                  — the inverse arm is missing or wrong",
             );
         }
+    }
+
+    #[test]
+    fn mir_builtin_lift_excludes_codegen_only_partitions() {
+        assert_eq!(
+            RuntimeCallFamily::from_mir_builtin_symbol("hew_vec_push_layout"),
+            None
+        );
+        assert_eq!(
+            RuntimeCallFamily::from_mir_builtin_symbol("Node::start"),
+            Some(RuntimeCallFamily::NodeStart)
+        );
+        assert_eq!(
+            RuntimeCallFamily::from_mir_builtin_symbol("hew_hashmap_insert_layout"),
+            Some(RuntimeCallFamily::HashMapInsertLayout)
+        );
     }
 
     /// `from_c_symbol` returns `None` for strings the catalog does

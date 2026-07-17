@@ -1816,8 +1816,9 @@ impl Builder {
                 self.enforce_closure_pair_ingress(value);
                 let arg_places = vec![receiver_place, index_place, src];
                 let next = self.alloc_block();
-                let builtin =
-                    hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(target_symbol);
+                let builtin = hew_types::runtime_call::RuntimeCallFamily::from_mir_builtin_symbol(
+                    target_symbol,
+                );
                 self.finish_current_block(Terminator::Call {
                     callee: target_symbol.clone(),
                     builtin,
@@ -2065,7 +2066,8 @@ impl Builder {
                     return;
                 };
                 let next = self.alloc_block();
-                let builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(&symbol);
+                let builtin =
+                    hew_types::runtime_call::RuntimeCallFamily::from_mir_builtin_symbol(&symbol);
                 self.finish_current_block(Terminator::Call {
                     callee: symbol,
                     builtin,
@@ -4490,15 +4492,11 @@ impl Builder {
                     Some(self.alloc_local(ret_ty.clone()))
                 };
                 let next = self.alloc_block();
-                // Catalog lift: the checker resolved this collection op to a
-                // concrete runtime symbol; recover the typed family through
-                // the sanctioned `from_c_symbol` bijection (the same lift
-                // `record_runtime_method_call_rewrite` performs) so the
-                // codegen layout-fact walker dispatches on the family.
-                // Non-catalog symbols (e.g. the per-element Vec push
-                // variants) carry `None` until their families are
-                // enumerated.
-                let builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(&callee);
+                // Recover only families intentionally carried on MIR calls.
+                // Codegen-only collection partitions remain typed in
+                // RuntimeCallFamily without widening the MIR dump surface.
+                let builtin =
+                    hew_types::runtime_call::RuntimeCallFamily::from_mir_builtin_symbol(&callee);
                 self.finish_current_block(Terminator::Call {
                     callee,
                     builtin,

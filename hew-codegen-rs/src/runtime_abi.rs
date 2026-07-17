@@ -3690,6 +3690,7 @@ pub(crate) fn lower_call_runtime_abi(
         // `Instr::CallRuntimeAbi`, so it has no MIR-ABI lowering arm here and
         // fails closed if it ever reaches this dispatch, like `TaskSetResult`.
         | F::BytesGet
+        | F::BytesNew
         | F::CancelTokenIsRequested
         | F::CancelTokenRelease
         | F::CancelTokenRetain
@@ -3704,6 +3705,8 @@ pub(crate) fn lower_call_runtime_abi(
         | F::DynBoxAlloc
         | F::DynBoxFree
         | F::HashMapContainsKeyLayout
+        | F::HashMapClearLayout
+        | F::HashMapCloneLayout
         | F::HashMapFreeLayout
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
@@ -3714,6 +3717,8 @@ pub(crate) fn lower_call_runtime_abi(
         | F::HashMapRemoveLayout
         | F::HashMapValuesLayout
         | F::HashSetContainsLayout
+        | F::HashSetClearLayout
+        | F::HashSetCloneLayout
         | F::HashSetFreeLayout
         | F::HashSetInsertLayout
         | F::HashSetIsEmptyLayout
@@ -3721,6 +3726,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::HashSetNew
         | F::HashSetNewWithLayout
         | F::HashSetRemoveLayout
+        | F::HashSetToVecLayout
         | F::LambdaBodyAllocReplyBuf
         | F::LambdaActorClone
         | F::LambdaActorDowngrade
@@ -3737,7 +3743,15 @@ pub(crate) fn lower_call_runtime_abi(
         | F::MetricHistogramRegister
         | F::MetricVecRegister
         | F::MetricVecWith
+        | F::NodeAllowPeer
+        | F::NodeConnect
+        | F::NodeIdentityKey
+        | F::NodeLoadKeys
         | F::NodeLookup
+        | F::NodeRegister
+        | F::NodeSetTransport
+        | F::NodeShutdown
+        | F::NodeStart
         | F::RcNew
         | F::RegexCompile
         | F::RemotePidSend
@@ -3780,6 +3794,25 @@ pub(crate) fn lower_call_runtime_abi(
         // fails closed if it ever reaches this dispatch, exactly like its
         // sibling `TaskCompleteThreaded`.
         | F::TaskSetResult
+        | F::VecCloneLayout
+        | F::VecCloneOwned
+        | F::VecContainsLayout
+        | F::VecContainsOwned
+        | F::VecNew
+        | F::VecPopBool
+        | F::VecPopLayout
+        | F::VecPopOwned
+        | F::VecPushBool
+        | F::VecPushLayout
+        | F::VecPushOwned
+        | F::VecPushOwnedMove
+        | F::VecRemoveAtBool
+        | F::VecRemoveAtLayout
+        | F::VecRemoveAtOwned
+        | F::VecSetBool
+        | F::VecSetI32
+        | F::VecSetLayout
+        | F::VecSetOwned
         | F::VtableDispatchPanicOnOob => {
             return Err(CodegenError::FailClosed(format!(
                 "Instr::CallRuntimeAbi(symbol={symbol:?}, family={:?}): codegen has no \

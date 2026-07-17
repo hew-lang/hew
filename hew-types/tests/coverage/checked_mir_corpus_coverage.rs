@@ -139,6 +139,10 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    string (`builtin: None`), so the `BytesGet` family is a descriptor
     //    row only and never renders as `family: BytesGet` in the corpus.
     "hew_bytes_get",
+    // -- Constructor callee identity intercepted by codegen. The checked-MIR
+    //    corpus records the lowered runtime call, not the `bytes::new` catalog
+    //    identity itself.
+    "bytes::new",
     // -- No user-facing surface lowers to the catalogued symbol today
     //    (probed: `bytes.len()` routes through `hew_vec_len`; no
     //    `char_count` string method; no Instant/Duration value surface;
@@ -194,6 +198,14 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    golden checked-mir corpus, so they pin as uncovered here.
     "hew_node_monitor",
     "hew_node_monitor_recv",
+    // -- Native-only `Node::*` catalog identities not exercised by the
+    //    single-program golden corpus. Node start/register/shutdown are covered
+    //    by existing fixtures; peer setup and connection lifecycle are proven
+    //    by the distributed integration suite.
+    "Node::allow_peer",
+    "Node::connect",
+    "Node::identity_key",
+    "Node::load_keys",
     // -- Cross-node link surface. An explicit `link(RemotePid<T>)` lowers to
     //    `hew_node_link_remote`, but exercising it requires a two-process
     //    distributed program (the link only materializes across a node
@@ -210,6 +222,29 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_vec_get_owned",
     "hew_vec_get_ptr",
     "hew_vec_slice_range_ptr",
+    // -- Direct-call collection kernels catalogued for typed codegen
+    //    partitioning. These are runtime/codegen helper identities rather than
+    //    families rendered by the current checked-MIR corpus.
+    "hew_hashmap_clear_layout",
+    "hew_hashmap_clone_layout",
+    "hew_hashset_clear_layout",
+    "hew_hashset_clone_layout",
+    "hew_hashset_to_vec_layout",
+    "hew_vec_clone_layout",
+    "hew_vec_clone_owned",
+    "hew_vec_contains_owned",
+    "hew_vec_contains_thunk",
+    "hew_vec_pop_bool",
+    "hew_vec_pop_layout",
+    "hew_vec_pop_owned",
+    "hew_vec_push_owned",
+    "hew_vec_remove_at_bool",
+    "hew_vec_remove_at_layout",
+    "hew_vec_remove_at_owned",
+    "hew_vec_set_bool",
+    "hew_vec_set_i32",
+    "hew_vec_set_layout",
+    "hew_vec_set_owned",
     // -- Per-type slice-range symbols replaced by the unified bytesize path.
     //    I32/I64/F64 scalar slice-range now routes through
     //    `hew_vec_slice_range_bytesize` (layout-aware, overflow-checked);

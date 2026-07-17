@@ -1165,6 +1165,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::BytesPush
         | F::BytesSet
         | F::BytesSlice
+        | F::BytesNew
         | F::CancelTokenIsRequested
         | F::CancelTokenRelease
         | F::CancelTokenRetain
@@ -1184,6 +1185,8 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::DynBoxAlloc
         | F::DynBoxFree
         | F::HashMapContainsKeyLayout
+        | F::HashMapClearLayout
+        | F::HashMapCloneLayout
         | F::HashMapFreeLayout
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
@@ -1194,6 +1197,8 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::HashMapRemoveLayout
         | F::HashMapValuesLayout
         | F::HashSetContainsLayout
+        | F::HashSetClearLayout
+        | F::HashSetCloneLayout
         | F::HashSetFreeLayout
         | F::HashSetInsertLayout
         | F::HashSetIsEmptyLayout
@@ -1201,6 +1206,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::HashSetNew
         | F::HashSetNewWithLayout
         | F::HashSetRemoveLayout
+        | F::HashSetToVecLayout
         | F::InstantDurationSince
         | F::InstantElapsed
         | F::InstantNow
@@ -1231,9 +1237,17 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::MetricHistogramRecord
         | F::MetricVecRegister
         | F::MetricVecWith
+        | F::NodeAllowPeer
+        | F::NodeConnect
+        | F::NodeIdentityKey
+        | F::NodeLoadKeys
         | F::NodeLookup
         | F::NodeMonitor
         | F::NodeMonitorRecv
+        | F::NodeRegister
+        | F::NodeSetTransport
+        | F::NodeShutdown
+        | F::NodeStart
         | F::ObserveReadU64
         | F::ObserveScrape
         | F::ObserveSeries
@@ -1274,8 +1288,27 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::StringIndex
         | F::StringSliceCodepoints
         | F::TcpAttachLocal
+        | F::VecCloneLayout
+        | F::VecCloneOwned
+        | F::VecContainsLayout
+        | F::VecContainsOwned
         | F::VecGet(_)
         | F::VecLen
+        | F::VecNew
+        | F::VecPopBool
+        | F::VecPopLayout
+        | F::VecPopOwned
+        | F::VecPushBool
+        | F::VecPushLayout
+        | F::VecPushOwned
+        | F::VecPushOwnedMove
+        | F::VecRemoveAtBool
+        | F::VecRemoveAtLayout
+        | F::VecRemoveAtOwned
+        | F::VecSetBool
+        | F::VecSetI32
+        | F::VecSetLayout
+        | F::VecSetOwned
         | F::VecSliceRange(_)
         | F::VtableDispatchPanicOnOob => false,
     }

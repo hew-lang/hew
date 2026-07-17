@@ -38306,8 +38306,8 @@ mod tests {
         );
     }
 
-    /// C1a positive guard: layout-sourced genuine builtins can still carry
-    /// `builtin: None` and must continue through the runtime layout ABI.
+    /// Positive guard: layout-sourced genuine builtins can carry `builtin: None`
+    /// and must stay on the runtime layout ABI.
     #[test]
     fn hashmap_layout_ops_get_emits_clone_call_and_option_branches() {
         let ctx = Context::create();

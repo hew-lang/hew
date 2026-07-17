@@ -222,12 +222,22 @@ fn arbitrary_bytes_return_extern_is_classified_not_gated() {
 fn bytes_return_extern_fails_closed_on_unmodelled_target() {
     let pipeline = pipeline_with_extern("probe_new_bytes_return", ResolvedTy::Bytes, vec![]);
     let mut opts = emit_options("bytes_return_unmodelled");
-    // sparc64 has no modelled aggregate ABI in `classify_aggregate`.
-    opts.target_triple = Some("sparc64-unknown-linux-gnu");
+    // 32-bit x86 (i686) has no modelled aggregate ABI in `classify_aggregate`:
+    // `is_sysv_or_aapcs` admits only `x86_64-`/`amd64-`/`aarch64-`/`arm64-`, so a
+    // `-> bytes` return here reaches the fail-closed arm. i686 is deliberately
+    // chosen over an exotic triple like sparc64: the X86 LLVM backend (which the
+    // modelled win64/SysV cases already exercise) covers i686 on EVERY platform's
+    // LLVM build, so `Target::from_triple` succeeds and codegen reaches the
+    // `classify_aggregate` fail-closed path deterministically — rather than
+    // failing earlier with `TargetSetup` on a host whose LLVM lacks the exotic
+    // backend. i686's `size_t` width IS modelled (`runtime_size_ty`'s 32-bit
+    // allowlist), so `verify_runtime_size_width` passes and the aggregate
+    // classifier is the sole backstop that trips.
+    opts.target_triple = Some("i686-unknown-linux-gnu");
     match emit_module(&pipeline, &opts) {
         Err(CodegenError::FailClosed(msg)) => {
             assert!(
-                msg.contains("not modelled") || msg.contains("sparc64"),
+                msg.contains("not modelled") || msg.contains("i686"),
                 "FailClosed must explain the unmodelled aggregate ABI; got: {msg}"
             );
         }

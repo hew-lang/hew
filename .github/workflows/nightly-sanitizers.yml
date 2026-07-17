@@ -52,7 +52,14 @@ jobs:
           CARGO_TARGET_DIR: target/sanitizer-runtime-asan
           RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer
           ASAN_OPTIONS: detect_leaks=1
-          LSAN_OPTIONS: suppressions=${{ github.workspace }}/hew-runtime/lsan.supp
+          # Bare relative filename, not an absolute ${{ github.workspace }} path:
+          # cargo runs the -p hew-runtime test binary with cwd = hew-runtime/, so
+          # `suppressions=lsan.supp` resolves to hew-runtime/lsan.supp without
+          # embedding the runner's workspace path. A workspace whose absolute
+          # path contains a space (self-hosted runner under /Volumes/Extreme SSD/
+          # ...) would otherwise make the sanitizer parse the space as a
+          # key=value separator and abort with "expected '=' in LSAN_OPTIONS".
+          LSAN_OPTIONS: suppressions=lsan.supp
           ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-${{ env.LLVM_VERSION }}/bin/llvm-symbolizer
         run: |
           # -Cunsafe-allow-abi-mismatch=sanitizer silences the hard ABI-mismatch

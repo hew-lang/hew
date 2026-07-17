@@ -31450,6 +31450,7 @@ mod builtin_enum_catalog_fingerprint_tests {
     use super::BUILTIN_ENUM_SPECS;
 
     const TRANSITION_FINGERPRINT: u64 = 0xe519_e1ac_f5ca_13d3;
+    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0x3bef_d3ad_73ec_fe8b;
 
     fn hash_byte(hash: &mut u64, byte: u8) {
         *hash ^= u64::from(byte);
@@ -31463,23 +31464,49 @@ mod builtin_enum_catalog_fingerprint_tests {
         hash_byte(hash, separator);
     }
 
-    #[test]
-    fn monomorphic_builtin_enum_catalog_matches_transition_fingerprint() {
-        let mut fingerprint = 0xcbf2_9ce4_8422_2325_u64;
-        for spec in BUILTIN_ENUM_SPECS
+    fn derived_monomorphic_specs() -> Vec<(&'static str, Vec<&'static str>)> {
+        BUILTIN_ENUM_SPECS
             .iter()
             .filter(|spec| spec.type_params.is_empty())
-        {
-            hash_name(&mut fingerprint, spec.type_name, 0xfe);
-            for variant_name in spec.variant_names() {
+            .map(|spec| (spec.type_name, spec.variant_names().collect()))
+            .collect()
+    }
+
+    fn catalog_fingerprint(specs: &[(&str, Vec<&str>)]) -> u64 {
+        let mut fingerprint = 0xcbf2_9ce4_8422_2325_u64;
+        for (type_name, variant_names) in specs {
+            hash_name(&mut fingerprint, type_name, 0xfe);
+            for variant_name in variant_names {
                 hash_name(&mut fingerprint, variant_name, 0xff);
             }
             hash_byte(&mut fingerprint, 0xfd);
         }
+        fingerprint
+    }
+
+    #[test]
+    fn monomorphic_builtin_enum_catalog_matches_transition_fingerprint() {
+        let fingerprint = catalog_fingerprint(&derived_monomorphic_specs());
         assert_eq!(
             fingerprint, TRANSITION_FINGERPRINT,
             "monomorphic builtin enum names or discriminant order changed; \
              update this transition fingerprint only with an intentional ABI migration"
         );
+    }
+
+    // Guards HIR derivation-order drift separately from the upstream build-time `.hew` ABI guard.
+    #[test]
+    fn transition_fingerprint_detects_derived_variant_order_drift() {
+        let mut specs = derived_monomorphic_specs();
+        let crash_action_variants = &mut specs
+            .iter_mut()
+            .find(|(type_name, _)| *type_name == "CrashAction")
+            .expect("derived catalog must contain CrashAction")
+            .1;
+        crash_action_variants.swap(0, 1);
+
+        let fingerprint = catalog_fingerprint(&specs);
+        assert_eq!(fingerprint, SWAPPED_CRASH_ACTION_FINGERPRINT);
+        assert_ne!(fingerprint, TRANSITION_FINGERPRINT);
     }
 }

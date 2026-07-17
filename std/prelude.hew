@@ -1,0 +1,5 @@
+//! Compiler-embedded prelude authority manifest.
+//!
+//! Lane 0 reserves the single manifest path and parses it with the other
+//! substrate sources. It remains intentionally empty until the prelude
+//! publication migration, so this foundation does not change name resolution.

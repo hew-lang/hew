@@ -23,13 +23,145 @@
 
 use std::collections::HashMap;
 
+/// Closed compiler-recognised lang-item key vocabulary.
+///
+/// The stdlib may move these attributes between declarations, but adding a new
+/// semantic hook requires a compiler change so misspelled keys fail closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LangItem {
+    Index,
+    IndexGet,
+    IndexAt,
+    Display,
+    DisplayFmt,
+    Option,
+    OptionIsSome,
+    OptionIsNone,
+    OptionUnwrap,
+    OptionUnwrapOr,
+    Result,
+    ResultIsOk,
+    ResultIsErr,
+    ResultUnwrap,
+    ResultUnwrapOr,
+    VecIterState,
+    Iterator,
+    IteratorNext,
+    CollectionNew,
+    MarkerSend,
+    MarkerSync,
+    MarkerFrozen,
+    MarkerCopy,
+    MarkerClone,
+    MarkerEq,
+    MarkerPartialOrd,
+    MarkerOrd,
+    MarkerNum,
+    MarkerHash,
+    MarkerDebug,
+    MarkerDrop,
+    MarkerDecode,
+    MarkerEncode,
+    MarkerSerializable,
+    MarkerRcFree,
+    MarkerResource,
+}
+
+impl LangItem {
+    pub const ALL: [Self; 36] = [
+        Self::Index,
+        Self::IndexGet,
+        Self::IndexAt,
+        Self::Display,
+        Self::DisplayFmt,
+        Self::Option,
+        Self::OptionIsSome,
+        Self::OptionIsNone,
+        Self::OptionUnwrap,
+        Self::OptionUnwrapOr,
+        Self::Result,
+        Self::ResultIsOk,
+        Self::ResultIsErr,
+        Self::ResultUnwrap,
+        Self::ResultUnwrapOr,
+        Self::VecIterState,
+        Self::Iterator,
+        Self::IteratorNext,
+        Self::CollectionNew,
+        Self::MarkerSend,
+        Self::MarkerSync,
+        Self::MarkerFrozen,
+        Self::MarkerCopy,
+        Self::MarkerClone,
+        Self::MarkerEq,
+        Self::MarkerPartialOrd,
+        Self::MarkerOrd,
+        Self::MarkerNum,
+        Self::MarkerHash,
+        Self::MarkerDebug,
+        Self::MarkerDrop,
+        Self::MarkerDecode,
+        Self::MarkerEncode,
+        Self::MarkerSerializable,
+        Self::MarkerRcFree,
+        Self::MarkerResource,
+    ];
+
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Index => "index",
+            Self::IndexGet => "index_get",
+            Self::IndexAt => "index_at",
+            Self::Display => "display",
+            Self::DisplayFmt => "display_fmt",
+            Self::Option => "option",
+            Self::OptionIsSome => "option.is_some",
+            Self::OptionIsNone => "option.is_none",
+            Self::OptionUnwrap => "option.unwrap",
+            Self::OptionUnwrapOr => "option.unwrap_or",
+            Self::Result => "result",
+            Self::ResultIsOk => "result.is_ok",
+            Self::ResultIsErr => "result.is_err",
+            Self::ResultUnwrap => "result.unwrap",
+            Self::ResultUnwrapOr => "result.unwrap_or",
+            Self::VecIterState => "vec.iter_state",
+            Self::Iterator => "iterator",
+            Self::IteratorNext => "iterator.next",
+            Self::CollectionNew => "collection.new",
+            Self::MarkerSend => "marker.send",
+            Self::MarkerSync => "marker.sync",
+            Self::MarkerFrozen => "marker.frozen",
+            Self::MarkerCopy => "marker.copy",
+            Self::MarkerClone => "marker.clone",
+            Self::MarkerEq => "marker.eq",
+            Self::MarkerPartialOrd => "marker.partial_ord",
+            Self::MarkerOrd => "marker.ord",
+            Self::MarkerNum => "marker.num",
+            Self::MarkerHash => "marker.hash",
+            Self::MarkerDebug => "marker.debug",
+            Self::MarkerDrop => "marker.drop",
+            Self::MarkerDecode => "marker.decode",
+            Self::MarkerEncode => "marker.encode",
+            Self::MarkerSerializable => "marker.serializable",
+            Self::MarkerRcFree => "marker.rc_free",
+            Self::MarkerResource => "marker.resource",
+        }
+    }
+
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|item| item.key() == key)
+    }
+}
+
 /// Well-known lang-item key for the trait through which f-string
 /// interpolation dispatches.
-pub const LANG_ITEM_DISPLAY: &str = "display";
+pub const LANG_ITEM_DISPLAY: &str = LangItem::Display.key();
 
 /// Well-known lang-item key for the method on the `display` trait used to
 /// render an interpolant to a `string`.
-pub const LANG_ITEM_DISPLAY_FMT: &str = "display_fmt";
+pub const LANG_ITEM_DISPLAY_FMT: &str = LangItem::DisplayFmt.key();
 
 /// One resolved lang-item entry: the trait that owns the tag plus, for
 /// method-level tags, the method's surface name.

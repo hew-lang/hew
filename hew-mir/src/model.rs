@@ -2501,7 +2501,16 @@ pub struct MirScope {
     pub end: u32,
 }
 
-/// PROVEN source attribution for a MIR function's byte-offset spans.
+/// Synthesised actor-handler subkind carried from the lowering mint site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorHandlerKind {
+    Receive,
+    Init,
+    Start,
+    Stop,
+}
+
+/// PROVEN source attribution and synthesised identity for a MIR function.
 ///
 /// A [`RawMirFunction::span`] and the entries in [`RawMirFunction::instr_spans`]
 /// are bare byte offsets (`hew_lexer::Span` carries no source identity). This
@@ -2536,10 +2545,19 @@ pub enum SourceOrigin {
     /// root. The CLI has no buffer for that source, so the diagnostic degrades
     /// to a bare plain-line.
     Foreign(String),
-    /// No source attribution established: synthesised functions (actor
-    /// handlers, machine dispatch, drop shims, closures), monomorphisations of
-    /// a foreign origin, and hand-built test MIR. Degrades to bare — the
-    /// fail-closed default.
+    /// A synthesised actor handler. The dotted actor layout key and handler
+    /// subkind are known before symbol mangling and remain authoritative across
+    /// the MIR boundary.
+    SynthesizedActorHandler {
+        kind: ActorHandlerKind,
+        actor_layout_key: String,
+    },
+    /// A synthesised machine step function. The machine declaration identity is
+    /// carried directly rather than recovered from the emitted symbol.
+    SynthesizedMachineStep { machine_name: String },
+    /// No source attribution or synthesised identity established: drop shims,
+    /// closures, monomorphisations of a foreign origin, and hand-built test MIR.
+    /// Degrades to bare — the fail-closed default.
     #[default]
     Unknown,
 }

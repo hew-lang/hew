@@ -7,7 +7,8 @@ use hew_hir::{
     HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, ValueClass,
 };
 use hew_mir::{
-    lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, MirStatement, Terminator,
+    lower_hir_module, ActorHandlerKind, FunctionCallConv, Instr, MirDiagnosticKind, MirStatement,
+    SourceOrigin, Terminator,
 };
 use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, BuiltinType, ResolvedTy};
 
@@ -375,6 +376,30 @@ fn defining_module_survives_to_actor_layout_with_qualified_key() {
     );
     assert_eq!(layout.init_symbol.as_deref(), Some("bank$Account__init"));
     assert_eq!(layout.handlers[0].symbol, "bank$Account__recv__bump");
+    let init = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "bank$Account__init")
+        .expect("qualified init handler MIR");
+    assert_eq!(
+        init.source_origin,
+        SourceOrigin::SynthesizedActorHandler {
+            kind: ActorHandlerKind::Init,
+            actor_layout_key: "bank.Account".to_string(),
+        }
+    );
+    let receive = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "bank$Account__recv__bump")
+        .expect("qualified receive handler MIR");
+    assert_eq!(
+        receive.source_origin,
+        SourceOrigin::SynthesizedActorHandler {
+            kind: ActorHandlerKind::Receive,
+            actor_layout_key: "bank.Account".to_string(),
+        }
+    );
 }
 
 /// A root-program actor (no defining module) lowers with `None` in the
@@ -1498,6 +1523,13 @@ fn actor_lifecycle_start_lowers_and_unwired_hooks_fail_closed() {
         .find(|func| func.name == "Counter__on_start")
         .expect("start hook MIR");
     assert_eq!(start.call_conv, FunctionCallConv::ActorHandler);
+    assert_eq!(
+        start.source_origin,
+        SourceOrigin::SynthesizedActorHandler {
+            kind: ActorHandlerKind::Start,
+            actor_layout_key: "Counter".to_string(),
+        }
+    );
     // on(crash) is now wired — it must lower to a MIR function.
     assert_eq!(
         pipeline.actor_layouts[0].on_crash_symbol.as_deref(),
@@ -1573,6 +1605,13 @@ fn actor_lifecycle_stop_lowers_to_actor_handler_function() {
         .find(|func| func.name == "Counter__on_stop__0")
         .expect("on(stop) hook must produce a MIR function");
     assert_eq!(stop.call_conv, FunctionCallConv::ActorHandler);
+    assert_eq!(
+        stop.source_origin,
+        SourceOrigin::SynthesizedActorHandler {
+            kind: ActorHandlerKind::Stop,
+            actor_layout_key: "Counter".to_string(),
+        }
+    );
     // No fail-closed diagnostic emitted.
     assert!(
         pipeline.diagnostics.is_empty(),

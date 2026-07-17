@@ -1489,12 +1489,9 @@ fn json_string_literal(s: &str) -> String {
 /// [`hew_mir::HeapOwnershipLayouts`] view over the standalone pipeline
 /// record/enum layout slices the CBOR thunk emitter carries (it has no
 /// `FnCtx`). Resolves user record / enum members through [`xnode_registry_key`]
-/// — the SAME registry-key strategy the retired `cbor_ty_owns_heap` walker used
-/// — so routing the CBOR element heap-ownership probe through the single
-/// `hew_mir::ty_owns_heap` authority is byte-identical for every shape the old
-/// walker classified, while inheriting the authority's correct leaf set. This
-/// is the CBOR sibling of [`CgHeapLayouts`] (which resolves the same members
-/// through a live `FnCtx`).
+/// so routing the CBOR element probe through the single
+/// `hew_mir::ty_heap_ownership` authority resolves both heap leaves and enum
+/// indirectness from the same layout.
 struct CborHeapLayouts<'a> {
     pipeline_records: &'a [RecordLayout],
     enum_layouts: &'a [EnumLayout],
@@ -1520,120 +1517,12 @@ impl hew_mir::HeapOwnershipLayouts for CborHeapLayouts<'_> {
             .find(|e| e.name == key)
             .map(|e| e.variants.iter().map(|v| v.field_tys.clone()).collect())
     }
-}
 
-/// RETIRED parallel heap walker (ownership/drop/ABI unification) —
-/// superseded by the single `hew_mir::ty_owns_heap` authority. It now delegates
-/// straight to that authority via [`CborHeapLayouts`]; it is retained ONLY as
-/// the sealed seam its sole sanctioned caller ([`cbor_vec_elem_kind`]) routes
-/// through. New code must call `hew_mir::ty_owns_heap` directly.
-///
-/// GUARD: the `#[deprecated]` seal plus the workspace
-/// `cargo clippy --workspace --tests -- -D warnings` CI step
-/// (`.github/workflows/ci.yml`) is the re-entry tripwire — any NEW caller is a
-/// hard CI failure unless it is explicitly `#[allow(deprecated)]`-listed (the
-/// allow-list). `-D deprecated` is implied by `-D warnings`, and the lint fires
-/// for same-crate callers, so no new test plumbing is needed.
-///
-/// Behaviour vs the retired walker (every delta is leak-SAFER, never a new
-/// leak): the old walker's `_ => false` arm BitCopied a heap-owning element
-/// when it was a `CancellationToken` (own variant) or hid behind a
-/// tuple/array/slice record field — a latent under-drop the authority's leaf
-/// set / structural recursion correctly fails closed. Those shapes are
-/// currently unreachable (they fail closed upstream at the clone-helper /
-/// wire-body floor), so this is a consistency hardening, not an observable
-/// change. The old walker's coarse `_ => true` over-defer for non-`Option`
-/// builtins is preserved at the caller (see [`cbor_vec_elem_kind`]), so
-/// reachable behaviour is byte-identical.
-#[deprecated(
-    note = "retired parallel heap walker — call `hew_mir::ty_owns_heap` (the single \
-            ownership authority) directly; this shim exists only as the sealed, \
-            allow-listed seam its sole caller routes through"
-)]
-fn cbor_ty_owns_heap(
-    ty: &ResolvedTy,
-    pipeline_records: &[RecordLayout],
-    enum_layouts: &[EnumLayout],
-) -> bool {
-    hew_mir::ty_owns_heap(
-        ty,
-        &CborHeapLayouts {
-            pipeline_records,
-            enum_layouts,
-        },
-    )
-}
-
-/// True when `ty` IS — or transitively contains, through type arguments, record
-/// fields, enum/machine variant payloads, or tuple/array elements — an *indirect
-/// enum*. An `indirect enum` value is a heap-owned pointer to a tagged-union
-/// struct (`EnumLayout::is_indirect`) even when every payload field is scalar, so
-/// each element must be released on drop and crosses the ABI by pointer.
-///
-/// The single `hew_mir::ty_owns_heap` authority resolves user types through the
-/// [`hew_mir::HeapOwnershipLayouts`] trait, which conveys only payload *field
-/// types* — not an enum's indirectness. Neither this path's [`CborHeapLayouts`]
-/// nor the `FnCtx`-backed [`CgHeapLayouts`] can signal indirectness through the
-/// authority, so an indirect enum with scalar payloads classifies
-/// `ty_owns_heap == false`. The CBOR element codec therefore detects it directly
-/// and fails closed — matching the pointer ABI the `Vec` constructor (indirect
-/// enum elements stored as `ptr`) and the CBOR decoder (`emit_de_enum_cbor`
-/// allocates and stores a heap node) already use — never BitCopying a heap-owned
-/// node. (The drop elaborator releases such values via `DropKind::IndirectEnum`,
-/// a path independent of `ty_owns_heap`, which is why this gap is CBOR-local.)
-///
-/// Resolution uses the SAME [`xnode_registry_key`] strategy as
-/// [`CborHeapLayouts`], so the layout whose `is_indirect` flag this reads is the
-/// exact layout the authority recursion walks.
-fn cbor_ty_contains_indirect_enum(
-    ty: &ResolvedTy,
-    pipeline_records: &[RecordLayout],
-    enum_layouts: &[EnumLayout],
-    visiting: &mut std::collections::HashSet<String>,
-) -> bool {
-    match ty {
-        ResolvedTy::Named { name, args, .. } => {
-            // Type arguments first (`Option<indirect enum>`, `Rc<…>`, …).
-            if args.iter().any(|a| {
-                cbor_ty_contains_indirect_enum(a, pipeline_records, enum_layouts, visiting)
-            }) {
-                return true;
-            }
-            let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
-            // An indirect enum is heap-owned irrespective of its payload field
-            // types — check before the recursion guard so a re-encounter on a
-            // cyclic type still reports it.
-            if enum_layouts.iter().any(|e| e.name == key && e.is_indirect) {
-                return true;
-            }
-            if !visiting.insert(key.clone()) {
-                // Already walking this type: its own indirectness was checked on
-                // first entry; break to keep the field recursion bounded.
-                return false;
-            }
-            let found = if let Some(rl) = pipeline_records.iter().find(|r| r.name == key) {
-                rl.field_tys.iter().any(|f| {
-                    cbor_ty_contains_indirect_enum(f, pipeline_records, enum_layouts, visiting)
-                })
-            } else if let Some(el) = enum_layouts.iter().find(|e| e.name == key) {
-                el.variants.iter().any(|v| {
-                    v.field_tys.iter().any(|f| {
-                        cbor_ty_contains_indirect_enum(f, pipeline_records, enum_layouts, visiting)
-                    })
-                })
-            } else {
-                false
-            };
-            visiting.remove(&key);
-            found
-        }
-        ResolvedTy::Tuple(elems) => elems
+    fn enum_is_indirect(&self, name: &str, args: &[ResolvedTy]) -> bool {
+        let key = xnode_registry_key(name, args, self.pipeline_records, self.enum_layouts);
+        self.enum_layouts
             .iter()
-            .any(|e| cbor_ty_contains_indirect_enum(e, pipeline_records, enum_layouts, visiting)),
-        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            cbor_ty_contains_indirect_enum(inner, pipeline_records, enum_layouts, visiting)
-        }
-        _ => false,
+            .any(|layout| layout.name == key && layout.is_indirect)
     }
 }
 
@@ -1772,17 +1661,22 @@ pub(crate) fn cbor_vec_elem_kind(
             builtin: Some(BuiltinType::Option),
             ..
         } => {
-            #[allow(deprecated)]
-            let owns_heap = cbor_ty_owns_heap(elem, pipeline_records, enum_layouts);
-            if owns_heap {
+            let ownership = hew_mir::ty_heap_ownership(
+                elem,
+                &CborHeapLayouts {
+                    pipeline_records,
+                    enum_layouts,
+                },
+            );
+            if ownership.owns_heap || ownership.via_indirection {
                 CborVecElemKind::Defer
             } else {
                 CborVecElemKind::LayoutBitCopy
             }
         }
-        // User record / enum elements: route the heap-ownership question through
-        // the single `hew_mir::ty_owns_heap` authority (was the parallel
-        // `cbor_ty_owns_heap` walker). A heap-free record/enum element is the
+        // User record / enum elements: route both heap ownership and enum
+        // indirectness through the single `hew_mir::ty_heap_ownership`
+        // authority. A heap-free record/enum element is the
         // layout-aware BitCopy vec `Vec::new` constructs (`hew_vec_new_with_layout`).
         // A heap-OWNING record/enum element takes the OWNED (thunk-bearing) Vec ABI
         // — the same authority `Vec::new`'s `VecCtor::Owned` uses — provided it
@@ -1790,22 +1684,16 @@ pub(crate) fn cbor_vec_elem_kind(
         // (and every indirect enum, whose pointer ABI is a separate store family)
         // stays fail-closed.
         ResolvedTy::Named { .. } => {
-            // SEALED retired-walker seam: the sole sanctioned caller.
-            #[allow(deprecated)]
-            let owns_heap = cbor_ty_owns_heap(elem, pipeline_records, enum_layouts);
-            // The single authority sees only enum payload *field types* through
-            // the layout adapter, not an enum's indirectness, so an indirect enum
-            // with scalar payloads classifies `owns_heap == false`. Such an
-            // element is nonetheless a heap-owned pointer — the `Vec` constructor
-            // and the CBOR decoder both use pointer ABI for it — so fail closed
-            // for any element that IS or transitively contains one, never
-            // BitCopying (or owned-ABI-mishandling) a heap-owned node.
-            let mut visiting = std::collections::HashSet::new();
-            let contains_indirect_enum =
-                cbor_ty_contains_indirect_enum(elem, pipeline_records, enum_layouts, &mut visiting);
-            if contains_indirect_enum {
+            let ownership = hew_mir::ty_heap_ownership(
+                elem,
+                &CborHeapLayouts {
+                    pipeline_records,
+                    enum_layouts,
+                },
+            );
+            if ownership.via_indirection {
                 CborVecElemKind::Defer
-            } else if owns_heap {
+            } else if ownership.owns_heap {
                 if crate::thunks::owned_elem_thunk_key(regs, elem).is_some() {
                     CborVecElemKind::Owned
                 } else {

@@ -528,14 +528,10 @@ impl Builder {
     ///     element's release is wired program-wide, but
     ///     `vec_owned_element_keys` is harvested per function, so a `Vec`
     ///     constructed in ANOTHER function (a generator body, a callee)
-    ///     classifies unsupported HERE. SHIM: keeps the buffer-only
-    ///     `hew_vec_free` — the pre-consolidation verdict — which frees the
-    ///     buffer but leaks owned element payloads when this function is the
-    ///     final owner. Wiring it means classifying owned elements
-    ///     harvest-independently (construction-ABI aware), the type-directed
-    ///     drop-table consolidation's job; until then the verdict is pinned
-    ///     by `yield_and_field_pickers_match_legacy_symbol_table` and the
-    ///     leak is tracked, not silent.
+    ///     classifies unsupported HERE. The release picker must use the
+    ///     harvest-independent `elem_is_owned_abi_releasable` authority and
+    ///     emit `hew_vec_free_owned`; a buffer-only free would leak every
+    ///     element payload.
     ///   - `UnenumeratedShape` — the element owns NO heap as a flat element
     ///     (a free `TypeParam` in a generic skeleton, `Unit`, a bare runtime
     ///     view) — the buffer-only free IS the complete release; refusing
@@ -544,22 +540,20 @@ impl Builder {
     fn vec_release_symbol_verdict(&self, elem: &ResolvedTy) -> ReleaseSymbolVerdict {
         #[allow(
             clippy::match_same_arms,
-            reason = "Plain and the residual Unsupported sub-domains are \
-                      distinct decisions whose symbols coincide: Plain is the \
-                      wired, complete buffer release; the residual Unsupported \
-                      arms (UnenumeratedShape, owned-ABI-releasable without \
-                      this function's harvest key) keep the buffer-only \
-                      verdict for the documented boundary reasons above. \
-                      Merging the arms would hide the seam the type-directed \
-                      drop tables rewire"
+            reason = "the repeated symbols are projections of distinct typed release \
+                      decisions; keeping the arms separate makes the owned, plain, \
+                      fail-closed, and unenumerated boundaries reviewable"
         )]
         match self.classify_vec_element_release(elem) {
             VecElementRelease::ClosurePair => ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
             VecElementRelease::OwnedElement => ReleaseSymbolVerdict::Wired("hew_vec_free_owned"),
             VecElementRelease::Plain => ReleaseSymbolVerdict::Wired("hew_vec_free"),
-            VecElementRelease::Unsupported(reason @ FailClosedReason::NoReleaseProtocol)
-                if !self.elem_is_owned_abi_releasable(elem) =>
+            VecElementRelease::Unsupported(FailClosedReason::NoReleaseProtocol)
+                if self.elem_is_owned_abi_releasable(elem) =>
             {
+                ReleaseSymbolVerdict::Wired("hew_vec_free_owned")
+            }
+            VecElementRelease::Unsupported(reason @ FailClosedReason::NoReleaseProtocol) => {
                 ReleaseSymbolVerdict::Unwired(reason)
             }
             VecElementRelease::Unsupported(_) => ReleaseSymbolVerdict::Wired("hew_vec_free"),

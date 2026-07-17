@@ -259,6 +259,7 @@ pub(crate) fn register_machine_layouts<'ctx>(
         let mut machine_cg = build_tagged_union_layout(
             ctx,
             &layout.name,
+            layout.tag_width,
             &layout.variants,
             record_layout_map,
             enum_layouts,
@@ -281,12 +282,12 @@ pub(crate) fn register_machine_layouts<'ctx>(
         record_layout_map.insert(layout.name.clone(), machine_cg.outer_struct);
         map.insert(layout.name.clone(), machine_cg);
 
-        // The companion event enum: `<Name>Event` with event-variant
-        // payloads. Tag bit width is derived from the event count
+        // The companion event enum: `<Name>Event` with event-variant payloads.
         let event_name = format!("{}Event", layout.name);
         let event_cg = build_tagged_union_layout(
             ctx,
             &event_name,
+            minimum_tag_width(layout.events.len()),
             &layout.events,
             record_layout_map,
             enum_layouts,
@@ -448,6 +449,7 @@ pub(crate) fn register_enum_layouts<'ctx>(
         let enum_cg = build_tagged_union_layout(
             ctx,
             &layout.name,
+            layout.tag_width,
             &layout.variants,
             record_layout_map,
             enum_layouts,
@@ -477,6 +479,7 @@ pub(crate) fn register_enum_layouts<'ctx>(
 pub(crate) fn build_tagged_union_layout<'ctx>(
     ctx: &'ctx Context,
     outer_name: &str,
+    tag_width: u32,
     variants: &[MachineVariantLayout],
     record_layout_map: &RecordLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
@@ -607,7 +610,14 @@ pub(crate) fn build_tagged_union_layout<'ctx>(
         // introduce a sibling `.llvm_ctx_display` helper.
         .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({element_bits}): {e}")))?;
 
-    let tag_int_ty = tag_int_type_for_variant_count(ctx, outer_name, variants.len())?;
+    #[cfg(debug_assertions)]
+    assert_eq!(
+        tag_storage_width(tag_width)?,
+        legacy_tag_storage_width(variants.len())?,
+        "tag-width authority drift for `{outer_name}`: carried width {tag_width} over {} variants",
+        variants.len()
+    );
+    let tag_int_ty = tag_int_type_for_width(ctx, outer_name, tag_width)?;
     let payload_arr_ty = payload_element_int_ty.array_type(element_count_u32);
 
     let outer_struct = record_layout_map.get(outer_name).copied().ok_or_else(|| {
@@ -625,6 +635,46 @@ pub(crate) fn build_tagged_union_layout<'ctx>(
         variant_field_tys,
         state_name_table: None,
     })
+}
+
+fn minimum_tag_width(variant_count: usize) -> u32 {
+    let count = variant_count.max(1);
+    (usize::BITS - (count - 1).leading_zeros()).max(1)
+}
+
+fn tag_storage_width(tag_width: u32) -> CodegenResult<u32> {
+    match tag_width {
+        1..=8 => Ok(8),
+        9..=16 => Ok(16),
+        _ => Err(CodegenError::Unsupported(
+            "machine tagged-union layout supports tag widths from 1 through 16 bits",
+        )),
+    }
+}
+
+fn tag_int_type_for_width<'ctx>(
+    ctx: &'ctx Context,
+    _outer_name: &str,
+    tag_width: u32,
+) -> CodegenResult<IntType<'ctx>> {
+    match tag_storage_width(tag_width)? {
+        8 => Ok(ctx.i8_type()),
+        16 => Ok(ctx.i16_type()),
+        _ => unreachable!("tag_storage_width returns only supported storage buckets"),
+    }
+}
+
+#[cfg(debug_assertions)]
+fn legacy_tag_storage_width(variant_count: usize) -> CodegenResult<u32> {
+    if variant_count <= 256 {
+        Ok(8)
+    } else if variant_count <= 65_536 {
+        Ok(16)
+    } else {
+        Err(CodegenError::Unsupported(
+            "machine tagged-union layout supports at most 65,536 variants",
+        ))
+    }
 }
 
 /// Locate a machine's tagged-union codegen layout for an MIR local known
@@ -5905,6 +5955,18 @@ pub(crate) fn lower_bytes_constructor_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn carried_tag_width_matches_legacy_storage_buckets() {
+        for variant_count in [0, 1, 2, 3, 255, 256, 257, 65_535, 65_536] {
+            let tag_width = minimum_tag_width(variant_count);
+            assert_eq!(
+                tag_storage_width(tag_width).expect("supported carried tag width"),
+                legacy_tag_storage_width(variant_count).expect("supported legacy variant count"),
+                "storage width moved for {variant_count} variants"
+            );
+        }
+    }
 
     /// `owned_elem_layout_descriptor_ptr` reconstructs `HewVecElemLayout`'s
     /// byte layout as an independent LLVM `StructType` because codegen does

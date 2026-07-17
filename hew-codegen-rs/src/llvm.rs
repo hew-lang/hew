@@ -2268,22 +2268,6 @@ pub(crate) fn collect_named_enum_deps(
     }
 }
 
-pub(crate) fn tag_int_type_for_variant_count<'ctx>(
-    ctx: &'ctx Context,
-    _outer_name: &str,
-    variant_count: usize,
-) -> CodegenResult<inkwell::types::IntType<'ctx>> {
-    if variant_count <= 256 {
-        Ok(ctx.i8_type())
-    } else if variant_count <= 65_536 {
-        Ok(ctx.i16_type())
-    } else {
-        Err(CodegenError::Unsupported(
-            "machine tagged-union layout supports at most 65,536 variants",
-        ))
-    }
-}
-
 /// Emit a private `[N x ptr]` LLVM global containing pointers to each
 /// state's NUL-terminated read-only name string. The address of this
 /// global is what `Instr::MachineStateName` GEPs into using the machine's
@@ -21054,6 +21038,19 @@ impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
         }
         None
     }
+
+    fn enum_is_indirect(&self, name: &str, args: &[ResolvedTy]) -> bool {
+        let short = short_name(name);
+        let key = if args.is_empty() {
+            name.to_string()
+        } else {
+            mangle_with_shortened_args(short, args)
+        };
+        self.fn_ctx.enum_layouts.iter().any(|layout| {
+            (layout.name == key || layout.name == name || short_name(&layout.name) == short)
+                && layout.is_indirect
+        })
+    }
 }
 
 /// Structural heap-owning check on a `ResolvedTy` — thin adapter over the single
@@ -38084,17 +38081,15 @@ mod tests {
     /// enum` must fail closed (`Defer`), never `LayoutBitCopy`. An indirect enum
     /// with scalar payloads is a heap-owned pointer (the `Vec` constructor stores
     /// it as `ptr`; the CBOR decoder allocates and stores a heap node), yet the
-    /// single `hew_mir::ty_owns_heap` authority sees only payload field types
-    /// through the layout adapter and so classifies it heap-FREE. The codec
-    /// detects indirectness directly (`cbor_ty_contains_indirect_enum`) and
-    /// defers, matching the pointer ABI both endpoints already use — without it
-    /// the codec would BitCopy on encode while the constructor/decoder used
-    /// pointer ABI, leaking the heap-owned node.
+    /// `hew_mir::ty_heap_ownership` authority reports that indirectness through
+    /// the layout adapter, so the codec defers in agreement with the pointer ABI
+    /// both endpoints already use. Without the carried bit the codec would
+    /// BitCopy on encode while the constructor/decoder used pointer ABI, leaking
+    /// the heap-owned node.
     ///
-    /// Revert-repro: drop the `contains_indirect_enum` term in
-    /// `cbor_vec_elem_kind` (or the `is_indirect` check in
-    /// `cbor_ty_contains_indirect_enum`) and the indirect-enum assertions below
-    /// report `LayoutBitCopy`.
+    /// Revert-repro: ignore `HeapOwnership::via_indirection` in
+    /// `cbor_vec_elem_kind` and the indirect-enum assertions below report
+    /// `LayoutBitCopy`.
     #[test]
     fn cbor_vec_elem_kind_fails_closed_for_indirect_enum_element() {
         // `indirect enum Node { Leaf(i64); Nil; }` — scalar payloads, yet every
@@ -38393,8 +38388,7 @@ mod tests {
         );
         let ir = m.print_to_string().to_string();
         // Tag-store of 0 + GEP for machine_tag_ptr must be present.
-        // (Tag width is i8 — `tag_int_type_for_variant_count` always
-        // rounds up to a byte for ≤256-variant unions.)
+        // The carried one-bit tag width uses the i8 storage bucket.
         assert!(
             ir.contains("machine_tag_ptr") && ir.contains("store i8 0"),
             "expected tag GEP + store i8 0 for Result Ok tag; got IR:\n{ir}"
@@ -38512,8 +38506,7 @@ mod tests {
             m.print_to_string().to_string()
         );
         let ir = m.print_to_string().to_string();
-        // Tag-store of 1 (Err) — tag width is i8 per
-        // `tag_int_type_for_variant_count`.
+        // Tag-store of 1 (Err) — the carried one-bit tag width uses i8 storage.
         assert!(
             ir.contains("store i8 1"),
             "expected store i8 1 for Err tag on Result; got IR:\n{ir}"
@@ -38805,7 +38798,7 @@ mod tests {
             m.print_to_string().to_string()
         );
         let ir = m.print_to_string().to_string();
-        // Sample has 3 variants → i8 tag (per tag_int_type_for_variant_count).
+        // Sample's carried two-bit tag width uses i8 storage.
         // Tag value 0 must be stored.
         assert!(
             ir.contains("machine_tag_ptr") && ir.contains("store i8 0"),

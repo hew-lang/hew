@@ -2326,6 +2326,10 @@ impl crate::model::HeapOwnershipLayouts for EmptyLayouts {
     ) -> Option<Vec<Vec<ResolvedTy>>> {
         None
     }
+
+    fn enum_is_indirect(&self, _name: &str, _args: &[ResolvedTy]) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

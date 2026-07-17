@@ -101,33 +101,38 @@ pub(crate) enum AbiClass {
     /// pointer. At a return site this lowers to an `sret(T)` parameter
     /// (`noalias`); at an argument site to a `byval(T)` parameter. Used for
     /// every >16-byte aggregate (all targets) and every aggregate larger than a
-    /// single register on Windows x64 MSVC (size != 1/2/4/8) and wasm32.
+    /// single register on Windows x64 (MSVC and MinGW-w64 GNU; size != 1/2/4/8)
+    /// and wasm32.
     Indirect,
 }
 
 /// The byte size above which SysV / AAPCS pass an aggregate indirectly.
 const SMALL_AGGREGATE_MAX: u64 = 16;
 
-/// Returns `true` when `triple` names the Windows **x64** MSVC environment,
-/// whose aggregate ABI differs from SysV/AAPCS (every non-{1,2,4,8}-byte
-/// aggregate is indirect). Matches the `-msvc` environment AND a 64-bit arch:
-/// the Win64 aggregate rule this admits is the x86_64/aarch64 one, not the
-/// 32-bit x86 (`i686-pc-windows-msvc`) cdecl/stdcall rule, which differs and is
-/// not modelled here. Gating on the arch keeps a 32-bit x86 MSVC triple OUT of
-/// this arm so it falls through to the fail-closed default rather than
-/// borrowing the x64 indirect rule. Hew targets Windows via 64-bit MSVC.
-fn is_windows_msvc(triple: &str) -> bool {
-    let is_msvc = triple.contains("windows-msvc") || triple.ends_with("-msvc");
+/// Returns `true` when `triple` names a 64-bit Windows target (x86_64/aarch64),
+/// whether the environment is MSVC or GNU (MinGW-w64). Both share the Win64
+/// aggregate ABI, whose rule differs from SysV/AAPCS: an aggregate is passed or
+/// returned in a single register only for size 1/2/4/8; every other size
+/// (notably 16) is indirect. MinGW-w64 x86_64 follows the Microsoft x64 calling
+/// convention — the aggregate rule is the platform ABI, not a toolchain choice,
+/// so `-gnu` and `-msvc` classify identically.
+///
+/// Gating on the arch keeps a 32-bit x86 Windows triple (`i686-pc-windows-*`)
+/// OUT of this arm: its cdecl/stdcall aggregate ABI differs and is not modelled,
+/// so it falls through to the fail-closed default rather than borrowing the x64
+/// indirect rule.
+fn is_windows_x64(triple: &str) -> bool {
+    if !is_windows(triple) {
+        return false;
+    }
     let arch = triple.split('-').next().unwrap_or(triple);
-    let is_64bit_x86_or_arm = matches!(arch, "x86_64" | "amd64" | "aarch64" | "arm64");
-    is_msvc && is_64bit_x86_or_arm
+    matches!(arch, "x86_64" | "amd64" | "aarch64" | "arm64")
 }
 
-/// Returns `true` for any Windows triple. Used to keep `*-windows-gnu`
-/// (Win64-GNU / MinGW) OUT of the SysV/AAPCS arm: Win64-GNU uses the Win64
-/// aggregate ABI (indirect for size ∉ {1,2,4,8}), NOT SysV. Hew targets
-/// Windows via MSVC, so Win64-GNU is an unsupported target and must fail
-/// closed rather than be misclassified as SysV.
+/// Returns `true` for any Windows triple. Used both to admit 64-bit Windows to
+/// the Win64 aggregate arm (via `is_windows_x64`) and to keep every Windows
+/// triple OUT of the SysV/AAPCS arm: Windows (MSVC and MinGW-w64 GNU alike) uses
+/// the Win64 aggregate ABI (indirect for size not in {1,2,4,8}), NOT SysV.
 fn is_windows(triple: &str) -> bool {
     triple.contains("windows") || triple.contains("-win32")
 }
@@ -154,11 +159,13 @@ pub(crate) fn classify_aggregate(
 ) -> CodegenResult<AbiClass> {
     let size = target_data.get_abi_size(&struct_ty);
 
-    // Windows x64 MSVC: a single-register class ONLY for size exactly 1/2/4/8;
-    // every other size (notably 16) is indirect. This is the rule the `_raw`
-    // family exists to satisfy — the canonical symbol with `sret(T)`/`byval(T)`
-    // replaces it.
-    if is_windows_msvc(triple) {
+    // Windows x64 (MSVC and MinGW-w64 GNU): a single-register class ONLY for
+    // size exactly 1/2/4/8; every other size (notably 16) is indirect. This is
+    // the rule the `_raw` family exists to satisfy — the canonical symbol with
+    // `sret(T)`/`byval(T)` replaces it. Win64-GNU shares this rule with MSVC
+    // because the aggregate-passing convention is the platform ABI, not a
+    // toolchain choice.
+    if is_windows_x64(triple) {
         return Ok(match size {
             1 | 2 | 4 | 8 => AbiClass::Direct,
             _ => AbiClass::Indirect,
@@ -206,11 +213,10 @@ fn is_sysv_or_aapcs(triple: &str) -> bool {
     let is_x86_64 = triple.starts_with("x86_64-") || triple.starts_with("amd64-");
     let is_aarch64 = triple.starts_with("aarch64-") || triple.starts_with("arm64-");
     // -gnu / -darwin / -musl / bare (no environment) on these arches use the
-    // SysV/AAPCS small-aggregate rule. EXCLUDE every Windows triple: MSVC was
-    // already handled above (Indirect), and `*-windows-gnu` (Win64-GNU/MinGW)
-    // uses the Win64 aggregate ABI, NOT SysV — admitting it here would emit a
-    // register-pair where the platform expects indirect. Hew targets Windows
-    // via MSVC, so Win64-GNU falls through to the fail-closed arm.
+    // SysV/AAPCS small-aggregate rule. EXCLUDE every Windows triple: 64-bit
+    // Windows (both `-msvc` and `-gnu`/MinGW) was already handled above under the
+    // Win64 rule (Indirect for size ∉ {1,2,4,8}); admitting it here would emit a
+    // register-pair where the platform expects indirect.
     (is_x86_64 || is_aarch64) && !is_windows(triple)
 }
 
@@ -515,21 +521,29 @@ mod tests {
     }
 
     #[test]
-    fn windows_msvc_rule_is_gated_to_64bit_arch() {
-        // `is_windows_msvc` matches the `-msvc` ENVIRONMENT; before the arch
-        // gate, `i686-pc-windows-msvc` (32-bit x86) borrowed the Win64
-        // aggregate rule. 32-bit x86 MSVC uses a different cdecl/stdcall
-        // aggregate ABI that is not modelled here, so it must now fall THROUGH
-        // the msvc arm to the fail-closed default rather than be classified
-        // under the x64 indirect rule.
-        assert!(is_windows_msvc("x86_64-pc-windows-msvc"));
-        assert!(is_windows_msvc("aarch64-pc-windows-msvc"));
+    fn windows_x64_rule_covers_both_environments_and_is_gated_to_64bit_arch() {
+        // The Win64 aggregate rule is the platform ABI, shared by MSVC and
+        // MinGW-w64 GNU on 64-bit x86/arm. `is_windows_x64` admits both
+        // environments. The 32-bit x86 Windows triples (`i686`/`i586`) use a
+        // different cdecl/stdcall aggregate ABI that is not modelled here, so
+        // they must fall THROUGH to the fail-closed default rather than borrow
+        // the x64 indirect rule.
+        assert!(is_windows_x64("x86_64-pc-windows-msvc"));
+        assert!(is_windows_x64("aarch64-pc-windows-msvc"));
         assert!(
-            !is_windows_msvc("i686-pc-windows-msvc"),
+            is_windows_x64("x86_64-pc-windows-gnu"),
+            "Win64-GNU (MinGW-w64) shares the Win64 aggregate rule with MSVC"
+        );
+        assert!(
+            !is_windows_x64("i686-pc-windows-msvc"),
             "32-bit x86 MSVC must not borrow the Win64 aggregate rule"
         );
         assert!(
-            !is_windows_msvc("i586-pc-windows-msvc"),
+            !is_windows_x64("i686-pc-windows-gnu"),
+            "32-bit x86 GNU must not borrow the Win64 aggregate rule"
+        );
+        assert!(
+            !is_windows_x64("i586-pc-windows-msvc"),
             "32-bit x86 MSVC must not borrow the Win64 aggregate rule"
         );
     }
@@ -617,27 +631,25 @@ mod tests {
     }
 
     #[test]
-    fn win64_gnu_fails_closed_not_classified_sysv() {
-        // `x86_64-pc-windows-gnu` (Win64-GNU / MinGW) uses the Win64 aggregate
-        // ABI (indirect for size ∉ {1,2,4,8}), NOT SysV. It is an unsupported
-        // target (Hew targets Windows via MSVC), so it must fail closed — NOT
-        // be admitted to the SysV register-pair arm. This is the multi-platform ABI
-        // correctness fix: an x86_64 non-MSVC Windows triple is no longer
-        // misclassified as SysV-like.
+    fn win64_gnu_is_indirect_like_msvc_not_sysv() {
+        // `x86_64-pc-windows-gnu` (Win64-GNU / MinGW-w64) uses the Win64
+        // aggregate ABI (indirect for size not in {1,2,4,8}), IDENTICAL to MSVC
+        // and NOT SysV — the aggregate-passing convention is the platform ABI,
+        // not a toolchain choice. A 16-byte BytesTriple must classify Indirect,
+        // the same as on `x86_64-pc-windows-msvc`, and must NOT be admitted to
+        // the SysV/AAPCS register-pair arm. This keeps `--emit-obj --target
+        // x86_64-pc-windows-gnu` producing a correct object.
         let ctx = Context::create();
-        let td = target_data_for(SYSV); // size only; the triple drives the rule
+        let td = target_data_for(WIN_MSVC); // 64-bit Win TargetData; the triple drives the rule
         assert!(
             !is_sysv_or_aapcs("x86_64-pc-windows-gnu"),
             "Win64-GNU must NOT be admitted to the SysV/AAPCS arm"
         );
-        let err = classify_aggregate(bytes_triple(&ctx), &td, "x86_64-pc-windows-gnu")
-            .expect_err("Win64-GNU must fail closed, not classify as SysV");
-        match err {
-            CodegenError::FailClosed(msg) => {
-                assert!(msg.contains("not modelled"), "msg: {msg}");
-            }
-            other => panic!("expected FailClosed for Win64-GNU, got {other:?}"),
-        }
+        assert_eq!(
+            classify_aggregate(bytes_triple(&ctx), &td, "x86_64-pc-windows-gnu").unwrap(),
+            AbiClass::Indirect,
+            "Win64-GNU 16-byte aggregate must be Indirect, matching MSVC"
+        );
     }
 
     // ── Stage 0 spike, kept as a permanent regression ──────────────────────

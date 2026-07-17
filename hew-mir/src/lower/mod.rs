@@ -284,6 +284,1007 @@ struct ActorMethodInfo {
     return_ty: ResolvedTy,
 }
 
+#[derive(Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Builder is the MIR-lowering state accumulator; each bool is an \
+              independent, orthogonal lowering-mode flag (e.g. the \
+              fallthrough-match-guard scope) that distinct call sites set and \
+              query on their own — collapsing them into an enum would force a \
+              single active-mode invariant the lowering does not have"
+)]
+struct Builder {
+    /// Checker-authority stream for the *current* basic block. Drained
+    /// into a `BasicBlock` when the cursor moves (`finish_current_block`)
+    /// or at function-body finalisation. Once a block is sealed it lives
+    /// in `pending_blocks` until the function's body walk completes.
+    pub(crate) statements: Vec<MirStatement>,
+    /// Backend-authority stream for the *current* basic block. Populated
+    /// in lock-step with `statements` by `lower_value` so the checker
+    /// and the emitter agree on what each `SiteId` resolves to. Drained
+    /// at the same cursor-move site as `statements`.
+    pub(crate) instructions: Vec<Instr>,
+    /// Completed basic blocks in construction order. Block id `0` is the
+    /// function's entry block; subsequent ids are monotone in allocation
+    /// order. The currently-being-built block (`current_block_id` /
+    /// `statements` / `instructions`) is appended at function-body
+    /// finalisation. Slice 1 leaves this empty for every function (the
+    /// cursor never moves under the CFG-flat lowering); Slice 2's `If`
+    /// lowering is the first writer.
+    pub(crate) pending_blocks: Vec<BasicBlock>,
+    /// Monotone counter for fresh `BasicBlock` ids. `alloc_block` returns
+    /// the next id without switching the cursor — the caller is
+    /// responsible for `finish_current_block(...)` + `start_block(id)`
+    /// at the right point in the lowering sequence.
+    pub(crate) next_block_id: u32,
+    /// Id of the block currently receiving `statements` / `instructions`.
+    /// Initialised to `0` (the entry block). Updated by
+    /// `start_block(id)` after a `finish_current_block(...)` seals the
+    /// previous block into `pending_blocks`.
+    pub(crate) current_block_id: u32,
+    /// Set when the most recent `finish_current_block` was followed by
+    /// `start_block` for a block that has no predecessor in the CFG —
+    /// typically the synthetic continuation block opened after an
+    /// explicit early `return` seals its block with `Terminator::Return`.
+    /// `finalize_blocks` drops this block from the function's CFG when
+    /// it is observed to be empty, so the dead-end does not appear as
+    /// an additional `Return` exit in `drop_plans`.
+    pub(crate) cursor_unreachable: bool,
+    /// Set alongside `cursor_unreachable` ONLY when the current dead cursor
+    /// was opened as the `next` of an already-sealed `Terminator::Call`
+    /// (a `Never`-typed callee's continuation) rather than from an
+    /// explicit `return`'s own seal. `finalize_blocks`'s empty-dead-cursor
+    /// drop is safe for the `return` case because nothing else references
+    /// that block's id (`Terminator::Return` has no successor field), but
+    /// a `Terminator::Call { next, .. }` DOES reference this id — dropping
+    /// an empty block here would leave the already-committed `Call`
+    /// pointing at a missing block (hew-lang/hew#2425:
+    /// `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb<N> missing`, hit whenever
+    /// the function-tail defer drain or a plain live-cursor fall-through
+    /// reached a `defer exit(..)`/`defer panic(..)` and nothing else wrote
+    /// into the resulting dead continuation before finalisation). When
+    /// this flag is set, `finalize_blocks` seals the empty block with
+    /// `Terminator::Trap { kind: UnreachableCallContinuation }` instead of
+    /// dropping it, so the id stays valid. Cleared by `start_block` and by
+    /// every `finalize_blocks` call, same as `cursor_unreachable`.
+    pub(crate) dead_cursor_is_call_continuation: bool,
+    /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
+    /// `Place::Local(i as u32)`.
+    pub(crate) locals: Vec<ResolvedTy>,
+    /// Source-level binding name for each local slot, parallel to `locals`
+    /// (`local_names[i]` is the name of `Place::Local(i)`, or `None` for an
+    /// anonymous temporary). Populated at the param prologue and `let`
+    /// lowering sites from the HIR `HirBinding.name`; every other
+    /// `alloc_local` pushes `None`. Drained into `RawMirFunction.local_names`
+    /// for codegen's `-g` variable DIEs (`create_auto_variable` /
+    /// `create_parameter_variable`). Best-effort and fail-closed: a `None`
+    /// entry means codegen emits no DIE for that slot rather than fabricating
+    /// a name. A side-table-shaped `Vec` (not a field on every binding-insert
+    /// site) keeps the many `binding_locals.insert` call sites unchanged.
+    pub(crate) local_names: Vec<Option<String>>,
+    /// gdb `-g` lexical scoping, parallel to `local_names`. `local_scopes[i]` is
+    /// the HIR `ScopeId` the binding occupying `Place::Local(i)` was declared in
+    /// (or `None` for params / anonymous temporaries / unscoped slots). Resolved
+    /// in `resolve_local_names_from_binds` from `binding_scope`. Codegen scopes
+    /// each variable DIE to the matching `DILexicalBlock`, so a shadowed inner
+    /// `first` does not share the outer's function-wide scope.
+    pub(crate) local_scopes: Vec<Option<ScopeId>>,
+    /// gdb `-g` declaration line, parallel to `local_names`. `local_decl_bytes[i]`
+    /// is the source start-byte of the `let` that introduced `Place::Local(i)`
+    /// (or `None`). Codegen maps it to a line so each local DIE carries its own
+    /// declaration line rather than the function-declaration line.
+    pub(crate) local_decl_bytes: Vec<Option<u32>>,
+    /// Maps `BindingId` to the `Local(N)` slot that holds the binding's
+    /// initialiser. Cluster 1 reads the slot directly; later clusters add
+    /// drop-cleanup and rebinding semantics.
+    pub(crate) binding_locals: HashMap<BindingId, Place>,
+    /// Count of anonymous caller-owned temp bindings minted so far in this
+    /// function. The next mint is
+    /// `BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - count)` — a
+    /// descending per-function range that stays clear of both the fixed
+    /// `u32::MAX ..= u32::MAX - 4` sentinels and real HIR binding ids.
+    pub(crate) synthetic_owned_temp_bindings: u32,
+    /// Per-function destructive-funcupdate base provenance. Maps a `BindingId`
+    /// to whether `{ ..<binding>, f: new }` over it is a PROVEN unique owner of
+    /// its heap fields — i.e. consuming it leaves no live alias, so the
+    /// override-drop's in-place field release is sound. Populated once per
+    /// function by `compute_funcupdate_base_provenance` (a flow-insensitive
+    /// prescan of the body) BEFORE the body is lowered, so the base allowlist
+    /// gate sees every reassignment. A binding is proven iff EVERY definition
+    /// (its `let` initialiser, every `=` reassignment, or a by-value parameter
+    /// origin) is a materialised owner (`expr_is_materialized_owner`) or a
+    /// move-chain of such; a binding bound from a projection of a still-live
+    /// owner (`let b = o.inner`), or introduced by any non-`let`/non-param form
+    /// (match-arm payload, let-else, loop var), is ABSENT or `false` — the gate
+    /// then fails closed. See `base_is_safe_for_destructive_funcupdate`.
+    pub(crate) funcupdate_base_proven: HashMap<BindingId, bool>,
+    /// Module-global interprocedural freshness summary: maps each free-function
+    /// `ItemId` to whether it provably returns a FRESH MATERIALISED owner on
+    /// every return path (`compute_fn_returns_fresh_owner`). Consulted by
+    /// `expr_is_materialized_owner` so a `..f(args)` funcupdate base is admitted
+    /// ONLY when `f` cannot launder a borrowed by-value parameter through its
+    /// return (the call-returns-borrowed-param use-after-free). `Rc` so child
+    /// builders share it cheaply; the empty default fails every call-base
+    /// closed, which is sound. See `compute_fn_returns_fresh_owner`.
+    pub(crate) funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>>,
+    /// Module-global call-scrutinee return-provenance context (#2648) for the
+    /// preflight admission classifier (`classify_call_scrutinee_admission`). Maps
+    /// each module-fn `ItemId` to its precise three-state return provenance, the
+    /// declared-extern id set, and the audited extern contract table. `Rc` so
+    /// child builders share it cheaply; the empty default classifies every callee
+    /// as an unknown item → interim `LegacyModuleCall` fail-open (sound —
+    /// preserves today's mint, never a wrongly-Fresh admit). See
+    /// `crate::return_provenance::CallScrutineeProvenance`.
+    pub(crate) call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance>,
+    /// Per-function local-binding freshness facts (#2648 S2b) consumed by the
+    /// caller-side argument scan: which of the CURRENT function's locals are
+    /// provably solely-owned fresh values (S1 bits `∅`, plain `let`, not
+    /// aliased, single read). Computed once per lowered function in
+    /// `lower_function`; the empty default (synthetic machine-step builders,
+    /// child builders, tests) admits NO local argument — fail-closed.
+    pub(crate) call_scrutinee_local_freshness: crate::return_provenance::LocalBindingFreshness,
+    /// Module-global RAII-2 param-ownership facts: which affine
+    /// `#[resource]` free-fn params are CONSUME (callee owns + drops) vs
+    /// BORROW (caller keeps + drops), and the call-arg `SiteId`s whose
+    /// over-stamped `Consume` intent is downgraded to a borrowing `Read`.
+    /// `Rc` so child builders share it cheaply; empty default leaves every
+    /// arg `Consume` and drops no param (sound: pre-RAII-2 behaviour).
+    pub(crate) param_ownership: Rc<ParamOwnershipFacts>,
+    /// Per-call direct-function argument positions proven borrow-only by the
+    /// module parameter-body summary. Keyed by the block containing the
+    /// `Terminator::Call`; consumed by collection drop escape analysis so a
+    /// caller-owned Vec survives a helper that only reads it.
+    pub(crate) proven_borrow_call_args: HashMap<u32, HashSet<usize>>,
+    /// Binding ids of the CURRENT function's by-value parameters, captured in
+    /// `lower_params`. A funcupdate base that is (or embeds in a construction) a
+    /// WHOLE by-value parameter is NOT a unique owner — the parameter is a
+    /// borrow (LESSONS `by-value-heap-params-are-borrows`) stored without a
+    /// refcount bump (`{ ..Wrap { s: p, .. }, s: new }` frees the caller's `p`
+    /// at the override-drop). Consulted by `expr_is_materialized_owner` to reject
+    /// such bases. `Rc` so child builders (closures) inherit the enclosing
+    /// parameters cheaply; the empty default is sound (admits nothing extra).
+    /// Projections of a parameter (`p.inner`) and bare locals are NOT listed —
+    /// a field read refcount-bumps and a local move consumes, both empirically
+    /// owner-preserving.
+    pub(crate) funcupdate_param_ids: Rc<HashSet<BindingId>>,
+    /// MIR locals for by-value `bytes` parameters that remain caller-owned
+    /// borrows. Returning or storing one mints a co-owner and therefore needs
+    /// an explicit `BytesRetain`; ordinary calls continue to borrow it.
+    pub(crate) borrowed_bytes_param_locals: HashSet<u32>,
+    /// MIR local ids for every function parameter. Used to distinguish a named
+    /// parameter slot from a consumed owned-local slot when classifying a plain
+    /// `Move` as a retained co-owner share.
+    pub(crate) parameter_locals: HashSet<u32>,
+    /// MIR locals for by-value `string` parameters that remain caller-owned
+    /// borrows. A genuine co-owner mint retains through `hew_string_clone`;
+    /// ordinary calls continue to borrow the caller's reference.
+    pub(crate) borrowed_string_param_locals: HashSet<u32>,
+    /// Binding-reference sites used as the RHS of `let next = current` for
+    /// `bytes`. Stage S1 treats these as retained shares, so their checker use
+    /// intent is downgraded from `Consume` to `Read`.
+    pub(crate) bytes_local_share_sites: HashSet<SiteId>,
+    /// Candidate `let next = current` string copies, keyed by the RHS site and
+    /// carrying `(source, destination)` bindings. Finalized MIR decides whether
+    /// the source is used after the copy (genuine co-owner) or handed off.
+    pub(crate) string_local_share_sites: HashMap<SiteId, (BindingId, BindingId)>,
+    /// F-04 fungible supervisor-child reference table. Maps the handle local id
+    /// produced by `lower_supervisor_child_get` (`Place::ActorHandle(N)`) to the
+    /// stable `(supervisor, slot)` reference it stands for.
+    ///
+    /// A supervised child handle is FUNGIBLE: it names a ROLE (the slot), not a
+    /// specific actor instance. The supervisor frees and replaces the underlying
+    /// actor on restart, so a snapshotted `*mut HewActor` dangles across a yield.
+    /// Rather than snapshot the resolved pointer, the handle carries this
+    /// reference and EACH send/ask re-resolves the current live child via
+    /// `hew_supervisor_child_get(sup, slot)` (the existing slot-table resolver,
+    /// race-free under `children_lock`). The reference never owns a child
+    /// pointer, so the stale-handle-across-yield UAF dissolves by construction
+    /// and a send to a not-live child fail-closes as a recoverable error rather
+    /// than a program-killing trap.
+    ///
+    /// Keyed by the handle local id because `let a = sup.w` binds `a` directly to
+    /// the same `Place::ActorHandle(N)` (no copy — see the `Let` arm), so both
+    /// `sup.w.tick()` and `let a = sup.w; …; a.tick()` resolve their receiver to
+    /// the same local and find the same ref here. Function-scoped (fresh per
+    /// builder via `Default`), matching `binding_locals`.
+    pub(crate) fungible_child_refs: HashMap<u32, FungibleChildRef>,
+    pub(crate) decisions: Vec<DecisionFact>,
+    /// NEW-6b: maps the id of a basic block that ends in `Terminator::SuspendingAsk`
+    /// to the constant deadline (nanoseconds) of an `await … | after d` combinator.
+    /// Populated by `lower_actor_ask` when the HIR `ActorAsk` carries a
+    /// `deadline_ns`; consumed by codegen to schedule
+    /// `hew_await_cancel_schedule_deadline_ms` against the suspend's cancel
+    /// registration. Carried as a side-table (not a carrier/Terminator field) so
+    /// the eight `Suspending*` carriers stay unchanged (codegen-locals shape).
+    pub(crate) await_deadline_ns: HashMap<u32, i64>,
+    /// Maps the id of a basic block that ends in one of the ten collapsed
+    /// suspension carriers to the carrier's distinguishing payload
+    /// ([`SuspendKind`]). Populated at each `finish_current_block(Suspending*)`
+    /// site for a PURE-`{resume, cleanup}` carrier; copied into
+    /// [`RawMirFunction::suspend_kinds`] at finalize. A side-table (not a
+    /// carrier/Terminator field) so the carriers collapse onto one
+    /// `Terminator::Suspend` while the emitted IR stays byte-identical.
+    pub(crate) suspend_kinds: HashMap<u32, SuspendKind>,
+    /// #2395 decision 2 — abandon-edge drops for a suspend's escape-poisoned
+    /// value that the generic `drops_for_exit` `BindingState` filter cannot see.
+    /// Today the sole member is the `SuspendKind::StreamSend` in-flight yield
+    /// value: it is escape-poisoned (so no scope-exit drop competes on the
+    /// resume path) and its resume-edge release is the pump's inline `after_send`
+    /// `Instr::Drop`. Keyed by the id of the block carrying the
+    /// `Terminator::Suspend` (the SAME key `suspend_kinds` uses). Appended to the
+    /// matching `ExitPath::Suspend` plan AFTER `enumerate_exits`, so the value is
+    /// freed exactly once on the destroy-while-parked edge — mutually exclusive
+    /// with the resume-edge drop (abandon XOR resume).
+    pub(crate) suspend_abandon_extra_drops: HashMap<u32, Vec<ElabDrop>>,
+    pub(crate) owned_locals: Vec<OwnedLocalEntry>,
+    /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
+    /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`
+    /// fires when that scope closes — INCLUDING when the scope is re-executed
+    /// by an enclosing loop. The function-exit LIFO drop only releases the
+    /// final content of each binding's slot, so a generator declared inside a
+    /// loop body (e.g. the `__hew_for_iter_*` binding of a `for x in gen()`
+    /// nested in a `while`) leaks one coro frame + heap companion per outer
+    /// iteration without this per-scope-exit release. Entries are removed from
+    /// `owned_locals` once
+    /// the scope-exit drop is emitted so the function-exit pass cannot
+    /// double-free (the drop also null-stores the slot as defence-in-depth).
+    pub(crate) scope_generator_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Sole-owner `for x in …` cursor (`VecIter<T>`) bindings tagged with the
+    /// for-in block scope they were declared in, so a per-scope-exit
+    /// `__hew_record_drop_inplace_VecIter$$T` (freeing the cursor's `vec` field
+    /// via `hew_vec_free`) fires when the scope closes — releasing the handle on
+    /// every outer iteration of an enclosing loop, the case the function-exit
+    /// LIFO drop misses. Mirrors `scope_generator_bindings`. Registered ONLY for
+    /// cursors that solely own their handle (rvalue / `to_vec()` / consumed
+    /// `into_iter()` source — see `vec_iter_let_cursor_owns_handle`); a `CowShare`
+    /// place source (`for x in v`) is NOT registered because the source binding
+    /// keeps its own drop and the cursor only borrows (freeing here would
+    /// double-free and dangle a post-loop `v` read). Entries are removed from
+    /// `owned_locals` once the scope-exit drop is emitted so the function-exit
+    /// pass cannot double-free; the inline `Instr::Drop` null-stores the slot as
+    /// defence in depth (`raii-null-after-move`).
+    pub(crate) scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// `Stream<T>` / `Receiver<T>` for-await cursor bindings tagged with the
+    /// block scope they were declared in, so a per-scope-exit close
+    /// (`hew_stream_close` / `hew_channel_receiver_close`) fires when that scope
+    /// closes. The `Generator`/`VecIter` analogue of #1949 for the general
+    /// `for await` consumption path: a `for await v in <stream>` desugars to a
+    /// `__hew_for_iter_*` cursor whose close was otherwise deferred to the
+    /// ENCLOSING FUNCTION's exit-LIFO plan, so `break`/early `return`/exhaustion
+    /// left the stream open — deadlocking any function that abandons a live
+    /// stream then does more work before returning (the producer stays parked
+    /// on backpressure, its peer never observed as closed). Closing at each
+    /// exit edge wakes the parked producer promptly. Mirrors
+    /// `scope_generator_bindings`: entries are dispositioned `ScopeReleased`
+    /// once the inline close is emitted so the function-exit LIFO cannot fire a
+    /// second close, and the inline `Instr::Drop` null-stores the slot
+    /// (`raii-null-after-move`; the runtime close symbols also null-guard).
+    pub(crate) scope_stream_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Active per-iteration generator-yielded heap value bindings, recorded
+    /// while lowering a `for v in gen()` (or `match g.next()`) consuming body so
+    /// a `break`/`continue` inside that body frees the current iteration's
+    /// yielded value before the back/exit edge — symmetric to
+    /// `emit_generator_drops_for_break_continue` freeing the generator HANDLE.
+    /// Without this, the break/continue ITERATION's yielded `Vec`/`string`/map
+    /// leaks: the body-end drop (`emit_generator_yield_binding_drop`) is emitted
+    /// AFTER the body lowers, so a `break`/`continue` jumps past it.
+    ///
+    /// Each entry is `(active_scopes_len_at_registration, Place, ResolvedTy,
+    /// drop_symbol)`. The `active_scopes` length captured when the value is
+    /// bound is compared against a break/continue site's `loop_scope_depth`: an
+    /// entry registered at depth >= the breaking loop's depth is in-loop and is
+    /// freed on that edge. Entries are CLONE-freed on the break/continue edge
+    /// (not removed) — the normal fall-through path's body-end drop still frees
+    /// the value for that mutually-exclusive CFG path, and the inline drop's
+    /// null-after-free makes a structurally-reachable second free a no-op
+    /// (`raii-null-after-move`; the runtime also null-guards). Drained when the
+    /// consuming body finishes lowering.
+    /// Per-iteration generator-yielded heap value bindings active during a
+    /// consuming body's lowering. Each entry is `(active_scopes_len, Place,
+    /// ResolvedTy, drop_fn, start_block_id, start_instr_len)`:
+    /// - `active_scopes_len`: depth marker used by break/continue at the
+    ///   matching loop scope to know which entries lie inside the breaking
+    ///   loop;
+    /// - `Place`/`ResolvedTy`/`drop_fn`: what to drop and how (a cow-heap
+    ///   `Release` symbol, or the composite `InPlace` thunk route);
+    /// - `start_block_id`/`start_instr_len`: the binding's site, used by
+    ///   `generator_yield_binding_drop_safe` to scan the body for an
+    ///   ownership-transferring escape (a `Move` of the binding's slot into
+    ///   another local, a store into a surviving aggregate). When the value
+    ///   escapes between its bind site and a break/continue point, the
+    ///   break/continue-edge drop MUST be skipped — the consumer (the
+    ///   move-destination) owns the release, so an unconditional break-edge
+    ///   drop would double-free the buffer at the move-out site. Without the
+    ///   scan, a `for await item in rx { carry = item; break; }` pattern
+    ///   reliably produces a use-after-free at `println(carry)` after the
+    ///   loop. (`scope_generator_bindings` for the generator HANDLE has no
+    ///   such case because handles do not get re-bound to another local
+    ///   mid-body — only their content is consumed via `next`.)
+    pub(crate) active_generator_yield_values: Vec<(
+        usize,
+        Place,
+        ResolvedTy,
+        crate::model::DropFnSpec,
+        u32,
+        usize,
+    )>,
+    /// Header-defined while-let scrutinee owners active while their body is
+    /// lowered. Break/continue edges consume these owners and record an
+    /// explicit edge drop; returns/panic/cancellation leave them Live so the
+    /// ordinary exit planner releases them.
+    pub(crate) active_iteration_owners: Vec<ActiveIterationOwner>,
+    /// Map from each MIR-bound HIR `BindingId` to the HIR `ScopeId` it was
+    /// declared in. Populated at every `MirStatement::Bind` push site (let
+    /// statements, match-arm payload bindings, function parameters, for-range
+    /// counter binds). Consulted by the elaborator (`enumerate_exits`) to
+    /// scope-filter back-edge `Goto` drops: a binding declared in a loop body's
+    /// scope must be released before the back-edge re-enters the body and
+    /// overwrites the slot with the next iteration's value.
+    ///
+    /// This is the missing piece that distinguishes per-iteration drops from
+    /// function-exit drops. Without scope tracking, the elaborator's existing
+    /// `drops_for_exit` (currently called only on `Return`/`Cancel`/`Panic`)
+    /// would either fire ALL live bindings on a back-edge (double-freeing
+    /// outer-scope values like the receiver itself) or fire NONE (the current
+    /// behaviour, which leaks the per-iteration heap-owning let-bindings).
+    /// Restricting the back-edge plan to bindings whose `binding_scope` matches
+    /// the loop body's scope (recorded in `loop_back_edge_blocks`) makes the
+    /// drop set per-iteration and CFG-correct: outer-scope bindings keep their
+    /// function-exit drop, inner-scope bindings get one drop per iteration.
+    pub(crate) binding_scope: HashMap<BindingId, ScopeId>,
+    /// Scope facts for transient payload-binding locals whose `binding_locals`
+    /// entry is restored after a match-like body lowers. The enum sole-owner
+    /// prover still needs their real body lifetime to distinguish an in-body
+    /// handoff from an escape into a surviving outer binding.
+    pub(crate) transient_local_scopes: HashMap<u32, ScopeId>,
+    /// gdb `-g` lexical-block scoping. Accumulates, per HIR `ScopeId` ever active
+    /// while lowering this function's body, the scope's parent `ScopeId` (the
+    /// scope directly below it on `active_scopes` when first observed) and the
+    /// source byte-extent `[min_start, max_end)` of every statement/instruction
+    /// span lowered under it. Updated incrementally in `push_instr` and
+    /// `record_binding_scope` (both fire while the scope's frame is on the stack
+    /// top) — so no instrumentation of the 11 `active_scopes.push` sites is
+    /// needed. Drained at finalize into `RawMirFunction.scope_table` for codegen
+    /// to build one `DILexicalBlock` per scope, parented per `parent`, with PC
+    /// ranges derived from byte-extent → line. A shadowed inner `let first` is
+    /// recorded under its own (inner) scope, so its variable DIE and the inner
+    /// block's instruction `DILocation`s land in a distinct lexical block — the
+    /// outer `first` no longer leaks into the inner breakpoint's frame.
+    pub(crate) scope_info: HashMap<ScopeId, ScopeInfoEntry>,
+    /// gdb `-g`: source start-byte of each `let`-binding's declaration, captured
+    /// at `record_binding_scope` from the live lowering cursor. Resolved to the
+    /// binding's slot in `resolve_local_names_from_binds` so each local DIE gets
+    /// its OWN declaration line — two same-named shadowed locals on different
+    /// lines stay distinct even before lexical-block scoping. Absent → codegen
+    /// falls back to the function-declaration line.
+    pub(crate) binding_decl_byte: HashMap<BindingId, u32>,
+    /// Map from each loop-body back-edge `Goto`'s emitting block id to the HIR
+    /// `ScopeId` of the loop body that closes there. Populated immediately
+    /// before each loop's body→header (or body→inc) `Terminator::Goto` is
+    /// emitted, in `lower_while`/`lower_while_let`/`lower_for_range`/
+    /// `lower_loop`. Consulted by `enumerate_exits` to populate the back-edge's
+    /// `DropPlan` with drops for bindings whose `binding_scope` matches this
+    /// scope — releasing exactly the per-iteration heap-owning let-bindings
+    /// (`Option<T>` recv results, owned strings/Vecs/maps bound inside the body)
+    /// before the next iteration overwrites their slots.
+    ///
+    /// The dataflow's `BindingState` filter in `drops_for_exit` automatically
+    /// excludes bindings that are `Consumed` (moved out) or `Uninit` (not yet
+    /// assigned on the first iteration's first reach), so escape via `break x`
+    /// / pass-by-value / first-iteration-uninit double-free corner cases are
+    /// handled by the existing dataflow without bespoke logic.
+    pub(crate) loop_back_edge_blocks: HashMap<u32, ScopeId>,
+    /// Goto-edge blocks that must release header-defined iteration owners.
+    /// Each binding is also marked consumed in the source block's statement
+    /// stream, so the target's later function exit cannot release it again.
+    pub(crate) iteration_owner_drop_blocks: HashMap<u32, Vec<BindingId>>,
+    /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
+    pub(crate) diagnostics: Vec<MirDiagnostic>,
+    /// Per-function de-duplication for W3.029 user-aggregate value-class
+    /// diagnostics. Keyed by the same bare/mangled record-layout key used by
+    /// `record_field_orders`.
+    pub(crate) unsupported_user_record_value_classes: HashSet<String>,
+    /// owned-string-record allow-list of expression sites that may classify a user record as
+    /// `CowValue` without opening the general user-record value-class surface.
+    /// Populated only for the RHS `StructInit` of a let-bound, monomorphic,
+    /// direct-string record and for direct field-access object `BindingRef`
+    /// sites against such bindings.
+    pub(crate) owned_string_record_value_sites: HashSet<SiteId>,
+    /// Let bindings whose value was introduced by the owned-string record-construction
+    /// gate. Field access and drop elaboration consult this binding-scoped proof
+    /// instead of re-opening arbitrary user-record reads.
+    pub(crate) owned_string_record_bindings: HashSet<BindingId>,
+    /// W5.016 owned-Vec-element allow-list of record/enum layout KEYS that are
+    /// used as the element of an owned-Vec anywhere in the current function. A
+    /// value of such a type classifies as `CowValue` (the runtime deep-clones
+    /// it in and drops it via the seeded per-type thunks) instead of tripping
+    /// the W3.029 wholesale `Unknown` reject. Pre-computed by `function_body`
+    /// before any `decide` runs (so it is robust to the `lower_value`-decides-
+    /// before-arm ordering). This is a bounded allow-list keyed on the exact
+    /// types codegen seeds thunks for — it does NOT open the general
+    /// user-record value-class surface (a record with a `Vec`/`HashMap` field
+    /// is never an owned-Vec element, so it never enters this set).
+    pub(crate) vec_owned_element_keys: HashSet<String>,
+    /// Per-named-type marker registry, cloned from the parent `HirModule` at
+    /// builder construction. Read by every `ValueClass::of_ty` call site in
+    /// MIR lowering so the marker is the single fact about whether a Named
+    /// type participates in the ownership-discipline surface.
+    pub(crate) type_classes: hew_hir::TypeClassTable,
+    /// Lambda-actor capture ledger collected across every
+    /// `HirExprKind::SpawnLambdaActor` literal in the function body.
+    /// Drained into `ElaboratedMirFunction.lambda_captures` at the
+    /// elaboration boundary; the structural fail-closed checker
+    /// `validate_lambda_captures` runs against the drained list.
+    pub(crate) lambda_captures: Vec<LambdaCapture>,
+    /// `Some(LambdaActorHandle)` while the producer is lowering the
+    /// value of `let <name> = actor |..| { .. }`. The `HirStmtKind::Let`
+    /// arm pre-allocates the actor's local and records the
+    /// `LambdaActorHandle(N)` here BEFORE lowering the value, so
+    /// `lower_spawn_lambda_actor` reuses the slot the binding already
+    /// owns instead of allocating a second local. The HIR forward-bind
+    /// already routed the binding's resolved name to the lambda's own
+    /// `BindingId`; this mirror at MIR keeps the binding's `Place`
+    /// alignment to that same handle so a Weak self-capture's slot
+    /// resolves correctly.
+    pub(crate) pending_lambda_actor_handle: Option<Place>,
+    /// Tuple decomposition map for runtime-call results that produce multiple
+    /// output Places (e.g. `hew_duplex_pair` → two `DuplexHandle` slots).
+    ///
+    /// Key: the `u32` local index of the "tuple proxy" `Place::Local(N)` that
+    /// `lower_runtime_call` returns for a multi-output call.  Value: the
+    /// ordered slice of output Places in source-declaration order (e.g.
+    /// `[DuplexHandle(N0), DuplexHandle(N1)]` for `duplex_pair`).
+    ///
+    /// `TupleIndex` lowering looks this map up when the tuple sub-expression
+    /// resolves to a proxy local: index `i` into the value vec to obtain the
+    /// concrete output Place without emitting additional instructions.
+    ///
+    /// SHIM(E2→E3): only `hew_duplex_pair` populates this map today.
+    /// WHY: MIR has no multi-return instruction; a proxy local threads the
+    ///   output Places through the existing single-`Place` `BindingRef` lookup.
+    /// WHEN obsolete: when a dedicated MIR multi-return or projection surface
+    ///   lands and `TupleIndex` lowering is rewritten to use it directly.
+    /// WHAT: replace with `Place::Projection { base, index }` variant or a
+    ///   `Terminator::Call`-style multi-dest encoding.
+    pub(crate) tuple_decomp: HashMap<u32, Vec<Place>>,
+    /// Declaration-order field descriptors for every `record` type in the module.
+    ///
+    /// Key: record type name (e.g. `"Point"`).
+    /// Value: `(field_name, field_ty)` pairs in declaration order.
+    ///
+    /// Used by `StructInit` and `FieldAccess` lowering to resolve a field
+    /// name to its 0-based `FieldOffset` and to look up the field type when
+    /// allocating intermediate places for functional-update base reads.
+    /// Built from `HirItem::Record` items in `lower_hir_module` and threaded
+    /// through to the builder.
+    ///
+    /// Tuple records have an empty field list by design (`HirRecordDecl.fields`
+    /// is empty for tuple records — their constructor is a `Call`, not a
+    /// `StructInit`). They will never be looked up here.
+    pub(crate) record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
+    pub(crate) actor_layouts: HashMap<String, ActorLayout>,
+    /// Supervisor-layout map, mirroring `actor_layouts` for supervisor types.
+    /// Used by `lower_spawn_actor` to route `spawn Sup` to the supervisor
+    /// bootstrap call and by `push_unknown_type_diagnostics` to recognise
+    /// supervisor names inside `LocalPid<Sup>` type args as known. Child
+    /// builders (closure shims, lambda-actor bodies, task-entry adapters)
+    /// inherit it via `child_builder_tables`.
+    pub(crate) supervisor_layout_map: HashMap<String, crate::model::SupervisorLayout>,
+    /// Set of recognised tagged-union type names — every machine type plus
+    /// the synthesised `<Machine>Event` companion enum for each. Used by
+    /// `push_unknown_type_diagnostics` to silence `UnknownType` on these
+    /// names and by `is_known_actor_runtime_ty` to classify their values
+    /// as `BitCopy` so the decision-map check accepts the site. Populated
+    /// from `module.machine_layouts` in `lower_hir_module` and threaded
+    /// through every Builder construction site.
+    pub(crate) machine_layout_names: HashSet<String>,
+    /// Monomorphised tagged-union enum layouts, cloned from the pipeline-wide
+    /// `enum_layouts` at builder construction. The drop elaborator consults
+    /// these through the single record-aware heap-ownership authority
+    /// `ty_owns_heap` (via `ty_owns_heap_mir`) to decide whether an
+    /// enum-composite binding owns a heap payload and so earns a tag-aware
+    /// `DropKind::EnumInPlace` scope-exit drop (W5.020).
+    /// Empty for builders constructed before layout collection (synthetic
+    /// test pipelines) — such bodies simply never elaborate the enum-in-place
+    /// drop, matching the pre-W5.020 leak-not-double-free posture.
+    pub(crate) enum_layouts: Vec<crate::model::EnumLayout>,
+    /// Names of every `#[opaque]` type declared in the module. Threaded into
+    /// `classify_state_field_full` so opaque handles (e.g. `json.Value`,
+    /// `cron.Expr`) appearing in owned-aggregate records classify as
+    /// `StateFieldCloneKind::OpaqueHandle` rather than `MissingRecordLayout`.
+    /// Populated from `module.items` in `lower_hir_module` and passed through
+    /// every Builder construction site that may reach
+    /// `owned_aggregate_record_field_kinds_for_key`.
+    pub(crate) opaque_handle_names: Vec<String>,
+    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
+    /// for every single-slot `#[resource] #[opaque]` handle (see
+    /// `resource_opaque_close_registry`). Threaded into
+    /// `classify_actor_state_fields_with_resource_handles` at the owned-aggregate
+    /// admission gate so a resource-bearing record field classifies as
+    /// `StateFieldCloneKind::Resource` (RAII drop spine) instead of the
+    /// no-op-drop `OpaqueHandle` (the W3.029 leak). Built from
+    /// `opaque_handle_names` + `type_classes` in the Builder ctor; `IrPipeline`
+    /// rebuilds the identical registry for codegen so the two never drift.
+    pub(crate) resource_opaque_close: Vec<(String, String)>,
+    pub(crate) current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
+    /// Names of every user-defined function declared in the module. Used by
+    /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
+    /// (→ `Terminator::Call`) from runtime-ABI callees (→
+    /// `Instr::CallRuntimeAbi`) and from indirect/closure callees
+    /// (→ `NotYetImplemented`). Name-string matching is the reliable
+    /// discriminator here because the HIR bridge does not yet emit
+    /// `ResolvedRef::Item` for function-item callees (see the SHIM comment
+    /// at the Call lowering arm). The set is populated once per module by
+    /// `lower_hir_module` before any function body is lowered, so forward
+    /// references (calling a function declared later in the file) are
+    /// handled correctly.
+    pub(crate) module_fn_names: HashSet<String>,
+    pub(crate) module_generic_fn_names: HashSet<String>,
+    /// Structured static-dispatch registry — `(declaring_trait,
+    /// self_type_name, method_name) → impl method symbol + impl type
+    /// params`. Built once from `HirItem::Impl` metadata in
+    /// `lower_program_with_*` and cloned into every builder so the
+    /// `CallTraitMethodStatic` arm can resolve through structured HIR
+    /// facts rather than reconstructing the impl symbol from a display
+    /// name. Empty for builders constructed via `Builder::default()`
+    /// (machine step shells, actor handler shims) — those bodies do
+    /// not host generic-bounded trait method calls.
+    #[allow(
+        dead_code,
+        reason = "prepared for structured dispatch; MIR uses type-name derivation in this slice"
+    )]
+    trait_impl_index:
+        HashMap<hew_hir::dispatch::TraitImplKey, hew_hir::dispatch::TraitImplMethodEntry>,
+    /// Substitution map from origin-fn type-parameter symbols to
+    /// concrete `ResolvedTy`s, populated only when this Builder is
+    /// lowering a generic function under a specific monomorphisation.
+    /// Empty for non-generic fn bodies.
+    ///
+    /// Every type observed during body lowering is substituted via
+    /// `subst_ty` before reaching the backend Instr stream so symbolic
+    /// type-parameter `Named` types never escape into MIR/codegen.
+    pub(crate) subst: HashMap<String, ResolvedTy>,
+    /// Per-call-site `Vec<ResolvedTy>` recorded by HIR lowering for
+    /// generic top-level user-fn callees. Cloned from
+    /// `HirModule.call_site_type_args`. The Call lowering arm
+    /// substitutes these via `subst_ty` and dispatches to the
+    /// per-monomorphisation mangled symbol.
+    pub(crate) call_site_type_args: HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    /// Per-concrete-element `Vec<T>` runtime-ABI verdict table, cloned from
+    /// `HirModule.vec_generic_element_abi`. The `ResolvedImplCall` arm consults
+    /// it to re-resolve an element-typed `Vec<T>` method (`push`/`get`/`set`/
+    /// `pop`) whose checker dispatch left a `hew_vec_*_FAMILY` placeholder
+    /// because the element was a type parameter: the substituted concrete
+    /// element is looked up here per monomorphisation and `(method, token)` is
+    /// mapped to the concrete runtime symbol. Empty for lowering contexts that
+    /// never observe a polymorphic element (the placeholder then fails closed).
+    pub(crate) vec_generic_element_abi: HashMap<hew_types::Ty, hew_types::VecElementToken>,
+    /// Per-`FieldAccess` site-id → `ChildSlot` side-table, populated by HIR
+    /// lowering from the checker's `supervisor_child_slots`. The `FieldAccess`
+    /// arm checks this map BEFORE the `record_field_orders` lookup so that
+    /// supervisor-typed LHS is intercepted and routed to
+    /// `hew_supervisor_child_get` rather than a record-field load.
+    ///
+    /// Cloned from `HirModule.supervisor_child_slots`. Empty for functions
+    /// (actor-handler shims, closure shims) whose bodies cannot contain
+    /// supervisor field accesses — the empty map causes the intercept arm to
+    /// skip immediately, adding zero overhead for the common case.
+    pub(crate) supervisor_child_slots: HashMap<hew_hir::SiteId, hew_types::ChildSlot>,
+    /// Resolved static-pool accessor sites (`sup.pool[i]` / `.get(i)` /
+    /// `.len()`), cloned from `HirModule.pool_accessor_sites` and keyed by the
+    /// `SiteId` of the `Index`/`MethodCall` expression. The lowering arms consult
+    /// this to emit the pool ABI call instead of the generic container/method
+    /// path. Empty for shim functions.
+    pub(crate) pool_accessor_sites: HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
+    pub(crate) current_task_scope: Option<Place>,
+    pub(crate) current_function_symbol: String,
+    pub(crate) current_function_call_conv: crate::model::FunctionCallConv,
+    /// True only on a source generator shell builder. Its fn-typed formal
+    /// parameters are admitted into the shell's generator env because every
+    /// standalone `gen fn` call crosses `lower_direct_call`'s provenance gate
+    /// and every `receive gen fn` call crosses `lower_actor_gen_stream`'s
+    /// equivalent gate. Anonymous `gen {}` blocks in ordinary functions have
+    /// no such call boundary and reject unproven fn-valued captures at env
+    /// materialisation.
+    pub(crate) generator_shell_call_gate: Option<GeneratorShellCallGate>,
+    pub(crate) task_entry_adapter_symbols: TaskEntryAdapterSymbols,
+    pub(crate) next_closure_id: u32,
+    pub(crate) generated_functions: Vec<LoweredFunction>,
+    pub(crate) closure_record_layouts: Vec<crate::model::RecordLayout>,
+    pub(crate) capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
+    /// Body-side set of capture bindings whose env field holds a WEAK
+    /// lambda-actor handle (`CaptureKind::Weak` — the forward-bound self
+    /// reference, §5.9 ratification 2). `lower_lambda_actor_call` consults
+    /// this to dispatch the self-send through `hew_lambda_actor_weak_send`
+    /// (the weak handle's ABI) instead of `hew_lambda_actor_send`.
+    pub(crate) weak_lambda_capture_bindings: std::collections::HashSet<BindingId>,
+    /// Base locals (the `u32` slot index from `Place::Local`) of pattern
+    /// bindings introduced by a non-BitCopy `match` record/tuple destructure
+    /// (`lower_match_project`) **whose scrutinee was consume-marked at the
+    /// destructure site**. Consulted by `derive_cow_sole_owner` to SUPPRESS
+    /// the projection-alias taint seed for these binders.
+    ///
+    /// Why this exists. The pattern binder is loaded via `RecordFieldLoad` /
+    /// `TupleFieldLoad`, both of which `projection_alias_dest` seeds as
+    /// tainted (interior alias of the parent aggregate). Tainted
+    /// leaf-`string`/`Vec`/`bytes` locals are excluded from
+    /// `cow_drop_allowed`, so `build_lifo_drops` silently skips their drop
+    /// (the leaf-CoW arm tolerates a missing place rather than panicking).
+    /// The taint is correct when the parent aggregate's composite drop still
+    /// fires (otherwise the same buffer frees twice), but a consume-marked
+    /// scrutinee emits a follow-up `Use { intent: Consume }` for the
+    /// `BindingRef`, so the parent's drop is suppressed by the dataflow
+    /// exit-state filter. With the parent consumed, the binder is the SOLE
+    /// owner of its loaded payload; the taint would otherwise become a leak.
+    ///
+    /// Membership is restricted to the binders whose source we actually
+    /// consume — the `match_project_scrutinee_reject` gate guarantees this is
+    /// always a non-captured `BindingRef`. Other destructure shapes
+    /// (let-pattern, enum-tag, while-let) keep their existing taint
+    /// behaviour. The dataflow `Consumed`/`MaybeConsumed` exit-state
+    /// post-filter at the `derive_cow_sole_owner` call site is still the
+    /// final authority: a binder consumed by `=> y` is removed from the
+    /// allow-set, so the drop won't double-free a moved-out payload.
+    pub(crate) match_project_consumed_binder_locals: HashSet<u32>,
+    /// Bindings that hold a closure value whose resolved invoke-shim carries a
+    /// suspend terminator (the suspendable-callee discriminator). Populated by
+    /// the `Let` handler from the shim's lowered MIR carriers — the SAME
+    /// structural fact codegen's `is_coroutine` reads — so a call to such a
+    /// binding lowers to `Terminator::SuspendingCallClosure` (the driver) rather
+    /// than the direct `Instr::CallClosure`. A non-suspending closure is never
+    /// inserted, keeping it on the direct path (no spurious coroutine driving).
+    pub(crate) suspending_closure_bindings: HashSet<BindingId>,
+    /// `let` bindings whose initializer failed to lower (returned `None`) AND
+    /// emitted at least one diagnostic of its own. A later `BindingRef` to such
+    /// a binding has no `binding_locals` Place, which would otherwise raise a
+    /// follow-on `UnresolvedPlace` ("could not resolve binding `u`") — pure
+    /// cascade noise stacked on the root error the user must actually fix (e.g.
+    /// a fail-closed functional-update base/carry reject on `let u = { ..base }`).
+    /// The `BindingRef` resolver consults this set and returns `None` silently
+    /// for a poisoned binding, so only the root diagnostic surfaces. Guarded on
+    /// "a diagnostic was emitted" so a genuinely-unresolved binding (a real bug
+    /// with no prior error) still reports.
+    pub(crate) poisoned_let_bindings: HashSet<BindingId>,
+    /// Generator/`gen fn` capture bindings the enclosing `lower_gen_block`
+    /// rejected with a root `NotYetImplemented` (an inadmissible opaque/owned
+    /// value that cannot be admitted into the generator's flat-copied env
+    /// record). The synthetic body still names the capture as a free variable,
+    /// but it was never
+    /// materialised into the env record — so its body-side `BindingRef` would
+    /// otherwise stack two cascade secondaries on the root: a
+    /// `MirStatement::Use` of an un-`Bind`-ed binding (→ dataflow
+    /// `InitialisedBeforeUse`) and an `UnresolvedPlace` (no backend slot). The
+    /// `BindingRef` resolver consults this set and returns `None` silently for a
+    /// poisoned capture, so only the actionable root rejection surfaces. Scoped
+    /// to the body sub-builder: it carries only the specific failing capture
+    /// ids, never the enclosing frame's bindings, and the body's own `let`
+    /// bindings have distinct ids so they are unaffected.
+    pub(crate) poisoned_capture_ids: HashSet<BindingId>,
+    /// Transient: set by `lower_closure_literal` to the just-lowered closure's
+    /// body-suspends verdict (derived from its shim's MIR carriers) so the `Let`
+    /// handler can attribute it to the bound binding. Reset around each closure
+    /// lowering; only read immediately after lowering a `HirExprKind::Closure`.
+    pub(crate) pending_closure_literal_suspends: Option<bool>,
+    /// Transient: set by `lower_closure_literal` to `true` when the
+    /// just-lowered closure literal's escape class selected the `Heap`
+    /// allocation strategy (its pair owns — or, capture-free, may own
+    /// nothing behind — a heap env box). Read by the `Let` handler to admit
+    /// the bound pair into `closure_pair_owned`. Same reset discipline as
+    /// `pending_closure_literal_suspends`.
+    pub(crate) pending_closure_literal_heap: Option<bool>,
+    /// Bindings that own an escaping-closure pair's env-box free obligation
+    /// (the sole-owner affine model). Admitted at the introducing
+    /// `HirStmtKind::Let` for three RHS shapes only: a closure literal whose
+    /// strategy was `Heap`, a fn-typed call result (the producer's pair is
+    /// always heap-or-null by construction), and a rebind of an
+    /// already-admitted binding (ownership transfers; the source is marked
+    /// moved). Every other producing shape leaks rather than risks freeing
+    /// a stack env (`boundary-fail-closed`: over-exclude, never re-admit).
+    /// `elaborate` narrows this set further (returned pairs, captured
+    /// pairs, consumed exits) into `closure_pair_drop_allowed`.
+    pub(crate) closure_pair_owned: HashSet<BindingId>,
+    /// Bindings holding a named-function pair (`let f = double;`) — the pair's
+    /// `env_ptr` is null by construction (the named-fn shim never reads it),
+    /// so the pair is freely byte-copyable: no env exists to double-free.
+    /// These bindings are exempt from the closure-pair ingress discipline
+    /// (`enforce_closure_pair_ingress`). Populated at the introducing `Let`
+    /// for an `Item`-resolved fn reference RHS and propagated through
+    /// rebinds of an already-exempt binding.
+    pub(crate) closure_pair_null_env: HashSet<BindingId>,
+    /// Fn-typed (`ty_is_closure_pair`) bindings whose pair may carry a NON-NULL
+    /// heap closure-env word even when its static type is a plain `fn(..)`.
+    /// Sources are:
+    ///   * fn-typed parameters (the caller may pass a capturing closure);
+    ///   * fn-typed call results (the callee may return one);
+    ///   * capturing-closure literals structurally unified with `fn(..)`;
+    ///   * copies/merges/reassignments of any binding already in this set.
+    ///
+    /// Let/reassignment provenance is collected flow-INSENSITIVELY by the
+    /// `collect_vec_owned_element_keys_from_block` pre-pass so a loop back-edge
+    /// assignment taints the binding before any call site lowers. Parameters
+    /// are seeded by `lower_params` before that pre-pass runs.
+    ///
+    /// Consulted by generator call-argument gates, anonymous-generator env
+    /// materialisation, and child-builder provenance inheritance. Deliberately
+    /// NOT a drop ledger and NOT consulted by closure-pair ingress/drop
+    /// machinery: taint answers "may this `fn(..)` value hide a heap env?",
+    /// never "who frees the env box".
+    pub(crate) closure_pair_env_may_be_nonnull: HashSet<BindingId>,
+    /// Closure-pair bindings whose ownership has already left them via a
+    /// rebind (`ClosurePairRhs::TransferFrom`). The dataflow checker flags
+    /// any later use of these on its own: the rebind's RHS read carries
+    /// HIR's `IntentKind::Consume`, so the source binding is `Consumed` in
+    /// the lattice and every subsequent read is `UseAfterConsume`. The
+    /// ingress gate consults this set only to avoid stacking a second
+    /// `ClosurePairBorrowedStore` diagnostic on a use the move checker
+    /// already rejects.
+    pub(crate) closure_pair_moved: HashSet<BindingId>,
+    /// Fn-typed (`ty_is_closure_pair`) PARAMETER bindings whose closure env is
+    /// provably heap-allocated, and which may therefore transfer env ownership
+    /// into an owning container (a record field, Vec element, tuple, or
+    /// machine payload) when stored — the same sole-owner transfer the closure-
+    /// *literal* and fn-call-*result* ingress paths already perform.
+    ///
+    /// SOUNDNESS PREMISE (the one fact this whole set rests on): a closure that
+    /// reaches a parameter has crossed a call boundary as an argument, so the
+    /// checker classified it `AnonContext::PassedToHigherOrder` →
+    /// `ClosureEscapeKind::Escapes` → `AllocationStrategy::Heap`
+    /// (`hew-types/src/check/mod.rs`; `hew-mir/src/closure_env.rs`). Its env was
+    /// heap-boxed by the CALLER before the call, never a stack/frame address.
+    /// So the conservative "a param pair may carry a stack env, freeing one
+    /// would over-free a frame address" assumption that keeps a bare parameter
+    /// in the `Borrowed` (refuse) class does NOT hold for a fn-typed param — it
+    /// is ownable exactly like a fn-typed call result. If a future change ever
+    /// admits a `Local`/stack-env closure into a parameter position, this
+    /// premise breaks; the field-store would over-free. The leak oracle
+    /// (`hew-cli/tests/closure_in_struct_leak_oracle.rs`) pins it with a
+    /// poisoned-allocator floor-equality / no-double-free check.
+    ///
+    /// This set drives ONLY the ingress classification in
+    /// `classify_closure_pair_ingress` (`Borrowed` → `OwnedBinding`). It is
+    /// deliberately DISJOINT from `closure_pair_owned`: it is NOT a drop
+    /// ledger. Merging it into `closure_pair_owned` would feed
+    /// `derive_closure_pair_drop_allowed` a param that is read only by
+    /// `CallClosure` (the benign callee read), which the aliasing scan does not
+    /// mark, so an UNSTORED-but-invoked param would gain an erroneous scope-exit
+    /// drop — a double-free of an env the param never owned. Two sets, two
+    /// purposes (ingress classification vs `Let`-binding drop admission).
+    pub(crate) closure_pair_param_owned: HashSet<BindingId>,
+    /// Reserved context for the later transition-body lowering slice. When
+    /// set, the `BindingId` identifies the step function's `self` parameter
+    /// slot so `HirExprKind::MachineFieldAccess` can address payload reads
+    /// via `Place::MachineVariant`.
+    ///
+    /// `None` outside a machine step body. This is the MIR analogue of the
+    /// HIR-side `current_machine_self_binding` / `current_machine_source_state`
+    /// context — HIR already resolves the field's `state_idx` and `field_idx`
+    /// at lowering time, so MIR only needs the addressing binding.
+    ///
+    /// Slice 4a's step shell leaves this unset because transition bodies are
+    /// not lowered. Slice 4b sets it while walking transition bodies; Slice
+    /// 4c reads the emitted `Place::MachineVariant` places.
+    pub(crate) current_machine_self_binding: Option<BindingId>,
+    pub(crate) current_machine_event_binding: Option<BindingId>,
+    /// Stable machine-type id (`machine_emit_type_id`) for the machine step
+    /// function currently being lowered. Set alongside
+    /// `current_machine_self_binding` / `current_machine_event_binding` by
+    /// `emit_machine_step_transition_return` (transition bodies) and
+    /// `lower_machine_lifecycle_block` (HIR admits `emit` inside `entry {}`
+    /// / `exit {}` too — both call sites must set this so
+    /// `HirExprKind::MachineEmit` can stamp `Instr::MachineEmitPlaceholder`'s
+    /// `machine_emit_id` regardless of which machine body context it
+    /// appears in). `None` outside a machine step/lifecycle body.
+    pub(crate) current_machine_emit_type_id: Option<u64>,
+    /// Set to `true` inside a gen-block body builder to enable
+    /// `HirExprKind::Yield` → `Terminator::Yield` construction.
+    /// The parent builder's field stays `false` (the `Default`).
+    /// A `Yield` node encountered when `in_gen_body` is `false` is a
+    /// checker invariant violation (HIR should never surface `yield`
+    /// outside a gen block) — fail-closed with `UnsupportedNode`.
+    /// S3b will extend this context with the cross-yield live-set
+    /// accumulator once liveness analysis lands.
+    pub(crate) in_gen_body: bool,
+    /// Set on the SHELL builder of a `receive gen fn` handler (a `HirFn`
+    /// with `is_generator: true` lowered under `FunctionCallConv::ActorHandler`
+    /// — derived in `lower_function`, never threaded as a separate parameter).
+    /// When present, the `HirExprKind::GenBlock` dispatch arm in `lower_value`
+    /// reshapes the shell into a stream-producer PUMP instead of returning the
+    /// freshly-constructed generator handle: `gen_place` is driven with
+    /// `Instr::GeneratorNext` in a loop, each yielded value is forwarded via
+    /// `Terminator::Suspend`/`SuspendKind::StreamSend { sink, value }`, and a
+    /// `None` result closes `sink` and falls off the end (Unit return). `None`
+    /// for every other function, including a standalone `gen fn`/`gen {}`
+    /// shell (`Default` call conv), which still returns the generator handle
+    /// to its caller unchanged.
+    pub(crate) stream_producer_pump: Option<StreamProducerPumpCtx>,
+    /// Per-scope deferred bodies collected during statement lowering.
+    /// Key: the `ScopeId` of the HIR scope that owns the defer.
+    /// Value: deferred body expressions in registration order (FIFO).
+    /// `emit_pending_defers(scope_id)` drains and lowers them in LIFO
+    /// (reverse registration) order at every exit from that scope.
+    ///
+    /// Q205-B: bindings inside defer bodies resolve by lexical reference
+    /// at execution time — mutable vars observe their final value;
+    /// moved/consumed bindings are rejected by the move-checker at the
+    /// materialization site.
+    pub(crate) pending_defers: HashMap<ScopeId, Vec<HirExpr>>,
+    /// W3.031 Stage 1: per-binding `TraitObjectStorage` ledger for
+    /// `dyn Trait` locals. Populated at the binding's introducing
+    /// `HirStmtKind::Let` statement when the resolved type is
+    /// `ResolvedTy::TraitObject` — `FrameOwned` for coercion-site
+    /// RHS (`HirExprKind::CoerceToDynTrait`) and direct binding
+    /// rebinds, `HeapBoxed` for call-result RHS (`HirExprKind::Call`,
+    /// `CallTraitMethodStatic`, `CallDynMethod`) returning `dyn Trait`
+    /// — and consumed by `build_lifo_drops` to construct the
+    /// `DropKind::TraitObject { storage }` discriminator.
+    ///
+    /// Keys are the `BindingId` of the owning `let`-binding (the same
+    /// key used by `binding_locals` / `owned_locals`). A binding that
+    /// the classifier could not resolve to one of the two storage
+    /// shapes emits a `MirDiagnosticKind::TraitObjectStorageUndetermined`
+    /// diagnostic and is not added to `owned_locals` — drop elaboration
+    /// then skips the binding, and the pipeline aborts at the MIR
+    /// boundary instead of fabricating a default storage.
+    pub(crate) dyn_trait_storage: HashMap<BindingId, TraitObjectStorage>,
+    /// Path-sensitive drop-flag for each non-idempotent user `#[resource]`
+    /// binding (#1933 / #1941). Keyed by the resource's `BindingId` (same
+    /// key as `binding_locals` / `owned_locals`); the value is a fresh
+    /// `i64` `Place::Local` initialised to 0 at the binding's introduction
+    /// and set to 1 at each `IntentKind::Consume` use site.
+    ///
+    /// Populated ONLY for bindings that satisfy `resource_needs_drop_flag`
+    /// (a `DropKind::Resource` whose ritual is a `DropFnSpec::UserClose`).
+    /// A binding present here is KEPT in `owned_locals` across its consume
+    /// (we do NOT call `mark_binding_moved` for it), so the per-exit
+    /// `drops_for_exit` dataflow filter narrows the drop per control-flow
+    /// path and codegen gates the surviving close on `flag == 0` — exactly
+    /// once on a `MaybeConsumed` join. A user resource absent here (no flag
+    /// allocated) falls back to the legacy path-insensitive
+    /// `mark_binding_moved` removal: fail-closed to no-double-close (it may
+    /// leak on a not-consumed branch, the pre-#1933 posture, but never
+    /// double-frees the non-idempotent close).
+    pub(crate) resource_drop_flags: HashMap<BindingId, Place>,
+    /// #2301 (extends #53): runtime drop-flags for an owned
+    /// `var`-local that is BOTH genuinely consumed (`intent=Consume`, a
+    /// move-out such as `let m = r`) on one control-flow path AND reassigned
+    /// (`r = <rhs>`) on another. The path-insensitive `owned_locals` removal at
+    /// the consume would otherwise make the overwrite-release static gate skip
+    /// the release on the NON-consuming path, leaking the still-owned old value
+    /// (~1 block/iteration in a loop). The flag is zero-init at the binding's
+    /// `let` (so it dominates every consume and overwrite, including loop
+    /// back-edges), set to 1 at each `mark_binding_moved`, gates the
+    /// overwrite-release on `flag == 0`, and is reset to 0 after the overwrite
+    /// stores a fresh value. Scope-exit drops are unaffected: owned
+    /// record/string locals are released through the `elaborate` allow-set
+    /// prover (`CowValue` arm), not `owned_locals` / this flag.
+    pub(crate) overwrite_guard_flags: HashMap<BindingId, Place>,
+    /// #2523: provenance for projected enum/machine payload binders, keyed on
+    /// the binder's `BindingId`. Populated in `lower_match_enum_tag`'s binder
+    /// loop for `MachineVariant`/`EnumVariant` sources; consulted at the
+    /// binder's `Consume`-intent move-out to emit `NeutralizePayloadSlot` for
+    /// the source slot and `AggregateAlias` for the scrutinee.
+    pub(crate) projected_payload_provenance: HashMap<BindingId, ProjectedPayloadProvenance>,
+    /// Set while lowering a match-arm guard expression that
+    /// can fall through to a later arm. A projected heap-payload binder consumed
+    /// with this flag set is rejected fail-closed (`GuardedConsume`): its
+    /// `NeutralizePayloadSlot` would run before the guard outcome is known, so a
+    /// false guard would fall through to a later arm re-destructuring the
+    /// now-null payload (null-fault / abort). Borrow-only guards never reach the
+    /// consume hook and are unaffected. Saved/restored around each guard lowering
+    /// so nested guards compose.
+    pub(crate) in_fallthrough_match_guard: bool,
+    /// #2418: runtime drop-flags for an owned collection local (owned-element
+    /// `Vec`, plain `Vec`, `HashMap`/`HashSet` handle) that the pre-pass saw
+    /// genuinely consumed (`intent=Consume`, a move-out such as `let ys = xs`)
+    /// somewhere in the body. The legacy path-insensitive `mark_binding_moved`
+    /// retraction at the consume site removed the binding from the scope-exit
+    /// set entirely, so a binding moved out on only SOME control-flow paths
+    /// (`MaybeConsumed` at the converging join) leaked on the not-moved path —
+    /// the whole-value `Move` lowering does NOT null the source slot, so the
+    /// moved path cannot be discriminated statically at a shared exit.
+    ///
+    /// A flagged binding is KEPT in `owned_locals` at its consume sites
+    /// (mirroring the #1933 `resource_drop_flags` discipline): the flag is an
+    /// `i64` local zero-initialised at the binding's `let` (dominating every
+    /// consume, including loop back-edges) and set to 1 at each consume-use.
+    /// `build_lifo_drops` attaches it as the [`ElabDrop::guard`], so codegen
+    /// gates the release on `flag == 0` — exactly once on a `MaybeConsumed`
+    /// join: skipped where the value moved to a new owner, fired where it is
+    /// still owned. The per-exit `drops_for_exit` dataflow filter still
+    /// excludes exits where the binding is `Consumed` on every reaching path.
+    ///
+    /// Mutually exclusive with `overwrite_guard_flags` (a mutable binding both
+    /// consumed and reassigned keeps the #2301 overwrite path and today's
+    /// scope-exit retraction — fail-closed, no flag interplay). Bindings
+    /// outside the collection classes keep the legacy retraction (leak on the
+    /// not-moved path, never double-free).
+    pub(crate) collection_drop_flags: HashMap<BindingId, Place>,
+    /// #2301 per-function pre-pass scratch: `BindingId`s used with
+    /// `intent=Consume` anywhere in the body. Populated by
+    /// `collect_vec_owned_element_keys_from_expr` before lowering; intersected
+    /// with `prepass_reassigned_bindings` + `owned_locals` membership to decide
+    /// which bindings get an `overwrite_guard_flags` entry.
+    pub(crate) prepass_consumed_bindings: HashSet<BindingId>,
+    /// #2418 per-function pre-pass scratch: `BindingId`s with a
+    /// `intent=Consume` use in any position OTHER than a direct `let`-rebind
+    /// initializer (`let y = xs;`) — a by-value call argument, an
+    /// aggregate-literal field (`Holder { items: xs }`), a `return xs`, an
+    /// assignment RHS, a match scrutinee, and every nested-expression read.
+    /// A binding in this set never gets a `collection_drop_flags` entry:
+    /// those consume shapes are owning-sink ESCAPES to the allow-set provers,
+    /// and keeping the source registered (flagged) would leave it a candidate
+    /// whose escape taints its whole whole-value alias group — excluding a
+    /// destination the unflagged (retract-at-consume) path admits. Fail
+    /// closed to the legacy retraction instead: behaviour byte-identical to
+    /// the pre-flag compiler for every non-rebind consume shape.
+    pub(crate) prepass_nonrebind_consumed: HashSet<BindingId>,
+    /// #2301 per-function pre-pass scratch: `BindingId`s that are the target of an
+    /// `Assign` (`r = <rhs>`) anywhere in the body.
+    pub(crate) prepass_reassigned_bindings: HashSet<BindingId>,
+    /// Stack of active scope IDs in nesting order (outermost at index 0,
+    /// innermost at the end). Pushed when entering a `Block` expression or
+    /// `function_body`; popped on exit. Read by `emit_defers_for_return` to
+    /// walk the full scope chain on early-return paths, emitting defers for
+    /// every enclosing scope that has registered bodies.
+    pub(crate) active_scopes: Vec<ScopeId>,
+    /// Stack of enclosing loop control targets, innermost at the end.
+    ///
+    /// `continue_target_bb` is the block a `continue` jumps to (the header for
+    /// `while`/`while let`, the increment block for `for`, the body for bare
+    /// `loop`). `exit_bb` is the block a `break` jumps to (always allocated,
+    /// even for a `loop` with no `break`, so the post-loop cursor has a home).
+    /// `scopes_depth_at_entry` is `active_scopes.len()` captured *before* the
+    /// loop body scope is pushed; `emit_defers_for_break_continue` flushes
+    /// `active_scopes[scopes_depth_at_entry..]` so break/continue run the
+    /// defers of every scope opened inside the loop body (LIFO) without
+    /// touching the loop's enclosing scopes.
+    ///
+    /// Pushed when entering a loop body, popped after the body walk. Labeled
+    /// break/continue scans this stack from inner to outer and uses the matched
+    /// frame's `scope_depth` as the bounded defer/drop flush window. Unknown
+    /// labels are a type-checker error; MIR still reports a diagnostic instead
+    /// of panicking if malformed HIR reaches this boundary.
+    pub(crate) loop_stack: Vec<LoopFrame>,
+    /// Checker's per-send-site alias classification, keyed by the source span
+    /// of each actor-send argument expression (same key as
+    /// `TypeCheckOutput::actor_send_aliasing`). Populated by the caller
+    /// (`lower_function` / `lower_hir_module_with_facts`); empty for the
+    /// backward-compat `lower_hir_module` path.
+    ///
+    /// `lower_actor_send` looks up `SpanKey::from(&args[0].span)` here and
+    /// stamps the resulting `SendAliasMode` onto `Terminator::Send.alias_mode`.
+    /// **Missing entry → `SendAliasMode::Copy`** (fail-closed).
+    ///
+    /// LESSONS: `serializer-fail-closed` (P0) — default MUST be Copy.
+    /// `copy ⊥ sendable` (P0) — derived SOLELY from this table, never from
+    /// a `Copy`-marker check.
+    pub(crate) actor_send_aliasing: HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    /// Stage 2 (gdb `-g`): byte-offset span `(start, end)` of the HIR
+    /// statement / tail expression currently being lowered. Set at each
+    /// statement boundary (`stmt`) and at the function tail (`function_body`);
+    /// read by `push_instr` to attribute every emitted `Instr` to its
+    /// originating source line. `None` outside any statement (synthesised
+    /// prologue/epilogue work) — those instructions get NO side-table entry
+    /// and inherit the nearest enclosing `DILocation` at codegen (fail-closed:
+    /// a real but coarser line, never a fabricated one).
+    pub(crate) current_span: Option<(u32, u32)>,
+    /// Stage 2 (gdb `-g`): per-instruction source spans for THIS function,
+    /// keyed by `(block_id, instruction_index)` and valued by the enclosing
+    /// statement/expression byte span. Populated incrementally by `push_instr`
+    /// (the index is the live `instructions.len()` before the push — the
+    /// instruction's final position in its block, because the per-block buffer
+    /// is moved out whole by `finish_current_block` / `finalize_blocks`).
+    /// Transferred into `RawMirFunction::instr_spans` at function finalisation.
+    pub(crate) instr_spans: BTreeMap<(u32, u32), (u32, u32)>,
+    /// Target pointer width (32 on wasm32, 64 native), threaded from the
+    /// compile target so the `isize`/`usize` div/rem signed-MIN and shift-range
+    /// trap guards emit the correct per-target constant. Derived from
+    /// `TargetArch`, never a host `cfg!` (a cross-compile would otherwise emit
+    /// host-width guards — a fail-open hole). Defaults to `Bits64` (every native
+    /// target); the host-defaulting `lower_hir_module` wrapper keeps the default.
+    pub(crate) pointer_width: PointerWidth,
+}
+
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -3498,1007 +4499,6 @@ struct ProjectedScrutinee {
     binding: BindingId,
     name: String,
     ty: ResolvedTy,
-}
-
-#[derive(Debug, Default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "Builder is the MIR-lowering state accumulator; each bool is an \
-              independent, orthogonal lowering-mode flag (e.g. the \
-              fallthrough-match-guard scope) that distinct call sites set and \
-              query on their own — collapsing them into an enum would force a \
-              single active-mode invariant the lowering does not have"
-)]
-struct Builder {
-    /// Checker-authority stream for the *current* basic block. Drained
-    /// into a `BasicBlock` when the cursor moves (`finish_current_block`)
-    /// or at function-body finalisation. Once a block is sealed it lives
-    /// in `pending_blocks` until the function's body walk completes.
-    pub(crate) statements: Vec<MirStatement>,
-    /// Backend-authority stream for the *current* basic block. Populated
-    /// in lock-step with `statements` by `lower_value` so the checker
-    /// and the emitter agree on what each `SiteId` resolves to. Drained
-    /// at the same cursor-move site as `statements`.
-    pub(crate) instructions: Vec<Instr>,
-    /// Completed basic blocks in construction order. Block id `0` is the
-    /// function's entry block; subsequent ids are monotone in allocation
-    /// order. The currently-being-built block (`current_block_id` /
-    /// `statements` / `instructions`) is appended at function-body
-    /// finalisation. Slice 1 leaves this empty for every function (the
-    /// cursor never moves under the CFG-flat lowering); Slice 2's `If`
-    /// lowering is the first writer.
-    pub(crate) pending_blocks: Vec<BasicBlock>,
-    /// Monotone counter for fresh `BasicBlock` ids. `alloc_block` returns
-    /// the next id without switching the cursor — the caller is
-    /// responsible for `finish_current_block(...)` + `start_block(id)`
-    /// at the right point in the lowering sequence.
-    pub(crate) next_block_id: u32,
-    /// Id of the block currently receiving `statements` / `instructions`.
-    /// Initialised to `0` (the entry block). Updated by
-    /// `start_block(id)` after a `finish_current_block(...)` seals the
-    /// previous block into `pending_blocks`.
-    pub(crate) current_block_id: u32,
-    /// Set when the most recent `finish_current_block` was followed by
-    /// `start_block` for a block that has no predecessor in the CFG —
-    /// typically the synthetic continuation block opened after an
-    /// explicit early `return` seals its block with `Terminator::Return`.
-    /// `finalize_blocks` drops this block from the function's CFG when
-    /// it is observed to be empty, so the dead-end does not appear as
-    /// an additional `Return` exit in `drop_plans`.
-    pub(crate) cursor_unreachable: bool,
-    /// Set alongside `cursor_unreachable` ONLY when the current dead cursor
-    /// was opened as the `next` of an already-sealed `Terminator::Call`
-    /// (a `Never`-typed callee's continuation) rather than from an
-    /// explicit `return`'s own seal. `finalize_blocks`'s empty-dead-cursor
-    /// drop is safe for the `return` case because nothing else references
-    /// that block's id (`Terminator::Return` has no successor field), but
-    /// a `Terminator::Call { next, .. }` DOES reference this id — dropping
-    /// an empty block here would leave the already-committed `Call`
-    /// pointing at a missing block (hew-lang/hew#2425:
-    /// `E_CODEGEN_FRONT_FAIL_CLOSED: Call next bb<N> missing`, hit whenever
-    /// the function-tail defer drain or a plain live-cursor fall-through
-    /// reached a `defer exit(..)`/`defer panic(..)` and nothing else wrote
-    /// into the resulting dead continuation before finalisation). When
-    /// this flag is set, `finalize_blocks` seals the empty block with
-    /// `Terminator::Trap { kind: UnreachableCallContinuation }` instead of
-    /// dropping it, so the id stays valid. Cleared by `start_block` and by
-    /// every `finalize_blocks` call, same as `cursor_unreachable`.
-    pub(crate) dead_cursor_is_call_continuation: bool,
-    /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
-    /// `Place::Local(i as u32)`.
-    pub(crate) locals: Vec<ResolvedTy>,
-    /// Source-level binding name for each local slot, parallel to `locals`
-    /// (`local_names[i]` is the name of `Place::Local(i)`, or `None` for an
-    /// anonymous temporary). Populated at the param prologue and `let`
-    /// lowering sites from the HIR `HirBinding.name`; every other
-    /// `alloc_local` pushes `None`. Drained into `RawMirFunction.local_names`
-    /// for codegen's `-g` variable DIEs (`create_auto_variable` /
-    /// `create_parameter_variable`). Best-effort and fail-closed: a `None`
-    /// entry means codegen emits no DIE for that slot rather than fabricating
-    /// a name. A side-table-shaped `Vec` (not a field on every binding-insert
-    /// site) keeps the many `binding_locals.insert` call sites unchanged.
-    pub(crate) local_names: Vec<Option<String>>,
-    /// gdb `-g` lexical scoping, parallel to `local_names`. `local_scopes[i]` is
-    /// the HIR `ScopeId` the binding occupying `Place::Local(i)` was declared in
-    /// (or `None` for params / anonymous temporaries / unscoped slots). Resolved
-    /// in `resolve_local_names_from_binds` from `binding_scope`. Codegen scopes
-    /// each variable DIE to the matching `DILexicalBlock`, so a shadowed inner
-    /// `first` does not share the outer's function-wide scope.
-    pub(crate) local_scopes: Vec<Option<ScopeId>>,
-    /// gdb `-g` declaration line, parallel to `local_names`. `local_decl_bytes[i]`
-    /// is the source start-byte of the `let` that introduced `Place::Local(i)`
-    /// (or `None`). Codegen maps it to a line so each local DIE carries its own
-    /// declaration line rather than the function-declaration line.
-    pub(crate) local_decl_bytes: Vec<Option<u32>>,
-    /// Maps `BindingId` to the `Local(N)` slot that holds the binding's
-    /// initialiser. Cluster 1 reads the slot directly; later clusters add
-    /// drop-cleanup and rebinding semantics.
-    pub(crate) binding_locals: HashMap<BindingId, Place>,
-    /// Count of anonymous caller-owned temp bindings minted so far in this
-    /// function. The next mint is
-    /// `BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - count)` — a
-    /// descending per-function range that stays clear of both the fixed
-    /// `u32::MAX ..= u32::MAX - 4` sentinels and real HIR binding ids.
-    pub(crate) synthetic_owned_temp_bindings: u32,
-    /// Per-function destructive-funcupdate base provenance. Maps a `BindingId`
-    /// to whether `{ ..<binding>, f: new }` over it is a PROVEN unique owner of
-    /// its heap fields — i.e. consuming it leaves no live alias, so the
-    /// override-drop's in-place field release is sound. Populated once per
-    /// function by `compute_funcupdate_base_provenance` (a flow-insensitive
-    /// prescan of the body) BEFORE the body is lowered, so the base allowlist
-    /// gate sees every reassignment. A binding is proven iff EVERY definition
-    /// (its `let` initialiser, every `=` reassignment, or a by-value parameter
-    /// origin) is a materialised owner (`expr_is_materialized_owner`) or a
-    /// move-chain of such; a binding bound from a projection of a still-live
-    /// owner (`let b = o.inner`), or introduced by any non-`let`/non-param form
-    /// (match-arm payload, let-else, loop var), is ABSENT or `false` — the gate
-    /// then fails closed. See `base_is_safe_for_destructive_funcupdate`.
-    pub(crate) funcupdate_base_proven: HashMap<BindingId, bool>,
-    /// Module-global interprocedural freshness summary: maps each free-function
-    /// `ItemId` to whether it provably returns a FRESH MATERIALISED owner on
-    /// every return path (`compute_fn_returns_fresh_owner`). Consulted by
-    /// `expr_is_materialized_owner` so a `..f(args)` funcupdate base is admitted
-    /// ONLY when `f` cannot launder a borrowed by-value parameter through its
-    /// return (the call-returns-borrowed-param use-after-free). `Rc` so child
-    /// builders share it cheaply; the empty default fails every call-base
-    /// closed, which is sound. See `compute_fn_returns_fresh_owner`.
-    pub(crate) funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>>,
-    /// Module-global call-scrutinee return-provenance context (#2648) for the
-    /// preflight admission classifier (`classify_call_scrutinee_admission`). Maps
-    /// each module-fn `ItemId` to its precise three-state return provenance, the
-    /// declared-extern id set, and the audited extern contract table. `Rc` so
-    /// child builders share it cheaply; the empty default classifies every callee
-    /// as an unknown item → interim `LegacyModuleCall` fail-open (sound —
-    /// preserves today's mint, never a wrongly-Fresh admit). See
-    /// `crate::return_provenance::CallScrutineeProvenance`.
-    pub(crate) call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance>,
-    /// Per-function local-binding freshness facts (#2648 S2b) consumed by the
-    /// caller-side argument scan: which of the CURRENT function's locals are
-    /// provably solely-owned fresh values (S1 bits `∅`, plain `let`, not
-    /// aliased, single read). Computed once per lowered function in
-    /// `lower_function`; the empty default (synthetic machine-step builders,
-    /// child builders, tests) admits NO local argument — fail-closed.
-    pub(crate) call_scrutinee_local_freshness: crate::return_provenance::LocalBindingFreshness,
-    /// Module-global RAII-2 param-ownership facts: which affine
-    /// `#[resource]` free-fn params are CONSUME (callee owns + drops) vs
-    /// BORROW (caller keeps + drops), and the call-arg `SiteId`s whose
-    /// over-stamped `Consume` intent is downgraded to a borrowing `Read`.
-    /// `Rc` so child builders share it cheaply; empty default leaves every
-    /// arg `Consume` and drops no param (sound: pre-RAII-2 behaviour).
-    pub(crate) param_ownership: Rc<ParamOwnershipFacts>,
-    /// Per-call direct-function argument positions proven borrow-only by the
-    /// module parameter-body summary. Keyed by the block containing the
-    /// `Terminator::Call`; consumed by collection drop escape analysis so a
-    /// caller-owned Vec survives a helper that only reads it.
-    pub(crate) proven_borrow_call_args: HashMap<u32, HashSet<usize>>,
-    /// Binding ids of the CURRENT function's by-value parameters, captured in
-    /// `lower_params`. A funcupdate base that is (or embeds in a construction) a
-    /// WHOLE by-value parameter is NOT a unique owner — the parameter is a
-    /// borrow (LESSONS `by-value-heap-params-are-borrows`) stored without a
-    /// refcount bump (`{ ..Wrap { s: p, .. }, s: new }` frees the caller's `p`
-    /// at the override-drop). Consulted by `expr_is_materialized_owner` to reject
-    /// such bases. `Rc` so child builders (closures) inherit the enclosing
-    /// parameters cheaply; the empty default is sound (admits nothing extra).
-    /// Projections of a parameter (`p.inner`) and bare locals are NOT listed —
-    /// a field read refcount-bumps and a local move consumes, both empirically
-    /// owner-preserving.
-    pub(crate) funcupdate_param_ids: Rc<HashSet<BindingId>>,
-    /// MIR locals for by-value `bytes` parameters that remain caller-owned
-    /// borrows. Returning or storing one mints a co-owner and therefore needs
-    /// an explicit `BytesRetain`; ordinary calls continue to borrow it.
-    pub(crate) borrowed_bytes_param_locals: HashSet<u32>,
-    /// MIR local ids for every function parameter. Used to distinguish a named
-    /// parameter slot from a consumed owned-local slot when classifying a plain
-    /// `Move` as a retained co-owner share.
-    pub(crate) parameter_locals: HashSet<u32>,
-    /// MIR locals for by-value `string` parameters that remain caller-owned
-    /// borrows. A genuine co-owner mint retains through `hew_string_clone`;
-    /// ordinary calls continue to borrow the caller's reference.
-    pub(crate) borrowed_string_param_locals: HashSet<u32>,
-    /// Binding-reference sites used as the RHS of `let next = current` for
-    /// `bytes`. Stage S1 treats these as retained shares, so their checker use
-    /// intent is downgraded from `Consume` to `Read`.
-    pub(crate) bytes_local_share_sites: HashSet<SiteId>,
-    /// Candidate `let next = current` string copies, keyed by the RHS site and
-    /// carrying `(source, destination)` bindings. Finalized MIR decides whether
-    /// the source is used after the copy (genuine co-owner) or handed off.
-    pub(crate) string_local_share_sites: HashMap<SiteId, (BindingId, BindingId)>,
-    /// F-04 fungible supervisor-child reference table. Maps the handle local id
-    /// produced by `lower_supervisor_child_get` (`Place::ActorHandle(N)`) to the
-    /// stable `(supervisor, slot)` reference it stands for.
-    ///
-    /// A supervised child handle is FUNGIBLE: it names a ROLE (the slot), not a
-    /// specific actor instance. The supervisor frees and replaces the underlying
-    /// actor on restart, so a snapshotted `*mut HewActor` dangles across a yield.
-    /// Rather than snapshot the resolved pointer, the handle carries this
-    /// reference and EACH send/ask re-resolves the current live child via
-    /// `hew_supervisor_child_get(sup, slot)` (the existing slot-table resolver,
-    /// race-free under `children_lock`). The reference never owns a child
-    /// pointer, so the stale-handle-across-yield UAF dissolves by construction
-    /// and a send to a not-live child fail-closes as a recoverable error rather
-    /// than a program-killing trap.
-    ///
-    /// Keyed by the handle local id because `let a = sup.w` binds `a` directly to
-    /// the same `Place::ActorHandle(N)` (no copy — see the `Let` arm), so both
-    /// `sup.w.tick()` and `let a = sup.w; …; a.tick()` resolve their receiver to
-    /// the same local and find the same ref here. Function-scoped (fresh per
-    /// builder via `Default`), matching `binding_locals`.
-    pub(crate) fungible_child_refs: HashMap<u32, FungibleChildRef>,
-    pub(crate) decisions: Vec<DecisionFact>,
-    /// NEW-6b: maps the id of a basic block that ends in `Terminator::SuspendingAsk`
-    /// to the constant deadline (nanoseconds) of an `await … | after d` combinator.
-    /// Populated by `lower_actor_ask` when the HIR `ActorAsk` carries a
-    /// `deadline_ns`; consumed by codegen to schedule
-    /// `hew_await_cancel_schedule_deadline_ms` against the suspend's cancel
-    /// registration. Carried as a side-table (not a carrier/Terminator field) so
-    /// the eight `Suspending*` carriers stay unchanged (codegen-locals shape).
-    pub(crate) await_deadline_ns: HashMap<u32, i64>,
-    /// Maps the id of a basic block that ends in one of the ten collapsed
-    /// suspension carriers to the carrier's distinguishing payload
-    /// ([`SuspendKind`]). Populated at each `finish_current_block(Suspending*)`
-    /// site for a PURE-`{resume, cleanup}` carrier; copied into
-    /// [`RawMirFunction::suspend_kinds`] at finalize. A side-table (not a
-    /// carrier/Terminator field) so the carriers collapse onto one
-    /// `Terminator::Suspend` while the emitted IR stays byte-identical.
-    pub(crate) suspend_kinds: HashMap<u32, SuspendKind>,
-    /// #2395 decision 2 — abandon-edge drops for a suspend's escape-poisoned
-    /// value that the generic `drops_for_exit` `BindingState` filter cannot see.
-    /// Today the sole member is the `SuspendKind::StreamSend` in-flight yield
-    /// value: it is escape-poisoned (so no scope-exit drop competes on the
-    /// resume path) and its resume-edge release is the pump's inline `after_send`
-    /// `Instr::Drop`. Keyed by the id of the block carrying the
-    /// `Terminator::Suspend` (the SAME key `suspend_kinds` uses). Appended to the
-    /// matching `ExitPath::Suspend` plan AFTER `enumerate_exits`, so the value is
-    /// freed exactly once on the destroy-while-parked edge — mutually exclusive
-    /// with the resume-edge drop (abandon XOR resume).
-    pub(crate) suspend_abandon_extra_drops: HashMap<u32, Vec<ElabDrop>>,
-    pub(crate) owned_locals: Vec<OwnedLocalEntry>,
-    /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
-    /// were declared in, recorded so a per-scope-exit `hew_gen_coro_destroy`
-    /// fires when that scope closes — INCLUDING when the scope is re-executed
-    /// by an enclosing loop. The function-exit LIFO drop only releases the
-    /// final content of each binding's slot, so a generator declared inside a
-    /// loop body (e.g. the `__hew_for_iter_*` binding of a `for x in gen()`
-    /// nested in a `while`) leaks one coro frame + heap companion per outer
-    /// iteration without this per-scope-exit release. Entries are removed from
-    /// `owned_locals` once
-    /// the scope-exit drop is emitted so the function-exit pass cannot
-    /// double-free (the drop also null-stores the slot as defence-in-depth).
-    pub(crate) scope_generator_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
-    /// Sole-owner `for x in …` cursor (`VecIter<T>`) bindings tagged with the
-    /// for-in block scope they were declared in, so a per-scope-exit
-    /// `__hew_record_drop_inplace_VecIter$$T` (freeing the cursor's `vec` field
-    /// via `hew_vec_free`) fires when the scope closes — releasing the handle on
-    /// every outer iteration of an enclosing loop, the case the function-exit
-    /// LIFO drop misses. Mirrors `scope_generator_bindings`. Registered ONLY for
-    /// cursors that solely own their handle (rvalue / `to_vec()` / consumed
-    /// `into_iter()` source — see `vec_iter_let_cursor_owns_handle`); a `CowShare`
-    /// place source (`for x in v`) is NOT registered because the source binding
-    /// keeps its own drop and the cursor only borrows (freeing here would
-    /// double-free and dangle a post-loop `v` read). Entries are removed from
-    /// `owned_locals` once the scope-exit drop is emitted so the function-exit
-    /// pass cannot double-free; the inline `Instr::Drop` null-stores the slot as
-    /// defence in depth (`raii-null-after-move`).
-    pub(crate) scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
-    /// `Stream<T>` / `Receiver<T>` for-await cursor bindings tagged with the
-    /// block scope they were declared in, so a per-scope-exit close
-    /// (`hew_stream_close` / `hew_channel_receiver_close`) fires when that scope
-    /// closes. The `Generator`/`VecIter` analogue of #1949 for the general
-    /// `for await` consumption path: a `for await v in <stream>` desugars to a
-    /// `__hew_for_iter_*` cursor whose close was otherwise deferred to the
-    /// ENCLOSING FUNCTION's exit-LIFO plan, so `break`/early `return`/exhaustion
-    /// left the stream open — deadlocking any function that abandons a live
-    /// stream then does more work before returning (the producer stays parked
-    /// on backpressure, its peer never observed as closed). Closing at each
-    /// exit edge wakes the parked producer promptly. Mirrors
-    /// `scope_generator_bindings`: entries are dispositioned `ScopeReleased`
-    /// once the inline close is emitted so the function-exit LIFO cannot fire a
-    /// second close, and the inline `Instr::Drop` null-stores the slot
-    /// (`raii-null-after-move`; the runtime close symbols also null-guard).
-    pub(crate) scope_stream_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
-    /// Active per-iteration generator-yielded heap value bindings, recorded
-    /// while lowering a `for v in gen()` (or `match g.next()`) consuming body so
-    /// a `break`/`continue` inside that body frees the current iteration's
-    /// yielded value before the back/exit edge — symmetric to
-    /// `emit_generator_drops_for_break_continue` freeing the generator HANDLE.
-    /// Without this, the break/continue ITERATION's yielded `Vec`/`string`/map
-    /// leaks: the body-end drop (`emit_generator_yield_binding_drop`) is emitted
-    /// AFTER the body lowers, so a `break`/`continue` jumps past it.
-    ///
-    /// Each entry is `(active_scopes_len_at_registration, Place, ResolvedTy,
-    /// drop_symbol)`. The `active_scopes` length captured when the value is
-    /// bound is compared against a break/continue site's `loop_scope_depth`: an
-    /// entry registered at depth >= the breaking loop's depth is in-loop and is
-    /// freed on that edge. Entries are CLONE-freed on the break/continue edge
-    /// (not removed) — the normal fall-through path's body-end drop still frees
-    /// the value for that mutually-exclusive CFG path, and the inline drop's
-    /// null-after-free makes a structurally-reachable second free a no-op
-    /// (`raii-null-after-move`; the runtime also null-guards). Drained when the
-    /// consuming body finishes lowering.
-    /// Per-iteration generator-yielded heap value bindings active during a
-    /// consuming body's lowering. Each entry is `(active_scopes_len, Place,
-    /// ResolvedTy, drop_fn, start_block_id, start_instr_len)`:
-    /// - `active_scopes_len`: depth marker used by break/continue at the
-    ///   matching loop scope to know which entries lie inside the breaking
-    ///   loop;
-    /// - `Place`/`ResolvedTy`/`drop_fn`: what to drop and how (a cow-heap
-    ///   `Release` symbol, or the composite `InPlace` thunk route);
-    /// - `start_block_id`/`start_instr_len`: the binding's site, used by
-    ///   `generator_yield_binding_drop_safe` to scan the body for an
-    ///   ownership-transferring escape (a `Move` of the binding's slot into
-    ///   another local, a store into a surviving aggregate). When the value
-    ///   escapes between its bind site and a break/continue point, the
-    ///   break/continue-edge drop MUST be skipped — the consumer (the
-    ///   move-destination) owns the release, so an unconditional break-edge
-    ///   drop would double-free the buffer at the move-out site. Without the
-    ///   scan, a `for await item in rx { carry = item; break; }` pattern
-    ///   reliably produces a use-after-free at `println(carry)` after the
-    ///   loop. (`scope_generator_bindings` for the generator HANDLE has no
-    ///   such case because handles do not get re-bound to another local
-    ///   mid-body — only their content is consumed via `next`.)
-    pub(crate) active_generator_yield_values: Vec<(
-        usize,
-        Place,
-        ResolvedTy,
-        crate::model::DropFnSpec,
-        u32,
-        usize,
-    )>,
-    /// Header-defined while-let scrutinee owners active while their body is
-    /// lowered. Break/continue edges consume these owners and record an
-    /// explicit edge drop; returns/panic/cancellation leave them Live so the
-    /// ordinary exit planner releases them.
-    pub(crate) active_iteration_owners: Vec<ActiveIterationOwner>,
-    /// Map from each MIR-bound HIR `BindingId` to the HIR `ScopeId` it was
-    /// declared in. Populated at every `MirStatement::Bind` push site (let
-    /// statements, match-arm payload bindings, function parameters, for-range
-    /// counter binds). Consulted by the elaborator (`enumerate_exits`) to
-    /// scope-filter back-edge `Goto` drops: a binding declared in a loop body's
-    /// scope must be released before the back-edge re-enters the body and
-    /// overwrites the slot with the next iteration's value.
-    ///
-    /// This is the missing piece that distinguishes per-iteration drops from
-    /// function-exit drops. Without scope tracking, the elaborator's existing
-    /// `drops_for_exit` (currently called only on `Return`/`Cancel`/`Panic`)
-    /// would either fire ALL live bindings on a back-edge (double-freeing
-    /// outer-scope values like the receiver itself) or fire NONE (the current
-    /// behaviour, which leaks the per-iteration heap-owning let-bindings).
-    /// Restricting the back-edge plan to bindings whose `binding_scope` matches
-    /// the loop body's scope (recorded in `loop_back_edge_blocks`) makes the
-    /// drop set per-iteration and CFG-correct: outer-scope bindings keep their
-    /// function-exit drop, inner-scope bindings get one drop per iteration.
-    pub(crate) binding_scope: HashMap<BindingId, ScopeId>,
-    /// Scope facts for transient payload-binding locals whose `binding_locals`
-    /// entry is restored after a match-like body lowers. The enum sole-owner
-    /// prover still needs their real body lifetime to distinguish an in-body
-    /// handoff from an escape into a surviving outer binding.
-    pub(crate) transient_local_scopes: HashMap<u32, ScopeId>,
-    /// gdb `-g` lexical-block scoping. Accumulates, per HIR `ScopeId` ever active
-    /// while lowering this function's body, the scope's parent `ScopeId` (the
-    /// scope directly below it on `active_scopes` when first observed) and the
-    /// source byte-extent `[min_start, max_end)` of every statement/instruction
-    /// span lowered under it. Updated incrementally in `push_instr` and
-    /// `record_binding_scope` (both fire while the scope's frame is on the stack
-    /// top) — so no instrumentation of the 11 `active_scopes.push` sites is
-    /// needed. Drained at finalize into `RawMirFunction.scope_table` for codegen
-    /// to build one `DILexicalBlock` per scope, parented per `parent`, with PC
-    /// ranges derived from byte-extent → line. A shadowed inner `let first` is
-    /// recorded under its own (inner) scope, so its variable DIE and the inner
-    /// block's instruction `DILocation`s land in a distinct lexical block — the
-    /// outer `first` no longer leaks into the inner breakpoint's frame.
-    pub(crate) scope_info: HashMap<ScopeId, ScopeInfoEntry>,
-    /// gdb `-g`: source start-byte of each `let`-binding's declaration, captured
-    /// at `record_binding_scope` from the live lowering cursor. Resolved to the
-    /// binding's slot in `resolve_local_names_from_binds` so each local DIE gets
-    /// its OWN declaration line — two same-named shadowed locals on different
-    /// lines stay distinct even before lexical-block scoping. Absent → codegen
-    /// falls back to the function-declaration line.
-    pub(crate) binding_decl_byte: HashMap<BindingId, u32>,
-    /// Map from each loop-body back-edge `Goto`'s emitting block id to the HIR
-    /// `ScopeId` of the loop body that closes there. Populated immediately
-    /// before each loop's body→header (or body→inc) `Terminator::Goto` is
-    /// emitted, in `lower_while`/`lower_while_let`/`lower_for_range`/
-    /// `lower_loop`. Consulted by `enumerate_exits` to populate the back-edge's
-    /// `DropPlan` with drops for bindings whose `binding_scope` matches this
-    /// scope — releasing exactly the per-iteration heap-owning let-bindings
-    /// (`Option<T>` recv results, owned strings/Vecs/maps bound inside the body)
-    /// before the next iteration overwrites their slots.
-    ///
-    /// The dataflow's `BindingState` filter in `drops_for_exit` automatically
-    /// excludes bindings that are `Consumed` (moved out) or `Uninit` (not yet
-    /// assigned on the first iteration's first reach), so escape via `break x`
-    /// / pass-by-value / first-iteration-uninit double-free corner cases are
-    /// handled by the existing dataflow without bespoke logic.
-    pub(crate) loop_back_edge_blocks: HashMap<u32, ScopeId>,
-    /// Goto-edge blocks that must release header-defined iteration owners.
-    /// Each binding is also marked consumed in the source block's statement
-    /// stream, so the target's later function exit cannot release it again.
-    pub(crate) iteration_owner_drop_blocks: HashMap<u32, Vec<BindingId>>,
-    /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
-    pub(crate) diagnostics: Vec<MirDiagnostic>,
-    /// Per-function de-duplication for W3.029 user-aggregate value-class
-    /// diagnostics. Keyed by the same bare/mangled record-layout key used by
-    /// `record_field_orders`.
-    pub(crate) unsupported_user_record_value_classes: HashSet<String>,
-    /// owned-string-record allow-list of expression sites that may classify a user record as
-    /// `CowValue` without opening the general user-record value-class surface.
-    /// Populated only for the RHS `StructInit` of a let-bound, monomorphic,
-    /// direct-string record and for direct field-access object `BindingRef`
-    /// sites against such bindings.
-    pub(crate) owned_string_record_value_sites: HashSet<SiteId>,
-    /// Let bindings whose value was introduced by the owned-string record-construction
-    /// gate. Field access and drop elaboration consult this binding-scoped proof
-    /// instead of re-opening arbitrary user-record reads.
-    pub(crate) owned_string_record_bindings: HashSet<BindingId>,
-    /// W5.016 owned-Vec-element allow-list of record/enum layout KEYS that are
-    /// used as the element of an owned-Vec anywhere in the current function. A
-    /// value of such a type classifies as `CowValue` (the runtime deep-clones
-    /// it in and drops it via the seeded per-type thunks) instead of tripping
-    /// the W3.029 wholesale `Unknown` reject. Pre-computed by `function_body`
-    /// before any `decide` runs (so it is robust to the `lower_value`-decides-
-    /// before-arm ordering). This is a bounded allow-list keyed on the exact
-    /// types codegen seeds thunks for — it does NOT open the general
-    /// user-record value-class surface (a record with a `Vec`/`HashMap` field
-    /// is never an owned-Vec element, so it never enters this set).
-    pub(crate) vec_owned_element_keys: HashSet<String>,
-    /// Per-named-type marker registry, cloned from the parent `HirModule` at
-    /// builder construction. Read by every `ValueClass::of_ty` call site in
-    /// MIR lowering so the marker is the single fact about whether a Named
-    /// type participates in the ownership-discipline surface.
-    pub(crate) type_classes: hew_hir::TypeClassTable,
-    /// Lambda-actor capture ledger collected across every
-    /// `HirExprKind::SpawnLambdaActor` literal in the function body.
-    /// Drained into `ElaboratedMirFunction.lambda_captures` at the
-    /// elaboration boundary; the structural fail-closed checker
-    /// `validate_lambda_captures` runs against the drained list.
-    pub(crate) lambda_captures: Vec<LambdaCapture>,
-    /// `Some(LambdaActorHandle)` while the producer is lowering the
-    /// value of `let <name> = actor |..| { .. }`. The `HirStmtKind::Let`
-    /// arm pre-allocates the actor's local and records the
-    /// `LambdaActorHandle(N)` here BEFORE lowering the value, so
-    /// `lower_spawn_lambda_actor` reuses the slot the binding already
-    /// owns instead of allocating a second local. The HIR forward-bind
-    /// already routed the binding's resolved name to the lambda's own
-    /// `BindingId`; this mirror at MIR keeps the binding's `Place`
-    /// alignment to that same handle so a Weak self-capture's slot
-    /// resolves correctly.
-    pub(crate) pending_lambda_actor_handle: Option<Place>,
-    /// Tuple decomposition map for runtime-call results that produce multiple
-    /// output Places (e.g. `hew_duplex_pair` → two `DuplexHandle` slots).
-    ///
-    /// Key: the `u32` local index of the "tuple proxy" `Place::Local(N)` that
-    /// `lower_runtime_call` returns for a multi-output call.  Value: the
-    /// ordered slice of output Places in source-declaration order (e.g.
-    /// `[DuplexHandle(N0), DuplexHandle(N1)]` for `duplex_pair`).
-    ///
-    /// `TupleIndex` lowering looks this map up when the tuple sub-expression
-    /// resolves to a proxy local: index `i` into the value vec to obtain the
-    /// concrete output Place without emitting additional instructions.
-    ///
-    /// SHIM(E2→E3): only `hew_duplex_pair` populates this map today.
-    /// WHY: MIR has no multi-return instruction; a proxy local threads the
-    ///   output Places through the existing single-`Place` `BindingRef` lookup.
-    /// WHEN obsolete: when a dedicated MIR multi-return or projection surface
-    ///   lands and `TupleIndex` lowering is rewritten to use it directly.
-    /// WHAT: replace with `Place::Projection { base, index }` variant or a
-    ///   `Terminator::Call`-style multi-dest encoding.
-    pub(crate) tuple_decomp: HashMap<u32, Vec<Place>>,
-    /// Declaration-order field descriptors for every `record` type in the module.
-    ///
-    /// Key: record type name (e.g. `"Point"`).
-    /// Value: `(field_name, field_ty)` pairs in declaration order.
-    ///
-    /// Used by `StructInit` and `FieldAccess` lowering to resolve a field
-    /// name to its 0-based `FieldOffset` and to look up the field type when
-    /// allocating intermediate places for functional-update base reads.
-    /// Built from `HirItem::Record` items in `lower_hir_module` and threaded
-    /// through to the builder.
-    ///
-    /// Tuple records have an empty field list by design (`HirRecordDecl.fields`
-    /// is empty for tuple records — their constructor is a `Call`, not a
-    /// `StructInit`). They will never be looked up here.
-    pub(crate) record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
-    pub(crate) actor_layouts: HashMap<String, ActorLayout>,
-    /// Supervisor-layout map, mirroring `actor_layouts` for supervisor types.
-    /// Used by `lower_spawn_actor` to route `spawn Sup` to the supervisor
-    /// bootstrap call and by `push_unknown_type_diagnostics` to recognise
-    /// supervisor names inside `LocalPid<Sup>` type args as known. Child
-    /// builders (closure shims, lambda-actor bodies, task-entry adapters)
-    /// inherit it via `child_builder_tables`.
-    pub(crate) supervisor_layout_map: HashMap<String, crate::model::SupervisorLayout>,
-    /// Set of recognised tagged-union type names — every machine type plus
-    /// the synthesised `<Machine>Event` companion enum for each. Used by
-    /// `push_unknown_type_diagnostics` to silence `UnknownType` on these
-    /// names and by `is_known_actor_runtime_ty` to classify their values
-    /// as `BitCopy` so the decision-map check accepts the site. Populated
-    /// from `module.machine_layouts` in `lower_hir_module` and threaded
-    /// through every Builder construction site.
-    pub(crate) machine_layout_names: HashSet<String>,
-    /// Monomorphised tagged-union enum layouts, cloned from the pipeline-wide
-    /// `enum_layouts` at builder construction. The drop elaborator consults
-    /// these through the single record-aware heap-ownership authority
-    /// `ty_owns_heap` (via `ty_owns_heap_mir`) to decide whether an
-    /// enum-composite binding owns a heap payload and so earns a tag-aware
-    /// `DropKind::EnumInPlace` scope-exit drop (W5.020).
-    /// Empty for builders constructed before layout collection (synthetic
-    /// test pipelines) — such bodies simply never elaborate the enum-in-place
-    /// drop, matching the pre-W5.020 leak-not-double-free posture.
-    pub(crate) enum_layouts: Vec<crate::model::EnumLayout>,
-    /// Names of every `#[opaque]` type declared in the module. Threaded into
-    /// `classify_state_field_full` so opaque handles (e.g. `json.Value`,
-    /// `cron.Expr`) appearing in owned-aggregate records classify as
-    /// `StateFieldCloneKind::OpaqueHandle` rather than `MissingRecordLayout`.
-    /// Populated from `module.items` in `lower_hir_module` and passed through
-    /// every Builder construction site that may reach
-    /// `owned_aggregate_record_field_kinds_for_key`.
-    pub(crate) opaque_handle_names: Vec<String>,
-    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
-    /// for every single-slot `#[resource] #[opaque]` handle (see
-    /// `resource_opaque_close_registry`). Threaded into
-    /// `classify_actor_state_fields_with_resource_handles` at the owned-aggregate
-    /// admission gate so a resource-bearing record field classifies as
-    /// `StateFieldCloneKind::Resource` (RAII drop spine) instead of the
-    /// no-op-drop `OpaqueHandle` (the W3.029 leak). Built from
-    /// `opaque_handle_names` + `type_classes` in the Builder ctor; `IrPipeline`
-    /// rebuilds the identical registry for codegen so the two never drift.
-    pub(crate) resource_opaque_close: Vec<(String, String)>,
-    pub(crate) current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
-    /// Names of every user-defined function declared in the module. Used by
-    /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
-    /// (→ `Terminator::Call`) from runtime-ABI callees (→
-    /// `Instr::CallRuntimeAbi`) and from indirect/closure callees
-    /// (→ `NotYetImplemented`). Name-string matching is the reliable
-    /// discriminator here because the HIR bridge does not yet emit
-    /// `ResolvedRef::Item` for function-item callees (see the SHIM comment
-    /// at the Call lowering arm). The set is populated once per module by
-    /// `lower_hir_module` before any function body is lowered, so forward
-    /// references (calling a function declared later in the file) are
-    /// handled correctly.
-    pub(crate) module_fn_names: HashSet<String>,
-    pub(crate) module_generic_fn_names: HashSet<String>,
-    /// Structured static-dispatch registry — `(declaring_trait,
-    /// self_type_name, method_name) → impl method symbol + impl type
-    /// params`. Built once from `HirItem::Impl` metadata in
-    /// `lower_program_with_*` and cloned into every builder so the
-    /// `CallTraitMethodStatic` arm can resolve through structured HIR
-    /// facts rather than reconstructing the impl symbol from a display
-    /// name. Empty for builders constructed via `Builder::default()`
-    /// (machine step shells, actor handler shims) — those bodies do
-    /// not host generic-bounded trait method calls.
-    #[allow(
-        dead_code,
-        reason = "prepared for structured dispatch; MIR uses type-name derivation in this slice"
-    )]
-    trait_impl_index:
-        HashMap<hew_hir::dispatch::TraitImplKey, hew_hir::dispatch::TraitImplMethodEntry>,
-    /// Substitution map from origin-fn type-parameter symbols to
-    /// concrete `ResolvedTy`s, populated only when this Builder is
-    /// lowering a generic function under a specific monomorphisation.
-    /// Empty for non-generic fn bodies.
-    ///
-    /// Every type observed during body lowering is substituted via
-    /// `subst_ty` before reaching the backend Instr stream so symbolic
-    /// type-parameter `Named` types never escape into MIR/codegen.
-    pub(crate) subst: HashMap<String, ResolvedTy>,
-    /// Per-call-site `Vec<ResolvedTy>` recorded by HIR lowering for
-    /// generic top-level user-fn callees. Cloned from
-    /// `HirModule.call_site_type_args`. The Call lowering arm
-    /// substitutes these via `subst_ty` and dispatches to the
-    /// per-monomorphisation mangled symbol.
-    pub(crate) call_site_type_args: HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
-    /// Per-concrete-element `Vec<T>` runtime-ABI verdict table, cloned from
-    /// `HirModule.vec_generic_element_abi`. The `ResolvedImplCall` arm consults
-    /// it to re-resolve an element-typed `Vec<T>` method (`push`/`get`/`set`/
-    /// `pop`) whose checker dispatch left a `hew_vec_*_FAMILY` placeholder
-    /// because the element was a type parameter: the substituted concrete
-    /// element is looked up here per monomorphisation and `(method, token)` is
-    /// mapped to the concrete runtime symbol. Empty for lowering contexts that
-    /// never observe a polymorphic element (the placeholder then fails closed).
-    pub(crate) vec_generic_element_abi: HashMap<hew_types::Ty, hew_types::VecElementToken>,
-    /// Per-`FieldAccess` site-id → `ChildSlot` side-table, populated by HIR
-    /// lowering from the checker's `supervisor_child_slots`. The `FieldAccess`
-    /// arm checks this map BEFORE the `record_field_orders` lookup so that
-    /// supervisor-typed LHS is intercepted and routed to
-    /// `hew_supervisor_child_get` rather than a record-field load.
-    ///
-    /// Cloned from `HirModule.supervisor_child_slots`. Empty for functions
-    /// (actor-handler shims, closure shims) whose bodies cannot contain
-    /// supervisor field accesses — the empty map causes the intercept arm to
-    /// skip immediately, adding zero overhead for the common case.
-    pub(crate) supervisor_child_slots: HashMap<hew_hir::SiteId, hew_types::ChildSlot>,
-    /// Resolved static-pool accessor sites (`sup.pool[i]` / `.get(i)` /
-    /// `.len()`), cloned from `HirModule.pool_accessor_sites` and keyed by the
-    /// `SiteId` of the `Index`/`MethodCall` expression. The lowering arms consult
-    /// this to emit the pool ABI call instead of the generic container/method
-    /// path. Empty for shim functions.
-    pub(crate) pool_accessor_sites: HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
-    pub(crate) current_task_scope: Option<Place>,
-    pub(crate) current_function_symbol: String,
-    pub(crate) current_function_call_conv: crate::model::FunctionCallConv,
-    /// True only on a source generator shell builder. Its fn-typed formal
-    /// parameters are admitted into the shell's generator env because every
-    /// standalone `gen fn` call crosses `lower_direct_call`'s provenance gate
-    /// and every `receive gen fn` call crosses `lower_actor_gen_stream`'s
-    /// equivalent gate. Anonymous `gen {}` blocks in ordinary functions have
-    /// no such call boundary and reject unproven fn-valued captures at env
-    /// materialisation.
-    pub(crate) generator_shell_call_gate: Option<GeneratorShellCallGate>,
-    pub(crate) task_entry_adapter_symbols: TaskEntryAdapterSymbols,
-    pub(crate) next_closure_id: u32,
-    pub(crate) generated_functions: Vec<LoweredFunction>,
-    pub(crate) closure_record_layouts: Vec<crate::model::RecordLayout>,
-    pub(crate) capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
-    /// Body-side set of capture bindings whose env field holds a WEAK
-    /// lambda-actor handle (`CaptureKind::Weak` — the forward-bound self
-    /// reference, §5.9 ratification 2). `lower_lambda_actor_call` consults
-    /// this to dispatch the self-send through `hew_lambda_actor_weak_send`
-    /// (the weak handle's ABI) instead of `hew_lambda_actor_send`.
-    pub(crate) weak_lambda_capture_bindings: std::collections::HashSet<BindingId>,
-    /// Base locals (the `u32` slot index from `Place::Local`) of pattern
-    /// bindings introduced by a non-BitCopy `match` record/tuple destructure
-    /// (`lower_match_project`) **whose scrutinee was consume-marked at the
-    /// destructure site**. Consulted by `derive_cow_sole_owner` to SUPPRESS
-    /// the projection-alias taint seed for these binders.
-    ///
-    /// Why this exists. The pattern binder is loaded via `RecordFieldLoad` /
-    /// `TupleFieldLoad`, both of which `projection_alias_dest` seeds as
-    /// tainted (interior alias of the parent aggregate). Tainted
-    /// leaf-`string`/`Vec`/`bytes` locals are excluded from
-    /// `cow_drop_allowed`, so `build_lifo_drops` silently skips their drop
-    /// (the leaf-CoW arm tolerates a missing place rather than panicking).
-    /// The taint is correct when the parent aggregate's composite drop still
-    /// fires (otherwise the same buffer frees twice), but a consume-marked
-    /// scrutinee emits a follow-up `Use { intent: Consume }` for the
-    /// `BindingRef`, so the parent's drop is suppressed by the dataflow
-    /// exit-state filter. With the parent consumed, the binder is the SOLE
-    /// owner of its loaded payload; the taint would otherwise become a leak.
-    ///
-    /// Membership is restricted to the binders whose source we actually
-    /// consume — the `match_project_scrutinee_reject` gate guarantees this is
-    /// always a non-captured `BindingRef`. Other destructure shapes
-    /// (let-pattern, enum-tag, while-let) keep their existing taint
-    /// behaviour. The dataflow `Consumed`/`MaybeConsumed` exit-state
-    /// post-filter at the `derive_cow_sole_owner` call site is still the
-    /// final authority: a binder consumed by `=> y` is removed from the
-    /// allow-set, so the drop won't double-free a moved-out payload.
-    pub(crate) match_project_consumed_binder_locals: HashSet<u32>,
-    /// Bindings that hold a closure value whose resolved invoke-shim carries a
-    /// suspend terminator (the suspendable-callee discriminator). Populated by
-    /// the `Let` handler from the shim's lowered MIR carriers — the SAME
-    /// structural fact codegen's `is_coroutine` reads — so a call to such a
-    /// binding lowers to `Terminator::SuspendingCallClosure` (the driver) rather
-    /// than the direct `Instr::CallClosure`. A non-suspending closure is never
-    /// inserted, keeping it on the direct path (no spurious coroutine driving).
-    pub(crate) suspending_closure_bindings: HashSet<BindingId>,
-    /// `let` bindings whose initializer failed to lower (returned `None`) AND
-    /// emitted at least one diagnostic of its own. A later `BindingRef` to such
-    /// a binding has no `binding_locals` Place, which would otherwise raise a
-    /// follow-on `UnresolvedPlace` ("could not resolve binding `u`") — pure
-    /// cascade noise stacked on the root error the user must actually fix (e.g.
-    /// a fail-closed functional-update base/carry reject on `let u = { ..base }`).
-    /// The `BindingRef` resolver consults this set and returns `None` silently
-    /// for a poisoned binding, so only the root diagnostic surfaces. Guarded on
-    /// "a diagnostic was emitted" so a genuinely-unresolved binding (a real bug
-    /// with no prior error) still reports.
-    pub(crate) poisoned_let_bindings: HashSet<BindingId>,
-    /// Generator/`gen fn` capture bindings the enclosing `lower_gen_block`
-    /// rejected with a root `NotYetImplemented` (an inadmissible opaque/owned
-    /// value that cannot be admitted into the generator's flat-copied env
-    /// record). The synthetic body still names the capture as a free variable,
-    /// but it was never
-    /// materialised into the env record — so its body-side `BindingRef` would
-    /// otherwise stack two cascade secondaries on the root: a
-    /// `MirStatement::Use` of an un-`Bind`-ed binding (→ dataflow
-    /// `InitialisedBeforeUse`) and an `UnresolvedPlace` (no backend slot). The
-    /// `BindingRef` resolver consults this set and returns `None` silently for a
-    /// poisoned capture, so only the actionable root rejection surfaces. Scoped
-    /// to the body sub-builder: it carries only the specific failing capture
-    /// ids, never the enclosing frame's bindings, and the body's own `let`
-    /// bindings have distinct ids so they are unaffected.
-    pub(crate) poisoned_capture_ids: HashSet<BindingId>,
-    /// Transient: set by `lower_closure_literal` to the just-lowered closure's
-    /// body-suspends verdict (derived from its shim's MIR carriers) so the `Let`
-    /// handler can attribute it to the bound binding. Reset around each closure
-    /// lowering; only read immediately after lowering a `HirExprKind::Closure`.
-    pub(crate) pending_closure_literal_suspends: Option<bool>,
-    /// Transient: set by `lower_closure_literal` to `true` when the
-    /// just-lowered closure literal's escape class selected the `Heap`
-    /// allocation strategy (its pair owns — or, capture-free, may own
-    /// nothing behind — a heap env box). Read by the `Let` handler to admit
-    /// the bound pair into `closure_pair_owned`. Same reset discipline as
-    /// `pending_closure_literal_suspends`.
-    pub(crate) pending_closure_literal_heap: Option<bool>,
-    /// Bindings that own an escaping-closure pair's env-box free obligation
-    /// (the sole-owner affine model). Admitted at the introducing
-    /// `HirStmtKind::Let` for three RHS shapes only: a closure literal whose
-    /// strategy was `Heap`, a fn-typed call result (the producer's pair is
-    /// always heap-or-null by construction), and a rebind of an
-    /// already-admitted binding (ownership transfers; the source is marked
-    /// moved). Every other producing shape leaks rather than risks freeing
-    /// a stack env (`boundary-fail-closed`: over-exclude, never re-admit).
-    /// `elaborate` narrows this set further (returned pairs, captured
-    /// pairs, consumed exits) into `closure_pair_drop_allowed`.
-    pub(crate) closure_pair_owned: HashSet<BindingId>,
-    /// Bindings holding a named-function pair (`let f = double;`) — the pair's
-    /// `env_ptr` is null by construction (the named-fn shim never reads it),
-    /// so the pair is freely byte-copyable: no env exists to double-free.
-    /// These bindings are exempt from the closure-pair ingress discipline
-    /// (`enforce_closure_pair_ingress`). Populated at the introducing `Let`
-    /// for an `Item`-resolved fn reference RHS and propagated through
-    /// rebinds of an already-exempt binding.
-    pub(crate) closure_pair_null_env: HashSet<BindingId>,
-    /// Fn-typed (`ty_is_closure_pair`) bindings whose pair may carry a NON-NULL
-    /// heap closure-env word even when its static type is a plain `fn(..)`.
-    /// Sources are:
-    ///   * fn-typed parameters (the caller may pass a capturing closure);
-    ///   * fn-typed call results (the callee may return one);
-    ///   * capturing-closure literals structurally unified with `fn(..)`;
-    ///   * copies/merges/reassignments of any binding already in this set.
-    ///
-    /// Let/reassignment provenance is collected flow-INSENSITIVELY by the
-    /// `collect_vec_owned_element_keys_from_block` pre-pass so a loop back-edge
-    /// assignment taints the binding before any call site lowers. Parameters
-    /// are seeded by `lower_params` before that pre-pass runs.
-    ///
-    /// Consulted by generator call-argument gates, anonymous-generator env
-    /// materialisation, and child-builder provenance inheritance. Deliberately
-    /// NOT a drop ledger and NOT consulted by closure-pair ingress/drop
-    /// machinery: taint answers "may this `fn(..)` value hide a heap env?",
-    /// never "who frees the env box".
-    pub(crate) closure_pair_env_may_be_nonnull: HashSet<BindingId>,
-    /// Closure-pair bindings whose ownership has already left them via a
-    /// rebind (`ClosurePairRhs::TransferFrom`). The dataflow checker flags
-    /// any later use of these on its own: the rebind's RHS read carries
-    /// HIR's `IntentKind::Consume`, so the source binding is `Consumed` in
-    /// the lattice and every subsequent read is `UseAfterConsume`. The
-    /// ingress gate consults this set only to avoid stacking a second
-    /// `ClosurePairBorrowedStore` diagnostic on a use the move checker
-    /// already rejects.
-    pub(crate) closure_pair_moved: HashSet<BindingId>,
-    /// Fn-typed (`ty_is_closure_pair`) PARAMETER bindings whose closure env is
-    /// provably heap-allocated, and which may therefore transfer env ownership
-    /// into an owning container (a record field, Vec element, tuple, or
-    /// machine payload) when stored — the same sole-owner transfer the closure-
-    /// *literal* and fn-call-*result* ingress paths already perform.
-    ///
-    /// SOUNDNESS PREMISE (the one fact this whole set rests on): a closure that
-    /// reaches a parameter has crossed a call boundary as an argument, so the
-    /// checker classified it `AnonContext::PassedToHigherOrder` →
-    /// `ClosureEscapeKind::Escapes` → `AllocationStrategy::Heap`
-    /// (`hew-types/src/check/mod.rs`; `hew-mir/src/closure_env.rs`). Its env was
-    /// heap-boxed by the CALLER before the call, never a stack/frame address.
-    /// So the conservative "a param pair may carry a stack env, freeing one
-    /// would over-free a frame address" assumption that keeps a bare parameter
-    /// in the `Borrowed` (refuse) class does NOT hold for a fn-typed param — it
-    /// is ownable exactly like a fn-typed call result. If a future change ever
-    /// admits a `Local`/stack-env closure into a parameter position, this
-    /// premise breaks; the field-store would over-free. The leak oracle
-    /// (`hew-cli/tests/closure_in_struct_leak_oracle.rs`) pins it with a
-    /// poisoned-allocator floor-equality / no-double-free check.
-    ///
-    /// This set drives ONLY the ingress classification in
-    /// `classify_closure_pair_ingress` (`Borrowed` → `OwnedBinding`). It is
-    /// deliberately DISJOINT from `closure_pair_owned`: it is NOT a drop
-    /// ledger. Merging it into `closure_pair_owned` would feed
-    /// `derive_closure_pair_drop_allowed` a param that is read only by
-    /// `CallClosure` (the benign callee read), which the aliasing scan does not
-    /// mark, so an UNSTORED-but-invoked param would gain an erroneous scope-exit
-    /// drop — a double-free of an env the param never owned. Two sets, two
-    /// purposes (ingress classification vs `Let`-binding drop admission).
-    pub(crate) closure_pair_param_owned: HashSet<BindingId>,
-    /// Reserved context for the later transition-body lowering slice. When
-    /// set, the `BindingId` identifies the step function's `self` parameter
-    /// slot so `HirExprKind::MachineFieldAccess` can address payload reads
-    /// via `Place::MachineVariant`.
-    ///
-    /// `None` outside a machine step body. This is the MIR analogue of the
-    /// HIR-side `current_machine_self_binding` / `current_machine_source_state`
-    /// context — HIR already resolves the field's `state_idx` and `field_idx`
-    /// at lowering time, so MIR only needs the addressing binding.
-    ///
-    /// Slice 4a's step shell leaves this unset because transition bodies are
-    /// not lowered. Slice 4b sets it while walking transition bodies; Slice
-    /// 4c reads the emitted `Place::MachineVariant` places.
-    pub(crate) current_machine_self_binding: Option<BindingId>,
-    pub(crate) current_machine_event_binding: Option<BindingId>,
-    /// Stable machine-type id (`machine_emit_type_id`) for the machine step
-    /// function currently being lowered. Set alongside
-    /// `current_machine_self_binding` / `current_machine_event_binding` by
-    /// `emit_machine_step_transition_return` (transition bodies) and
-    /// `lower_machine_lifecycle_block` (HIR admits `emit` inside `entry {}`
-    /// / `exit {}` too — both call sites must set this so
-    /// `HirExprKind::MachineEmit` can stamp `Instr::MachineEmitPlaceholder`'s
-    /// `machine_emit_id` regardless of which machine body context it
-    /// appears in). `None` outside a machine step/lifecycle body.
-    pub(crate) current_machine_emit_type_id: Option<u64>,
-    /// Set to `true` inside a gen-block body builder to enable
-    /// `HirExprKind::Yield` → `Terminator::Yield` construction.
-    /// The parent builder's field stays `false` (the `Default`).
-    /// A `Yield` node encountered when `in_gen_body` is `false` is a
-    /// checker invariant violation (HIR should never surface `yield`
-    /// outside a gen block) — fail-closed with `UnsupportedNode`.
-    /// S3b will extend this context with the cross-yield live-set
-    /// accumulator once liveness analysis lands.
-    pub(crate) in_gen_body: bool,
-    /// Set on the SHELL builder of a `receive gen fn` handler (a `HirFn`
-    /// with `is_generator: true` lowered under `FunctionCallConv::ActorHandler`
-    /// — derived in `lower_function`, never threaded as a separate parameter).
-    /// When present, the `HirExprKind::GenBlock` dispatch arm in `lower_value`
-    /// reshapes the shell into a stream-producer PUMP instead of returning the
-    /// freshly-constructed generator handle: `gen_place` is driven with
-    /// `Instr::GeneratorNext` in a loop, each yielded value is forwarded via
-    /// `Terminator::Suspend`/`SuspendKind::StreamSend { sink, value }`, and a
-    /// `None` result closes `sink` and falls off the end (Unit return). `None`
-    /// for every other function, including a standalone `gen fn`/`gen {}`
-    /// shell (`Default` call conv), which still returns the generator handle
-    /// to its caller unchanged.
-    pub(crate) stream_producer_pump: Option<StreamProducerPumpCtx>,
-    /// Per-scope deferred bodies collected during statement lowering.
-    /// Key: the `ScopeId` of the HIR scope that owns the defer.
-    /// Value: deferred body expressions in registration order (FIFO).
-    /// `emit_pending_defers(scope_id)` drains and lowers them in LIFO
-    /// (reverse registration) order at every exit from that scope.
-    ///
-    /// Q205-B: bindings inside defer bodies resolve by lexical reference
-    /// at execution time — mutable vars observe their final value;
-    /// moved/consumed bindings are rejected by the move-checker at the
-    /// materialization site.
-    pub(crate) pending_defers: HashMap<ScopeId, Vec<HirExpr>>,
-    /// W3.031 Stage 1: per-binding `TraitObjectStorage` ledger for
-    /// `dyn Trait` locals. Populated at the binding's introducing
-    /// `HirStmtKind::Let` statement when the resolved type is
-    /// `ResolvedTy::TraitObject` — `FrameOwned` for coercion-site
-    /// RHS (`HirExprKind::CoerceToDynTrait`) and direct binding
-    /// rebinds, `HeapBoxed` for call-result RHS (`HirExprKind::Call`,
-    /// `CallTraitMethodStatic`, `CallDynMethod`) returning `dyn Trait`
-    /// — and consumed by `build_lifo_drops` to construct the
-    /// `DropKind::TraitObject { storage }` discriminator.
-    ///
-    /// Keys are the `BindingId` of the owning `let`-binding (the same
-    /// key used by `binding_locals` / `owned_locals`). A binding that
-    /// the classifier could not resolve to one of the two storage
-    /// shapes emits a `MirDiagnosticKind::TraitObjectStorageUndetermined`
-    /// diagnostic and is not added to `owned_locals` — drop elaboration
-    /// then skips the binding, and the pipeline aborts at the MIR
-    /// boundary instead of fabricating a default storage.
-    pub(crate) dyn_trait_storage: HashMap<BindingId, TraitObjectStorage>,
-    /// Path-sensitive drop-flag for each non-idempotent user `#[resource]`
-    /// binding (#1933 / #1941). Keyed by the resource's `BindingId` (same
-    /// key as `binding_locals` / `owned_locals`); the value is a fresh
-    /// `i64` `Place::Local` initialised to 0 at the binding's introduction
-    /// and set to 1 at each `IntentKind::Consume` use site.
-    ///
-    /// Populated ONLY for bindings that satisfy `resource_needs_drop_flag`
-    /// (a `DropKind::Resource` whose ritual is a `DropFnSpec::UserClose`).
-    /// A binding present here is KEPT in `owned_locals` across its consume
-    /// (we do NOT call `mark_binding_moved` for it), so the per-exit
-    /// `drops_for_exit` dataflow filter narrows the drop per control-flow
-    /// path and codegen gates the surviving close on `flag == 0` — exactly
-    /// once on a `MaybeConsumed` join. A user resource absent here (no flag
-    /// allocated) falls back to the legacy path-insensitive
-    /// `mark_binding_moved` removal: fail-closed to no-double-close (it may
-    /// leak on a not-consumed branch, the pre-#1933 posture, but never
-    /// double-frees the non-idempotent close).
-    pub(crate) resource_drop_flags: HashMap<BindingId, Place>,
-    /// #2301 (extends #53): runtime drop-flags for an owned
-    /// `var`-local that is BOTH genuinely consumed (`intent=Consume`, a
-    /// move-out such as `let m = r`) on one control-flow path AND reassigned
-    /// (`r = <rhs>`) on another. The path-insensitive `owned_locals` removal at
-    /// the consume would otherwise make the overwrite-release static gate skip
-    /// the release on the NON-consuming path, leaking the still-owned old value
-    /// (~1 block/iteration in a loop). The flag is zero-init at the binding's
-    /// `let` (so it dominates every consume and overwrite, including loop
-    /// back-edges), set to 1 at each `mark_binding_moved`, gates the
-    /// overwrite-release on `flag == 0`, and is reset to 0 after the overwrite
-    /// stores a fresh value. Scope-exit drops are unaffected: owned
-    /// record/string locals are released through the `elaborate` allow-set
-    /// prover (`CowValue` arm), not `owned_locals` / this flag.
-    pub(crate) overwrite_guard_flags: HashMap<BindingId, Place>,
-    /// #2523: provenance for projected enum/machine payload binders, keyed on
-    /// the binder's `BindingId`. Populated in `lower_match_enum_tag`'s binder
-    /// loop for `MachineVariant`/`EnumVariant` sources; consulted at the
-    /// binder's `Consume`-intent move-out to emit `NeutralizePayloadSlot` for
-    /// the source slot and `AggregateAlias` for the scrutinee.
-    pub(crate) projected_payload_provenance: HashMap<BindingId, ProjectedPayloadProvenance>,
-    /// Set while lowering a match-arm guard expression that
-    /// can fall through to a later arm. A projected heap-payload binder consumed
-    /// with this flag set is rejected fail-closed (`GuardedConsume`): its
-    /// `NeutralizePayloadSlot` would run before the guard outcome is known, so a
-    /// false guard would fall through to a later arm re-destructuring the
-    /// now-null payload (null-fault / abort). Borrow-only guards never reach the
-    /// consume hook and are unaffected. Saved/restored around each guard lowering
-    /// so nested guards compose.
-    pub(crate) in_fallthrough_match_guard: bool,
-    /// #2418: runtime drop-flags for an owned collection local (owned-element
-    /// `Vec`, plain `Vec`, `HashMap`/`HashSet` handle) that the pre-pass saw
-    /// genuinely consumed (`intent=Consume`, a move-out such as `let ys = xs`)
-    /// somewhere in the body. The legacy path-insensitive `mark_binding_moved`
-    /// retraction at the consume site removed the binding from the scope-exit
-    /// set entirely, so a binding moved out on only SOME control-flow paths
-    /// (`MaybeConsumed` at the converging join) leaked on the not-moved path —
-    /// the whole-value `Move` lowering does NOT null the source slot, so the
-    /// moved path cannot be discriminated statically at a shared exit.
-    ///
-    /// A flagged binding is KEPT in `owned_locals` at its consume sites
-    /// (mirroring the #1933 `resource_drop_flags` discipline): the flag is an
-    /// `i64` local zero-initialised at the binding's `let` (dominating every
-    /// consume, including loop back-edges) and set to 1 at each consume-use.
-    /// `build_lifo_drops` attaches it as the [`ElabDrop::guard`], so codegen
-    /// gates the release on `flag == 0` — exactly once on a `MaybeConsumed`
-    /// join: skipped where the value moved to a new owner, fired where it is
-    /// still owned. The per-exit `drops_for_exit` dataflow filter still
-    /// excludes exits where the binding is `Consumed` on every reaching path.
-    ///
-    /// Mutually exclusive with `overwrite_guard_flags` (a mutable binding both
-    /// consumed and reassigned keeps the #2301 overwrite path and today's
-    /// scope-exit retraction — fail-closed, no flag interplay). Bindings
-    /// outside the collection classes keep the legacy retraction (leak on the
-    /// not-moved path, never double-free).
-    pub(crate) collection_drop_flags: HashMap<BindingId, Place>,
-    /// #2301 per-function pre-pass scratch: `BindingId`s used with
-    /// `intent=Consume` anywhere in the body. Populated by
-    /// `collect_vec_owned_element_keys_from_expr` before lowering; intersected
-    /// with `prepass_reassigned_bindings` + `owned_locals` membership to decide
-    /// which bindings get an `overwrite_guard_flags` entry.
-    pub(crate) prepass_consumed_bindings: HashSet<BindingId>,
-    /// #2418 per-function pre-pass scratch: `BindingId`s with a
-    /// `intent=Consume` use in any position OTHER than a direct `let`-rebind
-    /// initializer (`let y = xs;`) — a by-value call argument, an
-    /// aggregate-literal field (`Holder { items: xs }`), a `return xs`, an
-    /// assignment RHS, a match scrutinee, and every nested-expression read.
-    /// A binding in this set never gets a `collection_drop_flags` entry:
-    /// those consume shapes are owning-sink ESCAPES to the allow-set provers,
-    /// and keeping the source registered (flagged) would leave it a candidate
-    /// whose escape taints its whole whole-value alias group — excluding a
-    /// destination the unflagged (retract-at-consume) path admits. Fail
-    /// closed to the legacy retraction instead: behaviour byte-identical to
-    /// the pre-flag compiler for every non-rebind consume shape.
-    pub(crate) prepass_nonrebind_consumed: HashSet<BindingId>,
-    /// #2301 per-function pre-pass scratch: `BindingId`s that are the target of an
-    /// `Assign` (`r = <rhs>`) anywhere in the body.
-    pub(crate) prepass_reassigned_bindings: HashSet<BindingId>,
-    /// Stack of active scope IDs in nesting order (outermost at index 0,
-    /// innermost at the end). Pushed when entering a `Block` expression or
-    /// `function_body`; popped on exit. Read by `emit_defers_for_return` to
-    /// walk the full scope chain on early-return paths, emitting defers for
-    /// every enclosing scope that has registered bodies.
-    pub(crate) active_scopes: Vec<ScopeId>,
-    /// Stack of enclosing loop control targets, innermost at the end.
-    ///
-    /// `continue_target_bb` is the block a `continue` jumps to (the header for
-    /// `while`/`while let`, the increment block for `for`, the body for bare
-    /// `loop`). `exit_bb` is the block a `break` jumps to (always allocated,
-    /// even for a `loop` with no `break`, so the post-loop cursor has a home).
-    /// `scopes_depth_at_entry` is `active_scopes.len()` captured *before* the
-    /// loop body scope is pushed; `emit_defers_for_break_continue` flushes
-    /// `active_scopes[scopes_depth_at_entry..]` so break/continue run the
-    /// defers of every scope opened inside the loop body (LIFO) without
-    /// touching the loop's enclosing scopes.
-    ///
-    /// Pushed when entering a loop body, popped after the body walk. Labeled
-    /// break/continue scans this stack from inner to outer and uses the matched
-    /// frame's `scope_depth` as the bounded defer/drop flush window. Unknown
-    /// labels are a type-checker error; MIR still reports a diagnostic instead
-    /// of panicking if malformed HIR reaches this boundary.
-    pub(crate) loop_stack: Vec<LoopFrame>,
-    /// Checker's per-send-site alias classification, keyed by the source span
-    /// of each actor-send argument expression (same key as
-    /// `TypeCheckOutput::actor_send_aliasing`). Populated by the caller
-    /// (`lower_function` / `lower_hir_module_with_facts`); empty for the
-    /// backward-compat `lower_hir_module` path.
-    ///
-    /// `lower_actor_send` looks up `SpanKey::from(&args[0].span)` here and
-    /// stamps the resulting `SendAliasMode` onto `Terminator::Send.alias_mode`.
-    /// **Missing entry → `SendAliasMode::Copy`** (fail-closed).
-    ///
-    /// LESSONS: `serializer-fail-closed` (P0) — default MUST be Copy.
-    /// `copy ⊥ sendable` (P0) — derived SOLELY from this table, never from
-    /// a `Copy`-marker check.
-    pub(crate) actor_send_aliasing: HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
-    /// Stage 2 (gdb `-g`): byte-offset span `(start, end)` of the HIR
-    /// statement / tail expression currently being lowered. Set at each
-    /// statement boundary (`stmt`) and at the function tail (`function_body`);
-    /// read by `push_instr` to attribute every emitted `Instr` to its
-    /// originating source line. `None` outside any statement (synthesised
-    /// prologue/epilogue work) — those instructions get NO side-table entry
-    /// and inherit the nearest enclosing `DILocation` at codegen (fail-closed:
-    /// a real but coarser line, never a fabricated one).
-    pub(crate) current_span: Option<(u32, u32)>,
-    /// Stage 2 (gdb `-g`): per-instruction source spans for THIS function,
-    /// keyed by `(block_id, instruction_index)` and valued by the enclosing
-    /// statement/expression byte span. Populated incrementally by `push_instr`
-    /// (the index is the live `instructions.len()` before the push — the
-    /// instruction's final position in its block, because the per-block buffer
-    /// is moved out whole by `finish_current_block` / `finalize_blocks`).
-    /// Transferred into `RawMirFunction::instr_spans` at function finalisation.
-    pub(crate) instr_spans: BTreeMap<(u32, u32), (u32, u32)>,
-    /// Target pointer width (32 on wasm32, 64 native), threaded from the
-    /// compile target so the `isize`/`usize` div/rem signed-MIN and shift-range
-    /// trap guards emit the correct per-target constant. Derived from
-    /// `TargetArch`, never a host `cfg!` (a cross-compile would otherwise emit
-    /// host-width guards — a fail-open hole). Defaults to `Bits64` (every native
-    /// target); the host-defaulting `lower_hir_module` wrapper keeps the default.
-    pub(crate) pointer_width: PointerWidth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

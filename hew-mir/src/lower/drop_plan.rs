@@ -5263,11 +5263,17 @@ mod drop_admission_type_shape_pins {
             include_str!("mod.rs"),
             include_str!("ownership.rs"),
             include_str!("scope.rs"),
+            include_str!("expr.rs"),
+            include_str!("pattern.rs"),
+            include_str!("control_flow.rs"),
+            include_str!("task.rs"),
+            include_str!("actor.rs"),
+            include_str!("closure_gen.rs"),
         ]
         .into_iter()
         .map(|src| {
             src.replace("\r\n", "\n")
-                .split("\n#[cfg(test)]\n")
+                .split("\n#[cfg(test)]\nmod ")
                 .next()
                 .expect("lower module source has a non-test prefix")
                 .to_string()

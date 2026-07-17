@@ -5255,15 +5255,25 @@ mod drop_admission_type_shape_pins {
         );
     }
 
-    /// The production (non-test) prefix of `lower.rs`. CRLF-normalised so a
-    /// Windows checkout (`core.autocrlf=true`) still splits on the LF-anchored
-    /// test-module boundary (mirrors `layout_key_shortening_guard`).
+    /// The production (non-test) sources of the lower module. CRLF-normalised
+    /// so a Windows checkout (`core.autocrlf=true`) still splits on the
+    /// LF-anchored test-module boundary (mirrors `layout_key_shortening_guard`).
     fn production_source() -> String {
-        let src = include_str!("mod.rs").replace("\r\n", "\n");
-        src.split("\n#[cfg(test)]\n")
-            .next()
-            .expect("lower.rs has a non-test prefix")
-            .to_string()
+        [
+            include_str!("mod.rs"),
+            include_str!("ownership.rs"),
+            include_str!("scope.rs"),
+        ]
+        .into_iter()
+        .map(|src| {
+            src.replace("\r\n", "\n")
+                .split("\n#[cfg(test)]\n")
+                .next()
+                .expect("lower module source has a non-test prefix")
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     /// Structural inventory pin for the owned-locals seed fact: every
@@ -5297,7 +5307,7 @@ mod drop_admission_type_shape_pins {
         assert_eq!(
             count, 3,
             "a raw copy of the owned-locals seed comparison appeared in (or \
-             an allowlisted use vanished from) lower.rs production code; \
+             an allowlisted use vanished from) lower module production code; \
              seed decisions route through `binding_seeds_drop_elaboration`, \
              never an inline class test — classify any change to this \
              population in the allowlist above deliberately"

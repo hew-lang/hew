@@ -7791,10 +7791,19 @@ fn collect_xnode_codec_drop_seeds(
                 .or_else(|| enum_layouts.iter().find(|el| short_name(&el.name) == short))
                 .map(|el| el.name.clone())
         } else {
-            let mangled = mangle_with_shortened_args(short, args);
+            // Mirror `xnode_registry_key`: a generic layout keeps its qualified
+            // outer name with the arg spine shortened (`pkg.E$$i64`), so probe
+            // the FULL-qualified mangled key first and fall back to the
+            // short-name mangled key (`E$$i64`). The decoder resolves the drop
+            // helper under the full key, so seeding only the short key (or the
+            // unmangled `pkg.E`) left a full-key helper declared without a body
+            // and LLVM rejected the dangling declaration (#2208).
+            let full_mangled = mangle_with_shortened_args(name, args);
+            let short_mangled = mangle_with_shortened_args(short, args);
             enum_layouts
                 .iter()
-                .find(|el| el.name == mangled || el.name == *name)
+                .find(|el| el.name == full_mangled)
+                .or_else(|| enum_layouts.iter().find(|el| el.name == short_mangled))
                 .map(|el| el.name.clone())
         };
         if let Some(key) = enum_key {
@@ -7815,10 +7824,17 @@ fn collect_xnode_codec_drop_seeds(
                 })
                 .map(|rl| rl.name.clone())
         } else {
-            let mangled = mangle_with_shortened_args(short, args);
+            // Mirror `xnode_registry_key` (see the enum branch above): probe the
+            // FULL-qualified mangled key (`pkg.R$$i64`) first, then the
+            // short-name mangled key (`R$$i64`), so a qualified generic record
+            // layout gets its drop-helper body seeded under the same key the
+            // decoder declares it (#2208).
+            let full_mangled = mangle_with_shortened_args(name, args);
+            let short_mangled = mangle_with_shortened_args(short, args);
             record_layouts
                 .iter()
-                .find(|rl| rl.name == mangled || rl.name == *name)
+                .find(|rl| rl.name == full_mangled)
+                .or_else(|| record_layouts.iter().find(|rl| rl.name == short_mangled))
                 .map(|rl| rl.name.clone())
         };
         if let Some(key) = rec_key {

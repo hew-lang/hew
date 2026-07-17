@@ -267,6 +267,18 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 impl ResolvedTy {
+    /// Returns whether this type carries the checker-stamped builtin identity.
+    #[must_use]
+    pub fn is_builtin(&self, expected: BuiltinType) -> bool {
+        matches!(
+            self,
+            Self::Named {
+                builtin: Some(actual),
+                ..
+            } if *actual == expected
+        )
+    }
+
     /// Returns `true` for every concrete integer type admitted by the checker.
     /// `Bool` and `Char` are deliberately excluded: `bool` participates in
     /// explicit casts only through the checker-owned bool<->integer rules, and
@@ -939,6 +951,26 @@ pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_identity_uses_the_carried_discriminant() {
+        let builtin_vec = ResolvedTy::Named {
+            name: "Vec".into(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(BuiltinType::Vec),
+            is_opaque: false,
+        };
+        assert!(builtin_vec.is_builtin(BuiltinType::Vec));
+        assert!(!builtin_vec.is_builtin(BuiltinType::HashMap));
+
+        let user_vec = ResolvedTy::Named {
+            name: "Vec".into(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        assert!(!user_vec.is_builtin(BuiltinType::Vec));
+    }
 
     #[test]
     fn integer_literal_match_scrutinee_admits_all_integer_widths_only() {

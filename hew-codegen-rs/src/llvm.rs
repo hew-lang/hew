@@ -37770,13 +37770,10 @@ mod tests {
         finish_test_fn(&fn_ctx);
     }
 
-    /// W5.011 P3 (Fix #2.2): `resolved_ty_cow_heap_release` dispatches on the
-    /// `builtin` discriminant, NOT the `name` string. A user-defined type
-    /// named "Vec" with `builtin: None` must NOT be routed to `hew_vec_free`
-    /// (which would free a non-Vec layout). The resolved release's symbol reads
-    /// the single `CowHeapRelease::release_symbol` authority.
+    /// Checker-stamped runtime collection dispatch must use the `builtin`
+    /// discriminant, not a colliding user type's name.
     #[test]
-    fn resolved_ty_cow_heap_release_ignores_user_named_collision() {
+    fn checker_stamped_collection_dispatch_ignores_user_name_collisions() {
         let ctx = Context::create();
         let llvm_mod = ctx.create_module("cow_heap_release_test");
         let harness = build_harness(&ctx, &[], &[]);
@@ -37785,18 +37782,20 @@ mod tests {
         let sym =
             |ty: &ResolvedTy| resolved_ty_cow_heap_release(&fn_ctx, ty).map(|r| r.release_symbol());
 
-        // User type literally named "Vec" but not the builtin.
-        let user_vec = ResolvedTy::Named {
-            name: "Vec".to_string(),
-            args: vec![],
-            builtin: None,
-            is_opaque: false,
-        };
-        assert_eq!(
-            sym(&user_vec),
-            None,
-            "a user `Named {{ name: \"Vec\", builtin: None }}` must not resolve to hew_vec_free"
-        );
+        for name in ["Vec", "HashMap", "HashSet"] {
+            let user_ty = ResolvedTy::Named {
+                name: name.to_string(),
+                args: vec![],
+                builtin: None,
+                is_opaque: false,
+            };
+            assert_eq!(
+                sym(&user_ty),
+                None,
+                "user type `{name}` must not resolve to a runtime collection release"
+            );
+        }
+
         // The genuine builtin Vec of a string element: `string` takes its own
         // ElemKind path, so the Vec releases via the plain `hew_vec_free`.
         let builtin_vec = ResolvedTy::Named {
@@ -38307,6 +38306,8 @@ mod tests {
         );
     }
 
+    /// Positive guard: layout-sourced genuine builtins can carry `builtin: None`
+    /// and must stay on the runtime layout ABI.
     #[test]
     fn hashmap_layout_ops_get_emits_clone_call_and_option_branches() {
         let ctx = Context::create();

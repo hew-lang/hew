@@ -2043,7 +2043,8 @@ impl Builder {
             }
             // `xs[i] = v` over a `Vec<T>` lowers to the same runtime call that
             // `xs.set(i, v)` emits.
-            HirExprKind::Index { container, index } if matches!(&self.subst_ty(&container.ty), ResolvedTy::Named { name, .. } if name == "Vec") =>
+            HirExprKind::Index { container, index }
+                if self.subst_ty(&container.ty).is_builtin(BuiltinType::Vec) =>
             {
                 let Some(vec_place) = self.lower_value(container) else {
                     return;
@@ -2084,7 +2085,10 @@ impl Builder {
             // accepted this target with value type `V`, so `src` already holds
             // a `V`-typed value. The container/index were NOT pre-lowered (the
             // outer `assign` only lowered `value`), so lower them here.
-            HirExprKind::Index { container, index } if matches!(&self.subst_ty(&container.ty), ResolvedTy::Named { name, .. } if name == "HashMap") =>
+            HirExprKind::Index { container, index }
+                if self
+                    .subst_ty(&container.ty)
+                    .is_builtin(BuiltinType::HashMap) =>
             {
                 let Some(map_place) = self.lower_value(container) else {
                     return;
@@ -4069,7 +4073,7 @@ impl Builder {
                     // aborts with IndexOutOfBounds on a miss (the map analogue of
                     // `v[i]` OOB). `m.get(k) -> Option<V>` is the non-aborting
                     // form and takes the `ResolvedImplCall` get path.
-                    ResolvedTy::Named { name, .. } if name == "HashMap" => {
+                    ty if ty.is_builtin(BuiltinType::HashMap) => {
                         self.lower_hashmap_index_trap(container, index, &elem_ty, expr.site)
                     }
                     _ => self.lower_vec_index(container, index, &elem_ty, expr.site),
@@ -6891,7 +6895,9 @@ impl Builder {
         // Resolve element type from the result Vec<T> for runtime dispatch.
         let result_ty = self.subst_ty(result_ty);
         let elem_ty = match &result_ty {
-            ResolvedTy::Named { name, args, .. } if name == "Vec" && !args.is_empty() => {
+            ResolvedTy::Named { args, .. }
+                if result_ty.is_builtin(BuiltinType::Vec) && !args.is_empty() =>
+            {
                 args[0].clone()
             }
             other => {

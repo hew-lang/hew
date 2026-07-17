@@ -24,7 +24,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy};
 use hew_mir::Place;
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 use crate::layout::{
     get_or_declare_bool_vec_runtime, get_or_declare_owned_vec_runtime,
@@ -32,6 +32,13 @@ use crate::layout::{
 };
 #[allow(unused_imports)]
 use crate::llvm::*;
+
+fn stamped_vec_element_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    let ResolvedTy::Named { args, .. } = ty else {
+        return None;
+    };
+    (ty.is_builtin(BuiltinType::Vec) && args.len() == 1).then(|| &args[0])
+}
 
 /// Decode a setup ABI whose positive return is an internal ref id and whose
 /// negative return encodes an error enum as `-(variant + 1)`.
@@ -2381,18 +2388,14 @@ pub(crate) fn lower_call_runtime_abi(
                 // `llvm.rs::lower_layout_vec_direct_call` so the descriptor
                 // slice ABI has one codegen helper.
                 let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
-                let elem_hew_ty = match &vec_resolved_ty {
-                    ResolvedTy::Named {
-                        name,
-                        args: vec_args,
-                        ..
-                    } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
-                    other => {
-                        return Err(CodegenError::FailClosed(format!(
-                            "hew_vec_slice_range_layout: arg0 must be Vec<T>, got {other:?}"
-                        )));
-                    }
-                };
+                let elem_hew_ty = stamped_vec_element_ty(&vec_resolved_ty)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "hew_vec_slice_range_layout: arg0 must be Vec<T>, got \
+                             {vec_resolved_ty:?}"
+                        ))
+                    })?;
                 let layout_elem_ty = layout_vec_element_needs_descriptor(fn_ctx, &elem_hew_ty)?
                     .ok_or_else(|| {
                         CodegenError::FailClosed(format!(
@@ -6347,4 +6350,28 @@ pub(crate) fn predeclare_extern_decls<'ctx>(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stamped_vec_element_ignores_user_name_collision() {
+        let user_vec = ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: None,
+            is_opaque: false,
+        };
+        assert_eq!(stamped_vec_element_ty(&user_vec), None);
+
+        let builtin_vec = ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: Some(BuiltinType::Vec),
+            is_opaque: false,
+        };
+        assert_eq!(stamped_vec_element_ty(&builtin_vec), Some(&ResolvedTy::I64));
+    }
 }

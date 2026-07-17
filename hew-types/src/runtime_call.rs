@@ -561,6 +561,13 @@ pub enum RuntimeCallFamily {
     VtableDispatchPanicOnOob,
 }
 
+/// Module-level runtime authorities implied by typed runtime-call families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeCapability {
+    Metrics,
+    Node,
+}
+
 impl RuntimeCallFamily {
     /// Resolve the C-ABI symbol the family lowers to. Total function;
     /// every variant has exactly one symbol (the bijection guarantee).
@@ -1293,6 +1300,28 @@ impl RuntimeCallFamily {
                 | Self::NodeShutdown
                 | Self::NodeStart
         )
+    }
+
+    /// Runtime authority required by this call family, when one is carried.
+    #[must_use]
+    pub const fn runtime_capability(self) -> Option<RuntimeCapability> {
+        match self {
+            Self::MetricCounterRegister
+            | Self::MetricCounterInc
+            | Self::MetricCounterAdd
+            | Self::MetricGaugeRegister
+            | Self::MetricGaugeSet
+            | Self::MetricGaugeInc
+            | Self::MetricGaugeDec
+            | Self::MetricGaugeAdd
+            | Self::MetricHistogramRegister
+            | Self::MetricHistogramRegisterSimple
+            | Self::MetricHistogramRecord
+            | Self::MetricVecRegister
+            | Self::MetricVecWith => Some(RuntimeCapability::Metrics),
+            family if family.is_node_builtin() => Some(RuntimeCapability::Node),
+            _ => None,
+        }
     }
 
     /// True for compiler-recognised MIR spellings with no runtime export.
@@ -2168,6 +2197,19 @@ mod tests {
             RuntimeCallFamily::from_mir_builtin_symbol("hew_hashmap_insert_layout"),
             Some(RuntimeCallFamily::HashMapInsertLayout)
         );
+    }
+
+    #[test]
+    fn runtime_capabilities_are_classified_by_family() {
+        assert_eq!(
+            RuntimeCallFamily::MetricCounterInc.runtime_capability(),
+            Some(RuntimeCapability::Metrics)
+        );
+        assert_eq!(
+            RuntimeCallFamily::NodeStart.runtime_capability(),
+            Some(RuntimeCapability::Node)
+        );
+        assert_eq!(RuntimeCallFamily::DuplexSend.runtime_capability(), None);
     }
 
     #[test]

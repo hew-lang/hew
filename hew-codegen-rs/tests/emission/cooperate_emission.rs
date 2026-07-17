@@ -89,6 +89,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
             cooperate_sites,
         }],
         elaborated_mir: Vec::new(),
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: Vec::new(),
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

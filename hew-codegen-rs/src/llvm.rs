@@ -76,7 +76,8 @@ use hew_mir::{
     SupervisorChildLayout, SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
 use hew_types::{
-    BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable, WireTextFormat,
+    runtime_call::RuntimeCapability, BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection,
+    WireLayoutTable, WireTextFormat,
 };
 // Single source of truth for the trap discriminants codegen emits. Importing
 // these from the runtime makes a renumber on either side a build error rather
@@ -27469,44 +27470,6 @@ fn validate_context_markers_for_codegen(func: &RawMirFunction) -> Vec<hew_mir::M
 /// owned by `RuntimeInner::node`) is touched the moment a program calls
 /// `Node::set_transport`/`start`/`connect`/`register`/`lookup`/`shutdown`.
 /// Those builtins lower to `Terminator::Call` with a typed Node family.
-/// A program can touch the node authority WITHOUT declaring any actor (e.g. a
-/// bare `Node::start` smoke), so node presence is an independent reason to
-/// install the runtime at program entry — actor/supervisor presence does not
-/// imply it. Scans every function body's terminators for a typed Node builtin.
-fn module_uses_node_authority(raw_mir: &[RawMirFunction]) -> bool {
-    raw_mir.iter().any(|func| {
-        func.blocks.iter().any(|block| {
-            matches!(
-                &block.terminator,
-                Terminator::Call {
-                    builtin: Some(family),
-                    ..
-                } if family.is_node_builtin()
-            )
-        })
-    })
-}
-
-/// Does the module reach the user-metrics registry authority?
-///
-/// The de-globalized metrics registry is owned by `RuntimeInner::metrics`.
-/// Registration and mutation remain fail-closed in the runtime, so a metrics-only
-/// program must install the runtime at `main` entry just like node/actor programs
-/// do. Scans every function body's runtime-call instructions for the C-ABI symbols that
-/// `std::metrics` lowers to.
-fn module_uses_metric_authority(raw_mir: &[RawMirFunction]) -> bool {
-    raw_mir.iter().any(|func| {
-        func.blocks.iter().any(|block| {
-            block.instructions.iter().any(|instr| {
-                matches!(
-                    instr,
-                    Instr::CallRuntimeAbi(call) if call.symbol().starts_with("hew_metric_")
-                )
-            })
-        })
-    })
-}
-
 /// Does the module reach a blocking-pool offload authority (net DNS / TCP
 /// connect)?
 ///
@@ -30513,8 +30476,8 @@ fn build_module_for_target<'ctx>(
     // registration/mutation, the implicit drain epilogue).
     let module_uses_runtime = !pipeline.actor_layouts.is_empty()
         || !pipeline.supervisor_layouts.is_empty()
-        || module_uses_node_authority(&pipeline.raw_mir)
-        || module_uses_metric_authority(&pipeline.raw_mir)
+        || pipeline.capabilities.contains(RuntimeCapability::Node)
+        || pipeline.capabilities.contains(RuntimeCapability::Metrics)
         || module_uses_blocking_offload(&pipeline.raw_mir);
     let machine_step_symbols: HashSet<String> = pipeline
         .raw_mir
@@ -32710,6 +32673,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33338,6 +33302,7 @@ mod tests {
             raw_mir: vec![invoke, main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33426,6 +33391,7 @@ mod tests {
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33566,6 +33532,7 @@ mod tests {
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33681,6 +33648,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33824,6 +33792,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -33961,6 +33930,7 @@ mod tests {
             raw_mir: vec![handler],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -34050,6 +34020,7 @@ mod tests {
             raw_mir: vec![handler],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -34133,6 +34104,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -34419,6 +34391,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -34637,6 +34610,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -35430,6 +35404,7 @@ mod tests {
             raw_mir: vec![func],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -35521,6 +35496,7 @@ mod tests {
             raw_mir: vec![gen_body],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -35686,6 +35662,7 @@ mod tests {
             raw_mir: vec![gen_body, enclosing],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -35895,6 +35872,7 @@ mod tests {
             raw_mir: vec![func],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36175,6 +36153,7 @@ mod tests {
             raw_mir: Vec::new(),
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36248,6 +36227,7 @@ mod tests {
             raw_mir: Vec::new(),
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36307,6 +36287,7 @@ mod tests {
             raw_mir: Vec::new(),
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36344,6 +36325,7 @@ mod tests {
             raw_mir: vec![body],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -36969,6 +36951,7 @@ mod tests {
             raw_mir: Vec::new(),
             checked_mir: Vec::new(),
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -39958,6 +39941,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: vec![],
             elaborated_mir: vec![],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: vec![],
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: vec![],
@@ -40116,6 +40100,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: vec![],
             elaborated_mir: vec![],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: vec![],
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: vec![],
@@ -40515,6 +40500,7 @@ mod tests {
             raw_mir: vec![raw],
             checked_mir: vec![],
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: vec![],
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: vec![],
@@ -40660,6 +40646,7 @@ mod tests {
             raw_mir: vec![raw],
             checked_mir: vec![],
             elaborated_mir: vec![elab],
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: vec![],
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: vec![],
@@ -41045,6 +41032,7 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -41297,6 +41285,7 @@ mod tests {
             raw_mir: vec![probe],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -41423,6 +41412,7 @@ mod tests {
             raw_mir: vec![probe],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -41623,6 +41613,7 @@ mod tests {
             raw_mir: vec![probe],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -41819,6 +41810,7 @@ mod tests {
             raw_mir: vec![fn_with_non_ptr_return_and_suspend],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),
@@ -42040,6 +42032,7 @@ mod tests {
             raw_mir,
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
+            capabilities: hew_mir::ModuleCapabilities::EMPTY,
             diagnostics: Vec::new(),
             wire_layouts: std::sync::Arc::default(),
             opaque_handle_names: Vec::new(),

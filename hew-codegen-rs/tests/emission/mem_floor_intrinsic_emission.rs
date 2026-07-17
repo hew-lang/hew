@@ -94,6 +94,7 @@ fn floor_pipeline(
             coroutine: None,
             lambda_captures: vec![],
         }],
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

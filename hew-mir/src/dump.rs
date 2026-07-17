@@ -1919,6 +1919,7 @@ mod tests {
             raw_mir: vec![],
             checked_mir: vec![],
             elaborated_mir: vec![],
+            capabilities: crate::model::ModuleCapabilities::EMPTY,
             diagnostics: vec![],
             opaque_handle_names: vec![],
             record_layouts: vec![],

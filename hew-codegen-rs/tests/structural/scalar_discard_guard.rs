@@ -127,6 +127,7 @@ fn pipeline_discard_extern_owned(
         raw_mir: vec![raw],
         checked_mir: vec![checked],
         elaborated_mir: vec![elab],
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

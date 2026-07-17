@@ -341,3 +341,56 @@ fn raw_mir_basic_block_round_trips_call_runtime_abi() {
         panic!("CallRuntimeAbi did not round-trip through RawMirFunction");
     }
 }
+
+#[test]
+fn module_capabilities_collect_typed_metric_and_node_calls() {
+    use hew_mir::{BasicBlock, ModuleCapabilities, RawMirFunction, Terminator};
+    use hew_types::runtime_call::{RuntimeCallFamily, RuntimeCapability};
+
+    let function = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: "capabilities".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: hew_mir::FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![Instr::CallRuntimeAbi(
+                    hew_mir::RuntimeCall::new("hew_metric_counter_inc", vec![], None)
+                        .expect("metric call is allowlisted"),
+                )],
+                terminator: Terminator::Call {
+                    callee: "Node::start".to_string(),
+                    builtin: Some(RuntimeCallFamily::NodeStart),
+                    args: vec![],
+                    dest: None,
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    };
+
+    let capabilities = ModuleCapabilities::from_raw_mir(&[function]);
+    assert!(capabilities.contains(RuntimeCapability::Metrics));
+    assert!(capabilities.contains(RuntimeCapability::Node));
+}

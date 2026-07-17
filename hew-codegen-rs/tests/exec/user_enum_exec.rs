@@ -120,6 +120,7 @@ fn colour_red_pipeline() -> IrPipeline {
         raw_mir: vec![main_fn],
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: Vec::new(),
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

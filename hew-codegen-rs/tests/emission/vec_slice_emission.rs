@@ -231,6 +231,7 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
             coroutine: None,
             lambda_captures: vec![],
         }],
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
         diagnostics: vec![],
         wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],

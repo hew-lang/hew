@@ -680,8 +680,12 @@ impl Checker {
             // check time so the call fails closed with a structured diagnostic
             // instead of compiling to a wasm module that imports an undefined
             // `env::hew_node_api_*` symbol and traps at instantiation.
-            name if crate::runtime_call::RuntimeCallFamily::from_c_symbol(name)
-                .is_some_and(crate::runtime_call::RuntimeCallFamily::is_node_builtin) =>
+            name if crate::runtime_call::RuntimeCallFamily::from_c_symbol(name).is_some_and(
+                |family| {
+                    family.runtime_capability()
+                        == Some(crate::runtime_call::RuntimeCapability::Node)
+                },
+            ) =>
             {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
             }

@@ -243,6 +243,7 @@ tests/pkg-import/local_trait_shadows_imported_collision_accept.hew
 tests/pkg-import/local_type_shadows_import_alias_member.hew
 tests/pkg-import/local_type_shadows_import_alias.hew
 tests/pkg-import/missing_assoc_type_collision_accept.hew
+tests/pkg-import/mixed_collision_reply.hew
 tests/pkg-import/mixed_import_impl_collision.hew
 tests/pkg-import/nested_qualified_payload.hew
 tests/pkg-import/package_module_type_alias.hew
@@ -286,6 +287,7 @@ tests/pkg-import/record_destructure_selective_import.hew
 tests/pkg-import/reexport_aliased_super_inline_supermethod_accept.hew
 tests/pkg-import/reexport_chain_inline_supermethods_accept.hew
 tests/pkg-import/reexport_super_inline_supermethod_accept.hew
+tests/pkg-import/root_shadow_actor_ask.hew
 tests/pkg-import/samename_type_layout.hew
 tests/pkg-import/self_qualified_type_identity.hew
 

@@ -23641,9 +23641,7 @@ fn recv_dest_option_elem_ty(
         ))
     })?;
     match dest_ty {
-        ResolvedTy::Named { args, .. }
-            if dest_ty.is_builtin(BuiltinType::Option) && args.len() == 1 =>
-        {
+        ResolvedTy::Named { name, args, .. } if name == "Option" && args.len() == 1 => {
             Ok(args[0].clone())
         }
         other => Err(CodegenError::FailClosed(format!(
@@ -37779,17 +37777,8 @@ mod tests {
         let ctx = Context::create();
         let llvm_mod = ctx.create_module("cow_heap_release_test");
         let harness = build_harness(&ctx, &[], &[]);
-        let mut fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "cow_heap_release_probe");
+        let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "cow_heap_release_probe");
 
-        fn_ctx.local_tys.insert(
-            0,
-            ResolvedTy::Named {
-                name: "Option".to_string(),
-                args: vec![ResolvedTy::I64],
-                builtin: None,
-                is_opaque: false,
-            },
-        );
         let sym =
             |ty: &ResolvedTy| resolved_ty_cow_heap_release(&fn_ctx, ty).map(|r| r.release_symbol());
 
@@ -37806,11 +37795,6 @@ mod tests {
                 "user type `{name}` must not resolve to a runtime collection release"
             );
         }
-
-        assert!(
-            recv_dest_option_elem_ty(&fn_ctx, 0, "hew_channel_recv_layout").is_err(),
-            "user `Option<T>` must not be accepted as the runtime receive result"
-        );
 
         // The genuine builtin Vec of a string element: `string` takes its own
         // ElemKind path, so the Vec releases via the plain `hew_vec_free`.

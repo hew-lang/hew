@@ -115,6 +115,26 @@ ASAN_FIXTURE_TARGET_DIR="${ROOT}/target/sanitizer-fixture-asan"
 WORK_DIR="${ROOT}/.tmp/asan-fixture-out"
 mkdir -p "${WORK_DIR}"
 
+# ── Suppressions staging (hew-lang/hew#1889) ──────────────────────────────
+# The sanitizer runtime parses [LA]SAN_OPTIONS as a space-tolerant
+# key=value:key=value list, so a space inside the suppressions path value
+# (e.g. a worktree on /Volumes/Extreme SSD/...) makes it expect a new
+# key=value and abort with "expected '=' in LSAN_OPTIONS" before any fixture
+# runs. Stage lsan.supp into a mktemp dir (TMPDIR is conventionally space-free
+# on both Linux and macOS) so the value we pass never contains a space,
+# regardless of the absolute worktree location.
+SUPP_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hew-asan-supp.XXXXXX")"
+cleanup_supp_stage() { rm -rf "${SUPP_STAGE_DIR}"; }
+trap cleanup_supp_stage EXIT
+cp "${ROOT}/hew-runtime/lsan.supp" "${SUPP_STAGE_DIR}/lsan.supp"
+LSAN_SUPP="${SUPP_STAGE_DIR}/lsan.supp"
+if printf '%s' "${LSAN_SUPP}" | grep -q ' '; then
+  echo "asan-fixture-check: staged suppressions path still contains a space:" >&2
+  echo "  ${LSAN_SUPP}" >&2
+  echo "  set TMPDIR to a space-free directory and re-run." >&2
+  exit 1
+fi
+
 # ── Step 1: build ASan-instrumented hew + libhew.a ───────────────────────
 # Build with -Zsanitizer=address so the runtime's malloc/free paths are
 # instrumented.  The resulting hew binary and libhew.a live in the same
@@ -220,7 +240,7 @@ run_asan_fixture() {
 
   ASAN_OPTIONS="detect_leaks=1:log_path=${log_prefix}" \
   ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
-  LSAN_OPTIONS="suppressions=${ROOT}/hew-runtime/lsan.supp" \
+  LSAN_OPTIONS="suppressions=${LSAN_SUPP}" \
   HEW_WORKERS=1 \
     "${bin}" >/dev/null 2>/dev/null || actual_exit=$?
 

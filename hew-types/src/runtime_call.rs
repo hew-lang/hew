@@ -142,9 +142,9 @@ pub enum MathIntrinsic {
 /// Closed-set discriminator for every compiler-known runtime / builtin
 /// call. One variant per `(method, generic-arity)` tuple. Adding a new
 /// runtime symbol that MIR producers can emit means adding a variant
-/// here AND adding the round-trip arm in [`RuntimeCallFamily::c_symbol`]
-/// AND adding the symbol to `known_runtime_symbols` (allowlist-
-/// covered families only). The bijection test catches every drift.
+/// here, adding the round-trip arm in [`RuntimeCallFamily::c_symbol`],
+/// and classifying its MIR-emitter route. The bijection and fingerprint
+/// tests catch every drift.
 ///
 /// Variants are grouped by surface family; ordering within a group is
 /// alphabetical by C-symbol leaf to ease diffing against the allowlist.
@@ -1253,6 +1253,33 @@ impl RuntimeCallFamily {
         )
     }
 
+    /// True for compiler-recognised MIR spellings with no runtime export.
+    #[must_use]
+    pub const fn is_synthetic_mir_symbol(self) -> bool {
+        matches!(
+            self,
+            Self::BytesGet
+                | Self::RegexCapture
+                | Self::RegexCompile
+                | Self::RegexFreeCapture
+                | Self::RegexHandle
+                | Self::RegexMatch
+                | Self::StringGet
+        )
+    }
+
+    /// True when `Instr::CallRuntimeAbi` may carry this family.
+    #[must_use]
+    pub const fn is_mir_emitter_family(self) -> bool {
+        !is_pre_staged_family(self)
+    }
+
+    /// True when the MIR emitter family names a real runtime export.
+    #[must_use]
+    pub const fn is_runtime_backed_mir_family(self) -> bool {
+        self.is_mir_emitter_family() && !self.is_synthetic_mir_symbol()
+    }
+
     /// Codegen ABI partition for collection direct-call routing.
     #[must_use]
     pub const fn abi_shape(self) -> RuntimeCallAbiShape {
@@ -1967,7 +1994,7 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 10] {
 /// When the follow-up wires the producers, the symbols join the allowlist and
 /// this list shrinks.
 #[must_use]
-pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
+pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
     use RuntimeCallFamily as F;
     matches!(
         family,

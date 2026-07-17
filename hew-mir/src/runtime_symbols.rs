@@ -25,204 +25,26 @@
 //! (it also covers `Terminator::Call` builtin spellings) and is
 //! deliberately not folded into the admission predicate.
 
+use hew_types::runtime_call::{all_runtime_call_families, RuntimeCallFamily};
+
+/// Runtime-backed MIR symbols not yet represented by a typed family.
+///
+/// The mandatory diff-first comparison found no hand-only entries. This named
+/// empty residue remains as an explicit migration fingerprint: any future
+/// untyped emitter symbol must be justified here until it receives a family.
+const RUNTIME_BACKED_MIR_SYMBOLS_RESIDUE: &[&str] = &[];
+
 #[cfg(test)]
-use hew_types::runtime_call::{all_runtime_call_families, is_pre_staged_family, RuntimeCallFamily};
-
-/// Runtime-exported symbols that `Instr::CallRuntimeAbi` may name.
-///
-/// This fail-closed list is intentionally narrower than the TOML's complete
-/// stable/codegen-stable runtime surface. Keep it lexicographically sorted;
-/// `build.rs` verifies that every entry remains classified in one of those two
-/// TOML tiers.
-const RUNTIME_BACKED_MIR_SYMBOLS: &[&str] = &[
-    "hew_actor_ask",
-    "hew_actor_ask_with_channel",
-    "hew_actor_cooperate",
-    "hew_actor_demonitor",
-    "hew_actor_link",
-    "hew_actor_monitor",
-    "hew_actor_self",
-    "hew_actor_send_by_id",
-    "hew_actor_spawn",
-    "hew_actor_unlink",
-    "hew_auto_mutex_alloc",
-    "hew_auto_mutex_free",
-    "hew_auto_mutex_lock",
-    "hew_auto_mutex_unlock",
-    "hew_bytes_append",
-    "hew_bytes_clear",
-    "hew_bytes_contains",
-    "hew_bytes_index",
-    "hew_bytes_is_empty",
-    "hew_bytes_len",
-    "hew_bytes_pop",
-    "hew_bytes_push",
-    "hew_bytes_set",
-    "hew_bytes_slice",
-    "hew_cancel_token_is_requested",
-    "hew_cancel_token_release",
-    "hew_cancel_token_retain",
-    "hew_duplex_clone",
-    "hew_duplex_close",
-    "hew_duplex_close_half",
-    "hew_duplex_pair",
-    "hew_duplex_payload_free",
-    "hew_duplex_recv",
-    "hew_duplex_recv_half",
-    "hew_duplex_send",
-    "hew_duplex_send_half",
-    "hew_duplex_try_recv",
-    "hew_duplex_try_send",
-    "hew_duration_abs",
-    "hew_duration_hours",
-    "hew_duration_is_zero",
-    "hew_duration_micros",
-    "hew_duration_millis",
-    "hew_duration_mins",
-    "hew_duration_nanos",
-    "hew_duration_secs",
-    "hew_dyn_box_alloc",
-    "hew_dyn_box_free",
-    "hew_hashmap_contains_key_layout",
-    "hew_hashmap_free_layout",
-    "hew_hashmap_get_layout",
-    "hew_hashmap_insert_layout",
-    "hew_hashmap_len_layout",
-    "hew_hashmap_new_with_layout",
-    "hew_hashmap_remove_layout",
-    "hew_hashset_contains_layout",
-    "hew_hashset_free_layout",
-    "hew_hashset_insert_layout",
-    "hew_hashset_is_empty_layout",
-    "hew_hashset_len_layout",
-    "hew_hashset_new_with_layout",
-    "hew_hashset_remove_layout",
-    "hew_instant_duration_since",
-    "hew_instant_elapsed",
-    "hew_instant_now",
-    "hew_lambda_actor_ask",
-    "hew_lambda_actor_clone",
-    "hew_lambda_actor_downgrade",
-    "hew_lambda_actor_new",
-    "hew_lambda_actor_release",
-    "hew_lambda_actor_send",
-    "hew_lambda_actor_weak_clone",
-    "hew_lambda_actor_weak_drop",
-    "hew_lambda_actor_weak_send",
-    "hew_lambda_body_alloc_reply_buf",
-    "hew_lambda_drain_all",
-    "hew_metric_counter_add",
-    "hew_metric_counter_inc",
-    "hew_metric_counter_register",
-    "hew_metric_gauge_add",
-    "hew_metric_gauge_dec",
-    "hew_metric_gauge_inc",
-    "hew_metric_gauge_register",
-    "hew_metric_gauge_set",
-    "hew_metric_histogram_record",
-    "hew_metric_histogram_register",
-    "hew_metric_histogram_register_simple",
-    "hew_metric_vec_register",
-    "hew_metric_vec_with",
-    "hew_node_link_remote",
-    "hew_node_monitor",
-    "hew_node_monitor_recv",
-    "hew_observe_barrier",
-    "hew_observe_read_u64",
-    "hew_observe_scrape",
-    "hew_observe_series",
-    "hew_rc_new",
-    "hew_recv_half_recv",
-    "hew_recv_half_try_recv",
-    "hew_reply_channel_cancel",
-    "hew_reply_channel_free",
-    "hew_reply_channel_new",
-    "hew_reply_payload_free",
-    "hew_reply_wait",
-    "hew_select_first",
-    "hew_send_half_send",
-    "hew_send_half_try_send",
-    "hew_string_char_at",
-    "hew_string_char_at_utf8",
-    "hew_string_char_count",
-    "hew_string_concat",
-    "hew_string_find",
-    "hew_string_index",
-    "hew_string_slice_codepoints",
-    "hew_supervisor_child_get",
-    "hew_supervisor_nested_get",
-    "hew_supervisor_pool_child_get",
-    "hew_supervisor_pool_len",
-    "hew_supervisor_restart_await_blocking",
-    "hew_supervisor_stop",
-    "hew_task_await_blocking",
-    "hew_task_complete_threaded",
-    "hew_task_completion_observe",
-    "hew_task_completion_unobserve",
-    "hew_task_free",
-    "hew_task_get_env",
-    "hew_task_get_error",
-    "hew_task_get_result",
-    "hew_task_new",
-    "hew_task_scope_cancel_after_ns",
-    "hew_task_scope_destroy",
-    "hew_task_scope_join_all",
-    "hew_task_scope_new",
-    "hew_task_scope_set_current",
-    "hew_task_scope_spawn",
-    "hew_task_set_env",
-    "hew_task_set_result",
-    "hew_task_spawn_thread",
-    "hew_vec_get_bool",
-    "hew_vec_get_f32",
-    "hew_vec_get_f64",
-    "hew_vec_get_i16",
-    "hew_vec_get_i32",
-    "hew_vec_get_i64",
-    "hew_vec_get_i8",
-    "hew_vec_get_layout",
-    "hew_vec_get_owned",
-    "hew_vec_get_ptr",
-    "hew_vec_get_str",
-    "hew_vec_get_u16",
-    "hew_vec_get_u8",
-    "hew_vec_len",
-    "hew_vec_slice_range_bytesize",
-    "hew_vec_slice_range_f64",
-    "hew_vec_slice_range_i32",
-    "hew_vec_slice_range_i64",
-    "hew_vec_slice_range_layout",
-    "hew_vec_slice_range_owned",
-    "hew_vec_slice_range_ptr",
-    "hew_vec_slice_range_str",
-    "hew_vtable_dispatch_panic_on_oob",
-];
-
-/// Compiler-recognised MIR emitter spellings with no `hew-runtime` export.
-///
-/// Keep this list lexicographically sorted. Each entry is admitted only because
-/// codegen or a separately linked stdlib component implements the operation.
-pub const SYNTHETIC_MIR_SYMBOLS: &[&str] = &[
-    // Codegen bounds-checks the bytes triple and materialises `Option<u8>`.
-    "hew_bytes_get",
-    // The regex stdlib extracts captures; `hew-runtime` exports no such symbol.
-    "hew_regex_capture",
-    // The regex stdlib compiles module literals; `hew-runtime` exports no such symbol.
-    "hew_regex_compile",
-    // The regex stdlib frees capture buffers; `hew-runtime` exports no such symbol.
-    "hew_regex_free_capture",
-    // Codegen loads the compiled literal handle directly from the module table.
-    "hew_regex_handle",
-    // The regex stdlib performs the match; `hew-runtime` exports no such symbol.
-    "hew_regex_match",
-    // Codegen bounds-checks codepoints and materialises `Option<char>`.
-    "hew_string_get",
-];
-
-/// Complete fail-closed MIR emitter authority:
-/// runtime-backed symbols union synthetic compiler spellings.
-const MIR_EMITTER_RUNTIME_SYMBOLS: &[&[&str]] =
-    &[RUNTIME_BACKED_MIR_SYMBOLS, SYNTHETIC_MIR_SYMBOLS];
+fn runtime_backed_mir_symbols() -> Vec<&'static str> {
+    let mut symbols: Vec<_> = all_runtime_call_families()
+        .into_iter()
+        .filter(|family| family.is_runtime_backed_mir_family())
+        .map(RuntimeCallFamily::c_symbol)
+        .chain(RUNTIME_BACKED_MIR_SYMBOLS_RESIDUE.iter().copied())
+        .collect();
+    symbols.sort_unstable();
+    symbols
+}
 
 /// Error returned when a `RuntimeCall` is constructed with a symbol that
 /// is not a recognised runtime-ABI entry.
@@ -247,18 +69,21 @@ impl std::fmt::Display for UnknownRuntimeSymbol {
 /// `Instr::CallRuntimeAbi` may name.
 #[must_use]
 pub fn is_known_runtime_symbol(symbol: &str) -> bool {
-    MIR_EMITTER_RUNTIME_SYMBOLS
-        .iter()
-        .any(|symbols| symbols.binary_search(&symbol).is_ok())
+    RuntimeCallFamily::from_c_symbol(symbol).is_some_and(RuntimeCallFamily::is_mir_emitter_family)
+        || RUNTIME_BACKED_MIR_SYMBOLS_RESIDUE
+            .binary_search(&symbol)
+            .is_ok()
 }
 
 /// Enumerate every runtime-ABI symbol an `Instr::CallRuntimeAbi` may name,
 /// sorted lexicographically for stable diffs.
 #[must_use]
 pub fn known_runtime_symbols() -> Vec<&'static str> {
-    let mut symbols: Vec<&'static str> = MIR_EMITTER_RUNTIME_SYMBOLS
-        .iter()
-        .flat_map(|symbols| symbols.iter().copied())
+    let mut symbols: Vec<_> = all_runtime_call_families()
+        .into_iter()
+        .filter(|family| family.is_mir_emitter_family())
+        .map(RuntimeCallFamily::c_symbol)
+        .chain(RUNTIME_BACKED_MIR_SYMBOLS_RESIDUE.iter().copied())
         .collect();
     symbols.sort_unstable();
     symbols
@@ -802,6 +627,35 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    const RETIRED_RUNTIME_BACKED_SYMBOL_COUNT: usize = 161;
+    const RETIRED_RUNTIME_BACKED_SYMBOL_FINGERPRINT: u64 = 0xc9ed_96b1_1d75_15a1;
+
+    fn symbol_fingerprint(symbols: &[&str]) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for symbol in symbols {
+            for byte in symbol.bytes().chain(std::iter::once(0)) {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    #[test]
+    fn derived_runtime_backed_symbols_match_retired_allowlist_fingerprint() {
+        assert!(
+            RUNTIME_BACKED_MIR_SYMBOLS_RESIDUE.is_empty(),
+            "diff-first found no hand-only runtime-backed symbols; justify any residue"
+        );
+        let symbols = runtime_backed_mir_symbols();
+        assert_eq!(symbols.len(), RETIRED_RUNTIME_BACKED_SYMBOL_COUNT);
+        assert_eq!(
+            symbol_fingerprint(&symbols),
+            RETIRED_RUNTIME_BACKED_SYMBOL_FINGERPRINT,
+            "the RuntimeCallFamily-derived runtime-backed emitter set drifted"
+        );
+    }
+
     const CONTRACT_SYMBOLS: &[&str] = &[
         "hew_bool_to_string",
         "hew_bytes_append",
@@ -1002,7 +856,7 @@ mod tests {
             let admitted = is_known_runtime_symbol(family.c_symbol());
             assert_eq!(
                 admitted,
-                !is_pre_staged_family(family),
+                family.is_mir_emitter_family(),
                 "family {family:?} ({}) admission disagrees with its routing class",
                 family.c_symbol(),
             );

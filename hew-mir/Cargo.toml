@@ -17,6 +17,9 @@ hew-types = { path = "../hew-types" }
 serde.workspace = true
 siphasher = "1"
 
+[build-dependencies]
+hew-types = { path = "../hew-types" }
+
 [dev-dependencies]
 
 # Property-based testing for per-Return drop-plan live-set narrowing.

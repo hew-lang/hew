@@ -2,8 +2,8 @@
 # scripts/lane-gates.sh — mechanical per-lane gate battery.
 #
 # A fast, developer-invoked self-check an implementer runs BEFORE
-# `make ci-preflight`, mechanising three defect classes that were previously
-# caught only by review:
+# `make ci-preflight`, mechanising four defect classes that were previously
+# caught only by review or Linux CI:
 #
 #   1. Workspace-wide clippy misses  — a per-crate-only local check hides
 #      cross-crate lint fallout; this script always runs
@@ -20,6 +20,10 @@
 #      but fails `make fuzz-oracle` in CI. See LESSONS.md `trap-fixture-two-gate`.
 #      This script runs the real `make fuzz-oracle` ratchet, not a
 #      reimplementation of it.
+#   4. Codegen/MIR corpus drift — lanes touching hew-codegen-rs/, hew-mir/,
+#      examples/*/checked-mir/, or adding a .hew fixture automatically enter
+#      the codegen/MIR tier, which adds `make checked-mir-verify` and
+#      `make hew-check-all`.
 #
 # Not a preflight replacement. `make ci-preflight` (scripts/ci-preflight-dispatcher.sh)
 # remains the required pre-push gate; this is a narrower, faster, standalone
@@ -35,9 +39,11 @@
 #   1. cargo fmt --all -- --check
 #   2. cargo clippy --workspace --tests -- -D warnings
 #   3. cargo nextest run --profile lane -p <crate1> [-p <crate2> ...]
-#   4. commit-body lint (orchestration-framing delegation + literal-\n +
+#   4. codegen/MIR tier only: make checked-mir-verify
+#   5. codegen/MIR tier only: make hew-check-all
+#   6. commit-body lint (orchestration-framing delegation + literal-\n +
 #      tombstone-word checks over ${BASE_REF}..HEAD)
-#   5. make fuzz-oracle (skippable via --skip-oracle)
+#   7. make fuzz-oracle (skippable via --skip-oracle)
 
 set -euo pipefail
 
@@ -51,6 +57,8 @@ source "${REPO_ROOT}/scripts/lib/timeout.sh"
 LANE_GATES_TIMEOUT_FMT="${LANE_GATES_TIMEOUT_FMT:-60}"
 LANE_GATES_TIMEOUT_CLIPPY="${LANE_GATES_TIMEOUT_CLIPPY:-300}"
 LANE_GATES_TIMEOUT_TESTS="${LANE_GATES_TIMEOUT_TESTS:-180}"
+LANE_GATES_TIMEOUT_CHECKED_MIR="${LANE_GATES_TIMEOUT_CHECKED_MIR:-600}"
+LANE_GATES_TIMEOUT_HEW_CHECK_ALL="${LANE_GATES_TIMEOUT_HEW_CHECK_ALL:-600}"
 LANE_GATES_TIMEOUT_ORACLE="${LANE_GATES_TIMEOUT_ORACLE:-600}"
 
 CRATES=()
@@ -59,14 +67,16 @@ SKIP_ORACLE=0
 FAIL_FAST=0
 DRY_RUN=0
 SELF_TEST=0
+CODEGEN_MIR_TIER=0
 
 usage() {
     cat <<'EOF'
 Usage: scripts/lane-gates.sh -p <crate> [-p <crate> ...] [--base <ref>] [--skip-oracle] [--fail-fast] [--dry-run] [--self-test] [--help|-h]
 
 Mechanical per-lane gate battery: fmt-check, workspace clippy, targeted crate
-tests, commit-body lint, and the fuzz-oracle two-gate ratchet check. Run this
-before `make ci-preflight`, not instead of it.
+tests, commit-body lint, and the fuzz-oracle two-gate ratchet check. Codegen/MIR
+lanes also run the checked-MIR and full .hew corpus gates. Run this before
+`make ci-preflight`, not instead of it.
 
   -p <crate>       Crate to run `cargo nextest run --profile lane -p <crate>`
                     against. Repeatable; at least one is required.
@@ -155,6 +165,43 @@ resolve_base_ref() {
     return 1
 }
 
+selects_codegen_mir_tier() {
+    local path="$1"
+    case "$path" in
+        hew-codegen-rs/*|hew-mir/*|examples/*/checked-mir/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+detect_codegen_mir_tier() {
+    local path
+
+    while IFS= read -r -d '' path; do
+        if selects_codegen_mir_tier "$path"; then
+            return 0
+        fi
+    done < <(
+        git diff --name-only -z --diff-filter=ACMRD "$BASE_REF...HEAD"
+        git diff --cached --name-only -z --diff-filter=ACMRD
+        git diff --name-only -z --diff-filter=ACMRD
+        git ls-files -z --others --exclude-standard
+    )
+
+    while IFS= read -r -d '' path; do
+        if [[ "$path" == *.hew ]]; then
+            return 0
+        fi
+    done < <(
+        git diff --name-only -z --diff-filter=A "$BASE_REF...HEAD"
+        git diff --cached --name-only -z --diff-filter=A
+        git ls-files -z --others --exclude-standard
+    )
+
+    return 1
+}
+
 if (( SELF_TEST == 0 )); then
     if ! BASE_REF="$(resolve_base_ref)"; then
         echo "error: lane-gates: no resolvable base ref (tried --base, CI_PREFLIGHT_BASE, origin/main, main)." >&2
@@ -165,6 +212,10 @@ if (( SELF_TEST == 0 )); then
 
     if [[ ${#CRATES[@]} -eq 0 ]]; then
         die "at least one -p <crate> is required"
+    fi
+
+    if detect_codegen_mir_tier; then
+        CODEGEN_MIR_TIER=1
     fi
 fi
 
@@ -325,15 +376,28 @@ if (( DRY_RUN == 1 )); then
     echo "Crates: ${CRATES[*]}"
     echo "Base ref: $BASE_REF"
     echo "Commit range: $RANGE"
+    if (( CODEGEN_MIR_TIER == 1 )); then
+        echo "Gate tier: codegen/MIR"
+    else
+        echo "Gate tier: standard"
+    fi
     echo "Steps:"
     echo "  1. cargo fmt --all -- --check  (budget: ${LANE_GATES_TIMEOUT_FMT}s)"
     echo "  2. cargo clippy --workspace --tests -- -D warnings  (budget: ${LANE_GATES_TIMEOUT_CLIPPY}s)"
     echo "  3. ${NEXTEST_CMD}  (budget: ${LANE_GATES_TIMEOUT_TESTS}s)"
-    echo "  4. commit-body lint (${RANGE})"
+    _dry_step=4
+    if (( CODEGEN_MIR_TIER == 1 )); then
+        echo "  ${_dry_step}. make checked-mir-verify  (budget: ${LANE_GATES_TIMEOUT_CHECKED_MIR}s)"
+        _dry_step=$((_dry_step + 1))
+        echo "  ${_dry_step}. make hew-check-all  (budget: ${LANE_GATES_TIMEOUT_HEW_CHECK_ALL}s)"
+        _dry_step=$((_dry_step + 1))
+    fi
+    echo "  ${_dry_step}. commit-body lint (${RANGE})"
+    _dry_step=$((_dry_step + 1))
     if (( SKIP_ORACLE == 1 )); then
-        echo "  5. make fuzz-oracle  SKIPPED (--skip-oracle)"
+        echo "  ${_dry_step}. make fuzz-oracle  SKIPPED (--skip-oracle)"
     else
-        echo "  5. make fuzz-oracle  (budget: ${LANE_GATES_TIMEOUT_ORACLE}s)"
+        echo "  ${_dry_step}. make fuzz-oracle  (budget: ${LANE_GATES_TIMEOUT_ORACLE}s)"
     fi
     echo "Dry run: no commands executed."
     exit 0
@@ -385,6 +449,12 @@ if should_run_next; then
 fi
 if should_run_next; then
     run_step "$NEXTEST_CMD" "$NEXTEST_CMD" "$LANE_GATES_TIMEOUT_TESTS" || true
+fi
+if (( CODEGEN_MIR_TIER == 1 )) && should_run_next; then
+    run_step "make checked-mir-verify" "make checked-mir-verify" "$LANE_GATES_TIMEOUT_CHECKED_MIR" || true
+fi
+if (( CODEGEN_MIR_TIER == 1 )) && should_run_next; then
+    run_step "make hew-check-all" "make hew-check-all" "$LANE_GATES_TIMEOUT_HEW_CHECK_ALL" || true
 fi
 
 # Commit-body lint: manual SECONDS timing, no process-group wrapper (decision 9)

@@ -1813,12 +1813,6 @@ fn lower_machine_lifecycle_block(
 /// MIR means either the checker was bypassed or has a bug; MIR refuses
 /// to emit a bootstrap function in that case rather than infinite-loop
 /// on the dep graph.
-/// Classify a supervisor child init field type as owned (needs a deep clone in
-/// the init thunk) vs `BitCopy` scalar (a plain load). Owned types carry heap
-/// ownership (`string`/`Bytes`/`Vec`/`List`/`Set`/`Map`) that must be re-cloned
-/// per incarnation so each restart gets unaliased heap. Anything else is treated
-/// as a scalar load; genuinely-unsupported types are walled off at the checker
-/// (`ty_is_supervisor_init_reproducible`) before reaching MIR.
 /// True when a child init-arg HIR expr is a `config.field` read — a
 /// `FieldAccess` whose object is a binding reference (the supervisor config
 /// param). This is the same shape the MIR `ConfigField` arm matches, used here
@@ -1830,18 +1824,6 @@ fn hir_expr_reads_config_field(expr: &HirExpr) -> bool {
         HirExprKind::FieldAccess { object, .. }
             if matches!(object.kind, HirExprKind::BindingRef { .. })
     )
-}
-pub(super) fn child_init_field_is_owned(ty: &ResolvedTy) -> bool {
-    match ty {
-        ResolvedTy::String | ResolvedTy::Bytes => true,
-        ResolvedTy::Named { name, .. } => {
-            matches!(
-                name.as_str(),
-                "Vec" | "List" | "Set" | "Map" | "HashMap" | "String"
-            )
-        }
-        _ => false,
-    }
 }
 fn supervisor_children_in_spawn_order(sup: &HirSupervisorDecl) -> Option<Vec<&HirSupervisorChild>> {
     use std::collections::VecDeque;
@@ -2857,51 +2839,6 @@ fn collect_unknown_self_fields_in_expr(
         }
         HirExprKind::Loop { body, .. } => {
             collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
-        }
-    }
-}
-#[cfg(test)]
-mod child_init_owned_classification {
-    //! The init-closure restart model classifies a supervisor child config-init
-    //! field as owned (needs a deep-clone in the thunk) vs scalar (a plain load).
-    //! This classification is load-bearing: the MIR lowering fail-closes on owned
-    //! config fields until the per-field owned-clone init thunk lands, so a wrong
-    //! "scalar" verdict for an owned type would let an unaliasable field through.
-    use super::child_init_field_is_owned;
-    use hew_types::ResolvedTy;
-
-    fn named(name: &str) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: name.to_string(),
-            args: vec![],
-            builtin: None,
-            is_opaque: false,
-        }
-    }
-
-    #[test]
-    fn scalars_are_not_owned() {
-        for ty in [
-            ResolvedTy::I64,
-            ResolvedTy::I32,
-            ResolvedTy::U8,
-            ResolvedTy::F64,
-            ResolvedTy::Bool,
-            ResolvedTy::Char,
-        ] {
-            assert!(!child_init_field_is_owned(&ty), "{ty:?} is a scalar load");
-        }
-    }
-
-    #[test]
-    fn owned_heap_types_are_owned() {
-        assert!(child_init_field_is_owned(&ResolvedTy::String));
-        assert!(child_init_field_is_owned(&ResolvedTy::Bytes));
-        for name in ["Vec", "List", "Set", "Map", "HashMap", "String"] {
-            assert!(
-                child_init_field_is_owned(&named(name)),
-                "{name} carries heap ownership and must be classified owned"
-            );
         }
     }
 }

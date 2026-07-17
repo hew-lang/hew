@@ -22,27 +22,12 @@
 //!
 //! ## Builtin-vs-user-record name shadowing (independent review fix)
 //!
-//! `ResolvedTy::Named { name, args }` does not carry the checker's
-//! builtin-vs-user discriminator across the resolved-ty boundary. A
-//! user-declared `type Connection { ... }` and the runtime builtin
-//! `net.Connection` both arrive at `classify_named` as `Named { name:
-//! "Connection", args: [] }`. The classifier therefore looks
-//! `record_layouts` up FIRST for every `Named` arm; only when the name
-//! is not user-shadowed does it fall through to the builtin-name match
-//! (`Connection` / `LocalPid` / `Vec` / `HashMap` / `HashSet` /
-//! `string` / `bytes`).
-//!
-//! This is the local mitigation for dispatch-invariant #10
-//! (`string-identifier-fragility`). The structural fix — propagating
-//! a typed builtin discriminator past the checker boundary so MIR
-//! never has to guess from a string — is tracked as **W4.011** (HIR
-//! resolution gap: `ResolvedTy::Named` drops builtin discriminator).
-//! Once W4.011 lands, the `record_layouts`-first guards in
-//! `classify_named` become dead code; the lowercase `string`/`bytes`
-//! fallback similarly becomes dead. Until then, every `Named { name }`
-//! arm in this module MUST honour `record_layouts`-first — adding a
-//! new builtin name without that guard re-opens the misclassification
-//! bug.
+//! `ResolvedTy::Named` now carries the checker's `BuiltinType`
+//! discriminator. User records and enums still resolve through their concrete
+//! layouts first, while builtin-only branches consume the discriminator where
+//! available. Primitive `string` and `bytes` arrive as dedicated
+//! `ResolvedTy::{String, Bytes}` variants, so no lowercase name fallback is
+//! permitted.
 //!
 //! ## Visited-set rationale (reviewer P0 #4)
 //!
@@ -1222,27 +1207,17 @@ fn classify_named(
 
     // ── record/enum-layout lookup provenance (handled above) ─────────
     //
-    // `ResolvedTy::Named { name, args }` does not carry the checker's
-    // builtin discriminator across this boundary: a user-declared `type
-    // Connection { ... }` and the runtime builtin `net.Connection` both reach
-    // this function as `Named { name: "Connection", args: [] }`. Routing on
-    // name alone would silently misclassify a user record named after
-    // a builtin (Connection / Vec / HashMap / HashSet / LocalPid /
-    // string / bytes) — bypassing the recursive-record arm and the
-    // owned-heap drop helpers, which would leak (Stage 3) or UAF
-    // (post-Q185(c) lift, plan §8.8).
+    // `ResolvedTy::Named` carries the checker's builtin discriminator, but some
+    // legacy handle/container branches below still use their canonical names.
+    // Resolve user record/enum layouts first so a same-named user declaration
+    // cannot be captured by one of those branches.
     //
     // Therefore: when `is_opaque == false`, the top of this function first
     // checks whether `record_layouts` or `enum_layouts` carries a user type
     // under this name and recurses through that layout. Only when the name is
     // not a user record/enum do we fall through to the builtin-name arms below.
-    // This is the local
-    // mitigation of dispatch-invariant #10 (`string-identifier-
-    // fragility`); the structural fix — propagating a typed builtin
-    // discriminator past the checker boundary — is tracked as W4.011
-    // ("HIR resolution gap: ResolvedTy::Named drops builtin
-    // discriminator"). Until W4.011 lands, every non-opaque `Named { name }`
-    // arm in this module MUST honour record_layouts-first.
+    // Every residual name-dispatched `Named` arm must continue to honour this
+    // record-layout-first boundary.
     //
     // The record lookup is keyed via `lookup_record_layout`, which resolves BOTH
     // a bare-name monomorphic record AND a generic INSTANTIATION mangled by
@@ -1347,18 +1322,6 @@ fn classify_named(
         return Ok(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Generator,
         });
-    }
-
-    // Lowercase keyword fallbacks for HIR resolution gaps (see W4.011).
-    // In practice the type-resolver maps `string` / `bytes` to
-    // `ResolvedTy::String` / `ResolvedTy::Bytes`, but actor-state
-    // fields occasionally surface them as `Named` instead. Classify
-    // identically so we never silently route an owned-heap field
-    // into BitCopy / UserRecord. Dead code once W4.011 lands.
-    match name {
-        "string" if args.is_empty() => return Ok(StateFieldCloneKind::String),
-        "bytes" if args.is_empty() => return Ok(StateFieldCloneKind::Bytes),
-        _ => {}
     }
 
     // Containers.
@@ -2656,8 +2619,8 @@ mod tests {
     // ── Collision-safety: record-layouts-first beats opaque set ──────────────
 
     /// A user-declared `type Value { x: i64 }` imported as `laneBmod.Value`
-    /// arrives at the classifier as `Named { name: "Value", args: [] }` after
-    /// `lower_type` strips the module prefix (W4.011 gap).  The same short name
+    /// arrives at the classifier as `Named { name: "Value", args: [] }` at this
+    /// short-name layout boundary. The same short name
     /// `"Value"` is also in `opaque_handle_names` because `json.Value` is an
     /// `#[opaque]` stdlib type.
     ///

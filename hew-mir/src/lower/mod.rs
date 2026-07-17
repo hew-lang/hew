@@ -114,12 +114,11 @@ use self::drop_plan::{
 pub(crate) use self::facts::*;
 #[cfg(not(test))]
 use self::machine_synth::{
-    actor_symbol_base, build_machine_layout, build_supervisor_layout, child_init_field_is_owned,
-    lower_actor_body_handlers, lower_actor_handler_layouts, lower_supervisor_bootstrap,
-    machine_emit_type_id, mangle_actor_crash_handler, mangle_actor_exit_handler,
-    mangle_actor_init_handler, mangle_actor_lifecycle_wrapper, mangle_actor_start_handler,
-    mangle_actor_stop_handler_indexed, mangle_machine_step, mangle_supervisor_bootstrap,
-    synthesize_machine_step_fn,
+    actor_symbol_base, build_machine_layout, build_supervisor_layout, lower_actor_body_handlers,
+    lower_actor_handler_layouts, lower_supervisor_bootstrap, machine_emit_type_id,
+    mangle_actor_crash_handler, mangle_actor_exit_handler, mangle_actor_init_handler,
+    mangle_actor_lifecycle_wrapper, mangle_actor_start_handler, mangle_actor_stop_handler_indexed,
+    mangle_machine_step, mangle_supervisor_bootstrap, synthesize_machine_step_fn,
 };
 #[cfg(not(test))]
 use self::split_consume::{
@@ -2597,7 +2596,9 @@ pub fn lower_hir_module_with_facts(
                                         continue 'fields;
                                     };
                                     let config_ty_name = config_ty_name.clone();
-                                    let owned = child_init_field_is_owned(&source_expr.ty);
+                                    let owned =
+                                        ValueClass::of_ty(&source_expr.ty, &module.type_classes)
+                                            != ValueClass::BitCopy;
                                     // #2238 item 2: keep the MIR self-consistent
                                     // with the checker wall
                                     // (`ty_is_supervisor_init_reproducible`) and
@@ -2626,7 +2627,7 @@ pub fn lower_hir_module_with_facts(
                                         child.name,
                                         source_expr.ty
                                     );
-                                    // Owned config-field init (`string`/`Vec`/…)
+                                    // Non-BitCopy config-field init
                                     // lowers to a `ConfigField { owned: true }`:
                                     // the codegen init thunk deep-clones the
                                     // config field per incarnation

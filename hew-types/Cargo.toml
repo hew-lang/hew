@@ -37,3 +37,6 @@ serde_json.workspace = true
 # same test takes the address of.
 hew-runtime = { path = "../hew-runtime" }
 hew-cabi = { path = "../hew-cabi" }
+
+[build-dependencies]
+hew-parser = { path = "../hew-parser" }

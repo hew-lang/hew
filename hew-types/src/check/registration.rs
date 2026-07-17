@@ -119,67 +119,9 @@ const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
 /// module graph did not pre-populate `resolved_items`.
 const LAMBDA_ACTOR_HEW: &str = include_str!("../../../std/concurrency/lambda_actor.hew");
 
-/// Embedded source for the built-in actor monitor handle wrapper.
-///
-/// This copy intentionally mirrors the on-disk stdlib module without imports:
-/// inline checker tests do not flow through the stdlib resolver before this
-/// prelude surface is registered.
-const MONITOR_REF_HEW: &str = r#"
-#[resource]
-pub type MonitorRef {
-    ref_id: i64;
-}
-
-/// Error returned by `link(handle)`.
-///
-/// `AlreadyLinked` is an idempotent non-fatal condition — callers may
-/// treat it as `Ok(())`.  `TargetDead` is returned when the target actor
-/// has already exited; the caller's exit handler will fire immediately.
-pub enum LinkError {
-    AlreadyLinked;
-    TargetDead;
-    NodeNotRunning;
-    NoCurrentActor;
-    InvalidTarget;
-    Partition;
-    StaleRef;
-    EncodeFailure;
-    LocalShutdown;
-}
-
-pub enum MonitorError {
-    NodeNotRunning;
-    InvalidTarget;
-    Partition;
-    StaleRef;
-    EncodeFailure;
-    LocalShutdown;
-    VersionMismatch;
-    Unauthorized;
-    DecodeFailure;
-    MonitorLost;
-}
-
-pub enum PartitionPolicy {
-    FailFast;
-    Deadline;
-    MonitorLost;
-    CrashLinked;
-    Quarantine;
-}
-
-impl MonitorRef {
-    fn close(monitor_ref: MonitorRef) {
-        unsafe {
-            hew_actor_demonitor(monitor_ref.ref_id)
-        };
-    }
-}
-
-extern "C" {
-    fn hew_actor_demonitor(ref_id: i64);
-}
-"#;
+/// Import-free projection generated from the owning declarations in
+/// `std/builtins.hew` and `std/link_monitor.hew`.
+const MONITOR_REF_HEW: &str = include_str!(concat!(env!("OUT_DIR"), "/monitor_ref.hew"));
 
 /// Embedded source for `std/failure.hew`.
 ///
@@ -188,33 +130,7 @@ extern "C" {
 /// signatures are visible in the checker even in programs that were not
 /// loaded through the module-graph path (e.g. inline programs in tests).
 ///
-/// Mirrors the on-disk `std/failure.hew` byte-for-byte modulo the same
-/// `import` line elision applied to `MONITOR_REF_HEW`: inline tests do
-/// not flow through the import resolver, so the embedded snippet omits
-/// any top-of-file imports the file itself does not need (none today).
-const FAILURE_HEW: &str = r"
-pub type CrashInfo {
-    code: i64;
-    message: string;
-}
-
-pub enum CrashAction {
-    Restart;
-    Escalate;
-    Kill;
-}
-
-pub type CrashNotification {
-    actor_id: u64;
-    kind: CrashKind;
-}
-
-pub enum CrashKind {
-    Crashed;
-    HeapExceeded;
-    PartitionDetected;
-}
-";
+const FAILURE_HEW: &str = include_str!("../../../std/failure.hew");
 
 /// Embedded source for the built-in `LookupError` enum used as the `Err`
 /// variant of `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`.
@@ -223,18 +139,7 @@ pub enum CrashKind {
 /// surface is registered directly into the checker via
 /// `register_stdlib_hew_items` the same way `LinkError` / `CrashAction`
 /// are bootstrapped from `MONITOR_REF_HEW` / `FAILURE_HEW`.
-const LOOKUP_ERROR_HEW: &str = r"
-pub enum LookupError {
-    NotFound;
-    Partition;
-    Timeout;
-    StaleRef;
-    Cancelled;
-    LocalShutdown;
-    VersionMismatch;
-    Unauthorized;
-}
-";
+const LOOKUP_ERROR_HEW: &str = include_str!("../../../std/builtins.hew");
 
 /// Stdlib-floor modules permitted to DECLARE `#[intrinsic("…")]` functions.
 ///
@@ -1242,7 +1147,17 @@ impl Checker {
             parsed.errors
         );
         if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            let items: Vec<_> = parsed
+                .program
+                .items
+                .into_iter()
+                .filter(|(item, _)| {
+                    matches!(
+                        item,
+                        hew_parser::ast::Item::TypeDecl(decl) if decl.name == "LookupError"
+                    )
+                })
+                .collect();
             self.register_stdlib_hew_items("lookup_error", &items, StdlibBarePublication::Prelude);
         }
     }

@@ -9531,6 +9531,50 @@ fn collision_imported_type_name_collides(
 }
 
 #[cfg(test)]
+mod node_builtin_catalog_tests {
+    use super::*;
+    use crate::runtime_call::RuntimeCallFamily;
+
+    #[test]
+    fn emitted_node_builtins_are_catalogued_for_wasm_rejection() {
+        let mut checker = Checker::default();
+        checker.register_builtins();
+
+        let mut emitted: Vec<&str> = checker
+            .fn_sigs
+            .keys()
+            .map(String::as_str)
+            .filter(|name| name.starts_with("Node::"))
+            .collect();
+        emitted.sort_unstable();
+
+        assert_eq!(
+            emitted,
+            [
+                "Node::allow_peer",
+                "Node::connect",
+                "Node::identity_key",
+                "Node::load_keys",
+                "Node::lookup",
+                "Node::register",
+                "Node::set_transport",
+                "Node::shutdown",
+                "Node::start",
+            ]
+        );
+
+        for name in emitted {
+            let family = RuntimeCallFamily::from_c_symbol(name)
+                .unwrap_or_else(|| panic!("registered Node builtin {name:?} is not catalogued"));
+            assert!(
+                family.is_node_builtin(),
+                "registered Node builtin {name:?} is not classified for wasm rejection"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod failure_surface_lockstep_tests {
     use super::FAILURE_HEW;
 

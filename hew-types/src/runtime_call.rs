@@ -2106,7 +2106,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     /// Bijection (forward): every family variant produces a unique
     /// `c_symbol()`. No two variants collide. This is the substrate's
@@ -2168,6 +2168,60 @@ mod tests {
             RuntimeCallFamily::from_mir_builtin_symbol("hew_hashmap_insert_layout"),
             Some(RuntimeCallFamily::HashMapInsertLayout)
         );
+    }
+
+    #[test]
+    fn codegen_partition_only_set_pins_mir_carrier_boundary() {
+        use RuntimeCallFamily as F;
+
+        let expected: HashSet<RuntimeCallFamily> = [
+            F::BytesNew,
+            F::HashMapClearLayout,
+            F::HashMapCloneLayout,
+            F::HashSetClearLayout,
+            F::HashSetCloneLayout,
+            F::HashSetToVecLayout,
+            F::VecCloneLayout,
+            F::VecCloneOwned,
+            F::VecContainsLayout,
+            F::VecContainsOwned,
+            F::VecNew,
+            F::VecPopBool,
+            F::VecPopLayout,
+            F::VecPopOwned,
+            F::VecPushBool,
+            F::VecPushLayout,
+            F::VecPushOwned,
+            F::VecPushOwnedMove,
+            F::VecRemoveAtBool,
+            F::VecRemoveAtLayout,
+            F::VecRemoveAtOwned,
+            F::VecSetBool,
+            F::VecSetI32,
+            F::VecSetLayout,
+            F::VecSetOwned,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(expected.len(), 25);
+
+        let actual: HashSet<RuntimeCallFamily> = all_runtime_call_families()
+            .into_iter()
+            .filter(|family| family.is_codegen_partition_only())
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "the codegen-only collection partition changed; review whether each \
+             affected family should remain absent from MIR calls"
+        );
+
+        for family in all_runtime_call_families() {
+            assert_eq!(
+                RuntimeCallFamily::from_mir_builtin_symbol(family.c_symbol()).is_none(),
+                expected.contains(&family),
+                "MIR carrier classification drifted for {family:?}"
+            );
+        }
     }
 
     /// `from_c_symbol` returns `None` for strings the catalog does

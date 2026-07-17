@@ -18598,22 +18598,24 @@ fn lower_tuple_field_load(
 }
 
 pub(crate) fn is_bool_vec_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_vec_push_bool"
-            | "hew_vec_get_bool"
-            | "hew_vec_set_bool"
-            | "hew_vec_pop_bool"
-            | "hew_vec_remove_at_bool"
-    )
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecBool)
 }
 
 fn is_vec_i32_get_set_symbol(symbol: &str) -> bool {
-    matches!(symbol, "hew_vec_get_i32" | "hew_vec_set_i32")
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecI32GetSet)
 }
 
 fn is_vec_constructor_symbol(symbol: &str) -> bool {
-    symbol == "Vec::new"
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecConstructor)
 }
 
 fn vec_constructor_fn_type<'ctx>(

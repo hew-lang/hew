@@ -5,7 +5,9 @@
 //! `libc::malloc` and NUL-terminated.
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use hew_cabi::vec::HewVec;
-use hew_runtime::blocking_pool::{shared_blocking_pool, spawn_blocking_result, BlockingPoolError};
+use hew_runtime::blocking_pool::{
+    shared_blocking_pool_opt, spawn_blocking_result, BlockingPoolError,
+};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::os::raw::c_char;
 use std::time::Duration;
@@ -23,7 +25,9 @@ use std::time::Duration;
 ///   The pool thread keeps running `getaddrinfo` until it returns; its
 ///   result is discarded when the worker publishes it (no leak; see
 ///   `spawn_blocking_result` saturation note).
-/// - `Err(false)` — `getaddrinfo` itself errored, or the pool was stopped.
+/// - `Err(false)` — `getaddrinfo` itself errored, the pool was stopped, or no
+///   runtime is installed (fail closed: the entrypoint returns its empty/null
+///   sentinel rather than aborting across the ABI).
 fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
     let host = format!("{host}:0");
     let deadline = if deadline_ms <= 0 {
@@ -33,11 +37,19 @@ fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
         #[expect(clippy::cast_sign_loss, reason = "deadline_ms is checked > 0 above")]
         Some(Duration::from_millis(deadline_ms as u64))
     };
-    // SAFETY: shared_blocking_pool returns a process-lifetime pool that is
-    // never stopped; the pointer is valid for the call.
+    // Fail closed when no runtime is installed: reaching this offload without a
+    // runtime is a programming error, but it must return the empty/null sentinel
+    // to the C caller rather than abort in `rt_current()` across the ABI.
+    let Some(pool) = shared_blocking_pool_opt() else {
+        return Err(false);
+    };
+    // SAFETY: shared_blocking_pool_opt returns the current runtime's pool, valid
+    // for that runtime's lifetime; the resolve runs on a scheduler thread that
+    // cleanup joins before the runtime (and its pool) drops, so the pointer is
+    // valid for the call.
     let result = unsafe {
         spawn_blocking_result(
-            shared_blocking_pool(),
+            pool,
             move || {
                 // Collect inside the closure so the iterator (which is not
                 // Send) doesn't escape; the result is `Vec<IpAddr>` which is.
@@ -51,7 +63,9 @@ fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
     match result {
         Ok(Ok(addrs)) => Ok(addrs),
         Err(BlockingPoolError::TimedOut) => Err(true),
-        Ok(Err(())) | Err(BlockingPoolError::PoolStopped) => Err(false),
+        Ok(Err(())) | Err(BlockingPoolError::PoolStopped | BlockingPoolError::NoRuntime) => {
+            Err(false)
+        }
     }
 }
 
@@ -169,6 +183,11 @@ mod tests {
     use super::*;
     use std::ffi::{CStr, CString};
 
+    // Resolving through the blocking pool now requires an installed runtime
+    // (`shared_blocking_pool()` reads `rt_current()`); this guard installs a
+    // real scheduler under a process-wide lock and stops the pool on drop.
+    use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
+
     /// Helper: read a C string pointer and free it.
     unsafe fn read_and_free(ptr: *mut c_char) -> String {
         assert!(!ptr.is_null());
@@ -181,6 +200,7 @@ mod tests {
 
     #[test]
     fn resolve_localhost() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("localhost").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
@@ -207,6 +227,7 @@ mod tests {
 
     #[test]
     fn lookup_host_localhost() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("localhost").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
@@ -231,6 +252,44 @@ mod tests {
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
     }
 
+    /// A DNS entrypoint reached with a real hostname but NO runtime installed
+    /// must fail closed with the empty/null sentinel, never abort in
+    /// `rt_current()` across the C ABI. This is the negative test the original
+    /// blocking-pool inventory lacked: the production entrypoints reached the
+    /// pool unguarded and would SIGABRT when called before `hew_sched_init`.
+    #[test]
+    fn resolve_without_runtime_fails_closed() {
+        // Hold the shared scheduler lock so no concurrent guard installs a
+        // runtime; do NOT install one ourselves.
+        let _lock = crate::net_error_slot_test_support::lock_without_runtime();
+        assert!(
+            shared_blocking_pool_opt().is_none(),
+            "test requires no runtime installed"
+        );
+
+        let host = CString::new("example.com").unwrap();
+        // SAFETY: host is a valid NUL-terminated C string; reaching the offload
+        // with no runtime must return an empty vec, not abort.
+        let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
+        assert!(!vec.is_null(), "must return an empty vec, not null/abort");
+        // SAFETY: vec is a valid HewVec returned by hew_dns_resolve.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+        assert_eq!(
+            len, 0,
+            "no runtime installed => empty resolution, fail closed"
+        );
+        // SAFETY: vec was allocated by hew_dns_resolve and has not been freed.
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+
+        // The lookup variant fails closed to null on the same path.
+        // SAFETY: host is a valid NUL-terminated C string.
+        let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
+        assert!(
+            result.is_null(),
+            "lookup with no runtime must return null, not abort"
+        );
+    }
+
     #[test]
     fn lookup_host_null_returns_null() {
         // SAFETY: Null pointer is explicitly handled by hew_dns_lookup_host.
@@ -240,6 +299,7 @@ mod tests {
 
     #[test]
     fn resolve_invalid_hostname_returns_empty() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("this-host-does-not-exist.invalid.test").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
@@ -252,6 +312,7 @@ mod tests {
 
     #[test]
     fn lookup_host_invalid_returns_null() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("this-host-does-not-exist.invalid.test").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
@@ -283,6 +344,7 @@ mod tests {
     /// well-known local host. Proves the delegating shim is wired right.
     #[test]
     fn resolve_timed_zero_means_no_deadline() {
+        let _rt = NetErrorSlotRuntimeGuard::new();
         let host = CString::new("localhost").unwrap();
         // SAFETY: host is a valid NUL-terminated C string.
         let vec = unsafe { hew_dns_resolve_timed(host.as_ptr(), 0) };
@@ -314,11 +376,16 @@ mod tests {
         use std::sync::Barrier;
         use std::time::{Duration, Instant};
 
+        // `shared_blocking_pool()` now resolves the current runtime's pool, so a
+        // runtime must be installed for the duration of the offload.
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+
         let release = std::sync::Arc::new(Barrier::new(2));
         let release_clone = std::sync::Arc::clone(&release);
 
         let start = Instant::now();
-        // SAFETY: shared_blocking_pool returns a process-lifetime pool.
+        // SAFETY: shared_blocking_pool returns the current runtime's pool, valid
+        // while `_runtime` is held.
         let result = unsafe {
             spawn_blocking_result(
                 shared_blocking_pool(),

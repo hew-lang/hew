@@ -982,12 +982,20 @@ check-sanitizer-gate:
 # NOTE: GNU make $(sort) is lexicographic, so llvm-9 would rank after llvm-17.
 # Use a shell pipeline with sort -V (version-aware) to find the newest copy.
 ASAN_SYMBOLIZER ?= $(shell ls /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | sort -V | tail -1)
+# NOTE: the suppressions path is passed RELATIVE, not absolute. The sanitizer
+# runtime parses [LA]SAN_OPTIONS as a space-tolerant key=value:key=value list and
+# treats an embedded space as a separator, so an absolute worktree path
+# containing a space (e.g. /Volumes/Extreme SSD/...) aborts before any test runs
+# with "expected '=' in LSAN_OPTIONS" (hew-lang/hew#1889). cargo runs the
+# hew-runtime test binary with cwd = the package dir (hew-runtime/), so the bare
+# filename `lsan.supp` resolves correctly and never contains a space regardless
+# of the absolute worktree location.
 asan:
 	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes" \
 	ASAN_OPTIONS="detect_leaks=1" \
 	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
-	LSAN_OPTIONS="suppressions=$(CURDIR)/hew-runtime/lsan.supp" \
+	LSAN_OPTIONS="suppressions=lsan.supp" \
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib -- --test-threads=1
 
 # ASan gate for compiled .hew fixture binaries (Linux/nightly toolchain required).
@@ -1022,7 +1030,7 @@ ifeq ($(shell uname -sm),Darwin arm64)
 else
 	CARGO_TARGET_DIR=$(RUNTIME_TSAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
-	TSAN_OPTIONS="halt_on_error=0 suppressions=$(CURDIR)/hew-runtime/tsan.supp" \
+	TSAN_OPTIONS="halt_on_error=0 suppressions=tsan.supp" \
 	cargo +nightly test \
 		--target $(SANITIZER_RUST_TARGET) \
 		-p hew-runtime \

@@ -9066,7 +9066,38 @@ impl Checker {
                     // `register_actor_base` authors the dotted
                     // `{module_short}.{name}` identity directly; no bare key
                     // and no copy-based qualified alias.
+                    //
+                    // Scope `current_module` to the DECLARING module while the
+                    // receive-fn signatures are resolved, but ONLY when a
+                    // receive fn returns a genuinely cross-module-colliding
+                    // record (`testffi.Result` vs a file-import `Result`). A
+                    // bare `-> Result` inside an imported actor then re-qualifies
+                    // against the module that declared it — exactly as it did on
+                    // that module's own topo-order registration — so the checker
+                    // assigns the owner-qualified identity CONSISTENTLY across
+                    // the ask-reply type, the `Result<_, AskError>` payload, the
+                    // match scrutinee, and the pattern binding. That agrees with
+                    // the MIR record-layout keying (`type_layout_key` keys a
+                    // colliding record under its qualified identity) and the HIR
+                    // owner-qualification, closing the layout-vs-value mismatch
+                    // (#2208). The gate is mandatory: an UNCONDITIONAL scope
+                    // over-qualifies a NON-colliding stdlib actor record
+                    // (`http.Response`, `xml.Node`) whose layout stays bare,
+                    // creating a mismatch that SIGSEGVs at cabi.rs. Uses the FULL
+                    // dotted path to match the identity the module's own
+                    // registration used, restored immediately after the call.
+                    let scope_declaring_module = self.actor_returns_colliding_record(ad);
+                    let saved_current_module = if scope_declaring_module {
+                        let saved = self.current_module.clone();
+                        self.current_module = Some(module_full_path.to_string());
+                        Some(saved)
+                    } else {
+                        None
+                    };
                     self.register_actor_base(ad, Some(module_short));
+                    if let Some(saved) = saved_current_module {
+                        self.current_module = saved;
+                    }
                     self.record_module_type_export(module_short, &ad.name);
                     // If named import or glob, also register unqualified
                     if Self::should_import_name(&ad.name, spec) {
@@ -9085,6 +9116,103 @@ impl Checker {
         }
         self.local_type_defs = saved_local_type_defs;
         self.source_type_defs = saved_source_type_defs;
+    }
+
+    /// Build the precise cross-module record-name collision set, mirroring the
+    /// HIR/MIR authoritative notion (`imported_type_name_collides` /
+    /// `collided_type_names`): a bare record/type-decl name collides when 2+
+    /// distinct non-root modules (package OR file-import) declare it, AFTER
+    /// re-export subsumption so a stdlib module surfaced through two import
+    /// paths (e.g. `std::net::http` and `std::net::http::http_client` both
+    /// re-exporting `http.Response`) is not double-counted. Only a colliding
+    /// record is owner-qualified to its declaring module; a name unique to one
+    /// module keeps its bare identity, so no `http.Response`/`xml.Node`
+    /// over-qualification and no cabi over-qualification SIGSEGV (#2208).
+    pub(super) fn compute_cross_module_colliding_record_names(
+        program: &Program,
+    ) -> HashSet<String> {
+        let Some(mg) = program.module_graph.as_ref() else {
+            return HashSet::new();
+        };
+        // Empty file-import exclusion: a file-import module counts as a
+        // declaring scope — the mixed file-import + package same-bare-name shape
+        // #2208 depends on — matching the HIR lowering's collision set exactly.
+        let no_file_exclusion: HashSet<hew_parser::module::ModuleId> = HashSet::new();
+        let preferred = collision_preferred_package_module_ids(program, &no_file_exclusion);
+        let mut colliding: HashSet<String> = HashSet::new();
+        for module in mg.modules.values() {
+            for (item, _) in &module.items {
+                let name = match item {
+                    Item::TypeDecl(decl) => &decl.name,
+                    Item::Record(decl) => &decl.name,
+                    _ => continue,
+                };
+                if colliding.contains(name) {
+                    continue;
+                }
+                if collision_imported_type_name_collides(
+                    program,
+                    &no_file_exclusion,
+                    &preferred,
+                    name,
+                ) {
+                    colliding.insert(name.clone());
+                }
+            }
+        }
+        colliding
+    }
+
+    /// Whether any of the actor's receive fns declares a return type that names
+    /// a genuinely cross-module-colliding record (#2208). Drives the gated
+    /// `current_module` scope in the imported-actor registration: only such an
+    /// actor's colliding reply record must take the owner-qualified identity;
+    /// an actor whose replies are all unique records (or primitives) keeps its
+    /// bare identities, so a non-colliding stdlib record is never over-qualified.
+    fn actor_returns_colliding_record(&self, ad: &ActorDecl) -> bool {
+        ad.receive_fns.iter().any(|rf| {
+            rf.return_type
+                .as_ref()
+                .is_some_and(|(ty, _)| self.type_expr_names_colliding_record(ty))
+        })
+    }
+
+    /// Whether `ty` references a cross-module-colliding record name anywhere in
+    /// its structure (head or nested generic/tuple/container position) (#2208).
+    fn type_expr_names_colliding_record(&self, ty: &TypeExpr) -> bool {
+        match ty {
+            TypeExpr::Named { name, type_args } => {
+                self.cross_module_colliding_record_names.contains(name)
+                    || type_args.as_ref().is_some_and(|args| {
+                        args.iter()
+                            .any(|(a, _)| self.type_expr_names_colliding_record(a))
+                    })
+            }
+            TypeExpr::Result { ok, err } => {
+                self.type_expr_names_colliding_record(&ok.0)
+                    || self.type_expr_names_colliding_record(&err.0)
+            }
+            TypeExpr::Option(inner)
+            | TypeExpr::Slice(inner)
+            | TypeExpr::Borrow(inner)
+            | TypeExpr::Pointer { pointee: inner, .. } => {
+                self.type_expr_names_colliding_record(&inner.0)
+            }
+            TypeExpr::Array { element, .. } => self.type_expr_names_colliding_record(&element.0),
+            TypeExpr::Tuple(elems) => elems
+                .iter()
+                .any(|(e, _)| self.type_expr_names_colliding_record(e)),
+            TypeExpr::Function {
+                params,
+                return_type,
+            } => {
+                params
+                    .iter()
+                    .any(|(p, _)| self.type_expr_names_colliding_record(p))
+                    || self.type_expr_names_colliding_record(&return_type.0)
+            }
+            TypeExpr::TraitObject(_) | TypeExpr::Infer => false,
+        }
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).
@@ -9276,6 +9404,116 @@ impl Checker {
             .or_default()
             .insert(source_identity.to_string());
     }
+}
+
+/// Whether `item` is a record/type-decl declaring the bare `type_name`.
+/// Mirrors the HIR lowering helper of the same shape (#2208).
+fn collision_item_declares_type_name(item: &Item, type_name: &str) -> bool {
+    match item {
+        Item::TypeDecl(decl) => decl.name == type_name,
+        Item::Record(decl) => decl.name == type_name,
+        _ => false,
+    }
+}
+
+/// Package modules that are re-export "doubles" subsumed by a superset module,
+/// so a type they re-surface is not double-counted as a cross-module collision.
+/// Faithful port of the HIR lowering's `preferred_package_module_ids` re-export
+/// subsumption: module M is preferred (kept as the canonical declarant) iff some
+/// N ≠ M has `files(M) ⊆ files(N)` and either the subset is strict, or the sets
+/// are equal and N precedes M in topo order (a deterministic tiebreak keeping
+/// exactly one). Used to dedup a stdlib module surfaced through two import paths
+/// (e.g. `std::net::http` + `std::net::http::http_client`) so `http.Response`
+/// stays unique and is never owner-qualified (#2208).
+fn collision_preferred_package_module_ids(
+    program: &Program,
+    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
+) -> HashSet<hew_parser::module::ModuleId> {
+    use std::path::{Path, PathBuf};
+
+    let mut preferred = HashSet::new();
+    let Some(mg) = program.module_graph.as_ref() else {
+        return preferred;
+    };
+
+    let mut candidates: Vec<(&hew_parser::module::ModuleId, HashSet<&Path>, usize)> = Vec::new();
+    for (pos, id) in mg.topo_order.iter().enumerate() {
+        if *id == mg.root || file_import_modules.contains(id) {
+            continue;
+        }
+        let Some(module) = mg.modules.get(id) else {
+            continue;
+        };
+        let files: HashSet<&Path> = module.source_paths.iter().map(PathBuf::as_path).collect();
+        if files.is_empty() {
+            continue;
+        }
+        candidates.push((id, files, pos));
+    }
+
+    for i in 0..candidates.len() {
+        let (m_files, m_pos) = (&candidates[i].1, candidates[i].2);
+        for j in 0..candidates.len() {
+            if i == j {
+                continue;
+            }
+            let (n_files, n_pos) = (&candidates[j].1, candidates[j].2);
+            if !m_files.is_subset(n_files) {
+                continue;
+            }
+            let equal = m_files.len() == n_files.len();
+            if !equal || n_pos < m_pos {
+                preferred.insert(candidates[i].0.clone());
+                break;
+            }
+        }
+    }
+    preferred
+}
+
+/// Whether `type_name` is declared by 2+ distinct non-root modules (package or,
+/// with an empty `file_import_modules` exclusion, file-import), counting a
+/// re-export double only once via `preferred_modules` subsumption. Faithful port
+/// of the HIR lowering's `imported_type_name_collides` — the authoritative
+/// collision notion the checker owner-qualification must agree with (#2208).
+fn collision_imported_type_name_collides(
+    program: &Program,
+    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
+    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    type_name: &str,
+) -> bool {
+    let Some(module_graph) = program.module_graph.as_ref() else {
+        return false;
+    };
+    module_graph
+        .modules
+        .iter()
+        .filter(|(module_id, module)| {
+            **module_id != module_graph.root
+                && !file_import_modules.contains(*module_id)
+                && module.items.iter().any(|(item, _)| {
+                    if !collision_item_declares_type_name(item, type_name) {
+                        return false;
+                    }
+                    if preferred_modules.contains(*module_id) {
+                        return true;
+                    }
+                    !preferred_modules.iter().any(|preferred_id| {
+                        module_graph
+                            .modules
+                            .get(preferred_id)
+                            .is_some_and(|preferred| {
+                                preferred
+                                    .items
+                                    .iter()
+                                    .any(|(candidate, _)| candidate == item)
+                            })
+                    })
+                })
+        })
+        .take(2)
+        .count()
+        > 1
 }
 
 #[cfg(test)]

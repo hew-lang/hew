@@ -1,0 +1,19 @@
+//! Root-collision reply fixture (#2208 finding 1). Exports a `Payload` record
+//! whose bare name collides with a ROOT-declared `Payload` in the importer.
+//! MIR's `collided_type_names` counts distinct qualified identities across
+//! EVERY item including root, so it keys this reply layout `rootreply.Payload`;
+//! the checker/HIR collision set must include the root declarant too, or the
+//! ask-reply value flow stays bare and resolves to the root layout.
+
+/// Reply carrying a single `code` field.
+pub type Payload {
+    code: i64;
+}
+
+pub actor Source {
+    let seed: i64;
+
+    receive fn fetch() -> Payload {
+        Payload { code: seed + 40 }
+    }
+}

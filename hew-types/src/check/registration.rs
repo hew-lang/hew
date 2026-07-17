@@ -9489,8 +9489,14 @@ fn collision_imported_type_name_collides(
         .modules
         .iter()
         .filter(|(module_id, module)| {
-            **module_id != module_graph.root
-                && !file_import_modules.contains(*module_id)
+            // Include the root module as a declarant: MIR's authoritative
+            // `collided_type_names` counts distinct qualified identities over
+            // EVERY item (root included), so a root `Result` colliding with an
+            // imported `pkg.Result` is a real collision MIR keys `pkg.Result`.
+            // Excluding root left the checker/HIR value flow bare against that
+            // qualified layout (#2208). Re-export subsumption below still dedups
+            // a package that re-exports a file module's item.
+            !file_import_modules.contains(*module_id)
                 && module.items.iter().any(|(item, _)| {
                     if !collision_item_declares_type_name(item, type_name) {
                         return false;

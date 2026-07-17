@@ -342,6 +342,14 @@ fixtures=(
   # the UNIQUE registered-owner scan over `type_defs`/`known_types`
   # (→ `framealias.Widget`) and ACCEPTS the owner-identical pairing. Prints 11.
   callee_frame_bare_alias_accept
+  # Issue #2208 finding 1: a ROOT-declared `Payload` collides with an imported
+  # `rootreply.Payload` returned by an actor ask. MIR's `collided_type_names`
+  # counts distinct qualified identities across EVERY item INCLUDING root, so it
+  # keys the reply layout `rootreply.Payload`. The checker/HIR collision set
+  # must include the root declarant too, or the ask-reply value flow stays bare,
+  # resolves to the root `Payload` (field `tag`, not `code`), and the reply read
+  # fails. Prints `1` then `42`.
+  root_shadow_actor_ask
 )
 
 for fixture in "${fixtures[@]}"; do

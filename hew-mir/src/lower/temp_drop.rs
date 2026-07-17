@@ -388,8 +388,48 @@ pub(super) fn derive_cow_sole_owner(
             }
         }
     }
+    // A variant-payload share is a hand-off (no retain) when the source is
+    // never used afterwards AND the store site cannot re-execute for the same
+    // binding instance — i.e. its block is not on a CFG cycle. The previous
+    // entry-block-only proxy for "executes at most once" misclassified every
+    // post-call return-position constructor (`let v = f(); Ok(v)` — the call
+    // splits the CFG, so the constructor lands in a non-entry block) as a
+    // co-own share. That minted a `StringRetain` while
+    // `derive_returned_aggregate_member_bindings` simultaneously excluded the
+    // binding from its scope-exit drop as a returned-aggregate member (that
+    // authority's contract is a NO-retain byte-copy hand-off), so the payload
+    // gained a reference nothing ever released: one leaked string per call.
+    // Blocks on a cycle keep the retain-on-share posture — a loop body's store
+    // can re-execute for a binding defined outside the loop, where a hand-off
+    // would double-free.
+    // Reachable-from-self is a deliberate OVER-APPROXIMATION of cycle membership,
+    // and that is the fail-closed choice: a straight-line store wrongly judged
+    // loop-carried merely keeps a retain (safe — at worst a missed hand-off), whereas
+    // the dangerous direction is treating a re-executing store as a one-shot hand-off
+    // (a double-free). Cost is O(blocks·(blocks+edges)) per store — fine at MIR
+    // function sizes.
+    let cyclic_blocks: HashSet<u32> = {
+        let succs: HashMap<u32, Vec<u32>> = blocks.iter().map(|b| (b.id, b.successors())).collect();
+        let mut cyclic = HashSet::new();
+        for start in succs.keys().copied() {
+            let mut stack: Vec<u32> = succs.get(&start).cloned().unwrap_or_default();
+            let mut seen: HashSet<u32> = HashSet::new();
+            while let Some(b) = stack.pop() {
+                if b == start {
+                    cyclic.insert(start);
+                    break;
+                }
+                if seen.insert(b) {
+                    if let Some(next) = succs.get(&b) {
+                        stack.extend(next.iter().copied());
+                    }
+                }
+            }
+        }
+        cyclic
+    };
     let share_needs_retain = |local: u32, block: u32, instr_index: usize| {
-        entry_block != Some(block)
+        cyclic_blocks.contains(&block)
             || local_is_used_after(blocks, suspend_kinds, local, block, instr_index)
     };
 

@@ -16,6 +16,8 @@ use hew_parser::ast::{
 
 use crate::LangItem;
 
+pub(crate) mod codegen;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StdlibRoot {
     Builtins,

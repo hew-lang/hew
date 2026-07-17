@@ -42,6 +42,16 @@
 //!     once (no double-free) and that the shell free does not race the field
 //!     drop.
 //!
+//!   * **Owned-Vec-element decode-failure partial free-on-error**
+//!     (`vec_owned_struct_decode_failure_frees_partials_no_double_free` and its
+//!     enum sibling `vec_owned_enum_decode_failure_frees_partials_no_double_free`):
+//!     the headline path of the owned-Vec-element codec change. A container whose
+//!     field 1 is a `Vec<owned>` decodes the full owned Vec (allocating each
+//!     element's heap) before a trailing scalar field latches failure, so the
+//!     `fail_bb` must drop the whole owned Vec — releasing every already-decoded
+//!     element via the vec's per-element `drop_fn` — exactly once before the
+//!     shell free. Same poisoned-allocator trap + no-double-free assertion.
+//!
 //!   * **Out-of-range enum-tag decode free (actor context)**
 //!     (`actor_oob_enum_tag_decode_frees_reader_and_shell_no_excess_slope`): an
 //!     unknown enum wire tag traps fail-closed; inside an actor `receive`
@@ -365,6 +375,62 @@ const ENUM_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
      \x20   let raw = p.encode();\n\
      \x20   let bad = PayloadBad.decode(raw);\n\
      \x20   match bad { PayloadBad::Empty => 0, PayloadBad::Full(_, n, _) => n, }\n\
+     }\n";
+
+/// Decode-failure fixture for a `Vec<#[wire] struct>` whose ELEMENT owns heap
+/// (a `string` field). Encode a `{ items: Vec<Item> @1; tail: string @2 }`
+/// value, then decode the SAME bytes against a `{ items: Vec<Item> @1; tail:
+/// i64 @2 }` layout. Field 1 (`items`) decodes fully — allocating the owned Vec
+/// plus each element's owned `string` — then field 2 reads an `i64` where the
+/// stream holds a CBOR text head, latching reader failure and driving the
+/// `fail_bb`. The partial shell now holds a fully-decoded owned Vec, so
+/// `fail_bb` must drop that Vec (releasing every already-decoded element string
+/// via the vec's per-element `drop_fn`) exactly once before freeing the shell.
+/// This is the owned-Vec-element half of the error path the headline codec
+/// change admits — distinct from the scalar-string `fail_bb` the sibling
+/// `decode_failure_frees_partials_no_double_free` pins.
+const VEC_OWNED_STRUCT_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
+     type Item { name: string @1; }\n\
+     #[wire]\n\
+     type BatchGood { items: Vec<Item> @1; tail: string @2; }\n\
+     #[wire]\n\
+     type BatchBad { items: Vec<Item> @1; tail: i64 @2; }\n\
+     \n\
+     fn main() -> i64 {\n\
+     \x20   let xs: Vec<Item> = Vec::new();\n\
+     \x20   xs.push(Item { name: \"alpha-owned-element\" });\n\
+     \x20   xs.push(Item { name: \"beta-owned-element\" });\n\
+     \x20   let g = BatchGood { items: xs, tail: \"owned-tail-value\" };\n\
+     \x20   let raw = g.encode();\n\
+     \x20   let bad = BatchBad.decode(raw);\n\
+     \x20   bad.tail\n\
+     }\n";
+
+/// Decode-failure fixture for a `Vec<#[wire] enum>` whose ELEMENT is an
+/// owned-payload enum (a `string`-bearing variant). Encode a `{ items:
+/// Vec<Payload> @1; tail: string @2 }` value, then decode the SAME bytes against
+/// a `{ items: Vec<Payload> @1; tail: i64 @2 }` layout. Field 1 decodes the full
+/// owned Vec — each `Full` element allocates its owned `string` through
+/// `__hew_enum_clone_inplace_Payload` — then field 2 latches on the `i64`-where-
+/// text mismatch, driving the `fail_bb`. The partial shell's owned enum Vec must
+/// be dropped exactly once (each element's variant drop releasing its owned
+/// string) before the shell free — the owned-enum-element error path.
+const VEC_OWNED_ENUM_DECODE_FAILURE_SOURCE: &str = "#[wire]\n\
+     enum Payload { Empty; Full(string); }\n\
+     #[wire]\n\
+     type BagGood { items: Vec<Payload> @1; tail: string @2; }\n\
+     #[wire]\n\
+     type BagBad { items: Vec<Payload> @1; tail: i64 @2; }\n\
+     \n\
+     fn main() -> i64 {\n\
+     \x20   let xs: Vec<Payload> = Vec::new();\n\
+     \x20   xs.push(Payload::Full(\"first-owned-element\"));\n\
+     \x20   xs.push(Payload::Empty);\n\
+     \x20   xs.push(Payload::Full(\"second-owned-element\"));\n\
+     \x20   let g = BagGood { items: xs, tail: \"owned-tail-value\" };\n\
+     \x20   let raw = g.encode();\n\
+     \x20   let bad = BagBad.decode(raw);\n\
+     \x20   bad.tail\n\
      }\n";
 
 /// Actor-context out-of-range enum-tag fixture, parameterised by the message
@@ -796,6 +862,35 @@ fn enum_owned_payload_decode_failure_frees_partials_no_double_free() {
     assert_decode_failure_traps_no_double_free(
         "wire_cbor_enum_decode_failure",
         ENUM_DECODE_FAILURE_SOURCE,
+    );
+}
+
+/// Owned-Vec-element struct decode-failure free-on-error. Decoding a
+/// `{ items: Vec<Item> @1; tail: string @2 }` value against a `{ items:
+/// Vec<Item> @1; tail: i64 @2 }` layout decodes the full owned Vec (allocating
+/// each element's owned string) then latches on the `i64`-where-text tail,
+/// driving the `fail_bb`. Must trap fail-closed with no cabi double-free of any
+/// already-decoded owned element — proving the owned Vec (and its per-element
+/// strings) is dropped exactly once before the shell free. This is the headline
+/// owned-Vec-element error path the CBOR Vec codec change admits.
+#[test]
+fn vec_owned_struct_decode_failure_frees_partials_no_double_free() {
+    assert_decode_failure_traps_no_double_free(
+        "wire_cbor_vec_owned_struct_decode_failure",
+        VEC_OWNED_STRUCT_DECODE_FAILURE_SOURCE,
+    );
+}
+
+/// Owned-Vec-element ENUM decode-failure free-on-error. The `Vec<Payload>`
+/// element sibling: the owned-payload enum Vec decodes fully (each `Full`
+/// element allocating its owned string) before the `i64`-where-text tail latches
+/// failure. The `fail_bb` must drop the owned enum Vec exactly once — each
+/// element's variant drop releasing its owned string — with no cabi double-free.
+#[test]
+fn vec_owned_enum_decode_failure_frees_partials_no_double_free() {
+    assert_decode_failure_traps_no_double_free(
+        "wire_cbor_vec_owned_enum_decode_failure",
+        VEC_OWNED_ENUM_DECODE_FAILURE_SOURCE,
     );
 }
 

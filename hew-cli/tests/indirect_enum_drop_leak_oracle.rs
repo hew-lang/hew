@@ -297,6 +297,79 @@ fn inline_enum_wrapped_indirect_loop_source(iters: usize) -> String {
     )
 }
 
+/// Build-and-consume LOOP where a value RECORD owns the indirect child through
+/// an inline-enum field (F4 / #2208 record-container path), parameterised on the
+/// iteration count.
+///
+/// `Holder { tag: i64, wrap: Wrap }` is a value record whose `wrap` field is the
+/// INLINE enum `Wrap`, whose `W` variant owns a `Tree` — an `indirect enum` (a
+/// heap pointer). The record is dropped IN SCOPE each iteration (only the
+/// `BitCopy` `tag` is read out, so the sole-owner binding `h` retains `wrap` and
+/// its scope-exit `DropKind` reclaims the whole record). The record's synthesised
+/// `__hew_record_drop_inplace_Holder` must run `Wrap`'s in-place drop, which in
+/// turn frees the nested `Tree` through `__hew_indirect_enum_free_Tree`. This is
+/// the RECORD leg of the propagation the inline-enum-wrapped oracle covers for
+/// the indirect-enum-payload leg: the record drop body reaches an indirect child
+/// only via the one witness-aware `emit_field_drop_step`. Pre-fix the record
+/// drop path routed its enum field witness-blind and did not synthesise the
+/// nested child's teardown on demand, orphaning the inner `Tree`'s three nodes
+/// every iteration (a positive leak slope). `run_loop` returns `3 * iters`,
+/// self-checked, so the loop is never dead-code-eliminated and the binding slot
+/// is dead at process exit.
+fn record_of_inline_enum_loop_source(iters: usize) -> String {
+    let expected_total = iters * 3; // h.tag == 3
+    format!(
+        "enum Wrap {{ W(Tree); }}\n\
+         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+         type Holder {{ tag: i64, wrap: Wrap }}\n\
+         fn run_loop() -> i64 {{\n\
+         \x20   var total = 0;\n\
+         \x20   for i in 0..{iters} {{\n\
+         \x20       let h = Holder {{ tag: 3, wrap: W(Node(Leaf(1), Leaf(2))) }};\n\
+         \x20       total = total + h.tag;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() {{\n\
+         \x20   let r = run_loop();\n\
+         \x20   if r == {expected_total} {{ print(\"ok\"); }} else {{ print(\"BAD\"); }}\n\
+         }}\n"
+    )
+}
+
+/// Build-and-consume LOOP where a TUPLE owns the indirect child through an
+/// inline-enum element (F4 / #2208 tuple-container path), parameterised on the
+/// iteration count.
+///
+/// `(Wrap, i64)` is a value tuple whose first element is the INLINE enum `Wrap`
+/// owning a `Tree` (`indirect enum`, a heap pointer). The tuple is dropped IN
+/// SCOPE each iteration (only the `BitCopy` `.1` element is read, so the tuple
+/// binding `pair` retains the `Wrap` and its scope-exit drop reclaims it). The
+/// synthesised `__hew_tuple_drop_inplace_tuple_Wrap_i64` must run `Wrap`'s
+/// in-place drop, which frees the nested `Tree` through
+/// `__hew_indirect_enum_free_Tree`. Pre-fix the tuple drop body — like the
+/// record body — routed its enum element witness-blind, orphaning the inner
+/// `Tree` every iteration. `run_loop` returns `3 * iters`, self-checked.
+fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
+    let expected_total = iters * 3; // pair.1 == 3
+    format!(
+        "enum Wrap {{ W(Tree); }}\n\
+         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+         fn run_loop() -> i64 {{\n\
+         \x20   var total = 0;\n\
+         \x20   for i in 0..{iters} {{\n\
+         \x20       let pair = (W(Node(Leaf(1), Leaf(2))), 3);\n\
+         \x20       total = total + pair.1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() {{\n\
+         \x20   let r = run_loop();\n\
+         \x20   if r == {expected_total} {{ print(\"ok\"); }} else {{ print(\"BAD\"); }}\n\
+         }}\n"
+    )
+}
+
 /// Compile `source`, run under the poisoned-allocator triple, assert clean exit
 /// + exact stdout (the double-free / use-after-free pin).
 fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) {
@@ -439,6 +512,59 @@ fn indirect_enum_inline_wrapped_child_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
         "inline_wrapped_indirect_df",
         &inline_enum_wrapped_indirect_loop_source(50),
+        "ok",
+    );
+}
+
+/// F4 / #2208 — a value RECORD owning the indirect child through an inline-enum
+/// field, dropped in scope each iteration: the record's
+/// `__hew_record_drop_inplace_Holder` must run the `Wrap` field's in-place drop,
+/// which frees the nested `Tree` through `__hew_indirect_enum_free_Tree` — the
+/// record leg of the container propagation. Pre-fix this shape did not compile
+/// (the overwrite-release capacity walk overflowed the cyclic-graph depth guard
+/// on the self-recursive `Tree`); with that unblocked but the drop routing
+/// reverted, the record drop routes the inline-enum field's heap-node child to
+/// the inline helper and traps (misreads the node pointer as a tag). Post-fix
+/// the slope is flat.
+#[test]
+fn indirect_enum_record_of_inline_enum_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("record_of_inline_enum", record_of_inline_enum_loop_source);
+}
+
+/// F4 / #2208 — the record-of-inline-enum loop runs clean under the poisoned
+/// allocator: the nested `Tree` node is freed exactly once through the record →
+/// inline-enum → `__hew_indirect_enum_free_Tree` chain. The `ok` output
+/// (total `3 * 50 == 150`) plus the clean exit pin both a leak and a double-free.
+#[test]
+fn indirect_enum_record_of_inline_enum_no_corruption_under_malloc_scribble() {
+    assert_exact_under_malloc_scribble(
+        "record_of_inline_enum_df",
+        &record_of_inline_enum_loop_source(50),
+        "ok",
+    );
+}
+
+/// F4 / #2208 — a value TUPLE owning the indirect child through an inline-enum
+/// element, dropped in scope each iteration: the synthesised
+/// `__hew_tuple_drop_inplace_tuple_Wrap_i64` must run the `Wrap` element's
+/// in-place drop, freeing the nested `Tree` through `__hew_indirect_enum_free_Tree`
+/// — the tuple leg of the container propagation. Same pre-fix story as the record
+/// leg (fail-closed depth guard, then a trap with routing reverted); post-fix the
+/// slope is flat.
+#[test]
+fn indirect_enum_tuple_of_inline_enum_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("tuple_of_inline_enum", tuple_of_inline_enum_loop_source);
+}
+
+/// F4 / #2208 — the tuple-of-inline-enum loop runs clean under the poisoned
+/// allocator: the nested `Tree` node is freed exactly once through the tuple →
+/// inline-enum → `__hew_indirect_enum_free_Tree` chain. The `ok` output
+/// (total `3 * 50 == 150`) plus the clean exit pin both a leak and a double-free.
+#[test]
+fn indirect_enum_tuple_of_inline_enum_no_corruption_under_malloc_scribble() {
+    assert_exact_under_malloc_scribble(
+        "tuple_of_inline_enum_df",
+        &tuple_of_inline_enum_loop_source(50),
         "ok",
     );
 }

@@ -1152,6 +1152,7 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
             crate::thunks::emit_tuple_inplace_thunk_bodies(
                 ctx,
                 llvm_mod,
+                target_data,
                 regs,
                 &key,
                 elems,
@@ -2099,6 +2100,7 @@ fn hashmap_owned_value_layout_descriptor_ptr<'ctx>(
             crate::thunks::emit_tuple_inplace_thunk_bodies(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
+                fn_ctx.target_data,
                 fn_ctx.owned_elem_registries(),
                 &key,
                 elems,

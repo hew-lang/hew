@@ -5388,27 +5388,18 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         .iter()
         .map(|(record, symbol)| (record.as_str(), symbol.as_str()))
         .collect();
-    for (record_name, kinds) in &record_classifications {
-        let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "state_clone synthesis: record `{record_name}` has no LLVM StructType in \
-                 record_struct_map — register_record_layouts must run before synthesis"
-            ))
-        })?;
-        emit_record_clone_inplace_body(ctx, llvm_mod, record_name, record_struct, kinds)?;
-        emit_record_drop_inplace_body(
-            ctx,
-            llvm_mod,
-            record_name,
-            record_struct,
-            kinds,
-            resource_close_by_record.get(record_name.as_str()).copied(),
-        )?;
-    }
     // Concrete target-data for any indirect-enum child free thunk this pass
     // synthesises (F4). Falls back to the host layout when no target machine is
     // bound — the same policy `struct_abi_size` / `build_tagged_union_layout` use,
     // so the child node's `hew_dealloc` size/align agrees with its allocation.
+    //
+    // Built BEFORE the record loop so EVERY clone/drop body this pass emits —
+    // records, enums, actor state — draws its indirect-vs-inline routing and
+    // on-demand child-body synthesis from the one authority. A record whose
+    // field is an `indirect enum` (`type Holder { child: Tree }`) leaked before
+    // this move: its drop body was synthesised witness-blind and routed the
+    // indirect child through the inline `__hew_enum_drop_inplace_*` helper,
+    // misreading the heap-node pointer as a discriminant (#2208 F4).
     let host_td;
     let resolved_td: &TargetData = if let Some(td) = target_data {
         td
@@ -5424,6 +5415,41 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         record_structs: record_struct_map,
         resource_record_close,
     };
+    for (record_name, kinds) in &record_classifications {
+        let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "state_clone synthesis: record `{record_name}` has no LLVM StructType in \
+                 record_struct_map — register_record_layouts must run before synthesis"
+            ))
+        })?;
+        emit_record_clone_inplace_body(
+            ctx,
+            llvm_mod,
+            record_name,
+            record_struct,
+            kinds,
+            &drop_witnesses,
+        )?;
+        // Guard against a body already emitted by the recursive on-demand
+        // synthesis (`emit_field_drop_step` UserRecord arm → `ensure_record_drop_body`):
+        // an earlier classification whose field embeds THIS record — directly or
+        // through a container — synthesises its drop body ahead of its own turn in
+        // this list. Re-emitting would trip the duplicate-synthesis invariant.
+        // Mirrors the enum-drop guard below (F4 / #2208). The clone body has no
+        // on-demand synthesis path, so it stays unconditional.
+        if get_or_declare_record_drop_inplace(ctx, llvm_mod, record_name).count_basic_blocks() == 0
+        {
+            emit_record_drop_inplace_body(
+                ctx,
+                llvm_mod,
+                record_name,
+                record_struct,
+                kinds,
+                resource_close_by_record.get(record_name.as_str()).copied(),
+                &drop_witnesses,
+            )?;
+        }
+    }
     for (enum_name, variant_kinds) in &enum_classifications {
         let layout = machine_layout_map.get(enum_name).ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -5432,7 +5458,14 @@ fn emit_state_clone_drop_synthesis<'ctx>(
                  synthesis"
             ))
         })?;
-        emit_enum_clone_inplace_body(ctx, llvm_mod, enum_name, layout, variant_kinds)?;
+        emit_enum_clone_inplace_body(
+            ctx,
+            llvm_mod,
+            enum_name,
+            layout,
+            variant_kinds,
+            &drop_witnesses,
+        )?;
         // Guard against a body already emitted by the recursive on-demand
         // synthesis (`emit_owned_payload_field_drop` → `ensure_enum_drop_body`):
         // an earlier classification whose payload embeds THIS enum synthesises it
@@ -5469,6 +5502,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
             machine_layouts: machine_layout_map,
             rec_kinds: &rec_kinds_map,
             enum_kinds: &enum_kinds_map,
+            enum_layouts,
         };
         for (record_name, kinds) in &record_classifications {
             let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
@@ -5516,6 +5550,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
             state_struct,
             kinds,
             target_data,
+            &drop_witnesses,
         )?;
         emit_actor_state_drop_body(
             ctx,
@@ -5525,6 +5560,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
             state_struct,
             kinds,
             target_data,
+            &drop_witnesses,
         )?;
     }
     Ok(())
@@ -5573,6 +5609,11 @@ fn emit_state_clone_drop_synthesis<'ctx>(
 /// the body is short-circuited to `ret ptr null` — see plan §4.5 B. These
 /// handles have no dup runtime symbol; direct spawn is move-only and the null
 /// clone fn blocks supervisor restart fail-closed.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor identity + clone symbol + state layout + field kinds + target \
+              data + the drop-synthesis witnesses threaded to the rollback teardown"
+)]
 fn emit_actor_state_clone_body<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -5581,6 +5622,7 @@ fn emit_actor_state_clone_body<'ctx>(
     state_struct: Option<StructType<'ctx>>,
     kinds: &[StateFieldCloneKind],
     target_data: Option<&TargetData>,
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
@@ -5781,6 +5823,7 @@ fn emit_actor_state_clone_body<'ctx>(
                 store_bbs[step_idx],
                 rollback_bbs[step_idx],
                 next_bb,
+                w,
             )?;
         }
 
@@ -5798,6 +5841,7 @@ fn emit_actor_state_clone_body<'ctx>(
                     dst,
                     drop_field_idx,
                     drop_kind,
+                    w,
                 )?;
             }
             let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
@@ -5851,6 +5895,9 @@ fn emit_field_clone_step<'ctx>(
     store_bb: inkwell::basic_block::BasicBlock<'ctx>,
     rollback_bb: inkwell::basic_block::BasicBlock<'ctx>,
     next_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    // Threaded to the tuple thunk seeder below so a tuple field carrying an
+    // `indirect enum` element seeds an indirect-aware drop body (#2208 F4).
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i32_ty = ctx.i32_type();
@@ -5878,7 +5925,7 @@ fn emit_field_clone_step<'ctx>(
                 }
             };
             let key = state_kind_tuple_key(elems);
-            emit_tuple_kind_inplace_thunk_bodies(ctx, llvm_mod, &key, tuple_struct, elems)?;
+            emit_tuple_kind_inplace_thunk_bodies(ctx, llvm_mod, &key, tuple_struct, elems, w)?;
             let helper = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, &key);
             let src_field = builder
                 .build_struct_gep(
@@ -6185,6 +6232,13 @@ fn emit_field_clone_step<'ctx>(
 /// the synthesised in-place record-drop helper. BitCopy / Connection
 /// fields are no-ops (caller filters them out, but this helper is
 /// defensive).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "GEP witnesses (struct type, base pointer, field index) plus the \
+              drop-synthesis witnesses that carry the single indirect-vs-inline \
+              enum routing authority; bundling them would obscure the load-bearing \
+              struct/pointer/index relationship at each call site"
+)]
 pub(crate) fn emit_field_drop_step<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -6193,6 +6247,13 @@ pub(crate) fn emit_field_drop_step<'ctx>(
     state: PointerValue<'ctx>,
     field_idx: u32,
     kind: &StateFieldCloneKind,
+    // The ONE authority for indirect-vs-inline enum routing and on-demand child
+    // drop-body synthesis. Every drop-body emitter (record/enum/actor-state/
+    // tuple bodies, closure/spawn-env thunks, aggregate-recursive element drops,
+    // and clone-rollback teardown) reaches an owned enum/record field through
+    // THIS primitive, so the indirect-enum-child decision is made in exactly one
+    // place and no container shape can bypass it (#2208 F4 propagation).
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let st_ty = st_ty.ok_or_else(|| {
@@ -6225,7 +6286,7 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                 }
             };
             let key = state_kind_tuple_key(elems);
-            emit_tuple_kind_drop_inplace_body(ctx, llvm_mod, &key, tuple_struct, elems)?;
+            emit_tuple_kind_drop_inplace_body(ctx, llvm_mod, &key, tuple_struct, elems, w)?;
             let helper = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, &key);
             let field_ptr = builder
                 .build_struct_gep(
@@ -6249,6 +6310,12 @@ pub(crate) fn emit_field_drop_step<'ctx>(
              fail-closed until array value construction is wired"
         ))),
         StateFieldCloneKind::UserRecord { name } => {
+            // Synthesise the record's in-place drop body on demand (idempotent).
+            // A record reachable ONLY through a container (an indirect-enum node,
+            // a tuple element) is never visited by the up-front reachability
+            // walk, so without this its `__hew_record_drop_inplace_*` helper is a
+            // dangling declaration (#2208 F4).
+            ensure_record_drop_body(ctx, llvm_mod, name, w)?;
             let helper = get_or_declare_record_drop_inplace(ctx, llvm_mod, name);
             let field_ptr = builder
                 .build_struct_gep(st_ty, state, field_idx, &format!("drop_f{field_idx}_ptr"))
@@ -6263,9 +6330,71 @@ pub(crate) fn emit_field_drop_step<'ctx>(
             Ok(())
         }
         StateFieldCloneKind::Enum { name } => {
-            // In-place tag-dispatched drop: helper drops the active variant's
-            // owned payload fields. Mirrors the UserRecord arm — the enum is
-            // embedded, so the helper takes a pointer and frees no wrapper.
+            // THE single indirect-vs-inline enum drop decision, made off the
+            // ACTUAL SLOT LLVM TYPE rather than the enum's declared indirectness.
+            // An `indirect enum` rides two different representations depending on
+            // its container: a HEAP NODE POINTER when it is an enum-payload child
+            // or a `Vec` element (the boxed recursive occurrence), but the INLINE
+            // `{ tag, payload }` tagged-union struct when it is a record/tuple/
+            // actor-state field (`resolve_ty` is struct-layout-first). Keying the
+            // decision off `is_indirect_enum(name)` alone mis-routes the inline
+            // case — loading the inline bytes as a node pointer traps. Inspecting
+            // the slot type instead is correct in every container, so this is the
+            // ONE place the routing is chosen and no container can bypass it
+            // (#2208 F4 propagation).
+            let field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "enum field drop: parent struct {st_ty:?} has no field at index {field_idx}"
+                ))
+            })?;
+            if matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                // Boxed occurrence: the slot holds a heap node pointer. Free the
+                // subtree + node exactly once through the recursive heap-node free
+                // thunk (synthesised on demand, idempotent bb-count guard). A
+                // pointer slot for a non-indirect enum is a classifier/layout
+                // drift — fail closed rather than mint a free thunk for it.
+                if !crate::layout::is_indirect_enum(name, w.enum_layouts) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "enum field drop: field {field_idx} of {st_ty:?} is a pointer but \
+                         enum `{name}` is not an indirect enum — classifier/layout drift"
+                    )));
+                }
+                emit_indirect_enum_free_body_raw(ctx, llvm_mod, w, name)?;
+                let child_thunk = get_or_declare_indirect_enum_free(ctx, llvm_mod, name);
+                let field_ptr = builder
+                    .build_struct_gep(
+                        st_ty,
+                        state,
+                        field_idx,
+                        &format!("drop_f{field_idx}_indirect_ptr"),
+                    )
+                    .llvm_ctx_with(|| format!("drop indirect enum gep f{field_idx}"))?;
+                let node_ptr = builder
+                    .build_load(
+                        ptr_ty,
+                        field_ptr,
+                        &format!("drop_f{field_idx}_indirect_node"),
+                    )
+                    .llvm_ctx_with(|| format!("drop indirect enum node load f{field_idx}"))?
+                    .into_pointer_value();
+                builder
+                    .build_call(
+                        child_thunk,
+                        &[node_ptr.into()],
+                        &format!("drop_indirect_enum_f{field_idx}"),
+                    )
+                    .llvm_ctx_with(|| format!("drop indirect enum free call f{field_idx}"))?;
+                return Ok(());
+            }
+            // Inline occurrence: in-place tag-dispatched drop of the active
+            // variant's owned payload fields (an indirect enum's inline node
+            // still holds its recursive CHILDREN as pointers, freed through this
+            // helper's own payload teardown). Synthesise the body on demand
+            // (idempotent) so an enum reachable only through a container is not a
+            // dangling declaration — the load-bearing half of the propagation
+            // fix. The enum is embedded, so the helper takes a pointer and frees
+            // no wrapper — mirrors the UserRecord arm.
+            ensure_enum_drop_body(ctx, llvm_mod, name, w)?;
             let helper = get_or_declare_enum_drop_inplace(ctx, llvm_mod, name);
             let field_ptr = builder
                 .build_struct_gep(st_ty, state, field_idx, &format!("drop_f{field_idx}_ptr"))
@@ -6648,6 +6777,11 @@ pub(crate) fn emit_field_drop_step<'ctx>(
 /// `supervisor_stop` of arg-initialized stateful children. (The lambda-actor
 /// `__hew_lambda_state_drop_*` family has the opposite, wrapper-owning
 /// contract and is synthesized separately.)
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor identity + drop symbol + state layout + field kinds + target \
+              data + the drop-synthesis witnesses that route indirect-enum fields"
+)]
 fn emit_actor_state_drop_body<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -6656,6 +6790,7 @@ fn emit_actor_state_drop_body<'ctx>(
     state_struct: Option<StructType<'ctx>>,
     kinds: &[StateFieldCloneKind],
     _target_data: Option<&TargetData>,
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
@@ -6720,6 +6855,7 @@ fn emit_actor_state_drop_body<'ctx>(
             state,
             idx as u32,
             kind,
+            w,
         )?;
     }
     builder
@@ -6745,6 +6881,7 @@ fn emit_record_clone_inplace_body<'ctx>(
     record_name: &str,
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let f = get_or_declare_record_clone_inplace(ctx, llvm_mod, record_name);
     if f.count_basic_blocks() > 0 {
@@ -6753,7 +6890,7 @@ fn emit_record_clone_inplace_body<'ctx>(
              already has a body — duplicate synthesis is a substrate invariant violation"
         )));
     }
-    emit_aggregate_clone_inplace_body(ctx, llvm_mod, f, record_struct, kinds)
+    emit_aggregate_clone_inplace_body(ctx, llvm_mod, f, record_struct, kinds, w)
 }
 
 /// Emit the per-field clone+rollback body into a pre-declared
@@ -6769,6 +6906,7 @@ pub(crate) fn emit_aggregate_clone_inplace_body<'ctx>(
     f: FunctionValue<'ctx>,
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let i32_ty = ctx.i32_type();
     let builder = ctx.create_builder();
@@ -6829,6 +6967,7 @@ pub(crate) fn emit_aggregate_clone_inplace_body<'ctx>(
                 store_bbs[step_idx],
                 rollback_bbs[step_idx],
                 next_bb,
+                w,
             )?;
         }
         for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
@@ -6843,6 +6982,7 @@ pub(crate) fn emit_aggregate_clone_inplace_body<'ctx>(
                     dst,
                     drop_field_idx,
                     drop_kind,
+                    w,
                 )?;
             }
             // No wrapper free here — record is embedded.
@@ -6872,6 +7012,7 @@ fn emit_record_drop_inplace_body<'ctx>(
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
     resource_close_symbol: Option<&str>,
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let f = get_or_declare_record_drop_inplace(ctx, llvm_mod, record_name);
     if f.count_basic_blocks() > 0 {
@@ -6887,6 +7028,7 @@ fn emit_record_drop_inplace_body<'ctx>(
         record_struct,
         kinds,
         resource_close_symbol,
+        w,
     )
 }
 
@@ -6899,9 +7041,10 @@ pub(crate) fn emit_aggregate_drop_inplace_body<'ctx>(
     f: FunctionValue<'ctx>,
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     // Tuples and the non-resource record path carry no user `close`.
-    emit_aggregate_drop_inplace_body_with_close(ctx, llvm_mod, f, record_struct, kinds, None)
+    emit_aggregate_drop_inplace_body_with_close(ctx, llvm_mod, f, record_struct, kinds, None, w)
 }
 
 /// `emit_aggregate_drop_inplace_body`, plus an optional user `#[resource]`
@@ -6928,6 +7071,7 @@ fn emit_aggregate_drop_inplace_body_with_close<'ctx>(
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
     resource_close_symbol: Option<&str>,
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let i64_ty = ctx.i64_type();
     let builder = ctx.create_builder();
@@ -7010,6 +7154,7 @@ fn emit_aggregate_drop_inplace_body_with_close<'ctx>(
             state,
             idx as u32,
             kind,
+            w,
         )?;
     }
     builder
@@ -8491,6 +8636,7 @@ fn emit_enum_clone_inplace_body<'ctx>(
     enum_name: &str,
     layout: &MachineCodegenLayout<'ctx>,
     variant_kinds: &EnumVariantKinds,
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let f = get_or_declare_enum_clone_inplace(ctx, llvm_mod, enum_name);
     if f.count_basic_blocks() > 0 {
@@ -8675,6 +8821,7 @@ fn emit_enum_clone_inplace_body<'ctx>(
                 store_bbs[step_idx],
                 rollback_bbs[step_idx],
                 next_bb,
+                w,
             )?;
         }
         // Rollback: drop the payload fields cloned so far (LIFO), then fail.
@@ -8690,6 +8837,7 @@ fn emit_enum_clone_inplace_body<'ctx>(
                     dst_payload,
                     drop_field_idx,
                     drop_kind,
+                    w,
                 )?;
             }
             builder
@@ -8737,7 +8885,7 @@ pub(crate) struct DropSynthWitnesses<'a, 'ctx> {
 /// Build a `DropSynthWitnesses` from a live `FnCtx`. `record_layouts` is the
 /// caller-owned reconstruction from `codegen_record_layouts(fn_ctx)` (a `Vec`
 /// the caller must bind so its borrow outlives the returned witnesses).
-fn fn_ctx_drop_witnesses<'a, 'ctx>(
+pub(crate) fn fn_ctx_drop_witnesses<'a, 'ctx>(
     fn_ctx: &'a FnCtx<'_, 'ctx>,
     record_layouts: &'a [RecordLayout],
 ) -> DropSynthWitnesses<'a, 'ctx> {
@@ -8908,6 +9056,7 @@ fn ensure_record_drop_body<'ctx>(
         record_struct,
         &field_kinds,
         resource_close,
+        w,
     )
 }
 
@@ -8966,38 +9115,12 @@ fn emit_owned_payload_field_drop<'ctx>(
             variant_struct.count_fields()
         )));
     }
-    if let StateFieldCloneKind::Enum { name } = kind {
-        if crate::layout::is_indirect_enum(name, w.enum_layouts) {
-            // Free the indirect child through its recursive heap-node thunk.
-            emit_indirect_enum_free_body_raw(ctx, llvm_mod, w, name)?;
-            let child_thunk = get_or_declare_indirect_enum_free(ctx, llvm_mod, name);
-            let ptr_ty = ctx.ptr_type(AddressSpace::default());
-            let child_field_ptr = builder
-                .build_struct_gep(
-                    variant_struct,
-                    payload,
-                    field_idx as u32,
-                    &format!("payload_indirect_child_ptr_{field_idx}"),
-                )
-                .llvm_ctx("payload indirect child field gep")?;
-            let child_ptr = builder
-                .build_load(ptr_ty, child_field_ptr, "payload_indirect_child_load")
-                .llvm_ctx("payload indirect child load")?
-                .into_pointer_value();
-            builder
-                .build_call(
-                    child_thunk,
-                    &[child_ptr.into()],
-                    "payload_indirect_child_free",
-                )
-                .llvm_ctx("payload indirect child free call")?;
-            return Ok(());
-        }
-        // Inline enum child: synthesise its in-place drop body, then step.
-        ensure_enum_drop_body(ctx, llvm_mod, name, w)?;
-    } else if let StateFieldCloneKind::UserRecord { name } = kind {
-        ensure_record_drop_body(ctx, llvm_mod, name, w)?;
-    }
+    // All routing — indirect-enum-child free, inline-enum/record on-demand body
+    // synthesis, and every other owned kind — is made by the ONE witness-aware
+    // primitive `emit_field_drop_step`. This wrapper only adds the payload-slot
+    // bounds guard above; it no longer duplicates the indirect-vs-inline
+    // decision, so the inline-enum-payload path and the record/tuple/actor-state
+    // paths cannot diverge (#2208 F4).
     emit_field_drop_step(
         ctx,
         llvm_mod,
@@ -9006,6 +9129,7 @@ fn emit_owned_payload_field_drop<'ctx>(
         payload,
         field_idx as u32,
         kind,
+        w,
     )
 }
 
@@ -9591,6 +9715,12 @@ struct OverwriteReleaseCx<'a, 'ctx> {
     machine_layouts: &'a MachineLayoutMap<'ctx>,
     rec_kinds: &'a HashMap<&'a str, &'a [StateFieldCloneKind]>,
     enum_kinds: &'a HashMap<&'a str, &'a EnumVariantKinds>,
+    /// Enum-layout authority for the indirect-enum boundary check: an
+    /// `indirect enum` field is a single owned heap-node POINTER, so the
+    /// capacity/collect/neutralise walks treat it as one pointer leaf (like a
+    /// `String`) and never recurse into its variants — a self-recursive
+    /// indirect enum would otherwise blow the cyclic-graph depth guard (#2208).
+    enum_layouts: &'a [EnumLayout],
 }
 
 impl OverwriteReleaseCx<'_, '_> {
@@ -9656,11 +9786,19 @@ fn overwrite_heap_leaf_capacity(
                     })?
             }
             StateFieldCloneKind::Enum { name } => {
-                let mut max = 0usize;
-                for variant in cx.enum_kinds(name)? {
-                    max = max.max(overwrite_heap_leaf_capacity(cx, variant, depth + 1)?);
+                // An `indirect enum` field is a single owned heap-node pointer —
+                // one leaf, no recursion (a self-recursive indirect enum would
+                // otherwise overflow the cyclic-graph depth guard). An inline
+                // enum reserves its worst-case variant's leaves.
+                if crate::layout::is_indirect_enum(name, cx.enum_layouts) {
+                    1
+                } else {
+                    let mut max = 0usize;
+                    for variant in cx.enum_kinds(name)? {
+                        max = max.max(overwrite_heap_leaf_capacity(cx, variant, depth + 1)?);
+                    }
+                    max
                 }
-                max
             }
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::IoHandle { .. }
@@ -9821,21 +9959,38 @@ fn emit_overwrite_collect_leaves<'ctx>(
                 ));
             }
             StateFieldCloneKind::Enum { name } => {
-                let field_ptr = builder
-                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_enum_ptr"))
-                    .llvm_ctx_with(|| format!("{label} nested enum gep"))?;
-                let consumed = emit_overwrite_collect_enum(
-                    cx,
-                    builder,
-                    f,
-                    name,
-                    field_ptr,
-                    slots,
-                    *next_slot,
-                    depth + 1,
-                )?;
-                *next_slot += consumed;
-                None
+                // An `indirect enum` field's owned heap leaf is the node pointer
+                // stored in the field slot — collect it directly (like a
+                // `String`), not by recursing into the inline variant structure
+                // (the slot holds a pointer, not an inline `{ tag, payload }`).
+                if crate::layout::is_indirect_enum(name, cx.enum_layouts) {
+                    Some(
+                        builder
+                            .build_struct_gep(
+                                st_ty,
+                                base,
+                                idx_u,
+                                &format!("{label}_indirect_enum_ptr"),
+                            )
+                            .llvm_ctx_with(|| format!("{label} indirect enum gep"))?,
+                    )
+                } else {
+                    let field_ptr = builder
+                        .build_struct_gep(st_ty, base, idx_u, &format!("{label}_enum_ptr"))
+                        .llvm_ctx_with(|| format!("{label} nested enum gep"))?;
+                    let consumed = emit_overwrite_collect_enum(
+                        cx,
+                        builder,
+                        f,
+                        name,
+                        field_ptr,
+                        slots,
+                        *next_slot,
+                        depth + 1,
+                    )?;
+                    *next_slot += consumed;
+                    None
+                }
             }
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::IoHandle { .. }
@@ -10168,10 +10323,29 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                 ));
             }
             StateFieldCloneKind::Enum { name } => {
-                let field_ptr = builder
-                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_enum_ptr"))
-                    .llvm_ctx_with(|| format!("{label} nested enum gep"))?;
-                emit_overwrite_neutralize_enum(cx, builder, f, name, field_ptr, slots, depth + 1)?;
+                // An `indirect enum` field's owned heap leaf is the node pointer:
+                // alias-neutralise the field slot directly (like a `String`), so
+                // a subsequent drop of the old value frees the node exactly once
+                // and never double-frees a node the new value now aliases.
+                if crate::layout::is_indirect_enum(name, cx.enum_layouts) {
+                    let slot = builder
+                        .build_struct_gep(st_ty, base, idx_u, &format!("{label}_indirect_enum_ptr"))
+                        .llvm_ctx_with(|| format!("{label} indirect enum gep"))?;
+                    emit_overwrite_neutralize_slot(cx, builder, slot, slots, &label)?;
+                } else {
+                    let field_ptr = builder
+                        .build_struct_gep(st_ty, base, idx_u, &format!("{label}_enum_ptr"))
+                        .llvm_ctx_with(|| format!("{label} nested enum gep"))?;
+                    emit_overwrite_neutralize_enum(
+                        cx,
+                        builder,
+                        f,
+                        name,
+                        field_ptr,
+                        slots,
+                        depth + 1,
+                    )?;
+                }
             }
             StateFieldCloneKind::IoHandle {
                 kind: IoHandleKind::Connection,
@@ -18588,14 +18762,15 @@ fn emit_tuple_kind_inplace_thunk_bodies<'ctx>(
     tuple_key: &str,
     tuple_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
     if clone_fn.count_basic_blocks() == 0 {
-        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, tuple_struct, kinds)?;
+        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, tuple_struct, kinds, w)?;
     }
     let drop_fn = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, tuple_key);
     if drop_fn.count_basic_blocks() == 0 {
-        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, kinds)?;
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, kinds, w)?;
     }
     Ok(())
 }
@@ -18606,10 +18781,11 @@ fn emit_tuple_kind_drop_inplace_body<'ctx>(
     tuple_key: &str,
     tuple_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+    w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let drop_fn = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, tuple_key);
     if drop_fn.count_basic_blocks() == 0 {
-        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, kinds)?;
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, kinds, w)?;
     }
     Ok(())
 }
@@ -18770,7 +18946,9 @@ pub(crate) fn emit_tuple_drop_inplace_body_only<'ctx>(
         elems,
         tuple_llvm_ty,
     )?;
-    emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds)
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let w = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+    emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds, &w)
 }
 
 /// Emit (or reuse) a thunk-less constant `HewVecElemLayout` global. The
@@ -20984,7 +21162,7 @@ fn emit_cow_heap_drop(
     Ok(())
 }
 
-fn codegen_record_layouts(fn_ctx: &FnCtx<'_, '_>) -> Vec<hew_mir::RecordLayout> {
+pub(crate) fn codegen_record_layouts(fn_ctx: &FnCtx<'_, '_>) -> Vec<hew_mir::RecordLayout> {
     fn_ctx
         .record_field_resolved_tys
         .iter()
@@ -21280,6 +21458,11 @@ fn emit_heap_slot_drop<'ctx>(
                 "aggregate-recursive drop: named leaf {ty:?} is not drop-classifiable: {e}"
             ))
         })?;
+        // One witness bundle for both arms — the same authority the up-front
+        // synthesis pass uses, so a record/enum reached as a tuple/array element
+        // synthesises identical bodies and routes an indirect-enum child the same
+        // way (#2208 F4).
+        let w = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
         match kind {
             StateFieldCloneKind::UserRecord { name } => {
                 let helper = get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &name);
@@ -21303,6 +21486,7 @@ fn emit_heap_slot_drop<'ctx>(
                         record_struct,
                         &field_kinds,
                         resource_close,
+                        &w,
                     )?;
                 }
                 fn_ctx
@@ -21312,6 +21496,16 @@ fn emit_heap_slot_drop<'ctx>(
                 return Ok(());
             }
             StateFieldCloneKind::Enum { name } => {
+                // A named enum reached as a tuple/array element is laid out INLINE
+                // (`resolve_ty` is struct-layout-first — even an `indirect enum`
+                // is the inline `{ tag, payload }` struct here, not a heap node
+                // pointer). Its in-place drop helper tag-dispatches and frees the
+                // active variant's owned payload — including, for an indirect
+                // enum's inline node, its recursive CHILD pointers through that
+                // helper's own payload teardown. Routing this slot through the
+                // recursive heap-node free would misread the inline bytes as a
+                // node pointer and trap (#2208 F4: the decision is the slot
+                // representation, not the enum's declared indirectness).
                 let helper = get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &name);
                 if helper.count_basic_blocks() == 0 {
                     let layout = fn_ctx.machine_layouts.get(&name).ok_or_else(|| {
@@ -21320,8 +21514,6 @@ fn emit_heap_slot_drop<'ctx>(
                         ))
                     })?;
                     let variant_kinds = classify_enum_drop_variants_for_key(fn_ctx, &name)?;
-                    let record_layouts = codegen_record_layouts(fn_ctx);
-                    let w = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
                     emit_enum_drop_inplace_body(
                         fn_ctx.ctx,
                         fn_ctx.llvm_mod,
@@ -30002,6 +30194,14 @@ fn build_module_for_target<'ctx>(
                 actor,
                 &record_layouts,
             )?;
+            let msg_drop_witnesses = DropSynthWitnesses {
+                enum_layouts: &pipeline.enum_layouts,
+                machine_layouts: &machine_layouts,
+                target_data: &target_data,
+                record_layouts: &pipeline.record_layouts,
+                record_structs: &record_layouts,
+                resource_record_close: &pipeline.resource_record_close,
+            };
             crate::thunks::emit_actor_message_drop_fn(
                 ctx,
                 &llvm_mod,
@@ -30010,6 +30210,7 @@ fn build_module_for_target<'ctx>(
                 &record_layouts,
                 &pipeline.record_layouts,
                 &pipeline.enum_layouts,
+                &msg_drop_witnesses,
             )?;
         }
         if !actor.on_stop_symbols.is_empty() {
@@ -42804,6 +43005,24 @@ fn main() {
         (llvm_mod, builder, slot, host_fn)
     }
 
+    /// Empty drop witnesses for the `Bytes`-arm unit tests. The Bytes arm is
+    /// reached before any enum/record/tuple routing, so the witness fields are
+    /// never dereferenced — this only satisfies the required parameter.
+    fn empty_drop_witnesses<'a, 'ctx>(
+        target_data: &'a TargetData,
+        machine_layouts: &'a MachineLayoutMap<'ctx>,
+        record_structs: &'a RecordLayoutMap<'ctx>,
+    ) -> DropSynthWitnesses<'a, 'ctx> {
+        DropSynthWitnesses {
+            enum_layouts: &[],
+            machine_layouts,
+            target_data,
+            record_layouts: &[],
+            record_structs,
+            resource_record_close: &[],
+        }
+    }
+
     /// Happy path: parent struct field 0 IS the `{ ptr, i32, i32 }` Bytes-
     /// Triple shape. `emit_field_drop_step(Bytes)` must succeed and the
     /// emitted IR must contain a load + `hew_bytes_drop` call + null
@@ -42821,6 +43040,10 @@ fn main() {
         let (llvm_mod, builder, slot, host_fn) =
             bytes_field_drop_test_harness(&ctx, parent_st, "bytes_field_drop_ok");
 
+        let td = host_target_data();
+        let ml = MachineLayoutMap::new();
+        let rs = RecordLayoutMap::new();
+        let w = empty_drop_witnesses(&td, &ml, &rs);
         emit_field_drop_step(
             &ctx,
             &llvm_mod,
@@ -42829,6 +43052,7 @@ fn main() {
             slot,
             0,
             &StateFieldCloneKind::Bytes,
+            &w,
         )
         .expect("Bytes field drop on a valid `{ ptr, i32, i32 }` field must succeed");
 
@@ -42877,6 +43101,10 @@ fn main() {
         let (llvm_mod, builder, slot, _) =
             bytes_field_drop_test_harness(&ctx, parent_st, "bytes_field_drop_wrong_width");
 
+        let td = host_target_data();
+        let ml = MachineLayoutMap::new();
+        let rs = RecordLayoutMap::new();
+        let w = empty_drop_witnesses(&td, &ml, &rs);
         let err = emit_field_drop_step(
             &ctx,
             &llvm_mod,
@@ -42885,6 +43113,7 @@ fn main() {
             slot,
             0,
             &StateFieldCloneKind::Bytes,
+            &w,
         )
         .expect_err("Bytes field drop must reject a 3-field struct with non-i32 inner width");
 
@@ -42920,6 +43149,10 @@ fn main() {
         let (llvm_mod, builder, slot, _) =
             bytes_field_drop_test_harness(&ctx, parent_st, "bytes_field_drop_wrong_arity");
 
+        let td = host_target_data();
+        let ml = MachineLayoutMap::new();
+        let rs = RecordLayoutMap::new();
+        let w = empty_drop_witnesses(&td, &ml, &rs);
         let err = emit_field_drop_step(
             &ctx,
             &llvm_mod,
@@ -42928,6 +43161,7 @@ fn main() {
             slot,
             0,
             &StateFieldCloneKind::Bytes,
+            &w,
         )
         .expect_err("Bytes field drop must reject a 4-field struct");
 
@@ -42956,6 +43190,10 @@ fn main() {
         let (llvm_mod, builder, slot, _) =
             bytes_field_drop_test_harness(&ctx, parent_st, "bytes_field_drop_non_struct");
 
+        let td = host_target_data();
+        let ml = MachineLayoutMap::new();
+        let rs = RecordLayoutMap::new();
+        let w = empty_drop_witnesses(&td, &ml, &rs);
         let err = emit_field_drop_step(
             &ctx,
             &llvm_mod,
@@ -42964,6 +43202,7 @@ fn main() {
             slot,
             0,
             &StateFieldCloneKind::Bytes,
+            &w,
         )
         .expect_err("Bytes field drop must reject a scalar (non-struct) field");
 
@@ -43106,6 +43345,10 @@ fn main() {
             machine_layouts: &machine_layouts,
             rec_kinds: &rec_kinds,
             enum_kinds: &enum_kinds,
+            // No indirect enums under test here; an empty layout slice makes
+            // `is_indirect_enum` report every enum inline — the pre-fix path
+            // these overwrite-release tests were written against.
+            enum_layouts: &[],
         };
         stub_drop_inplace_body(
             &ctx,
@@ -43174,6 +43417,10 @@ fn main() {
             machine_layouts: &machine_layouts,
             rec_kinds: &rec_kinds,
             enum_kinds: &enum_kinds,
+            // No indirect enums under test here; an empty layout slice makes
+            // `is_indirect_enum` report every enum inline — the pre-fix path
+            // these overwrite-release tests were written against.
+            enum_layouts: &[],
         };
 
         let err = emit_record_overwrite_release_body(&cx, "OwOuter", rec_st, &kinds)
@@ -43211,6 +43458,10 @@ fn main() {
             machine_layouts: &machine_layouts,
             rec_kinds: &rec_kinds,
             enum_kinds: &enum_kinds,
+            // No indirect enums under test here; an empty layout slice makes
+            // `is_indirect_enum` report every enum inline — the pre-fix path
+            // these overwrite-release tests were written against.
+            enum_layouts: &[],
         };
         stub_drop_inplace_body(
             &ctx,
@@ -43265,6 +43516,10 @@ fn main() {
             machine_layouts: &machine_layouts,
             rec_kinds: &rec_kinds,
             enum_kinds: &enum_kinds,
+            // No indirect enums under test here; an empty layout slice makes
+            // `is_indirect_enum` report every enum inline — the pre-fix path
+            // these overwrite-release tests were written against.
+            enum_layouts: &[],
         };
         stub_drop_inplace_body(
             &ctx,
@@ -43322,6 +43577,10 @@ fn main() {
             machine_layouts: &machine_layouts,
             rec_kinds: &rec_kinds,
             enum_kinds: &enum_kinds,
+            // No indirect enums under test here; an empty layout slice makes
+            // `is_indirect_enum` report every enum inline — the pre-fix path
+            // these overwrite-release tests were written against.
+            enum_layouts: &[],
         };
         let kinds = vec![
             StateFieldCloneKind::String,

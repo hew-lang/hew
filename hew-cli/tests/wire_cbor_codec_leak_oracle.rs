@@ -80,16 +80,25 @@
 //!
 //! ## Error-path under-free disposition
 //!
-//! `.decode()` traps (SIGTRAP/SIGILL) on a malformed stream — it does not
-//! return a `Result` — so `leaks --atExit` (which needs a normal exit to run
-//! its hook) cannot snapshot the failing decode for an UNDER-free slope. The
-//! error-path under-free guarantee is instead established structurally: the
-//! `fail_bb` calls `emit_de_drop_owned(dst)` over the SAME null-safe drop
-//! helpers (`hew_string_drop`, `hew_vec_free`, `__hew_record_drop_inplace_*`)
-//! that the success-path slope proves leak-free, walking every field of the
-//! zero-initialised shell (unwritten fields are null and short-circuit) before
-//! `free(dst)`. The no-DOUBLE-free half is proven dynamically here under the
-//! poisoned-allocator triple.
+//! `.decode()` traps (SIGTRAP/SIGILL) on a malformed stream in `fn main` — it
+//! does not return a `Result` — so `leaks --atExit` (which needs a normal exit
+//! to run its hook) cannot snapshot THAT process for an UNDER-free slope. The
+//! `assert_decode_failure_traps_no_double_free` oracles therefore prove only the
+//! no-DOUBLE-free half (the poisoned-allocator triple aborts on an over-free).
+//!
+//! The UNDER-free half is proven dynamically by
+//! `vec_owned_{struct,enum}_decode_failure_frees_partials_no_under_free`: they
+//! run the SAME failing decode inside an actor `receive` handler, where the
+//! supervisor's crash-recovery `siglongjmp` catches each trap and keeps the
+//! process alive to a normal exit `leaks --atExit` can snapshot. A `fail_bb`
+//! that skipped `emit_de_drop_owned(dst)` leaks the already-decoded owned Vec +
+//! its element strings on every failed message; a DIFFERENTIAL slope against an
+//! in-range (successful-decode) baseline cancels the per-spawn actor-cell floor
+//! and the success-path owned-Vec drop, leaving the `fail_bb`'s own under-free —
+//! which must be ~0. `emit_de_drop_owned` walks the zero-initialised shell over
+//! the SAME null-safe drop helpers (`hew_string_drop`, `hew_vec_free`,
+//! `__hew_record_drop_inplace_*`) the success-path slope proves leak-free
+//! (unwritten fields are null and short-circuit) before `free(dst)`.
 //!
 //! ## Slope methodology + skip behaviour
 //!
@@ -493,6 +502,154 @@ fn actor_in_range_enum_decode_source(frames: usize) -> String {
     actor_enum_decode_source(frames, "Narrow::B(1)")
 }
 
+// ── under-free (leak) teeth for the decode-failure `fail_bb` ─────────────────
+//
+// The `assert_decode_failure_traps_no_double_free` oracles run the failing
+// decode in `fn main`, where the null-return TRAPS the process. That trap
+// catches OVER-free (the scribbled double-free aborts with the cabi guard) but
+// is BLIND to UNDER-free: a `fail_bb` that never dropped the partial owned
+// fields still exits via the same trap, and `leaks --atExit` cannot snapshot a
+// signal-terminated process. Removing `emit_de_drop_owned` therefore leaves the
+// trap-based oracles green while the error path leaks every already-decoded
+// owned element.
+//
+// These fixtures give that path under-free teeth by running the SAME failing
+// decode inside an actor `receive` handler. The supervisor's crash-recovery
+// `siglongjmp` catches each trap and keeps the PROCESS alive, so the leak of a
+// missing `fail_bb` drop ACCUMULATES across frames and survives to a normal
+// exit that `leaks --atExit` can snapshot — the same survive-the-trap mechanism
+// `actor_oob_enum_tag_decode_frees_reader_and_shell_no_excess_slope` relies on.
+// A DIFFERENTIAL slope against an in-range baseline (same spawn-per-frame shape,
+// same owned-Vec decode allocation, but a matching layout that decodes
+// SUCCESSFULLY) cancels the codec-independent per-spawn actor-cell leak; the
+// remainder is the `fail_bb`'s own per-message under-free, which must be ~0.
+// Drop `emit_de_drop_owned` and the failure slope jumps by the owned Vec + its
+// element strings per frame — the teeth these fixtures require.
+
+/// Actor-context owned-Vec-element STRUCT decode, parameterised by whether the
+/// encoded layout MISMATCHES the decode layout. Both shapes decode a
+/// `BatchBad { items: Vec<Item> @1; tail: i64 @2 }` (an owned-string-per-element
+/// Vec) inside the actor handler, spawning one `Decoder` per frame:
+///
+///   * `mismatch = true`: the frame encodes a `BatchGood` (`tail: string`), so
+///     the decode fills the full owned Vec then latches on the `i64`-where-text
+///     tail, driving the `fail_bb`. The actor traps; the supervisor recovers.
+///     A `fail_bb` missing its owned-Vec drop leaks the Vec + every element
+///     string per frame.
+///   * `mismatch = false`: the frame encodes a `BatchBad` directly, so the
+///     decode succeeds; the handler reads only the scalar `bad.tail` keep-alive
+///     and the value drop releases the owned Vec at scope exit (the success-path
+///     drop the round-trip slope oracle already proves leak-free). This isolates
+///     the shared per-spawn actor-cell floor.
+fn actor_vec_owned_struct_decode_source(frames: usize, mismatch: bool) -> String {
+    let build = if mismatch {
+        "let g = BatchGood { items: xs, tail: \"owned-tail-value\" };"
+    } else {
+        "let g = BatchBad { items: xs, tail: 7 };"
+    };
+    format!(
+        "#[wire]\n\
+         type Item {{ name: string @1; }}\n\
+         #[wire]\n\
+         type BatchGood {{ items: Vec<Item> @1; tail: string @2; }}\n\
+         #[wire]\n\
+         type BatchBad {{ items: Vec<Item> @1; tail: i64 @2; }}\n\
+         \n\
+         actor Decoder {{\n\
+         \x20   let seq: i64;\n\
+         \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
+         \x20       let bad = BatchBad.decode(raw);\n\
+         \x20       bad.tail\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let xs: Vec<Item> = Vec::new();\n\
+         \x20       xs.push(Item {{ name: \"alpha-owned-element\" }});\n\
+         \x20       xs.push(Item {{ name: \"beta-owned-element\" }});\n\
+         \x20       {build}\n\
+         \x20       let raw = g.encode();\n\
+         \x20       let a = spawn Decoder(seq: i);\n\
+         \x20       let r = await a.decode_it(raw);\n\
+         \x20       match r {{ Ok(v) => {{ total = total + v; }}, Err(_) => {{ total = total + 1; }}, }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Mismatch (failure) branch of the owned-Vec-element struct actor fixture.
+fn actor_vec_owned_struct_decode_failure_source(frames: usize) -> String {
+    actor_vec_owned_struct_decode_source(frames, true)
+}
+
+/// In-range baseline of the owned-Vec-element struct actor fixture.
+fn actor_vec_owned_struct_decode_baseline_source(frames: usize) -> String {
+    actor_vec_owned_struct_decode_source(frames, false)
+}
+
+/// Actor-context owned-Vec-element ENUM decode, parameterised by mismatch. The
+/// element is a `#[wire]` enum whose `Full` variant owns a `string`, so each
+/// decoded element allocates through `__hew_enum_clone_inplace_Payload`. On the
+/// `mismatch = true` failure the `fail_bb` must drop the owned enum Vec exactly
+/// once (each `Full` element releasing its string); the `mismatch = false`
+/// baseline decodes successfully and drops the owned Vec on the value drop.
+fn actor_vec_owned_enum_decode_source(frames: usize, mismatch: bool) -> String {
+    let build = if mismatch {
+        "let g = BagGood { items: xs, tail: \"owned-tail-value\" };"
+    } else {
+        "let g = BagBad { items: xs, tail: 7 };"
+    };
+    format!(
+        "#[wire]\n\
+         enum Payload {{ Empty; Full(string); }}\n\
+         #[wire]\n\
+         type BagGood {{ items: Vec<Payload> @1; tail: string @2; }}\n\
+         #[wire]\n\
+         type BagBad {{ items: Vec<Payload> @1; tail: i64 @2; }}\n\
+         \n\
+         actor Decoder {{\n\
+         \x20   let seq: i64;\n\
+         \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
+         \x20       let bad = BagBad.decode(raw);\n\
+         \x20       bad.tail\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let xs: Vec<Payload> = Vec::new();\n\
+         \x20       xs.push(Payload::Full(\"first-owned-element\"));\n\
+         \x20       xs.push(Payload::Empty);\n\
+         \x20       xs.push(Payload::Full(\"second-owned-element\"));\n\
+         \x20       {build}\n\
+         \x20       let raw = g.encode();\n\
+         \x20       let a = spawn Decoder(seq: i);\n\
+         \x20       let r = await a.decode_it(raw);\n\
+         \x20       match r {{ Ok(v) => {{ total = total + v; }}, Err(_) => {{ total = total + 1; }}, }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n"
+    )
+}
+
+/// Mismatch (failure) branch of the owned-Vec-element enum actor fixture.
+fn actor_vec_owned_enum_decode_failure_source(frames: usize) -> String {
+    actor_vec_owned_enum_decode_source(frames, true)
+}
+
+/// In-range baseline of the owned-Vec-element enum actor fixture.
+fn actor_vec_owned_enum_decode_baseline_source(frames: usize) -> String {
+    actor_vec_owned_enum_decode_source(frames, false)
+}
+
 // ── leak measurement plumbing (same shape as bytes_drop_leak_oracle) ────────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and return
@@ -688,6 +845,52 @@ fn assert_frame_leaks_exactly_zero(
          high_leaks={high_leaks}. The fresh codec temp (encode buffer / to_json \
          string) is not released after the borrowing decode/parse — re-run a \
          standalone build under `MallocStackLogging=1 leaks --atExit -- <bin>`."
+    );
+}
+
+/// Differential leak-slope teeth for a decode-FAILURE `fail_bb`. Compiles the
+/// failure shape (mismatched layout — traps, caught by the actor supervisor)
+/// and an in-range baseline (matching layout — decodes successfully) at LOW and
+/// HIGH frames, measures each leak-node slope, and asserts the failure slope
+/// does not exceed the baseline slope by more than `SLOPE_TOLERANCE`. Both
+/// shapes spawn one `Decoder` per frame and allocate the same owned Vec on
+/// decode, so subtracting the baseline cancels the per-spawn actor-cell floor
+/// AND the success-path owned-Vec drop; the remainder is the `fail_bb`'s own
+/// per-message under-free, which must be ~0. Dropping `emit_de_drop_owned`
+/// leaks the owned Vec + its element strings per failed frame — an ~N/frame
+/// slope this catches. Skips (logs `skip:`) when the host cannot run `leaks(1)`.
+fn assert_decode_failure_no_underfree_slope(
+    fail_shape: &str,
+    fail_source_fn: fn(usize) -> String,
+    base_shape: &str,
+    base_source_fn: fn(usize) -> String,
+) {
+    let Some((fail_low, fail_high)) =
+        frame_leak_counts(fail_shape, fail_source_fn, LOW_FRAMES, HIGH_FRAMES)
+    else {
+        return;
+    };
+    let Some((base_low, base_high)) =
+        frame_leak_counts(base_shape, base_source_fn, LOW_FRAMES, HIGH_FRAMES)
+    else {
+        return;
+    };
+
+    let fail_slope = fail_high.saturating_sub(fail_low);
+    let base_slope = base_high.saturating_sub(base_low);
+    eprintln!(
+        "{fail_shape} under-free differential: fail_slope={fail_slope} \
+         (fail_low={fail_low} fail_high={fail_high}) base_slope={base_slope} \
+         (base_low={base_low} base_high={base_high}) tolerance={SLOPE_TOLERANCE}"
+    );
+    assert!(
+        fail_slope <= base_slope + SLOPE_TOLERANCE,
+        "{fail_shape}: the decode-failure path leaks (UNDER-frees) per malformed message — \
+         failure slope {fail_slope} exceeds the in-range baseline slope {base_slope} by {} nodes \
+         (tolerance {SLOPE_TOLERANCE}). The `fail_bb` is not dropping every already-decoded owned \
+         field (the owned Vec + its element strings) before freeing the shell — check that \
+         `emit_de_drop_owned` still walks this shape's owned fields on the error path.",
+        fail_slope.saturating_sub(base_slope + SLOPE_TOLERANCE),
     );
 }
 
@@ -891,6 +1094,38 @@ fn vec_owned_enum_decode_failure_frees_partials_no_double_free() {
     assert_decode_failure_traps_no_double_free(
         "wire_cbor_vec_owned_enum_decode_failure",
         VEC_OWNED_ENUM_DECODE_FAILURE_SOURCE,
+    );
+}
+
+/// UNDER-free teeth for the owned-Vec-element STRUCT decode-failure path. The
+/// `no_double_free` sibling above traps in `fn main` and so is blind to a
+/// leak; this runs the same failing decode inside an actor handler (the
+/// supervisor survives each trap) and asserts the accumulated leak slope stays
+/// at the in-range baseline. Removing `emit_de_drop_owned` from the deserialize
+/// thunk's `fail_bb` leaks the owned Vec + element strings per frame and fails
+/// this — the direction the `no_double_free` oracle cannot see.
+#[test]
+fn vec_owned_struct_decode_failure_frees_partials_no_under_free() {
+    assert_decode_failure_no_underfree_slope(
+        "wire_cbor_vec_owned_struct_decode_failure_underfree",
+        actor_vec_owned_struct_decode_failure_source,
+        "wire_cbor_vec_owned_struct_decode_baseline",
+        actor_vec_owned_struct_decode_baseline_source,
+    );
+}
+
+/// UNDER-free teeth for the owned-Vec-element ENUM decode-failure path — the
+/// `Vec<#[wire] enum>` sibling of the struct under-free oracle above. Each
+/// already-decoded `Full` element owns a `string`; a `fail_bb` that skips the
+/// owned enum Vec drop leaks those strings per malformed message, which the
+/// actor-survived differential slope catches.
+#[test]
+fn vec_owned_enum_decode_failure_frees_partials_no_under_free() {
+    assert_decode_failure_no_underfree_slope(
+        "wire_cbor_vec_owned_enum_decode_failure_underfree",
+        actor_vec_owned_enum_decode_failure_source,
+        "wire_cbor_vec_owned_enum_decode_baseline",
+        actor_vec_owned_enum_decode_baseline_source,
     );
 }
 

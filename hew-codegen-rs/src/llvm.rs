@@ -5405,6 +5405,17 @@ fn emit_state_clone_drop_synthesis<'ctx>(
             resource_close_by_record.get(record_name.as_str()).copied(),
         )?;
     }
+    // Concrete target-data for any indirect-enum child free thunk this pass
+    // synthesises (F4). Falls back to the host layout when no target machine is
+    // bound — the same policy `struct_abi_size` / `build_tagged_union_layout` use,
+    // so the child node's `hew_dealloc` size/align agrees with its allocation.
+    let host_td;
+    let resolved_td: &TargetData = if let Some(td) = target_data {
+        td
+    } else {
+        host_td = host_target_data();
+        &host_td
+    };
     for (enum_name, variant_kinds) in &enum_classifications {
         let layout = machine_layout_map.get(enum_name).ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -5414,7 +5425,16 @@ fn emit_state_clone_drop_synthesis<'ctx>(
             ))
         })?;
         emit_enum_clone_inplace_body(ctx, llvm_mod, enum_name, layout, variant_kinds)?;
-        emit_enum_drop_inplace_body(ctx, llvm_mod, enum_name, layout, variant_kinds)?;
+        emit_enum_drop_inplace_body(
+            ctx,
+            llvm_mod,
+            enum_name,
+            layout,
+            variant_kinds,
+            enum_layouts,
+            machine_layout_map,
+            resolved_td,
+        )?;
     }
     // Overwrite-release helpers (state-field re-store) — synthesised for
     // every classified record/enum, mirroring the clone/drop families
@@ -7773,73 +7793,71 @@ fn collect_xnode_codec_drop_seeds(
             return;
         };
         let short = short_name(name);
-        // Check enum first (mirrors `emit_de_drop_owned` resolution order).
-        // Prefer the EXACT name match over the short-name fallback: when a
-        // package-qualified reply type (`testffi.Result`) collides on its short
-        // name with another module's record (a file-import `Result`), the
-        // short-name fallback would seed the drop body under the WRONG key. The
-        // codec's deserialize fail-path references the drop helper under the
-        // reply type's exact (qualified) identity, so the seed MUST resolve to
-        // that same identity or the helper body is never emitted and LLVM
-        // rejects a dangling declaration (#2208). Short-name matching stays as
-        // the fallback so a unique bare reply type keeps its byte-identical
-        // pre-qualification key.
-        let enum_key = if args.is_empty() {
-            enum_layouts
-                .iter()
-                .find(|el| el.name == *name)
-                .or_else(|| enum_layouts.iter().find(|el| short_name(&el.name) == short))
-                .map(|el| el.name.clone())
+        // Mirror `xnode_registry_key`'s resolution ORDER byte-for-byte, not just
+        // its mangling: it probes the FULL-qualified key across BOTH records AND
+        // enums first (`records.any(full) || enums.any(full)`), and only then
+        // falls back to the SHORT name across both. Probing enum-full → enum-short
+        // and returning before ever checking record-full is wrong: a generic like
+        // `pkg.Foo<i64>` that resolves to a full RECORD key (`pkg.Foo$$i64`) can
+        // collide on its short enum key (`Foo$$i64`), so the enum-first collector
+        // seeded the wrong (short enum) key and left the decoder-referenced record
+        // drop helper declared without a body — LLVM rejects the dangling
+        // declaration (#2208). The full-across-both / short-across-both order below
+        // guarantees the seed lands under the exact key the decoder resolves.
+        //
+        // Records are probed before enums at each qualification level to match the
+        // `||` short-circuit in `xnode_registry_key` (records first). Each level
+        // returns as soon as it hits, so a full-qualified match never falls through
+        // to the short fallback.
+        // For the empty-args case the full candidate is the bare name and the
+        // short fallback matches any layout whose short name equals `short`. For a
+        // generic the full candidate mangles the qualified name (`pkg.E$$i64`) and
+        // the short fallback is the exact bare-name mangling (`E$$i64`) — the two
+        // candidates `xnode_registry_key` tries in that order.
+        let full_key = if args.is_empty() {
+            name.to_string()
         } else {
-            // Mirror `xnode_registry_key`: a generic layout keeps its qualified
-            // outer name with the arg spine shortened (`pkg.E$$i64`), so probe
-            // the FULL-qualified mangled key first and fall back to the
-            // short-name mangled key (`E$$i64`). The decoder resolves the drop
-            // helper under the full key, so seeding only the short key (or the
-            // unmangled `pkg.E`) left a full-key helper declared without a body
-            // and LLVM rejected the dangling declaration (#2208).
-            let full_mangled = mangle_with_shortened_args(name, args);
-            let short_mangled = mangle_with_shortened_args(short, args);
-            enum_layouts
-                .iter()
-                .find(|el| el.name == full_mangled)
-                .or_else(|| enum_layouts.iter().find(|el| el.name == short_mangled))
-                .map(|el| el.name.clone())
+            mangle_with_shortened_args(name, args)
         };
-        if let Some(key) = enum_key {
-            if enum_seen.insert(key.clone()) {
-                enum_seeds.push(key);
+        // Full-qualified, records first (mirrors `records.any(full)`).
+        if let Some(rl) = record_layouts.iter().find(|rl| rl.name == full_key) {
+            if rec_seen.insert(rl.name.clone()) {
+                rec_seeds.push(rl.name.clone());
             }
-            return; // Enum found; record path not needed for this type.
+            return;
         }
-        // Not an enum — check if it is a record.
-        let rec_key = if args.is_empty() {
+        // Full-qualified, enums next (mirrors `|| enums.any(full)`).
+        if let Some(el) = enum_layouts.iter().find(|el| el.name == full_key) {
+            if enum_seen.insert(el.name.clone()) {
+                enum_seeds.push(el.name.clone());
+            }
+            return;
+        }
+        // Short fallback, records first (mirrors the trailing `short` return).
+        let rec_short = if args.is_empty() {
             record_layouts
                 .iter()
-                .find(|rl| rl.name == *name)
-                .or_else(|| {
-                    record_layouts
-                        .iter()
-                        .find(|rl| short_name(&rl.name) == short)
-                })
-                .map(|rl| rl.name.clone())
+                .find(|rl| short_name(&rl.name) == short)
         } else {
-            // Mirror `xnode_registry_key` (see the enum branch above): probe the
-            // FULL-qualified mangled key (`pkg.R$$i64`) first, then the
-            // short-name mangled key (`R$$i64`), so a qualified generic record
-            // layout gets its drop-helper body seeded under the same key the
-            // decoder declares it (#2208).
-            let full_mangled = mangle_with_shortened_args(name, args);
             let short_mangled = mangle_with_shortened_args(short, args);
-            record_layouts
-                .iter()
-                .find(|rl| rl.name == full_mangled)
-                .or_else(|| record_layouts.iter().find(|rl| rl.name == short_mangled))
-                .map(|rl| rl.name.clone())
+            record_layouts.iter().find(|rl| rl.name == short_mangled)
         };
-        if let Some(key) = rec_key {
-            if rec_seen.insert(key.clone()) {
-                rec_seeds.push(key);
+        if let Some(rl) = rec_short {
+            if rec_seen.insert(rl.name.clone()) {
+                rec_seeds.push(rl.name.clone());
+            }
+            return;
+        }
+        // Short fallback, enums last.
+        let enum_short = if args.is_empty() {
+            enum_layouts.iter().find(|el| short_name(&el.name) == short)
+        } else {
+            let short_mangled = mangle_with_shortened_args(short, args);
+            enum_layouts.iter().find(|el| el.name == short_mangled)
+        };
+        if let Some(el) = enum_short {
+            if enum_seen.insert(el.name.clone()) {
+                enum_seeds.push(el.name.clone());
             }
         }
     };
@@ -8684,12 +8702,20 @@ fn emit_enum_clone_inplace_body<'ctx>(
 /// Does NOT free the wrapper — the enum is embedded in its parent struct. The
 /// variant layout is read from the same `MachineCodegenLayout` authority the
 /// clone body uses, so the two cannot select different payload offsets.
+#[allow(clippy::too_many_arguments)]
 fn emit_enum_drop_inplace_body<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     enum_name: &str,
     layout: &MachineCodegenLayout<'ctx>,
     variant_kinds: &EnumVariantKinds,
+    // Witnesses needed to route an indirect-enum payload child through its
+    // recursive heap-node free thunk (F4). `variant_field_tys` names the child
+    // types; `enum_layouts` classifies indirect vs inline; `machine_layouts` +
+    // `target_data` size the child node for its `hew_dealloc`.
+    enum_layouts: &[EnumLayout],
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    target_data: &TargetData,
 ) -> CodegenResult<()> {
     let f = get_or_declare_enum_drop_inplace(ctx, llvm_mod, enum_name);
     if f.count_basic_blocks() > 0 {
@@ -8760,6 +8786,53 @@ fn emit_enum_drop_inplace_body<'ctx>(
             if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
                 continue;
             }
+            // F4: an indirect-enum payload child is a heap POINTER, not an inline
+            // `{ tag, payload }` struct. The classifier tags both inline and
+            // indirect enums as `StateFieldCloneKind::Enum { name }`, so routing an
+            // indirect child through `emit_field_drop_step`'s Enum arm would call
+            // `__hew_enum_drop_inplace_<child>` on the pointer SLOT, reading the
+            // child node pointer's bits as a discriminant tag (the same class of
+            // bug the top-level indirect-free repair fixed, one level down). Detect
+            // the indirect child here and free it the way the top-level node free
+            // does: load the child node pointer and invoke its recursive
+            // `__hew_indirect_enum_free_<child>` thunk (synthesised on first
+            // reference, idempotent), which post-order-frees the subtree and
+            // `hew_dealloc`s the node exactly once. Falls through to
+            // `emit_field_drop_step` for inline enums and every other kind.
+            if let StateFieldCloneKind::Enum { name } = kind {
+                if crate::layout::is_indirect_enum(name, enum_layouts) {
+                    emit_indirect_enum_free_body_raw(
+                        ctx,
+                        llvm_mod,
+                        enum_layouts,
+                        machine_layouts,
+                        target_data,
+                        name,
+                    )?;
+                    let child_thunk = get_or_declare_indirect_enum_free(ctx, llvm_mod, name);
+                    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+                    let child_field_ptr = builder
+                        .build_struct_gep(
+                            *variant_struct,
+                            payload,
+                            field_idx as u32,
+                            &format!("enum_drop_indirect_child_ptr_{idx}_{field_idx}"),
+                        )
+                        .llvm_ctx("enum drop indirect child field gep")?;
+                    let child_ptr = builder
+                        .build_load(ptr_ty, child_field_ptr, "enum_drop_indirect_child_load")
+                        .llvm_ctx("enum drop indirect child load")?
+                        .into_pointer_value();
+                    builder
+                        .build_call(
+                            child_thunk,
+                            &[child_ptr.into()],
+                            "enum_drop_indirect_child_free",
+                        )
+                        .llvm_ctx("enum drop indirect child free call")?;
+                    continue;
+                }
+            }
             emit_field_drop_step(
                 ctx,
                 llvm_mod,
@@ -8825,13 +8898,12 @@ pub(crate) fn get_or_declare_indirect_enum_free<'ctx>(
 /// trying the bare key then the short name (the same fallback
 /// `machine_layout_for_local` uses for module-qualified names).
 fn indirect_enum_layout_by_key<'a, 'ctx>(
-    fn_ctx: &'a FnCtx<'_, 'ctx>,
+    machine_layouts: &'a MachineLayoutMap<'ctx>,
     enum_name: &str,
 ) -> CodegenResult<&'a MachineCodegenLayout<'ctx>> {
-    fn_ctx
-        .machine_layouts
+    machine_layouts
         .get(enum_name)
-        .or_else(|| fn_ctx.machine_layouts.get(short_name(enum_name)))
+        .or_else(|| machine_layouts.get(short_name(enum_name)))
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "indirect-enum free synthesis: enum `{enum_name}` is not in \
@@ -8880,7 +8952,8 @@ fn emit_indirect_enum_node_alloc(fn_ctx: &FnCtx<'_, '_>, local: u32) -> CodegenR
         return Ok(());
     }
     let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, ty)?;
-    let outer_struct = indirect_enum_layout_by_key(fn_ctx, &enum_name)?.outer_struct;
+    let outer_struct =
+        indirect_enum_layout_by_key(fn_ctx.machine_layouts, &enum_name)?.outer_struct;
 
     // Size/align from an anonymous mirror of the outer struct — the same
     // host_target_data-safe sizing `emit_indirect_enum_free_body_only` uses, so
@@ -8996,8 +9069,30 @@ pub(crate) fn emit_indirect_enum_free_body_only<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     enum_name: &str,
 ) -> CodegenResult<()> {
-    let ctx = fn_ctx.ctx;
-    let llvm_mod = fn_ctx.llvm_mod;
+    emit_indirect_enum_free_body_raw(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        fn_ctx.enum_layouts,
+        fn_ctx.machine_layouts,
+        fn_ctx.target_data,
+        enum_name,
+    )
+}
+
+/// `emit_indirect_enum_free_body_only` with the required layout witnesses passed
+/// directly instead of via a live `FnCtx`. Lets the state-clone/drop synthesis
+/// pass (which has no `FnCtx`) synthesise a child's recursive free thunk when an
+/// inline enum's variant payload holds an indirect-enum pointer — the identical
+/// body the scope-exit `DropKind::IndirectEnum` path emits, so the two can never
+/// diverge on (size, align) or the recursion set.
+pub(crate) fn emit_indirect_enum_free_body_raw<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    enum_layouts: &[EnumLayout],
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    target_data: &TargetData,
+    enum_name: &str,
+) -> CodegenResult<()> {
     let f = get_or_declare_indirect_enum_free(ctx, llvm_mod, enum_name);
     if f.count_basic_blocks() > 0 {
         return Ok(());
@@ -9006,7 +9101,7 @@ pub(crate) fn emit_indirect_enum_free_body_only<'ctx>(
     // Resolve this enum's tagged-union layout (outer struct, tag int type,
     // per-variant payload struct types) and the MIR-side variant field types
     // (to know which payload fields are indirect-enum children to recurse into).
-    let layout = indirect_enum_layout_by_key(fn_ctx, enum_name)?.clone();
+    let layout = indirect_enum_layout_by_key(machine_layouts, enum_name)?.clone();
     let outer_struct = layout.outer_struct;
     let tag_int_ty = layout.tag_int_ty;
 
@@ -9035,8 +9130,8 @@ pub(crate) fn emit_indirect_enum_free_body_only<'ctx>(
     for field_tys in &layout.variant_field_tys {
         for fty in field_tys {
             if let ResolvedTy::Named { name, .. } = fty {
-                if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
-                    let child_key = crate::layout::enum_layout_key_for_ty(fn_ctx, fty)?;
+                if crate::layout::is_indirect_enum(name, enum_layouts) {
+                    let child_key = crate::layout::enum_layout_key_for_ty_from(enum_layouts, fty)?;
                     if child_key != enum_name && !child_enum_keys.contains(&child_key) {
                         child_enum_keys.push(child_key);
                     }
@@ -9045,7 +9140,14 @@ pub(crate) fn emit_indirect_enum_free_body_only<'ctx>(
         }
     }
     for child_key in &child_enum_keys {
-        emit_indirect_enum_free_body_only(fn_ctx, child_key)?;
+        emit_indirect_enum_free_body_raw(
+            ctx,
+            llvm_mod,
+            enum_layouts,
+            machine_layouts,
+            target_data,
+            child_key,
+        )?;
     }
 
     let builder = ctx.create_builder();
@@ -9116,7 +9218,7 @@ pub(crate) fn emit_indirect_enum_free_body_only<'ctx>(
             let ResolvedTy::Named { name, .. } = fty else {
                 continue;
             };
-            if !crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+            if !crate::layout::is_indirect_enum(name, enum_layouts) {
                 continue;
             }
             // Bounds-guard against layout/field drift before GEP-ing.
@@ -9143,7 +9245,7 @@ pub(crate) fn emit_indirect_enum_free_body_only<'ctx>(
             // Resolve the child's own free thunk (self for `Node(Tree,Tree)`,
             // the partner thunk for a mutually-recursive pair). Both were
             // declared+bodied above, so this resolves to a real define.
-            let child_key = crate::layout::enum_layout_key_for_ty(fn_ctx, fty)?;
+            let child_key = crate::layout::enum_layout_key_for_ty_from(enum_layouts, fty)?;
             let child_thunk = get_or_declare_indirect_enum_free(ctx, llvm_mod, &child_key);
             builder
                 .build_call(child_thunk, &[child_ptr.into()], "indirect_free_child_call")
@@ -9159,8 +9261,8 @@ pub(crate) fn emit_indirect_enum_free_body_only<'ctx>(
     // allocation prologue uses, so alloc and free agree on (size, align)).
     builder.position_at_end(dealloc_bb);
     let anon_outer = ctx.struct_type(&outer_struct.get_field_types(), false);
-    let size_bytes = fn_ctx.target_data.get_abi_size(&anon_outer);
-    let align_bytes = fn_ctx.target_data.get_abi_alignment(&anon_outer);
+    let size_bytes = target_data.get_abi_size(&anon_outer);
+    let align_bytes = target_data.get_abi_alignment(&anon_outer);
     if size_bytes == 0 {
         return Err(CodegenError::FailClosed(format!(
             "indirect-enum free synthesis: `{enum_name}` outer struct has 0 bytes \
@@ -20978,6 +21080,9 @@ fn emit_heap_slot_drop<'ctx>(
                         &name,
                         layout,
                         &variant_kinds,
+                        fn_ctx.enum_layouts,
+                        fn_ctx.machine_layouts,
+                        fn_ctx.target_data,
                     )?;
                 }
                 fn_ctx

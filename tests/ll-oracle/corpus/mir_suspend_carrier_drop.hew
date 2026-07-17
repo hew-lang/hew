@@ -1,0 +1,25 @@
+// ll-oracle corpus fixture: suspend-carrier source-place derivation.
+//
+// Exercises the MIR suspend-carrier derivation in hew-mir/src/lower.rs:
+// `terminator_is_suspend_carrier`, `suspend_kind_source_places`,
+// `terminator_source_places`, and the generator yield-escape drop paths.
+// `held` is an owned heap string set BEFORE the first `yield` and read AFTER
+// the resume, so it is live across the suspend point and must be tracked as a
+// carrier place (spilled into the coroutine frame, released on the abandoned /
+// early-drop edge rather than leaked). Stays on the generator (not actor)
+// surface so it compiles for both native and wasm32. Proves the suspend
+// source-place + carrier-drop derivation stays byte-identical across the
+// lower.rs file-split.
+fn main() -> i64 {
+    let g = gen {
+        let held = "carried" + " across";
+        yield 1;
+        yield held.len();
+    };
+    var total = 0;
+    for v in g {
+        total = total + v;
+    }
+    println(total);
+    total
+}

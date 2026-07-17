@@ -136,13 +136,59 @@ impl Parser<'_> {
             let end = self
                 .expect(&Token::RightBracket)
                 .map_or_else(|| self.peek_span().start, |span| span.end);
-            attrs.push(Attribute {
+            let attr = Attribute {
                 name,
                 args,
                 span: start..end,
-            });
+            };
+            self.validate_authority_attribute_shape(&attr);
+            attrs.push(attr);
         }
         attrs
+    }
+
+    fn validate_authority_attribute_shape(&mut self, attr: &Attribute) {
+        match attr.name.as_str() {
+            "lang_item" | "intrinsic" | "diagnostic_item" => {
+                if !matches!(attr.args.as_slice(), [AttributeArg::Positional(value)] if !value.is_empty())
+                {
+                    self.error_at(
+                        format!(
+                            "`#[{}]` requires exactly one string key, for example \
+                             `#[{}(\"key\")]`",
+                            attr.name, attr.name
+                        ),
+                        attr.span.clone(),
+                    );
+                }
+            }
+            "abi" => {
+                if attr.args.is_empty()
+                    || attr
+                        .args
+                        .iter()
+                        .any(|arg| !matches!(arg, AttributeArg::KeyValue { .. }))
+                {
+                    self.error_at(
+                        "`#[abi]` requires one or more `key = value` arguments".to_string(),
+                        attr.span.clone(),
+                    );
+                }
+
+                let mut seen = std::collections::HashSet::new();
+                for arg in &attr.args {
+                    if let AttributeArg::KeyValue { key, .. } = arg {
+                        if !seen.insert(key.as_str()) {
+                            self.error_at(
+                                format!("duplicate `#[abi]` key `{key}`"),
+                                attr.span.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Parse a visibility modifier.
@@ -314,7 +360,7 @@ impl Parser<'_> {
                         self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
                     }
                     Some(Token::Indirect) => {
-                        let mut t = self.parse_indirect_enum(vis)?;
+                        let mut t = self.parse_indirect_enum(vis, &attrs)?;
                         t.doc_comment = doc_comment;
                         Item::TypeDecl(t)
                     }
@@ -388,7 +434,7 @@ impl Parser<'_> {
                 self.parse_fn_with_modifiers(Visibility::Private, attrs, &doc_comment)?
             }
             Some(Token::Indirect) => {
-                let mut t = self.parse_indirect_enum(Visibility::Private)?;
+                let mut t = self.parse_indirect_enum(Visibility::Private, &attrs)?;
                 t.doc_comment = doc_comment;
                 Item::TypeDecl(t)
             }
@@ -689,6 +735,10 @@ impl Parser<'_> {
         // post-body (must be an empty-body struct). Representation axis —
         // orthogonal to the `resource_marker` ownership axis.
         let is_opaque = attrs.iter().any(|a| a.name == "opaque");
+        let lang_item = attrs
+            .iter()
+            .find(|a| a.name == "lang_item")
+            .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
 
         let kind = match self.peek() {
             Some(Token::Type) => {
@@ -760,6 +810,7 @@ impl Parser<'_> {
             resource_marker,
             is_opaque,
             consuming_methods,
+            lang_item,
         })
     }
 
@@ -914,6 +965,7 @@ impl Parser<'_> {
             "yaml",
             "deprecated",
             "opaque",
+            "lang_item",
         ];
 
         let mut resource_span: Option<std::ops::Range<usize>> = None;
@@ -967,16 +1019,17 @@ impl Parser<'_> {
         marker
     }
 
-    pub(crate) fn parse_indirect_enum(&mut self, visibility: Visibility) -> Option<TypeDecl> {
+    pub(crate) fn parse_indirect_enum(
+        &mut self,
+        visibility: Visibility,
+        attrs: &[Attribute],
+    ) -> Option<TypeDecl> {
         self.expect(&Token::Indirect)?;
         if self.peek() != Some(&Token::Enum) {
             self.error("'indirect' can only be used with 'enum'".to_string());
             return None;
         }
-        // Indirect enums (recursive boxed enums) do not participate in the
-        // `#[resource]` / `#[linear]` ownership-discipline surface; pass an
-        // empty attribute slice so no marker is extracted.
-        let mut decl = self.parse_struct_or_enum(visibility, &[])?;
+        let mut decl = self.parse_struct_or_enum(visibility, attrs)?;
         decl.is_indirect = true;
         Some(decl)
     }

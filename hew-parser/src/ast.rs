@@ -981,6 +981,9 @@ pub struct TypeDecl {
     /// Populated by the parser; used by the type checker to validate ownership rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consuming_methods: Vec<String>,
+    /// Lang-item key from `#[lang_item("key")]`, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang_item: Option<String>,
 }
 
 impl ResourceMarker {

@@ -25,6 +25,7 @@ pub mod resolved_ty;
 pub mod runtime_call;
 pub mod runtime_calling_convention;
 pub mod stdlib;
+pub mod stdlib_authority;
 pub mod stdlib_loader;
 pub mod traits;
 pub mod ty;
@@ -58,7 +59,9 @@ pub use extern_symbol::{
     ExternSymbolSpec, ExternSymbolTemplate, PlaceholderName, TemplateError, TemplateExpansionError,
     TemplateSegment,
 };
-pub use lang_items::{LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT};
+pub use lang_items::{
+    LangItem, LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT,
+};
 pub use lowering_facts::{
     assert_lowering_facts_consistent, hashmap_layout_key_fact,
     hashmap_layout_key_layout_value_fact, hashset_layout_element_admissible, hashset_layout_fact,
@@ -73,6 +76,12 @@ pub use runtime_call::{
     RuntimeDropDescriptor, StreamElementKind, VecGetElem, VecSliceElem,
 };
 pub use runtime_calling_convention::RuntimeCallingConvention;
+pub use stdlib_authority::{
+    authority as stdlib_authority, AuthorityBinding, AuthorityDeclarationKind, AuthorityError,
+    AuthorityErrorKind, AuthoritySource, DiagnosticItem, EnumVariantOrder, ExternAbiEntry,
+    ExternAbiFact, Intrinsic, OverloadGroup, PreludeExport, PreludeExportKind, StdlibAuthority,
+    StdlibRoot, STDLIB_AUTHORITY, SUBSTRATE_SOURCES,
+};
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
 pub use vec_authority::VecElementToken;

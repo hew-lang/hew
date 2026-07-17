@@ -370,6 +370,10 @@ impl Parser<'_> {
             resource_marker: ResourceMarker::None,
             is_opaque: false,
             consuming_methods: Vec::new(),
+            lang_item: attrs
+                .iter()
+                .find(|a| a.name == "lang_item")
+                .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string())),
         })
     }
 

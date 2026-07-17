@@ -1,0 +1,21 @@
+// #2208 finding 1: a ROOT-declared `Payload` collides with an imported
+// `rootreply.Payload` returned by an actor ask. MIR keys the reply layout
+// `rootreply.Payload` (two distinct qualified identities share the bare name);
+// the checker/HIR collision set must include the root declarant so the ask
+// reply carries the same qualified identity and reads the right layout.
+import hew::rootreply;
+
+// Root's own `Payload` with a DIVERGENT field set (`tag`, not `code`).
+type Payload {
+    tag: i64;
+}
+
+fn main() {
+    let local = Payload { tag: 1 };
+    println(local.tag);
+    let src = spawn rootreply.Source(seed: 2);
+    match await src.fetch() {
+        Ok(p) => println(p.code),
+        Err(_) => println("err"),
+    }
+}

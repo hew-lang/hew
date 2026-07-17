@@ -993,7 +993,12 @@ impl Checker {
         // as the qualified-key prefix on per-method `td.methods` insertions
         // (none of which fire for primitive targets that lack a
         // `type_defs` entry).
-        self.register_stdlib_hew_items("builtins", &impl_items, StdlibBarePublication::Prelude);
+        self.register_stdlib_hew_items(
+            "builtins",
+            "std.builtins",
+            &impl_items,
+            StdlibBarePublication::Prelude,
+        );
         self.register_compiled_stdlib_receiver_impls(
             "string",
             include_str!("../../../std/string.hew"),
@@ -1046,8 +1051,10 @@ impl Checker {
             })
             .collect();
         if !impl_items.is_empty() {
+            let module_full_path = format!("std.{module_short}");
             self.register_stdlib_hew_items(
                 module_short,
+                &module_full_path,
                 &impl_items,
                 StdlibBarePublication::Prelude,
             );
@@ -1069,7 +1076,12 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("closable", &items, StdlibBarePublication::Prelude);
+            self.register_stdlib_hew_items(
+                "closable",
+                "std.io.closable",
+                &items,
+                StdlibBarePublication::Prelude,
+            );
         }
     }
 
@@ -1091,7 +1103,12 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("link_monitor", &items, StdlibBarePublication::Prelude);
+            self.register_stdlib_hew_items(
+                "link_monitor",
+                "std.link_monitor",
+                &items,
+                StdlibBarePublication::Prelude,
+            );
             // The on-disk stdlib path derives this from the `#[resource]` marker
             // in `stdlib_loader` (resource types are pushed into `drop_types`),
             // which makes the trait registry treat `MonitorRef` as move-only so
@@ -1126,7 +1143,12 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("failure", &items, StdlibBarePublication::Prelude);
+            self.register_stdlib_hew_items(
+                "failure",
+                "std.failure",
+                &items,
+                StdlibBarePublication::Prelude,
+            );
         }
     }
 
@@ -1158,7 +1180,12 @@ impl Checker {
                     )
                 })
                 .collect();
-            self.register_stdlib_hew_items("lookup_error", &items, StdlibBarePublication::Prelude);
+            self.register_stdlib_hew_items(
+                "lookup_error",
+                "std.lookup_error",
+                &items,
+                StdlibBarePublication::Prelude,
+            );
         }
     }
 
@@ -6846,16 +6873,22 @@ impl Checker {
         // that have no flat variant (user-defined types, generics) take the
         // `Ty::Named` path as before.  Primitive types never carry type args,
         // so the from_name path only fires when self_type_args is empty.
+        let impl_self_name = self
+            .current_module_short()
+            .filter(|_| !type_name.contains('.'))
+            .map(|module| format!("{module}.{type_name}"))
+            .filter(|qualified| self.type_defs.contains_key(qualified))
+            .unwrap_or_else(|| type_name.to_string());
         let impl_self = if self_type_args.is_empty() {
-            Ty::from_name(type_name).unwrap_or_else(|| Ty::Named {
+            Ty::from_name(&impl_self_name).unwrap_or_else(|| Ty::Named {
                 builtin: None,
-                name: type_name.to_string(),
+                name: impl_self_name.clone(),
                 args: Vec::new(),
             })
         } else {
             Ty::Named {
                 builtin: None,
-                name: type_name.to_string(),
+                name: impl_self_name,
                 args: self_type_args.to_vec(),
             }
         };
@@ -7652,8 +7685,10 @@ impl Checker {
                     // alongside their C/Rust bindings so trait methods stay visible.
                     if let Some(ref resolved_items) = decl.resolved_items {
                         if !self.stdlib_hew_source_already_registered(decl, &module_path) {
+                            let module_full_path = module_path.replace("::", ".");
                             self.register_stdlib_hew_items(
                                 &short,
+                                &module_full_path,
                                 resolved_items,
                                 StdlibBarePublication::Import(&decl.spec),
                             );
@@ -7685,6 +7720,7 @@ impl Checker {
                                 let items: Vec<_> = parsed.program.items.into_iter().collect();
                                 self.register_stdlib_hew_items(
                                     &short,
+                                    "std.io.closable",
                                     &items,
                                     StdlibBarePublication::Prelude,
                                 );
@@ -7711,6 +7747,7 @@ impl Checker {
                                 let items: Vec<_> = parsed.program.items.into_iter().collect();
                                 self.register_stdlib_hew_items(
                                     &short,
+                                    "std.concurrency.lambda_actor",
                                     &items,
                                     StdlibBarePublication::Prelude,
                                 );
@@ -7868,6 +7905,7 @@ impl Checker {
     pub(super) fn register_stdlib_hew_items(
         &mut self,
         module_short: &str,
+        module_full_path: &str,
         items: &[Spanned<Item>],
         import_spec: StdlibBarePublication<'_>,
     ) {
@@ -7928,7 +7966,7 @@ impl Checker {
                     let qualified_type = format!("{module_short}.{}", td.name);
                     self.type_visibility
                         .entry(qualified_type.clone())
-                        .or_insert((td.visibility, Some(module_short.to_string())));
+                        .or_insert((td.visibility, Some(module_full_path.to_string())));
                     // Record the declaration span so E_VISIBILITY can point "declared
                     // here" at the actual declaration for both pub and non-pub types.
                     self.type_def_spans
@@ -7968,7 +8006,7 @@ impl Checker {
                     let qualified_type = format!("{module_short}.{}", md.name);
                     self.type_visibility
                         .entry(qualified_type.clone())
-                        .or_insert((md.visibility, Some(module_short.to_string())));
+                        .or_insert((md.visibility, Some(module_full_path.to_string())));
                     // Record the declaration span for non-pub machines.
                     self.type_def_spans
                         .entry(qualified_type)
@@ -8029,7 +8067,7 @@ impl Checker {
                     let qualified_type = format!("{module_short}.{}", tr.name);
                     self.type_visibility
                         .entry(qualified_type.clone())
-                        .or_insert((tr.visibility, Some(module_short.to_string())));
+                        .or_insert((tr.visibility, Some(module_full_path.to_string())));
                     self.type_def_spans
                         .entry(qualified_type)
                         .or_insert_with(|| span.clone());
@@ -8060,6 +8098,9 @@ impl Checker {
                     self.fn_visibility
                         .entry(qualified.clone())
                         .or_insert(fd.visibility);
+                    self.fn_def_spans
+                        .entry(qualified.clone())
+                        .or_insert_with(|| (span.clone(), Some(module_full_path.to_string())));
                     if !self.fn_sigs.contains_key(&qualified) {
                         let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                         // Only `Pub` functions are module exports: `package fn` must
@@ -8107,7 +8148,7 @@ impl Checker {
                     let qualified_type = format!("{module_short}.{}", ad.name);
                     self.type_visibility
                         .entry(qualified_type.clone())
-                        .or_insert((ad.visibility, Some(module_short.to_string())));
+                        .or_insert((ad.visibility, Some(module_full_path.to_string())));
                     self.type_def_spans
                         .entry(qualified_type)
                         .or_insert_with(|| span.clone());
@@ -9025,7 +9066,25 @@ impl Checker {
                     // `register_actor_base` authors the dotted
                     // `{module_short}.{name}` identity directly; no bare key
                     // and no copy-based qualified alias.
+                    //
+                    // Receive-fn reply types register BARE, then a collision-gated
+                    // transform owner-qualifies ONLY the cross-module-colliding
+                    // record names in each reply — recursing exactly as HIR's
+                    // `qualify_colliding_module_record_ty` does. Scoping
+                    // `current_module` for the whole registration instead would
+                    // qualify EVERY nested local type: a reply
+                    // `Result<Unique, Colliding>` becomes
+                    // `Result<pkg.Unique, pkg.Colliding>` in checker state while
+                    // HIR qualifies only `Colliding`, so MIR's actor-reply
+                    // equality rejects the divergence (#2208). Qualifying only
+                    // the colliding name keeps the checker, HIR, and the MIR
+                    // record-layout keying (`type_layout_key` / `collided_type_names`)
+                    // in lockstep: a colliding reply record takes its owner
+                    // identity (`testffi.Result`), a unique one (`http.Response`,
+                    // `xml.Node`, the `Unique` above) keeps its bare identity so
+                    // its layout stays bare too and never SIGSEGVs at cabi.rs.
                     self.register_actor_base(ad, Some(module_short));
+                    self.qualify_colliding_receive_reply_tys(ad, module_short);
                     self.record_module_type_export(module_short, &ad.name);
                     // If named import or glob, also register unqualified
                     if Self::should_import_name(&ad.name, spec) {
@@ -9044,6 +9103,124 @@ impl Checker {
         }
         self.local_type_defs = saved_local_type_defs;
         self.source_type_defs = saved_source_type_defs;
+    }
+
+    /// Build the precise cross-module record-name collision set, mirroring the
+    /// HIR/MIR authoritative notion (`imported_type_name_collides` /
+    /// `collided_type_names`): a bare record/type-decl name collides when 2+
+    /// distinct non-root modules (package OR file-import) declare it, AFTER
+    /// re-export subsumption so a stdlib module surfaced through two import
+    /// paths (e.g. `std::net::http` and `std::net::http::http_client` both
+    /// re-exporting `http.Response`) is not double-counted. Only a colliding
+    /// record is owner-qualified to its declaring module; a name unique to one
+    /// module keeps its bare identity, so no `http.Response`/`xml.Node`
+    /// over-qualification and no cabi over-qualification SIGSEGV (#2208).
+    pub(super) fn compute_cross_module_colliding_record_names(
+        program: &Program,
+    ) -> HashSet<String> {
+        let Some(mg) = program.module_graph.as_ref() else {
+            return HashSet::new();
+        };
+        // Empty file-import exclusion: a file-import module counts as a
+        // declaring scope — the mixed file-import + package same-bare-name shape
+        // #2208 depends on — matching the HIR lowering's collision set exactly.
+        let no_file_exclusion: HashSet<hew_parser::module::ModuleId> = HashSet::new();
+        let preferred = collision_preferred_package_module_ids(program, &no_file_exclusion);
+        let mut colliding: HashSet<String> = HashSet::new();
+        for module in mg.modules.values() {
+            for (item, _) in &module.items {
+                let name = match item {
+                    Item::TypeDecl(decl) => &decl.name,
+                    Item::Record(decl) => &decl.name,
+                    _ => continue,
+                };
+                if colliding.contains(name) {
+                    continue;
+                }
+                if collision_imported_type_name_collides(
+                    program,
+                    &no_file_exclusion,
+                    &preferred,
+                    name,
+                ) {
+                    colliding.insert(name.clone());
+                }
+            }
+        }
+        colliding
+    }
+
+    /// Owner-qualify the cross-module-colliding record names in every receive
+    /// fn's already-registered reply type, in place. Runs after
+    /// `register_actor_base` for an imported actor so the checker's stored reply
+    /// identity matches HIR's collision-gated handler transform and MIR's
+    /// actor-reply equality (#2208).
+    fn qualify_colliding_receive_reply_tys(&mut self, ad: &ActorDecl, module_short: &str) {
+        let identity = Self::actor_identity(Some(module_short), &ad.name);
+        for rf in &ad.receive_fns {
+            let method_name = format!("{identity}::{}", rf.name);
+            let Some(current) = self
+                .fn_sigs
+                .get(&method_name)
+                .map(|s| s.return_type.clone())
+            else {
+                continue;
+            };
+            let qualified = self.qualify_colliding_reply_ty(&current, module_short);
+            if qualified != current {
+                if let Some(sig) = self.fn_sigs.get_mut(&method_name) {
+                    sig.return_type = qualified;
+                }
+            }
+        }
+    }
+
+    /// Owner-qualify ONLY the cross-module-colliding record names inside a reply
+    /// type, recursing through generic arguments exactly as HIR's
+    /// `qualify_colliding_module_record_ty` does. Builtins, already-qualified
+    /// names, and non-colliding records are returned unchanged, so a reply
+    /// `Result<Unique, Colliding>` becomes `Result<Unique, {module}.Colliding>`
+    /// — the same identity HIR produces — rather than qualifying `Unique` too
+    /// (which MIR's actor-reply equality would reject). Only a name the module
+    /// actually declares (`{module}.{name}` present in `type_defs`) is
+    /// qualified; otherwise the bare name is preserved (#2208).
+    fn qualify_colliding_reply_ty(&self, ty: &Ty, module_short: &str) -> Ty {
+        let Ty::Named {
+            name,
+            args,
+            builtin,
+        } = ty
+        else {
+            return ty.clone();
+        };
+        let args = args
+            .iter()
+            .map(|arg| self.qualify_colliding_reply_ty(arg, module_short))
+            .collect();
+        if builtin.is_some()
+            || name.contains('.')
+            || !self.cross_module_colliding_record_names.contains(name)
+        {
+            return Ty::Named {
+                name: name.clone(),
+                args,
+                builtin: *builtin,
+            };
+        }
+        let qualified = format!("{module_short}.{name}");
+        if self.type_defs.contains_key(&qualified) {
+            Ty::Named {
+                name: qualified,
+                args,
+                builtin: None,
+            }
+        } else {
+            Ty::Named {
+                name: name.clone(),
+                args,
+                builtin: *builtin,
+            }
+        }
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).
@@ -9175,6 +9352,17 @@ impl Checker {
     pub(super) fn register_qualified_type_alias(&mut self, module_short: &str, name: &str) {
         let qualified = format!("{module_short}.{name}");
         if let Some(def) = self.type_defs.get(name).cloned() {
+            // The bare entry is last-write-wins across modules, while an existing
+            // qualified entry is that module's authority. Cross-module import
+            // registration must not overwrite it with another module's bare
+            // winner. The owning module may overwrite its own qualified entry
+            // during Pass 1.5 member re-resolution, when the bare definition has
+            // just been upgraded after import aliases became available.
+            let owns_qualified = self.current_module_short() == Some(module_short);
+            let write_alias = owns_qualified || !self.type_defs.contains_key(&qualified);
+            if !write_alias {
+                return;
+            }
             self.type_defs.insert(qualified.clone(), def);
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified.clone(), span);
@@ -9224,6 +9412,122 @@ impl Checker {
             .or_default()
             .insert(source_identity.to_string());
     }
+}
+
+/// Whether `item` is a record/type-decl declaring the bare `type_name`.
+/// Mirrors the HIR lowering helper of the same shape (#2208).
+fn collision_item_declares_type_name(item: &Item, type_name: &str) -> bool {
+    match item {
+        Item::TypeDecl(decl) => decl.name == type_name,
+        Item::Record(decl) => decl.name == type_name,
+        _ => false,
+    }
+}
+
+/// Package modules that are re-export "doubles" subsumed by a superset module,
+/// so a type they re-surface is not double-counted as a cross-module collision.
+/// Faithful port of the HIR lowering's `preferred_package_module_ids` re-export
+/// subsumption: module M is preferred (kept as the canonical declarant) iff some
+/// N ≠ M has `files(M) ⊆ files(N)` and either the subset is strict, or the sets
+/// are equal and N precedes M in topo order (a deterministic tiebreak keeping
+/// exactly one). Used to dedup a stdlib module surfaced through two import paths
+/// (e.g. `std::net::http` + `std::net::http::http_client`) so `http.Response`
+/// stays unique and is never owner-qualified (#2208).
+fn collision_preferred_package_module_ids(
+    program: &Program,
+    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
+) -> HashSet<hew_parser::module::ModuleId> {
+    use std::path::{Path, PathBuf};
+
+    let mut preferred = HashSet::new();
+    let Some(mg) = program.module_graph.as_ref() else {
+        return preferred;
+    };
+
+    let mut candidates: Vec<(&hew_parser::module::ModuleId, HashSet<&Path>, usize)> = Vec::new();
+    for (pos, id) in mg.topo_order.iter().enumerate() {
+        if *id == mg.root || file_import_modules.contains(id) {
+            continue;
+        }
+        let Some(module) = mg.modules.get(id) else {
+            continue;
+        };
+        let files: HashSet<&Path> = module.source_paths.iter().map(PathBuf::as_path).collect();
+        if files.is_empty() {
+            continue;
+        }
+        candidates.push((id, files, pos));
+    }
+
+    for i in 0..candidates.len() {
+        let (m_files, m_pos) = (&candidates[i].1, candidates[i].2);
+        for j in 0..candidates.len() {
+            if i == j {
+                continue;
+            }
+            let (n_files, n_pos) = (&candidates[j].1, candidates[j].2);
+            if !m_files.is_subset(n_files) {
+                continue;
+            }
+            let equal = m_files.len() == n_files.len();
+            if !equal || n_pos < m_pos {
+                preferred.insert(candidates[i].0.clone());
+                break;
+            }
+        }
+    }
+    preferred
+}
+
+/// Whether `type_name` is declared by 2+ distinct non-root modules (package or,
+/// with an empty `file_import_modules` exclusion, file-import), counting a
+/// re-export double only once via `preferred_modules` subsumption. Faithful port
+/// of the HIR lowering's `imported_type_name_collides` — the authoritative
+/// collision notion the checker owner-qualification must agree with (#2208).
+fn collision_imported_type_name_collides(
+    program: &Program,
+    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
+    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    type_name: &str,
+) -> bool {
+    let Some(module_graph) = program.module_graph.as_ref() else {
+        return false;
+    };
+    module_graph
+        .modules
+        .iter()
+        .filter(|(module_id, module)| {
+            // Include the root module as a declarant: MIR's authoritative
+            // `collided_type_names` counts distinct qualified identities over
+            // EVERY item (root included), so a root `Result` colliding with an
+            // imported `pkg.Result` is a real collision MIR keys `pkg.Result`.
+            // Excluding root left the checker/HIR value flow bare against that
+            // qualified layout (#2208). Re-export subsumption below still dedups
+            // a package that re-exports a file module's item.
+            !file_import_modules.contains(*module_id)
+                && module.items.iter().any(|(item, _)| {
+                    if !collision_item_declares_type_name(item, type_name) {
+                        return false;
+                    }
+                    if preferred_modules.contains(*module_id) {
+                        return true;
+                    }
+                    !preferred_modules.iter().any(|preferred_id| {
+                        module_graph
+                            .modules
+                            .get(preferred_id)
+                            .is_some_and(|preferred| {
+                                preferred
+                                    .items
+                                    .iter()
+                                    .any(|(candidate, _)| candidate == item)
+                            })
+                    })
+                })
+        })
+        .take(2)
+        .count()
+        > 1
 }
 
 #[cfg(test)]

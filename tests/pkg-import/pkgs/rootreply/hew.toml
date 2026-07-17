@@ -1,0 +1,6 @@
+[package]
+name = "hew::rootreply"
+version = "0.1.0"
+description = "Root-collision reply fixture: exports a `Payload` (code: i64) reached via an actor ask"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

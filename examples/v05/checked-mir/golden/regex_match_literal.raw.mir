@@ -378,7 +378,7 @@ fn Pattern::clone(Pattern) -> Pattern [conv=default]
   locals:
     _0: Pattern
     _1: PatternHandle
-    _2: PatternHandle
+    _2: regex.PatternHandle
     _3: Pattern
     _4: Pattern
   bb0:
@@ -632,8 +632,8 @@ fn CaptureMatches::whole(CaptureMatches, i64) -> Option<string> [conv=default]
 fn regex$new(string) -> Pattern [conv=default]
   locals:
     _0: string
-    _1: PatternHandle
-    _2: PatternHandle
+    _1: regex.PatternHandle
+    _2: regex.PatternHandle
     _3: Pattern
     _4: Pattern
     _5: i64
@@ -649,8 +649,8 @@ fn regex$new(string) -> Pattern [conv=default]
     stmt: use BindingId(39) pattern site=SiteId(190) ty=string intent=Read
     _1 = call hew_regex_new(_0) -> bb1
   bb1:
-    stmt: bind BindingId(40) handle site=SiteId(189) ty=PatternHandle
-    stmt: use BindingId(40) handle site=SiteId(193) ty=PatternHandle intent=Read
+    stmt: bind BindingId(40) handle site=SiteId(189) ty=regex.PatternHandle
+    stmt: use BindingId(40) handle site=SiteId(193) ty=regex.PatternHandle intent=Read
     stmt: bind BindingId(41) re site=SiteId(192) ty=Pattern
     stmt: use BindingId(41) re site=SiteId(197) ty=Pattern intent=Read
     _2 = move _1

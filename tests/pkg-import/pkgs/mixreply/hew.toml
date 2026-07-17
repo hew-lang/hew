@@ -1,0 +1,6 @@
+[package]
+name = "hew::mixreply"
+version = "0.1.0"
+description = "Mixed-collision reply fixture: Result<Unique, Colliding> where only Colliding collides"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

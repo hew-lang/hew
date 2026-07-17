@@ -725,6 +725,17 @@ pub(crate) fn enum_layout_key_for_ty(
     fn_ctx: &FnCtx<'_, '_>,
     ty: &ResolvedTy,
 ) -> CodegenResult<String> {
+    enum_layout_key_for_ty_from(fn_ctx.enum_layouts, ty)
+}
+
+/// `enum_layout_key_for_ty` with the enum-layout slice supplied directly, for
+/// synthesis paths that resolve the key without a live `FnCtx` (e.g. the
+/// state-clone/drop synthesis pass routing an indirect-enum child field through
+/// the recursive free thunk). Same resolution as the `FnCtx` form.
+pub(crate) fn enum_layout_key_for_ty_from(
+    enum_layouts: &[EnumLayout],
+    ty: &ResolvedTy,
+) -> CodegenResult<String> {
     let ResolvedTy::Named { name, args, .. } = ty else {
         return Err(CodegenError::FailClosed(format!(
             "enum in-place drop: ElabDrop::ty {ty:?} is not a named enum type"
@@ -732,15 +743,13 @@ pub(crate) fn enum_layout_key_for_ty(
     };
     let short = short_name(name);
     let key = if args.is_empty() {
-        fn_ctx
-            .enum_layouts
+        enum_layouts
             .iter()
             .find(|el| el.name == *name || short_name(&el.name) == short)
             .map(|el| el.name.clone())
     } else {
         let mangled = mangle_with_shortened_args(short, args);
-        fn_ctx
-            .enum_layouts
+        enum_layouts
             .iter()
             .find(|el| el.name == mangled || el.name == *name)
             .map(|el| el.name.clone())
@@ -1143,6 +1152,7 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
             crate::thunks::emit_tuple_inplace_thunk_bodies(
                 ctx,
                 llvm_mod,
+                target_data,
                 regs,
                 &key,
                 elems,
@@ -2090,6 +2100,7 @@ fn hashmap_owned_value_layout_descriptor_ptr<'ctx>(
             crate::thunks::emit_tuple_inplace_thunk_bodies(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
+                fn_ctx.target_data,
                 fn_ctx.owned_elem_registries(),
                 &key,
                 elems,

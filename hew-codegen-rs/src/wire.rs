@@ -116,11 +116,12 @@ fn emit_de_drop_owned<'ctx>(
     ty: &ResolvedTy,
     dst: PointerValue<'ctx>,
     record_layouts: &RecordLayoutMap<'ctx>,
-    _machine_layouts: &MachineLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
     match ty {
         // Scalars: no heap allocation in the decode walk — nothing to drop.
         ResolvedTy::Bool
@@ -195,12 +196,64 @@ fn emit_de_drop_owned<'ctx>(
         // struct's owned fields and drops them; null fields are safe.
         ResolvedTy::Named { name, args, .. } => {
             let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
-            if let Some(_el) = enum_layouts.iter().find(|e| e.name == key) {
-                // Enum: delegate to the per-enum in-place drop helper.
+            if let Some(el) = enum_layouts.iter().find(|e| e.name == key) {
                 let drop_fn = get_or_declare_enum_drop_inplace(ctx, llvm_mod, &key);
-                builder
-                    .build_call(drop_fn, &[dst.into()], "de_drop_enum")
-                    .llvm_ctx("de drop enum call")?;
+                if el.is_indirect {
+                    // An indirect (recursive) enum's `dst` holds a heap-node
+                    // POINTER: `emit_de_enum_cbor` stored the `hew_alloc`'d node
+                    // there and decoded the tagged union INTO the node. The
+                    // in-place drop reads its argument AS the tagged-union node,
+                    // so it must run on the NODE — invoking it on `dst` would
+                    // reinterpret the pointer bits as the discriminant and drop
+                    // garbage, and would ALSO leak the node (nothing frees it).
+                    // Load the node, drop its owned payload in place, then
+                    // `hew_dealloc` the node exactly once (paired with the
+                    // codec's `hew_alloc`). Every fail path leaves the node
+                    // well-defined: the known-tag walk writes every field, and
+                    // the unknown-tag path zeroes the node before latching, so
+                    // the structural drop never reads uninitialised bytes (#2208).
+                    let node = builder
+                        .build_load(ptr_ty, dst, "de_drop_enum_node")
+                        .llvm_ctx("de drop indirect enum node load")?
+                        .into_pointer_value();
+                    builder
+                        .build_call(drop_fn, &[node.into()], "de_drop_enum_node")
+                        .llvm_ctx("de drop indirect enum node call")?;
+                    let layout = machine_layouts.get(&key).ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "indirect-enum decode cleanup: enum `{key}` has no \
+                             MachineCodegenLayout — codec/layout registration drift"
+                        ))
+                    })?;
+                    let node_size = layout.outer_struct.size_of().ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "indirect-enum decode cleanup: enum `{key}` outer struct \
+                             has no size"
+                        ))
+                    })?;
+                    // Matches `emit_de_enum_cbor`'s `hew_alloc(size, 8)`; the
+                    // runtime allocator asserts the (size, align) pair matches.
+                    let align = i64_ty.const_int(8, false);
+                    let dealloc = declare_codec_prim(
+                        ctx,
+                        llvm_mod,
+                        "hew_dealloc",
+                        ctx.void_type()
+                            .fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
+                    );
+                    builder
+                        .build_call(
+                            dealloc,
+                            &[node.into(), node_size.into(), align.into()],
+                            "de_drop_enum_node_free",
+                        )
+                        .llvm_ctx("de drop indirect enum node dealloc")?;
+                } else {
+                    // Inline enum: `dst` IS the tagged-union storage.
+                    builder
+                        .build_call(drop_fn, &[dst.into()], "de_drop_enum")
+                        .llvm_ctx("de drop enum call")?;
+                }
             } else if record_layouts.contains_key(&key) {
                 // Record: delegate to the per-record in-place drop helper.
                 let drop_fn = get_or_declare_record_drop_inplace(ctx, llvm_mod, &key);

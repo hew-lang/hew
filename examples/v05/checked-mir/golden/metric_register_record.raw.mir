@@ -162,7 +162,7 @@ fn metrics$counter(string) -> Counter [conv=default]
     _9: string
     _10: string
     _11: string
-    _12: Counter
+    _12: metrics.Counter
   bb0:
     stmt: use BindingId(14) name site=SiteId(75) ty=string intent=Read
     stmt: bind BindingId(15) id site=SiteId(73) ty=i64
@@ -182,8 +182,8 @@ fn metrics$counter(string) -> Counter [conv=default]
   bb3:
     stmt: eval site=SiteId(93) ty=()
     stmt: use BindingId(15) id site=SiteId(95) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(94)) ty=Counter
-    _12 = record_init Counter { .0=_3 }
+    stmt: return site=Some(SiteId(94)) ty=metrics.Counter
+    _12 = record_init metrics.Counter { .0=_3 }
     ret = move _12
     return
   bb4:
@@ -204,18 +204,18 @@ fn metrics$try_counter(string) -> Result<Counter, MetricsError> [conv=default]
     _1: i64
     _2: i64
     _3: i64
-    _4: Result<Counter, MetricsError>
+    _4: Result<metrics.Counter, metrics.MetricsError>
     _5: i64
     _6: bool
-    _7: Result<Counter, MetricsError>
+    _7: Result<metrics.Counter, metrics.MetricsError>
     _8: i64
     _9: MetricsError
     _10: i64
-    _11: Result<Counter, MetricsError>
-    _12: Result<Counter, MetricsError>
+    _11: Result<metrics.Counter, metrics.MetricsError>
+    _12: Result<metrics.Counter, metrics.MetricsError>
     _13: i64
-    _14: Counter
-    _15: Result<Counter, MetricsError>
+    _14: metrics.Counter
+    _15: Result<metrics.Counter, metrics.MetricsError>
   bb0:
     stmt: use BindingId(16) name site=SiteId(98) ty=string intent=Read
     stmt: bind BindingId(17) id site=SiteId(96) ty=i64
@@ -242,13 +242,13 @@ fn metrics$try_counter(string) -> Result<Counter, MetricsError> [conv=default]
     stmt: use BindingId(17) id site=SiteId(111) ty=i64 intent=Read
     _13 = const.i64 0
     mtag12 = move _13
-    _14 = record_init Counter { .0=_3 }
+    _14 = record_init metrics.Counter { .0=_3 }
     mvar12.0.0 = move _14
     _15 = move _12
     _4 = move _15
     goto bb3
   bb3:
-    stmt: return site=Some(SiteId(100)) ty=Result<Counter, MetricsError>
+    stmt: return site=Some(SiteId(100)) ty=Result<metrics.Counter, metrics.MetricsError>
     ret = move _4
     return
 
@@ -266,7 +266,7 @@ fn metrics$gauge(string) -> Gauge [conv=default]
     _9: string
     _10: string
     _11: string
-    _12: Gauge
+    _12: metrics.Gauge
   bb0:
     stmt: use BindingId(18) name site=SiteId(114) ty=string intent=Read
     stmt: bind BindingId(19) id site=SiteId(112) ty=i64
@@ -286,8 +286,8 @@ fn metrics$gauge(string) -> Gauge [conv=default]
   bb3:
     stmt: eval site=SiteId(132) ty=()
     stmt: use BindingId(19) id site=SiteId(134) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(133)) ty=Gauge
-    _12 = record_init Gauge { .0=_3 }
+    stmt: return site=Some(SiteId(133)) ty=metrics.Gauge
+    _12 = record_init metrics.Gauge { .0=_3 }
     ret = move _12
     return
   bb4:
@@ -308,18 +308,18 @@ fn metrics$try_gauge(string) -> Result<Gauge, MetricsError> [conv=default]
     _1: i64
     _2: i64
     _3: i64
-    _4: Result<Gauge, MetricsError>
+    _4: Result<metrics.Gauge, metrics.MetricsError>
     _5: i64
     _6: bool
-    _7: Result<Gauge, MetricsError>
+    _7: Result<metrics.Gauge, metrics.MetricsError>
     _8: i64
     _9: MetricsError
     _10: i64
-    _11: Result<Gauge, MetricsError>
-    _12: Result<Gauge, MetricsError>
+    _11: Result<metrics.Gauge, metrics.MetricsError>
+    _12: Result<metrics.Gauge, metrics.MetricsError>
     _13: i64
-    _14: Gauge
-    _15: Result<Gauge, MetricsError>
+    _14: metrics.Gauge
+    _15: Result<metrics.Gauge, metrics.MetricsError>
   bb0:
     stmt: use BindingId(20) name site=SiteId(137) ty=string intent=Read
     stmt: bind BindingId(21) id site=SiteId(135) ty=i64
@@ -346,13 +346,13 @@ fn metrics$try_gauge(string) -> Result<Gauge, MetricsError> [conv=default]
     stmt: use BindingId(21) id site=SiteId(150) ty=i64 intent=Read
     _13 = const.i64 0
     mtag12 = move _13
-    _14 = record_init Gauge { .0=_3 }
+    _14 = record_init metrics.Gauge { .0=_3 }
     mvar12.0.0 = move _14
     _15 = move _12
     _4 = move _15
     goto bb3
   bb3:
-    stmt: return site=Some(SiteId(139)) ty=Result<Gauge, MetricsError>
+    stmt: return site=Some(SiteId(139)) ty=Result<metrics.Gauge, metrics.MetricsError>
     ret = move _4
     return
 
@@ -370,7 +370,7 @@ fn metrics$histogram(string) -> Histogram [conv=default]
     _9: string
     _10: string
     _11: string
-    _12: Histogram
+    _12: metrics.Histogram
   bb0:
     stmt: use BindingId(22) name site=SiteId(153) ty=string intent=Read
     stmt: bind BindingId(23) id site=SiteId(151) ty=i64
@@ -390,8 +390,8 @@ fn metrics$histogram(string) -> Histogram [conv=default]
   bb3:
     stmt: eval site=SiteId(171) ty=()
     stmt: use BindingId(23) id site=SiteId(173) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(172)) ty=Histogram
-    _12 = record_init Histogram { .0=_3 }
+    stmt: return site=Some(SiteId(172)) ty=metrics.Histogram
+    _12 = record_init metrics.Histogram { .0=_3 }
     ret = move _12
     return
   bb4:
@@ -412,18 +412,18 @@ fn metrics$try_histogram(string) -> Result<Histogram, MetricsError> [conv=defaul
     _1: i64
     _2: i64
     _3: i64
-    _4: Result<Histogram, MetricsError>
+    _4: Result<metrics.Histogram, metrics.MetricsError>
     _5: i64
     _6: bool
-    _7: Result<Histogram, MetricsError>
+    _7: Result<metrics.Histogram, metrics.MetricsError>
     _8: i64
     _9: MetricsError
     _10: i64
-    _11: Result<Histogram, MetricsError>
-    _12: Result<Histogram, MetricsError>
+    _11: Result<metrics.Histogram, metrics.MetricsError>
+    _12: Result<metrics.Histogram, metrics.MetricsError>
     _13: i64
-    _14: Histogram
-    _15: Result<Histogram, MetricsError>
+    _14: metrics.Histogram
+    _15: Result<metrics.Histogram, metrics.MetricsError>
   bb0:
     stmt: use BindingId(24) name site=SiteId(176) ty=string intent=Read
     stmt: bind BindingId(25) id site=SiteId(174) ty=i64
@@ -450,13 +450,13 @@ fn metrics$try_histogram(string) -> Result<Histogram, MetricsError> [conv=defaul
     stmt: use BindingId(25) id site=SiteId(189) ty=i64 intent=Read
     _13 = const.i64 0
     mtag12 = move _13
-    _14 = record_init Histogram { .0=_3 }
+    _14 = record_init metrics.Histogram { .0=_3 }
     mvar12.0.0 = move _14
     _15 = move _12
     _4 = move _15
     goto bb3
   bb3:
-    stmt: return site=Some(SiteId(178)) ty=Result<Histogram, MetricsError>
+    stmt: return site=Some(SiteId(178)) ty=Result<metrics.Histogram, metrics.MetricsError>
     ret = move _4
     return
 

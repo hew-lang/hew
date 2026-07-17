@@ -379,6 +379,52 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
             )
         }
         StateFieldCloneKind::Enum { name } => {
+            // An `indirect enum` reply is ABI-lowered to a bare heap-node
+            // POINTER (`declare_function`'s `resolve_value_ty` override,
+            // llvm.rs), so the reply buffer holds the node pointer — NOT the
+            // inline `{ tag, payload }` tagged union. Running the inline
+            // `__hew_enum_drop_inplace_<E>` helper over that buffer reads the
+            // pointer bits as a discriminant tag and frees nothing: the heap
+            // node and its whole subtree leak on a never-consumed reply
+            // (#2208 F4 — the ask-reply ABI boundary the per-field
+            // slot-discriminator cannot reach, because the callback gets
+            // ABI-lowered storage, not a parent-field slot).
+            //
+            // Route through the SAME slot-type routing authority the per-field
+            // path uses: wrap the buffer as a single-field `{ ptr }` aggregate
+            // and run `emit_field_drop_step` over it. Its `Enum` arm inspects
+            // the ACTUAL slot type — a pointer slot loads the node pointer and
+            // frees the subtree through the recursive
+            // `__hew_indirect_enum_free_<E>` thunk (fail-closed if the enum is
+            // not actually indirect). One routing decision, shared with the
+            // structural authority. A non-indirect enum reply rides the inline
+            // struct by value, so its buffer IS the `{ tag, payload }` union —
+            // the inline helper is correct there and unchanged.
+            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+                let sym = format!(
+                    "__hew_reply_drop_indirect_{}",
+                    hew_hir::mangle_resolved_ty(reply_ty)
+                );
+                if let Some(existing) = fn_ctx.llvm_mod.get_function(&sym) {
+                    return Ok(existing.as_global_value().as_pointer_value());
+                }
+                let wrapper = ctx.struct_type(&[ptr_ty.into()], false);
+                let f = fn_ctx.llvm_mod.add_function(
+                    &sym,
+                    ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                    Some(Linkage::Internal),
+                );
+                let w = crate::llvm::fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+                emit_aggregate_drop_inplace_body(
+                    ctx,
+                    fn_ctx.llvm_mod,
+                    f,
+                    wrapper,
+                    std::slice::from_ref(&kind),
+                    &w,
+                )?;
+                return Ok(f.as_global_value().as_pointer_value());
+            }
             Ok(get_or_declare_enum_drop_inplace(ctx, fn_ctx.llvm_mod, name)
                 .as_global_value()
                 .as_pointer_value())
@@ -397,12 +443,14 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
                 ctx.void_type().fn_type(&[ptr_ty.into()], false),
                 Some(Linkage::Internal),
             );
+            let w = crate::llvm::fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
             emit_aggregate_drop_inplace_body(
                 ctx,
                 fn_ctx.llvm_mod,
                 f,
                 wrapper,
                 std::slice::from_ref(&kind),
+                &w,
             )?;
             Ok(f.as_global_value().as_pointer_value())
         }
@@ -652,6 +700,8 @@ fn get_or_emit_spawn_env_rc_drop_thunk<'ctx>(
             ))
         })?
         .into_pointer_value();
+    let record_layouts = crate::llvm::codegen_record_layouts(fn_ctx);
+    let w = crate::llvm::fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
     for (field_idx, kind) in owned_field_kinds.iter().rev() {
         crate::llvm::emit_field_drop_step(
             ctx,
@@ -661,6 +711,7 @@ fn get_or_emit_spawn_env_rc_drop_thunk<'ctx>(
             env,
             *field_idx,
             kind,
+            &w,
         )?;
     }
     builder
@@ -748,6 +799,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     // GEPs land directly on the capture fields. BitCopy / Connection / opaque
     // arms are no-ops inside `emit_field_drop_step`; every owning class routes
     // to its single canonical release.
+    let record_layouts = crate::llvm::codegen_record_layouts(fn_ctx);
+    let w = crate::llvm::fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
     for (idx, kind) in field_kinds.iter().enumerate().rev() {
         let field_idx = u32::try_from(idx).map_err(|_| {
             CodegenError::FailClosed(format!(
@@ -762,6 +815,7 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
             env,
             field_idx,
             kind,
+            &w,
         )?;
     }
 
@@ -935,6 +989,7 @@ pub(crate) fn emit_collection_handle_thunk_bodies<'ctx>(
 pub(crate) fn emit_tuple_inplace_thunk_bodies<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
     regs: OwnedElemRegistries<'_, 'ctx>,
     tuple_key: &str,
     elems: &[ResolvedTy],
@@ -942,13 +997,42 @@ pub(crate) fn emit_tuple_inplace_thunk_bodies<'ctx>(
 ) -> CodegenResult<()> {
     let (tuple_struct, kinds) = tuple_inplace_field_kinds(regs, tuple_key, elems, tuple_llvm_ty)?;
 
+    // Witnesses for indirect-vs-inline enum routing inside the tuple's drop body
+    // (a `Vec<(Tree, ...)>` element whose `Tree` is an `indirect enum` — #2208
+    // F4). This owned-Vec-element descriptor path is deliberately FnCtx-free
+    // (shared with the wire codec), so it carries only `regs` + `target_data`.
+    // The LLVM record-struct map and the `#[resource]` close registry are not
+    // reachable here; an inline-enum / record child reached ONLY through this
+    // tuple relies on the up-front synthesis pass having bodied it (the
+    // `ensure_*` guards early-return when a body exists), and an indirect child
+    // whose subtree needs a not-yet-bodied record helper fails closed at
+    // synthesis rather than leaking — never the pre-fix silent mis-route.
+    let record_layouts: Vec<hew_mir::RecordLayout> = regs
+        .record_field_resolved_tys
+        .iter()
+        .map(|(name, tys)| hew_mir::RecordLayout {
+            name: name.clone(),
+            field_tys: tys.clone(),
+            field_names: Vec::new(),
+        })
+        .collect();
+    let empty_record_structs: RecordLayoutMap<'ctx> = RecordLayoutMap::new();
+    let w = crate::llvm::DropSynthWitnesses {
+        enum_layouts: regs.enum_layouts,
+        machine_layouts: regs.machine_layouts,
+        target_data,
+        record_layouts: &record_layouts,
+        record_structs: &empty_record_structs,
+        resource_record_close: &[],
+    };
+
     let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
     if clone_fn.count_basic_blocks() == 0 {
-        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, tuple_struct, &kinds)?;
+        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, tuple_struct, &kinds, &w)?;
     }
     let drop_fn = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, tuple_key);
     if drop_fn.count_basic_blocks() == 0 {
-        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds)?;
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds, &w)?;
     }
     Ok(())
 }
@@ -2462,6 +2546,11 @@ pub(crate) fn emit_coalesce_key_fn<'ctx>(
 /// Dispatch moves owned fields out before freeing a consumed node, so this
 /// callback is registered only on eviction/replacement paths where dispatch
 /// will never run.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "actor layout + LLVM/MIR record maps + enum layouts + target data + \
+              the drop-synthesis witnesses that route an indirect-enum payload field"
+)]
 pub(crate) fn emit_actor_message_drop_fn<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -2470,6 +2559,7 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
     record_layouts: &RecordLayoutMap<'ctx>,
     mir_record_layouts: &[hew_mir::RecordLayout],
     enum_layouts: &[hew_mir::EnumLayout],
+    w: &crate::llvm::DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i32_ty = ctx.i32_type();
@@ -2543,7 +2633,7 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
             ctx.void_type().fn_type(&[ptr_ty.into()], false),
             Some(Linkage::Internal),
         );
-        emit_aggregate_drop_inplace_body(ctx, llvm_mod, helper, payload_struct, &field_kinds)?;
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, helper, payload_struct, &field_kinds, w)?;
         builder
             .build_call(helper, &[payload.into()], "drop_message_payload")
             .llvm_ctx("message payload drop helper call")?;

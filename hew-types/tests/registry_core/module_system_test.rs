@@ -755,6 +755,145 @@ fn pub_struct_with_scalar_field(name: &str, field: &str, scalar: &str) -> TypeDe
     }
 }
 
+/// A `pub type Holder { <field>: <member> }` whose single field references the
+/// bare (unqualified) name `member`. Used to exercise member-position
+/// resolution of a bare name that collides across modules.
+fn pub_holder_with_named_field(name: &str, field: &str, member: &str) -> TypeDecl {
+    TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: name.to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Field {
+            name: field.to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: member.to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            attributes: vec![],
+            doc_comment: None,
+            span: 0..0,
+        }],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+        lang_item: None,
+    }
+}
+
+#[test]
+fn same_bare_name_member_field_binds_to_own_module_identity() {
+    // #2208: two package-local (non-root module-graph) modules each declare a
+    // bare `Wrap` with a DIVERGENT layout and a `Holder { w: Wrap }` whose field
+    // references the bare local name. The bare `type_defs["Wrap"]` key is
+    // last-write-wins across modules (documented in `pre_register_type_decl`),
+    // so a `Holder.w` field resolved to the BARE name `Wrap` silently binds to
+    // whichever module's `Wrap` was registered last (observable downstream as
+    // `no field ... help: <other module's field>` in a correctly-disambiguated
+    // program — the bug report's "unobservable" claim is false). The field type
+    // must instead carry each holder's OWN module-qualified `Wrap` identity.
+    //
+    // Load-bearing: on revert (member field resolves to bare `Wrap`) both
+    // holders' field types collapse to the same last-writer identity and the
+    // exact-string assertions below fail.
+    for order in [["alpha", "beta"], ["beta", "alpha"]] {
+        let root_id = ModuleId::new(vec!["myapp".to_string()]);
+        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
+        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+        let alpha_items = vec![
+            (
+                Item::TypeDecl(pub_struct_with_scalar_field("Wrap", "a_field", "i64")),
+                0..0,
+            ),
+            (
+                Item::TypeDecl(pub_holder_with_named_field("Holder", "w", "Wrap")),
+                0..0,
+            ),
+        ];
+        let beta_items = vec![
+            (
+                Item::TypeDecl(pub_struct_with_scalar_field("Wrap", "b_field", "i8")),
+                0..0,
+            ),
+            (
+                Item::TypeDecl(pub_holder_with_named_field("Holder", "w", "Wrap")),
+                0..0,
+            ),
+        ];
+
+        let mut graph = ModuleGraph::new(root_id.clone());
+        let mut alpha_mod = module_node("alpha", &[]);
+        alpha_mod.items.clone_from(&alpha_items);
+        let mut beta_mod = module_node("beta", &[]);
+        beta_mod.items.clone_from(&beta_items);
+        graph.add_module(module_node("myapp", &[])).unwrap();
+        graph.add_module(alpha_mod).unwrap();
+        graph.add_module(beta_mod).unwrap();
+        graph.topo_order = order
+            .iter()
+            .map(|module| {
+                if *module == "alpha" {
+                    alpha_id.clone()
+                } else {
+                    beta_id.clone()
+                }
+            })
+            .chain(std::iter::once(root_id))
+            .collect();
+
+        let items = order
+            .iter()
+            .map(|module| {
+                let module_items = if *module == "alpha" {
+                    alpha_items.clone()
+                } else {
+                    beta_items.clone()
+                };
+                (
+                    Item::Import(make_user_import(&["pkg", *module], None, module_items)),
+                    0..0,
+                )
+            })
+            .collect();
+        let program = Program {
+            items,
+            module_doc: None,
+            module_graph: Some(graph),
+        };
+        let mut checker = isolated_checker();
+        let output = checker.check_program(&program);
+
+        let field_member = |holder_key: &str| -> String {
+            let holder = output
+                .type_defs
+                .get(holder_key)
+                .unwrap_or_else(|| panic!("{holder_key} must register its own qualified def"));
+            match holder.fields.get("w") {
+                Some(Ty::Named { name, .. }) => name.clone(),
+                other => panic!("{holder_key}.w must be a Ty::Named, got {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            field_member("alpha.Holder"),
+            "alpha.Wrap",
+            "alpha.Holder.w must bind to alpha.Wrap in order {order:?}"
+        );
+        assert_eq!(
+            field_member("beta.Holder"),
+            "beta.Wrap",
+            "beta.Holder.w must bind to beta.Wrap in order {order:?}"
+        );
+    }
+}
+
 #[test]
 fn same_bare_name_types_register_independent_divergent_field_layouts() {
     // C1 authority: two co-imported modules each export a `Widget` with a

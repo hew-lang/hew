@@ -1,0 +1,21 @@
+//! Mixed-collision reply fixture (#2208 finding 2). The actor's reply nests a
+//! NON-colliding record (`Unique`) and a colliding record (`Colliding`, whose
+//! bare name is also declared by the importer's root) inside one `Result`.
+//! Only `Colliding` must be owner-qualified; qualifying `Unique` too diverges
+//! from HIR's collision-gated transform and MIR's actor-reply equality rejects.
+
+pub type Unique {
+    u: i64;
+}
+
+pub type Colliding {
+    c: i64;
+}
+
+pub actor Src {
+    let seed: i64;
+
+    receive fn get() -> Result<Unique, Colliding> {
+        Ok(Unique { u: seed + 5 })
+    }
+}

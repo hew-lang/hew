@@ -177,6 +177,11 @@ impl Checker {
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
         self.root_value_bindings.clear();
         self.register_builtins();
+        // Compute the precise cross-module record-name collision set before any
+        // registration runs, so the imported-actor registration can owner-qualify
+        // a colliding receive-fn return record to its declaring module (#2208).
+        self.cross_module_colliding_record_names =
+            Self::compute_cross_module_colliding_record_names(program);
         self.collect_types(program);
         // Record every declared type-parameter name (across all modules) before
         // arming the guard, so it never false-positives on a generic parameter

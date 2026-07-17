@@ -2963,6 +2963,15 @@ pub struct Checker {
     pub(super) task_scope_depth: u32,
     /// The module currently being processed (enables per-module scoping in future).
     pub(super) current_module: Option<String>,
+    /// Bare record/type-decl names that genuinely collide across modules
+    /// (2+ distinct declaring package/file-import modules share the bare name,
+    /// after re-export subsumption). Mirrors the HIR/MIR authoritative
+    /// collision notion (`imported_type_name_collides` / `collided_type_names`)
+    /// so the checker owner-qualifies an imported actor's colliding receive-fn
+    /// return record to its declaring module identity — and ONLY a colliding
+    /// record (a name unique to one module keeps its bare identity, so no
+    /// stdlib `http.Response`/`xml.Node` over-qualification) (#2208).
+    pub(super) cross_module_colliding_record_names: HashSet<String>,
     /// 1-based index of the non-root module currently being type-checked.
     /// 0 = root; N = N-th non-root module in topo order. Combined with
     /// `SpanKey.module_idx` to prevent byte-offset collisions across files.
@@ -3385,6 +3394,7 @@ impl Checker {
             in_unsafe: false,
             task_scope_depth: 0,
             current_module: None,
+            cross_module_colliding_record_names: HashSet::new(),
             current_module_idx: 0,
             local_type_defs: HashSet::new(),
             source_type_defs: HashSet::new(),

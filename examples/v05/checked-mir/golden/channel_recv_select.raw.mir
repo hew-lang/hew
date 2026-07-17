@@ -321,8 +321,8 @@ fn channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     _9: string
     _10: string
     _11: i64
-    _12: ChannelPair
-    _13: ChannelPair
+    _12: channel.ChannelPair
+    _13: channel.ChannelPair
     _14: ()
     _15: bool
     _16: bool
@@ -377,8 +377,8 @@ fn channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
   bb7:
     goto bb3
   bb8:
-    stmt: bind BindingId(21) pair site=SiteId(110) ty=ChannelPair
-    stmt: use BindingId(21) pair site=SiteId(116) ty=ChannelPair intent=Read
+    stmt: bind BindingId(21) pair site=SiteId(110) ty=channel.ChannelPair
+    stmt: use BindingId(21) pair site=SiteId(116) ty=channel.ChannelPair intent=Read
     _13 = move _12
     _15 = call hew_channel_pair_is_valid(_13) -> bb9
   bb9:
@@ -390,7 +390,7 @@ fn channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     goto bb12
   bb12:
     stmt: eval site=SiteId(130) ty=()
-    stmt: use BindingId(21) pair site=SiteId(132) ty=ChannelPair intent=Read
+    stmt: use BindingId(21) pair site=SiteId(132) ty=channel.ChannelPair intent=Read
     _27 = call hew_channel_pair_sender(_13) -> bb19
   bb13:
     stmt: bind BindingId(22) detail site=SiteId(118) ty=string
@@ -425,18 +425,18 @@ fn channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     goto bb12
   bb19:
     stmt: bind BindingId(23) tx site=SiteId(131) ty=Sender
-    stmt: use BindingId(21) pair site=SiteId(135) ty=ChannelPair intent=Read
+    stmt: use BindingId(21) pair site=SiteId(135) ty=channel.ChannelPair intent=Read
     _28 = move _27
     _29 = call hew_channel_pair_receiver(_13) -> bb20
   bb20:
     stmt: bind BindingId(24) rx site=SiteId(134) ty=Receiver
-    stmt: use BindingId(21) pair site=SiteId(138) ty=ChannelPair intent=Read
+    stmt: use BindingId(21) pair site=SiteId(138) ty=channel.ChannelPair intent=Read
     _30 = move _29
     call hew_channel_pair_free(_13) -> bb21
   bb21:
     stmt: eval site=SiteId(137) ty=()
-    stmt: use BindingId(23) tx site=SiteId(142) ty=Sender intent=Read
-    stmt: use BindingId(24) rx site=SiteId(143) ty=Receiver intent=Read
+    stmt: use BindingId(23) tx site=SiteId(142) ty=Sender intent=Consume
+    stmt: use BindingId(24) rx site=SiteId(143) ty=Receiver intent=Consume
     stmt: return site=Some(SiteId(109)) ty=Result<(Sender, Receiver), string>
     _32 = const.i64 0
     mtag31 = move _32

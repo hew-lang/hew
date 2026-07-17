@@ -346,6 +346,7 @@ fn stdlib_plain_import_does_not_publish_bare_type() {
     checker.modules.insert("websocket".to_string());
     checker.register_stdlib_hew_items(
         "websocket",
+        "std.net.websocket",
         &[(Item::TypeDecl(server), 0..0)],
         StdlibBarePublication::Import(&None),
     );
@@ -377,6 +378,7 @@ fn stdlib_named_import_publishes_bare_type() {
     checker.modules.insert("websocket".to_string());
     checker.register_stdlib_hew_items(
         "websocket",
+        "std.net.websocket",
         &[(Item::TypeDecl(server), 0..0)],
         StdlibBarePublication::Import(&Some(ImportSpec::Names(vec![ImportName {
             name: "Server".to_string(),
@@ -401,6 +403,7 @@ fn stdlib_prelude_publishes_bare_type() {
     checker.modules.insert("closable".to_string());
     checker.register_stdlib_hew_items(
         "closable",
+        "std.io.closable",
         &[(Item::TypeDecl(close_error), 0..0)],
         StdlibBarePublication::Prelude,
     );
@@ -411,6 +414,71 @@ fn stdlib_prelude_publishes_bare_type() {
             .contains_key(&(None, "CloseError".to_string())),
         "prelude bootstrap surface must publish bare `CloseError` unconditionally"
     );
+}
+
+#[test]
+fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
+    let mut private_wrap = make_pub_struct("Wrap", "value");
+    private_wrap.visibility = Visibility::Private;
+    let holder = TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: "Holder".to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Field {
+            name: "wrap".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "Wrap".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            attributes: Vec::new(),
+            doc_comment: None,
+            span: 0..0,
+        }],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+        lang_item: None,
+    };
+    let items = vec![
+        (Item::TypeDecl(private_wrap.clone()), 0..0),
+        (Item::TypeDecl(holder), 0..0),
+    ];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("std.net.tls".to_string());
+    checker.register_type_decl(&private_wrap);
+    checker.register_qualified_type_alias("tls", "Wrap");
+    checker.register_stdlib_hew_items(
+        "tls",
+        "std.net.tls",
+        &items,
+        StdlibBarePublication::Import(&None),
+    );
+
+    assert!(
+        checker.errors.is_empty(),
+        "a private type referenced bare within its nested declaring module must be accessible: {:?}",
+        checker.errors
+    );
+    let holder = checker
+        .type_defs
+        .get("tls.Holder")
+        .expect("qualified Holder definition must be registered");
+    match holder.fields.get("wrap") {
+        Some(Ty::Named { name, .. }) => assert_eq!(
+            name, "tls.Wrap",
+            "the private local member must retain its own qualified type identity"
+        ),
+        other => panic!("Holder.wrap must be a named type, got {other:?}"),
+    }
 }
 
 /// P2 — the qualified type alias is published for a bare import, and its

@@ -32,6 +32,6 @@ include!(concat!(env!("OUT_DIR"), "/builtin_enums.rs"));
 /// Catalog of monomorphic builtin enums whose layouts MIR registers
 /// out-of-band.
 #[must_use]
-pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
+pub const fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
     DERIVED_MONOMORPHIC_BUILTIN_ENUMS
 }

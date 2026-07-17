@@ -1540,25 +1540,94 @@ fn classify_enum(
     resource_close: &[(String, String)],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
-    if !visited.insert(layout.name.clone()) {
-        // A name already in `visited` normally signals a value-type cycle
-        // (infinite recursion without heap indirection). For `indirect` enums,
-        // re-encountering the name is valid: the self-referential variant payload
-        // is a heap-allocated pointer to the enum, not an inline embed. Return
-        // `Enum` (ptr-shaped) instead of propagating `RecordCycle`.
-        if layout.is_indirect {
+    if layout.is_indirect {
+        // Heap-boundary crossing. An `indirect enum` variant payload is a
+        // POINTER to a separately-allocated node, so a value cycle that passes
+        // through it is finite — re-encountering an inline ancestor on the far
+        // side of the pointer is NOT the infinite-inline-layout cycle the guard
+        // rejects. Validate the payload under a FRESH value-cycle stack that
+        // carries only the monotonic indirect-boundary markers (`\0ind\0<name>`,
+        // a namespace no real type name can occupy), so:
+        //   - a cycle broken by this pointer (`Wrap`(inline) → `Tree`(indirect)
+        //     → `Wrap`) no longer false-trips `RecordCycle` (F4 / #2208), while
+        //   - a genuine inline cycle with no heap indirection between the two
+        //     encounters still fails closed (the fresh stack re-detects it), and
+        //   - a mutually-recursive `indirect` chain (`A` ↔ `B`) still terminates
+        //     (its marker is already present on re-entry → ptr-shaped leaf).
+        // The caller's `visited` is left untouched (the fresh set is local), so
+        // sibling fields are unaffected.
+        let marker = indirect_boundary_marker(&layout.name);
+        if visited.contains(&marker) {
             return Ok(StateFieldCloneKind::Enum {
                 name: layout.name.clone(),
             });
         }
+        let mut inner: HashSet<String> = visited
+            .iter()
+            .filter(|name| is_indirect_boundary_marker(name))
+            .cloned()
+            .collect();
+        inner.insert(marker);
+        validate_enum_variant_payloads(
+            layout,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            &mut inner,
+        )?;
+        return Ok(StateFieldCloneKind::Enum {
+            name: layout.name.clone(),
+        });
+    }
+    if !visited.insert(layout.name.clone()) {
+        // An inline enum name already on the active stack IS an infinite
+        // value-layout cycle (no heap indirection) — fail closed.
         return Err(ClassificationError::RecordCycle {
             name: layout.name.clone(),
         });
     }
-    // Eagerly validate every variant payload field is classifiable. The
-    // result is discarded — codegen re-runs classification against the
-    // same `EnumLayout`. If any payload field is unsupported, this is
-    // where the error surfaces (with the recursion stack preserved).
+    validate_enum_variant_payloads(
+        layout,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+        visited,
+    )?;
+    visited.remove(&layout.name);
+    Ok(StateFieldCloneKind::Enum {
+        name: layout.name.clone(),
+    })
+}
+
+/// The reserved `visited`-set marker recording that an `indirect enum` node is
+/// being validated on the active recursion path. The `\0` prefix cannot collide
+/// with any real (possibly `$$`-mangled) type name, so markers and type-name
+/// cycle entries share one set without ambiguity.
+fn indirect_boundary_marker(name: &str) -> String {
+    format!("\0ind\0{name}")
+}
+
+fn is_indirect_boundary_marker(name: &str) -> bool {
+    name.starts_with("\0ind\0")
+}
+
+/// Eagerly validate every variant payload field of an enum is classifiable. The
+/// classification result is discarded — codegen re-runs it against the same
+/// `EnumLayout` — but an unsupported / function-valued / `#[resource]` payload
+/// surfaces here as a fail-closed `ClassificationError` (with the recursion
+/// stack preserved) rather than later in codegen. Shared by the inline and
+/// indirect `classify_enum` arms so the two cannot diverge on which payloads
+/// they reject.
+fn validate_enum_variant_payloads(
+    layout: &EnumLayout,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    visited: &mut HashSet<String>,
+) -> Result<(), ClassificationError> {
     for variant in &layout.variants {
         for field_ty in &variant.field_tys {
             let kind = classify_state_field_full_impl(
@@ -1613,10 +1682,7 @@ fn classify_enum(
             }
         }
     }
-    visited.remove(&layout.name);
-    Ok(StateFieldCloneKind::Enum {
-        name: layout.name.clone(),
-    })
+    Ok(())
 }
 
 fn classify_user_record(

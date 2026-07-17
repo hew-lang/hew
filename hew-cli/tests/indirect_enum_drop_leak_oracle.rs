@@ -255,6 +255,48 @@ fn mutual_loop_source(iters: usize) -> String {
     )
 }
 
+/// Build-and-consume LOOP through an INLINE enum wrapping an indirect child
+/// (F4 / #2208), parameterised on the iteration count.
+///
+/// `Wrap` is an INLINE enum (`enum Wrap`, no heap node of its own) whose payload
+/// owns a `Tree` — an `indirect enum` (a heap pointer). `Tree::Node(Wrap)` embeds
+/// the inline `Wrap` struct in its heap node. Freeing the outer `Tree::Node`
+/// therefore has to run `Wrap`'s in-place drop so the `Tree` nested inside `Wrap`
+/// is reclaimed through `__hew_indirect_enum_free_Tree`. Pre-fix the indirect
+/// free thunk recursed only into DIRECT indirect-enum payload fields and skipped
+/// the inline-enum field entirely, orphaning the inner `Tree` node every
+/// iteration (a positive leak slope). Each iteration constructs
+/// `Node(W(Leaf(3)))` — an outer `Node` node plus an inner `Leaf` node — and
+/// consumes it via the borrow-taking `val`, so the sole-owner binding `t`'s
+/// scope-exit `DropKind::IndirectEnum` free must reclaim BOTH nodes. `run_loop`
+/// returns `3 * iters`, self-checked in `main`, so the loop is never
+/// dead-code-eliminated and the binding slot is dead at process exit.
+fn inline_enum_wrapped_indirect_loop_source(iters: usize) -> String {
+    let expected_total = iters * 3; // val(Node(W(Leaf(3)))) == 3
+    format!(
+        "enum Wrap {{ W(Tree); }}\n\
+         indirect enum Tree {{ Leaf(i64); Node(Wrap); }}\n\
+         fn val(t: Tree) -> i64 {{\n\
+         \x20   match t {{\n\
+         \x20       Leaf(n) => n,\n\
+         \x20       Node(w) => match w {{ W(inner) => val(inner), }},\n\
+         \x20   }}\n\
+         }}\n\
+         fn run_loop() -> i64 {{\n\
+         \x20   var total = 0;\n\
+         \x20   for i in 0..{iters} {{\n\
+         \x20       let t = Node(W(Leaf(3)));\n\
+         \x20       total = total + val(t);\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() {{\n\
+         \x20   let r = run_loop();\n\
+         \x20   if r == {expected_total} {{ print(\"ok\"); }} else {{ print(\"BAD\"); }}\n\
+         }}\n"
+    )
+}
+
 /// Compile `source`, run under the poisoned-allocator triple, assert clean exit
 /// + exact stdout (the double-free / use-after-free pin).
 fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) {
@@ -367,6 +409,36 @@ fn indirect_enum_var_overwrite_loop_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
         "var_overwrite_loop_df",
         &var_overwrite_loop_source(50),
+        "ok",
+    );
+}
+
+/// F4 / #2208 — an inline enum wrapping an indirect-enum child, looped: freeing
+/// the outer indirect node must run the inline `Wrap`'s in-place drop so the
+/// `Tree` nested inside it is reclaimed through `__hew_indirect_enum_free_Tree`.
+/// Pre-fix the indirect free thunk recursed only into DIRECT indirect-enum
+/// payload fields and skipped the inline-enum field, orphaning the inner `Tree`
+/// node every iteration — a positive leak slope of one node/iteration. Post-fix
+/// the shared payload-teardown drops every owned field, so the slope is flat.
+#[test]
+fn indirect_enum_inline_wrapped_child_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "inline_wrapped_indirect",
+        inline_enum_wrapped_indirect_loop_source,
+    );
+}
+
+/// F4 / #2208 — the inline-enum-wrapped indirect-child loop runs clean under the
+/// poisoned allocator: the inner `Tree` node is freed exactly once through the
+/// inline `Wrap`'s in-place drop. An over-eager free (the inner node reclaimed by
+/// both `Wrap`'s drop and a spurious second path) aborts under `MallocScribble`;
+/// a missed free reads scribbled bytes. The `ok` output (total `3 * 50 == 150`)
+/// plus the clean exit pin both directions.
+#[test]
+fn indirect_enum_inline_wrapped_child_no_corruption_under_malloc_scribble() {
+    assert_exact_under_malloc_scribble(
+        "inline_wrapped_indirect_df",
+        &inline_enum_wrapped_indirect_loop_source(50),
         "ok",
     );
 }

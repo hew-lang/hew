@@ -142,9 +142,9 @@ pub enum MathIntrinsic {
 /// Closed-set discriminator for every compiler-known runtime / builtin
 /// call. One variant per `(method, generic-arity)` tuple. Adding a new
 /// runtime symbol that MIR producers can emit means adding a variant
-/// here AND adding the round-trip arm in [`RuntimeCallFamily::c_symbol`]
-/// AND adding the symbol to `known_runtime_symbols` (allowlist-
-/// covered families only). The bijection test catches every drift.
+/// here, adding the round-trip arm in [`RuntimeCallFamily::c_symbol`],
+/// and classifying its MIR-emitter route. The bijection and fingerprint
+/// tests catch every drift.
 ///
 /// Variants are grouped by surface family; ordering within a group is
 /// alphabetical by C-symbol leaf to ease diffing against the allowlist.
@@ -211,6 +211,9 @@ pub enum RuntimeCallFamily {
     BytesPush,
     BytesSet,
     BytesSlice,
+    /// `bytes::new` constructor callee identity. Codegen materialises the
+    /// runtime `hew_bytes_new` call from the destination type.
+    BytesNew,
 
     // --- CancellationToken retain/release/poll ------------------------------
     CancelTokenIsRequested,
@@ -259,6 +262,8 @@ pub enum RuntimeCallFamily {
 
     // --- Layout-backed HashMap ---------------------------------------------
     HashMapContainsKeyLayout,
+    HashMapClearLayout,
+    HashMapCloneLayout,
     HashMapFreeLayout,
     HashMapGetLayout,
     HashMapInsertLayout,
@@ -284,6 +289,8 @@ pub enum RuntimeCallFamily {
 
     // --- Layout-backed HashSet ---------------------------------------------
     HashSetContainsLayout,
+    HashSetClearLayout,
+    HashSetCloneLayout,
     HashSetFreeLayout,
     HashSetInsertLayout,
     HashSetIsEmptyLayout,
@@ -293,6 +300,7 @@ pub enum RuntimeCallFamily {
     HashSetNew,
     HashSetNewWithLayout,
     HashSetRemoveLayout,
+    HashSetToVecLayout,
 
     // --- Instant accessors --------------------------------------------------
     InstantDurationSince,
@@ -332,10 +340,14 @@ pub enum RuntimeCallFamily {
     MathIntrinsic(MathIntrinsic),
 
     // --- Node operations ---------------------------------------------------
-    // Pre-staged: `Node::lookup` is a Terminator::Call callee-name
-    // intercept today (`hew-codegen-rs/src/llvm.rs:25631`); `Node::register_pid`
-    // already has a typed `FnSymbol::NodeRegisterPid` so it does NOT appear
-    // here as a runtime-call family.
+    // The `Node::*` variants are pre-staged Terminator::Call callee identities.
+    // Their runtime FFI symbols are carried separately by the stdlib catalog;
+    // the family records the source-level builtin identity used by checker,
+    // MIR, and codegen dispatch.
+    NodeAllowPeer,
+    NodeConnect,
+    NodeIdentityKey,
+    NodeLoadKeys,
     NodeLookup,
     /// `monitor(RemotePid<T>)` → `hew_node_monitor(target_pid: i64) -> i64`.
     /// Positive returns are distributed-monitor ref ids; negative returns encode
@@ -349,6 +361,10 @@ pub enum RuntimeCallFamily {
     /// signal arrives for `ref_id` (or `timeout_ms` elapses), returning the
     /// carried down-reason. Both args are `BitCopy` `i64`; non-consuming.
     NodeMonitorRecv,
+    NodeRegister,
+    NodeSetTransport,
+    NodeShutdown,
+    NodeStart,
 
     // --- User metrics (#1862) -----------------------------------------------
     // `std::metrics` emit path: register-or-get + mutate developer-defined
@@ -518,8 +534,27 @@ pub enum RuntimeCallFamily {
     TaskSpawnThread,
 
     // --- Vec<T> ------------------------------------------------------------
+    VecCloneLayout,
+    VecCloneOwned,
+    VecContainsLayout,
+    VecContainsOwned,
     VecGet(VecGetElem),
     VecLen,
+    VecNew,
+    VecPopBool,
+    VecPopLayout,
+    VecPopOwned,
+    VecPushBool,
+    VecPushLayout,
+    VecPushOwned,
+    VecPushOwnedMove,
+    VecRemoveAtBool,
+    VecRemoveAtLayout,
+    VecRemoveAtOwned,
+    VecSetBool,
+    VecSetI32,
+    VecSetLayout,
+    VecSetOwned,
     VecSliceRange(VecSliceElem),
 
     // --- Trait-object dispatch diagnostics ---------------------------------
@@ -575,6 +610,7 @@ impl RuntimeCallFamily {
             Self::BytesPush => "hew_bytes_push",
             Self::BytesSet => "hew_bytes_set",
             Self::BytesSlice => "hew_bytes_slice",
+            Self::BytesNew => "bytes::new",
             // CancellationToken
             Self::CancelTokenIsRequested => "hew_cancel_token_is_requested",
             Self::CancelTokenRelease => "hew_cancel_token_release",
@@ -611,6 +647,8 @@ impl RuntimeCallFamily {
             Self::DynBoxFree => "hew_dyn_box_free",
             // HashMap
             Self::HashMapContainsKeyLayout => "hew_hashmap_contains_key_layout",
+            Self::HashMapClearLayout => "hew_hashmap_clear_layout",
+            Self::HashMapCloneLayout => "hew_hashmap_clone_layout",
             Self::HashMapFreeLayout => "hew_hashmap_free_layout",
             Self::HashMapGetLayout => "hew_hashmap_get_layout",
             Self::HashMapInsertLayout => "hew_hashmap_insert_layout",
@@ -622,6 +660,8 @@ impl RuntimeCallFamily {
             Self::HashMapValuesLayout => "hew_hashmap_values_layout",
             // HashSet
             Self::HashSetContainsLayout => "hew_hashset_contains_layout",
+            Self::HashSetClearLayout => "hew_hashset_clear_layout",
+            Self::HashSetCloneLayout => "hew_hashset_clone_layout",
             Self::HashSetFreeLayout => "hew_hashset_free_layout",
             Self::HashSetInsertLayout => "hew_hashset_insert_layout",
             Self::HashSetIsEmptyLayout => "hew_hashset_is_empty_layout",
@@ -629,6 +669,7 @@ impl RuntimeCallFamily {
             Self::HashSetNew => "HashSet::new",
             Self::HashSetNewWithLayout => "hew_hashset_new_with_layout",
             Self::HashSetRemoveLayout => "hew_hashset_remove_layout",
+            Self::HashSetToVecLayout => "hew_hashset_to_vec_layout",
             // Instant
             Self::InstantDurationSince => "hew_instant_duration_since",
             Self::InstantElapsed => "hew_instant_elapsed",
@@ -662,9 +703,17 @@ impl RuntimeCallFamily {
             Self::MathIntrinsic(MathIntrinsic::Ceil) => "ceil",
             Self::MathIntrinsic(MathIntrinsic::Round) => "round",
             // Node (pre-staged)
+            Self::NodeAllowPeer => "Node::allow_peer",
+            Self::NodeConnect => "Node::connect",
+            Self::NodeIdentityKey => "Node::identity_key",
+            Self::NodeLoadKeys => "Node::load_keys",
             Self::NodeLookup => "Node::lookup",
             Self::NodeMonitor => "hew_node_monitor",
             Self::NodeMonitorRecv => "hew_node_monitor_recv",
+            Self::NodeRegister => "Node::register",
+            Self::NodeSetTransport => "Node::set_transport",
+            Self::NodeShutdown => "Node::shutdown",
+            Self::NodeStart => "Node::start",
             // User metrics (#1862)
             Self::MetricCounterRegister => "hew_metric_counter_register",
             Self::MetricCounterInc => "hew_metric_counter_inc",
@@ -759,6 +808,10 @@ impl RuntimeCallFamily {
             Self::TaskSetResult => "hew_task_set_result",
             Self::TaskSpawnThread => "hew_task_spawn_thread",
             // Vec
+            Self::VecCloneLayout => "hew_vec_clone_layout",
+            Self::VecCloneOwned => "hew_vec_clone_owned",
+            Self::VecContainsLayout => "hew_vec_contains_thunk",
+            Self::VecContainsOwned => "hew_vec_contains_owned",
             Self::VecGet(VecGetElem::Bool) => "hew_vec_get_bool",
             Self::VecGet(VecGetElem::F32) => "hew_vec_get_f32",
             Self::VecGet(VecGetElem::F64) => "hew_vec_get_f64",
@@ -773,6 +826,21 @@ impl RuntimeCallFamily {
             Self::VecGet(VecGetElem::U8) => "hew_vec_get_u8",
             Self::VecGet(VecGetElem::U16) => "hew_vec_get_u16",
             Self::VecLen => "hew_vec_len",
+            Self::VecNew => "Vec::new",
+            Self::VecPopBool => "hew_vec_pop_bool",
+            Self::VecPopLayout => "hew_vec_pop_layout",
+            Self::VecPopOwned => "hew_vec_pop_owned",
+            Self::VecPushBool => "hew_vec_push_bool",
+            Self::VecPushLayout => "hew_vec_push_layout",
+            Self::VecPushOwned => "hew_vec_push_owned",
+            Self::VecPushOwnedMove => "hew_vec_push_owned_move",
+            Self::VecRemoveAtBool => "hew_vec_remove_at_bool",
+            Self::VecRemoveAtLayout => "hew_vec_remove_at_layout",
+            Self::VecRemoveAtOwned => "hew_vec_remove_at_owned",
+            Self::VecSetBool => "hew_vec_set_bool",
+            Self::VecSetI32 => "hew_vec_set_i32",
+            Self::VecSetLayout => "hew_vec_set_layout",
+            Self::VecSetOwned => "hew_vec_set_owned",
             Self::VecSliceRange(VecSliceElem::Bytesize) => "hew_vec_slice_range_bytesize",
             Self::VecSliceRange(VecSliceElem::F64) => "hew_vec_slice_range_f64",
             Self::VecSliceRange(VecSliceElem::I32) => "hew_vec_slice_range_i32",
@@ -834,6 +902,7 @@ impl RuntimeCallFamily {
             "hew_bytes_push" => Self::BytesPush,
             "hew_bytes_set" => Self::BytesSet,
             "hew_bytes_slice" => Self::BytesSlice,
+            "bytes::new" => Self::BytesNew,
             // CancellationToken
             "hew_cancel_token_is_requested" => Self::CancelTokenIsRequested,
             "hew_cancel_token_release" => Self::CancelTokenRelease,
@@ -870,6 +939,8 @@ impl RuntimeCallFamily {
             "hew_dyn_box_free" => Self::DynBoxFree,
             // HashMap
             "hew_hashmap_contains_key_layout" => Self::HashMapContainsKeyLayout,
+            "hew_hashmap_clear_layout" => Self::HashMapClearLayout,
+            "hew_hashmap_clone_layout" => Self::HashMapCloneLayout,
             "hew_hashmap_free_layout" => Self::HashMapFreeLayout,
             "hew_hashmap_get_layout" => Self::HashMapGetLayout,
             "hew_hashmap_insert_layout" => Self::HashMapInsertLayout,
@@ -881,6 +952,8 @@ impl RuntimeCallFamily {
             "hew_hashmap_values_layout" => Self::HashMapValuesLayout,
             // HashSet
             "hew_hashset_contains_layout" => Self::HashSetContainsLayout,
+            "hew_hashset_clear_layout" => Self::HashSetClearLayout,
+            "hew_hashset_clone_layout" => Self::HashSetCloneLayout,
             "hew_hashset_free_layout" => Self::HashSetFreeLayout,
             "hew_hashset_insert_layout" => Self::HashSetInsertLayout,
             "hew_hashset_is_empty_layout" => Self::HashSetIsEmptyLayout,
@@ -888,6 +961,7 @@ impl RuntimeCallFamily {
             "HashSet::new" => Self::HashSetNew,
             "hew_hashset_new_with_layout" => Self::HashSetNewWithLayout,
             "hew_hashset_remove_layout" => Self::HashSetRemoveLayout,
+            "hew_hashset_to_vec_layout" => Self::HashSetToVecLayout,
             // Instant
             "hew_instant_duration_since" => Self::InstantDurationSince,
             "hew_instant_elapsed" => Self::InstantElapsed,
@@ -921,9 +995,17 @@ impl RuntimeCallFamily {
             "ceil" => Self::MathIntrinsic(MathIntrinsic::Ceil),
             "round" => Self::MathIntrinsic(MathIntrinsic::Round),
             // Node
+            "Node::allow_peer" => Self::NodeAllowPeer,
+            "Node::connect" => Self::NodeConnect,
+            "Node::identity_key" => Self::NodeIdentityKey,
+            "Node::load_keys" => Self::NodeLoadKeys,
             "Node::lookup" => Self::NodeLookup,
             "hew_node_monitor" => Self::NodeMonitor,
             "hew_node_monitor_recv" => Self::NodeMonitorRecv,
+            "Node::register" => Self::NodeRegister,
+            "Node::set_transport" => Self::NodeSetTransport,
+            "Node::shutdown" => Self::NodeShutdown,
+            "Node::start" => Self::NodeStart,
             // User metrics (#1862)
             "hew_metric_counter_register" => Self::MetricCounterRegister,
             "hew_metric_counter_inc" => Self::MetricCounterInc,
@@ -1017,6 +1099,10 @@ impl RuntimeCallFamily {
             "hew_task_set_result" => Self::TaskSetResult,
             "hew_task_spawn_thread" => Self::TaskSpawnThread,
             // Vec
+            "hew_vec_clone_layout" => Self::VecCloneLayout,
+            "hew_vec_clone_owned" => Self::VecCloneOwned,
+            "hew_vec_contains_thunk" => Self::VecContainsLayout,
+            "hew_vec_contains_owned" => Self::VecContainsOwned,
             "hew_vec_get_bool" => Self::VecGet(VecGetElem::Bool),
             "hew_vec_get_f32" => Self::VecGet(VecGetElem::F32),
             "hew_vec_get_f64" => Self::VecGet(VecGetElem::F64),
@@ -1031,6 +1117,21 @@ impl RuntimeCallFamily {
             "hew_vec_get_u8" => Self::VecGet(VecGetElem::U8),
             "hew_vec_get_u16" => Self::VecGet(VecGetElem::U16),
             "hew_vec_len" => Self::VecLen,
+            "Vec::new" => Self::VecNew,
+            "hew_vec_pop_bool" => Self::VecPopBool,
+            "hew_vec_pop_layout" => Self::VecPopLayout,
+            "hew_vec_pop_owned" => Self::VecPopOwned,
+            "hew_vec_push_bool" => Self::VecPushBool,
+            "hew_vec_push_layout" => Self::VecPushLayout,
+            "hew_vec_push_owned" => Self::VecPushOwned,
+            "hew_vec_push_owned_move" => Self::VecPushOwnedMove,
+            "hew_vec_remove_at_bool" => Self::VecRemoveAtBool,
+            "hew_vec_remove_at_layout" => Self::VecRemoveAtLayout,
+            "hew_vec_remove_at_owned" => Self::VecRemoveAtOwned,
+            "hew_vec_set_bool" => Self::VecSetBool,
+            "hew_vec_set_i32" => Self::VecSetI32,
+            "hew_vec_set_layout" => Self::VecSetLayout,
+            "hew_vec_set_owned" => Self::VecSetOwned,
             "hew_vec_slice_range_bytesize" => Self::VecSliceRange(VecSliceElem::Bytesize),
             "hew_vec_slice_range_f64" => Self::VecSliceRange(VecSliceElem::F64),
             "hew_vec_slice_range_i32" => Self::VecSliceRange(VecSliceElem::I32),
@@ -1044,6 +1145,235 @@ impl RuntimeCallFamily {
             _ => return None,
         };
         Some(family)
+    }
+
+    /// Recover a family that is intentionally carried on MIR
+    /// `Terminator::Call`.
+    ///
+    /// Codegen-only collection partition variants remain classifiable through
+    /// [`Self::from_c_symbol`] but do not widen the MIR carrier merely because
+    /// codegen gained a typed spelling for an existing direct-call helper.
+    #[must_use]
+    pub fn from_mir_builtin_symbol(sym: &str) -> Option<Self> {
+        Self::from_c_symbol(sym).filter(|family| !family.is_codegen_partition_only())
+    }
+
+    const fn is_codegen_partition_only(self) -> bool {
+        matches!(
+            self,
+            Self::BytesNew
+                | Self::HashMapClearLayout
+                | Self::HashMapCloneLayout
+                | Self::HashSetClearLayout
+                | Self::HashSetCloneLayout
+                | Self::HashSetToVecLayout
+                | Self::VecCloneLayout
+                | Self::VecCloneOwned
+                | Self::VecContainsLayout
+                | Self::VecContainsOwned
+                | Self::VecNew
+                | Self::VecPopBool
+                | Self::VecPopLayout
+                | Self::VecPopOwned
+                | Self::VecPushBool
+                | Self::VecPushLayout
+                | Self::VecPushOwned
+                | Self::VecPushOwnedMove
+                | Self::VecRemoveAtBool
+                | Self::VecRemoveAtLayout
+                | Self::VecRemoveAtOwned
+                | Self::VecSetBool
+                | Self::VecSetI32
+                | Self::VecSetLayout
+                | Self::VecSetOwned
+        )
+    }
+
+    /// Broad collection family partition used by codegen routing.
+    #[must_use]
+    pub const fn is_vec_op(self) -> bool {
+        matches!(
+            self,
+            Self::VecCloneLayout
+                | Self::VecCloneOwned
+                | Self::VecContainsLayout
+                | Self::VecContainsOwned
+                | Self::VecGet(_)
+                | Self::VecLen
+                | Self::VecNew
+                | Self::VecPopBool
+                | Self::VecPopLayout
+                | Self::VecPopOwned
+                | Self::VecPushBool
+                | Self::VecPushLayout
+                | Self::VecPushOwned
+                | Self::VecPushOwnedMove
+                | Self::VecRemoveAtBool
+                | Self::VecRemoveAtLayout
+                | Self::VecRemoveAtOwned
+                | Self::VecSetBool
+                | Self::VecSetI32
+                | Self::VecSetLayout
+                | Self::VecSetOwned
+                | Self::VecSliceRange(_)
+        )
+    }
+
+    /// Broad `HashMap` operation partition used by codegen routing.
+    #[must_use]
+    pub const fn is_hashmap_op(self) -> bool {
+        matches!(
+            self,
+            Self::HashMapContainsKeyLayout
+                | Self::HashMapClearLayout
+                | Self::HashMapCloneLayout
+                | Self::HashMapFreeLayout
+                | Self::HashMapGetLayout
+                | Self::HashMapInsertLayout
+                | Self::HashMapKeysLayout
+                | Self::HashMapLenLayout
+                | Self::HashMapNew
+                | Self::HashMapNewWithLayout
+                | Self::HashMapRemoveLayout
+                | Self::HashMapValuesLayout
+        )
+    }
+
+    /// Broad `HashSet` operation partition used by codegen routing.
+    #[must_use]
+    pub const fn is_hashset_op(self) -> bool {
+        matches!(
+            self,
+            Self::HashSetContainsLayout
+                | Self::HashSetClearLayout
+                | Self::HashSetCloneLayout
+                | Self::HashSetFreeLayout
+                | Self::HashSetInsertLayout
+                | Self::HashSetIsEmptyLayout
+                | Self::HashSetLenLayout
+                | Self::HashSetNew
+                | Self::HashSetNewWithLayout
+                | Self::HashSetRemoveLayout
+                | Self::HashSetToVecLayout
+        )
+    }
+
+    /// Broad bytes operation partition used by codegen routing.
+    #[must_use]
+    pub const fn is_bytes_op(self) -> bool {
+        matches!(
+            self,
+            Self::BytesAppend
+                | Self::BytesClear
+                | Self::BytesContains
+                | Self::BytesGet
+                | Self::BytesIndex
+                | Self::BytesIsEmpty
+                | Self::BytesLen
+                | Self::BytesNew
+                | Self::BytesPop
+                | Self::BytesPush
+                | Self::BytesSet
+                | Self::BytesSlice
+        )
+    }
+
+    /// True for source-level `Node::*` builtin identities.
+    #[must_use]
+    pub const fn is_node_builtin(self) -> bool {
+        matches!(
+            self,
+            Self::NodeAllowPeer
+                | Self::NodeConnect
+                | Self::NodeIdentityKey
+                | Self::NodeLoadKeys
+                | Self::NodeLookup
+                | Self::NodeRegister
+                | Self::NodeSetTransport
+                | Self::NodeShutdown
+                | Self::NodeStart
+        )
+    }
+
+    /// True for compiler-recognised MIR spellings with no runtime export.
+    #[must_use]
+    pub const fn is_synthetic_mir_symbol(self) -> bool {
+        matches!(
+            self,
+            Self::BytesGet
+                | Self::RegexCapture
+                | Self::RegexCompile
+                | Self::RegexFreeCapture
+                | Self::RegexHandle
+                | Self::RegexMatch
+                | Self::StringGet
+        )
+    }
+
+    /// True when `Instr::CallRuntimeAbi` may carry this family.
+    #[must_use]
+    pub const fn is_mir_emitter_family(self) -> bool {
+        !is_pre_staged_family(self)
+    }
+
+    /// True when the MIR emitter family names a real runtime export.
+    #[must_use]
+    pub const fn is_runtime_backed_mir_family(self) -> bool {
+        self.is_mir_emitter_family() && !self.is_synthetic_mir_symbol()
+    }
+
+    /// Codegen ABI partition for collection direct-call routing.
+    #[must_use]
+    pub const fn abi_shape(self) -> RuntimeCallAbiShape {
+        match self {
+            Self::VecPushBool
+            | Self::VecGet(VecGetElem::Bool)
+            | Self::VecSetBool
+            | Self::VecPopBool
+            | Self::VecRemoveAtBool => RuntimeCallAbiShape::VecBool,
+            Self::VecGet(VecGetElem::I32) | Self::VecSetI32 => RuntimeCallAbiShape::VecI32GetSet,
+            Self::VecNew => RuntimeCallAbiShape::VecConstructor,
+            Self::VecPushLayout
+            | Self::VecGet(VecGetElem::Layout)
+            | Self::VecSetLayout
+            | Self::VecPopLayout
+            | Self::VecContainsLayout
+            | Self::VecRemoveAtLayout
+            | Self::VecCloneLayout
+            | Self::VecSliceRange(VecSliceElem::Layout) => RuntimeCallAbiShape::VecLayout,
+            Self::VecPushOwned
+            | Self::VecPushOwnedMove
+            | Self::VecGet(VecGetElem::Owned)
+            | Self::VecSetOwned
+            | Self::VecPopOwned
+            | Self::VecRemoveAtOwned
+            | Self::VecCloneOwned
+            | Self::VecContainsOwned
+            | Self::VecSliceRange(VecSliceElem::Owned) => RuntimeCallAbiShape::VecOwned,
+            Self::HashMapInsertLayout
+            | Self::HashMapContainsKeyLayout
+            | Self::HashMapRemoveLayout
+            | Self::HashMapLenLayout
+            | Self::HashMapKeysLayout
+            | Self::HashMapValuesLayout
+            | Self::HashMapCloneLayout
+            | Self::HashMapClearLayout
+            | Self::HashSetInsertLayout
+            | Self::HashSetContainsLayout
+            | Self::HashSetRemoveLayout
+            | Self::HashSetLenLayout
+            | Self::HashSetIsEmptyLayout
+            | Self::HashSetToVecLayout
+            | Self::HashSetCloneLayout
+            | Self::HashSetClearLayout => RuntimeCallAbiShape::HashCollectionLayoutOp,
+            Self::HashMapGetLayout => RuntimeCallAbiShape::HashMapLayoutGet,
+            Self::HashMapNew
+            | Self::HashMapNewWithLayout
+            | Self::HashSetNew
+            | Self::HashSetNewWithLayout => RuntimeCallAbiShape::HashCollectionConstructor,
+            Self::BytesNew => RuntimeCallAbiShape::BytesConstructor,
+            _ => RuntimeCallAbiShape::Other,
+        }
     }
 
     /// True iff calling this family consumes the receiver handle (the
@@ -1165,6 +1495,7 @@ impl RuntimeCallFamily {
             | F::BytesPush
             | F::BytesSet
             | F::BytesSlice
+            | F::BytesNew
             | F::CancelTokenIsRequested
             | F::CancelTokenRelease
             | F::CancelTokenRetain
@@ -1179,6 +1510,8 @@ impl RuntimeCallFamily {
             | F::DynBoxAlloc
             | F::DynBoxFree
             | F::HashMapContainsKeyLayout
+            | F::HashMapClearLayout
+            | F::HashMapCloneLayout
             | F::HashMapFreeLayout
             | F::HashMapGetLayout
             | F::HashMapInsertLayout
@@ -1189,6 +1522,8 @@ impl RuntimeCallFamily {
             | F::HashMapRemoveLayout
             | F::HashMapValuesLayout
             | F::HashSetContainsLayout
+            | F::HashSetClearLayout
+            | F::HashSetCloneLayout
             | F::HashSetFreeLayout
             | F::HashSetInsertLayout
             | F::HashSetIsEmptyLayout
@@ -1196,6 +1531,7 @@ impl RuntimeCallFamily {
             | F::HashSetNew
             | F::HashSetNewWithLayout
             | F::HashSetRemoveLayout
+            | F::HashSetToVecLayout
             | F::InstantDurationSince
             | F::InstantElapsed
             | F::InstantNow
@@ -1224,9 +1560,17 @@ impl RuntimeCallFamily {
             | F::MetricHistogramRecord
             | F::MetricVecRegister
             | F::MetricVecWith
+            | F::NodeAllowPeer
+            | F::NodeConnect
+            | F::NodeIdentityKey
+            | F::NodeLoadKeys
             | F::NodeLookup
             | F::NodeMonitor
             | F::NodeMonitorRecv
+            | F::NodeRegister
+            | F::NodeSetTransport
+            | F::NodeShutdown
+            | F::NodeStart
             | F::ObserveReadU64
             | F::ObserveScrape
             | F::ObserveSeries
@@ -1281,8 +1625,27 @@ impl RuntimeCallFamily {
             | F::TaskSetEnv
             | F::TaskSetResult
             | F::TaskSpawnThread
+            | F::VecCloneLayout
+            | F::VecCloneOwned
+            | F::VecContainsLayout
+            | F::VecContainsOwned
             | F::VecGet(_)
             | F::VecLen
+            | F::VecNew
+            | F::VecPopBool
+            | F::VecPopLayout
+            | F::VecPopOwned
+            | F::VecPushBool
+            | F::VecPushLayout
+            | F::VecPushOwned
+            | F::VecPushOwnedMove
+            | F::VecRemoveAtBool
+            | F::VecRemoveAtLayout
+            | F::VecRemoveAtOwned
+            | F::VecSetBool
+            | F::VecSetI32
+            | F::VecSetLayout
+            | F::VecSetOwned
             | F::VecSliceRange(_)
             | F::VtableDispatchPanicOnOob => None,
         }
@@ -1316,6 +1679,21 @@ impl RuntimeCallFamily {
         // bijection invariant for the closed-set variants.
         false
     }
+}
+
+/// ABI-routing shape for collection calls that require bespoke codegen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeCallAbiShape {
+    VecBool,
+    VecI32GetSet,
+    VecConstructor,
+    VecLayout,
+    VecOwned,
+    HashCollectionLayoutOp,
+    HashMapLayoutGet,
+    HashCollectionConstructor,
+    BytesConstructor,
+    Other,
 }
 
 /// Async-suspending behaviour classification. One variant per HIR
@@ -1658,7 +2036,7 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 10] {
 /// When the follow-up wires the producers, the symbols join the allowlist and
 /// this list shrinks.
 #[must_use]
-pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
+pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
     use RuntimeCallFamily as F;
     matches!(
         family,
@@ -1674,7 +2052,21 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::HashMapValuesLayout
             | F::HashSetNew
             | F::MathIntrinsic(_)
+            | F::BytesNew
+            | F::HashMapClearLayout
+            | F::HashMapCloneLayout
+            | F::HashSetClearLayout
+            | F::HashSetCloneLayout
+            | F::HashSetToVecLayout
+            | F::NodeAllowPeer
+            | F::NodeConnect
+            | F::NodeIdentityKey
+            | F::NodeLoadKeys
             | F::NodeLookup
+            | F::NodeRegister
+            | F::NodeSetTransport
+            | F::NodeShutdown
+            | F::NodeStart
             | F::RemotePidSend
             | F::SinkClose
             | F::SinkPeerClosed
@@ -1685,6 +2077,25 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::StreamSendLayout
             | F::StreamTryNextLayout
             | F::TcpAttachLocal
+            | F::VecCloneLayout
+            | F::VecCloneOwned
+            | F::VecContainsLayout
+            | F::VecContainsOwned
+            | F::VecNew
+            | F::VecPopBool
+            | F::VecPopLayout
+            | F::VecPopOwned
+            | F::VecPushBool
+            | F::VecPushLayout
+            | F::VecPushOwned
+            | F::VecPushOwnedMove
+            | F::VecRemoveAtBool
+            | F::VecRemoveAtLayout
+            | F::VecRemoveAtOwned
+            | F::VecSetBool
+            | F::VecSetI32
+            | F::VecSetLayout
+            | F::VecSetOwned
     )
 }
 
@@ -1695,7 +2106,7 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     /// Bijection (forward): every family variant produces a unique
     /// `c_symbol()`. No two variants collide. This is the substrate's
@@ -1739,6 +2150,76 @@ mod tests {
                 Some(family),
                 "from_c_symbol({sym:?}) returned {back:?}, expected Some({family:?}) \
                  — the inverse arm is missing or wrong",
+            );
+        }
+    }
+
+    #[test]
+    fn mir_builtin_lift_excludes_codegen_only_partitions() {
+        assert_eq!(
+            RuntimeCallFamily::from_mir_builtin_symbol("hew_vec_push_layout"),
+            None
+        );
+        assert_eq!(
+            RuntimeCallFamily::from_mir_builtin_symbol("Node::start"),
+            Some(RuntimeCallFamily::NodeStart)
+        );
+        assert_eq!(
+            RuntimeCallFamily::from_mir_builtin_symbol("hew_hashmap_insert_layout"),
+            Some(RuntimeCallFamily::HashMapInsertLayout)
+        );
+    }
+
+    #[test]
+    fn codegen_partition_only_set_pins_mir_carrier_boundary() {
+        use RuntimeCallFamily as F;
+
+        let expected: HashSet<RuntimeCallFamily> = [
+            F::BytesNew,
+            F::HashMapClearLayout,
+            F::HashMapCloneLayout,
+            F::HashSetClearLayout,
+            F::HashSetCloneLayout,
+            F::HashSetToVecLayout,
+            F::VecCloneLayout,
+            F::VecCloneOwned,
+            F::VecContainsLayout,
+            F::VecContainsOwned,
+            F::VecNew,
+            F::VecPopBool,
+            F::VecPopLayout,
+            F::VecPopOwned,
+            F::VecPushBool,
+            F::VecPushLayout,
+            F::VecPushOwned,
+            F::VecPushOwnedMove,
+            F::VecRemoveAtBool,
+            F::VecRemoveAtLayout,
+            F::VecRemoveAtOwned,
+            F::VecSetBool,
+            F::VecSetI32,
+            F::VecSetLayout,
+            F::VecSetOwned,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(expected.len(), 25);
+
+        let actual: HashSet<RuntimeCallFamily> = all_runtime_call_families()
+            .into_iter()
+            .filter(|family| family.is_codegen_partition_only())
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "the codegen-only collection partition changed; review whether each \
+             affected family should remain absent from MIR calls"
+        );
+
+        for family in all_runtime_call_families() {
+            assert_eq!(
+                RuntimeCallFamily::from_mir_builtin_symbol(family.c_symbol()).is_none(),
+                expected.contains(&family),
+                "MIR carrier classification drifted for {family:?}"
             );
         }
     }

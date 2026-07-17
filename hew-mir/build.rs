@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+use hew_types::runtime_call::{all_runtime_call_families, RuntimeCallFamily};
+
 fn quoted_value(line: &str) -> Option<&str> {
     let (_, value) = line.split_once('=')?;
     let value = value.trim();
@@ -101,37 +103,13 @@ fn toml_symbol_tier(source: &str, tier: &str) -> BTreeSet<String> {
     panic!("unterminated `{tier}` TOML symbol list");
 }
 
-fn runtime_backed_mir_symbols(path: &Path) -> BTreeSet<String> {
-    let source = fs::read_to_string(path).expect("read runtime_symbols.rs");
-    let marker = "const RUNTIME_BACKED_MIR_SYMBOLS:";
-    let start = source
-        .find(marker)
-        .expect("runtime_symbols.rs must declare RUNTIME_BACKED_MIR_SYMBOLS");
-    let mut symbols = BTreeSet::new();
-
-    for line in source[start..].lines().skip(1) {
-        let line = line.trim();
-        if line == "];" {
-            assert!(
-                !symbols.is_empty(),
-                "RUNTIME_BACKED_MIR_SYMBOLS must not be empty"
-            );
-            return symbols;
-        }
-        if !line.starts_with('"') {
-            continue;
-        }
-        let symbol = line
-            .strip_prefix('"')
-            .and_then(|line| line.strip_suffix("\","))
-            .unwrap_or_else(|| panic!("malformed RUNTIME_BACKED_MIR_SYMBOLS row: {line}"));
-        assert!(
-            symbols.insert(symbol.to_owned()),
-            "duplicate runtime-backed MIR symbol: {symbol}"
-        );
-    }
-
-    panic!("unterminated RUNTIME_BACKED_MIR_SYMBOLS");
+fn runtime_backed_mir_symbols() -> BTreeSet<String> {
+    all_runtime_call_families()
+        .into_iter()
+        .filter(|family| family.is_runtime_backed_mir_family())
+        .map(RuntimeCallFamily::c_symbol)
+        .map(str::to_owned)
+        .collect()
 }
 
 fn main() {
@@ -146,7 +124,7 @@ fn main() {
         fs::read_to_string(&classification).expect("read FFI classification TOML");
     let mut jit_symbols = toml_symbol_tier(&classification_source, "stable");
     jit_symbols.extend(toml_symbol_tier(&classification_source, "codegen-stable"));
-    let missing: Vec<_> = runtime_backed_mir_symbols(&runtime_symbols)
+    let missing: Vec<_> = runtime_backed_mir_symbols()
         .difference(&jit_symbols)
         .cloned()
         .collect();

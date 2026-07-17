@@ -957,17 +957,10 @@ pub(crate) fn collection_layout_witness(
 }
 
 pub(crate) fn is_layout_vec_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_vec_push_layout"
-            | "hew_vec_get_layout"
-            | "hew_vec_set_layout"
-            | "hew_vec_pop_layout"
-            | "hew_vec_contains_thunk"
-            | "hew_vec_remove_at_layout"
-            | "hew_vec_clone_layout"
-            | "hew_vec_slice_range_layout"
-    )
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecLayout)
 }
 
 pub(crate) fn layout_vec_fn_type<'ctx>(
@@ -1393,18 +1386,10 @@ pub(crate) fn primitive_key_layout_extern_name(rty: &ResolvedTy) -> Option<&'sta
 
 /// True for the W5.016 owned-element Vec runtime symbols.
 pub(crate) fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_vec_push_owned"
-            | "hew_vec_push_owned_move"
-            | "hew_vec_get_owned"
-            | "hew_vec_set_owned"
-            | "hew_vec_pop_owned"
-            | "hew_vec_remove_at_owned"
-            | "hew_vec_clone_owned"
-            | "hew_vec_contains_owned"
-            | "hew_vec_slice_range_owned"
-    )
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecOwned)
 }
 
 /// LLVM signature for an owned-element Vec runtime symbol. The descriptor is
@@ -2450,10 +2435,9 @@ pub(crate) fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
     )
 }
 
-/// Recognise the 8 non-probe, non-constructor, non-get, non-free layout
-/// operation symbols handled by `lower_hashmap_layout_direct_call`.
+/// Recognise the non-probe, non-constructor, non-get, non-free layout
+/// operation families handled by `lower_hashmap_layout_direct_call`.
 ///
-/// Parallel to `is_layout_vec_runtime_symbol` (`llvm.rs:8660`).
 /// Does NOT include the probe callees (those are caught by
 /// `is_hashmap_layout_probe_symbol`), the constructors (`*_new_with_layout`
 /// — caught by `is_hashmap_constructor_symbol`, slice-ii), `.get()`
@@ -2461,49 +2445,32 @@ pub(crate) fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
 /// (`*_free_layout` — actor-state drop-plan reroute handled in
 /// `drop_helper_for_kind`, slice-ii).
 pub(crate) fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_hashmap_insert_layout"
-            | "hew_hashmap_contains_key_layout"
-            | "hew_hashmap_remove_layout"
-            | "hew_hashmap_len_layout"
-            | "hew_hashmap_keys_layout"
-            | "hew_hashmap_values_layout"
-            | "hew_hashmap_clone_layout"
-            | "hew_hashset_insert_layout"
-            | "hew_hashset_contains_layout"
-            | "hew_hashset_remove_layout"
-            | "hew_hashset_len_layout"
-            | "hew_hashset_is_empty_layout"
-            | "hew_hashset_to_vec_layout"
-            | "hew_hashset_clone_layout"
-            | "hew_hashmap_clear_layout"
-            | "hew_hashset_clear_layout"
-    )
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::HashCollectionLayoutOp)
 }
 
 pub(crate) fn is_hashmap_layout_get_symbol(symbol: &str) -> bool {
-    symbol == "hew_hashmap_get_layout"
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::HashMapLayoutGet)
 }
 
-/// Recognise the two layout HashMap/HashSet constructor symbols
-/// (`hew_hashmap_new_with_layout`, `hew_hashset_new_with_layout`).
+/// Recognise the layout `HashMap`/`HashSet` constructor identities.
 ///
-/// Parallel split to `is_vec_constructor_symbol` (`llvm.rs:8685`). Kept
-/// distinct from `is_hashmap_layout_runtime_symbol` because the constructor
-/// shape is fundamentally different from the 8 op-call arms: it carries no
+/// Kept distinct from `is_hashmap_layout_runtime_symbol` because the constructor
+/// shape is fundamentally different from the operation arms: it carries no
 /// source-level args (codegen synthesises the layout descriptor pointers
 /// from the dest's `HashMap<K,V>` / `HashSet<T>` type), and the handle is
 /// the *return value* rather than `args[0]`. The clarity is worth the
 /// extra predicate per slice-ii commit-body justification.
 pub(crate) fn is_hashmap_constructor_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_hashmap_new_with_layout"
-            | "hew_hashset_new_with_layout"
-            | "HashMap::new"
-            | "HashSet::new"
-    )
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::HashCollectionConstructor)
 }
 
 /// True for the `bytes::new` associated-function constructor. Catalogued as
@@ -2511,7 +2478,10 @@ pub(crate) fn is_hashmap_constructor_symbol(symbol: &str) -> bool {
 /// codegen as the literal callee name and must be intercepted here rather than
 /// resolved as a user/runtime symbol.
 pub(crate) fn is_bytes_constructor_symbol(symbol: &str) -> bool {
-    symbol == "bytes::new"
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::BytesConstructor)
 }
 
 fn hashmap_constructor_runtime_symbol(symbol: &str) -> CodegenResult<&'static str> {

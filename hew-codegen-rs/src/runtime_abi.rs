@@ -412,7 +412,8 @@ pub(crate) fn lower_call_runtime_abi(
     let i64_ty = fn_ctx.ctx.i64_type();
     let i8_ty = fn_ctx.ctx.i8_type();
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    match call.family() {
+    let family = call.family();
+    match family {
         F::DuplexPair => {
             if args.len() != 4 {
                 return Err(CodegenError::FailClosed(format!(
@@ -2222,7 +2223,7 @@ pub(crate) fn lower_call_runtime_abi(
             // Closure-pair element (`fns[i]` on a `Vec<fn(...)>`): the
             // returned pointer is the slot's pair box; copy the 16-byte
             // pair out (a borrow — the vec keeps the box and the env).
-            if symbol == "hew_vec_get_ptr"
+            if family == F::VecGet(VecGetElem::Ptr)
                 && matches!(
                     place_resolved_ty(fn_ctx, dest_place)?,
                     ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
@@ -2233,7 +2234,7 @@ pub(crate) fn lower_call_runtime_abi(
                 return Ok(());
             }
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            let store_val = if symbol == "hew_vec_get_bool" {
+            let store_val = if family == F::VecGet(VecGetElem::Bool) {
                 zext_bool_i1_to_dest(fn_ctx, result_val.into_int_value(), dest_ty, symbol)?
             } else {
                 result_val
@@ -2375,7 +2376,7 @@ pub(crate) fn lower_call_runtime_abi(
             let end_val = load_int_arg(fn_ctx, args[2], i64_ty, &format!("{symbol} arg2"))?;
             let mut llvm_args: Vec<BasicMetadataValueEnum> =
                 vec![vec_ptr.into(), start_val.into(), end_val.into()];
-            if symbol == "hew_vec_slice_range_layout" {
+            if family == F::VecSliceRange(hew_types::runtime_call::VecSliceElem::Layout) {
                 // DEDUP-TODO: share this hidden layout-pointer synthesis with
                 // `llvm.rs::lower_layout_vec_direct_call` so the descriptor
                 // slice ABI has one codegen helper.
@@ -3690,6 +3691,7 @@ pub(crate) fn lower_call_runtime_abi(
         // `Instr::CallRuntimeAbi`, so it has no MIR-ABI lowering arm here and
         // fails closed if it ever reaches this dispatch, like `TaskSetResult`.
         | F::BytesGet
+        | F::BytesNew
         | F::CancelTokenIsRequested
         | F::CancelTokenRelease
         | F::CancelTokenRetain
@@ -3704,6 +3706,8 @@ pub(crate) fn lower_call_runtime_abi(
         | F::DynBoxAlloc
         | F::DynBoxFree
         | F::HashMapContainsKeyLayout
+        | F::HashMapClearLayout
+        | F::HashMapCloneLayout
         | F::HashMapFreeLayout
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
@@ -3714,6 +3718,8 @@ pub(crate) fn lower_call_runtime_abi(
         | F::HashMapRemoveLayout
         | F::HashMapValuesLayout
         | F::HashSetContainsLayout
+        | F::HashSetClearLayout
+        | F::HashSetCloneLayout
         | F::HashSetFreeLayout
         | F::HashSetInsertLayout
         | F::HashSetIsEmptyLayout
@@ -3721,6 +3727,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::HashSetNew
         | F::HashSetNewWithLayout
         | F::HashSetRemoveLayout
+        | F::HashSetToVecLayout
         | F::LambdaBodyAllocReplyBuf
         | F::LambdaActorClone
         | F::LambdaActorDowngrade
@@ -3737,7 +3744,15 @@ pub(crate) fn lower_call_runtime_abi(
         | F::MetricHistogramRegister
         | F::MetricVecRegister
         | F::MetricVecWith
+        | F::NodeAllowPeer
+        | F::NodeConnect
+        | F::NodeIdentityKey
+        | F::NodeLoadKeys
         | F::NodeLookup
+        | F::NodeRegister
+        | F::NodeSetTransport
+        | F::NodeShutdown
+        | F::NodeStart
         | F::RcNew
         | F::RegexCompile
         | F::RemotePidSend
@@ -3780,6 +3795,25 @@ pub(crate) fn lower_call_runtime_abi(
         // fails closed if it ever reaches this dispatch, exactly like its
         // sibling `TaskCompleteThreaded`.
         | F::TaskSetResult
+        | F::VecCloneLayout
+        | F::VecCloneOwned
+        | F::VecContainsLayout
+        | F::VecContainsOwned
+        | F::VecNew
+        | F::VecPopBool
+        | F::VecPopLayout
+        | F::VecPopOwned
+        | F::VecPushBool
+        | F::VecPushLayout
+        | F::VecPushOwned
+        | F::VecPushOwnedMove
+        | F::VecRemoveAtBool
+        | F::VecRemoveAtLayout
+        | F::VecRemoveAtOwned
+        | F::VecSetBool
+        | F::VecSetI32
+        | F::VecSetLayout
+        | F::VecSetOwned
         | F::VtableDispatchPanicOnOob => {
             return Err(CodegenError::FailClosed(format!(
                 "Instr::CallRuntimeAbi(symbol={symbol:?}, family={:?}): codegen has no \

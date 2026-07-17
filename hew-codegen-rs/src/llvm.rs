@@ -1165,6 +1165,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::BytesPush
         | F::BytesSet
         | F::BytesSlice
+        | F::BytesNew
         | F::CancelTokenIsRequested
         | F::CancelTokenRelease
         | F::CancelTokenRetain
@@ -1184,6 +1185,8 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::DynBoxAlloc
         | F::DynBoxFree
         | F::HashMapContainsKeyLayout
+        | F::HashMapClearLayout
+        | F::HashMapCloneLayout
         | F::HashMapFreeLayout
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
@@ -1194,6 +1197,8 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::HashMapRemoveLayout
         | F::HashMapValuesLayout
         | F::HashSetContainsLayout
+        | F::HashSetClearLayout
+        | F::HashSetCloneLayout
         | F::HashSetFreeLayout
         | F::HashSetInsertLayout
         | F::HashSetIsEmptyLayout
@@ -1201,6 +1206,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::HashSetNew
         | F::HashSetNewWithLayout
         | F::HashSetRemoveLayout
+        | F::HashSetToVecLayout
         | F::InstantDurationSince
         | F::InstantElapsed
         | F::InstantNow
@@ -1231,9 +1237,17 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::MetricHistogramRecord
         | F::MetricVecRegister
         | F::MetricVecWith
+        | F::NodeAllowPeer
+        | F::NodeConnect
+        | F::NodeIdentityKey
+        | F::NodeLoadKeys
         | F::NodeLookup
         | F::NodeMonitor
         | F::NodeMonitorRecv
+        | F::NodeRegister
+        | F::NodeSetTransport
+        | F::NodeShutdown
+        | F::NodeStart
         | F::ObserveReadU64
         | F::ObserveScrape
         | F::ObserveSeries
@@ -1274,8 +1288,27 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::StringIndex
         | F::StringSliceCodepoints
         | F::TcpAttachLocal
+        | F::VecCloneLayout
+        | F::VecCloneOwned
+        | F::VecContainsLayout
+        | F::VecContainsOwned
         | F::VecGet(_)
         | F::VecLen
+        | F::VecNew
+        | F::VecPopBool
+        | F::VecPopLayout
+        | F::VecPopOwned
+        | F::VecPushBool
+        | F::VecPushLayout
+        | F::VecPushOwned
+        | F::VecPushOwnedMove
+        | F::VecRemoveAtBool
+        | F::VecRemoveAtLayout
+        | F::VecRemoveAtOwned
+        | F::VecSetBool
+        | F::VecSetI32
+        | F::VecSetLayout
+        | F::VecSetOwned
         | F::VecSliceRange(_)
         | F::VtableDispatchPanicOnOob => false,
     }
@@ -18565,22 +18598,24 @@ fn lower_tuple_field_load(
 }
 
 pub(crate) fn is_bool_vec_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_vec_push_bool"
-            | "hew_vec_get_bool"
-            | "hew_vec_set_bool"
-            | "hew_vec_pop_bool"
-            | "hew_vec_remove_at_bool"
-    )
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecBool)
 }
 
 fn is_vec_i32_get_set_symbol(symbol: &str) -> bool {
-    matches!(symbol, "hew_vec_get_i32" | "hew_vec_set_i32")
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecI32GetSet)
 }
 
 fn is_vec_constructor_symbol(symbol: &str) -> bool {
-    symbol == "Vec::new"
+    use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
+
+    RuntimeCallFamily::from_c_symbol(symbol)
+        .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecConstructor)
 }
 
 fn vec_constructor_fn_type<'ctx>(
@@ -27422,17 +27457,20 @@ fn validate_context_markers_for_codegen(func: &RawMirFunction) -> Vec<hew_mir::M
 /// The de-globalized node state (`CURRENT_NODE`/`KNOWN_NODES`/`REPLY_TABLE`,
 /// owned by `RuntimeInner::node`) is touched the moment a program calls
 /// `Node::set_transport`/`start`/`connect`/`register`/`lookup`/`shutdown`.
-/// Those builtins lower to `Terminator::Call` with a `Node::`-prefixed callee.
+/// Those builtins lower to `Terminator::Call` with a typed Node family.
 /// A program can touch the node authority WITHOUT declaring any actor (e.g. a
 /// bare `Node::start` smoke), so node presence is an independent reason to
 /// install the runtime at program entry — actor/supervisor presence does not
-/// imply it. Scans every function body's terminators for a `Node::` callee.
+/// imply it. Scans every function body's terminators for a typed Node builtin.
 fn module_uses_node_authority(raw_mir: &[RawMirFunction]) -> bool {
     raw_mir.iter().any(|func| {
         func.blocks.iter().any(|block| {
             matches!(
                 &block.terminator,
-                Terminator::Call { callee, .. } if callee.starts_with("Node::")
+                Terminator::Call {
+                    builtin: Some(family),
+                    ..
+                } if family.is_node_builtin()
             )
         })
     })

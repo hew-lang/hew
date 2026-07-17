@@ -517,7 +517,7 @@ const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
 /// Bare-name variants of built-in tagged unions. Counted into the pre-pass's
 /// `bare_counts` so a user enum that redeclares one of them correctly marks
 /// the bare form as ambiguous. Must include every variant of every spec in
-/// `builtin_enum_specs()` — omissions cause silent overwrites of user
+/// `BUILTIN_ENUM_SPECS` — omissions cause silent overwrites of user
 /// machine-state ctor entries in `machine_ctor_registry` (the `Full` /
 /// `Closed` / `NodeRoutingNotWired` `SendError` variants and `NotFound`
 /// `LookupError` variant were the original regression that motivated this
@@ -641,87 +641,108 @@ const CRASH_KIND_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 3];
 /// the same registries user enums populate (`machine_ctor_registry`,
 /// `enum_variants_by_name`, `enum_type_params`, `enum_item_ids`). Variant
 /// payload type-parameter names index into `type_params`.
-struct BuiltinEnumSpec {
-    type_name: &'static str,
-    item_id: ItemId,
-    type_params: &'static [&'static str],
-    variant_names: &'static [&'static str],
+pub(crate) struct BuiltinEnumSpec {
+    pub(crate) type_name: &'static str,
+    pub(crate) item_id: ItemId,
+    pub(crate) type_params: &'static [&'static str],
+    pub(crate) variant_names: &'static [&'static str],
     /// Per-variant payload, listed as the type-parameter names that appear
     /// in the variant. Empty inner slice means a unit variant.
-    variant_payloads: &'static [&'static [&'static str]],
+    pub(crate) variant_payloads: &'static [&'static [&'static str]],
 }
 
-fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
-    &[
-        BuiltinEnumSpec {
-            type_name: "Option",
-            item_id: SYNTHETIC_OPTION_ITEM,
-            type_params: &["T"],
-            variant_names: &["Some", "None"],
-            variant_payloads: &[&["T"], &[]],
-        },
-        BuiltinEnumSpec {
-            type_name: "Result",
-            item_id: SYNTHETIC_RESULT_ITEM,
-            type_params: &["T", "E"],
-            variant_names: &["Ok", "Err"],
-            variant_payloads: &[&["T"], &["E"]],
-        },
-        BuiltinEnumSpec {
-            type_name: "LookupError",
-            item_id: SYNTHETIC_LOOKUP_ERROR_ITEM,
-            type_params: &[],
-            variant_names: LOOKUP_ERROR_VARIANTS,
-            variant_payloads: LOOKUP_ERROR_PAYLOADS,
-        },
-        BuiltinEnumSpec {
-            type_name: "SendError",
-            item_id: SYNTHETIC_SEND_ERROR_ITEM,
-            type_params: &[],
-            variant_names: SEND_ERROR_VARIANTS,
-            variant_payloads: SEND_ERROR_PAYLOADS,
-        },
-        BuiltinEnumSpec {
-            type_name: "TimeoutError",
-            item_id: SYNTHETIC_TIMEOUT_ERROR_ITEM,
-            type_params: &[],
-            variant_names: TIMEOUT_ERROR_VARIANTS,
-            variant_payloads: TIMEOUT_ERROR_PAYLOADS,
-        },
-        BuiltinEnumSpec {
-            type_name: "LinkError",
-            item_id: SYNTHETIC_LINK_ERROR_ITEM,
-            type_params: &[],
-            variant_names: LINK_ERROR_VARIANTS,
-            variant_payloads: LINK_ERROR_PAYLOADS,
-        },
-        BuiltinEnumSpec {
-            type_name: "AskError",
-            item_id: ItemId(u32::MAX - 1003),
-            type_params: &[],
-            variant_names: ASK_ERROR_VARIANTS,
-            variant_payloads: ASK_ERROR_PAYLOADS,
-        },
-        // `CrashAction` (M-4) and `CrashKind` (M-7-R) are out-of-band monomorphic
-        // builtin enums: their MIR layout is registered from
-        // `hew_types::builtin_enums::monomorphic_builtin_enums()`, so the HIR
-        // discriminant assignments here MUST match that catalog's variant order
-        // (the parity test pins it).
-        BuiltinEnumSpec {
-            type_name: "CrashAction",
-            item_id: SYNTHETIC_CRASH_ACTION_ITEM,
-            type_params: &[],
-            variant_names: CRASH_ACTION_VARIANTS,
-            variant_payloads: CRASH_ACTION_PAYLOADS,
-        },
-        BuiltinEnumSpec {
-            type_name: "CrashKind",
-            item_id: SYNTHETIC_CRASH_KIND_ITEM,
-            type_params: &[],
-            variant_names: CRASH_KIND_VARIANTS,
-            variant_payloads: CRASH_KIND_PAYLOADS,
-        },
-    ]
+pub(crate) const BUILTIN_ENUM_SPECS: &[BuiltinEnumSpec] = &[
+    BuiltinEnumSpec {
+        type_name: "Option",
+        item_id: SYNTHETIC_OPTION_ITEM,
+        type_params: &["T"],
+        variant_names: &["Some", "None"],
+        variant_payloads: &[&["T"], &[]],
+    },
+    BuiltinEnumSpec {
+        type_name: "Result",
+        item_id: SYNTHETIC_RESULT_ITEM,
+        type_params: &["T", "E"],
+        variant_names: &["Ok", "Err"],
+        variant_payloads: &[&["T"], &["E"]],
+    },
+    BuiltinEnumSpec {
+        type_name: "LookupError",
+        item_id: SYNTHETIC_LOOKUP_ERROR_ITEM,
+        type_params: &[],
+        variant_names: LOOKUP_ERROR_VARIANTS,
+        variant_payloads: LOOKUP_ERROR_PAYLOADS,
+    },
+    BuiltinEnumSpec {
+        type_name: "SendError",
+        item_id: SYNTHETIC_SEND_ERROR_ITEM,
+        type_params: &[],
+        variant_names: SEND_ERROR_VARIANTS,
+        variant_payloads: SEND_ERROR_PAYLOADS,
+    },
+    BuiltinEnumSpec {
+        type_name: "TimeoutError",
+        item_id: SYNTHETIC_TIMEOUT_ERROR_ITEM,
+        type_params: &[],
+        variant_names: TIMEOUT_ERROR_VARIANTS,
+        variant_payloads: TIMEOUT_ERROR_PAYLOADS,
+    },
+    BuiltinEnumSpec {
+        type_name: "LinkError",
+        item_id: SYNTHETIC_LINK_ERROR_ITEM,
+        type_params: &[],
+        variant_names: LINK_ERROR_VARIANTS,
+        variant_payloads: LINK_ERROR_PAYLOADS,
+    },
+    BuiltinEnumSpec {
+        type_name: "AskError",
+        item_id: ItemId(u32::MAX - 1003),
+        type_params: &[],
+        variant_names: ASK_ERROR_VARIANTS,
+        variant_payloads: ASK_ERROR_PAYLOADS,
+    },
+    // `CrashAction` (M-4) and `CrashKind` (M-7-R) are out-of-band monomorphic
+    // builtin enums: their MIR layout is registered from
+    // `hew_types::builtin_enums::monomorphic_builtin_enums()`, so the HIR
+    // discriminant assignments here MUST match that catalog's variant order
+    // (the parity test pins it).
+    BuiltinEnumSpec {
+        type_name: "CrashAction",
+        item_id: SYNTHETIC_CRASH_ACTION_ITEM,
+        type_params: &[],
+        variant_names: CRASH_ACTION_VARIANTS,
+        variant_payloads: CRASH_ACTION_PAYLOADS,
+    },
+    BuiltinEnumSpec {
+        type_name: "CrashKind",
+        item_id: SYNTHETIC_CRASH_KIND_ITEM,
+        type_params: &[],
+        variant_names: CRASH_KIND_VARIANTS,
+        variant_payloads: CRASH_KIND_PAYLOADS,
+    },
+];
+
+pub(crate) fn builtin_enum_hir_variants(spec: &BuiltinEnumSpec) -> Vec<HirVariant> {
+    spec.variant_names
+        .iter()
+        .zip(spec.variant_payloads.iter())
+        .map(|(name, payload_params)| {
+            let kind = if payload_params.is_empty() {
+                HirVariantKind::Unit
+            } else {
+                HirVariantKind::Tuple(
+                    payload_params
+                        .iter()
+                        .map(|param| ResolvedTy::named_user(*param, Vec::new()))
+                        .collect(),
+                )
+            };
+            HirVariant {
+                name: (*name).to_string(),
+                kind,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2663,7 +2684,7 @@ pub fn lower_program_with_mono_cap(
         // variant name that the root program has already declared.  The
         // qualified form (`LookupError::NotFound`) is always registered so
         // existing code that uses the fully-qualified path keeps working.
-        for spec in builtin_enum_specs() {
+        for spec in BUILTIN_ENUM_SPECS {
             for (variant_idx, variant_name) in spec.variant_names.iter().enumerate() {
                 let qualified = format!("{}::{}", spec.type_name, variant_name);
                 ctx.machine_ctor_registry
@@ -2689,33 +2710,8 @@ pub fn lower_program_with_mono_cap(
     // so `substitute_type_params` in `try_register_enum_instantiation`
     // produces correctly substituted per-instantiation layouts that flow into
     // MIR via `module.enum_layouts`.
-    for spec in builtin_enum_specs() {
-        let variants: Vec<HirVariant> = spec
-            .variant_names
-            .iter()
-            .zip(spec.variant_payloads.iter())
-            .map(|(name, payload_params)| {
-                let kind = if payload_params.is_empty() {
-                    HirVariantKind::Unit
-                } else {
-                    HirVariantKind::Tuple(
-                        payload_params
-                            .iter()
-                            .map(|p| ResolvedTy::Named {
-                                name: (*p).to_string(),
-                                args: Vec::new(),
-                                builtin: None,
-                                is_opaque: false,
-                            })
-                            .collect(),
-                    )
-                };
-                HirVariant {
-                    name: (*name).to_string(),
-                    kind,
-                }
-            })
-            .collect();
+    for spec in BUILTIN_ENUM_SPECS {
+        let variants = builtin_enum_hir_variants(spec);
         ctx.enum_variants_by_name
             .insert(spec.type_name.to_string(), variants);
         ctx.enum_type_params.insert(
@@ -31266,7 +31262,7 @@ mod tests {
 /// The catalogs being compared:
 ///   1. `hew_types::builtin_enums::monomorphic_builtin_enums()` — the Rust-side
 ///      out-of-band layout catalog consumed by MIR and codegen.
-///   2. `builtin_enum_specs()` — the HIR lowering table that seeds the checker's
+///   2. `BUILTIN_ENUM_SPECS` — the HIR lowering table that seeds the checker's
 ///      `machine_ctor_registry`, `enum_variants_by_name`, and the discriminant
 ///      assignments that drive match-arm lowering and codegen tag emission.
 ///   3. `BUILTIN_ENUM_VARIANT_BARE_NAMES` — the flat de-duplication guard that
@@ -31279,10 +31275,10 @@ mod tests {
 /// reviewer-vigilance requirement into a compile-time-enforced test invariant.
 #[cfg(test)]
 mod builtin_enum_parity_tests {
-    use super::{builtin_enum_specs, BUILTIN_ENUM_VARIANT_BARE_NAMES};
+    use super::{BUILTIN_ENUM_SPECS, BUILTIN_ENUM_VARIANT_BARE_NAMES};
 
     /// For each monomorphic builtin enum in the `hew-types` out-of-band catalog,
-    /// assert that `builtin_enum_specs()` declares the same variants in the same
+    /// assert that `BUILTIN_ENUM_SPECS` declares the same variants in the same
     /// order.
     ///
     /// A mismatch here means the HIR discriminant assignments (index in
@@ -31290,7 +31286,7 @@ mod builtin_enum_parity_tests {
     /// `BuiltinMonomorphicEnum::variants`), which breaks codegen tag emission.
     #[test]
     fn monomorphic_enum_variants_agree_between_hir_and_types_catalog() {
-        let hir_specs = builtin_enum_specs();
+        let hir_specs = BUILTIN_ENUM_SPECS;
         let types_catalog = hew_types::builtin_enums::monomorphic_builtin_enums();
 
         for types_entry in types_catalog {
@@ -31299,7 +31295,7 @@ mod builtin_enum_parity_tests {
                 .find(|s| s.type_name == types_entry.name)
                 .unwrap_or_else(|| {
                     panic!(
-                        "builtin_enum_specs() is missing an entry for `{}`, \
+                        "BUILTIN_ENUM_SPECS is missing an entry for `{}`, \
                          which is present in hew_types::builtin_enums::monomorphic_builtin_enums(). \
                          Add a matching BuiltinEnumSpec for it.",
                         types_entry.name
@@ -31311,7 +31307,7 @@ mod builtin_enum_parity_tests {
 
             assert_eq!(
                 hir_variants, types_variants,
-                "Variant list for `{}` differs between builtin_enum_specs() \
+                "Variant list for `{}` differs between BUILTIN_ENUM_SPECS \
                  (hew-hir) and monomorphic_builtin_enums() (hew-types).\n\
                  hew-hir:   {:?}\n\
                  hew-types: {:?}\n\
@@ -31327,7 +31323,7 @@ mod builtin_enum_parity_tests {
             let found = types_catalog.iter().any(|e| e.name == hir_spec.type_name);
             assert!(
                 found,
-                "builtin_enum_specs() contains monomorphic entry `{}` that \
+                "BUILTIN_ENUM_SPECS contains monomorphic entry `{}` that \
                  is absent from hew_types::builtin_enums::monomorphic_builtin_enums(). \
                  Add it to the hew-types catalog so MIR/codegen can register its layout.",
                 hir_spec.type_name
@@ -31336,11 +31332,11 @@ mod builtin_enum_parity_tests {
     }
 
     /// `BUILTIN_ENUM_VARIANT_BARE_NAMES` must be the exact set of all variant
-    /// names across all `builtin_enum_specs()` entries — no more, no fewer.
+    /// names across all `BUILTIN_ENUM_SPECS` entries — no more, no fewer.
     ///
     /// This list prevents bare names (e.g. `Full`, `NotFound`) from
     /// silently overwriting user machine-state constructor entries in
-    /// `machine_ctor_registry`.  A variant added to `builtin_enum_specs()`
+    /// `machine_ctor_registry`. A variant added to `BUILTIN_ENUM_SPECS`
     /// but missing here causes the silent-overwrite regression; a name
     /// listed here but absent from every spec is dead weight that erodes
     /// trust in the guard.
@@ -31348,7 +31344,7 @@ mod builtin_enum_parity_tests {
     fn bare_names_guard_is_exhaustive_union_of_all_spec_variants() {
         use std::collections::BTreeSet;
 
-        let specs = builtin_enum_specs();
+        let specs = BUILTIN_ENUM_SPECS;
 
         // Collect every variant name from every spec (any arity, generic or not).
         let mut expected: BTreeSet<&str> = BTreeSet::new();
@@ -31365,7 +31361,7 @@ mod builtin_enum_parity_tests {
         assert!(
             missing_from_guard.is_empty(),
             "BUILTIN_ENUM_VARIANT_BARE_NAMES is missing variant names that appear \
-             in builtin_enum_specs(). Omitting them re-opens the silent-overwrite \
+             in BUILTIN_ENUM_SPECS. Omitting them re-opens the silent-overwrite \
              regression. Add each of these to BUILTIN_ENUM_VARIANT_BARE_NAMES:\n  {missing_from_guard:?}"
         );
 
@@ -31373,7 +31369,7 @@ mod builtin_enum_parity_tests {
         assert!(
             extra_in_guard.is_empty(),
             "BUILTIN_ENUM_VARIANT_BARE_NAMES contains names that do not appear \
-             in any builtin_enum_specs() entry. Remove dead entries to keep the \
+             in any BUILTIN_ENUM_SPECS entry. Remove dead entries to keep the \
              guard trustworthy:\n  {extra_in_guard:?}"
         );
     }

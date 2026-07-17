@@ -29,6 +29,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use hew_types::resolved_ty::{mangle_resolved_ty_segment, TypeParamMangle};
 use hew_types::ResolvedTy;
 
 use crate::ids::ItemId;
@@ -232,116 +233,17 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
 /// associated bindings, and `$m` replaces name qualifiers. Every token starts
 /// with `$`, which Hew identifiers cannot contain, so the rendering is
 /// structural and injective over the supported `ResolvedTy` identity
-/// dimensions. It is stable across runs (no hash or monotonic counter) and is
-/// the canonical key source for codegen-synthesised per-type thunks.
+/// dimensions. This compatibility wrapper selects the shared encoder's total
+/// `TypeParam` mode, preserving `typeparam$x{name}$g` for speculative HIR keys.
+///
+/// # Panics
+///
+/// Panics if the shared encoder violates the contract that
+/// [`TypeParamMangle::Concrete`] renders every [`ResolvedTy`].
 #[must_use]
 pub fn mangle_resolved_ty(ty: &ResolvedTy) -> String {
-    match ty {
-        ResolvedTy::I8 => "i8".to_string(),
-        ResolvedTy::I16 => "i16".to_string(),
-        ResolvedTy::I32 => "i32".to_string(),
-        ResolvedTy::I64 => "i64".to_string(),
-        ResolvedTy::U8 => "u8".to_string(),
-        ResolvedTy::U16 => "u16".to_string(),
-        ResolvedTy::U32 => "u32".to_string(),
-        ResolvedTy::U64 => "u64".to_string(),
-        ResolvedTy::Isize => "isize".to_string(),
-        ResolvedTy::Usize => "usize".to_string(),
-        ResolvedTy::F32 => "f32".to_string(),
-        ResolvedTy::F64 => "f64".to_string(),
-        ResolvedTy::Bool => "bool".to_string(),
-        ResolvedTy::Char => "char".to_string(),
-        ResolvedTy::String => "string".to_string(),
-        ResolvedTy::Bytes => "bytes".to_string(),
-        ResolvedTy::CancellationToken => "CancellationToken".to_string(),
-        ResolvedTy::Duration => "duration".to_string(),
-        ResolvedTy::Unit => "unit".to_string(),
-        ResolvedTy::Never => "never".to_string(),
-        ResolvedTy::Tuple(items) => mangle_compound("tuple", items),
-        ResolvedTy::Array(elem, n) => format!("array$x{}$c{n}$g", mangle_resolved_ty(elem)),
-        ResolvedTy::Slice(elem) => format!("slice$x{}$g", mangle_resolved_ty(elem)),
-        ResolvedTy::Named { name, args, .. } => mangle_named(name, args),
-        ResolvedTy::Function { params, ret } => mangle_function_like("fn", params, ret),
-        // Captures are not part of the call-type identity.
-        ResolvedTy::Closure { params, ret, .. } => mangle_function_like("closure", params, ret),
-        ResolvedTy::Pointer {
-            is_mutable,
-            pointee,
-        } => {
-            if *is_mutable {
-                format!("ptrmut$x{}$g", mangle_resolved_ty(pointee))
-            } else {
-                format!("ptr$x{}$g", mangle_resolved_ty(pointee))
-            }
-        }
-        ResolvedTy::Borrow { pointee } => format!("borrow$x{}$g", mangle_resolved_ty(pointee)),
-        ResolvedTy::TraitObject { traits } => mangle_trait_object(traits),
-        ResolvedTy::Task(inner) => format!("task$x{}$g", mangle_resolved_ty(inner)),
-        // A concrete monomorphisation never carries an abstract parameter in
-        // its type-arg list, so this is not reached for a real instantiation.
-        // It is mangled deterministically (and LLVM-clean) for totality.
-        ResolvedTy::TypeParam { name } => format!("typeparam$x{name}$g"),
-    }
-}
-
-fn mangle_compound(head: &str, items: &[ResolvedTy]) -> String {
-    let mut out = format!("{head}$x");
-    append_type_list(&mut out, items);
-    out.push_str("$g");
-    out
-}
-
-fn mangle_named(name: &str, args: &[ResolvedTy]) -> String {
-    let mut out = mangle_qualified_name(name);
-    if !args.is_empty() {
-        out.push_str("$l");
-        append_type_list(&mut out, args);
-        out.push_str("$g");
-    }
-    out
-}
-
-fn mangle_function_like(head: &str, params: &[ResolvedTy], ret: &ResolvedTy) -> String {
-    let mut out = format!("{head}$x");
-    append_type_list(&mut out, params);
-    out.push_str("$r");
-    out.push_str(&mangle_resolved_ty(ret));
-    out.push_str("$g");
-    out
-}
-
-fn mangle_trait_object(traits: &[hew_types::ResolvedTraitBound]) -> String {
-    let mut out = String::from("dyn$x");
-    for (i, bound) in traits.iter().enumerate() {
-        if i > 0 {
-            out.push_str("$c");
-        }
-        out.push_str(&mangle_named(&bound.trait_name, &bound.args));
-        let mut assoc_bindings = bound.assoc_bindings.iter().collect::<Vec<_>>();
-        assoc_bindings.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
-        for (name, ty) in assoc_bindings {
-            out.push_str("$a");
-            out.push_str(name);
-            out.push_str("$l");
-            out.push_str(&mangle_resolved_ty(ty));
-            out.push_str("$g");
-        }
-    }
-    out.push_str("$g");
-    out
-}
-
-fn append_type_list(out: &mut String, types: &[ResolvedTy]) {
-    for (i, ty) in types.iter().enumerate() {
-        if i > 0 {
-            out.push_str("$c");
-        }
-        out.push_str(&mangle_resolved_ty(ty));
-    }
-}
-
-fn mangle_qualified_name(name: &str) -> String {
-    name.replace("::", "$m").replace('.', "$m")
+    mangle_resolved_ty_segment(ty, TypeParamMangle::Concrete)
+        .expect("Concrete TypeParam mangling must render every ResolvedTy")
 }
 
 /// Insertion-ordered registry used during HIR lowering.

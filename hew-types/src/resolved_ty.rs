@@ -743,7 +743,7 @@ impl fmt::Display for UserFacingResolvedTy<'_> {
     }
 }
 
-// ── Symbol-key mangling for concrete specialised impls ───────────────────────
+// ── Symbol-key mangling ──────────────────────────────────────────────────────
 //
 // When two `impl Trait for Wrapper<i64>` and `impl Trait for Wrapper<string>`
 // blocks coexist, their methods are registered and looked up under the bare
@@ -757,19 +757,9 @@ impl fmt::Display for UserFacingResolvedTy<'_> {
 //
 // The mangle format matches `hew-hir::monomorph::mangle` for
 // `SymbolClass::Function`: `"{origin}$$" + args joined by "$"`, where each
-// arg is rendered via the `$`-token scheme documented on
-// `mangle_resolved_ty_segment` below — the same scheme
-// `hew-hir::monomorph::mangle_resolved_ty` uses.
-//
-// These helpers live in `hew-types` (not `hew-hir`) because `hew-types` does
-// not depend on `hew-hir` and the checker must compute mangled keys without
-// introducing a circular dependency. `hew-hir` calls its own `mangle()` entry
-// point over `ResolvedTy` values; both produce byte-identical output for the
-// inputs that a concrete specialised impl target can carry. The two encoders
-// are kept in lockstep ONLY by doc comments plus the cross-crate parity test
-// in `hew-hir/tests/monomorphization/mangle_resolved_ty_segment_parity.rs` —
-// there is no shared code path, so any change to one MUST be mirrored in the
-// other.
+// arg is rendered via the `$`-token scheme implemented below. The shared
+// segment encoder also serves HIR monomorphisation, with an explicit mode for
+// its total TypeParam probe-key encoding.
 //
 // Scope: only concrete specialised impls ever produce mangled keys here.
 // Generic impls (`impl<T> Trait for Wrapper<T>`) and impls with no target type
@@ -778,24 +768,32 @@ impl fmt::Display for UserFacingResolvedTy<'_> {
 // unresolved or complex type arg), we fall back to the bare key so existing
 // behaviour is preserved.
 
-/// Render a single `ResolvedTy` as the canonical mangle segment used by
-/// `hew-hir::monomorph::mangle_resolved_ty`. Returns `None` for shapes that
-/// cannot be embedded (inference variables, abstract type-parameter
-/// references) — those never appear in a concrete specialised impl's target
-/// type args, so `None` signals the caller to fall back to the bare
-/// (unmangled) key. Every other shape is concrete and always renders `Some`.
+/// Selects how the shared segment encoder handles an abstract type parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeParamMangle {
+    /// Emit HIR's total speculative-probe encoding: `typeparam$x{name}$g`.
+    Concrete,
+    /// Return `None` so checker lookups retain their bare-key fallback.
+    BareKeyFallback,
+}
+
+/// Render a single [`ResolvedTy`] as the canonical mangle segment.
 ///
-/// For every concrete shape this matches `hew-hir`'s rendering byte-for-byte:
-/// scalar keywords (`i64`, `string`, …); `Named` as `name$l a1 $c a2 $g`
+/// Scalar keywords (`i64`, `string`, …); `Named` as `name$l a1 $c a2 $g`
 /// (`::`/`.` name qualifiers → `$m`, argument list omitted entirely when
 /// empty); structural compounds (`Tuple`/`Array`/`Slice`/`Function`/
 /// `Closure`/`Pointer`/`Borrow`/`TraitObject`/`Task`) as `head$x...$g` with
-/// `$c` list separators and `$r` marking a function/closure return. This
-/// function MUST be kept in lockstep with
-/// `hew-hir/src/monomorph.rs::mangle_resolved_ty` — see the module comment
-/// above for why the two can't share code.
+/// `$c` list separators and `$r` marking a function/closure return.
+///
+/// [`TypeParamMangle::Concrete`] makes this total and preserves HIR's
+/// `typeparam$x{name}$g` probe-key output. [`TypeParamMangle::BareKeyFallback`]
+/// returns `None` for a `TypeParam` anywhere in the shape, allowing checker
+/// callers to retain the bare lookup key.
 #[must_use]
-pub fn mangle_resolved_ty_segment(ty: &ResolvedTy) -> Option<String> {
+pub fn mangle_resolved_ty_segment(
+    ty: &ResolvedTy,
+    type_param_mode: TypeParamMangle,
+) -> Option<String> {
     match ty {
         ResolvedTy::I8 => Some("i8".to_string()),
         ResolvedTy::I16 => Some("i16".to_string()),
@@ -817,27 +815,32 @@ pub fn mangle_resolved_ty_segment(ty: &ResolvedTy) -> Option<String> {
         ResolvedTy::Duration => Some("duration".to_string()),
         ResolvedTy::Unit => Some("unit".to_string()),
         ResolvedTy::Never => Some("never".to_string()),
-        ResolvedTy::Tuple(items) => Some(format!("tuple$x{}$g", mangle_type_list_segment(items)?)),
+        ResolvedTy::Tuple(items) => Some(format!(
+            "tuple$x{}$g",
+            mangle_type_list_segment(items, type_param_mode)?
+        )),
         ResolvedTy::Array(elem, n) => {
-            let elem_seg = mangle_resolved_ty_segment(elem)?;
+            let elem_seg = mangle_resolved_ty_segment(elem, type_param_mode)?;
             Some(format!("array$x{elem_seg}$c{n}$g"))
         }
         ResolvedTy::Slice(elem) => {
-            let elem_seg = mangle_resolved_ty_segment(elem)?;
+            let elem_seg = mangle_resolved_ty_segment(elem, type_param_mode)?;
             Some(format!("slice$x{elem_seg}$g"))
         }
-        ResolvedTy::Named { name, args, .. } => mangle_named_segment(name, args),
-        ResolvedTy::Function { params, ret } => mangle_function_like_segment("fn", params, ret),
+        ResolvedTy::Named { name, args, .. } => mangle_named_segment(name, args, type_param_mode),
+        ResolvedTy::Function { params, ret } => {
+            mangle_function_like_segment("fn", params, ret, type_param_mode)
+        }
         // Captures are not part of the call-type identity — mirrors
         // `hew-hir::monomorph::mangle_resolved_ty`.
         ResolvedTy::Closure { params, ret, .. } => {
-            mangle_function_like_segment("closure", params, ret)
+            mangle_function_like_segment("closure", params, ret, type_param_mode)
         }
         ResolvedTy::Pointer {
             is_mutable,
             pointee,
         } => {
-            let seg = mangle_resolved_ty_segment(pointee)?;
+            let seg = mangle_resolved_ty_segment(pointee, type_param_mode)?;
             Some(if *is_mutable {
                 format!("ptrmut$x{seg}$g")
             } else {
@@ -845,74 +848,85 @@ pub fn mangle_resolved_ty_segment(ty: &ResolvedTy) -> Option<String> {
             })
         }
         ResolvedTy::Borrow { pointee } => {
-            let seg = mangle_resolved_ty_segment(pointee)?;
+            let seg = mangle_resolved_ty_segment(pointee, type_param_mode)?;
             Some(format!("borrow$x{seg}$g"))
         }
-        ResolvedTy::TraitObject { traits } => mangle_trait_object_segment(traits),
+        ResolvedTy::TraitObject { traits } => mangle_trait_object_segment(traits, type_param_mode),
         ResolvedTy::Task(inner) => {
-            let seg = mangle_resolved_ty_segment(inner)?;
+            let seg = mangle_resolved_ty_segment(inner, type_param_mode)?;
             Some(format!("task$x{seg}$g"))
         }
-        // Abstract type parameters never appear in a concrete specialised
-        // impl's target type args (a generic impl target carries `TypeParam`
-        // only before instantiation) — `None` signals the caller to fall
-        // back to the bare key, preserving existing behaviour.
-        ResolvedTy::TypeParam { .. } => None,
+        ResolvedTy::TypeParam { name } => match type_param_mode {
+            TypeParamMangle::Concrete => Some(format!("typeparam$x{name}$g")),
+            TypeParamMangle::BareKeyFallback => None,
+        },
     }
 }
 
-/// Render a `$c`-separated list of segments — mirrors
-/// `hew-hir::monomorph::append_type_list`.
-fn mangle_type_list_segment(types: &[ResolvedTy]) -> Option<String> {
+/// Render a `$c`-separated list of segments.
+fn mangle_type_list_segment(
+    types: &[ResolvedTy],
+    type_param_mode: TypeParamMangle,
+) -> Option<String> {
     let mut out = String::new();
     for (i, ty) in types.iter().enumerate() {
         if i > 0 {
             out.push_str("$c");
         }
-        out.push_str(&mangle_resolved_ty_segment(ty)?);
+        out.push_str(&mangle_resolved_ty_segment(ty, type_param_mode)?);
     }
     Some(out)
 }
 
-/// Render a `Named` segment — mirrors `hew-hir::monomorph::mangle_named`.
-fn mangle_named_segment(name: &str, args: &[ResolvedTy]) -> Option<String> {
+/// Render a `Named` segment.
+fn mangle_named_segment(
+    name: &str,
+    args: &[ResolvedTy],
+    type_param_mode: TypeParamMangle,
+) -> Option<String> {
     let mut out = name.replace("::", "$m").replace('.', "$m");
     if !args.is_empty() {
         out.push_str("$l");
-        out.push_str(&mangle_type_list_segment(args)?);
+        out.push_str(&mangle_type_list_segment(args, type_param_mode)?);
         out.push_str("$g");
     }
     Some(out)
 }
 
-/// Render a `Function`/`Closure` segment — mirrors
-/// `hew-hir::monomorph::mangle_function_like`.
+/// Render a `Function`/`Closure` segment.
 fn mangle_function_like_segment(
     head: &str,
     params: &[ResolvedTy],
     ret: &ResolvedTy,
+    type_param_mode: TypeParamMangle,
 ) -> Option<String> {
-    let params_seg = mangle_type_list_segment(params)?;
-    let ret_seg = mangle_resolved_ty_segment(ret)?;
+    let params_seg = mangle_type_list_segment(params, type_param_mode)?;
+    let ret_seg = mangle_resolved_ty_segment(ret, type_param_mode)?;
     Some(format!("{head}$x{params_seg}$r{ret_seg}$g"))
 }
 
-/// Render a `TraitObject` segment — mirrors
-/// `hew-hir::monomorph::mangle_trait_object`.
-fn mangle_trait_object_segment(traits: &[ResolvedTraitBound]) -> Option<String> {
+/// Render a `TraitObject` segment.
+fn mangle_trait_object_segment(
+    traits: &[ResolvedTraitBound],
+    type_param_mode: TypeParamMangle,
+) -> Option<String> {
     let mut out = String::from("dyn$x");
     for (i, bound) in traits.iter().enumerate() {
         if i > 0 {
             out.push_str("$c");
         }
-        out.push_str(&mangle_named_segment(&bound.trait_name, &bound.args)?);
+        out.push_str(&mangle_named_segment(
+            &bound.trait_name,
+            &bound.args,
+            type_param_mode,
+        )?);
         let mut assoc_bindings = bound.assoc_bindings.iter().collect::<Vec<_>>();
         assoc_bindings.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
         for (name, ty) in assoc_bindings {
             out.push_str("$a");
             out.push_str(name);
             out.push_str("$l");
-            out.push_str(&mangle_resolved_ty_segment(ty)?);
+            out.push_str(&mangle_resolved_ty_segment(ty, type_param_mode)?);
             out.push_str("$g");
         }
     }
@@ -924,14 +938,14 @@ fn mangle_trait_object_segment(traits: &[ResolvedTraitBound]) -> Option<String> 
 ///
 /// For `impl Describe for Wrapper<i64>`: returns `Some("Wrapper$$i64")`.
 /// For `impl Describe for Wrapper<string>`: returns `Some("Wrapper$$string")`.
-/// Returns `None` when any type arg cannot be mangled (e.g. abstract type
-/// parameters, inference variables), in which case callers fall back to the
-/// bare `name`.
+/// Returns `None` when any type arg contains an abstract type parameter, in
+/// which case callers fall back to the bare `name`.
 ///
 /// The produced name matches `hew-hir::monomorph::mangle(name, type_args)` for
 /// `SymbolClass::Function` — both omit a class prefix and join args with a
 /// `$$` then `$` separator, with each arg itself rendered via
-/// [`mangle_resolved_ty_segment`].
+/// [`mangle_resolved_ty_segment`] in
+/// [`TypeParamMangle::BareKeyFallback`] mode.
 #[must_use]
 pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<String> {
     if type_args.is_empty() {
@@ -943,7 +957,10 @@ pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<Str
         if i > 0 {
             out.push('$');
         }
-        out.push_str(&mangle_resolved_ty_segment(ty)?);
+        out.push_str(&mangle_resolved_ty_segment(
+            ty,
+            TypeParamMangle::BareKeyFallback,
+        )?);
     }
     Some(out)
 }
@@ -951,6 +968,37 @@ pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concrete_type_param_mangling_preserves_probe_encoding() {
+        let type_param = ResolvedTy::TypeParam { name: "T".into() };
+        assert_eq!(
+            mangle_resolved_ty_segment(&type_param, TypeParamMangle::Concrete),
+            Some("typeparam$xT$g".into())
+        );
+
+        let nested = ResolvedTy::named_user("Wrapper", vec![type_param]);
+        assert_eq!(
+            mangle_resolved_ty_segment(&nested, TypeParamMangle::Concrete),
+            Some("Wrapper$ltypeparam$xT$g$g".into())
+        );
+    }
+
+    #[test]
+    fn bare_key_type_param_mangling_preserves_fallback() {
+        let type_param = ResolvedTy::TypeParam { name: "T".into() };
+        assert_eq!(
+            mangle_resolved_ty_segment(&type_param, TypeParamMangle::BareKeyFallback),
+            None
+        );
+
+        let nested = ResolvedTy::named_user("Wrapper", vec![type_param]);
+        assert_eq!(
+            mangle_resolved_ty_segment(&nested, TypeParamMangle::BareKeyFallback),
+            None
+        );
+        assert_eq!(mangle_impl_self_name("Wrapper", &[nested]), None);
+    }
 
     #[test]
     fn builtin_identity_uses_the_carried_discriminant() {

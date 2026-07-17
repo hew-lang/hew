@@ -27457,17 +27457,20 @@ fn validate_context_markers_for_codegen(func: &RawMirFunction) -> Vec<hew_mir::M
 /// The de-globalized node state (`CURRENT_NODE`/`KNOWN_NODES`/`REPLY_TABLE`,
 /// owned by `RuntimeInner::node`) is touched the moment a program calls
 /// `Node::set_transport`/`start`/`connect`/`register`/`lookup`/`shutdown`.
-/// Those builtins lower to `Terminator::Call` with a `Node::`-prefixed callee.
+/// Those builtins lower to `Terminator::Call` with a typed Node family.
 /// A program can touch the node authority WITHOUT declaring any actor (e.g. a
 /// bare `Node::start` smoke), so node presence is an independent reason to
 /// install the runtime at program entry — actor/supervisor presence does not
-/// imply it. Scans every function body's terminators for a `Node::` callee.
+/// imply it. Scans every function body's terminators for a typed Node builtin.
 fn module_uses_node_authority(raw_mir: &[RawMirFunction]) -> bool {
     raw_mir.iter().any(|func| {
         func.blocks.iter().any(|block| {
             matches!(
                 &block.terminator,
-                Terminator::Call { callee, .. } if callee.starts_with("Node::")
+                Terminator::Call {
+                    builtin: Some(family),
+                    ..
+                } if family.is_node_builtin()
             )
         })
     })

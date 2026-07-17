@@ -968,3 +968,188 @@ fn error(
         kind,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_substrate_populates_existing_authorities() {
+        let authority = load_stdlib_authority(SUBSTRATE_SOURCES)
+            .expect("embedded stdlib authority sources must load");
+
+        for key in [
+            LangItem::Index,
+            LangItem::IndexGet,
+            LangItem::IndexAt,
+            LangItem::Display,
+            LangItem::DisplayFmt,
+        ] {
+            assert!(
+                authority.lang_items().contains_key(&key),
+                "missing existing lang item {}",
+                key.key()
+            );
+        }
+        assert!(
+            authority
+                .enum_variant_orders()
+                .contains_key("builtins::SendError"),
+            "builtins enum orders must be collected"
+        );
+        assert!(
+            authority
+                .enum_variant_orders()
+                .contains_key("failure::CrashAction"),
+            "failure enum orders must be collected"
+        );
+    }
+
+    #[test]
+    fn synthetic_sources_populate_every_registry() {
+        let sources = [
+            AuthoritySource::embedded(
+                StdlibRoot::Builtins,
+                "std/builtins.hew",
+                r#"
+#[lang_item("option")]
+pub enum Maybe<T> { Some(T); None; }
+
+#[intrinsic("math.sqrt")]
+pub fn sqrt(x: f64) -> f64;
+
+#[diagnostic_item("fs")]
+pub fn read_file() {}
+
+#[overload("println")]
+pub fn println_i64(value: i64) {}
+
+extern "C" {
+    #[abi(ret = bytes_triple, bytes_param = ptr, drop = cow_null_tolerant)]
+    fn hew_bytes();
+}
+"#,
+            ),
+            AuthoritySource::embedded(
+                StdlibRoot::Prelude,
+                "std/prelude.hew",
+                "import std::builtins::{ Maybe as Option };\n",
+            ),
+        ];
+
+        let authority =
+            load_stdlib_authority(&sources).expect("synthetic authority sources must load");
+        assert_eq!(
+            authority.lang_items()[&LangItem::Option].declaration,
+            "Maybe"
+        );
+        assert_eq!(
+            authority.intrinsics()[&Intrinsic::MathSqrt].declaration,
+            "sqrt"
+        );
+        assert_eq!(
+            authority.diagnostic_items()[&DiagnosticItem::Fs].declaration,
+            "read_file"
+        );
+        assert_eq!(
+            authority.overload_groups()[&OverloadGroup::Println][0].declaration,
+            "println_i64"
+        );
+        assert_eq!(
+            authority.extern_abi()["builtins::hew_bytes"].facts,
+            vec![
+                ExternAbiFact::ReturnBytesTriple,
+                ExternAbiFact::BytesParamPointer,
+                ExternAbiFact::CowDropNullTolerant,
+            ]
+        );
+        assert_eq!(
+            authority.enum_variant_orders()["builtins::Maybe"].variants,
+            vec!["Some".to_string(), "None".to_string()]
+        );
+        assert_eq!(
+            authority.prelude_exports(),
+            &[PreludeExport {
+                module: "std::builtins".to_string(),
+                name: Some("Maybe".to_string()),
+                alias: Some("Option".to_string()),
+                kind: PreludeExportKind::Item,
+            }]
+        );
+    }
+
+    #[test]
+    fn unknown_lang_item_key_is_a_pointed_build_error() {
+        let source = AuthoritySource::embedded(
+            StdlibRoot::Builtins,
+            "std/builtins.hew",
+            r#"#[lang_item("display_typo")] pub trait Display {}"#,
+        );
+        let error =
+            load_stdlib_authority(&[source]).expect_err("unknown lang-item keys must fail closed");
+
+        assert_eq!(error.source_path, "std/builtins.hew");
+        assert_eq!(error.declaration.as_deref(), Some("Display"));
+        assert_eq!(
+            error.kind,
+            AuthorityErrorKind::UnknownLangItem {
+                key: "display_typo".to_string(),
+            }
+        );
+        assert!(
+            error.to_string().contains("display_typo"),
+            "build error must name the rejected key: {error}"
+        );
+    }
+
+    #[test]
+    fn unknown_abi_key_is_a_pointed_build_error() {
+        let source = AuthoritySource::embedded(
+            StdlibRoot::Io,
+            "std/io.hew",
+            r#"
+extern "C" {
+    #[abi(byte_param = ptr)]
+    fn hew_write(data: bytes);
+}
+"#,
+        );
+        let error =
+            load_stdlib_authority(&[source]).expect_err("unknown ABI keys must fail closed");
+
+        assert_eq!(error.declaration.as_deref(), Some("hew_write"));
+        assert_eq!(
+            error.kind,
+            AuthorityErrorKind::UnknownAbiKey {
+                key: "byte_param".to_string(),
+            }
+        );
+        assert!(
+            error.to_string().contains("byte_param"),
+            "build error must name the rejected ABI key: {error}"
+        );
+    }
+
+    #[test]
+    fn authority_attribute_outside_std_roots_is_rejected() {
+        let source = AuthoritySource::external(
+            "src/main.hew",
+            r#"#[diagnostic_item("fs")] pub fn read_file() {}"#,
+        );
+        let error = load_stdlib_authority(&[source])
+            .expect_err("authority attributes outside std roots must fail closed");
+
+        assert_eq!(error.source_path, "src/main.hew");
+        assert_eq!(error.declaration.as_deref(), Some("read_file"));
+        assert_eq!(
+            error.kind,
+            AuthorityErrorKind::AttributeOutsideStdRoot {
+                attribute: "diagnostic_item".to_string(),
+            }
+        );
+        assert!(
+            error.to_string().contains("substrate-only"),
+            "outside-root error must explain the privilege boundary: {error}"
+        );
+    }
+}

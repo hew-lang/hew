@@ -385,8 +385,8 @@ fn CaptureMatches::whole -> Option<string>
 fn regex$new -> Pattern
   statements:
     use BindingId(39) pattern site=SiteId(190) ty=string intent=Read
-    bind BindingId(40) handle site=SiteId(189) ty=PatternHandle
-    use BindingId(40) handle site=SiteId(193) ty=PatternHandle intent=Read
+    bind BindingId(40) handle site=SiteId(189) ty=regex.PatternHandle
+    use BindingId(40) handle site=SiteId(193) ty=regex.PatternHandle intent=Read
     bind BindingId(41) re site=SiteId(192) ty=Pattern
     use BindingId(41) re site=SiteId(197) ty=Pattern intent=Read
     use BindingId(39) pattern site=SiteId(202) ty=string intent=Read

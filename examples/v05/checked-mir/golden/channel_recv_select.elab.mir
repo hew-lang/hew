@@ -243,10 +243,10 @@ fn channel$try_new -> Result<(Sender, Receiver), string>
     eval site=SiteId(108) ty=()
     use BindingId(20) capacity site=SiteId(112) ty=i64 intent=Read
     return site=Some(SiteId(96)) ty=Result<(Sender, Receiver), string>
-    bind BindingId(21) pair site=SiteId(110) ty=ChannelPair
-    use BindingId(21) pair site=SiteId(116) ty=ChannelPair intent=Read
+    bind BindingId(21) pair site=SiteId(110) ty=channel.ChannelPair
+    use BindingId(21) pair site=SiteId(116) ty=channel.ChannelPair intent=Read
     eval site=SiteId(130) ty=()
-    use BindingId(21) pair site=SiteId(132) ty=ChannelPair intent=Read
+    use BindingId(21) pair site=SiteId(132) ty=channel.ChannelPair intent=Read
     bind BindingId(22) detail site=SiteId(118) ty=string
     use BindingId(22) detail site=SiteId(121) ty=string intent=Read
     return site=Some(SiteId(123)) ty=Result<(Sender, Receiver), string>
@@ -254,12 +254,12 @@ fn channel$try_new -> Result<(Sender, Receiver), string>
     use BindingId(22) detail site=SiteId(128) ty=string intent=Read
     return site=Some(SiteId(127)) ty=Result<(Sender, Receiver), string>
     bind BindingId(23) tx site=SiteId(131) ty=Sender
-    use BindingId(21) pair site=SiteId(135) ty=ChannelPair intent=Read
+    use BindingId(21) pair site=SiteId(135) ty=channel.ChannelPair intent=Read
     bind BindingId(24) rx site=SiteId(134) ty=Receiver
-    use BindingId(21) pair site=SiteId(138) ty=ChannelPair intent=Read
+    use BindingId(21) pair site=SiteId(138) ty=channel.ChannelPair intent=Read
     eval site=SiteId(137) ty=()
-    use BindingId(23) tx site=SiteId(142) ty=Sender intent=Read
-    use BindingId(24) rx site=SiteId(143) ty=Receiver intent=Read
+    use BindingId(23) tx site=SiteId(142) ty=Sender intent=Consume
+    use BindingId(24) rx site=SiteId(143) ty=Receiver intent=Consume
     return site=Some(SiteId(109)) ty=Result<(Sender, Receiver), string>
     drop BindingId(22) detail ty=string
   drop_plans:

@@ -203,32 +203,32 @@ fn fs$io_error_from_kind(i64, i64) -> IoError [conv=default]
   locals:
     _0: i64
     _1: i64
-    _2: IoError
+    _2: fs.IoError
     _3: i64
     _4: bool
     _5: IoError
     _6: i64
     _7: IoError
-    _8: IoError
+    _8: fs.IoError
     _9: i64
     _10: bool
     _11: IoError
     _12: i64
     _13: IoError
-    _14: IoError
+    _14: fs.IoError
     _15: i64
     _16: bool
     _17: IoError
     _18: i64
     _19: IoError
-    _20: IoError
+    _20: fs.IoError
     _21: i64
     _22: bool
     _23: IoError
     _24: i64
     _25: IoError
-    _26: IoError
-    _27: IoError
+    _26: fs.IoError
+    _27: fs.IoError
   bb0:
     stmt: use BindingId(5) kind site=SiteId(69) ty=i64 intent=Read
     _3 = const.i64 1
@@ -248,7 +248,7 @@ fn fs$io_error_from_kind(i64, i64) -> IoError [conv=default]
     _10 = icmp.eq _0 _9
     branch _10 ? bb4 : bb5
   bb3:
-    stmt: return site=Some(SiteId(67)) ty=IoError
+    stmt: return site=Some(SiteId(67)) ty=fs.IoError
     ret = move _2
     return
   bb4:
@@ -521,7 +521,7 @@ fn fs$last_io_error() -> IoError [conv=default]
     _4: i64
     _5: i64
     _6: string
-    _7: IoError
+    _7: fs.IoError
     _8: bool
     _9: i64
     _10: bool
@@ -531,9 +531,9 @@ fn fs$last_io_error() -> IoError [conv=default]
     _14: i64
     _15: i64
     _16: IoError
-    _17: IoError
-    _18: IoError
-    _19: IoError
+    _17: fs.IoError
+    _18: fs.IoError
+    _19: fs.IoError
   bb0:
     _0 = call hew_stream_last_error_kind() -> bb1
   bb1:
@@ -574,7 +574,7 @@ fn fs$last_io_error() -> IoError [conv=default]
     stmt: use BindingId(15) errno site=SiteId(188) ty=i64 intent=Read
     _17 = call fs$io_error_from_kind(_2, _5) -> bb9
   bb8:
-    stmt: return site=Some(SiteId(165)) ty=IoError
+    stmt: return site=Some(SiteId(165)) ty=fs.IoError
     _19 = move _7
     ret = move _19
     return
@@ -605,7 +605,7 @@ fn fs$read(string) -> string [conv=default]
     _17: string
     _18: string
     _19: i64
-    _20: IoError
+    _20: fs.IoError
     _21: string
     _22: string
     _23: string
@@ -705,9 +705,9 @@ fn fs$read(string) -> string [conv=default]
 fn fs$try_read(string) -> Result<string, IoError> [conv=default]
   locals:
     _0: string
-    _1: FileReadStream
-    _2: FileReadStream
-    _3: Result<string, IoError>
+    _1: fs.FileReadStream
+    _2: fs.FileReadStream
+    _3: Result<string, fs.IoError>
     _4: bool
     _5: string
     _6: string
@@ -717,42 +717,42 @@ fn fs$try_read(string) -> Result<string, IoError> [conv=default]
     _10: i32
     _11: i32
     _12: string
-    _13: Result<string, IoError>
+    _13: Result<string, fs.IoError>
     _14: i32
     _15: bool
-    _16: Result<string, IoError>
+    _16: Result<string, fs.IoError>
     _17: i64
-    _18: Result<string, IoError>
-    _19: Result<string, IoError>
+    _18: Result<string, fs.IoError>
+    _19: Result<string, fs.IoError>
     _20: i64
     _21: i64
-    _22: IoError
-    _23: Result<string, IoError>
-    _24: Result<string, IoError>
-    _25: Result<string, IoError>
+    _22: fs.IoError
+    _23: Result<string, fs.IoError>
+    _24: Result<string, fs.IoError>
+    _25: Result<string, fs.IoError>
     _26: i64
-    _27: IoError
-    _28: Result<string, IoError>
-    _29: Result<string, IoError>
+    _27: fs.IoError
+    _28: Result<string, fs.IoError>
+    _29: Result<string, fs.IoError>
   bb0:
     stmt: use BindingId(20) file_path site=SiteId(253) ty=string intent=Read
     _1 = call hew_stream_from_file_read(_0) -> bb1
   bb1:
-    stmt: bind BindingId(21) file site=SiteId(252) ty=FileReadStream
-    stmt: use BindingId(21) file site=SiteId(257) ty=FileReadStream intent=Read
+    stmt: bind BindingId(21) file site=SiteId(252) ty=fs.FileReadStream
+    stmt: use BindingId(21) file site=SiteId(257) ty=fs.FileReadStream intent=Read
     _2 = move _1
     _4 = call hew_stream_is_valid(_2) -> bb2
   bb2:
     branch _4 ? bb3 : bb4
   bb3:
-    stmt: use BindingId(21) file site=SiteId(261) ty=FileReadStream intent=Read
+    stmt: use BindingId(21) file site=SiteId(261) ty=fs.FileReadStream intent=Read
     _5 = call hew_stream_collect_string(_2) -> bb6
   bb4:
     _26 = const.i64 1
     mtag25 = move _26
     _27 = call fs$last_io_error() -> bb14
   bb5:
-    stmt: return site=Some(SiteId(251)) ty=Result<string, IoError>
+    stmt: return site=Some(SiteId(251)) ty=Result<string, fs.IoError>
     _29 = move _3
     ret = move _29
     return
@@ -828,17 +828,17 @@ fn fs$try_write(string, string) -> Result<i64, IoError> [conv=default]
   locals:
     _0: string
     _1: string
-    _2: Result<i64, IoError>
+    _2: Result<i64, fs.IoError>
     _3: i32
     _4: i32
     _5: i32
     _6: bool
-    _7: Result<i64, IoError>
+    _7: Result<i64, fs.IoError>
     _8: i64
     _9: i64
-    _10: Result<i64, IoError>
+    _10: Result<i64, fs.IoError>
     _11: i64
-    _12: IoError
+    _12: fs.IoError
   bb0:
     stmt: use BindingId(27) file_path site=SiteId(297) ty=string intent=Read
     stmt: use BindingId(28) content site=SiteId(298) ty=string intent=Read
@@ -847,7 +847,7 @@ fn fs$try_write(string, string) -> Result<i64, IoError> [conv=default]
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(294)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(294)) ty=Result<i64, fs.IoError>
     ret = move _2
     return
   bb3:
@@ -894,17 +894,17 @@ fn fs$try_append(string, string) -> Result<i64, IoError> [conv=default]
   locals:
     _0: string
     _1: string
-    _2: Result<i64, IoError>
+    _2: Result<i64, fs.IoError>
     _3: i32
     _4: i32
     _5: i32
     _6: bool
-    _7: Result<i64, IoError>
+    _7: Result<i64, fs.IoError>
     _8: i64
     _9: i64
-    _10: Result<i64, IoError>
+    _10: Result<i64, fs.IoError>
     _11: i64
-    _12: IoError
+    _12: fs.IoError
   bb0:
     stmt: use BindingId(31) file_path site=SiteId(314) ty=string intent=Read
     stmt: use BindingId(32) content site=SiteId(315) ty=string intent=Read
@@ -913,7 +913,7 @@ fn fs$try_append(string, string) -> Result<i64, IoError> [conv=default]
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(311)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(311)) ty=Result<i64, fs.IoError>
     ret = move _2
     return
   bb3:
@@ -971,17 +971,17 @@ fn fs$delete(string) -> i64 [conv=default]
 fn fs$try_delete(string) -> Result<i64, IoError> [conv=default]
   locals:
     _0: string
-    _1: Result<i64, IoError>
+    _1: Result<i64, fs.IoError>
     _2: i32
     _3: i32
     _4: i32
     _5: bool
-    _6: Result<i64, IoError>
+    _6: Result<i64, fs.IoError>
     _7: i64
     _8: i64
-    _9: Result<i64, IoError>
+    _9: Result<i64, fs.IoError>
     _10: i64
-    _11: IoError
+    _11: fs.IoError
   bb0:
     stmt: use BindingId(35) file_path site=SiteId(334) ty=string intent=Read
     _2 = call hew_file_delete(_0) -> bb1
@@ -989,7 +989,7 @@ fn fs$try_delete(string) -> Result<i64, IoError> [conv=default]
     _3 = move _2
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(331)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(331)) ty=Result<i64, fs.IoError>
     ret = move _1
     return
   bb3:
@@ -1052,19 +1052,19 @@ fn fs$try_read_bytes(string) -> Result<bytes, IoError> [conv=default]
     _5: i64
     _6: i32
     _7: i32
-    _8: Result<bytes, IoError>
+    _8: Result<bytes, fs.IoError>
     _9: i32
     _10: bool
     _11: string
-    _12: Result<bytes, IoError>
+    _12: Result<bytes, fs.IoError>
     _13: i64
     _14: i64
-    _15: IoError
-    _16: Result<bytes, IoError>
-    _17: Result<bytes, IoError>
+    _15: fs.IoError
+    _16: Result<bytes, fs.IoError>
+    _17: Result<bytes, fs.IoError>
     _18: i64
-    _19: Result<bytes, IoError>
-    _20: Result<bytes, IoError>
+    _19: Result<bytes, fs.IoError>
+    _20: Result<bytes, fs.IoError>
   bb0:
     stmt: use BindingId(38) file_path site=SiteId(351) ty=string intent=Read
     _1 = call hew_file_read_bytes(_0) -> bb1
@@ -1095,7 +1095,7 @@ fn fs$try_read_bytes(string) -> Result<bytes, IoError> [conv=default]
     _8 = move _19
     goto bb6
   bb6:
-    stmt: return site=Some(SiteId(349)) ty=Result<bytes, IoError>
+    stmt: return site=Some(SiteId(349)) ty=Result<bytes, fs.IoError>
     _20 = move _8
     ret = move _20
     return
@@ -1135,17 +1135,17 @@ fn fs$try_write_bytes(string, bytes) -> Result<i64, IoError> [conv=default]
   locals:
     _0: string
     _1: bytes
-    _2: Result<i64, IoError>
+    _2: Result<i64, fs.IoError>
     _3: i32
     _4: i32
     _5: i32
     _6: bool
-    _7: Result<i64, IoError>
+    _7: Result<i64, fs.IoError>
     _8: i64
     _9: i64
-    _10: Result<i64, IoError>
+    _10: Result<i64, fs.IoError>
     _11: i64
-    _12: IoError
+    _12: fs.IoError
   bb0:
     stmt: use BindingId(44) file_path site=SiteId(383) ty=string intent=Read
     stmt: use BindingId(45) data site=SiteId(384) ty=bytes intent=Read
@@ -1154,7 +1154,7 @@ fn fs$try_write_bytes(string, bytes) -> Result<i64, IoError> [conv=default]
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(380)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(380)) ty=Result<i64, fs.IoError>
     ret = move _2
     return
   bb3:
@@ -1198,17 +1198,17 @@ fn fs$mkdir(string) -> i64 [conv=default]
 fn fs$try_mkdir(string) -> Result<i64, IoError> [conv=default]
   locals:
     _0: string
-    _1: Result<i64, IoError>
+    _1: Result<i64, fs.IoError>
     _2: i32
     _3: i32
     _4: i32
     _5: bool
-    _6: Result<i64, IoError>
+    _6: Result<i64, fs.IoError>
     _7: i64
     _8: i64
-    _9: Result<i64, IoError>
+    _9: Result<i64, fs.IoError>
     _10: i64
-    _11: IoError
+    _11: fs.IoError
   bb0:
     stmt: use BindingId(47) dir_path site=SiteId(399) ty=string intent=Read
     _2 = call hew_fs_mkdir(_0) -> bb1
@@ -1216,7 +1216,7 @@ fn fs$try_mkdir(string) -> Result<i64, IoError> [conv=default]
     _3 = move _2
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(396)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(396)) ty=Result<i64, fs.IoError>
     ret = move _1
     return
   bb3:
@@ -1260,17 +1260,17 @@ fn fs$mkdir_all(string) -> i64 [conv=default]
 fn fs$try_mkdir_all(string) -> Result<i64, IoError> [conv=default]
   locals:
     _0: string
-    _1: Result<i64, IoError>
+    _1: Result<i64, fs.IoError>
     _2: i32
     _3: i32
     _4: i32
     _5: bool
-    _6: Result<i64, IoError>
+    _6: Result<i64, fs.IoError>
     _7: i64
     _8: i64
-    _9: Result<i64, IoError>
+    _9: Result<i64, fs.IoError>
     _10: i64
-    _11: IoError
+    _11: fs.IoError
   bb0:
     stmt: use BindingId(49) dir_path site=SiteId(414) ty=string intent=Read
     _2 = call hew_fs_mkdir_all(_0) -> bb1
@@ -1278,7 +1278,7 @@ fn fs$try_mkdir_all(string) -> Result<i64, IoError> [conv=default]
     _3 = move _2
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(411)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(411)) ty=Result<i64, fs.IoError>
     ret = move _1
     return
   bb3:
@@ -1328,18 +1328,18 @@ fn fs$try_list_dir(string) -> Result<Vec<string>, IoError> [conv=default]
     _6: i32
     _7: i32
     _8: string
-    _9: Result<Vec<string>, IoError>
+    _9: Result<Vec<string>, fs.IoError>
     _10: i32
     _11: bool
-    _12: Result<Vec<string>, IoError>
+    _12: Result<Vec<string>, fs.IoError>
     _13: i64
-    _14: Result<Vec<string>, IoError>
-    _15: Result<Vec<string>, IoError>
+    _14: Result<Vec<string>, fs.IoError>
+    _15: Result<Vec<string>, fs.IoError>
     _16: i64
     _17: i64
-    _18: IoError
-    _19: Result<Vec<string>, IoError>
-    _20: Result<Vec<string>, IoError>
+    _18: fs.IoError
+    _19: Result<Vec<string>, fs.IoError>
+    _20: Result<Vec<string>, fs.IoError>
   bb0:
     stmt: use BindingId(51) dir_path site=SiteId(427) ty=string intent=Read
     _1 = call hew_fs_list_dir(_0) -> bb1
@@ -1379,7 +1379,7 @@ fn fs$try_list_dir(string) -> Result<Vec<string>, IoError> [conv=default]
     _17 = cast _7 i32 -> i64
     _18 = call fs$io_error_from_kind(_5, _17) -> bb8
   bb7:
-    stmt: return site=Some(SiteId(425)) ty=Result<Vec<string>, IoError>
+    stmt: return site=Some(SiteId(425)) ty=Result<Vec<string>, fs.IoError>
     _20 = move _9
     ret = move _20
     return
@@ -1411,17 +1411,17 @@ fn fs$try_rename(string, string) -> Result<i64, IoError> [conv=default]
   locals:
     _0: string
     _1: string
-    _2: Result<i64, IoError>
+    _2: Result<i64, fs.IoError>
     _3: i32
     _4: i32
     _5: i32
     _6: bool
-    _7: Result<i64, IoError>
+    _7: Result<i64, fs.IoError>
     _8: i64
     _9: i64
-    _10: Result<i64, IoError>
+    _10: Result<i64, fs.IoError>
     _11: i64
-    _12: IoError
+    _12: fs.IoError
   bb0:
     stmt: use BindingId(57) from site=SiteId(459) ty=string intent=Read
     stmt: use BindingId(58) to site=SiteId(460) ty=string intent=Read
@@ -1430,7 +1430,7 @@ fn fs$try_rename(string, string) -> Result<i64, IoError> [conv=default]
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(456)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(456)) ty=Result<i64, fs.IoError>
     ret = move _2
     return
   bb3:
@@ -1477,17 +1477,17 @@ fn fs$try_copy(string, string) -> Result<i64, IoError> [conv=default]
   locals:
     _0: string
     _1: string
-    _2: Result<i64, IoError>
+    _2: Result<i64, fs.IoError>
     _3: i32
     _4: i32
     _5: i32
     _6: bool
-    _7: Result<i64, IoError>
+    _7: Result<i64, fs.IoError>
     _8: i64
     _9: i64
-    _10: Result<i64, IoError>
+    _10: Result<i64, fs.IoError>
     _11: i64
-    _12: IoError
+    _12: fs.IoError
   bb0:
     stmt: use BindingId(61) from site=SiteId(476) ty=string intent=Read
     stmt: use BindingId(62) to site=SiteId(477) ty=string intent=Read
@@ -1496,7 +1496,7 @@ fn fs$try_copy(string, string) -> Result<i64, IoError> [conv=default]
     _4 = move _3
     goto bb3
   bb2:
-    stmt: return site=Some(SiteId(473)) ty=Result<i64, IoError>
+    stmt: return site=Some(SiteId(473)) ty=Result<i64, fs.IoError>
     ret = move _2
     return
   bb3:
@@ -1594,8 +1594,8 @@ fn stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [conv=
     _9: string
     _10: string
     _11: i64
-    _12: StreamPair
-    _13: StreamPair
+    _12: stream.StreamPair
+    _13: stream.StreamPair
     _14: ()
     _15: bool
     _16: bool
@@ -1650,8 +1650,8 @@ fn stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [conv=
   bb7:
     goto bb3
   bb8:
-    stmt: bind BindingId(68) pair site=SiteId(513) ty=StreamPair
-    stmt: use BindingId(68) pair site=SiteId(519) ty=StreamPair intent=Read
+    stmt: bind BindingId(68) pair site=SiteId(513) ty=stream.StreamPair
+    stmt: use BindingId(68) pair site=SiteId(519) ty=stream.StreamPair intent=Read
     _13 = move _12
     _15 = call hew_stream_pair_is_valid(_13) -> bb9
   bb9:
@@ -1663,7 +1663,7 @@ fn stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [conv=
     goto bb12
   bb12:
     stmt: eval site=SiteId(533) ty=()
-    stmt: use BindingId(68) pair site=SiteId(535) ty=StreamPair intent=Read
+    stmt: use BindingId(68) pair site=SiteId(535) ty=stream.StreamPair intent=Read
     _27 = call hew_stream_pair_sink(_13) -> bb19
   bb13:
     stmt: bind BindingId(69) detail site=SiteId(521) ty=string
@@ -1698,12 +1698,12 @@ fn stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [conv=
     goto bb12
   bb19:
     stmt: bind BindingId(70) sink site=SiteId(534) ty=Sink<string>
-    stmt: use BindingId(68) pair site=SiteId(538) ty=StreamPair intent=Read
+    stmt: use BindingId(68) pair site=SiteId(538) ty=stream.StreamPair intent=Read
     _28 = move _27
     _29 = call hew_stream_pair_stream(_13) -> bb20
   bb20:
     stmt: bind BindingId(71) input site=SiteId(537) ty=Stream<string>
-    stmt: use BindingId(68) pair site=SiteId(541) ty=StreamPair intent=Read
+    stmt: use BindingId(68) pair site=SiteId(541) ty=stream.StreamPair intent=Read
     _30 = move _29
     call hew_stream_pair_free(_13) -> bb21
   bb21:
@@ -1780,8 +1780,8 @@ fn stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string> [c
     _9: string
     _10: string
     _11: i64
-    _12: StreamPair
-    _13: StreamPair
+    _12: stream.StreamPair
+    _13: stream.StreamPair
     _14: ()
     _15: bool
     _16: bool
@@ -1836,8 +1836,8 @@ fn stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string> [c
   bb7:
     goto bb3
   bb8:
-    stmt: bind BindingId(76) pair site=SiteId(572) ty=StreamPair
-    stmt: use BindingId(76) pair site=SiteId(578) ty=StreamPair intent=Read
+    stmt: bind BindingId(76) pair site=SiteId(572) ty=stream.StreamPair
+    stmt: use BindingId(76) pair site=SiteId(578) ty=stream.StreamPair intent=Read
     _13 = move _12
     _15 = call hew_stream_pair_is_valid(_13) -> bb9
   bb9:
@@ -1849,7 +1849,7 @@ fn stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string> [c
     goto bb12
   bb12:
     stmt: eval site=SiteId(592) ty=()
-    stmt: use BindingId(76) pair site=SiteId(594) ty=StreamPair intent=Read
+    stmt: use BindingId(76) pair site=SiteId(594) ty=stream.StreamPair intent=Read
     _27 = call hew_stream_pair_sink_bytes(_13) -> bb19
   bb13:
     stmt: bind BindingId(77) detail site=SiteId(580) ty=string
@@ -1884,12 +1884,12 @@ fn stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string> [c
     goto bb12
   bb19:
     stmt: bind BindingId(78) sink site=SiteId(593) ty=Sink<bytes>
-    stmt: use BindingId(76) pair site=SiteId(597) ty=StreamPair intent=Read
+    stmt: use BindingId(76) pair site=SiteId(597) ty=stream.StreamPair intent=Read
     _28 = move _27
     _29 = call hew_stream_pair_stream_bytes(_13) -> bb20
   bb20:
     stmt: bind BindingId(79) input site=SiteId(596) ty=Stream<bytes>
-    stmt: use BindingId(76) pair site=SiteId(600) ty=StreamPair intent=Read
+    stmt: use BindingId(76) pair site=SiteId(600) ty=stream.StreamPair intent=Read
     _30 = move _29
     call hew_stream_pair_free(_13) -> bb21
   bb21:

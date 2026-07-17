@@ -125,7 +125,7 @@ fn metrics$counter -> Counter
     use BindingId(14) name site=SiteId(83) ty=string intent=Read
     eval site=SiteId(93) ty=()
     use BindingId(15) id site=SiteId(95) ty=i64 intent=Read
-    return site=Some(SiteId(94)) ty=Counter
+    return site=Some(SiteId(94)) ty=metrics.Counter
     eval site=SiteId(80) ty=!
   drop_plans:
     branch[bb0: bb1/bb2] ->
@@ -156,7 +156,7 @@ fn metrics$try_counter -> Result<Counter, MetricsError>
     use BindingId(17) id site=SiteId(102) ty=i64 intent=Read
     use BindingId(16) name site=SiteId(107) ty=string intent=Read
     use BindingId(17) id site=SiteId(111) ty=i64 intent=Read
-    return site=Some(SiteId(100)) ty=Result<Counter, MetricsError>
+    return site=Some(SiteId(100)) ty=Result<metrics.Counter, metrics.MetricsError>
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -177,7 +177,7 @@ fn metrics$gauge -> Gauge
     use BindingId(18) name site=SiteId(122) ty=string intent=Read
     eval site=SiteId(132) ty=()
     use BindingId(19) id site=SiteId(134) ty=i64 intent=Read
-    return site=Some(SiteId(133)) ty=Gauge
+    return site=Some(SiteId(133)) ty=metrics.Gauge
     eval site=SiteId(119) ty=!
   drop_plans:
     branch[bb0: bb1/bb2] ->
@@ -208,7 +208,7 @@ fn metrics$try_gauge -> Result<Gauge, MetricsError>
     use BindingId(21) id site=SiteId(141) ty=i64 intent=Read
     use BindingId(20) name site=SiteId(146) ty=string intent=Read
     use BindingId(21) id site=SiteId(150) ty=i64 intent=Read
-    return site=Some(SiteId(139)) ty=Result<Gauge, MetricsError>
+    return site=Some(SiteId(139)) ty=Result<metrics.Gauge, metrics.MetricsError>
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -229,7 +229,7 @@ fn metrics$histogram -> Histogram
     use BindingId(22) name site=SiteId(161) ty=string intent=Read
     eval site=SiteId(171) ty=()
     use BindingId(23) id site=SiteId(173) ty=i64 intent=Read
-    return site=Some(SiteId(172)) ty=Histogram
+    return site=Some(SiteId(172)) ty=metrics.Histogram
     eval site=SiteId(158) ty=!
   drop_plans:
     branch[bb0: bb1/bb2] ->
@@ -260,7 +260,7 @@ fn metrics$try_histogram -> Result<Histogram, MetricsError>
     use BindingId(25) id site=SiteId(180) ty=i64 intent=Read
     use BindingId(24) name site=SiteId(185) ty=string intent=Read
     use BindingId(25) id site=SiteId(189) ty=i64 intent=Read
-    return site=Some(SiteId(178)) ty=Result<Histogram, MetricsError>
+    return site=Some(SiteId(178)) ty=Result<metrics.Histogram, metrics.MetricsError>
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)

@@ -1,0 +1,21 @@
+import std::encoding::xml;
+import std::testing;
+
+#[test]
+fn try_parse_returns_node() {
+    match xml.try_parse("<root><child/></root>") {
+        Ok(node) => testing.assert_eq_str(node.get_tag(), "root"),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn try_parse_returns_parser_error() {
+    match xml.try_parse("<root>") {
+        Ok(node) => {
+            node.close();
+            testing.assert_true(false);
+        }
+        Err(message) => testing.assert_true(message.starts_with("xml:")),
+    }
+}

@@ -34,6 +34,8 @@ mod resolved_impl_call_hashmap_layout_descriptor_materialisation;
 mod scalar_discard_guard;
 #[path = "structural/state_clone_generic_enum_pipeline.rs"]
 mod state_clone_generic_enum_pipeline;
+#[path = "structural/state_clone_recursive_collection_pipeline.rs"]
+mod state_clone_recursive_collection_pipeline;
 #[path = "structural/state_clone_synthesis.rs"]
 mod state_clone_synthesis;
 #[path = "structural/supervised_handler_name_registration.rs"]

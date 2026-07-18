@@ -1079,6 +1079,65 @@ fn classify_state_field_full_impl(
 /// the single `model::ty_contains_unclonable_opaque` authority so `Vec` /
 /// `Option` / `Result` / `HashMap` / nested containers / record-with-opaque-field
 /// / enum-payload all fail closed through one decision, not per-shape patches.
+/// Classify a container's element/value type, breaking a self-recursion cycle
+/// at the container boundary.
+///
+/// A `Vec`/`HashMap`/`HashSet` is a heap-pointer indirection: an element type
+/// already on the active recursion stack (`visited`) is reached through the
+/// container's heap buffer, so a value cycle that passes through it is FINITE —
+/// re-encountering an inline ancestor on the far side of the container pointer
+/// is not the infinite-inline-layout cycle that [`classify_enum`] /
+/// [`classify_user_record`] reject with [`ClassificationError::RecordCycle`].
+/// This mirrors the `indirect enum` heap-boundary handling in `classify_enum`.
+///
+/// When the element resolves to a record/enum whose layout name is already
+/// `visited`, return the name-only kind directly WITHOUT re-descending: the
+/// runtime recursion runs through the inner collection's OWN per-element
+/// clone/drop thunks (`hew_vec_{clone,free}_owned` etc.), which invoke the
+/// element type's `__hew_{record,enum}_{clone,drop}_inplace_*` thunk per slot.
+/// A directly self-referential record/enum WITHOUT a container indirection
+/// never reaches this helper (its field recursion goes straight through
+/// `classify_state_field_full_impl`), so it still fails closed with
+/// `RecordCycle` — the container indirection is the sole admitted recursion
+/// boundary (`recursive-admission-needs-indirection-witness`).
+fn classify_container_element(
+    elem: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    if let ResolvedTy::Named { name, args, .. } = elem {
+        // Enum on the active stack — reached through this container's heap
+        // buffer. (Indirect enums carry a `\0ind\0` marker rather than their
+        // bare name in `visited`, so `layout.name` is absent for them and they
+        // fall through to normal recursion, where `classify_enum`'s indirect
+        // arm handles the boundary.)
+        if let Some(layout) = lookup_enum_layout(name, args, enum_layouts) {
+            if visited.contains(&layout.name) {
+                return Ok(StateFieldCloneKind::Enum {
+                    name: layout.name.clone(),
+                });
+            }
+        } else if let Some(layout) = lookup_record_layout(name, args, record_layouts) {
+            if visited.contains(&layout.name) {
+                return Ok(StateFieldCloneKind::UserRecord {
+                    name: layout.name.clone(),
+                });
+            }
+        }
+    }
+    classify_state_field_full_impl(
+        elem,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+        visited,
+    )
+}
+
 fn reject_unclonable_opaque_container(
     outer: &str,
     elem: &ResolvedTy,
@@ -1338,7 +1397,7 @@ fn classify_named(
             // The single transitive authority covers Vec<json.Value>,
             // Vec<Option<json.Value>>, Vec<RecordWithOpaqueField>, etc.
             reject_unclonable_opaque_container("Vec", elem, record_layouts, enum_layouts)?;
-            let elem_kind = classify_state_field_full_impl(
+            let elem_kind = classify_container_element(
                 elem,
                 record_layouts,
                 enum_layouts,
@@ -1364,6 +1423,10 @@ fn classify_named(
             // Fail closed on either an opaque key or an opaque value.
             reject_unclonable_opaque_container("HashMap", key, record_layouts, enum_layouts)?;
             reject_unclonable_opaque_container("HashMap", val, record_layouts, enum_layouts)?;
+            // The key position is not a self-recursion boundary (a hashable key
+            // does not recurse through the map); classify it directly. The value
+            // position IS a container-indirected boundary, so it takes the
+            // cycle-break helper.
             let key_kind = classify_state_field_full_impl(
                 key,
                 record_layouts,
@@ -1372,7 +1435,7 @@ fn classify_named(
                 resource_close,
                 visited,
             )?;
-            let val_kind = classify_state_field_full_impl(
+            let val_kind = classify_container_element(
                 val,
                 record_layouts,
                 enum_layouts,
@@ -1392,7 +1455,7 @@ fn classify_named(
                     rendered: format!("Named {{ name: \"HashSet\", args: {args:?} }}"),
                 })?;
             reject_unclonable_opaque_container("HashSet", elem, record_layouts, enum_layouts)?;
-            let elem_kind = classify_state_field_full_impl(
+            let elem_kind = classify_container_element(
                 elem,
                 record_layouts,
                 enum_layouts,
@@ -2175,6 +2238,107 @@ mod tests {
         assert!(
             matches!(result, Err(ClassificationError::RecordCycle { ref name }) if name == "Node"),
             "expected RecordCycle on `Node`, got {result:?}",
+        );
+    }
+
+    /// A self-recursive enum whose self-edge passes THROUGH a `Vec` payload
+    /// (`enum Reply { Nil; Num(i64); Arr([Reply]) }`) classifies as `Enum`
+    /// rather than failing closed with `RecordCycle`. The `Vec` is a heap
+    /// indirection, so the value cycle is finite — the runtime recursion runs
+    /// through the inner Vec's own per-element clone/drop thunks.
+    #[test]
+    fn self_recursive_enum_through_vec_classifies() {
+        let enums = vec![EnumLayout {
+            name: "Reply".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Nil".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Num".to_string(),
+                    field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Arr".to_string(),
+                    field_tys: vec![builtin(
+                        hew_types::BuiltinType::Vec,
+                        vec![named("Reply", vec![])],
+                    )],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let mut v = HashSet::new();
+        let result =
+            classify_state_field_with_enum_layouts(&named("Reply", vec![]), &[], &enums, &mut v)
+                .unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::Enum {
+                name: "Reply".to_string(),
+            },
+        );
+        assert!(v.is_empty(), "recursion guard must unwind cleanly");
+    }
+
+    /// A self-recursive record whose self-edge passes through a `Vec` field
+    /// (`type Tree { children: [Tree] }`) classifies as `UserRecord`, not
+    /// `RecordCycle` — the container-indirection cycle-break covers records too.
+    #[test]
+    fn self_recursive_record_through_vec_classifies() {
+        let records = vec![RecordLayout {
+            name: "Tree".to_string(),
+            field_tys: vec![builtin(
+                hew_types::BuiltinType::Vec,
+                vec![named("Tree", vec![])],
+            )],
+            field_names: vec![],
+        }];
+        let mut v = HashSet::new();
+        let result =
+            classify_state_field_with_enum_layouts(&named("Tree", vec![]), &records, &[], &mut v)
+                .unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::UserRecord {
+                name: "Tree".to_string(),
+            },
+        );
+        assert!(v.is_empty());
+    }
+
+    /// A self-recursive enum whose self-edge is DIRECT (an inline payload with
+    /// no container indirection) must still fail closed with `RecordCycle`: the
+    /// container indirection is the sole admitted recursion boundary
+    /// (`recursive-admission-needs-indirection-witness`). A real such enum is
+    /// `indirect` (heap-boxed); an inline one is an infinite-layout bug.
+    #[test]
+    fn self_recursive_enum_direct_still_cycles() {
+        let enums = vec![EnumLayout {
+            name: "BadDirect".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Wrap".to_string(),
+                field_tys: vec![named("BadDirect", vec![])],
+                field_names: vec![],
+            }],
+            is_indirect: false,
+        }];
+        let mut v = HashSet::new();
+        let result = classify_state_field_with_enum_layouts(
+            &named("BadDirect", vec![]),
+            &[],
+            &enums,
+            &mut v,
+        );
+        assert!(
+            matches!(result, Err(ClassificationError::RecordCycle { ref name }) if name == "BadDirect"),
+            "direct (non-container) self-reference must still fail closed, got {result:?}",
         );
     }
 

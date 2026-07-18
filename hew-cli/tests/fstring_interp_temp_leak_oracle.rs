@@ -131,6 +131,54 @@ fn fstring_gen_yield_interp_loop_source(frames: usize) -> String {
     )
 }
 
+/// Multi-interpolation f-string in statement position: `interps` copies of the
+/// loop counter interpolated into ONE f-string per iteration
+/// (`f"a={i} b={i} c={i}"` for `interps == 3`). Each interpolation adds a
+/// `to_string_i64` conversion (a block-terminating `Terminator::Call` that
+/// SPLITS the concat chain) plus a `hew_string_concat` join. #2726: the
+/// intermediate concat result whose consuming concat lands in the NEXT block
+/// (past the `to_string` split) was never admitted by
+/// `collect_nested_fresh_string_temp_drops` — the instruction-use concat-chain
+/// branch required def and use in the SAME block, so every `to_string`-split
+/// intermediate leaked. 1–2 interpolations stay in one block (clean); 3+
+/// cross a split and leaked pre-fix, at a rate that scales with `interps`.
+fn fstring_multi_interp_loop_source(interps: usize, frames: usize) -> String {
+    let expected_total: usize = (0..frames).sum();
+    let fstr = (0..interps)
+        .map(|j| format!("s{j}={{i}}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       println(f\"{fstr}\");\n\
+         \x20       total = total + i;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_total} {{ return 94; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+fn fstring_one_interp_loop_source(frames: usize) -> String {
+    fstring_multi_interp_loop_source(1, frames)
+}
+fn fstring_two_interp_loop_source(frames: usize) -> String {
+    fstring_multi_interp_loop_source(2, frames)
+}
+fn fstring_three_interp_loop_source(frames: usize) -> String {
+    fstring_multi_interp_loop_source(3, frames)
+}
+fn fstring_four_interp_loop_source(frames: usize) -> String {
+    fstring_multi_interp_loop_source(4, frames)
+}
+fn fstring_five_interp_loop_source(frames: usize) -> String {
+    fstring_multi_interp_loop_source(5, frames)
+}
+
 // -- correctness pins --------------------------------------------------------
 
 /// Run `source` to native, execute under the poisoned-allocator triple, and
@@ -194,4 +242,55 @@ fn fstring_scalar_interp_gen_yield_freed_exactly_once_under_malloc_scribble() {
         "fstring_scalar_gen_df",
         &fstring_gen_yield_interp_loop_source(200),
     );
+}
+
+// -- #2726 multi-interpolation concat-chain oracles --------------------------
+
+/// No-regression slope pins: 1- and 2-interpolation f-strings keep the whole
+/// concat chain in one block (no `to_string` split between an intermediate and
+/// its consuming concat), so they were always clean. Pin them flat so a future
+/// change to the admission cannot silently regress the already-correct cases.
+#[test]
+fn fstring_one_interp_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("fstring_1interp", fstring_one_interp_loop_source);
+}
+#[test]
+fn fstring_two_interp_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("fstring_2interp", fstring_two_interp_loop_source);
+}
+
+/// Teeth (#2726): 3-, 4-, and 5-interpolation f-strings. Each interpolation
+/// past the second splits the concat chain across a `to_string` terminator, so
+/// the intermediate concat result consumed in the next block leaked once per
+/// split per iteration pre-fix — a positive slope that scales with the
+/// interpolation count (3→~1, 4→~3, 5→~4 leaked nodes/iteration). With the
+/// cross-block domination admission the slope is flat.
+#[test]
+fn fstring_three_interp_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("fstring_3interp", fstring_three_interp_loop_source);
+}
+#[test]
+fn fstring_four_interp_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("fstring_4interp", fstring_four_interp_loop_source);
+}
+#[test]
+fn fstring_five_interp_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("fstring_5interp", fstring_five_interp_loop_source);
+}
+
+/// No-double-free pins (#2726): the intermediate concat results release EXACTLY
+/// once across 200 iterations for 3-, 4-, and 5-interpolation f-strings. A
+/// second owner (an over-eager cross-block drop that double-frees) aborts under
+/// the poisoned-allocator triple; a scribbled read miscomputes the total.
+#[test]
+fn fstring_three_interp_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free("fstring_3interp_df", &fstring_three_interp_loop_source(200));
+}
+#[test]
+fn fstring_four_interp_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free("fstring_4interp_df", &fstring_four_interp_loop_source(200));
+}
+#[test]
+fn fstring_five_interp_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free("fstring_5interp_df", &fstring_five_interp_loop_source(200));
 }

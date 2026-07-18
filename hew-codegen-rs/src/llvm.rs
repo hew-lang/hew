@@ -35350,12 +35350,11 @@ mod tests {
             params: vec![],
             locals: vec![
                 // local_0: Option<i64> — must resolve via mangled key
-                ResolvedTy::Named {
-                    name: "Option".to_string(),
-                    args: vec![ResolvedTy::I64],
-                    builtin: None,
-                    is_opaque: false,
-                },
+                ResolvedTy::named_builtin(
+                    BuiltinType::Option.canonical_name(),
+                    BuiltinType::Option,
+                    vec![ResolvedTy::I64],
+                ),
                 // local_1: i64 — return value
                 ResolvedTy::I64,
             ],
@@ -38266,8 +38265,8 @@ mod tests {
         );
     }
 
-    /// Positive guard: layout-sourced genuine builtins can carry `builtin: None`
-    /// and must stay on the runtime layout ABI.
+    /// Positive guard: layout-sourced genuine builtins carry their discriminant
+    /// and stay on the runtime layout ABI.
     #[test]
     fn hashmap_layout_ops_get_emits_clone_call_and_option_branches() {
         let ctx = Context::create();
@@ -38278,9 +38277,10 @@ mod tests {
             &[fixture_option_i64_layout()],
         );
         let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-        let map_ty = ResolvedTy::Named {
-            name: "HashMap".to_string(),
-            args: vec![
+        let map_ty = ResolvedTy::named_builtin(
+            BuiltinType::HashMap.canonical_name(),
+            BuiltinType::HashMap,
+            vec![
                 ResolvedTy::Named {
                     name: "Point".to_string(),
                     args: vec![],
@@ -38289,21 +38289,20 @@ mod tests {
                 },
                 ResolvedTy::I64,
             ],
-            builtin: None,
-            is_opaque: false,
-        };
+        );
         let point_ty = ResolvedTy::Named {
             name: "Point".to_string(),
             args: vec![],
             builtin: None,
             is_opaque: false,
         };
-        let option_i64_ty = ResolvedTy::Named {
-            name: "Option".to_string(),
-            args: vec![ResolvedTy::I64],
-            builtin: None,
-            is_opaque: false,
-        };
+        let option_i64_ty = ResolvedTy::named_builtin(
+            BuiltinType::Option.canonical_name(),
+            BuiltinType::Option,
+            vec![ResolvedTy::I64],
+        );
+        assert!(map_ty.is_builtin(BuiltinType::HashMap));
+        assert!(option_i64_ty.is_builtin(BuiltinType::Option));
         alloc_local(&mut fn_ctx, 0, map_ty);
         alloc_local(&mut fn_ctx, 1, point_ty);
         alloc_local(&mut fn_ctx, 2, option_i64_ty);

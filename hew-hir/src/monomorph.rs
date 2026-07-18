@@ -911,10 +911,15 @@ mod tests {
         // Option<T> where T is the structural TypeParam variant -> Option<i64>.
         let params = vec!["T".to_string()];
         let args = vec![ResolvedTy::I64];
-        let ty = ResolvedTy::named_user("Option", vec![ResolvedTy::TypeParam { name: "T".into() }]);
+        let builtin = hew_types::BuiltinType::Option;
+        let ty = ResolvedTy::named_builtin(
+            builtin.canonical_name(),
+            builtin,
+            vec![ResolvedTy::TypeParam { name: "T".into() }],
+        );
         assert_eq!(
             substitute_type_params(&ty, &params, &args),
-            ResolvedTy::named_user("Option", vec![ResolvedTy::I64])
+            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, vec![ResolvedTy::I64])
         );
     }
 

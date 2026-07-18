@@ -75,6 +75,7 @@ use hew_mir::{
     RawMirFunction, RecordLayout, RegexLiteral, SourceOrigin, StateFieldCloneKind,
     SupervisorChildLayout, SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
+pub(crate) use hew_types::short_name;
 use hew_types::{
     runtime_call::RuntimeCapability, BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection,
     WireLayoutTable, WireTextFormat,
@@ -2585,10 +2586,6 @@ fn emit_const_globals<'ctx>(
         }
     }
     Ok(globals)
-}
-
-pub(crate) fn short_name(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
 /// True when `ty` names a machine (short-name match against the machine
@@ -19084,8 +19081,8 @@ fn resolve_drop_fn<'ctx>(
             // first and this fallback never crosses two distinct bodies; if
             // neither spelling is registered the drop still fails closed below.
             let bare_fallback = name.split_once("::").and_then(|(ty, method)| {
-                ty.rsplit_once('.')
-                    .map(|(_, short)| format!("{short}::{method}"))
+                let short = short_name(ty);
+                (short != ty).then(|| format!("{short}::{method}"))
             });
             let resolved: &str = match bare_fallback.as_deref() {
                 Some(bare) if !fn_symbols.contains_key(name) && fn_symbols.contains_key(bare) => {
@@ -20333,10 +20330,7 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             // The type checker qualifies imported record names with their module
             // prefix (e.g. `"process.CommandOutput"`). The synthesized helper is
             // keyed by the bare type name (`"CommandOutput"`), so strip the prefix.
-            Ok(name
-                .rsplit_once('.')
-                .map_or(name.as_str(), |(_, bare)| bare)
-                .to_string())
+            Ok(short_name(name).to_string())
         }
         ResolvedTy::Named {
             name,
@@ -20353,9 +20347,7 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             // the drop call resolves the body that was emitted. Strip the module
             // prefix from the origin name first (the mangler keys on the short
             // name) so an imported generic record matches its registered layout.
-            let short = name
-                .rsplit_once('.')
-                .map_or(name.as_str(), |(_, bare)| bare);
+            let short = short_name(name);
             Ok(mangle_with_shortened_args(short, args))
         }
         // M-5: a builtin owned-aggregate record (today only `CrashInfo`, which

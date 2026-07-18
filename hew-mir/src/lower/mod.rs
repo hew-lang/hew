@@ -24,7 +24,7 @@ use hew_hir::{
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_types::{
-    BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
+    short_name, BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
     NumericMethodOp, NumericSignedness, ResolvedTy,
 };
 
@@ -2245,7 +2245,7 @@ pub fn lower_hir_module_with_facts(
     for layout in &actor_layouts {
         if layout.defining_module.is_some() {
             *module_short_name_counts
-                .entry(crate::model::short_name(&layout.name))
+                .entry(short_name(&layout.name))
                 .or_insert(0) += 1;
         }
     }
@@ -2253,7 +2253,7 @@ pub fn lower_hir_module_with_facts(
         if layout.defining_module.is_none() {
             continue;
         }
-        let short = crate::model::short_name(&layout.name);
+        let short = short_name(&layout.name);
         if module_short_name_counts.get(short) == Some(&1) && !actor_layout_map.contains_key(short)
         {
             actor_layout_map.insert(short.to_string(), layout.clone());

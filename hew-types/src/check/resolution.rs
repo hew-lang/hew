@@ -143,7 +143,7 @@ impl Checker {
         }
         if let Some((module, short)) = name.rsplit_once('.') {
             let current = self.current_module.as_deref();
-            let current_short = current.map(|m| m.rsplit_once('.').map_or(m, |(_, s)| s));
+            let current_short = current.map(crate::short_name);
             if current == Some(module) || current_short == Some(module) {
                 return short.to_string();
             }
@@ -283,8 +283,8 @@ impl Checker {
         if a_qualified == b_qualified {
             return false;
         }
-        let a_bare = a.rsplit_once('.').map_or(a, |(_, bare)| bare);
-        let b_bare = b.rsplit_once('.').map_or(b, |(_, bare)| bare);
+        let a_bare = crate::short_name(a);
+        let b_bare = crate::short_name(b);
         a_bare == b_bare && crate::lookup_builtin_type(a_bare).is_some()
     }
 
@@ -1314,7 +1314,7 @@ impl Checker {
                     // way it does in the defining module (`per-module-type-identity`:
                     // the qualifier is an outer-identity concern, not part of the
                     // impl-binding key).
-                    let bare_name = name.rsplit('.').next().unwrap_or(name.as_str());
+                    let bare_name = crate::short_name(name);
                     let key = (name.clone(), trait_name.to_string(), assoc_name.to_string());
                     let binding = self.impl_assoc_type_bindings.get(&key).or_else(|| {
                         if bare_name == name.as_str() {
@@ -1855,9 +1855,7 @@ impl Checker {
                     .known_types
                     .iter()
                     .filter(|qualified| {
-                        qualified
-                            .rsplit_once('.')
-                            .is_some_and(|(_, short)| short == name)
+                        qualified.contains('.') && crate::short_name(qualified) == name
                     })
                     .cloned()
                     .collect();
@@ -1965,9 +1963,7 @@ impl Checker {
                                 .reported_type_visibility_violations
                                 .insert(resolved_name.clone())
                             {
-                                let symbol = resolved_name
-                                    .rsplit_once('.')
-                                    .map_or(resolved_name.as_str(), |(_, n)| n);
+                                let symbol = crate::short_name(&resolved_name);
                                 let decl_span = self
                                     .type_def_spans
                                     .get(&resolved_name)

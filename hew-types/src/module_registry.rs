@@ -383,7 +383,7 @@ impl ModuleRegistry {
     pub fn qualify_handle_type(&self, name: &str) -> Option<String> {
         self.handle_types
             .iter()
-            .find(|ht| ht.rsplit('.').next() == Some(name))
+            .find(|ht| crate::short_name(ht) == name)
             .cloned()
     }
 
@@ -714,11 +714,7 @@ mod tests {
         reg.load("std::encoding::json").unwrap();
         let info = reg.get("std::encoding::json").unwrap();
         if let Some(hm) = info.handle_methods.first() {
-            let short = hm
-                .type_name
-                .rsplit('.')
-                .next()
-                .expect("qualified handle type should have short name");
+            let short = crate::short_name(&hm.type_name);
             let c_sym = reg.resolve_handle_method(short, &hm.method_name);
             assert_eq!(
                 c_sym.as_deref(),

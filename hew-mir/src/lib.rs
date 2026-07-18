@@ -47,10 +47,11 @@ pub fn drop_kind_for_test(
 }
 pub use dump::{dump_mir, DumpStage};
 pub use hew_hir::sanitize_for_symbol;
+pub use hew_types::short_name;
 pub use model::{
     call_arg_source_escapes, callee_param_is_borrow, classify_extern_string_ownership,
     container_ingress_is_copy_in, machine_enum_view, machine_enum_views,
-    mangle_dyn_drop_in_place_symbol, mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol, short_name,
+    mangle_dyn_drop_in_place_symbol, mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol,
     ty_contains_closure_value, ty_contains_heap_owning, ty_contains_unclonable_opaque,
     ty_contains_unclonable_opaque_with_names, ty_heap_ownership, ty_owns_heap, ty_owns_heap_mir,
     validate_context_markers, ActorHandlerKind, ActorHandlerLayout, ActorLayout,

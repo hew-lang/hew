@@ -1533,8 +1533,7 @@ impl Builder {
                             ..
                         } if args.len() == 1
                             && (matches!(builtin, Some(hew_types::BuiltinType::Receiver))
-                                || name.rsplit_once('.').map_or(name.as_str(), |(_, s)| s)
-                                    == "Receiver") =>
+                                || hew_types::short_name(&name) == "Receiver") =>
                         {
                             args.remove(0)
                         }

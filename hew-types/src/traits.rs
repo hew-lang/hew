@@ -324,18 +324,16 @@ impl TraitRegistry {
 
     /// Look up `RcFree` members by exact or module-qualified/unqualified name.
     fn rc_free_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
-        self.rc_free_members.get(name).or_else(|| {
-            name.rsplit_once('.')
-                .and_then(|(_, unqualified)| self.rc_free_members.get(unqualified))
-        })
+        self.rc_free_members
+            .get(name)
+            .or_else(|| self.rc_free_members.get(crate::short_name(name)))
     }
 
     /// Look up `Serializable` members by exact or module-qualified/unqualified name.
     fn serializable_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
-        self.serializable_members.get(name).or_else(|| {
-            name.rsplit_once('.')
-                .and_then(|(_, unqualified)| self.serializable_members.get(unqualified))
-        })
+        self.serializable_members
+            .get(name)
+            .or_else(|| self.serializable_members.get(crate::short_name(name)))
     }
 
     fn combine_rc_free_status<I>(&self, tys: I, visiting: &mut HashSet<String>) -> RcFreeStatus
@@ -562,7 +560,7 @@ impl TraitRegistry {
             || self
                 .handle_types
                 .iter()
-                .any(|ht| ht.rsplit('.').next() == Some(name))
+                .any(|ht| crate::short_name(ht) == name)
     }
 
     /// Check if a name is a drop type (qualified or unqualified).
@@ -571,7 +569,7 @@ impl TraitRegistry {
             || self
                 .drop_types
                 .iter()
-                .any(|dt| dt.rsplit('.').next() == Some(name))
+                .any(|dt| crate::short_name(dt) == name)
     }
 
     /// Register a `#[resource]` type by its declared (bare) name.
@@ -633,7 +631,7 @@ impl TraitRegistry {
         if self.resource_types.contains(name) {
             return true;
         }
-        let unqualified = name.rsplit_once('.').map_or(name, |(_, suffix)| suffix);
+        let unqualified = crate::short_name(name);
         self.resource_types.contains(unqualified)
     }
 
@@ -644,7 +642,7 @@ impl TraitRegistry {
         if self.linear_types.contains(name) {
             return true;
         }
-        let unqualified = name.rsplit_once('.').map_or(name, |(_, suffix)| suffix);
+        let unqualified = crate::short_name(name);
         self.linear_types.contains(unqualified)
     }
 

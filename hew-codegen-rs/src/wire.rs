@@ -73,7 +73,7 @@ fn xnode_registry_key(
     records: &[RecordLayout],
     enums: &[EnumLayout],
 ) -> String {
-    let short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    let short = short_name(name);
     if args.is_empty() {
         // Prefer an exact registered name; else the short form.
         if records.iter().any(|r| r.name == name) || enums.iter().any(|e| e.name == name) {
@@ -312,7 +312,7 @@ fn cbor_field_key(
         return tag;
     }
     // Records are usually keyed by the short name; try it if the key was qualified.
-    let short = record_key.rsplit_once('.').map_or(record_key, |(_, s)| s);
+    let short = short_name(record_key);
     if short != record_key {
         if let Some(tag) = probe(short) {
             return tag;
@@ -1162,7 +1162,7 @@ fn cbor_variant_tag(
     if let Some(tag) = probe(enum_key) {
         return tag;
     }
-    let short = enum_key.rsplit_once('.').map_or(enum_key, |(_, s)| s);
+    let short = short_name(enum_key);
     if short != enum_key {
         if let Some(tag) = probe(short) {
             return tag;

@@ -2951,9 +2951,8 @@ impl Checker {
                 && expected_args.is_empty()
                 && !name.contains('.')
                 && !name.contains("::")
-                && expected_name
-                    .rsplit_once('.')
-                    .is_some_and(|(_, short)| short == name.as_str())
+                && expected_name.contains('.')
+                && crate::short_name(expected_name) == name
                 && self.lookup_type_def(expected_name).is_some_and(|td| {
                     td.type_params.is_empty()
                         && matches!(td.kind, TypeDefKind::Struct | TypeDefKind::Record)
@@ -3000,9 +2999,8 @@ impl Checker {
                 && !expected_args.is_empty()
                 && !name.contains('.')
                 && !name.contains("::")
-                && expected_name
-                    .rsplit_once('.')
-                    .is_some_and(|(_, short)| short == name.as_str())
+                && expected_name.contains('.')
+                && crate::short_name(expected_name) == name
                 && self.lookup_type_def(expected_name).is_some_and(|td| {
                     !td.type_params.is_empty()
                         && matches!(td.kind, TypeDefKind::Struct | TypeDefKind::Record)

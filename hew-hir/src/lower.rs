@@ -11155,7 +11155,7 @@ impl LowerCtx {
         let module_scoped_key = self
             .current_module_name
             .as_deref()
-            .and_then(|module| module.rsplit('.').next())
+            .map(hew_types::short_name)
             .map(|leaf| format!("{leaf}.{}", decl.name));
         let protocol_descriptor = module_scoped_key
             .as_deref()
@@ -14398,11 +14398,9 @@ impl LowerCtx {
                                 builtin: None,
                                 ..
                             } if recorded.contains('.') => {
-                                recorded.rsplit_once('.').and_then(|(_, short)| {
-                                    (short == name.as_str()
-                                        || self.record_registry.contains_key(short))
+                                let short = hew_types::short_name(recorded);
+                                (short == name.as_str() || self.record_registry.contains_key(short))
                                     .then(|| recorded.clone())
-                                })
                             }
                             _ => None,
                         })
@@ -15846,8 +15844,7 @@ impl LowerCtx {
                         ..
                     } if args.len() == 1
                         && (matches!(builtin, Some(hew_types::BuiltinType::Receiver))
-                            || name.rsplit_once('.').map_or(name.as_str(), |(_, s)| s)
-                                == "Receiver") =>
+                            || hew_types::short_name(name) == "Receiver") =>
                     {
                         args[0].clone()
                     }
@@ -18604,9 +18601,7 @@ impl LowerCtx {
     /// already-lowered generic arguments. Split out of `lower_type` to keep
     /// that dispatcher under the line budget.
     fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
-        let type_name = name
-            .rsplit_once('.')
-            .map_or(name, |(_, unqualified)| unqualified);
+        let type_name = hew_types::short_name(name);
         if args.is_empty() {
             let canonical = self.canonical_current_module_record_name(name);
             if canonical != name && !self.resolves_to_opaque_handle(&canonical, type_name) {
@@ -18770,7 +18765,7 @@ impl LowerCtx {
             if let Some(module_short) = self
                 .current_module_name
                 .as_deref()
-                .and_then(|module| module.rsplit('.').next())
+                .map(hew_types::short_name)
             {
                 let qualified = format!("{module_short}.{name}");
                 if self.record_registry.contains_key(&qualified) {
@@ -18796,9 +18791,10 @@ impl LowerCtx {
         else {
             return symbol.to_string();
         };
-        let Some((_, receiver_short)) = receiver_name.rsplit_once('.') else {
+        let receiver_short = hew_types::short_name(receiver_name);
+        if receiver_short == receiver_name {
             return symbol.to_string();
-        };
+        }
         if receiver_short != symbol_type {
             return symbol.to_string();
         }

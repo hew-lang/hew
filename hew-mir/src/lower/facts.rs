@@ -2,10 +2,10 @@
 use super::*;
 #[cfg(not(test))]
 use super::{
-    named_type_names, BindingId, Builder, BuiltinType, HashMap, HashSet, HirBlock, HirExpr,
-    HirExprKind, HirFn, HirItem, HirStmtKind, Instr, IntentKind, LayoutReadiness, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, ParamOwnershipFacts, Place, ResolvedRef, ResolvedTy,
-    ResourceMarker, ScanCtx, Strategy, ValueClass,
+    named_type_names, short_name, BindingId, Builder, BuiltinType, HashMap, HashSet, HirBlock,
+    HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind, Instr, IntentKind, LayoutReadiness,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, ParamOwnershipFacts, Place, ResolvedRef,
+    ResolvedTy, ResourceMarker, ScanCtx, Strategy, ValueClass,
 };
 
 /// Flow-insensitive prescan deciding, for every binding in `func`, whether a
@@ -2432,10 +2432,7 @@ fn push_unknown_type_diagnostic(
 pub(super) fn machine_layout_name_matches(layout_names: &HashSet<String>, name: &str) -> bool {
     layout_names
         .iter()
-        .any(|known| known == name || short_name(known) == short_name(name))
-}
-pub(super) fn short_name(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(_, short)| short)
+        .any(|known| known == name || hew_types::short_name(known) == hew_types::short_name(name))
 }
 #[cfg(test)]
 mod runtime_callee_ownership_contract_parity {

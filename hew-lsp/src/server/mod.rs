@@ -1552,7 +1552,7 @@ impl Worker {
         // find_definition_in_ast doesn't find the full dot-qualified name...
         assert!(find_definition_in_ast(source, &lo, &parse_result, &word).is_none());
         // ...but the method part alone finds the receive method definition.
-        let method = word.rsplit('.').next().unwrap();
+        let method = hew_types::short_name(&word);
         let found = find_definition_in_ast(source, &lo, &parse_result, method);
         assert!(found.is_some(), "should find receive method definition");
     }

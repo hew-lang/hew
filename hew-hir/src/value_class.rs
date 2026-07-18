@@ -44,13 +44,14 @@ pub fn lookup_type_marker(name: &str, type_classes: &TypeClassTable) -> Option<R
         .map(|registration| registration.marker)
         .or_else(|| {
             let exact = type_classes.get(name).map(|(marker, _)| *marker);
-            match (exact, name.rsplit_once('.')) {
-                (Some(ResourceMarker::None), Some((_, short))) => {
+            let short = hew_types::short_name(name);
+            match (exact, short != name) {
+                (Some(ResourceMarker::None), true) => {
                     type_classes.get(short).map(|(marker, _)| *marker).or(exact)
                 }
                 (Some(marker), _) => Some(marker),
-                (None, Some((_, short))) => type_classes.get(short).map(|(marker, _)| *marker),
-                (None, None) => None,
+                (None, true) => type_classes.get(short).map(|(marker, _)| *marker),
+                (None, false) => None,
             }
         })
 }
@@ -96,13 +97,14 @@ pub fn lookup_type_marker_for_ty(
     }
 
     let exact = type_classes.get(name).map(|(marker, _)| *marker);
-    match (exact, name.rsplit_once('.')) {
-        (Some(ResourceMarker::None), Some((_, short))) => {
+    let short = hew_types::short_name(name);
+    match (exact, short != name.as_str()) {
+        (Some(ResourceMarker::None), true) => {
             type_classes.get(short).map(|(marker, _)| *marker).or(exact)
         }
         (Some(marker), _) => Some(marker),
-        (None, Some((_, short))) => type_classes.get(short).map(|(marker, _)| *marker),
-        (None, None) => None,
+        (None, true) => type_classes.get(short).map(|(marker, _)| *marker),
+        (None, false) => None,
     }
 }
 

@@ -86,6 +86,12 @@ pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
 pub use vec_authority::VecElementToken;
 
+/// Return the final segment of a dot-qualified name.
+#[must_use]
+pub fn short_name(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, short)| short)
+}
+
 /// Native-only stdlib module short-names that are rejected on the wasm32 target
 /// and in the browser sandbox.
 ///
@@ -112,3 +118,14 @@ pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
     "http_client",
     "smtp",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::short_name;
+
+    #[test]
+    fn short_name_uses_the_final_qualified_segment() {
+        assert_eq!(short_name("a.b.c"), "c");
+        assert_eq!(short_name("Name"), "Name");
+    }
+}

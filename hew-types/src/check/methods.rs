@@ -1964,9 +1964,7 @@ impl Checker {
     /// `std.net.websocket`). Returns `None` at the root / flat namespace, where
     /// type names are unqualified.
     pub(super) fn current_module_short(&self) -> Option<&str> {
-        self.current_module
-            .as_deref()
-            .map(|m| m.rsplit('.').next().unwrap_or(m))
+        self.current_module.as_deref().map(crate::short_name)
     }
 
     /// Resolve a bare actor reference to its registered checker identity.
@@ -7828,9 +7826,7 @@ impl Checker {
                         || self.dyn_trait_method_calls.contains_key(&span_key)
                         || self.resolved_calls.contains_key(&span_key);
                     if !already_rewritten {
-                        let method_owner = name
-                            .rsplit_once('.')
-                            .map_or(name.as_str(), |(_, unqualified)| unqualified);
+                        let method_owner = crate::short_name(name);
                         let method_key = format!("{method_owner}::{method}");
                         // Wire codec instance serialize methods on a `#[wire]`
                         // struct or enum. `encode` is the binary CBOR path

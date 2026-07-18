@@ -22,7 +22,16 @@ use std::ptr;
 use std::sync::atomic::AtomicPtr;
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
+use crate::mailbox_header::{header_validate, normalize_coalesce_fallback};
 use crate::set_last_error;
+
+pub use crate::mailbox_header::{
+    HEW_MSG_ENVELOPE_ALIAS_ACTIVE, HEW_MSG_ENVELOPE_ARENA_BACKED,
+    HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER, HEW_MSG_ENVELOPE_FORKED,
+    HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK, HEW_MSG_ENVELOPE_RESERVED_DELTA_A,
+    HEW_MSG_ENVELOPE_RESERVED_DELTA_B, HEW_MSG_ENVELOPE_RESERVED_GAMMA_A,
+    HEW_MSG_ENVELOPE_RESERVED_GAMMA_B, HEW_MSG_ENVELOPE_SHARED_FROZEN,
+};
 
 /// Key extractor used by coalescing mailboxes.
 pub type HewCoalesceKeyFn = unsafe extern "C" fn(i32, *mut c_void, usize) -> u64;
@@ -245,26 +254,8 @@ const _: () = {
 // contract (refcount-based COW, fail-closed reserved bits) is identical
 // so codegen-emitted calls resolve transparently on both targets.
 
-/// Header bit: ≥2 observers hold this envelope (WASM parity).
-pub const HEW_MSG_ENVELOPE_ALIAS_ACTIVE: u32 = 1 << 0;
-/// Header bit: payload is `Frozen`; never forks (γ uses).
-pub const HEW_MSG_ENVELOPE_SHARED_FROZEN: u32 = 1 << 1;
-/// Header bit: payload was bumped from a per-dispatch arena (δ uses).
-pub const HEW_MSG_ENVELOPE_ARENA_BACKED: u32 = 1 << 2;
-/// Header bit: a fork-on-write has fired (diagnostic / metric).
-pub const HEW_MSG_ENVELOPE_FORKED: u32 = 1 << 3;
-/// Header bit: payload is a §12 capability transfer; alias forbidden.
-pub const HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER: u32 = 1 << 4;
-/// Reserved for γ.
-pub const HEW_MSG_ENVELOPE_RESERVED_GAMMA_A: u32 = 1 << 5;
-/// Reserved for γ aux.
-pub const HEW_MSG_ENVELOPE_RESERVED_GAMMA_B: u32 = 1 << 6;
-/// Reserved for δ aux.
-pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_A: u32 = 1 << 7;
-/// Reserved for δ aux.
-pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_B: u32 = 1 << 8;
-/// All bits ≥ 9 must read zero on every envelope load (fail-closed).
-pub const HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK: u32 = !((1u32 << 9) - 1);
+// The cross-target header assignments and pure bit logic live in
+// `crate::mailbox_header`; WASM allocation and scheduling remain here.
 
 /// Drop glue invoked when an envelope's refcount drops to zero.
 pub type HewMsgEnvelopeDropFn = unsafe extern "C" fn(*mut c_void);
@@ -300,17 +291,6 @@ unsafe impl Send for HewMsgEnvelope {}
 // SAFETY: see the `Send` impl above; concurrent reads are read-only,
 // concurrent refcount/header mutations go through atomics.
 unsafe impl Sync for HewMsgEnvelope {}
-
-#[inline]
-fn header_validate(bits: u32) -> u32 {
-    assert!(
-        bits & HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK == 0,
-        "hew_msg_envelope: reserved header bits set (bits = {bits:#x}); \
-         this runtime does not understand the envelope's contract — \
-         refusing to proceed (fail-closed)"
-    );
-    bits
-}
 
 // On native builds the WASM envelope must layout-match the native one
 // so codegen treats them interchangeably across targets.
@@ -623,13 +603,6 @@ pub struct HewMailboxWasm {
 fn update_high_water_mark(mb: &mut HewMailboxWasm) {
     if mb.count > mb.high_water_mark {
         mb.high_water_mark = mb.count;
-    }
-}
-
-fn normalize_coalesce_fallback(policy: HewOverflowPolicy) -> HewOverflowPolicy {
-    match policy {
-        HewOverflowPolicy::Coalesce => HewOverflowPolicy::DropOld,
-        other => other,
     }
 }
 

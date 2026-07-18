@@ -1027,11 +1027,36 @@ impl Builder {
         };
         let elem = args.first()?;
         let elem_ty = elem.to_ty();
-        let abi = self.vec_generic_element_abi.get(&elem_ty).copied();
+        // Per-monomorphisation ABI: prefer the checker-exported verdict table
+        // (its Ptr/Layout entries are Copy-gated at the checker boundary). On a
+        // miss — a COMPOSITE monomorphised element (`W<i64>`, `Option<i64>`) the
+        // table never enumerated because it keys on raw generic type-ARGUMENTS,
+        // not the substituted element — classify the concrete element on demand
+        // through the SAME shared token classifier the checker uses, so this side
+        // and the constructor codegen reach one verdict (`dedup-semantic-boundary`,
+        // #2737: the checker deferred `W<T>` rather than resolve it owned on the
+        // generic spine while the constructor stamps a plain `W<i64>` descriptor).
+        let abi = self
+            .vec_generic_element_abi
+            .get(&elem_ty)
+            .copied()
+            .or_else(|| {
+                hew_types::vec_authority::classify_element_with(&elem_ty, &|name, args| {
+                    self.nominal_indirect_for_vec_element(name, args)
+                })
+            });
+        let is_owned = self.is_owned_vec_element(elem);
+        // A Layout-token element is `Copy` (plain bit-copy `_layout` ops) exactly
+        // when it owns no heap — the same fact the constructor consults to stamp a
+        // plain vs owned descriptor. A heap-owning composite is routed by
+        // `is_owned` above (owned family) and never reaches the copy-layout arm.
+        let is_copy_layout = abi == Some(hew_types::VecElementToken::Layout)
+            && !is_owned
+            && !self.named_elem_owns_heap(elem);
         let profile = hew_types::vec_authority::VecElementProfile {
             abi,
-            is_owned: self.is_owned_vec_element(elem),
-            is_copy_layout: abi == Some(hew_types::VecElementToken::Layout),
+            is_owned,
+            is_copy_layout,
             is_function_like: matches!(
                 elem,
                 ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
@@ -1048,6 +1073,45 @@ impl Builder {
             | hew_types::vec_authority::VecSymbolResolution::Unavailable
             | hew_types::vec_authority::VecSymbolResolution::Unsupported(_) => None,
         }
+    }
+
+    /// Nominal indirection lookup backing the shared Vec element-token classifier
+    /// ([`hew_types::vec_authority::classify_element_with`]) on the MIR
+    /// monomorphisation re-resolution path. `Some(true)` for a registered
+    /// indirect enum (heap-boxed pointer slot), `Some(false)` for a registered
+    /// inline record/enum (layout-descriptor slot), `None` when the name resolves
+    /// to no user layout in scope. Consults the SAME record/enum layout
+    /// registries the owned-element and heap-ownership authorities read, so the
+    /// element token this side derives matches the checker's `TypeDef`-backed
+    /// verdict (`dedup-semantic-boundary`).
+    fn nominal_indirect_for_vec_element(&self, name: &str, args: &[hew_types::Ty]) -> Option<bool> {
+        let short = short_name(name);
+        // The layout registries key generic instantiations by the monomorphised
+        // mangle (`W$$i64`), so form that key from the substituted arguments; a
+        // monomorphic nominal keeps its bare declared name. Mirrors the
+        // record/enum key resolution `elem_is_owned_abi_releasable` uses.
+        let resolved_args: Vec<ResolvedTy> = args
+            .iter()
+            .filter_map(|a| ResolvedTy::from_ty(a).ok())
+            .collect();
+        let key = if !args.is_empty() && resolved_args.len() == args.len() {
+            mangle_layout_key(name, &resolved_args)
+        } else {
+            name.to_string()
+        };
+        if let Some(layout) = self
+            .enum_layouts
+            .iter()
+            .find(|el| el.name == key || el.name == name || short_name(&el.name) == short)
+        {
+            return Some(layout.is_indirect);
+        }
+        if self.lookup_record_field_order(&key).is_some()
+            || self.lookup_record_field_order(name).is_some()
+        {
+            return Some(false);
+        }
+        None
     }
 
     /// User-facing rendering of a `Vec<T>` receiver's substituted element type,

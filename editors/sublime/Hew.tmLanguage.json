@@ -242,6 +242,11 @@
     "keywords": {
       "patterns": [
         {
+          "comment": "`clone <operand>` — the eager copy-on-write cost operation. A contextual prefix operator, highlighted only in prefix position: preceded by a non-member, non-word char and followed by whitespace then an operand start. This deliberately skips `x.clone()`, `fn clone(`, `clone(args)`, and `clone = ...` where `clone` stays an ordinary identifier.",
+          "name": "keyword.operator.clone.hew",
+          "match": "(?<![.\\w])clone(?=\\s+[A-Za-z0-9_\"'\\[{])"
+        },
+        {
           "comment": "Control flow",
           "name": "keyword.control.hew",
           "match": "\\b(after|await_restart|await|break|continue|defer|else|for|from|if|in|join|loop|match|return|scope|select|while|yield)\\b"

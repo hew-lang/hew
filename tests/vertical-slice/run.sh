@@ -712,18 +712,13 @@ run_accept_expect_status "array_repeat_int_sum" 0
 run_accept_expect_status "array_repeat_runtime_count" 0
 run_accept_expect_status "array_repeat_string_clone" 0
 run_accept_expect_status "array_repeat_record_clone" 0
+# Owned-element array-repeat where the element transitively holds a Vec field:
+# [b; 3] must produce 3 independent deep clones and keep the source live (#2724).
+# Previously fail-closed; the desugar now gives a place source no aliasing temp,
+# so a collection-field record is admitted exactly like copy-in `.push`.
+run_accept_expect_status "array_repeat_collection_field_clone" 0
 run_accept_expect_stdout "for_in_block_wrapped_array_literal"
 run_accept_expect_stdout "for_in_block_wrapped_array_repeat"
-
-# Owned-element array-repeat reject: a record transitively holding a Vec field
-# is a valid copy-in `.push` element but is NOT yet array-repeat clonable (the
-# repeat-value temp aliases the source's collection buffer and both drop it), so
-# [r; N] must fail closed with a clear diagnostic naming the missing clone path.
-# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/array_repeat_non_clone_element.hew" \
-    'array repeat requires the element type to be Clone' \
-    "array_repeat_non_clone_element"
 
 # Fundamentally non-clone array-repeat reject: a record with an `Rc` field has
 # no clone/drop thunk at all, so [r; N] must fail closed. Pins the non-clone

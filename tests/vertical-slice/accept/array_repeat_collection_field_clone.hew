@@ -1,0 +1,36 @@
+// Owned-element array-repeat where the element transitively holds a collection
+// field: `[b; 3]` of a record with a `Vec` field must produce 3 INDEPENDENT
+// deep clones, and the source `b` must stay live and drop exactly once.
+//
+// Previously fail-closed (#2724): the repeat desugar bound an intermediate
+// repeat-value temp to a shallow Read-load of the source that aliased its Vec
+// field buffer, so the temp and the still-live source both freed it (double-
+// free). The desugar now gives a place source no temp -- each slot is an
+// independent per-slot clone -- so a Vec-field record is admitted, matching
+// what copy-in `.push` already accepts.
+type Bag {
+    items: Vec<i64>;
+}
+
+fn main() -> i64 {
+    let b = Bag { items: [10, 20, 30] };
+    let bs = [b; 3];
+    if bs.len() != 3 {
+        return 70;
+    }
+    // Each slot is an independent deep clone holding the full source contents.
+    if bs[0].items.len() != 3 {
+        return 71;
+    }
+    if bs[1].items[0] != 10 {
+        return 72;
+    }
+    if bs[2].items[2] != 30 {
+        return 73;
+    }
+    // The source place is still live (no move) and drops exactly once.
+    if b.items.len() != 3 {
+        return 74;
+    }
+    0
+}

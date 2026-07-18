@@ -715,14 +715,24 @@ run_accept_expect_status "array_repeat_record_clone" 0
 run_accept_expect_stdout "for_in_block_wrapped_array_literal"
 run_accept_expect_stdout "for_in_block_wrapped_array_repeat"
 
-# Owned-element array-repeat reject: a record with a Vec field has no clone
-# thunk (container-in-container), so [r; N] must fail closed with a clear
-# diagnostic naming the missing clone path.
+# Owned-element array-repeat reject: a record transitively holding a Vec field
+# is a valid copy-in `.push` element but is NOT yet array-repeat clonable (the
+# repeat-value temp aliases the source's collection buffer and both drop it), so
+# [r; N] must fail closed with a clear diagnostic naming the missing clone path.
 # shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/array_repeat_non_clone_element.hew" \
     'array repeat requires the element type to be Clone' \
     "array_repeat_non_clone_element"
+
+# Fundamentally non-clone array-repeat reject: a record with an `Rc` field has
+# no clone/drop thunk at all, so [r; N] must fail closed. Pins the non-clone
+# boundary independently of the collection-field narrowing above.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/array_repeat_rc_field_element.hew" \
+    'array repeat requires the element type to be Clone' \
+    "array_repeat_rc_field_element"
 
 run_accept_expect_status "map_literal_string_keys" 0
 run_accept_expect_status "map_literal_empty_annotated" 0

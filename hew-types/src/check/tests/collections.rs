@@ -1022,6 +1022,54 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
 }
 
 #[test]
+fn array_repeat_collection_bearing_record_fails_closed() {
+    // Admitting a collection-bearing record as a Vec element (copy-in `.push`)
+    // must NOT widen array-repeat `[b; N]`: the repeat clone-N lowering aliases
+    // the source's collection buffer in an unconsumed temp and double-frees it.
+    // `[Bag; N]` stays fail-closed with the array-repeat Clone diagnostic while
+    // `Bag.push` is admitted; a collection-free record `[Point; N]` still repeats.
+    let bag = check_source(
+        r"
+        type Bag { items: Vec<i64> }
+
+        fn main() {
+            let b = Bag { items: [1, 2, 3] };
+            let bs = [b; 3];
+        }
+        ",
+    );
+    assert!(
+        bag.errors.iter().any(|error| {
+            error
+                .message
+                .contains("array repeat requires the element type to be Clone")
+        }),
+        "[Bag; N] array-repeat of a collection-bearing record must fail closed: {:#?}",
+        bag.errors
+    );
+
+    let point = check_source(
+        r"
+        type Point { x: i64, y: i64 }
+
+        fn main() {
+            let p = Point { x: 1, y: 2 };
+            let ps = [p; 3];
+        }
+        ",
+    );
+    assert!(
+        !point.errors.iter().any(|error| {
+            error
+                .message
+                .contains("array repeat requires the element type to be Clone")
+        }),
+        "[Point; N] array-repeat of a collection-free record must remain admitted: {:#?}",
+        point.errors
+    );
+}
+
+#[test]
 fn vec_record_closure_collection_field_fails_closed() {
     // A record whose collection field holds an UNCLONABLE element (a
     // function/closure) keeps the record fail-closed: the owned-collection ABI

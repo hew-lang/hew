@@ -5189,7 +5189,7 @@ impl Checker {
     /// own self-edge through a `Vec` (`Array(Vec<RedisReply>)`) is the one
     /// admitted exception (gated by the later `RcFree` refinement) — here we
     /// only reject UNOWNED-container fields, not the self-recursive edge.
-    fn vec_element_contains_unowned_container(
+    pub(super) fn vec_element_contains_unowned_container(
         &self,
         ty: &Ty,
         roots: &HashSet<String>,

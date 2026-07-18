@@ -3921,7 +3921,7 @@ impl Checker {
             return;
         }
 
-        let is_abstract = self.is_vec_element_abstract_type_param(&elem_ty);
+        let is_abstract = self.vec_element_contains_abstract_type_param(&elem_ty);
         let is_copy_layout = self.vec_element_has_copy_layout(&elem_ty);
         let profile = crate::vec_authority::VecElementProfile {
             abi: crate::vec_authority::classify_element(&elem_ty, &self.type_defs),
@@ -4001,20 +4001,38 @@ impl Checker {
         self.report_error(TypeErrorKind::InvalidOperation, span, message);
     }
 
-    /// True when `elem_ty` is a bare, no-argument declared type parameter
-    /// (e.g. the `T` in `fn f<T>(v: Vec<T>)`). This is the signal that a
-    /// `Vec<T>` element-typed method cannot be resolved to a concrete runtime
-    /// symbol at check time and must be re-resolved per monomorphisation
-    /// (#1929 Stage 1). A bare `Ty::Named` with no args and no builtin
-    /// discriminator that names an in-scope type parameter is the abstract
-    /// element; anything else (a concrete nominal, a builtin, an applied
-    /// generic) is not.
-    fn is_vec_element_abstract_type_param(&self, elem_ty: &Ty) -> bool {
-        matches!(
-            elem_ty,
-            Ty::Named { name, args, builtin: None }
-                if args.is_empty() && self.is_type_param_in_scope(name)
-        )
+    /// True when `elem_ty` transitively references an in-scope type parameter —
+    /// a bare `T`, or a composite that *contains* one (`W<T>`, `Option<T>`,
+    /// `(T, i64)`, `Vec<T>`). Such an element cannot be classified to a concrete
+    /// runtime symbol at check time: its owned-vs-plain / Copy-vs-heap verdict
+    /// depends on the monomorphised argument, so eager resolution on the generic
+    /// spine can pick a different ABI than the constructor codegen stamps for the
+    /// concrete instantiation (the #2737 clone-thunk divergence — `W<T>`
+    /// classified owned generically vs the plain all-scalar `W<i64>`). Marking it
+    /// abstract routes the method through the per-monomorphisation re-resolver
+    /// (MIR `resolve_polymorphic_vec_element_symbol`), which classifies the
+    /// substituted element and stays congruent with the constructor by
+    /// construction (`dedup-semantic-boundary`).
+    pub(super) fn vec_element_contains_abstract_type_param(&self, elem_ty: &Ty) -> bool {
+        match elem_ty {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                (builtin.is_none() && args.is_empty() && self.is_type_param_in_scope(name))
+                    || args
+                        .iter()
+                        .any(|a| self.vec_element_contains_abstract_type_param(a))
+            }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .any(|e| self.vec_element_contains_abstract_type_param(e)),
+            Ty::Array(inner, _) | Ty::Slice(inner) => {
+                self.vec_element_contains_abstract_type_param(inner)
+            }
+            _ => false,
+        }
     }
 
     /// Build the `Ty → VecElementToken` verdict table that MIR consults when

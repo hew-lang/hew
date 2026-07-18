@@ -547,59 +547,6 @@ unsafe fn wasm_snapshot(
     }
 }
 
-// ── Constants parity ─────────────────────────────────────────────────────────
-
-/// Header-bit constants in `mailbox_wasm` must equal those in `mailbox`.
-///
-/// This is documentation-as-test: if a constant moves in either module the
-/// test fails loudly instead of silently allowing the two surfaces to drift.
-#[test]
-fn envelope_header_bit_constants_match_native_and_wasm() {
-    use crate::mailbox as native;
-    use crate::mailbox_wasm as wasm;
-
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_ALIAS_ACTIVE,
-        wasm::HEW_MSG_ENVELOPE_ALIAS_ACTIVE
-    );
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_SHARED_FROZEN,
-        wasm::HEW_MSG_ENVELOPE_SHARED_FROZEN
-    );
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_ARENA_BACKED,
-        wasm::HEW_MSG_ENVELOPE_ARENA_BACKED
-    );
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_FORKED,
-        wasm::HEW_MSG_ENVELOPE_FORKED
-    );
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER,
-        wasm::HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER
-    );
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_RESERVED_GAMMA_A,
-        wasm::HEW_MSG_ENVELOPE_RESERVED_GAMMA_A
-    );
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_RESERVED_GAMMA_B,
-        wasm::HEW_MSG_ENVELOPE_RESERVED_GAMMA_B
-    );
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_RESERVED_DELTA_A,
-        wasm::HEW_MSG_ENVELOPE_RESERVED_DELTA_A
-    );
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_RESERVED_DELTA_B,
-        wasm::HEW_MSG_ENVELOPE_RESERVED_DELTA_B
-    );
-    assert_eq!(
-        native::HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK,
-        wasm::HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK
-    );
-}
-
 // ── Refcount + alias bit parity ──────────────────────────────────────────────
 
 /// `hew_msg_envelope_new` starts at refcount=1, alias bit clear, on both

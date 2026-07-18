@@ -390,7 +390,77 @@ fn module_capabilities_collect_typed_metric_and_node_calls() {
         instr_spans: ::std::collections::BTreeMap::new(),
     };
 
-    let capabilities = ModuleCapabilities::from_raw_mir(&[function]);
+    let capabilities = ModuleCapabilities::from_raw_mir(&[function], &[]);
     assert!(capabilities.contains(RuntimeCapability::Metrics));
     assert!(capabilities.contains(RuntimeCapability::Node));
+}
+
+#[test]
+fn module_capabilities_set_and_clear_blocking_offload_from_tagged_extern_calls() {
+    use hew_mir::{
+        BasicBlock, ExternDecl, ModuleCapabilities, RawMirFunction, SourceOrigin, Terminator,
+    };
+    use hew_types::runtime_call::RuntimeCapability;
+    use hew_types::ExternRuntimeCapability;
+
+    let function_calling = |callee: &str| RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: format!("calls_{callee}"),
+        return_ty: ResolvedTy::Unit,
+        call_conv: hew_mir::FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Call {
+                    callee: callee.to_string(),
+                    builtin: None,
+                    args: vec![],
+                    dest: None,
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let tagged_connect = ExternDecl {
+        name: "hew_tcp_connect".to_string(),
+        abi: "C".to_string(),
+        param_tys: vec![ResolvedTy::String],
+        return_ty: ResolvedTy::Unit,
+        provenance: hew_hir::ExternProvenance::Module("std.net".to_string()),
+        runtime_capability: Some(ExternRuntimeCapability::BlockingOffload),
+        malloc_string_return: false,
+    };
+
+    let set = ModuleCapabilities::from_raw_mir(
+        &[function_calling("hew_tcp_connect")],
+        std::slice::from_ref(&tagged_connect),
+    );
+    assert!(set.contains(RuntimeCapability::BlockingOffload));
+
+    let clear = ModuleCapabilities::from_raw_mir(
+        &[function_calling("hew_tcp_accept")],
+        std::slice::from_ref(&tagged_connect),
+    );
+    assert!(!clear.contains(RuntimeCapability::BlockingOffload));
 }

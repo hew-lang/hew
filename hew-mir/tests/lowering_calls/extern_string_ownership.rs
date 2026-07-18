@@ -67,6 +67,7 @@ fn extern_item(
         param_consume: vec![],
         return_ty,
         provenance,
+        runtime_capability: None,
         span: 0..0,
     })
 }

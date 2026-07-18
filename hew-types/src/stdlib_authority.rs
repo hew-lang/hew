@@ -376,6 +376,21 @@ impl StdlibAuthority {
     }
 
     #[must_use]
+    pub fn extern_runtime_capability(
+        &self,
+        module_name: &str,
+        declaration: &str,
+    ) -> Option<ExternRuntimeCapability> {
+        let relative_module = module_name
+            .strip_prefix("std.")
+            .or_else(|| module_name.strip_prefix("std::"))?;
+        let qualified = format!("{}::{declaration}", relative_module.replace('.', "::"));
+        self.extern_runtime_capabilities
+            .get(&qualified)
+            .map(|entry| entry.capability)
+    }
+
+    #[must_use]
     pub fn overload_groups(&self) -> &BTreeMap<OverloadGroup, Vec<AuthorityBinding>> {
         &self.overload_groups
     }
@@ -1174,6 +1189,25 @@ extern "C" {
                 alias: Some("Option".to_string()),
                 kind: PreludeExportKind::Item,
             }]
+        );
+    }
+
+    #[test]
+    fn extern_runtime_capability_lookup_accepts_dotted_and_scoped_std_modules() {
+        let authority = load_stdlib_authority(SUBSTRATE_SOURCES)
+            .expect("embedded stdlib authority sources must load");
+
+        assert_eq!(
+            authority.extern_runtime_capability("std.net", "hew_tcp_connect"),
+            Some(ExternRuntimeCapability::BlockingOffload)
+        );
+        assert_eq!(
+            authority.extern_runtime_capability("std::net::dns", "hew_dns_resolve"),
+            Some(ExternRuntimeCapability::BlockingOffload)
+        );
+        assert_eq!(
+            authority.extern_runtime_capability("user.net", "hew_tcp_connect"),
+            None
         );
     }
 

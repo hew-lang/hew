@@ -3386,6 +3386,7 @@ pub fn lower_hir_module_with_facts(
             param_tys: ef.param_tys.clone(),
             return_ty: ef.return_ty.clone(),
             provenance: ef.provenance.clone(),
+            runtime_capability: ef.runtime_capability,
             malloc_string_return,
         });
     }
@@ -3465,7 +3466,7 @@ pub fn lower_hir_module_with_facts(
         })
         .collect();
 
-    let capabilities = crate::model::ModuleCapabilities::from_raw_mir(&raw_mir);
+    let capabilities = crate::model::ModuleCapabilities::from_raw_mir(&raw_mir, &extern_decls);
 
     IrPipeline {
         thir,

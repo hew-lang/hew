@@ -121,6 +121,7 @@ fn pipeline_adopt_extern(malloc_string_return: bool) -> IrPipeline {
             param_tys: vec![],
             return_ty: ResolvedTy::String,
             provenance: hew_hir::ExternProvenance::Root,
+            runtime_capability: None,
             malloc_string_return,
         }],
         dyn_vtable_registry: vec![],

@@ -3430,6 +3430,8 @@ pub fn lower_program_with_mono_cap(
                         "extern fn",
                         &func.span,
                     );
+                    let provenance = extern_provenance(ctx.current_module_name.as_deref());
+                    let runtime_capability = extern_runtime_capability(&provenance, &func.name);
                     items.push(HirItem::ExternFn(crate::node::HirExternFn {
                         id: ctx.ids.item(),
                         node: ctx.ids.node(),
@@ -3444,7 +3446,8 @@ pub fn lower_program_with_mono_cap(
                         // `Some(dotted)` a file-import module. Threaded to MIR so
                         // C-ABI string-return ownership is classified from a proven
                         // fact, not `diagnostic_source_modules` absence.
-                        provenance: extern_provenance(ctx.current_module_name.as_deref()),
+                        provenance,
+                        runtime_capability,
                         span: func.span.clone(),
                     }));
                 }
@@ -3718,6 +3721,10 @@ pub fn lower_program_with_mono_cap(
                                     "extern fn",
                                     &func.span,
                                 );
+                                let provenance =
+                                    extern_provenance(ctx.current_module_name.as_deref());
+                                let runtime_capability =
+                                    extern_runtime_capability(&provenance, &func.name);
                                 items.push(HirItem::ExternFn(crate::node::HirExternFn {
                                     id: ctx.ids.item(),
                                     node: ctx.ids.node(),
@@ -3733,9 +3740,8 @@ pub fn lower_program_with_mono_cap(
                                     // above so a std vs. user/package extern is
                                     // classified identically regardless of which
                                     // pass emitted it.
-                                    provenance: extern_provenance(
-                                        ctx.current_module_name.as_deref(),
-                                    ),
+                                    provenance,
+                                    runtime_capability,
                                     span: func.span.clone(),
                                 }));
                             }
@@ -4581,6 +4587,16 @@ fn extern_provenance(current_module_name: Option<&str>) -> ExternProvenance {
         None => ExternProvenance::Root,
         Some(name) => ExternProvenance::Module(name.to_string()),
     }
+}
+
+fn extern_runtime_capability(
+    provenance: &ExternProvenance,
+    declaration: &str,
+) -> Option<hew_types::ExternRuntimeCapability> {
+    let ExternProvenance::Module(module_name) = provenance else {
+        return None;
+    };
+    hew_types::stdlib_authority().extern_runtime_capability(module_name, declaration)
 }
 
 fn record_source_modules_for_items(

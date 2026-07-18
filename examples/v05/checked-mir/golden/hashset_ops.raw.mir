@@ -100,6 +100,7 @@ fn main() -> () [conv=default]
     _22 = call string_concat(_20, _21) -> bb12
   bb12:
     drop _21 ty=string fn=release(hew_string_drop)
+    drop _20 ty=string fn=release(hew_string_drop)
     _23 = string_lit " removed="
     _24 = call string_concat(_22, _23) -> bb13
   bb13:
@@ -110,6 +111,7 @@ fn main() -> () [conv=default]
     _26 = call string_concat(_24, _25) -> bb15
   bb15:
     drop _25 ty=string fn=release(hew_string_drop)
+    drop _24 ty=string fn=release(hew_string_drop)
     call println_str(_26) -> bb16
   bb16:
     stmt: eval site=SiteId(19) ty=()
@@ -162,6 +164,7 @@ fn main() -> () [conv=default]
     _45 = call string_concat(_43, _44) -> bb28
   bb28:
     drop _44 ty=string fn=release(hew_string_drop)
+    drop _43 ty=string fn=release(hew_string_drop)
     call println_str(_45) -> bb29
   bb29:
     stmt: eval site=SiteId(60) ty=()

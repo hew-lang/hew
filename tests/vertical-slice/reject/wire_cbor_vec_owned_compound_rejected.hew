@@ -1,11 +1,10 @@
 // Reject: a `Vec` whose element is an `Option` with a heap-owning payload
-// (`Option<string>`) is outside the supported wire-body floor. Heap-owning
-// record / enum / nested-collection elements now ride the owned Vec ABI, but the
-// `Option` null-encoding combined with an owned-element backing store is a
-// distinct, unproven shape — the CBOR codec fails closed at codegen-front
-// validation rather than emitting an element codec that could mis-free the owned
-// payload on a malformed decode. (bytes, indirect-enum, and HashMap/HashSet
-// elements remain rejected the same way.)
+// (`Option<string>`) has no synthesised clone/drop thunk path for the
+// owned-element Vec runtime, so it fails closed at owned-element Vec admission
+// (`Vec::new`) — before the wire-body floor is even reached. `Option<i64>`
+// (all-scalar) is a first-class inline layout Vec element; the heap-owning
+// payload is the unsupported shape here. (bytes, indirect-enum, and
+// HashMap/HashSet elements remain rejected as well.)
 #[wire]
 type Holder {
     xs: Vec<Option<string>> @1,

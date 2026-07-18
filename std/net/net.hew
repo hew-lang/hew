@@ -679,9 +679,9 @@ pub type StreamPair {
 extern "C" {
     fn hew_tcp_listen(addr: string) -> Listener;
     fn hew_tcp_accept(listener: Listener) -> Connection;
-    #[runtime_capability("blocking_offload")]
+    #[runtime_capability(blocking_offload)]
     fn hew_tcp_connect(addr: string) -> Connection;
-    #[runtime_capability("blocking_offload")]
+    #[runtime_capability(blocking_offload)]
     fn hew_tcp_connect_timeout(host: string, port: i32, timeout_ms: i32) -> Connection;
     fn hew_tcp_read(conn: Connection) -> bytes;
     // Returns the byte count written (>= 0) on success, or -1 on failure with

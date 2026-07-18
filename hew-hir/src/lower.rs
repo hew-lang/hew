@@ -7345,26 +7345,26 @@ impl LowerCtx {
             // so MIR threads the typed family onto the call and codegen
             // dispatches on it, never on the callee string. Deliberately
             // narrow: only the families whose intercepts are family-keyed
-            // today (`Node::lookup` and the `HashMap::new` / `HashSet::new`
-            // constructor surface forms — `pid.send` / `conn.attach` and
-            // the channel/stream layout entries arrive typed through the
-            // checker's method-call rewrites instead). Widening this to
-            // every catalog-named row (e.g. the math intrinsic names)
-            // changes their value-position acceptance and belongs to the
-            // math-intercept migration, not this seam.
+            // today (math intrinsics, `Node::lookup`, and the `HashMap::new` /
+            // `HashSet::new` constructor surface forms — `pid.send` /
+            // `conn.attach` and the channel/stream layout entries arrive typed
+            // through the checker's method-call rewrites instead).
             //
             // The lift must NOT apply to the `runtime_symbol()` alias
             // insert below: the alias callee name (e.g.
             // `hew_node_api_lookup`) is a different callee identity than
             // the family's `c_symbol()`, and carrying the family there
             // would break the `Terminator::Call` builtin↔callee invariant.
-            let primary_family = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                builtin.name,
-            )
-            .filter(|family| {
-                use hew_types::runtime_call::RuntimeCallFamily as F;
-                matches!(family, F::NodeLookup | F::HashMapNew | F::HashSetNew)
-            });
+            let primary_family =
+                match hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(builtin.name) {
+                    Some(
+                        family @ (hew_types::runtime_call::RuntimeCallFamily::MathIntrinsic(_)
+                        | hew_types::runtime_call::RuntimeCallFamily::NodeLookup
+                        | hew_types::runtime_call::RuntimeCallFamily::HashMapNew
+                        | hew_types::runtime_call::RuntimeCallFamily::HashSetNew),
+                    ) => Some(family),
+                    _ => None,
+                };
             self.fn_registry.insert(
                 builtin.name.to_string(),
                 FnEntry {
@@ -9015,7 +9015,11 @@ impl LowerCtx {
         let resolved_ref = self
             .fn_registry
             .get(&symbol)
-            .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
+            .map_or(ResolvedRef::Unresolved, |entry| {
+                entry
+                    .builtin_family
+                    .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
+            });
         let callee_ty = ResolvedTy::Function {
             params: Vec::new(),
             ret: Box::new(ret_ty.clone()),
@@ -21905,10 +21909,14 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     );
                 };
-                let resolved_ref = self
-                    .fn_registry
-                    .get(symbol)
-                    .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id));
+                let resolved_ref =
+                    self.fn_registry
+                        .get(symbol)
+                        .map_or(ResolvedRef::Unresolved, |entry| {
+                            entry
+                                .builtin_family
+                                .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
+                        });
                 let callee_ty = ResolvedTy::Function {
                     params: Vec::new(),
                     ret: Box::new(ret_ty.clone()),

@@ -571,6 +571,7 @@ fn fs$last_io_error() -> IoError [conv=default]
   bb3:
     stmt: eval site=SiteId(179) ty=string
     stmt: use BindingId(17) errno site=SiteId(184) ty=i64 intent=Read
+    drop _6 ty=string fn=release(hew_string_drop)
     _8 = const.i64 0
     _9 = const.i64 0
     _10 = icmp.eq _5 _9
@@ -689,6 +690,7 @@ fn fs$read(string) -> string [conv=default]
   bb11:
     _16 = call string_concat(_14, _15) -> bb12
   bb12:
+    drop _15 ty=string fn=release(hew_string_drop)
     _17 = string_lit "`: "
     _18 = call string_concat(_16, _17) -> bb13
   bb13:
@@ -703,6 +705,7 @@ fn fs$read(string) -> string [conv=default]
   bb16:
     _23 = call string_concat(_18, _22) -> bb17
   bb17:
+    drop _22 ty=string fn=release(hew_string_drop)
     call panic(_23) -> bb18
   bb18:
     stmt: eval site=SiteId(215) ty=!
@@ -710,6 +713,7 @@ fn fs$read(string) -> string [conv=default]
   bb19:
     _26 = call string_concat(_24, _25) -> bb20
   bb20:
+    drop _25 ty=string fn=release(hew_string_drop)
     _27 = string_lit "`: "
     _28 = call string_concat(_26, _27) -> bb21
   bb21:
@@ -719,6 +723,7 @@ fn fs$read(string) -> string [conv=default]
   bb22:
     _30 = call string_concat(_28, _29) -> bb23
   bb23:
+    drop _29 ty=string fn=release(hew_string_drop)
     call panic(_30) -> bb24
   bb24:
     stmt: eval site=SiteId(238) ty=!
@@ -794,6 +799,7 @@ fn fs$try_read(string) -> Result<string, IoError> [conv=default]
   bb9:
     stmt: eval site=SiteId(275) ty=string
     stmt: use BindingId(26) errno site=SiteId(279) ty=i32 intent=Read
+    drop _12 ty=string fn=release(hew_string_drop)
     _14 = const.i64 0
     _15 = icmp.eq _11 _14
     branch _15 ? bb10 : bb11
@@ -1124,6 +1130,7 @@ fn fs$try_read_bytes(string) -> Result<bytes, IoError> [conv=default]
     stmt: eval site=SiteId(370) ty=string
     stmt: use BindingId(42) kind site=SiteId(374) ty=i64 intent=Read
     stmt: use BindingId(43) errno site=SiteId(376) ty=i32 intent=Read
+    drop _11 ty=string fn=release(hew_string_drop)
     _13 = const.i64 1
     mtag12 = move _13
     _14 = cast _7 i32 -> i64
@@ -1380,6 +1387,7 @@ fn fs$try_list_dir(string) -> Result<Vec<string>, IoError> [conv=default]
   bb4:
     stmt: eval site=SiteId(441) ty=string
     stmt: use BindingId(56) errno site=SiteId(445) ty=i32 intent=Read
+    drop _8 ty=string fn=release(hew_string_drop)
     _10 = const.i64 0
     _11 = icmp.eq _7 _10
     branch _11 ? bb5 : bb6
@@ -2036,6 +2044,7 @@ fn stream$try_from_file(string) -> Result<Stream<string>, fs.IoError> [conv=defa
     stmt: eval site=SiteId(645) ty=string
     stmt: use BindingId(86) kind site=SiteId(649) ty=i64 intent=Read
     stmt: use BindingId(87) errno site=SiteId(651) ty=i32 intent=Read
+    drop _13 ty=string fn=release(hew_string_drop)
     _15 = const.i64 1
     mtag14 = move _15
     _16 = cast _12 i32 -> i64
@@ -2156,6 +2165,7 @@ fn stream$try_to_file(string) -> Result<Sink<string>, fs.IoError> [conv=default]
     stmt: eval site=SiteId(685) ty=string
     stmt: use BindingId(92) kind site=SiteId(689) ty=i64 intent=Read
     stmt: use BindingId(93) errno site=SiteId(691) ty=i32 intent=Read
+    drop _13 ty=string fn=release(hew_string_drop)
     _15 = const.i64 1
     mtag14 = move _15
     _16 = cast _12 i32 -> i64

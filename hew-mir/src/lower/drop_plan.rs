@@ -3599,6 +3599,9 @@ pub(super) fn binder_read_is_borrow_safe_terminator(
 pub(super) fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bool {
     if let Instr::CallRuntimeAbi(call) = instr {
         let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
+        if contract.borrows_string_call_args() {
+            return true;
+        }
         if contract.borrows_collection_binder_receiver() || contract.borrows_bytes_receiver() {
             return !call
                 .args()

@@ -678,6 +678,7 @@ fn regex$new(string) -> Pattern [conv=default]
   bb6:
     _12 = call string_concat(_10, _11) -> bb7
   bb7:
+    drop _11 ty=string fn=release(hew_string_drop)
     call panic(_12) -> bb8
   bb8:
     stmt: eval site=SiteId(199) ty=!

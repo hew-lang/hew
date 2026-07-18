@@ -5809,6 +5809,7 @@ fn emit_actor_state_clone_body<'ctx>(
                 dst,
                 field_idx,
                 kind,
+                false,
                 store_bbs[step_idx],
                 rollback_bbs[step_idx],
                 next_bb,
@@ -5881,6 +5882,7 @@ fn emit_field_clone_step<'ctx>(
     dst: PointerValue<'ctx>,
     field_idx: u32,
     kind: &StateFieldCloneKind,
+    allow_opaque_rollback: bool,
     store_bb: inkwell::basic_block::BasicBlock<'ctx>,
     rollback_bb: inkwell::basic_block::BasicBlock<'ctx>,
     next_bb: inkwell::basic_block::BasicBlock<'ctx>,
@@ -6093,6 +6095,20 @@ fn emit_field_clone_step<'ctx>(
             builder
                 .build_unconditional_branch(next_bb)
                 .llvm_ctx_with(|| format!("closure pair clone store term f{field_idx}"))?;
+            return Ok(());
+        }
+        StateFieldCloneKind::OpaqueHandle { name } if allow_opaque_rollback => {
+            // Opaque handles have no dup helper. Aggregate clone callers must
+            // receive the ordinary rollback/failure result, while the paired
+            // drop helper remains available for drop-only enum/record seeds.
+            let _ = name;
+            builder
+                .build_unconditional_branch(rollback_bb)
+                .llvm_ctx_with(|| format!("opaque handle clone refusal f{field_idx}"))?;
+            builder.position_at_end(store_bb);
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("opaque handle clone store term f{field_idx}"))?;
             return Ok(());
         }
         StateFieldCloneKind::Resource { name, .. } => {
@@ -6879,7 +6895,7 @@ fn emit_record_clone_inplace_body<'ctx>(
              already has a body — duplicate synthesis is a substrate invariant violation"
         )));
     }
-    emit_aggregate_clone_inplace_body(ctx, llvm_mod, f, record_struct, kinds, w)
+    emit_aggregate_clone_inplace_body(ctx, llvm_mod, f, record_struct, kinds, true, w)
 }
 
 /// Emit the per-field clone+rollback body into a pre-declared
@@ -6895,6 +6911,7 @@ pub(crate) fn emit_aggregate_clone_inplace_body<'ctx>(
     f: FunctionValue<'ctx>,
     record_struct: StructType<'ctx>,
     kinds: &[StateFieldCloneKind],
+    allow_opaque_rollback: bool,
     w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
     let i32_ty = ctx.i32_type();
@@ -6953,6 +6970,7 @@ pub(crate) fn emit_aggregate_clone_inplace_body<'ctx>(
                 dst,
                 field_idx,
                 kind,
+                allow_opaque_rollback,
                 store_bbs[step_idx],
                 rollback_bbs[step_idx],
                 next_bb,
@@ -8807,6 +8825,7 @@ fn emit_enum_clone_inplace_body<'ctx>(
                 dst_payload,
                 field_idx,
                 kind,
+                true,
                 store_bbs[step_idx],
                 rollback_bbs[step_idx],
                 next_bb,
@@ -18757,7 +18776,7 @@ fn emit_tuple_kind_inplace_thunk_bodies<'ctx>(
 ) -> CodegenResult<()> {
     let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
     if clone_fn.count_basic_blocks() == 0 {
-        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, tuple_struct, kinds, w)?;
+        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, tuple_struct, kinds, false, w)?;
     }
     let drop_fn = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, tuple_key);
     if drop_fn.count_basic_blocks() == 0 {

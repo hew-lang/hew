@@ -189,6 +189,7 @@ fn metrics$counter(string) -> Counter [conv=default]
   bb4:
     _9 = call string_concat(_7, _8) -> bb5
   bb5:
+    drop _8 ty=string fn=release(hew_string_drop)
     _10 = string_lit "`"
     _11 = call string_concat(_9, _10) -> bb6
   bb6:
@@ -293,6 +294,7 @@ fn metrics$gauge(string) -> Gauge [conv=default]
   bb4:
     _9 = call string_concat(_7, _8) -> bb5
   bb5:
+    drop _8 ty=string fn=release(hew_string_drop)
     _10 = string_lit "`"
     _11 = call string_concat(_9, _10) -> bb6
   bb6:
@@ -397,6 +399,7 @@ fn metrics$histogram(string) -> Histogram [conv=default]
   bb4:
     _9 = call string_concat(_7, _8) -> bb5
   bb5:
+    drop _8 ty=string fn=release(hew_string_drop)
     _10 = string_lit "`"
     _11 = call string_concat(_9, _10) -> bb6
   bb6:

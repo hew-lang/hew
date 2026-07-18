@@ -41,7 +41,7 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![ResolvedTy::I64],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
 

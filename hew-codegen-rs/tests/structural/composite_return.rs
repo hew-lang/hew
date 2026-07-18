@@ -43,7 +43,7 @@ fn option_some_pipeline() -> IrPipeline {
     let option_ty = ResolvedTy::Named {
         name: "Option".to_string(),
         args: vec![ResolvedTy::I64],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Option),
         is_opaque: false,
     };
     let enum_layout = EnumLayout {
@@ -152,7 +152,7 @@ fn option_string_pipeline() -> IrPipeline {
     let option_ty = ResolvedTy::Named {
         name: "Option".to_string(),
         args: vec![ResolvedTy::String],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Option),
         is_opaque: false,
     };
     let enum_layout = EnumLayout {

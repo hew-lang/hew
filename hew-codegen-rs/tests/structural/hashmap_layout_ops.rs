@@ -314,7 +314,7 @@ fn hashmap_ty(key: ResolvedTy, val: ResolvedTy) -> ResolvedTy {
     ResolvedTy::Named {
         name: "HashMap".to_string(),
         args: vec![key, val],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::HashMap),
         is_opaque: false,
     }
 }
@@ -323,7 +323,7 @@ fn hashset_ty(elem: ResolvedTy) -> ResolvedTy {
     ResolvedTy::Named {
         name: "HashSet".to_string(),
         args: vec![elem],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::HashSet),
         is_opaque: false,
     }
 }

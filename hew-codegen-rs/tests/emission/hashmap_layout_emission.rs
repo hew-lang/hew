@@ -36,7 +36,7 @@ fn vec_of(elem: ResolvedTy) -> ResolvedTy {
     ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![elem],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     }
 }

@@ -46,7 +46,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![ResolvedTy::I64],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
 
@@ -214,7 +214,7 @@ fn vec_index_bool_pipeline() -> IrPipeline {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![ResolvedTy::Bool],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
 
@@ -378,7 +378,7 @@ fn vec_index_char_pipeline() -> IrPipeline {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![ResolvedTy::Char],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
 

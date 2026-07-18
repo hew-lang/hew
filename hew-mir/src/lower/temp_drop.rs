@@ -1517,6 +1517,46 @@ fn is_borrowing_string_concat_instr_use(instr: &Instr, t: u32) -> bool {
         && crate::runtime_symbols::callee_ownership_contract(call.symbol())
             .borrows_string_call_args()
 }
+/// `true` when control flows from `start` to `use_block` along a chain of
+/// single-predecessor `Call`-terminated blocks — so reaching `use_block`
+/// implies the block that produced `start` ran exactly once, and every block on
+/// the chain (including `use_block`) has that single predecessor.
+///
+/// `start` is the def producer's `Call` continuation (the `next` of a
+/// terminator-def, or the def instruction's own block terminator's `next`).
+/// A single-step chain (`start == use_block`, `pred_count[use_block] == 1`) is
+/// the shape the terminator-def domination check historically proved directly.
+/// The multi-step walk is the #2726 f-string case: a `to_string_*` conversion
+/// lowers to a block-terminating `Call` that SPLITS the concat chain, so the
+/// concat consuming an intermediate result is separated from the concat that
+/// produced it by that conversion block. Each intervening block is itself a
+/// single-predecessor `Call` continuation, so the whole span is straight-line —
+/// no branch merges in, so reaching the use implies the def ran once.
+///
+/// The walk is bounded by the block count: a single-predecessor chain cannot
+/// revisit a block (a revisited block would have a second predecessor), so the
+/// bound is a belt-and-braces guard, never a real limit.
+fn dominates_use_via_single_pred_chain(
+    blocks: &[BasicBlock],
+    start: u32,
+    use_block: u32,
+    pred_count: &HashMap<u32, usize>,
+) -> bool {
+    let mut cur = start;
+    for _ in 0..blocks.len() {
+        if pred_count.get(&cur).copied().unwrap_or(0) != 1 {
+            return false;
+        }
+        if cur == use_block {
+            return true;
+        }
+        match block_by_id(blocks, cur).and_then(|b| call_terminator_next(&b.terminator)) {
+            Some(n) => cur = n,
+            None => return false,
+        }
+    }
+    false
+}
 /// W5.011 P3 — `true` when an instruction transfers ownership of a fresh-owned
 /// `string` `local` out of its slot, so a scope-exit drop of `local` would be a
 /// double-free (over-decrement of the shared refcount).
@@ -2094,13 +2134,27 @@ fn nested_fresh_string_temp_drop(
                 return None;
             }
             let def_dominates = match def {
-                // Instruction def in the use's own block precedes the terminator.
-                NestedDefSite::Instr { block, .. } => block == ub,
-                // Terminator def `Call(next = U)`: a single-predecessor `U` is
-                // reached only from the def block, so the def ran.
+                // Instruction def in the use's own block precedes the terminator;
+                // otherwise the def block's `Call` continuation must reach the
+                // use block along a single-predecessor chain (see below).
+                NestedDefSite::Instr { block, .. } => {
+                    block == ub
+                        || block_by_id(blocks, block)
+                            .and_then(|b| call_terminator_next(&b.terminator))
+                            .is_some_and(|start| {
+                                dominates_use_via_single_pred_chain(blocks, start, ub, pred_count)
+                            })
+                }
+                // Terminator def `Call(next = U)`: `U` (and every block up to the
+                // use) is reached only from the def block along a
+                // single-predecessor chain, so the def ran. The multi-step chain
+                // is the #2726 f-string case, where a `to_string_*` conversion
+                // block splits the concat chain between the producing and
+                // consuming concats.
                 NestedDefSite::Term { block } => {
-                    call_terminator_next(&block_by_id(blocks, block)?.terminator) == Some(ub)
-                        && pred_count.get(&ub).copied().unwrap_or(0) == 1
+                    call_terminator_next(&block_by_id(blocks, block)?.terminator).is_some_and(
+                        |start| dominates_use_via_single_pred_chain(blocks, start, ub, pred_count),
+                    )
                 }
             };
             def_dominates.then_some((*next, 0, drop_place, drop_ty))
@@ -2124,15 +2178,37 @@ fn nested_fresh_string_temp_drop(
                 return None;
             }
             let def_dominates = match def {
-                // Instruction def must be an EARLIER instruction in the use's
-                // own block: same-block straight-line execution means reaching
-                // the use (which reads `t`) implies the def ran.
-                NestedDefSite::Instr { block, idx } => block == ub && idx < *ui,
-                // Terminator def `Call(next = U)`: a single-predecessor `U` is
-                // reached only from the def block, so the def ran before the use.
+                // Instruction def dominates the use when EITHER:
+                //   * it is an EARLIER instruction in the use's own block —
+                //     same-block straight-line execution means reaching the use
+                //     (which reads `t`) implies the def ran; OR
+                //   * the def block's terminator is a `Call` whose sole
+                //     continuation is the use block, and the use block has that
+                //     single predecessor. The def is an instruction in the def
+                //     block, which runs straight-line to its terminator; the
+                //     terminator's normal edge reaches the use block, whose only
+                //     predecessor is the def block — so reaching the use implies
+                //     the def ran. This is the multi-interpolation f-string
+                //     shape (#2726): a `to_string_*` conversion lowers to a
+                //     block-terminating `Call` that SPLITS the concat chain, so
+                //     the concat consuming an intermediate result lands one
+                //     block past that split. Same single-step domination the
+                //     terminator-def arm below already proves.
+                NestedDefSite::Instr { block, idx } => {
+                    (block == ub && idx < *ui)
+                        || block_by_id(blocks, block)
+                            .and_then(|b| call_terminator_next(&b.terminator))
+                            .is_some_and(|start| {
+                                dominates_use_via_single_pred_chain(blocks, start, ub, pred_count)
+                            })
+                }
+                // Terminator def `Call(next = U)`: `U` (and every block up to the
+                // use) is reached only from the def block along a
+                // single-predecessor chain, so the def ran before the use.
                 NestedDefSite::Term { block } => {
-                    call_terminator_next(&block_by_id(blocks, block)?.terminator) == Some(ub)
-                        && pred_count.get(&ub).copied().unwrap_or(0) == 1
+                    call_terminator_next(&block_by_id(blocks, block)?.terminator).is_some_and(
+                        |start| dominates_use_via_single_pred_chain(blocks, start, ub, pred_count),
+                    )
                 }
             };
             // Drop immediately after the compare instruction (straight-line in
@@ -2303,6 +2379,56 @@ mod nested_fresh_string_temp_drop_admission {
             vec![(1, 1, Place::Local(2), ResolvedTy::String)],
             "a proven fresh terminator-produced operand used once by borrowing concat \
              must be dropped immediately after that concat"
+        );
+    }
+
+    fn concat_term(lhs: u32, rhs: u32, dest: u32, next: u32) -> Terminator {
+        Terminator::Call {
+            callee: "hew_string_concat".to_string(),
+            builtin: None,
+            args: vec![Place::Local(lhs), Place::Local(rhs)],
+            dest: Some(Place::Local(dest)),
+            next,
+        }
+    }
+
+    // #2726: a multi-interpolation f-string lowers the concat chain as
+    // block-terminating `Call`s, and each `to_string_*` conversion is itself a
+    // terminator that SPLITS the chain. The intermediate concat result (t2)
+    // produced in bb0 is consumed by the concat in bb2, one block past the
+    // `to_string` split (bb1). Its producing and consuming concats are in
+    // DIFFERENT blocks, so the single-step domination check missed it and it
+    // leaked. The single-predecessor-chain walk proves bb0's continuation
+    // reaches the use block bb2 straight-line, so t2 earns exactly one drop.
+    #[test]
+    fn cross_block_concat_intermediate_split_by_conversion_gets_one_drop() {
+        let blocks = vec![
+            // t2 = concat(t0, t1); the intermediate result.
+            block(0, vec![], concat_term(0, 1, 2, 1)),
+            // t3 = to_string(..); the conversion terminator that splits the chain.
+            block(1, vec![], fresh_string_call("hew_i64_to_string", 3, 2)),
+            // t4 = concat(t2, t3); consumes the cross-block intermediate t2.
+            block(2, vec![], concat_term(2, 3, 4, 3)),
+            ret_block(3),
+        ];
+        // t4 is the final result (a let/print binding); exclude it so the
+        // assertion isolates the intermediate temps t2 and t3.
+        let binding_locals: HashMap<BindingId, Place> =
+            [(BindingId(44), Place::Local(4))].into_iter().collect();
+
+        let mut drops = collect(&blocks, &locals_with(&[]), &binding_locals);
+        drops.sort_by_key(|(_, _, place, _)| base_local(*place));
+
+        assert_eq!(
+            drops,
+            vec![
+                (3, 0, Place::Local(2), ResolvedTy::String),
+                (3, 0, Place::Local(3), ResolvedTy::String),
+            ],
+            "the cross-block intermediate concat result (t2) and the conversion \
+             temp (t3) are each fresh owners borrowed exactly once by the \
+             consuming concat; both must be released once, at the front of the \
+             consuming concat's continuation"
         );
     }
 

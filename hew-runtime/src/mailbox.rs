@@ -30,9 +30,18 @@ use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
+use crate::mailbox_header::{header_validate, normalize_coalesce_fallback};
 use crate::scheduler::{MESSAGES_RECEIVED, MESSAGES_SENT};
 use crate::set_last_error;
 use crate::tracing::HewTraceContext;
+
+pub use crate::mailbox_header::{
+    HEW_MSG_ENVELOPE_ALIAS_ACTIVE, HEW_MSG_ENVELOPE_ARENA_BACKED,
+    HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER, HEW_MSG_ENVELOPE_FORKED,
+    HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK, HEW_MSG_ENVELOPE_RESERVED_DELTA_A,
+    HEW_MSG_ENVELOPE_RESERVED_DELTA_B, HEW_MSG_ENVELOPE_RESERVED_GAMMA_A,
+    HEW_MSG_ENVELOPE_RESERVED_GAMMA_B, HEW_MSG_ENVELOPE_SHARED_FROZEN,
+};
 
 /// Re-export of [`HewOverflowPolicy`] for the public mailbox API.
 pub use crate::internal::types::HewOverflowPolicy as OverflowPolicy;
@@ -159,30 +168,8 @@ pub struct HewMsgNode {
 // send for non-`Copy` types, so a runtime fork only fires for the
 // narrow corner cases the static analysis cannot prove safe.
 //
-// This commit lands the envelope FFI surface and reserved header bits.
-// No call site calls into the envelope path yet; codegen flips selected
-// sites in a later commit.
-
-/// Header bit: ≥2 observers hold this envelope (sender + receiver).
-pub const HEW_MSG_ENVELOPE_ALIAS_ACTIVE: u32 = 1 << 0;
-/// Header bit: payload is `Frozen`; never forks (γ uses).
-pub const HEW_MSG_ENVELOPE_SHARED_FROZEN: u32 = 1 << 1;
-/// Header bit: payload was bumped from a per-dispatch arena (δ uses).
-pub const HEW_MSG_ENVELOPE_ARENA_BACKED: u32 = 1 << 2;
-/// Header bit: a fork-on-write has fired (diagnostic / metric).
-pub const HEW_MSG_ENVELOPE_FORKED: u32 = 1 << 3;
-/// Header bit: payload is a §12 capability transfer; alias forbidden.
-pub const HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER: u32 = 1 << 4;
-/// Reserved for γ (captured by ≥2 `task_scope` children).
-pub const HEW_MSG_ENVELOPE_RESERVED_GAMMA_A: u32 = 1 << 5;
-/// Reserved for γ aux.
-pub const HEW_MSG_ENVELOPE_RESERVED_GAMMA_B: u32 = 1 << 6;
-/// Reserved for δ aux.
-pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_A: u32 = 1 << 7;
-/// Reserved for δ aux.
-pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_B: u32 = 1 << 8;
-/// All bits ≥ 9 must read zero on every envelope load (fail-closed).
-pub const HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK: u32 = !((1u32 << 9) - 1);
+// The cross-target header assignments and pure bit logic live in
+// `crate::mailbox_header`; native allocation and scheduling remain here.
 
 /// Drop glue invoked when an envelope's refcount drops to zero.
 ///
@@ -236,23 +223,6 @@ unsafe impl Send for HewMsgEnvelope {}
 // SAFETY: see the `Send` impl above; concurrent reads are read-only,
 // concurrent refcount/header mutations go through atomics.
 unsafe impl Sync for HewMsgEnvelope {}
-
-/// Validate that bits 9..31 of `bits` are zero; panic on mismatch.
-///
-/// This is the `serializer-fail-closed` invariant for the envelope
-/// header: any forwards-incompatible bit set by a future runtime
-/// would otherwise be interpreted as zero by today's release path,
-/// silently dropping a contract. Loud panic instead.
-#[inline]
-fn header_validate(bits: u32) -> u32 {
-    assert!(
-        bits & HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK == 0,
-        "hew_msg_envelope: reserved header bits set (bits = {bits:#x}); \
-         this runtime does not understand the envelope's contract — \
-         refusing to proceed (fail-closed)"
-    );
-    bits
-}
 
 /// Allocate a fresh envelope wrapping `payload`.
 ///
@@ -1287,13 +1257,6 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         high_water_mark: AtomicI64::new(0),
         use_slow_path: true,
     }))
-}
-
-fn normalize_coalesce_fallback(policy: HewOverflowPolicy) -> HewOverflowPolicy {
-    match policy {
-        HewOverflowPolicy::Coalesce => HewOverflowPolicy::DropOld,
-        other => other,
-    }
 }
 
 unsafe fn coalesce_message_key(
@@ -3785,24 +3748,6 @@ mod tests {
     }
 
     // ── Phase-α envelope tests ──────────────────────────────────────
-
-    /// Reserved-bit layout is documented and tested. Any reordering
-    /// here will be caught at compile-time on the constants and at
-    /// run-time on the assertion.
-    #[test]
-    fn envelope_header_bits_layout_locked() {
-        assert_eq!(HEW_MSG_ENVELOPE_ALIAS_ACTIVE, 1u32 << 0);
-        assert_eq!(HEW_MSG_ENVELOPE_SHARED_FROZEN, 1u32 << 1);
-        assert_eq!(HEW_MSG_ENVELOPE_ARENA_BACKED, 1u32 << 2);
-        assert_eq!(HEW_MSG_ENVELOPE_FORKED, 1u32 << 3);
-        assert_eq!(HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER, 1u32 << 4);
-        assert_eq!(HEW_MSG_ENVELOPE_RESERVED_GAMMA_A, 1u32 << 5);
-        assert_eq!(HEW_MSG_ENVELOPE_RESERVED_GAMMA_B, 1u32 << 6);
-        assert_eq!(HEW_MSG_ENVELOPE_RESERVED_DELTA_A, 1u32 << 7);
-        assert_eq!(HEW_MSG_ENVELOPE_RESERVED_DELTA_B, 1u32 << 8);
-        // Bits 9..31 are reserved-zero.
-        assert_eq!(HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK, 0xFFFF_FE00);
-    }
 
     /// Drop-glue probe used by envelope tests; bumps a counter so the
     /// test can assert that the final release fires `drop_glue` exactly

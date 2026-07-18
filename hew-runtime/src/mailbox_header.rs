@@ -4,6 +4,8 @@
 //! across native and WASM mailboxes. They are unrelated to the cross-node CBOR
 //! wire envelope.
 
+use crate::internal::types::HewOverflowPolicy;
+
 /// Header bit: at least two observers hold this message payload.
 pub const HEW_MSG_ENVELOPE_ALIAS_ACTIVE: u32 = 1 << 0;
 /// Header bit: payload is `Frozen`; never forks.
@@ -24,6 +26,30 @@ pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_A: u32 = 1 << 7;
 pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_B: u32 = 1 << 8;
 /// All bits at or above bit 9 must read zero on every header load.
 pub const HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK: u32 = !((1u32 << 9) - 1);
+
+/// Validate that reserved header bits are zero.
+///
+/// A newer runtime assigning one of these bits would otherwise let an older
+/// runtime silently drop an in-process payload contract.
+#[inline]
+pub(crate) fn header_validate(bits: u32) -> u32 {
+    assert!(
+        bits & HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK == 0,
+        "hew_msg_envelope: reserved header bits set (bits = {bits:#x}); \
+         this runtime does not understand the envelope's contract — \
+         refusing to proceed (fail-closed)"
+    );
+    bits
+}
+
+/// Prevent a coalescing mailbox from recursively selecting coalescing as its
+/// fallback policy.
+pub(crate) fn normalize_coalesce_fallback(policy: HewOverflowPolicy) -> HewOverflowPolicy {
+    match policy {
+        HewOverflowPolicy::Coalesce => HewOverflowPolicy::DropOld,
+        other => other,
+    }
+}
 
 #[cfg(test)]
 mod tests {

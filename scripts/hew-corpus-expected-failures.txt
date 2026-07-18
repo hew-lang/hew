@@ -82,7 +82,6 @@ examples/v05/hashmap_f64_key_is_empty_fails.hew
 # deferred-nyi: vec layout and method NYI
 examples/v05/vec_indirect_enum_element_fails.hew
 examples/v05/vec_indirect_enum_heap_payload_element_fails.hew
-examples/v05/vec_layout_noncopy_fails.hew
 examples/v05/vec_unsupported_method_fails.hew
 
 # ── hew-lsp/ ─────────────────────────────────────────────────────────────────

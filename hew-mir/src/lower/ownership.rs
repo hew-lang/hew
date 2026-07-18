@@ -10,6 +10,7 @@ use super::{
     Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass,
     ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
     SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
+    SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
 impl Builder {
@@ -415,6 +416,21 @@ impl Builder {
             ty.clone(),
         );
         Some((binding, ty))
+    }
+    pub(crate) fn register_while_let_iteration_owner(
+        &mut self,
+        scrutinee: &HirExpr,
+        snapshot_local: u32,
+        ty: ResolvedTy,
+    ) -> BindingId {
+        let binding = self.register_synthetic_owned_local(
+            SYNTHETIC_WHILE_LET_ITERATION_NAME,
+            scrutinee.site,
+            snapshot_local,
+            ty,
+        );
+        self.back_edge_only_iteration_owners.insert(binding);
+        binding
     }
     pub(crate) fn discarded_call_result_owned_ty(&self, expr: &HirExpr) -> Option<ResolvedTy> {
         if let Some(ty) = self.call_scrutinee_owned_ty(expr) {

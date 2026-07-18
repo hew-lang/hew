@@ -756,6 +756,58 @@ pub unsafe extern "C" fn hew_timer_wheel_next_deadline_ms(tw: *mut HewTimerWheel
     }
 }
 
+/// Test-only: return the earliest **absolute** deadline (`deadline_ms`) of any
+/// live entry, or `None` when the wheel is empty.
+///
+/// Unlike [`hew_timer_wheel_next_deadline_ms`], which returns the delay
+/// *relative* to the wheel's `current_ms`, this returns the absolute fire time
+/// an entry was scheduled at. Timer-wheel tests must drive
+/// `hew_wasm_timer_tick` with this absolute value: the wheel fires an entry
+/// only once its `current_ms` reaches the entry's absolute `deadline_ms`, and
+/// on native (where the wasm virtual-clock seam is inert) that value is
+/// `current_ms_at_creation + delay`, which drifts from any freshly re-derived
+/// `now + delay`.
+///
+/// # Safety
+///
+/// `tw` must be null or a valid pointer returned by [`hew_timer_wheel_new`].
+#[cfg(test)]
+pub(crate) unsafe fn timer_wheel_earliest_abs_deadline_ms(tw: *mut HewTimerWheel) -> Option<u64> {
+    if tw.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees `tw` is valid.
+    let wheel = unsafe { &*tw };
+    let w = wheel
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut earliest: u64 = u64::MAX;
+    let mut scan = |mut e: *mut HewTimerEntry| {
+        while !e.is_null() {
+            // SAFETY: entries are valid under lock.
+            unsafe {
+                if (*e).cancelled == 0 && (*e).deadline_ms < earliest {
+                    earliest = (*e).deadline_ms;
+                }
+                e = (*e).next;
+            }
+        }
+    };
+    for slot in &w.l0 {
+        scan(*slot);
+    }
+    for slot in &w.l1 {
+        scan(*slot);
+    }
+    scan(w.overflow);
+    if earliest == u64::MAX {
+        None
+    } else {
+        Some(earliest)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -765,40 +817,51 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicI32, Ordering};
 
-    static FIRE_COUNT: AtomicI32 = AtomicI32::new(0);
-
-    unsafe extern "C" fn test_cb(_data: *mut c_void) {
-        FIRE_COUNT.fetch_add(1, Ordering::SeqCst);
+    /// Per-test fire counter passed through the timer callback's `data`
+    /// pointer. Using a callback-local counter instead of a shared `static`
+    /// keeps each test's fire count isolated: the timer callbacks run under a
+    /// parallel test runner, so a module-global counter let a sibling test's
+    /// fire (`schedule_and_tick_immediate`) leak into `cancel_prevents_firing`
+    /// and flip its `== 0` assertion (a pre-existing cross-test race).
+    unsafe extern "C" fn test_cb(data: *mut c_void) {
+        if !data.is_null() {
+            // SAFETY: every scheduler in these tests passes a pointer to a
+            // live `AtomicI32` that outlives the tick that fires the callback.
+            let counter = unsafe { &*data.cast::<AtomicI32>() };
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     #[test]
     fn schedule_and_tick_immediate() {
-        FIRE_COUNT.store(0, Ordering::SeqCst);
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
         // SAFETY: standard lifecycle calls.
         unsafe {
             let tw = hew_timer_wheel_new();
             assert!(!tw.is_null());
-            hew_timer_wheel_schedule(tw, 1, test_cb, ptr::null_mut());
+            hew_timer_wheel_schedule(tw, 1, test_cb, data);
             // Wait for the 1ms timer to expire.
             std::thread::sleep(std::time::Duration::from_millis(5));
             let fired = hew_timer_wheel_tick(tw);
             assert!(fired >= 1);
-            assert!(FIRE_COUNT.load(Ordering::SeqCst) >= 1);
+            assert!(fire_count.load(Ordering::SeqCst) >= 1);
             hew_timer_wheel_free(tw);
         }
     }
 
     #[test]
     fn cancel_prevents_firing() {
-        FIRE_COUNT.store(0, Ordering::SeqCst);
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
         // SAFETY: standard lifecycle calls.
         unsafe {
             let tw = hew_timer_wheel_new();
-            let h = hew_timer_wheel_schedule_handle(tw, 0, test_cb, ptr::null_mut());
+            let h = hew_timer_wheel_schedule_handle(tw, 0, test_cb, data);
             hew_timer_wheel_cancel(tw, h.entry, h.generation);
             let fired = hew_timer_wheel_tick(tw);
             assert_eq!(fired, 0);
-            assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 0);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 0);
             hew_timer_wheel_free(tw);
         }
     }
@@ -1270,7 +1333,8 @@ mod tests {
 
     #[test]
     fn probe_b_stale_cancel_does_not_cancel_reused_entry_address() {
-        FIRE_COUNT.store(0, Ordering::SeqCst);
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
         // SAFETY: this test reuses one allocation slot with explicit lifetime
         // boundaries to model allocator reuse of E's address for E2.
         unsafe {
@@ -1282,7 +1346,7 @@ mod tests {
                     deadline_ms: 1,
                     generation: 41,
                     cb: Some(test_cb),
-                    data: ptr::null_mut(),
+                    data,
                     cancelled: 0,
                     next: ptr::null_mut(),
                 },
@@ -1297,7 +1361,7 @@ mod tests {
                     deadline_ms: 10,
                     generation: 42,
                     cb: Some(test_cb),
-                    data: ptr::null_mut(),
+                    data,
                     cancelled: 0,
                     next: ptr::null_mut(),
                 },
@@ -1319,22 +1383,23 @@ mod tests {
             if let Some(cb) = expired_entry.cb {
                 cb(expired_entry.data);
             }
-            assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 1);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
             ptr::drop_in_place(entry);
         }
     }
 
     #[test]
     fn cancel_after_tick_free_is_ignored() {
-        FIRE_COUNT.store(0, Ordering::SeqCst);
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
         // SAFETY: the stale cancel models a source-completion thread that
         // already captured the timer entry before the deadline thread fired it.
         unsafe {
             let tw = make_timer_wheel(0);
-            let h = hew_timer_wheel_schedule_handle(tw, 1, test_cb, ptr::null_mut());
+            let h = hew_timer_wheel_schedule_handle(tw, 1, test_cb, data);
 
             assert_eq!(timer_wheel_tick_to(tw, 1), 1);
-            assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 1);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
 
             hew_timer_wheel_cancel(tw, h.entry, h.generation);
             hew_timer_wheel_free(tw);

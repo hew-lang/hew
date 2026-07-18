@@ -24,11 +24,21 @@ source-only scaffold: it writes `main.hew` plus `README.md`, but no
 Common signs:
 
 - `Error: clang not found. Install LLVM to link Hew programs.`
+- `Error: cannot find libhew.a. Build with: make stdlib`
 - raw linker output after `hew compile <file.hew>`
 - `hew check <file.hew>` succeeds, but `hew compile ...` fails
 
 What to check:
 
+- `Error: cannot find libhew.a. Build with: make stdlib` only happens on a
+  **source checkout**: `cargo build -p hew-cli --bin hew` builds the driver
+  alone, and `hew build` / `hew compile` also need the combined runtime +
+  stdlib staticlib (`libhew.a` on Unix, `hew.lib` on Windows) next to it. Run
+  `make stdlib` (equivalent to `cargo build -p hew-lib`) once, or use
+  `make hew-native` to build the driver and the staticlib together in one
+  step. This does not affect an installed release binary — the release
+  artifacts already bundle `libhew.a`, so a downloaded or packaged `hew` works
+  without any extra build step.
 - Use `hew check <file.hew>` first to separate frontend failures from
   link/toolchain failures.
 - Hew forwards raw linker output. Fix missing libraries, bad `--link-lib`

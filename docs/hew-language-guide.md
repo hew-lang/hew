@@ -1827,23 +1827,60 @@ fn main() {
 }
 ```
 
-> **Note:** Generic constructor functions called *without* turbofish fail — the error depends on context: if `T` is entirely unconstrained (no usage to narrow it), the type-checker reports `cannot infer type for local binding`; once usage constrains `T`, the call emits `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Annotating the binding without turbofish (`let s: Stack<i64> = new_empty()`) does not help — it still emits `E_NOT_YET_IMPLEMENTED`. Two workarounds:
->
-> ```hew
-> type Stack<T> { items: Vec<T>; }
->
-> fn new_empty<T>() -> Stack<T> { Stack { items: Vec::new() } }
->
-> fn main() {
->     // Option A — turbofish on the call (preferred when using a ctor fn)
->     let s = new_empty::<i64>();
->
->     // Option B — construct inline with a type annotation on the binding
->     let s2: Stack<i64> = Stack { items: Vec::new() };
-> }
-> ```
->
-> Note: `Stack { items: Vec::new() }` *without* a type annotation on the binding also fails — with `cannot infer type for local binding` when `T` is unconstrained, or `E_MIR: unknown type 'T' at the MIR boundary` once usage constrains `T`. Always provide a type annotation when constructing a generic record inline.
+**Turbofish is one way to pin a generic constructor's type argument, not the only one.** The checker also resolves `T` from the **expected return type** at the call site — a `let` binding's declared type, a function's declared return type, or an argument position — with no turbofish needed:
+
+```hew
+type Stack<T> { items: Vec<T>; }
+
+fn new_empty<T>() -> Stack<T> { Stack { items: Vec::new() } }
+
+fn make_i64_stack() -> Stack<i64> {
+    new_empty()                    // return-position inference — no turbofish
+}
+
+fn main() {
+    let s: Stack<i64> = new_empty();      // let-annotation inference — no turbofish
+    let s2 = new_empty::<i64>();          // turbofish — still supported, use when nothing else pins T
+    let s3 = make_i64_stack();
+    println(s.items.len());
+    println(s2.items.len());
+    println(s3.items.len());
+}
+```
+
+Only a **genuinely unconstrained** call — no turbofish, no annotation, no usage that pins `T` — fails, and it fails with the same clean `cannot infer type for local binding` / `consider adding a type annotation` diagnostic as any other unconstrained generic call. There is no separate NYI/MIR-lowering error for this pattern; add a turbofish or a type annotation to resolve it.
+
+### Inherent impl on a generic record
+
+Methods on a generic record need the impl itself to carry the type parameter — `impl<T> Stack<T> { ... }`, not `impl Stack<T> { ... }`. The bare form leaves `T` unbound inside the impl body and every use of `T` fails with `unknown type 'T'`.
+
+```hew
+type Stack<T> { items: Vec<T> }
+
+impl<T> Stack<T> {
+    fn push_item(s: Stack<T>, v: T) -> Stack<T> {
+        let items = s.items;
+        items.push(v);
+        Stack { items: items }
+    }
+    fn len(s: Stack<T>) -> i64 {
+        s.items.len()
+    }
+}
+
+fn new_stack<T>() -> Stack<T> {
+    Stack { items: Vec::new() }
+}
+
+fn main() {
+    let s = new_stack::<i64>();
+    let s2 = s.push_item(1);
+    let s3 = s2.push_item(2);
+    println(s3.len());   // 2
+}
+```
+
+Construct the empty generic record through the constructor function `new_stack`, either with turbofish (`new_stack::<i64>()`) or a `let` type annotation and no turbofish at all (`let s: Stack<i64> = new_stack();`) — both resolve `T` from the call site and lower identically, the same return-type-driven inference covered in the Turbofish section above. `hew fmt` normalizes an explicit `::<T>` call to `<T>` (`new_stack::<i64>()` becomes `new_stack<i64>()`); every one of these spellings type-checks and runs identically — write whichever you like and let the formatter settle it. A bare `Stack { items: Vec::new() }` construction with no surrounding annotation is still ambiguous and needs one.
 
 ### Generic functions as values (cross-module)
 
@@ -2549,6 +2586,55 @@ fn main() {
 ```
 
 **Memory management:** every `Value` (from `parse`, `get_field`, `array_get`, `from_*`, `object()`, `array()`) must be freed with `.free()` before it goes out of scope. Omitting `.free()` is a resource leak. Values returned by `get_field` and `array_get` are heap-allocated clones — free them independently of the parent.
+
+**Naming the `Value` type** — a plain `import std::encoding::json;` publishes the `json` module alias (`json.parse(...)`, `json.Value` as a qualified type) but does not put the bare `Value` name in scope. Use `Value` unqualified in a function signature (a parameter or return type) by importing it alongside the module in one combined import:
+
+```hew
+import std::encoding::json::{self, Value};
+```
+
+`self` keeps the `json.parse(...)` / `json.object()` module-call style; `Value` lets you write `fn foo(v: Value) -> ...` instead of `fn foo(v: json.Value) -> ...`. Omitting the named import and using bare `Value` in a signature fails with `type Value is not in scope`.
+
+**Nested config with required fields** — `get_field` on a missing key returns a value whose `type_of()` is `-1` (distinct from `0`, the tag for an explicit JSON `null`). Use that to fail closed on a required field instead of silently reading garbage:
+
+```hew
+import std::encoding::json::{self, Value};
+
+fn require_string(config: Value, key: string) -> string {
+    let field = config.get_field(key);
+    if field.type_of() == -1 {
+        panic(f"missing required field: {key}");
+    }
+    let s = field.get_string();
+    field.free();
+    return s;
+}
+
+fn require_int(config: Value, key: string) -> i64 {
+    let field = config.get_field(key);
+    if field.type_of() == -1 {
+        panic(f"missing required field: {key}");
+    }
+    let n = field.get_int();
+    field.free();
+    return n;
+}
+
+fn main() {
+    let raw = "{\"server\": {\"host\": \"localhost\", \"port\": 8080}}";
+    let config = json.parse(raw);
+    let server = config.get_field("server");
+
+    let host = require_string(server, "host");
+    let port = require_int(server, "port");
+    println(f"{host}:{port}");   // localhost:8080
+
+    server.free();
+    config.free();
+}
+```
+
+A config missing `port` traps with `missing required field: port` instead of returning a zero value.
 
 ## Structural equality
 

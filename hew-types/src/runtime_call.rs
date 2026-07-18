@@ -564,6 +564,7 @@ pub enum RuntimeCallFamily {
 /// Module-level runtime authorities implied by typed runtime-call families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeCapability {
+    BlockingOffload,
     Metrics,
     Node,
 }

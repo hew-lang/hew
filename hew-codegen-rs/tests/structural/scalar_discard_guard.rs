@@ -144,6 +144,7 @@ fn pipeline_discard_extern_owned(
             param_tys,
             return_ty: extern_return_ty,
             provenance: hew_hir::ExternProvenance::Root,
+            runtime_capability: None,
             malloc_string_return,
         }],
         dyn_vtable_registry: vec![],

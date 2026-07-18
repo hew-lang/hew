@@ -368,22 +368,29 @@ pub struct ModuleCapabilities(u8);
 
 impl ModuleCapabilities {
     pub const EMPTY: Self = Self(0);
-    const METRICS: u8 = 1 << 0;
-    const NODE: u8 = 1 << 1;
+    const BLOCKING_OFFLOAD: u8 = 1 << 0;
+    const METRICS: u8 = 1 << 1;
+    const NODE: u8 = 1 << 2;
 
-    pub(crate) fn insert_family(&mut self, family: hew_types::runtime_call::RuntimeCallFamily) {
+    fn insert(&mut self, capability: hew_types::runtime_call::RuntimeCapability) {
         use hew_types::runtime_call::RuntimeCapability;
 
-        self.0 |= match family.runtime_capability() {
-            Some(RuntimeCapability::Metrics) => Self::METRICS,
-            Some(RuntimeCapability::Node) => Self::NODE,
-            None => 0,
+        self.0 |= match capability {
+            RuntimeCapability::BlockingOffload => Self::BLOCKING_OFFLOAD,
+            RuntimeCapability::Metrics => Self::METRICS,
+            RuntimeCapability::Node => Self::NODE,
         };
     }
 
-    /// Collect module capabilities from typed runtime-call identities in MIR.
+    pub(crate) fn insert_family(&mut self, family: hew_types::runtime_call::RuntimeCallFamily) {
+        if let Some(capability) = family.runtime_capability() {
+            self.insert(capability);
+        }
+    }
+
+    /// Collect module capabilities from typed runtime-call and extern identities.
     #[must_use]
-    pub fn from_raw_mir(raw_mir: &[RawMirFunction]) -> Self {
+    pub fn from_raw_mir(raw_mir: &[RawMirFunction], extern_decls: &[ExternDecl]) -> Self {
         let mut capabilities = Self::default();
         for function in raw_mir {
             for block in &function.blocks {
@@ -393,11 +400,20 @@ impl ModuleCapabilities {
                     }
                 }
                 if let Terminator::Call {
-                    builtin: Some(family),
-                    ..
+                    callee, builtin, ..
                 } = &block.terminator
                 {
-                    capabilities.insert_family(*family);
+                    if let Some(family) = builtin {
+                        capabilities.insert_family(*family);
+                    }
+                    if extern_decls.iter().any(|decl| {
+                        decl.name == *callee
+                            && decl.runtime_capability
+                                == Some(hew_types::ExternRuntimeCapability::BlockingOffload)
+                    }) {
+                        capabilities
+                            .insert(hew_types::runtime_call::RuntimeCapability::BlockingOffload);
+                    }
                 }
             }
         }
@@ -410,6 +426,7 @@ impl ModuleCapabilities {
         use hew_types::runtime_call::RuntimeCapability;
 
         let bit = match capability {
+            RuntimeCapability::BlockingOffload => Self::BLOCKING_OFFLOAD,
             RuntimeCapability::Metrics => Self::METRICS,
             RuntimeCapability::Node => Self::NODE,
         };
@@ -437,6 +454,16 @@ pub struct MirLint {
 }
 
 impl IrPipeline {
+    /// Assert that the capability snapshot still matches the final raw MIR and
+    /// its typed extern declarations.
+    pub fn debug_assert_capabilities_current(&self) {
+        debug_assert_eq!(
+            self.capabilities,
+            ModuleCapabilities::from_raw_mir(&self.raw_mir, &self.extern_decls),
+            "module capabilities are stale after raw MIR mutation"
+        );
+    }
+
     /// Clone the checker-authored layout-backed `HashMap`/`HashSet`
     /// lowering facts from `tco` into this pipeline (W3.003).
     ///
@@ -487,6 +514,8 @@ pub struct ExternDecl {
     /// C-ABI string return's ownership ([`ExternDecl::malloc_string_return`]),
     /// carried here as a proven fact so codegen never re-derives it by absence.
     pub provenance: hew_hir::ExternProvenance,
+    /// Typed runtime authority declared on this stdlib extern, if any.
+    pub runtime_capability: Option<hew_types::ExternRuntimeCapability>,
     /// True only for a raw root/package `extern "C" -> string` whose C ABI
     /// transfers a plain malloc-owned pointer that codegen must copy into Hew's
     /// header-aware refcounted domain and then `free`. Standard-library modules

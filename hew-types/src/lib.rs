@@ -79,8 +79,9 @@ pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use stdlib_authority::{
     authority as stdlib_authority, AuthorityBinding, AuthorityDeclarationKind, AuthorityError,
     AuthorityErrorKind, AuthoritySource, DiagnosticItem, EnumVariantOrder, ExternAbiEntry,
-    ExternAbiFact, Intrinsic, OverloadGroup, PreludeExport, PreludeExportKind, StdlibAuthority,
-    StdlibRoot, STDLIB_AUTHORITY, SUBSTRATE_SOURCES,
+    ExternAbiFact, ExternRuntimeCapability, ExternRuntimeCapabilityEntry, Intrinsic, OverloadGroup,
+    PreludeExport, PreludeExportKind, StdlibAuthority, StdlibRoot, STDLIB_AUTHORITY,
+    SUBSTRATE_SOURCES,
 };
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;

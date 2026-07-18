@@ -152,6 +152,7 @@ fn pipeline_with_extern(
             param_tys,
             return_ty,
             provenance: hew_hir::ExternProvenance::Root,
+            runtime_capability: None,
             malloc_string_return: false,
         }],
         dyn_vtable_registry: vec![],

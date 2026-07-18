@@ -13,6 +13,7 @@ use hew_parser::ast::{
     Attribute, AttributeArg, FnDecl, ImportSpec, Item, TraitItem, TypeBodyItem, TypeDeclKind,
     TypeExpr,
 };
+use strum::{EnumIter, IntoEnumIterator};
 
 use crate::LangItem;
 
@@ -133,7 +134,7 @@ pub struct AuthorityBinding {
     pub kind: AuthorityDeclarationKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, EnumIter)]
 pub enum Intrinsic {
     MathExp,
     MathLog,
@@ -160,31 +161,6 @@ pub enum Intrinsic {
 }
 
 impl Intrinsic {
-    pub const ALL: [Self; 22] = [
-        Self::MathExp,
-        Self::MathLog,
-        Self::MathSqrt,
-        Self::MathSin,
-        Self::MathCos,
-        Self::MathFloor,
-        Self::MathCeil,
-        Self::MathAbs,
-        Self::MathTanh,
-        Self::MathLog2,
-        Self::MathLog10,
-        Self::MathExp2,
-        Self::MathPow,
-        Self::MathMax,
-        Self::MathMin,
-        Self::MathPi,
-        Self::MathE,
-        Self::MemAlloc,
-        Self::MemRealloc,
-        Self::MemDealloc,
-        Self::MemPtrOffset,
-        Self::MemPtrCopy,
-    ];
-
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -215,9 +191,7 @@ impl Intrinsic {
 
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|intrinsic| intrinsic.key() == key)
+        Self::iter().find(|intrinsic| intrinsic.key() == key)
     }
 }
 
@@ -974,6 +948,13 @@ fn error(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_intrinsic_key_round_trips() {
+        for intrinsic in Intrinsic::iter() {
+            assert_eq!(Intrinsic::from_key(intrinsic.key()), Some(intrinsic));
+        }
+    }
 
     #[test]
     fn embedded_substrate_populates_existing_authorities() {

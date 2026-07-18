@@ -27453,45 +27453,6 @@ fn validate_context_markers_for_codegen(func: &RawMirFunction) -> Vec<hew_mir::M
     validate_context_markers(func)
 }
 
-/// Does the module reach a distributed-node authority (`Node::*` builtin)?
-///
-/// The de-globalized node state (`CURRENT_NODE`/`KNOWN_NODES`/`REPLY_TABLE`,
-/// owned by `RuntimeInner::node`) is touched the moment a program calls
-/// `Node::set_transport`/`start`/`connect`/`register`/`lookup`/`shutdown`.
-/// Those builtins lower to `Terminator::Call` with a typed Node family.
-/// Does the module reach a blocking-pool offload authority (net DNS / TCP
-/// connect)?
-///
-/// The deadline-bounded syscall pool (`RuntimeInner::blocking_pool`) was a
-/// process-lifetime `blocking_pool::SHARED_POOL` singleton that worked with no
-/// runtime installed; it is now owned per-runtime and resolved through the
-/// fail-closed `rt_current_opt()` (`blocking_pool::shared_blocking_pool_opt`).
-/// A program that offloads a DNS resolve or a TCP connect from a non-actor
-/// context — e.g. `net.connect(..)` in a bare `main`, with no `spawn`, `Node`,
-/// or metrics use — would otherwise reach the offload with no runtime installed
-/// and fail closed with EINVAL, so the connect never completes. Touching the
-/// pool is therefore an independent reason to install the runtime at program
-/// entry, just like node/metrics.
-///
-/// The offload entrypoints are the connect family (`hew_tcp_connect`,
-/// `hew_tcp_connect_timed`, `hew_tcp_connect_timeout`) and the DNS family
-/// (`hew_dns_resolve*`, `hew_dns_lookup_host*`); every one begins with
-/// `hew_tcp_connect` or `hew_dns_`. Accept/read/write are direct blocking
-/// syscalls that never touch the pool, so they are deliberately not matched.
-/// Extern fns lower to `Terminator::Call` with the extern symbol as the callee
-/// (`hew-mir/src/lower.rs`), so scanning terminators by callee prefix is exact.
-fn module_uses_blocking_offload(raw_mir: &[RawMirFunction]) -> bool {
-    raw_mir.iter().any(|func| {
-        func.blocks.iter().any(|block| {
-            matches!(
-                &block.terminator,
-                Terminator::Call { callee, .. }
-                    if callee.starts_with("hew_tcp_connect") || callee.starts_with("hew_dns_")
-            )
-        })
-    })
-}
-
 /// Lower one function from `raw_mir`, consuming `elaborated_mir.drop_plans`
 /// to emit LIFO close calls before every exit terminator.
 ///
@@ -29769,6 +29730,7 @@ fn build_module_for_target<'ctx>(
     target_machine: Option<&TargetMachine>,
     debug: Option<DebugInput<'_>>,
 ) -> CodegenResult<LlvmModule<'ctx>> {
+    pipeline.debug_assert_capabilities_current();
     let llvm_mod = ctx.create_module(name);
     let emit_wasm_entry_alias = target_machine.is_some_and(|machine| {
         machine
@@ -30465,9 +30427,11 @@ fn build_module_for_target<'ctx>(
     // registration/mutation, the implicit drain epilogue).
     let module_uses_runtime = !pipeline.actor_layouts.is_empty()
         || !pipeline.supervisor_layouts.is_empty()
+        || pipeline
+            .capabilities
+            .contains(RuntimeCapability::BlockingOffload)
         || pipeline.capabilities.contains(RuntimeCapability::Node)
-        || pipeline.capabilities.contains(RuntimeCapability::Metrics)
-        || module_uses_blocking_offload(&pipeline.raw_mir);
+        || pipeline.capabilities.contains(RuntimeCapability::Metrics);
     let machine_step_symbols: HashSet<String> = pipeline
         .raw_mir
         .iter()

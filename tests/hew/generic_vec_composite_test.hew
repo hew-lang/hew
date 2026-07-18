@@ -1,0 +1,74 @@
+//! Regression pins for #2737 — generic `Vec<Composite<T>>` element codegen.
+//!
+//! A `Vec<W<T>>` / `Vec<Option<T>>` inside a generic function had its element
+//! method (`push`/`get`) resolved on the generic spine, which classified the
+//! composite element `owned` (its abstract `T` reads non-`Copy`), while the
+//! constructor codegen classified the monomorphised all-scalar `W<i64>` as a
+//! plain layout element. The Vec was built plain but pushed owned, and the
+//! owned push read a null clone thunk → `PANIC: Vec owned descriptor is missing
+//! the clone thunk`. The element-typed method now DEFERS to per-monomorphisation
+//! re-resolution, which classifies the substituted element congruently with the
+//! constructor: an all-scalar `W<i64>` rides the plain `_layout` ops, a
+//! heap-owning `W<string>` rides the owned family.
+
+import std::testing;
+
+type W<T> {
+    v: T;
+}
+
+fn store_and_read<T>(x: T) -> T {
+    let items: Vec<W<T>> = Vec::new();
+    items.push(W { v: x });
+    match items.get(0) {
+        Some(w) => w.v,
+        None => x,
+    }
+}
+
+// Bug A: an all-scalar generic composite element (`W<i64>`) rides the plain
+// layout ABI on BOTH the constructor and the push — no clone-thunk panic.
+#[test]
+fn test_generic_vec_scalar_composite_reads_back() {
+    testing.assert_eq(store_and_read(7), 7);
+}
+
+// The heap-owning instantiation (`W<string>`) rides the owned-descriptor ABI
+// (constructor + push both owned) and reads the retained element back intact.
+#[test]
+fn test_generic_vec_heap_composite_reads_back() {
+    let s = store_and_read("hello");
+    testing.assert_eq(s.len(), 5);
+}
+
+fn count_options<T>(x: T) -> i64 {
+    let items: Vec<Option<T>> = Vec::new();
+    items.push(Some(x));
+    items.push(None);
+    match items.get(0) {
+        Some(Some(_)) => items.len(),
+        _ => -1,
+    }
+}
+
+// Bug B: a generic `Vec<Option<T>>` element resolves per-monomorphisation to the
+// inline tagged-union layout ABI (was: `MethodCallNoRewrite` / NYI at check).
+#[test]
+fn test_generic_vec_option_element() {
+    testing.assert_eq(count_options(9), 2);
+}
+
+// The concrete twin must also compile and run — `Option<i64>` is now a
+// first-class inline layout Vec element.
+#[test]
+fn test_concrete_vec_option_element() {
+    let items: Vec<Option<i64>> = Vec::new();
+    items.push(Some(5));
+    items.push(None);
+    let got = match items.get(0) {
+        Some(Some(v)) => v,
+        _ => -1,
+    };
+    testing.assert_eq(got, 5);
+    testing.assert_eq(items.len(), 2);
+}

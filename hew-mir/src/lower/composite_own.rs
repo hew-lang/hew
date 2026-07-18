@@ -846,6 +846,41 @@ fn compute_escaped_chain_sibling_drops(
     }
     vec![(esc_block, esc_idx + 1, siblings)]
 }
+/// The base locals passed as WHOLE-VALUE arguments at the proven-borrow
+/// positions of this block's terminating direct call.
+///
+/// A user-function call borrows exactly the argument positions the module
+/// parameter-body summary proved never escape (`compute_call_param_consumption`
+/// projected into `builder.proven_borrow_call_args`, keyed block-id → borrowed
+/// arg-index set, stamped in `lower_direct_call`). Such a by-value composite
+/// argument is a transient borrow: the callee releases nothing, so the CALLER
+/// retains the value and keeps its scope-exit composite drop — the caller-side
+/// owned-param completion for by-value record / tuple / enum params. This
+/// mirrors the arm `derive_local_collection_drop_allowed` already applies to
+/// `Vec` / map handles.
+///
+/// Shared verbatim by the record / tuple / enum sole-owner escape scans so the
+/// exemption is one authority and cannot drift between the sibling derivations.
+/// Only WHOLE-value arg reads are exempted here: a field / element / payload
+/// binder passed by value (`f(r.field)`) is a distinct local whose escape each
+/// scan's own binder branch still records — this set never touches it, so those
+/// discharges stay fail-closed.
+pub(super) fn proven_borrow_whole_arg_locals(
+    block: &BasicBlock,
+    proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
+) -> HashSet<u32> {
+    let Terminator::Call { args, .. } = &block.terminator else {
+        return HashSet::new();
+    };
+    let Some(borrowed) = proven_borrow_call_args.get(&block.id) else {
+        return HashSet::new();
+    };
+    args.iter()
+        .enumerate()
+        .filter(|(index, _)| borrowed.contains(index))
+        .filter_map(|(_, p)| base_local(*p))
+        .collect()
+}
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
 /// composite** bindings (`Result<T, string>`, `Option<string>`, any user
 /// `enum` whose active variant owns heap). Returns the subset of
@@ -921,6 +956,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value (string/Bytes/owning aggregate or a
     // nested heap-owning enum) iff its registered type says so. Bitcopy payload
@@ -1344,6 +1380,12 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 if crate::runtime_symbols::callee_ownership_contract(callee)
                     .is_vec_copy_in_element_store()
         );
+        // Caller-side owned-param completion: a whole enum composite passed by
+        // value at a proven-borrow call position is a transient borrow, so the
+        // caller keeps its `EnumInPlace` scope-exit drop. Payload binders
+        // (`f(p.field)`) are unaffected — this set holds only whole-value args.
+        let proven_borrow_arg_locals =
+            proven_borrow_whole_arg_locals(block, proven_borrow_call_args);
         // Terminator reads. A return value / send / ask payload escapes; a
         // branch cond is bitcopy and harmless. A `print`/`println` call
         // BORROWS its string argument (it does not take ownership), so a
@@ -1355,6 +1397,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 if !copy_in_elem_store
                     && alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                    && !proven_borrow_arg_locals.contains(&l)
                 {
                     // A whole composite passed to a borrowing print sink is
                     // not how composites are consumed, but apply the same
@@ -1470,6 +1513,7 @@ pub(super) fn derive_owned_record_drop_allowed(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     alias_field_binders: &[(u32, u32)],
+    proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `RecordFieldLoad` dest is an owned-field binder (a
@@ -1869,6 +1913,13 @@ pub(super) fn derive_owned_record_drop_allowed(
                 if crate::runtime_symbols::callee_ownership_contract(callee)
                     .is_vec_copy_in_element_store()
         );
+        // Caller-side owned-param completion: a whole record passed by value at a
+        // proven-borrow call position is a transient borrow, so the caller keeps
+        // its `RecordInPlace` scope-exit drop. Field binders (`f(r.field)`) are a
+        // distinct local excluded by the field-escape branch below unchanged —
+        // this set holds only whole-value args.
+        let proven_borrow_arg_locals =
+            proven_borrow_whole_arg_locals(block, proven_borrow_call_args);
         // Terminator reads. A return / send / ask of a whole record or an owned
         // field binder escapes. `print`/`println` borrows its string arg, and a
         // collection-borrow call (`.len()` / `.get(i)`) borrows its receiver, so
@@ -1879,6 +1930,7 @@ pub(super) fn derive_owned_record_drop_allowed(
                 if !copy_in_elem_store
                     && alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                    && !proven_borrow_arg_locals.contains(&l)
                     && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
@@ -2732,6 +2784,7 @@ pub(super) fn derive_tuple_composite_drop_allowed(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     alias_field_binders: &[(u32, u32)],
+    proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `TupleFieldLoad` dest is an owned-element binder (a
@@ -3111,6 +3164,13 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                 }
             }
         }
+        // Caller-side owned-param completion: a whole tuple passed by value at a
+        // proven-borrow call position is a transient borrow, so the caller keeps
+        // its `TupleInPlace` scope-exit drop. Element binders (`f(t.0)`) are a
+        // distinct local excluded by the element-escape branch below unchanged —
+        // this set holds only whole-value args.
+        let proven_borrow_arg_locals =
+            proven_borrow_whole_arg_locals(block, proven_borrow_call_args);
         // Terminator reads. A return / send / ask of a whole tuple or an owned
         // element binder escapes. `print`/`println` borrows its string arg, and a
         // collection-borrow call (`.len()` / `.get(i)`) borrows its receiver, so
@@ -3120,6 +3180,7 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             if let Some(l) = base_local(p) {
                 if alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                    && !proven_borrow_arg_locals.contains(&l)
                     && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
@@ -4957,6 +5018,7 @@ mod owned_record_drop_derivation {
             &record_field_orders,
             &[],
             &[],
+            &HashMap::new(),
         )
     }
 
@@ -4979,6 +5041,144 @@ mod owned_record_drop_derivation {
         assert!(
             allowed.contains(&b),
             "an untouched owned record is its own sole owner and must be admitted"
+        );
+    }
+
+    /// `derive` variant that seeds the per-block proven-borrow arg-index map —
+    /// the caller-side owned-param completion input.
+    fn derive_with_pbca(
+        blocks: &[BasicBlock],
+        owned: &[(BindingId, String, ResolvedTy)],
+        binding_locals: &HashMap<BindingId, Place>,
+        local_tys: &[ResolvedTy],
+        proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
+    ) -> HashSet<BindingId> {
+        let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+        record_field_orders.insert(
+            "Rec".to_string(),
+            vec![("label".to_string(), ResolvedTy::String)],
+        );
+        derive_owned_record_drop_allowed(
+            blocks,
+            &HashMap::new(),
+            owned,
+            binding_locals,
+            local_tys,
+            &is_rec,
+            &record_field_orders,
+            &[],
+            &[],
+            proven_borrow_call_args,
+        )
+    }
+
+    /// A single-block user call `foo(r)` reading the WHOLE record as its sole
+    /// argument. Returns `(binding, block)` so a test can drive the derivation
+    /// with and without a proven-borrow verdict for arg-index 0.
+    fn whole_record_arg_call_block() -> (BindingId, Vec<BasicBlock>) {
+        let b = BindingId(1);
+        let blk = vec![block(
+            0,
+            vec![],
+            Terminator::Call {
+                callee: "foo".to_string(),
+                builtin: None,
+                args: vec![Place::Local(0)],
+                dest: None,
+                next: 1,
+            },
+        )];
+        (b, blk)
+    }
+
+    /// Caller-side owned-param completion: a whole record passed by value at a
+    /// call position the module summary PROVED borrow-only is a transient borrow
+    /// — the caller retains it and keeps its `RecordInPlace` scope-exit drop.
+    #[test]
+    fn proven_borrow_whole_record_arg_is_admitted() {
+        let (b, blocks) = whole_record_arg_call_block();
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty()];
+        // Block 0's arg-index 0 is proven borrow.
+        let pbca: HashMap<u32, HashSet<usize>> = [(0u32, [0usize].into_iter().collect())]
+            .into_iter()
+            .collect();
+
+        let allowed = derive_with_pbca(&blocks, &owned, &binding_locals, &local_tys, &pbca);
+        assert!(
+            allowed.contains(&b),
+            "a proven-borrow whole-record call arg is a transient borrow; the \
+             caller must keep its RecordInPlace drop; allowed: {allowed:?}"
+        );
+    }
+
+    /// Fail-closed direction: the SAME call with NO proven-borrow verdict is an
+    /// ownership escape (the callee may store/return/send the record), so the
+    /// record root stays excluded — leak, never double-free.
+    #[test]
+    fn unproven_whole_record_arg_is_excluded() {
+        let (b, blocks) = whole_record_arg_call_block();
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty()];
+
+        let allowed = derive_with_pbca(
+            &blocks,
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &HashMap::new(),
+        );
+        assert!(
+            !allowed.contains(&b),
+            "an unproven whole-record call arg may escape into the callee; it \
+             must stay excluded (fail-closed leak); allowed: {allowed:?}"
+        );
+    }
+
+    /// A mixed-args call `foo(a, b)` where ONLY arg-index 0 is proven borrow:
+    /// `a` is admitted, `b`'s root stays excluded. The exemption is per-arg, not
+    /// per-call.
+    #[test]
+    fn mixed_args_call_admits_only_proven_arg() {
+        let a = BindingId(1);
+        let bb = BindingId(2);
+        let owned = vec![
+            (a, "a".to_string(), rec_ty()),
+            (bb, "b".to_string(), rec_ty()),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(a, Place::Local(0)), (bb, Place::Local(1))]
+                .into_iter()
+                .collect();
+        let local_tys = vec![rec_ty(), rec_ty()];
+        let blocks = vec![block(
+            0,
+            vec![],
+            Terminator::Call {
+                callee: "foo".to_string(),
+                builtin: None,
+                args: vec![Place::Local(0), Place::Local(1)],
+                dest: None,
+                next: 1,
+            },
+        )];
+        // Only arg-index 0 is proven borrow.
+        let pbca: HashMap<u32, HashSet<usize>> = [(0u32, [0usize].into_iter().collect())]
+            .into_iter()
+            .collect();
+
+        let allowed = derive_with_pbca(&blocks, &owned, &binding_locals, &local_tys, &pbca);
+        assert!(
+            allowed.contains(&a),
+            "the proven-borrow arg must be admitted; allowed: {allowed:?}"
+        );
+        assert!(
+            !allowed.contains(&bb),
+            "the un-proven arg may escape and must stay excluded; allowed: {allowed:?}"
         );
     }
 
@@ -6304,6 +6504,7 @@ mod tuple_composite_field_drop_exclusion {
             &HashMap::new(),
             &[],
             &[],
+            &HashMap::new(),
         );
         (b, allowed)
     }
@@ -6382,6 +6583,7 @@ mod tuple_composite_field_drop_exclusion {
             &HashMap::new(),
             &[],
             &[],
+            &HashMap::new(),
         );
         assert!(
             !allowed.contains(&b),
@@ -6462,6 +6664,7 @@ mod enum_composite_field_drop_exemption {
             &local_tys,
             &record_field_orders,
             &enum_layouts,
+            &HashMap::new(),
         );
         (b, allowed)
     }

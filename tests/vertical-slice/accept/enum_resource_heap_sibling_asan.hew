@@ -1,0 +1,27 @@
+import std::encoding::xml;
+
+type ParseError {
+    message: string;
+    offset: i64;
+}
+
+enum ParseOutcome {
+    Parsed(xml.Node);
+    Failed(ParseError);
+    Skipped(string);
+}
+
+fn classify(s: string) -> ParseOutcome {
+    match xml.try_parse(s) {
+        Ok(node) => ParseOutcome::Parsed(node),
+        Err(message) => ParseOutcome::Failed(ParseError { message: message, offset: 0 }),
+    }
+}
+
+fn main() {
+    match classify("<root/>") {
+        ParseOutcome::Parsed(node) => println(node.get_tag()),
+        ParseOutcome::Failed(error) => println(error.message),
+        ParseOutcome::Skipped(message) => println(message),
+    }
+}

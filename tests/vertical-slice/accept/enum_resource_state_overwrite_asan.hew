@@ -1,0 +1,26 @@
+import std::encoding::xml;
+
+enum DocState {
+    Empty;
+    Loaded(xml.Node);
+    Broken(string);
+}
+
+actor DocHolder {
+    var doc: DocState;
+
+    receive fn load(s: string) -> i64 {
+        match xml.try_parse(s) {
+            Ok(node) => { doc = DocState::Loaded(node); },
+            Err(message) => { doc = DocState::Broken(message); },
+        }
+        1
+    }
+}
+
+fn main() -> i64 {
+    let holder = spawn DocHolder(doc: DocState::Empty);
+    let first = (await holder.load("<doc/>")).unwrap_or(0);
+    let second = (await holder.load("<doc>")).unwrap_or(0);
+    first + second - 2
+}

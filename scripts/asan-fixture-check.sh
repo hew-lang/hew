@@ -60,6 +60,10 @@
 #       match-arm destructured call-result payload released exactly once per
 #       loop back-edge. A refcount underflow in any would double-free a
 #       String/Bytes header — invisible to macOS `leaks`, caught here by ASan.
+#   resource-in-enum shapes (#2641)
+#       A match-consumed resource payload with heap-owning sibling variants and
+#       an actor-state resource enum overwritten Loaded→Broken. Both must remain
+#       leak- and double-free-clean through recursive enum/record drop thunks.
 #
 # SHIM: Linux-only gate.  On macOS the leak oracle is the `leaks --atExit`
 # path in hew-cli/tests/*_leak_oracle.rs; ASan + LSan on Darwin does not
@@ -364,6 +368,8 @@ ENUM_PAYLOAD_LOOP_SRC="${ROOT}/tests/vertical-slice/accept/enum_payload_call_loo
 # synthetic owner over the call temp; a double-mint would double-free the payload
 # header — invisible to macOS `leaks`, caught here by ASan. Exits 0, clean.
 CALL_SCRUTINEE_FRESH_SRC="${ROOT}/tests/vertical-slice/accept/call_scrutinee_fresh_forwarder_release.hew"
+ENUM_RESOURCE_MATCH_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_heap_sibling_asan.hew"
+ENUM_RESOURCE_STATE_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_state_overwrite_asan.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -409,6 +415,12 @@ compile_asan_fixture "match-scrutinee enum payload (call loop)" "${ENUM_PAYLOAD_
 
 CALL_SCRUTINEE_FRESH_BIN="${WORK_DIR}/call_scrutinee_fresh_forwarder_release"
 compile_asan_fixture "admitted fresh-producer call scrutinee (#2648)" "${CALL_SCRUTINEE_FRESH_SRC}" "${CALL_SCRUTINEE_FRESH_BIN}"
+
+ENUM_RESOURCE_MATCH_BIN="${WORK_DIR}/enum_resource_heap_sibling_asan"
+compile_asan_fixture "resource enum match-consume (#2641)" "${ENUM_RESOURCE_MATCH_SRC}" "${ENUM_RESOURCE_MATCH_BIN}"
+
+ENUM_RESOURCE_STATE_BIN="${WORK_DIR}/enum_resource_state_overwrite_asan"
+compile_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOURCE_STATE_SRC}" "${ENUM_RESOURCE_STATE_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -528,6 +540,18 @@ fi
 # admit path is leak-clean under ASan; a double-mint (the #2648 double-free) would
 # surface here as a heap-use-after-free on the payload header.
 if run_asan_fixture "admitted fresh-producer call scrutinee (#2648)" "${CALL_SCRUTINEE_FRESH_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "resource enum match-consume (#2641)" "${ENUM_RESOURCE_MATCH_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOURCE_STATE_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

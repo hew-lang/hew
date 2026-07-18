@@ -8192,11 +8192,13 @@ fn collect_vec_owned_element_seeds(
                 // channel (string-bearing records were masked by the
                 // direct-string record seed). Carrier names may be
                 // module-qualified (`channel.Receiver`) — compare short.
-                if name == "Vec" || matches!(short_name(name), "Sender" | "Receiver" | "Stream") {
+                if ty.is_builtin(BuiltinType::Vec)
+                    || matches!(short_name(name), "Sender" | "Receiver" | "Stream")
+                {
                     if let Some(elem) = args.first() {
                         on_vec_elem(elem);
                     }
-                } else if name == "HashMap" || short_name(name) == "HashMap" {
+                } else if ty.is_builtin(BuiltinType::HashMap) {
                     // Seed BOTH the value (heap-owning V drop thunk) AND the key
                     // (managed-record-key drop thunk). A `string`-bearing record
                     // key is owned by the map and dropped via its per-record
@@ -8330,24 +8332,22 @@ fn collect_wire_value_owned_vec_element_seeds(
         match &ty {
             ResolvedTy::Named { name, args, .. } => {
                 let short = short_name(name);
-                if name == "Vec" || matches!(short, "Sender" | "Receiver" | "Stream") {
+                if ty.is_builtin(BuiltinType::Vec)
+                    || matches!(short, "Sender" | "Receiver" | "Stream")
+                {
                     if let Some(elem) = args.first() {
                         consider_elem(elem, &mut record_seeds, &mut enum_seeds);
                         stack.push(elem.clone());
                     }
                     continue;
                 }
-                if name == "HashMap"
-                    || short == "HashMap"
-                    || name == "HashSet"
-                    || short == "HashSet"
-                {
+                if ty.is_builtin(BuiltinType::HashMap) || ty.is_builtin(BuiltinType::HashSet) {
                     for a in args {
                         stack.push(a.clone());
                     }
                     continue;
                 }
-                if matches!(short, "Option" | "Result" | "Range") {
+                if ty.is_builtin(BuiltinType::Option) || matches!(short, "Result" | "Range") {
                     for a in args {
                         stack.push(a.clone());
                     }
@@ -38342,6 +38342,59 @@ mod tests {
             !ir.contains("llvm.memcpy"),
             "HashMap::get must not memcpy a borrowed slot into owned Option<V>; got IR:\n{ir}"
         );
+    }
+
+    #[test]
+    fn hashmap_layout_ops_reject_user_named_collision() {
+        let ctx = Context::create();
+        let m = ctx.create_module("hashmap_get_user_collision_test");
+        let harness = build_harness(
+            &ctx,
+            &[fixture_point_layout()],
+            &[fixture_option_i64_layout()],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        let user_map_ty = ResolvedTy::Named {
+            name: "HashMap".to_string(),
+            args: vec![
+                ResolvedTy::Named {
+                    name: "Point".to_string(),
+                    args: vec![],
+                    builtin: None,
+                    is_opaque: false,
+                },
+                ResolvedTy::I64,
+            ],
+            builtin: None,
+            is_opaque: false,
+        };
+        let point_ty = ResolvedTy::Named {
+            name: "Point".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        let option_i64_ty = ResolvedTy::named_builtin(
+            BuiltinType::Option.canonical_name(),
+            BuiltinType::Option,
+            vec![ResolvedTy::I64],
+        );
+        alloc_local(&mut fn_ctx, 0, user_map_ty);
+        alloc_local(&mut fn_ctx, 1, point_ty);
+        alloc_local(&mut fn_ctx, 2, option_i64_ty);
+
+        let err = lower_hashmap_get_layout_call(
+            &fn_ctx,
+            &[Place::Local(0), Place::Local(1)],
+            Some(&Place::Local(2)),
+            1,
+        )
+        .expect_err("a user type named HashMap must not route to the runtime map ABI");
+        assert!(
+            matches!(&err, CodegenError::FailClosed(message) if message.contains("arg0 must be HashMap<K,V>")),
+            "unexpected error: {err:?}"
+        );
+        finish_test_fn(&fn_ctx);
     }
 
     // ---- emit_result_ok ----------------------------------------------------

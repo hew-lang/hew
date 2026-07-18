@@ -3787,11 +3787,11 @@ pub(crate) fn lower_layout_vec_direct_call(
             // Derive the LLVM element type from the Vec<T> resolved type.
             let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
             let elem_hew_ty = match &vec_resolved_ty {
-                ResolvedTy::Named {
-                    name,
-                    args: vec_args,
-                    ..
-                } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
+                ResolvedTy::Named { args: vec_args, .. }
+                    if vec_resolved_ty.is_builtin(BuiltinType::Vec) && vec_args.len() == 1 =>
+                {
+                    vec_args[0].clone()
+                }
                 other => {
                     return Err(CodegenError::FailClosed(format!(
                         "hew_vec_clone_layout: arg0 must be Vec<T>, got {other:?}"
@@ -3847,11 +3847,11 @@ pub(crate) fn lower_layout_vec_direct_call(
             )?;
             let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
             let elem_hew_ty = match &vec_resolved_ty {
-                ResolvedTy::Named {
-                    name,
-                    args: vec_args,
-                    ..
-                } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
+                ResolvedTy::Named { args: vec_args, .. }
+                    if vec_resolved_ty.is_builtin(BuiltinType::Vec) && vec_args.len() == 1 =>
+                {
+                    vec_args[0].clone()
+                }
                 other => {
                     return Err(CodegenError::FailClosed(format!(
                         "hew_vec_slice_range_layout: arg0 must be Vec<T>, got {other:?}"
@@ -4531,12 +4531,12 @@ pub(crate) fn lower_hashmap_get_layout_call(
     })?;
 
     let map_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
-    let val_resolved = match map_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "HashMap" && ty_args.len() == 2 => ty_args[1].clone(),
+    let val_resolved = match &map_ty {
+        ResolvedTy::Named { args: ty_args, .. }
+            if map_ty.is_builtin(BuiltinType::HashMap) && ty_args.len() == 2 =>
+        {
+            ty_args[1].clone()
+        }
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_hashmap_get_layout arg0 must be HashMap<K,V>, got {other:?}"
@@ -4545,11 +4545,10 @@ pub(crate) fn lower_hashmap_get_layout_call(
     };
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
     match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == val_resolved => {}
+        ResolvedTy::Named { args: ty_args, .. }
+            if dest_ty.is_builtin(BuiltinType::Option)
+                && ty_args.len() == 1
+                && ty_args[0] == val_resolved => {}
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_hashmap_get_layout dest must be Option<{val_resolved:?}>, got {other:?}"
@@ -4666,12 +4665,12 @@ pub(crate) fn lower_hashmap_remove_take_call(
     })?;
 
     let map_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
-    let val_resolved = match map_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "HashMap" && ty_args.len() == 2 => ty_args[1].clone(),
+    let val_resolved = match &map_ty {
+        ResolvedTy::Named { args: ty_args, .. }
+            if map_ty.is_builtin(BuiltinType::HashMap) && ty_args.len() == 2 =>
+        {
+            ty_args[1].clone()
+        }
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_hashmap_remove_take_layout arg0 must be HashMap<K,V>, got {other:?}"
@@ -4680,11 +4679,10 @@ pub(crate) fn lower_hashmap_remove_take_call(
     };
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
     match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == val_resolved => {}
+        ResolvedTy::Named { args: ty_args, .. }
+            if dest_ty.is_builtin(BuiltinType::Option)
+                && ty_args.len() == 1
+                && ty_args[0] == val_resolved => {}
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_hashmap_remove_take_layout dest must be Option<{val_resolved:?}>, \
@@ -4810,12 +4808,12 @@ pub(crate) fn lower_hashmap_index_trap_call(
     })?;
 
     let map_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
-    let val_resolved = match map_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "HashMap" && ty_args.len() == 2 => ty_args[1].clone(),
+    let val_resolved = match &map_ty {
+        ResolvedTy::Named { args: ty_args, .. }
+            if map_ty.is_builtin(BuiltinType::HashMap) && ty_args.len() == 2 =>
+        {
+            ty_args[1].clone()
+        }
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_hashmap_get_clone_layout (m[k] trap) arg0 must be HashMap<K,V>, got {other:?}"
@@ -4936,12 +4934,12 @@ pub(crate) fn lower_vec_get_clone_call(
     })?;
 
     let vec_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
-    let elem_resolved = match vec_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Vec" && ty_args.len() == 1 => ty_args[0].clone(),
+    let elem_resolved = match &vec_ty {
+        ResolvedTy::Named { args: ty_args, .. }
+            if vec_ty.is_builtin(BuiltinType::Vec) && ty_args.len() == 1 =>
+        {
+            ty_args[0].clone()
+        }
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_vec_get_clone arg0 must be Vec<T>, got {other:?}"
@@ -4950,11 +4948,13 @@ pub(crate) fn lower_vec_get_clone_call(
     };
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
     let dest_is_option = match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == elem_resolved => true,
+        ResolvedTy::Named { args: ty_args, .. }
+            if dest_ty.is_builtin(BuiltinType::Option)
+                && ty_args.len() == 1
+                && ty_args[0] == elem_resolved =>
+        {
+            true
+        }
         ty if ty == &elem_resolved => false,
         other => {
             return Err(CodegenError::FailClosed(format!(

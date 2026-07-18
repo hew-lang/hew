@@ -294,7 +294,6 @@ fn channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     stmt: return site=Some(SiteId(88)) ty=Result<(Sender, Receiver), string>
     _26 = const.i64 1
     mtag25 = move _26
-    string.retain _18
     mvar25.1.0 = move _18
     ret = move _25
     return

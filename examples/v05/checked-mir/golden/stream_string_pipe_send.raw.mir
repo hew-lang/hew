@@ -801,7 +801,6 @@ fn fs$try_read(string) -> Result<string, IoError> [conv=default]
     stmt: use BindingId(24) contents site=SiteId(283) ty=string intent=Read
     _17 = const.i64 0
     mtag16 = move _17
-    string.retain _6
     mvar16.0.0 = move _6
     _18 = move _16
     _13 = move _18
@@ -1710,7 +1709,6 @@ fn stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [conv=
     stmt: return site=Some(SiteId(537)) ty=Result<(Sink<string>, Stream<string>), string>
     _26 = const.i64 1
     mtag25 = move _26
-    string.retain _18
     mvar25.1.0 = move _18
     ret = move _25
     return
@@ -1896,7 +1894,6 @@ fn stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string> [c
     stmt: return site=Some(SiteId(596)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     _26 = const.i64 1
     mtag25 = move _26
-    string.retain _18
     mvar25.1.0 = move _18
     ret = move _25
     return

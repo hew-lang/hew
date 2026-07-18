@@ -119,17 +119,17 @@ fn test_var_reassign_through_aliasing_fn_is_exact -> ()
     branch[bb6: bb7/bb8] ->
       (none)
     panic[bb7] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     call[bb8 testing$assert_eq -> bb9] ->
       (none)
     branch[bb9: bb10/bb11] ->
       (none)
     panic[bb10] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     call[bb11 testing$assert_eq -> bb12] ->
       (none)
     return[bb12] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
 
 fn test_loop_reassignment_accumulates_exact_elements -> ()
   statements:
@@ -166,17 +166,17 @@ fn test_loop_reassignment_accumulates_exact_elements -> ()
     call[bb5 testing$assert_eq -> bb10] ->
       (none)
     panic[bb6] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     goto[bb7->bb2] ->
       (none)
     cancel[bb7] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     goto[bb8->bb4] ->
       (none)
     cancel[bb8] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     panic[bb9] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     call[bb10 hew_vec_len -> bb11] ->
       (none)
     call[bb11 testing$assert_eq -> bb12] ->
@@ -184,23 +184,23 @@ fn test_loop_reassignment_accumulates_exact_elements -> ()
     branch[bb12: bb13/bb14] ->
       (none)
     panic[bb13] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     call[bb14 testing$assert_eq -> bb15] ->
       (none)
     branch[bb15: bb16/bb17] ->
       (none)
     panic[bb16] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     call[bb17 testing$assert_eq -> bb18] ->
       (none)
     branch[bb18: bb19/bb20] ->
       (none)
     panic[bb19] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     call[bb20 testing$assert_eq -> bb21] ->
       (none)
     return[bb21] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
 
 fn test_two_vec_record_reassignment_is_exact -> ()
   statements:
@@ -253,29 +253,29 @@ fn test_two_vec_record_reassignment_is_exact -> ()
     branch[bb9: bb10/bb11] ->
       (none)
     panic[bb10] ->
-      (none)
+      drop _1 ty=Pair kind=record_in_place
     call[bb11 testing$assert_eq -> bb12] ->
       (none)
     branch[bb12: bb13/bb14] ->
       (none)
     panic[bb13] ->
-      (none)
+      drop _1 ty=Pair kind=record_in_place
     call[bb14 testing$assert_eq -> bb15] ->
       (none)
     branch[bb15: bb16/bb17] ->
       (none)
     panic[bb16] ->
-      (none)
+      drop _1 ty=Pair kind=record_in_place
     call[bb17 testing$assert_eq -> bb18] ->
       (none)
     branch[bb18: bb19/bb20] ->
       (none)
     panic[bb19] ->
-      (none)
+      drop _1 ty=Pair kind=record_in_place
     call[bb20 testing$assert_eq -> bb21] ->
       (none)
     return[bb21] ->
-      (none)
+      drop _1 ty=Pair kind=record_in_place
 
 fn test_reassignment_from_fresh_returning_fn_resets -> ()
   statements:
@@ -326,11 +326,11 @@ fn test_reassignment_from_fresh_returning_fn_resets -> ()
     branch[bb10: bb11/bb12] ->
       (none)
     panic[bb11] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
     call[bb12 testing$assert_eq -> bb13] ->
       (none)
     return[bb13] ->
-      (none)
+      drop _1 ty=S kind=record_in_place
 
 fn test_conditional_reassignment_join_is_exact -> ()
   statements:
@@ -378,7 +378,8 @@ fn test_conditional_reassignment_join_is_exact -> ()
     goto[bb6->bb5] ->
       (none)
     cancel[bb6] ->
-      (none)
+      drop _3 ty=S kind=record_in_place
+      drop _1 ty=S kind=record_in_place
     call[bb7 grow -> bb10] ->
       (none)
     goto[bb8->bb9] ->
@@ -388,7 +389,8 @@ fn test_conditional_reassignment_join_is_exact -> ()
     goto[bb10->bb9] ->
       (none)
     cancel[bb10] ->
-      (none)
+      drop _3 ty=S kind=record_in_place
+      drop _1 ty=S kind=record_in_place
     call[bb11 hew_vec_len -> bb12] ->
       (none)
     call[bb12 testing$assert_eq -> bb13] ->
@@ -396,7 +398,8 @@ fn test_conditional_reassignment_join_is_exact -> ()
     branch[bb13: bb14/bb15] ->
       (none)
     panic[bb14] ->
-      (none)
+      drop _3 ty=S kind=record_in_place
+      drop _1 ty=S kind=record_in_place
     call[bb15 testing$assert_eq -> bb16] ->
       (none)
     call[bb16 testing$assert_eq -> bb17] ->
@@ -406,7 +409,8 @@ fn test_conditional_reassignment_join_is_exact -> ()
     call[bb18 testing$assert_eq -> bb19] ->
       (none)
     return[bb19] ->
-      (none)
+      drop _3 ty=S kind=record_in_place
+      drop _1 ty=S kind=record_in_place
 
 fn test_literal_rhs_embedding_own_projection_is_exact -> ()
   statements:

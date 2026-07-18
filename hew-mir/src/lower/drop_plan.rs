@@ -309,6 +309,7 @@ pub(super) fn elaborate(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &builder.proven_borrow_call_args,
     );
 
     // W5.016 — owned-element `Vec<T>` scope-exit drop allow-set. An owned Vec
@@ -626,6 +627,7 @@ pub(super) fn elaborate(
         &builder.record_field_orders,
         &builder.enum_layouts,
         &alias_field_binders,
+        &builder.proven_borrow_call_args,
     );
 
     // W5.021 — fail-closed sole-owner allow-set for heap-owning **tuple**
@@ -647,6 +649,7 @@ pub(super) fn elaborate(
         &builder.record_field_orders,
         &builder.enum_layouts,
         &alias_field_binders,
+        &builder.proven_borrow_call_args,
     );
 
     // W5.021 (defect #1) — owned members the caller now owns via a returned

@@ -6,6 +6,12 @@
 #   are now Read/retain, so the source binding keeps a scope-exit drop and every
 #   shared heap-string local drops via the cow_heap(hew_string_drop) destructor.
 #   The two owned-record fixtures are byte-identical across both revisions.)
+#   Refreshed for the caller-side by-value-param drop: owned by-value
+#   record/tuple/enum params now carry a scope-exit `record_in_place` drop at
+#   the caller. Only var_record_reassign_ownership_test.elab.mir shifted, and
+#   purely additively — every hunk replaces a `(none)` scope-exit slot with a
+#   `drop _N ty=<record/tuple> kind=record_in_place`, no CFG/terminator/value
+#   change. The other three baselines remain byte-identical.
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
 # normalization: two run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both

@@ -4142,6 +4142,7 @@ pub(crate) fn lower_function(
         &builder.record_field_orders,
         &builder.enum_layouts,
         &alias_field_binders,
+        &builder.proven_borrow_call_args,
     );
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
@@ -4154,6 +4155,7 @@ pub(crate) fn lower_function(
         &builder.record_field_orders,
         &builder.enum_layouts,
         &alias_field_binders,
+        &builder.proven_borrow_call_args,
     );
     let mut composite_drop_allowed = tuple_composite_drop_allowed;
     composite_drop_allowed.extend(owned_record_drop_allowed);

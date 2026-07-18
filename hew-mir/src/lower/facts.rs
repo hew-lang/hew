@@ -207,6 +207,23 @@ fn collect_binding_defs_in_block<'f>(
         collect_binding_defs_in_expr(tail, defs, let_ids);
     }
 }
+
+/// Every whole-binding reassignment of `binding` nested within `block`.
+///
+/// Binding ids are function-unique, so the existing exhaustive definition
+/// collector can be reused here: the queried binding was declared outside the
+/// while-let body, and therefore every definition found inside the body is an
+/// assignment rather than a shadowing `let`.
+pub(crate) fn binding_reassignment_values_in_block(
+    block: &HirBlock,
+    binding: BindingId,
+) -> Vec<&HirExpr> {
+    let mut defs = HashMap::new();
+    let mut let_ids = HashSet::new();
+    collect_binding_defs_in_block(block, &mut defs, &mut let_ids);
+    defs.remove(&binding).unwrap_or_default()
+}
+
 /// Recurse into every sub-expression and nested block of `expr` so
 /// `collect_binding_defs_in_block` reaches every `let`/`=` in inner scopes.
 /// Mirrors the sealed `HirExprKind` surface (cf.

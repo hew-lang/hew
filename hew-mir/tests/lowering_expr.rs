@@ -74,6 +74,8 @@ mod unary_lowering;
 mod vec_slice_range;
 #[path = "lowering_expr/vertical.rs"]
 mod vertical;
+#[path = "lowering_expr/while_let_reassign_owner.rs"]
+mod while_let_reassign_owner;
 #[path = "lowering_expr/while_let_skipped_owned.rs"]
 mod while_let_skipped_owned;
 #[path = "lowering_expr/wrapping_lowering.rs"]

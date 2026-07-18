@@ -263,6 +263,7 @@ const SENTINEL_RECV_GEN_COMPANION_BINDING: BindingId = BindingId(u32::MAX - 4);
 const SYNTHETIC_OWNED_TEMP_BINDING_BASE: u32 = u32::MAX - 64;
 
 const SYNTHETIC_CALL_SCRUTINEE_NAME: &str = "__hew_call_scrutinee";
+const SYNTHETIC_WHILE_LET_ITERATION_NAME: &str = "__hew_while_let_iteration";
 const SYNTHETIC_DISCARDED_CALL_RESULT_NAME: &str = "__hew_discarded_call_result";
 
 /// Prefix of the synthetic for-iteration cursor binding minted by the HIR
@@ -683,6 +684,11 @@ struct Builder {
     /// Each binding is also marked consumed in the source block's statement
     /// stream, so the target's later function exit cannot release it again.
     pub(crate) iteration_owner_drop_blocks: HashMap<u32, Vec<BindingId>>,
+    /// Header snapshot owners whose drop template is valid only on a recorded
+    /// loop back-edge. Ordinary exit plans exclude these bindings because the
+    /// source binding still owns the same value on tag-false and pre-reassign
+    /// break/return edges.
+    pub(crate) back_edge_only_iteration_owners: HashSet<BindingId>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
     pub(crate) diagnostics: Vec<MirDiagnostic>,
     /// Per-function de-duplication for W3.029 user-aggregate value-class

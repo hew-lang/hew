@@ -226,6 +226,9 @@ pub(super) fn elaborate(
     // ledger carried richer facts, in the same declaration order.
     let owned_locals_snapshot = builder.owned_locals_snapshot();
     for (binding, name, ty) in owned_locals_snapshot.iter().rev() {
+        if builder.back_edge_only_iteration_owners.contains(binding) {
+            continue;
+        }
         elaborated_statements.push(MirStatement::Drop {
             binding: *binding,
             name: name.clone(),
@@ -757,9 +760,19 @@ pub(super) fn elaborate(
         &builder.resource_drop_flags,
         &builder.collection_drop_flags,
     );
+    let ordinary_lifo_drops: Vec<ElabDrop> = lifo_drops
+        .iter()
+        .filter(|drop| {
+            !builder
+                .back_edge_only_iteration_owners
+                .iter()
+                .any(|binding| builder.binding_locals.get(binding).copied() == Some(drop.place))
+        })
+        .cloned()
+        .collect();
     let (elab_blocks, mut drop_plans) = enumerate_exits(
         &checked.blocks,
-        &lifo_drops,
+        &ordinary_lifo_drops,
         &dataflow_result.exit_states,
         &dataflow_result.entry_states,
         &builder.binding_locals,

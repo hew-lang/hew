@@ -1,8 +1,10 @@
 use super::{
-    base_local, integer_bit_width, integer_signedness, ActiveIterationOwner, Builder, CmpPred,
-    HashSet, HirExpr, Instr, IntArithOp, IntSignedness, LoopFrame, MirDiagnostic,
+    base_local, binding_reassignment_values_in_block, integer_bit_width, integer_signedness,
+    ty_is_heap_owning_enum_composite, ActiveIterationOwner, Builder, CmpPred, HashSet, HirExpr,
+    HirExprKind, HirStmtKind, Instr, IntArithOp, IntSignedness, LoopFrame, MirDiagnostic,
     MirDiagnosticKind, MirStatement, Place, ProjectedPayloadOrigin, ProjectedPayloadRejectReason,
-    ResolvedTy, Terminator, TrapKind, SYNTHETIC_CALL_SCRUTINEE_NAME,
+    ResolvedRef, ResolvedTy, Terminator, TrapKind, SYNTHETIC_CALL_SCRUTINEE_NAME,
+    SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
 impl Builder {
@@ -399,6 +401,14 @@ impl Builder {
                 return None;
             }
         };
+        let binding_iteration_owner_ty =
+            match self.classify_while_let_binding_iteration_owner(label, scrutinee, body) {
+                Ok(owner_ty) => owner_ty,
+                Err(diag) => {
+                    self.diagnostics.push(*diag);
+                    return None;
+                }
+            };
         // Fail-closed: a `while let` over an enum variant that leaves an OWNED
         // payload field unaccounted for (a `..` rest or a bare `_` sibling)
         // cannot release that field's heap on the loop back-edge. The header
@@ -469,6 +479,22 @@ impl Builder {
             scrutinee,
             scrutinee_local,
         );
+        let binding_iteration_owner = binding_iteration_owner_ty.map(|ty| {
+            let snapshot_place = self.alloc_local(ty.clone());
+            let Place::Local(snapshot_local) = snapshot_place else {
+                unreachable!("alloc_local returns Place::Local");
+            };
+            self.push_instr(Instr::Move {
+                dest: snapshot_place,
+                src: Place::Local(scrutinee_local),
+            });
+            let binding =
+                self.register_while_let_iteration_owner(scrutinee, snapshot_local, ty.clone());
+            (binding, ty, snapshot_local)
+        });
+        let pattern_scrutinee_local = binding_iteration_owner
+            .as_ref()
+            .map_or(scrutinee_local, |(_, _, snapshot_local)| *snapshot_local);
         let false_cleanup_bb = scrutinee_owner.as_ref().map(|_| self.alloc_block());
 
         // Load the variant tag into a fresh i64 local, mirroring
@@ -478,7 +504,7 @@ impl Builder {
         let tag_local = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::Move {
             dest: tag_local,
-            src: Place::EnumTag(scrutinee_local),
+            src: Place::EnumTag(pattern_scrutinee_local),
         });
 
         // Compare tag against the continue-arm variant index.
@@ -513,7 +539,7 @@ impl Builder {
         for pvp in payload_variant_predicates {
             self.emit_payload_variant_predicate_checks(
                 pvp,
-                scrutinee_local,
+                pattern_scrutinee_local,
                 variant_idx,
                 false_cleanup_bb.unwrap_or(exit_bb),
                 scrutinee.site,
@@ -550,7 +576,7 @@ impl Builder {
             self.push_instr(Instr::Move {
                 dest,
                 src: Place::MachineVariant {
-                    local: scrutinee_local,
+                    local: pattern_scrutinee_local,
                     variant_idx,
                     field_idx: binding.field_idx,
                 },
@@ -566,7 +592,7 @@ impl Builder {
                 binding.binding,
                 &binding.name,
                 Place::MachineVariant {
-                    local: scrutinee_local,
+                    local: pattern_scrutinee_local,
                     variant_idx,
                     field_idx: binding.field_idx,
                 },
@@ -663,6 +689,14 @@ impl Builder {
                 ty,
             );
         }
+        if let Some((binding, ty, _)) = &binding_iteration_owner {
+            self.record_iteration_owner_drop(
+                *binding,
+                SYNTHETIC_WHILE_LET_ITERATION_NAME,
+                scrutinee.site,
+                ty,
+            );
+        }
         // Record this block as a loop-body back-edge so `enumerate_exits`
         // populates its `Goto` `DropPlan` with per-iteration releases for
         // heap-owning bindings declared in `body.scope` (including the
@@ -700,6 +734,461 @@ impl Builder {
         // Exit: subsequent lowering continues here.
         self.start_block(exit_bb);
         None
+    }
+
+    fn classify_while_let_binding_iteration_owner(
+        &self,
+        label: Option<&str>,
+        scrutinee: &HirExpr,
+        body: &hew_hir::HirBlock,
+    ) -> Result<Option<ResolvedTy>, Box<MirDiagnostic>> {
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &scrutinee.kind
+        else {
+            return Ok(None);
+        };
+        let ty = self.subst_ty(&scrutinee.ty);
+        if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts) {
+            return Ok(None);
+        }
+
+        let nested_reassignments = binding_reassignment_values_in_block(body, *binding);
+        if nested_reassignments.is_empty() {
+            return Ok(None);
+        }
+        let top_level_reassignments: Vec<(usize, &HirExpr)> = body
+            .statements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, stmt)| match &stmt.kind {
+                HirStmtKind::Assign { target, value }
+                    if matches!(
+                        &target.kind,
+                        HirExprKind::BindingRef {
+                            resolved: ResolvedRef::Binding(target_binding),
+                            ..
+                        } if target_binding == binding
+                    ) =>
+                {
+                    Some((index, value.as_ref()))
+                }
+                _ => None,
+            })
+            .collect();
+
+        if nested_reassignments.len() != 1 || top_level_reassignments.len() != 1 {
+            return Err(Box::new(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "while-let scrutinee conditionally reassigned in loop body"
+                        .to_string(),
+                    site: scrutinee.site,
+                },
+                note: "a heap-owning while-let scrutinee binding may currently be reassigned \
+                       exactly once by an unconditional top-level statement; move the \
+                       reassignment out of nested control flow"
+                    .to_string(),
+            }));
+        }
+        if self.while_let_body_contains_targeting_continue(body, label, 0) {
+            return Err(Box::new(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "while-let reassigned scrutinee with continue".to_string(),
+                    site: scrutinee.site,
+                },
+                note: "a continue edge may bypass the unconditional fresh reassignment; \
+                       rewrite the body without continue before using a reassigned \
+                       heap-owning while-let scrutinee"
+                    .to_string(),
+            }));
+        }
+        let (reassignment_index, reassignment_value) = top_level_reassignments[0];
+        if self.while_let_body_has_exit_after_reassignment(body, label, reassignment_index) {
+            return Err(Box::new(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "while-let reassigned scrutinee with post-reassignment exit"
+                        .to_string(),
+                    site: scrutinee.site,
+                },
+                note: "break or return after the reassignment would bypass the back-edge-only \
+                       snapshot release; move the exit before the reassignment"
+                    .to_string(),
+            }));
+        }
+        if !self.while_let_reassignment_provably_fresh(reassignment_value) {
+            return Err(Box::new(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "while-let scrutinee reassigned from non-fresh value".to_string(),
+                    site: scrutinee.site,
+                },
+                note: "the reassignment must produce a proven-fresh value; assigning from a \
+                       re-readable binding or projection could alias the iteration snapshot"
+                    .to_string(),
+            }));
+        }
+        Ok(Some(ty))
+    }
+
+    fn while_let_reassignment_provably_fresh(&self, value: &HirExpr) -> bool {
+        if matches!(value.kind, HirExprKind::Call { .. }) {
+            return self
+                .classify_call_scrutinee_admission(value)
+                .is_ok_and(|admission| {
+                    !matches!(
+                        admission,
+                        crate::return_provenance::CallScrutineeAdmission::NotApplicable
+                    )
+                });
+        }
+        self.scrutinee_arg_provably_fresh(value)
+    }
+
+    fn while_let_body_has_exit_after_reassignment(
+        &self,
+        body: &hew_hir::HirBlock,
+        label: Option<&str>,
+        reassignment_index: usize,
+    ) -> bool {
+        body.statements[reassignment_index + 1..]
+            .iter()
+            .any(|stmt| match &stmt.kind {
+                HirStmtKind::Return(_) => true,
+                HirStmtKind::Let(_, init) => init
+                    .as_ref()
+                    .is_some_and(|expr| self.while_let_expr_has_unsafe_exit(expr, label, 0)),
+                HirStmtKind::Assign { target, value } => {
+                    self.while_let_expr_has_unsafe_exit(target, label, 0)
+                        || self.while_let_expr_has_unsafe_exit(value, label, 0)
+                }
+                HirStmtKind::Expr(expr) => self.while_let_expr_has_unsafe_exit(expr, label, 0),
+                HirStmtKind::Defer { body, .. } => {
+                    self.while_let_expr_has_unsafe_exit(body, label, 0)
+                }
+                HirStmtKind::LetElse {
+                    scrutinee,
+                    success_prelude,
+                    else_body,
+                    ..
+                } => {
+                    self.while_let_expr_has_unsafe_exit(scrutinee, label, 0)
+                        || success_prelude.iter().any(|stmt| {
+                            if let HirStmtKind::Let(_, Some(value)) = &stmt.kind {
+                                self.while_let_expr_has_unsafe_exit(value, label, 0)
+                            } else {
+                                false
+                            }
+                        })
+                        || self.while_let_block_has_unsafe_exit(else_body, label, 0)
+                }
+            })
+            || body
+                .tail
+                .as_ref()
+                .is_some_and(|tail| self.while_let_expr_has_unsafe_exit(tail, label, 0))
+    }
+
+    fn while_let_block_has_unsafe_exit(
+        &self,
+        block: &hew_hir::HirBlock,
+        label: Option<&str>,
+        nested_loop_depth: usize,
+    ) -> bool {
+        block.statements.iter().any(|stmt| match &stmt.kind {
+            HirStmtKind::Return(_) => true,
+            HirStmtKind::Let(_, init) => init.as_ref().is_some_and(|expr| {
+                self.while_let_expr_has_unsafe_exit(expr, label, nested_loop_depth)
+            }),
+            HirStmtKind::Assign { target, value } => {
+                self.while_let_expr_has_unsafe_exit(target, label, nested_loop_depth)
+                    || self.while_let_expr_has_unsafe_exit(value, label, nested_loop_depth)
+            }
+            HirStmtKind::Expr(expr) => {
+                self.while_let_expr_has_unsafe_exit(expr, label, nested_loop_depth)
+            }
+            HirStmtKind::Defer { body, .. } => {
+                self.while_let_expr_has_unsafe_exit(body, label, nested_loop_depth)
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                self.while_let_expr_has_unsafe_exit(scrutinee, label, nested_loop_depth)
+                    || success_prelude.iter().any(|stmt| {
+                        if let HirStmtKind::Let(_, Some(value)) = &stmt.kind {
+                            self.while_let_expr_has_unsafe_exit(value, label, nested_loop_depth)
+                        } else {
+                            false
+                        }
+                    })
+                    || self.while_let_block_has_unsafe_exit(else_body, label, nested_loop_depth)
+            }
+        }) || block
+            .tail
+            .as_ref()
+            .is_some_and(|tail| self.while_let_expr_has_unsafe_exit(tail, label, nested_loop_depth))
+    }
+
+    fn while_let_expr_has_unsafe_exit(
+        &self,
+        expr: &HirExpr,
+        label: Option<&str>,
+        nested_loop_depth: usize,
+    ) -> bool {
+        match &expr.kind {
+            HirExprKind::Return { .. } => true,
+            HirExprKind::Break {
+                label: break_label, ..
+            } => break_label
+                .as_deref()
+                .map_or(nested_loop_depth == 0, |name| label == Some(name)),
+            HirExprKind::Block(block) | HirExprKind::Scope { body: block } => {
+                self.while_let_block_has_unsafe_exit(block, label, nested_loop_depth)
+            }
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.while_let_expr_has_unsafe_exit(condition, label, nested_loop_depth)
+                    || self.while_let_expr_has_unsafe_exit(then_expr, label, nested_loop_depth)
+                    || else_expr.as_ref().is_some_and(|else_expr| {
+                        self.while_let_expr_has_unsafe_exit(else_expr, label, nested_loop_depth)
+                    })
+            }
+            HirExprKind::Match { scrutinee, arms } => {
+                self.while_let_expr_has_unsafe_exit(scrutinee, label, nested_loop_depth)
+                    || arms.iter().any(|arm| {
+                        arm.guard.as_ref().is_some_and(|guard| {
+                            self.while_let_expr_has_unsafe_exit(guard, label, nested_loop_depth)
+                        }) || self.while_let_expr_has_unsafe_exit(
+                            &arm.body,
+                            label,
+                            nested_loop_depth,
+                        )
+                    })
+            }
+            HirExprKind::IfLet {
+                scrutinee,
+                body,
+                else_body,
+                ..
+            } => {
+                self.while_let_expr_has_unsafe_exit(scrutinee, label, nested_loop_depth)
+                    || self.while_let_block_has_unsafe_exit(body, label, nested_loop_depth)
+                    || else_body.as_ref().is_some_and(|else_body| {
+                        self.while_let_block_has_unsafe_exit(else_body, label, nested_loop_depth)
+                    })
+            }
+            HirExprKind::While {
+                condition, body, ..
+            } => {
+                self.while_let_expr_has_unsafe_exit(condition, label, nested_loop_depth)
+                    || self.while_let_block_has_unsafe_exit(body, label, nested_loop_depth + 1)
+            }
+            HirExprKind::ForRange {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                self.while_let_expr_has_unsafe_exit(start, label, nested_loop_depth)
+                    || self.while_let_expr_has_unsafe_exit(end, label, nested_loop_depth)
+                    || self.while_let_expr_has_unsafe_exit(step, label, nested_loop_depth)
+                    || self.while_let_block_has_unsafe_exit(body, label, nested_loop_depth + 1)
+            }
+            HirExprKind::WhileLet {
+                scrutinee, body, ..
+            } => {
+                self.while_let_expr_has_unsafe_exit(scrutinee, label, nested_loop_depth)
+                    || self.while_let_block_has_unsafe_exit(body, label, nested_loop_depth + 1)
+            }
+            HirExprKind::Loop { body, .. } => {
+                self.while_let_block_has_unsafe_exit(body, label, nested_loop_depth + 1)
+            }
+            _ => false,
+        }
+    }
+
+    fn while_let_body_contains_targeting_continue(
+        &self,
+        block: &hew_hir::HirBlock,
+        label: Option<&str>,
+        nested_loop_depth: usize,
+    ) -> bool {
+        block.statements.iter().any(|stmt| {
+            let expr_has_continue = |expr: &HirExpr| {
+                self.while_let_expr_contains_targeting_continue(expr, label, nested_loop_depth)
+            };
+            match &stmt.kind {
+                HirStmtKind::Let(_, init) => init.as_ref().is_some_and(expr_has_continue),
+                HirStmtKind::Assign { target, value } => {
+                    expr_has_continue(target) || expr_has_continue(value)
+                }
+                HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
+                    expr_has_continue(expr)
+                }
+                HirStmtKind::Return(None) => false,
+                HirStmtKind::Defer { body, .. } => expr_has_continue(body),
+                HirStmtKind::LetElse {
+                    scrutinee,
+                    success_prelude,
+                    else_body,
+                    ..
+                } => {
+                    expr_has_continue(scrutinee)
+                        || success_prelude.iter().any(|stmt| {
+                            if let HirStmtKind::Let(_, Some(value)) = &stmt.kind {
+                                expr_has_continue(value)
+                            } else {
+                                false
+                            }
+                        })
+                        || self.while_let_body_contains_targeting_continue(
+                            else_body,
+                            label,
+                            nested_loop_depth,
+                        )
+                }
+            }
+        }) || block.tail.as_ref().is_some_and(|tail| {
+            self.while_let_expr_contains_targeting_continue(tail, label, nested_loop_depth)
+        })
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the recursive control-flow scan keeps every loop and branch shape visible so a \
+                  newly admitted continue path cannot silently bypass the snapshot release"
+    )]
+    fn while_let_expr_contains_targeting_continue(
+        &self,
+        expr: &HirExpr,
+        label: Option<&str>,
+        nested_loop_depth: usize,
+    ) -> bool {
+        match &expr.kind {
+            HirExprKind::Continue {
+                label: continue_label,
+            } => continue_label
+                .as_deref()
+                .map_or(nested_loop_depth == 0, |name| label == Some(name)),
+            HirExprKind::Block(block) | HirExprKind::Scope { body: block } => {
+                self.while_let_body_contains_targeting_continue(block, label, nested_loop_depth)
+            }
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.while_let_expr_contains_targeting_continue(condition, label, nested_loop_depth)
+                    || self.while_let_expr_contains_targeting_continue(
+                        then_expr,
+                        label,
+                        nested_loop_depth,
+                    )
+                    || else_expr.as_ref().is_some_and(|else_expr| {
+                        self.while_let_expr_contains_targeting_continue(
+                            else_expr,
+                            label,
+                            nested_loop_depth,
+                        )
+                    })
+            }
+            HirExprKind::Match { scrutinee, arms } => {
+                self.while_let_expr_contains_targeting_continue(scrutinee, label, nested_loop_depth)
+                    || arms.iter().any(|arm| {
+                        arm.guard.as_ref().is_some_and(|guard| {
+                            self.while_let_expr_contains_targeting_continue(
+                                guard,
+                                label,
+                                nested_loop_depth,
+                            )
+                        }) || self.while_let_expr_contains_targeting_continue(
+                            &arm.body,
+                            label,
+                            nested_loop_depth,
+                        )
+                    })
+            }
+            HirExprKind::IfLet {
+                scrutinee,
+                body,
+                else_body,
+                ..
+            } => {
+                self.while_let_expr_contains_targeting_continue(scrutinee, label, nested_loop_depth)
+                    || self.while_let_body_contains_targeting_continue(
+                        body,
+                        label,
+                        nested_loop_depth,
+                    )
+                    || else_body.as_ref().is_some_and(|else_body| {
+                        self.while_let_body_contains_targeting_continue(
+                            else_body,
+                            label,
+                            nested_loop_depth,
+                        )
+                    })
+            }
+            HirExprKind::While {
+                condition, body, ..
+            } => {
+                self.while_let_expr_contains_targeting_continue(condition, label, nested_loop_depth)
+                    || self.while_let_body_contains_targeting_continue(
+                        body,
+                        label,
+                        nested_loop_depth + 1,
+                    )
+            }
+            HirExprKind::ForRange {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                self.while_let_expr_contains_targeting_continue(start, label, nested_loop_depth)
+                    || self.while_let_expr_contains_targeting_continue(
+                        end,
+                        label,
+                        nested_loop_depth,
+                    )
+                    || self.while_let_expr_contains_targeting_continue(
+                        step,
+                        label,
+                        nested_loop_depth,
+                    )
+                    || self.while_let_body_contains_targeting_continue(
+                        body,
+                        label,
+                        nested_loop_depth + 1,
+                    )
+            }
+            HirExprKind::WhileLet {
+                scrutinee, body, ..
+            } => {
+                self.while_let_expr_contains_targeting_continue(scrutinee, label, nested_loop_depth)
+                    || self.while_let_body_contains_targeting_continue(
+                        body,
+                        label,
+                        nested_loop_depth + 1,
+                    )
+            }
+            HirExprKind::Loop { body, .. } => {
+                self.while_let_body_contains_targeting_continue(body, label, nested_loop_depth + 1)
+            }
+            HirExprKind::Break {
+                value: Some(value), ..
+            }
+            | HirExprKind::Return { value: Some(value) } => {
+                self.while_let_expr_contains_targeting_continue(value, label, nested_loop_depth)
+            }
+            _ => false,
+        }
     }
 
     /// Detect a `while let` enum-variant pattern that leaves an OWNED payload

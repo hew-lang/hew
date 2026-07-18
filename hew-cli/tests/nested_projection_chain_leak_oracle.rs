@@ -883,11 +883,15 @@ fn escaped_return_record_excludes_the_owner_composite() {
     );
 }
 
-/// Owner-consumed control: the alias `mid` emits no drop and the consumed
-/// owner `o` emits no scope-exit composite drop in the caller (the consumer
-/// `sink` owns it) — so `run_cycle` emits zero `record_in_place` drops.
+/// Proven-borrow owner control: `sink(o: Outer)` only reads `o`, so it is a
+/// proven-borrowing helper that registers no callee-side drop. Under the
+/// copy-on-write borrow model the caller therefore RETAINS the owner and frees
+/// it exactly once at its own scope exit: `run_cycle` emits exactly ONE
+/// `record_in_place` drop — the owner `o`'s composite. The alias `mid` (a
+/// Read-projection of `o.mid`) never owns, so it emits none. Exactly-once is
+/// the invariant: two owner drops would be a double-free, zero would be a leak.
 #[test]
-fn owner_consumed_control_emits_no_alias_or_owner_drop() {
+fn owner_consumed_control_emits_single_owner_drop_no_alias_drop() {
     let dump = elab_dump(
         &owner_consumed_control_source(4),
         "chain-owner-consumed-mir-",
@@ -896,11 +900,24 @@ fn owner_consumed_control_emits_no_alias_or_owner_drop() {
         .split("fn ")
         .find(|section| section.starts_with("run_cycle"))
         .expect("run_cycle section present in dump");
+    // Teeth 1: the owner frees exactly once — one composite in-place drop, the
+    // outer root's. Zero here is the leak (proven-borrow callee freed nothing);
+    // two is the double-free (caller AND callee both freed).
+    let composites = record_in_place_locals(run_cycle);
     assert_eq!(
-        run_cycle.matches("kind=record_in_place").count(),
-        0,
-        "the alias emits no drop and the consumed owner is freed by the \
-         callee, so the caller emits no composite drop;\n{run_cycle}"
+        composites.len(),
+        1,
+        "the proven-borrowing `sink` frees nothing, so the caller retains the \
+         owner and frees it exactly once; got {composites:?}\n{run_cycle}"
+    );
+    // Teeth 2: the single composite is the OWNER's (`ty=Outer`), never the
+    // alias `mid` (a Read-projection into the owner's subtree, `ty=Mid`). A
+    // `Mid` composite here would be the alias wrongly re-freeing the shared
+    // subtree — a double-free of the owner's payload.
+    assert!(
+        !run_cycle.contains("ty=Mid kind=record_in_place"),
+        "the alias `mid` must emit no composite drop; a `ty=Mid` in-place drop \
+         means the alias re-freed the owner's shared subtree;\n{run_cycle}"
     );
 }
 

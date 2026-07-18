@@ -1,0 +1,48 @@
+// A self-recursive enum is a first-class `Vec` element. `RedisReply` models a
+// Redis/RESP-style reply tree: the `Array` variant carries a `[RedisReply]`, so
+// a reply nests arbitrarily. The compiler synthesises the recursive owned
+// clone/drop thunks for the enum, so pushing a reply into a `[RedisReply]`
+// deep-clones the whole subtree (copy-in) and the outer Vec becomes its sole
+// owner — every nested buffer is released exactly once at scope exit, with no
+// leak and no double-free.
+enum RedisReply {
+    Nil;
+    Int(i64);
+    Text(string);
+    Array([RedisReply]);
+}
+
+fn main() {
+    // Build a batch of replies, including a nested `Array` reply — the exact
+    // shape a RESP array decode produces. Each `push` deep-clones the reply
+    // (the `Array`'s inner `[RedisReply]` and all) into `replies`.
+    var replies: [RedisReply] = [];
+    replies.push(RedisReply::Int(1));
+    replies.push(RedisReply::Int(2));
+    replies.push(RedisReply::Array([RedisReply::Int(10), RedisReply::Int(20)]));
+    replies.push(RedisReply::Text("OK"));
+
+    // Read the batch back and classify each reply by its variant — proving the
+    // stored tree is intact and matchable after the copy-in clone.
+    var int_sum: i64 = 0;
+    var arrays: i64 = 0;
+    var texts: i64 = 0;
+    for reply in replies {
+        match reply {
+            RedisReply::Int(n) => {
+                int_sum = int_sum + n;
+            },
+            RedisReply::Array(_) => {
+                arrays = arrays + 1;
+            },
+            RedisReply::Text(_) => {
+                texts = texts + 1;
+            },
+            RedisReply::Nil => {},
+        }
+    }
+    println(f"replies={replies.len()}");
+    println(f"int_sum={int_sum}");
+    println(f"arrays={arrays}");
+    println(f"texts={texts}");
+}

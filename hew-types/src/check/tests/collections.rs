@@ -840,12 +840,14 @@ fn vec_local_pid_push_routes_to_pointer_abi() {
 }
 
 #[test]
-fn vec_self_recursive_enum_fails_closed_with_accurate_diagnostic() {
-    // A self-recursive enum (`Array(Vec<RedisReply>)`) is owned but needs the
-    // recursive owned-thunk synthesis that is a separate follow-on. It must
-    // fail closed at construction with a diagnostic that names the real blocker
-    // (the container field), NOT a misleading `Copy` / `hew_vec_new_with_layout`
-    // message.
+fn vec_self_recursive_enum_push_routes_to_owned_abi() {
+    // A self-recursive enum (`Array(Vec<RedisReply>)` — the Redis/JSON reply
+    // shape) is admitted as an owned Vec element: its clone/drop thunk recurses
+    // through the inner `Vec<RedisReply>` via the owned-collection ABI. The
+    // self-recursion edge is keyed on the element's own name, so the container
+    // field no longer fails closed. Pushing a variant routes to the owned ABI;
+    // the copy-in clone + scope-exit drop are proven by the recursive-enum leak
+    // oracle.
     let output = check_source(
         r"
         enum RedisReply {
@@ -855,8 +857,231 @@ fn vec_self_recursive_enum_fails_closed_with_accurate_diagnostic() {
         }
 
         fn main() {
-            let v: Vec<RedisReply> = Vec::new();
-            let _ = v.len();
+            var v: Vec<RedisReply> = [];
+            v.push(RedisReply::Int(7));
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| { error.message.contains("cannot be a `Vec` element") }),
+        "self-recursive enum Vec element must now be admitted, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.resolved_calls.values().any(|call| {
+            call.method_name == "push" && call.target.symbol_name == "hew_vec_push_owned"
+        }),
+        "self-recursive enum Vec::push must route to hew_vec_push_owned: {:#?}",
+        output.resolved_calls
+    );
+}
+
+#[test]
+fn vec_record_collection_field_push_routes_to_owned_abi() {
+    // A record whose field is a collection (`Boxed { payload: Vec<i64> }`) is
+    // admitted as an owned Vec element: the record's `__hew_record_*_inplace`
+    // thunk clones/frees `payload` through the owned-collection ABI. Copy-in
+    // `.push` deep-clones the element so the source keeps its own scope-exit
+    // drop (proven by the push-clone leak oracle).
+    let output = check_source(
+        r"
+        type Boxed { payload: Vec<i64> }
+
+        fn main() {
+            var xs: Vec<Boxed> = [];
+            let src = Boxed { payload: [10, 20] };
+            xs.push(src);
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("cannot be a `Vec` element")),
+        "record-with-collection-field Vec element must be admitted: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.resolved_calls.values().any(|call| {
+            call.method_name == "push" && call.target.symbol_name == "hew_vec_push_owned"
+        }),
+        "record-with-collection Vec::push must route to hew_vec_push_owned: {:#?}",
+        output.resolved_calls
+    );
+}
+
+#[test]
+fn vec_record_hashmap_field_push_admitted() {
+    // A record whose field is a `HashMap` is admitted — the map arg types
+    // (`string`/`string`) are clonable, so the collection field is clonable.
+    let output = check_source(
+        r"
+        type M { rows: HashMap<string, string> }
+
+        fn main() {
+            var xs: Vec<M> = [];
+            xs.push(M { rows: HashMap::new() });
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("cannot be a `Vec` element")),
+        "record-with-HashMap-field Vec element must be admitted: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn channel_admission_fails_closed_for_collection_bearing_record() {
+    // Admitting a collection-bearing record as a Vec element must NOT widen the
+    // channel/queue path: the mailbox envelope has no per-message recursive drop
+    // for the record's Vec field, so a channel element would leak the field on
+    // every send. The queue authority stays fail-closed for `Boxed` while Vec
+    // STORAGE still admits it (the outer Vec's per-element drop_fn frees it). A
+    // collection-free record (`Person`) stays admitted on BOTH surfaces.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let vec_i64 = Ty::Named {
+        name: "Vec".to_string(),
+        builtin: Some(BuiltinType::Vec),
+        args: vec![Ty::I64],
+    };
+    checker.type_defs.insert(
+        "Boxed".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Record,
+            name: "Boxed".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::from([("payload".to_string(), vec_i64.clone())]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec!["payload".to_string()],
+            is_indirect: false,
+        },
+    );
+    checker.type_defs.insert(
+        "Person".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Record,
+            name: "Person".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::from([("name".to_string(), Ty::String)]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec!["name".to_string()],
+            is_indirect: false,
+        },
+    );
+    checker
+        .registry
+        .register_rcfree_members("Boxed".to_string(), vec![vec_i64]);
+    checker
+        .registry
+        .register_rcfree_members("Person".to_string(), vec![Ty::String]);
+
+    let boxed = Ty::Named {
+        name: "Boxed".to_string(),
+        builtin: None,
+        args: vec![],
+    };
+    let person = Ty::Named {
+        name: "Person".to_string(),
+        builtin: None,
+        args: vec![],
+    };
+
+    // Vec storage admits the collection-bearing record (copy-in push).
+    assert!(
+        checker.vec_owned_element_admissible(&boxed),
+        "Vec storage must admit a collection-bearing record element"
+    );
+    // The channel/queue path stays fail-closed for it.
+    assert!(
+        !checker.queue_elem_admissible(&boxed),
+        "the channel path must reject a collection-bearing record element"
+    );
+    // A collection-free record is admitted on both surfaces.
+    assert!(checker.vec_owned_element_admissible(&person));
+    assert!(
+        checker.queue_elem_admissible(&person),
+        "a collection-free record must remain a valid channel element"
+    );
+}
+
+#[test]
+fn array_repeat_collection_bearing_record_fails_closed() {
+    // Admitting a collection-bearing record as a Vec element (copy-in `.push`)
+    // must NOT widen array-repeat `[b; N]`: the repeat clone-N lowering aliases
+    // the source's collection buffer in an unconsumed temp and double-frees it.
+    // `[Bag; N]` stays fail-closed with the array-repeat Clone diagnostic while
+    // `Bag.push` is admitted; a collection-free record `[Point; N]` still repeats.
+    let bag = check_source(
+        r"
+        type Bag { items: Vec<i64> }
+
+        fn main() {
+            let b = Bag { items: [1, 2, 3] };
+            let bs = [b; 3];
+        }
+        ",
+    );
+    assert!(
+        bag.errors.iter().any(|error| {
+            error
+                .message
+                .contains("array repeat requires the element type to be Clone")
+        }),
+        "[Bag; N] array-repeat of a collection-bearing record must fail closed: {:#?}",
+        bag.errors
+    );
+
+    let point = check_source(
+        r"
+        type Point { x: i64, y: i64 }
+
+        fn main() {
+            let p = Point { x: 1, y: 2 };
+            let ps = [p; 3];
+        }
+        ",
+    );
+    assert!(
+        !point.errors.iter().any(|error| {
+            error
+                .message
+                .contains("array repeat requires the element type to be Clone")
+        }),
+        "[Point; N] array-repeat of a collection-free record must remain admitted: {:#?}",
+        point.errors
+    );
+}
+
+#[test]
+fn vec_record_closure_collection_field_fails_closed() {
+    // A record whose collection field holds an UNCLONABLE element (a
+    // function/closure) keeps the record fail-closed: the owned-collection ABI
+    // cannot clone a closure environment per element.
+    let output = check_source(
+        r"
+        type Holder { cbs: Vec<fn() -> i64> }
+
+        fn main() {
+            var xs: Vec<Holder> = [];
+            let h = Holder { cbs: [] };
+            xs.push(h);
         }
         ",
     );
@@ -864,18 +1089,9 @@ fn vec_self_recursive_enum_fails_closed_with_accurate_diagnostic() {
     assert!(
         output.errors.iter().any(|error| {
             error.message.contains("cannot be a `Vec` element")
-                && error.message.contains("Vec`/`HashMap`/`HashSet` field")
+                && error.message.contains("no clone/drop thunk path")
         }),
-        "self-recursive enum Vec must fail closed naming the container blocker: {:#?}",
-        output.errors
-    );
-    assert!(
-        !output.errors.iter().any(|error| {
-            error.message.contains("hew_vec_new_with_layout")
-                || error.message.contains("is not `Copy`")
-        }),
-        "self-recursive enum Vec diagnostic must not blame Copy or name \
-         hew_vec_new_with_layout: {:#?}",
+        "record with a closure-bearing collection field must fail closed: {:#?}",
         output.errors
     );
 }

@@ -1,7 +1,10 @@
-// Reject fixture: [r; N] where the element type is not Clone must be rejected
-// at compile time with a clear diagnostic. A record containing a Vec field has
-// no synthesised clone thunk (container-in-container path is not yet supported)
-// and must fail closed rather than silently producing a bad clone.
+// Reject fixture: `[r; N]` where the element transitively holds a collection
+// field must fail closed. A record with a `Vec` field IS a valid Vec element
+// for copy-in `.push` (the outer Vec's per-element drop_fn frees each clone),
+// but array-repeat clone-N is a distinct lowering that byte-copies the source
+// into an unconsumed repeat-value temp aliasing its collection buffer; both the
+// source and the temp then drop it (double-free). So `[Bag; N]` must fail closed
+// until the repeat clone-N path recurses through collection fields.
 type Bag {
     items: Vec<i64>;
 }

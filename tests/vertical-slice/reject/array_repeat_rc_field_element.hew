@@ -1,0 +1,14 @@
+// Reject fixture: `[r; N]` where the element is fundamentally non-clone must
+// fail closed. A record holding an `Rc` field has no synthesised clone/drop
+// thunk (the owned-element runtime does not track per-element Rc ownership), so
+// it is rejected for BOTH Vec storage and array-repeat. This pins the
+// non-clone `[x; N]` boundary independently of the collection-field narrowing.
+type Shared {
+    handle: Rc<i64>;
+}
+
+fn main() -> i64 {
+    let s = Shared { handle: Rc::new(7) };
+    let ss = [s; 3];
+    0
+}

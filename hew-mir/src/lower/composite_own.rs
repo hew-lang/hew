@@ -1179,6 +1179,21 @@ pub(super) fn derive_enum_composite_drop_allowed(
             excluded.insert(root);
         }
     };
+    // A payload binder read as the `vec` field of a `record_init VecIter` cursor
+    // is a BORROW: a `for it in items` over a matched collection payload
+    // (`match m { Batch(items) => for it in items }`) lowers the payload binder
+    // into `VecIter { vec: items, idx: 0 }`, which ITERATES the shared buffer
+    // without freeing it (a CowShare place source). The composite still solely
+    // owns the payload and keeps its `EnumInPlace` drop — mirroring
+    // `derive_local_collection_drop_allowed`'s cursor-ingress exemption and the
+    // `items[i]` / `.len()` receiver-borrow exemptions below. The place-source
+    // cursor is never registered for a handle drop
+    // (`vec_iter_let_cursor_owns_handle` = false), so the composite's single free
+    // is exactly-once, never a double-free. Left unexempted the cursor ingress
+    // read wrongly excluded the composite and leaked the payload buffer (#2725b).
+    let vec_iter_cursor_ingress_of = |instr: &Instr, local: u32| -> bool {
+        vec_iter_record_init_vec_source(instr).and_then(base_local) == Some(local)
+    };
     for block in blocks {
         for instr in &block.instructions {
             // COPY-IN element store (`hew_vec_push_owned` / `hew_vec_set_owned`)
@@ -1355,6 +1370,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         if payload_binders.contains_key(&l)
                             && !place_is_tag_read(p)
                             && !binder_read_is_borrow_safe_instr(instr, l)
+                            && !vec_iter_cursor_ingress_of(instr, l)
                         {
                             note_payload_escape(
                                 &payload_binders,

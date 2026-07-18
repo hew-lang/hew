@@ -1145,6 +1145,18 @@ pub(super) fn derive_enum_composite_drop_allowed(
     };
     for block in blocks {
         for instr in &block.instructions {
+            // COPY-IN element store (`hew_vec_push_owned` / `hew_vec_set_owned`)
+            // DEEP-CLONES its element operand: an owned enum-with-collection
+            // value pushed WHOLE by value is cloned into the Vec slot and the
+            // SOURCE keeps its `EnumInPlace` drop (#1722 COPY-IN retain). This
+            // exempts ONLY the whole-composite alias escape below; a pushed
+            // PAYLOAD BINDER (a matched inner payload) still excludes its
+            // composite via the payload-escape scan, because that discharge path
+            // double-frees if relaxed. The MOVE variant (`hew_vec_push_owned_move`)
+            // is deliberately NOT exempt — it consumes its source.
+            let copy_in_elem_store = matches!(instr, Instr::CallRuntimeAbi(call)
+                if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .is_vec_copy_in_element_store());
             // Direct prover-exclusion rule for the no-temp field-addressed
             // drop, mirroring `derive_owned_record_drop_allowed` /
             // `derive_tuple_composite_drop_allowed`: a `FieldDropInPlace`
@@ -1276,7 +1288,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
-                        if alias_of.contains_key(&l)
+                        if !copy_in_elem_store
+                            && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
                         {
                             note_alias_escape(l, &mut excluded_roots);
@@ -1305,6 +1318,18 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 }
             }
         }
+        // COPY-IN element store as a terminator (`xs.push(src)` lowers to
+        // `Terminator::Call { callee: hew_vec_push_owned, .. }`): a WHOLE
+        // enum-with-collection source is deep-cloned, not consumed, so it retains
+        // its `EnumInPlace` drop. Exempt ONLY the whole-composite alias escape; a
+        // pushed PAYLOAD BINDER still excludes its composite via the payload scan
+        // below (relaxing that discharge double-frees).
+        let copy_in_elem_store = matches!(
+            &block.terminator,
+            Terminator::Call { callee, .. }
+                if crate::runtime_symbols::callee_ownership_contract(callee)
+                    .is_vec_copy_in_element_store()
+        );
         // Terminator reads. A return value / send / ask payload escapes; a
         // branch cond is bitcopy and harmless. A `print`/`println` call
         // BORROWS its string argument (it does not take ownership), so a
@@ -1313,7 +1338,10 @@ pub(super) fn derive_enum_composite_drop_allowed(
         // `retained_string_terminator_drop_safe` encodes.
         for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
-                if alias_of.contains_key(&l) && matches!(p, Place::Local(_) | Place::ReturnSlot) {
+                if !copy_in_elem_store
+                    && alias_of.contains_key(&l)
+                    && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                {
                     // A whole composite passed to a borrowing print sink is
                     // not how composites are consumed, but apply the same
                     // borrow exemption for symmetry; any non-print read of a
@@ -1682,6 +1710,22 @@ pub(super) fn derive_owned_record_drop_allowed(
     };
     for block in blocks {
         for instr in &block.instructions {
+            // COPY-IN element store (`hew_vec_push_owned` / `hew_vec_set_owned`)
+            // DEEP-CLONES its element operand: an owned record pushed WHOLE by
+            // value is cloned into the Vec slot and the SOURCE keeps sole
+            // ownership of its own heap fields, so it retains its scope-exit
+            // `RecordInPlace` drop (#1722 `container-ingress-ownership-is-per-
+            // container` COPY-IN retain, the record analogue of the exemption
+            // `derive_local_collection_drop_allowed` already applies for the Vec
+            // handle). This exempts ONLY the whole-record alias escape below; a
+            // pushed owned FIELD BINDER (`xs.push(r.field)`) still excludes its
+            // composite via the field-escape scan, because that discharge path
+            // double-frees if relaxed (`vec_copy_in_tail_split...`). The MOVE
+            // variant (`hew_vec_push_owned_move`) is deliberately NOT exempt — it
+            // consumes its source, which must then be excluded.
+            let copy_in_elem_store = matches!(instr, Instr::CallRuntimeAbi(call)
+                if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .is_vec_copy_in_element_store());
             // Direct prover-exclusion rule for the no-temp field-addressed
             // drop: a `FieldDropInPlace` whose base is an alias-set member is
             // by construction BOTH the field extraction AND that field's
@@ -1784,7 +1828,8 @@ pub(super) fn derive_owned_record_drop_allowed(
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
-                        if alias_of.contains_key(&l)
+                        if !copy_in_elem_store
+                            && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
                         {
                             note_alias_escape(l, &mut excluded_roots);
@@ -1796,6 +1841,20 @@ pub(super) fn derive_owned_record_drop_allowed(
                 }
             }
         }
+        // COPY-IN element store as a terminator (`xs.push(src)` lowers to
+        // `Terminator::Call { callee: hew_vec_push_owned, args: [xs, src] }`):
+        // a WHOLE owned record source is deep-cloned, not consumed, so it retains
+        // its `RecordInPlace` drop and the borrowed receiver is not a candidate
+        // record. Exempt ONLY the whole-record alias escape below — a pushed
+        // FIELD BINDER (`xs.push(r.field)`) still excludes its composite via the
+        // field-escape scan (relaxing that discharge double-frees). This closes
+        // the copy-in `.push(src)` leak of `src`'s owned collection field.
+        let copy_in_elem_store = matches!(
+            &block.terminator,
+            Terminator::Call { callee, .. }
+                if crate::runtime_symbols::callee_ownership_contract(callee)
+                    .is_vec_copy_in_element_store()
+        );
         // Terminator reads. A return / send / ask of a whole record or an owned
         // field binder escapes. `print`/`println` borrows its string arg, and a
         // collection-borrow call (`.len()` / `.get(i)`) borrows its receiver, so
@@ -1803,7 +1862,8 @@ pub(super) fn derive_owned_record_drop_allowed(
         // not an escape (`binder_read_is_borrow_safe_terminator`).
         for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
-                if alias_of.contains_key(&l)
+                if !copy_in_elem_store
+                    && alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
                     && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,

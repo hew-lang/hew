@@ -918,6 +918,26 @@ mod tests {
 
         let key = CString::new("TMPDIR").unwrap();
 
+        // Toggle TMPDIR only between real, always-present directories.
+        //
+        // WHY: this test mutates the process-wide TMPDIR env var, which
+        // `std::env::temp_dir()` reads. Under the parallel test runner a
+        // sibling test that calls `tempdir()` resolves its base directory from
+        // whatever value TMPDIR holds at that instant. The previous version
+        // toggled TMPDIR to `/tmp/hew_test_{i}` — paths that this test never
+        // creates — so a sibling could observe TMPDIR pointing at a
+        // non-existent directory and its `tempdir()` failed `NotFound`
+        // (the cross-test flake reported in the nightly ASan job). Toggling
+        // only between two directories that always exist keeps the concurrency
+        // stress on `hew_temp_dir`/`ENV_LOCK` (the actual unit under test)
+        // while never exposing a sibling to an unresolvable base. Both are
+        // system temp roots on every supported platform.
+        let real_tmp = std::env::temp_dir();
+        let alt_tmp = real_tmp.join("hew_env_test_stable");
+        std::fs::create_dir_all(&alt_tmp).expect("alt temp root must be creatable");
+        let val_a = CString::new(real_tmp.to_string_lossy().into_owned()).unwrap();
+        let val_b = CString::new(alt_tmp.to_string_lossy().into_owned()).unwrap();
+
         // Snapshot original TMPDIR so we can restore it.
         // SAFETY: key is a valid NUL-terminated C string.
         let orig_ptr = unsafe { hew_env_get(key.as_ptr()) };
@@ -934,18 +954,16 @@ mod tests {
         let barrier = Arc::new(Barrier::new(THREADS * 2));
         let mut handles = Vec::new();
 
-        // Writer threads toggle TMPDIR between two values.
-        for i in 0..THREADS {
+        // Writer threads toggle TMPDIR between two always-present directories.
+        for _ in 0..THREADS {
             let key = key.clone();
+            let val_a = val_a.clone();
+            let val_b = val_b.clone();
             let b = Arc::clone(&barrier);
             handles.push(thread::spawn(move || {
                 b.wait();
                 for j in 0..ITERS {
-                    let val = if j % 2 == 0 {
-                        CString::new(format!("/tmp/hew_test_{i}")).unwrap()
-                    } else {
-                        CString::new("/tmp").unwrap()
-                    };
+                    let val = if j % 2 == 0 { &val_a } else { &val_b };
                     // SAFETY: both pointers are valid NUL-terminated C strings.
                     unsafe { hew_env_set(key.as_ptr(), val.as_ptr()) };
                 }

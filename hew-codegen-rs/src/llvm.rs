@@ -77,8 +77,8 @@ use hew_mir::{
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
-    runtime_call::RuntimeCapability, BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection,
-    WireLayoutTable, WireTextFormat,
+    runtime_call::{MathIntrinsic, RuntimeCapability},
+    BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable, WireTextFormat,
 };
 // Single source of truth for the trap discriminants codegen emits. Importing
 // these from the runtime makes a renumber on either side a build error rather
@@ -1969,35 +1969,6 @@ impl<'ctx> FnSymbol<'ctx> {
 /// check). One declaration per symbol per module — repeat references at
 /// multiple call sites share the same LLVM `declare` line.
 pub(crate) type RuntimeDeclMap<'ctx> = HashMap<String, FunctionValue<'ctx>>;
-
-#[derive(Debug, Clone, Copy)]
-enum MathBuiltinIntrinsic {
-    UnaryF64(&'static str),
-    BinaryF64(&'static str),
-    AbsI64,
-    BinaryI64(&'static str),
-}
-
-fn math_builtin_intrinsic(callee: &str) -> Option<MathBuiltinIntrinsic> {
-    match callee {
-        "sqrt" => Some(MathBuiltinIntrinsic::UnaryF64("llvm.sqrt.f64")),
-        "exp" => Some(MathBuiltinIntrinsic::UnaryF64("llvm.exp.f64")),
-        "log" => Some(MathBuiltinIntrinsic::UnaryF64("llvm.log.f64")),
-        "sin" => Some(MathBuiltinIntrinsic::UnaryF64("llvm.sin.f64")),
-        "cos" => Some(MathBuiltinIntrinsic::UnaryF64("llvm.cos.f64")),
-        "abs" => Some(MathBuiltinIntrinsic::AbsI64),
-        "min" => Some(MathBuiltinIntrinsic::BinaryI64("llvm.smin.i64")),
-        "max" => Some(MathBuiltinIntrinsic::BinaryI64("llvm.smax.i64")),
-        "abs_f" => Some(MathBuiltinIntrinsic::UnaryF64("llvm.fabs.f64")),
-        "min_f" => Some(MathBuiltinIntrinsic::BinaryF64("llvm.minnum.f64")),
-        "max_f" => Some(MathBuiltinIntrinsic::BinaryF64("llvm.maxnum.f64")),
-        "pow" => Some(MathBuiltinIntrinsic::BinaryF64("llvm.pow.f64")),
-        "floor" => Some(MathBuiltinIntrinsic::UnaryF64("llvm.floor.f64")),
-        "ceil" => Some(MathBuiltinIntrinsic::UnaryF64("llvm.ceil.f64")),
-        "round" => Some(MathBuiltinIntrinsic::UnaryF64("llvm.round.f64")),
-        _ => None,
-    }
-}
 
 /// The C `size_t`/`usize` integer type for the module's target.
 ///
@@ -23411,10 +23382,10 @@ fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) ->
     Ok(())
 }
 
-fn emit_math_builtin_intrinsic_call<'ctx>(
+fn emit_math_intrinsic_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     callee: &str,
-    intrinsic: MathBuiltinIntrinsic,
+    intrinsic: MathIntrinsic,
     args: &[Place],
     dest: Option<&Place>,
     next: u32,
@@ -23429,19 +23400,39 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
     let i64_ty = fn_ctx.ctx.i64_type();
     let i1_ty = fn_ctx.ctx.bool_type();
 
-    // `UnaryF64` / `BinaryF64` float intrinsics are resolved via
-    // `add_function`; they carry no integer-only attributes and their
+    // Float intrinsics are resolved via `add_function`; they carry no
+    // integer-only attributes and their
     // `IntrNoMem` / `Speculatable` markers are preserved through the
     // external-linkage declaration.
     //
-    // `AbsI64` and `BinaryI64` (abs / smin / smax / umin / umax) are
+    // Integer intrinsics (abs / smin / smax) are
     // resolved via `Intrinsic::find` + `get_declaration` so LLVM
     // attaches the `IntrNoMem`, `Speculatable`, and `willreturn`
     // attributes that `add_function(..., External)` would strip.
     // These attributes enable InstCombine folding and LICM on
     // abs/min/max calls.
     match intrinsic {
-        MathBuiltinIntrinsic::UnaryF64(name) => {
+        MathIntrinsic::Sqrt
+        | MathIntrinsic::Exp
+        | MathIntrinsic::Log
+        | MathIntrinsic::Sin
+        | MathIntrinsic::Cos
+        | MathIntrinsic::AbsF64
+        | MathIntrinsic::Floor
+        | MathIntrinsic::Ceil
+        | MathIntrinsic::Round => {
+            let name = match intrinsic {
+                MathIntrinsic::Sqrt => "llvm.sqrt.f64",
+                MathIntrinsic::Exp => "llvm.exp.f64",
+                MathIntrinsic::Log => "llvm.log.f64",
+                MathIntrinsic::Sin => "llvm.sin.f64",
+                MathIntrinsic::Cos => "llvm.cos.f64",
+                MathIntrinsic::AbsF64 => "llvm.fabs.f64",
+                MathIntrinsic::Floor => "llvm.floor.f64",
+                MathIntrinsic::Ceil => "llvm.ceil.f64",
+                MathIntrinsic::Round => "llvm.round.f64",
+                _ => unreachable!("outer match admits only unary f64 intrinsics"),
+            };
             let [arg] = args else {
                 return Err(CodegenError::FailClosed(format!(
                     "math builtin `{callee}` expects 1 argument, got {}",
@@ -23479,7 +23470,13 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
                 .build_store(dest_ptr, result)
                 .llvm_ctx_with(|| format!("{callee} intrinsic store"))?;
         }
-        MathBuiltinIntrinsic::BinaryF64(name) => {
+        MathIntrinsic::MinF64 | MathIntrinsic::MaxF64 | MathIntrinsic::Pow => {
+            let name = match intrinsic {
+                MathIntrinsic::MinF64 => "llvm.minnum.f64",
+                MathIntrinsic::MaxF64 => "llvm.maxnum.f64",
+                MathIntrinsic::Pow => "llvm.pow.f64",
+                _ => unreachable!("outer match admits only binary f64 intrinsics"),
+            };
             let [lhs, rhs] = args else {
                 return Err(CodegenError::FailClosed(format!(
                     "math builtin `{callee}` expects 2 arguments, got {}",
@@ -23518,7 +23515,7 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
                 .build_store(dest_ptr, result)
                 .llvm_ctx_with(|| format!("{callee} intrinsic store"))?;
         }
-        MathBuiltinIntrinsic::AbsI64 => {
+        MathIntrinsic::AbsI64 => {
             let [arg] = args else {
                 return Err(CodegenError::FailClosed(format!(
                     "math builtin `{callee}` expects 1 argument, got {}",
@@ -23566,7 +23563,12 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
                 .build_store(dest_ptr, result)
                 .llvm_ctx_with(|| "abs intrinsic store".to_owned())?;
         }
-        MathBuiltinIntrinsic::BinaryI64(name) => {
+        MathIntrinsic::MinI64 | MathIntrinsic::MaxI64 => {
+            let name = match intrinsic {
+                MathIntrinsic::MinI64 => "llvm.smin.i64",
+                MathIntrinsic::MaxI64 => "llvm.smax.i64",
+                _ => unreachable!("outer match admits only binary i64 intrinsics"),
+            };
             let [lhs, rhs] = args else {
                 return Err(CodegenError::FailClosed(format!(
                     "math builtin `{callee}` expects 2 arguments, got {}",
@@ -25367,18 +25369,9 @@ fn lower_terminator<'ctx>(
                     }
                 }
             }
-            if let Some(intrinsic) = math_builtin_intrinsic(callee) {
-                if !fn_symbols.contains_key(callee) {
-                    emit_math_builtin_intrinsic_call(
-                        fn_ctx,
-                        callee,
-                        intrinsic,
-                        args,
-                        dest.as_ref(),
-                        *next,
-                    )?;
-                    return Ok(());
-                }
+            if let Some(RtFamily::MathIntrinsic(intrinsic)) = *builtin {
+                emit_math_intrinsic_call(fn_ctx, callee, intrinsic, args, dest.as_ref(), *next)?;
+                return Ok(());
             }
             // Closure-pair Vec element marshalling: a `Vec<fn(...)>` rides
             // the pointer-element runtime ABI with each slot holding a

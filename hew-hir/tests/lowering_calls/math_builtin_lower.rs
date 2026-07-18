@@ -1,14 +1,21 @@
 use hew_hir::{lower_program, verify_hir, HirExprKind, HirItem, ResolutionCtx};
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_types::{
+    module_registry::ModuleRegistry, runtime_call::MathIntrinsic, Checker, RuntimeCallFamily,
+};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
-    let parsed = hew_parser::parse(source);
+    let source = format!("import std::math;\n{source}");
+    let parsed = hew_parser::parse(&source);
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
         parsed.errors
     );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-hir crate must live below repo root")
+        .to_path_buf();
+    let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root]));
     let tc_output = checker.check_program(&parsed.program);
     assert!(
         tc_output.errors.is_empty(),
@@ -31,7 +38,7 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
     output
 }
 
-fn assert_main_tail_call_resolves(source: &str, expected: &str) {
+fn assert_main_tail_call_resolves(source: &str, expected: &str, expected_intrinsic: MathIntrinsic) {
     let output = lower(source);
     let main_fn = output
         .module
@@ -50,38 +57,92 @@ fn assert_main_tail_call_resolves(source: &str, expected: &str) {
         panic!("callee must be a binding ref, got {callee:#?}");
     };
     assert_eq!(name, expected);
-    assert!(
-        matches!(resolved, hew_hir::ResolvedRef::Item(_)),
-        "{expected} must resolve to a synthetic stdlib item, got {resolved:?}"
+    assert_eq!(
+        *resolved,
+        hew_hir::ResolvedRef::Builtin(RuntimeCallFamily::MathIntrinsic(expected_intrinsic)),
+        "{expected} must resolve to its typed math intrinsic"
     );
 }
 
 #[test]
-fn free_math_builtins_resolve_to_hir_items() {
-    for (name, source) in [
-        ("sqrt", "fn main() -> f64 { sqrt(9.0) }"),
-        ("abs", "fn main() -> i64 { abs(-9) }"),
-        ("min", "fn main() -> i64 { min(7, 3) }"),
-        ("max", "fn main() -> i64 { max(7, 3) }"),
-        ("pow", "fn main() -> f64 { pow(2, 10) }"),
-        ("floor", "fn main() -> f64 { floor(2.75) }"),
-        ("ceil", "fn main() -> f64 { ceil(2.25) }"),
-        ("round", "fn main() -> f64 { round(2.5) }"),
+fn math_builtin_identifiers_resolve_to_typed_intrinsics() {
+    for (name, intrinsic, source) in [
+        (
+            "sqrt",
+            MathIntrinsic::Sqrt,
+            "fn main() -> f64 { math.sqrt(9.0) }",
+        ),
+        (
+            "exp",
+            MathIntrinsic::Exp,
+            "fn main() -> f64 { math.exp(1.0) }",
+        ),
+        (
+            "log",
+            MathIntrinsic::Log,
+            "fn main() -> f64 { math.log(1.0) }",
+        ),
+        (
+            "sin",
+            MathIntrinsic::Sin,
+            "fn main() -> f64 { math.sin(1.0) }",
+        ),
+        (
+            "cos",
+            MathIntrinsic::Cos,
+            "fn main() -> f64 { math.cos(1.0) }",
+        ),
+        (
+            "abs",
+            MathIntrinsic::AbsI64,
+            "fn main() -> i64 { math.abs(-9) }",
+        ),
+        (
+            "min",
+            MathIntrinsic::MinI64,
+            "fn main() -> i64 { math.min(7, 3) }",
+        ),
+        (
+            "max",
+            MathIntrinsic::MaxI64,
+            "fn main() -> i64 { math.max(7, 3) }",
+        ),
+        (
+            "abs_f",
+            MathIntrinsic::AbsF64,
+            "fn main() -> f64 { math.abs(-9.0) }",
+        ),
+        (
+            "min_f",
+            MathIntrinsic::MinF64,
+            "fn main() -> f64 { math.min(7.0, 3.0) }",
+        ),
+        (
+            "max_f",
+            MathIntrinsic::MaxF64,
+            "fn main() -> f64 { math.max(7.0, 3.0) }",
+        ),
+        (
+            "pow",
+            MathIntrinsic::Pow,
+            "fn main() -> f64 { math.pow(2.0, 10.0) }",
+        ),
+        (
+            "floor",
+            MathIntrinsic::Floor,
+            "fn main() -> f64 { math.floor(2.75) }",
+        ),
+        (
+            "ceil",
+            MathIntrinsic::Ceil,
+            "fn main() -> f64 { math.ceil(2.25) }",
+        ),
+        (
+            "round",
+            MathIntrinsic::Round,
+            "fn main() -> f64 { math.round(2.5) }",
+        ),
     ] {
-        assert_main_tail_call_resolves(source, name);
-    }
-}
-
-#[test]
-fn generic_math_module_calls_dispatch_to_concrete_intrinsics() {
-    for (expected, source) in [
-        ("abs", "fn main() -> i64 { math.abs(-9) }"),
-        ("abs_f", "fn main() -> f64 { math.abs(-9.0) }"),
-        ("min", "fn main() -> i64 { math.min(7, 3) }"),
-        ("min_f", "fn main() -> f64 { math.min(7.0, 3.0) }"),
-        ("max", "fn main() -> i64 { math.max(7, 3) }"),
-        ("max_f", "fn main() -> f64 { math.max(7.0, 3.0) }"),
-    ] {
-        assert_main_tail_call_resolves(source, expected);
+        assert_main_tail_call_resolves(source, name, intrinsic);
     }
 }

@@ -110,11 +110,10 @@ pub enum StreamElementKind {
     String,
 }
 
-/// Math-intrinsic family discriminator. Mirrors the user-visible
-/// callee names dispatched in `hew-codegen-rs::llvm::math_builtin_intrinsic`
-/// today (the names appear as `BindingRef.name` in HIR — `"sqrt"`, `"sin"`,
-/// …). Pre-staged: a follow-up migrates the callee-name match in codegen
-/// onto a typed `RuntimeCallFamily::MathIntrinsic(...)`.
+/// Math-intrinsic family discriminator. HIR resolves the user-visible
+/// identifiers (`"sqrt"`, `"sin"`, …) onto
+/// `RuntimeCallFamily::MathIntrinsic(...)`; MIR carries that family on the
+/// call so codegen never re-derives the intrinsic from the callee string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum MathIntrinsic {
     #[default]
@@ -334,9 +333,8 @@ pub enum RuntimeCallFamily {
     LambdaActorWeakSend,
 
     // --- Math intrinsics ---------------------------------------------------
-    // Pre-staged: dispatched today by user-visible callee name
-    // (`"sqrt"`, `"sin"`, …) via codegen's `math_builtin_intrinsic`
-    // lookup; not in `known_runtime_symbols`.
+    // User-visible callee identities carried on MIR `Terminator::Call`; not
+    // runtime C-ABI symbols and therefore absent from `known_runtime_symbols`.
     MathIntrinsic(MathIntrinsic),
 
     // --- Node operations ---------------------------------------------------
@@ -693,7 +691,7 @@ impl RuntimeCallFamily {
             Self::LambdaActorWeakClone => "hew_lambda_actor_weak_clone",
             Self::LambdaActorWeakDrop => "hew_lambda_actor_weak_drop",
             Self::LambdaActorWeakSend => "hew_lambda_actor_weak_send",
-            // Math intrinsics (pre-staged; user-visible callee names)
+            // Math intrinsics (user-visible callee names)
             Self::MathIntrinsic(MathIntrinsic::Sqrt) => "sqrt",
             Self::MathIntrinsic(MathIntrinsic::Exp) => "exp",
             Self::MathIntrinsic(MathIntrinsic::Log) => "log",

@@ -1,4 +1,5 @@
 import std::encoding::xml;
+
 import std::testing;
 
 type ParseError {
@@ -38,7 +39,7 @@ fn result_resource_and_string_variants() {
         Ok(node) => {
             node.close();
             testing.assert_true(false);
-        }
+        },
         Err(message) => testing.assert_true(message.starts_with("xml:")),
     }
 }
@@ -54,18 +55,18 @@ fn user_enum_resource_and_heap_siblings() {
         ParseOutcome::Parsed(node) => {
             node.close();
             testing.assert_true(false);
-        }
+        },
         ParseOutcome::Failed(error) => {
             testing.assert_eq(error.offset, 0);
             testing.assert_true(error.message.starts_with("xml:"));
-        }
+        },
         ParseOutcome::Skipped(_) => testing.assert_true(false),
     }
     match classify("") {
         ParseOutcome::Parsed(node) => {
             node.close();
             testing.assert_true(false);
-        }
+        },
         ParseOutcome::Failed(_) => testing.assert_true(false),
         ParseOutcome::Skipped(message) => testing.assert_eq_str(message, "EMPTY"),
     }

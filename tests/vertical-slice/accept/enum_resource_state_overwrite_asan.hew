@@ -11,8 +11,12 @@ actor DocHolder {
 
     receive fn load(s: string) -> i64 {
         match xml.try_parse(s) {
-            Ok(node) => { doc = DocState::Loaded(node); },
-            Err(message) => { doc = DocState::Broken(message); },
+            Ok(node) => {
+                doc = DocState::Loaded(node);
+            },
+            Err(message) => {
+                doc = DocState::Broken(message);
+            },
         }
         1
     }

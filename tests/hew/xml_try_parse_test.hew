@@ -1,4 +1,5 @@
 import std::encoding::xml;
+
 import std::testing;
 
 #[test]
@@ -15,7 +16,7 @@ fn try_parse_returns_parser_error() {
         Ok(node) => {
             node.close();
             testing.assert_true(false);
-        }
+        },
         Err(message) => testing.assert_true(message.starts_with("xml:")),
     }
 }

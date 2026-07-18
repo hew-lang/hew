@@ -1775,12 +1775,15 @@ pub(super) fn derive_owned_record_drop_allowed(
             // `RecordInPlace` drop (#1722 `container-ingress-ownership-is-per-
             // container` COPY-IN retain, the record analogue of the exemption
             // `derive_local_collection_drop_allowed` already applies for the Vec
-            // handle). This exempts ONLY the whole-record alias escape below; a
-            // pushed owned FIELD BINDER (`xs.push(r.field)`) still excludes its
-            // composite via the field-escape scan, because that discharge path
-            // double-frees if relaxed (`vec_copy_in_tail_split...`). The MOVE
-            // variant (`hew_vec_push_owned_move`) is deliberately NOT exempt — it
-            // consumes its source, which must then be excluded.
+            // handle). This exempts BOTH the whole-record alias escape AND the
+            // field-escape scan below: a pushed owned FIELD BINDER
+            // (`xs.push(r.field)`) is DEEP-CLONED into the slot, so the origin
+            // record keeps sole ownership of the ORIGINAL field and must retain
+            // its composite drop — excluding it leaks the original buffer
+            // (#2721; the container's element drop-thunk owns the disjoint
+            // clone). The MOVE variant (`hew_vec_push_owned_move`) is
+            // deliberately NOT exempt — it consumes its source, which must then
+            // be excluded.
             let copy_in_elem_store = matches!(instr, Instr::CallRuntimeAbi(call)
                 if crate::runtime_symbols::callee_ownership_contract(call.symbol())
                     .is_vec_copy_in_element_store());
@@ -1892,7 +1895,10 @@ pub(super) fn derive_owned_record_drop_allowed(
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if is_escape_binder(l) && !binder_read_is_borrow_safe_instr(instr, l) {
+                        if !copy_in_elem_store
+                            && is_escape_binder(l)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
+                        {
                             note_field_escape(l, &mut excluded_roots);
                         }
                     }
@@ -1903,10 +1909,13 @@ pub(super) fn derive_owned_record_drop_allowed(
         // `Terminator::Call { callee: hew_vec_push_owned, args: [xs, src] }`):
         // a WHOLE owned record source is deep-cloned, not consumed, so it retains
         // its `RecordInPlace` drop and the borrowed receiver is not a candidate
-        // record. Exempt ONLY the whole-record alias escape below — a pushed
-        // FIELD BINDER (`xs.push(r.field)`) still excludes its composite via the
-        // field-escape scan (relaxing that discharge double-frees). This closes
-        // the copy-in `.push(src)` leak of `src`'s owned collection field.
+        // record. Exempt BOTH the whole-record alias escape AND the field-escape
+        // scan below — a pushed FIELD BINDER (`xs.push(r.field)`) is deep-cloned,
+        // so the origin record keeps sole ownership of the ORIGINAL field and
+        // must retain its composite drop (#2721; the container's element
+        // drop-thunk owns the clone). This closes the copy-in `.push(src)` leak
+        // of `src`'s owned collection field AND the field-push leak of the
+        // record's original field buffer.
         let copy_in_elem_store = matches!(
             &block.terminator,
             Terminator::Call { callee, .. }
@@ -1939,7 +1948,8 @@ pub(super) fn derive_owned_record_drop_allowed(
                 {
                     note_alias_escape(l, &mut excluded_roots);
                 }
-                if is_escape_binder(l)
+                if !copy_in_elem_store
+                    && is_escape_binder(l)
                     && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
@@ -5372,11 +5382,16 @@ mod owned_record_drop_derivation {
         );
     }
 
-    /// `hew_vec_push_owned` / `hew_vec_set_owned` copy their element into the
-    /// destination Vec. The collection-local prover exempts that element operand,
-    /// while composite binder scans still treat the tail operand as an escape.
+    /// `hew_vec_push_owned` / `hew_vec_set_owned` DEEP-CLONE their element
+    /// operand into the destination Vec, so the source keeps sole ownership of
+    /// its own heap. Both the collection-local prover AND the composite binder
+    /// scans therefore retain their candidate: a field binder pushed copy-in
+    /// (`xs.push(r.field)`) leaves `r` owning the ORIGINAL field buffer, so the
+    /// record retains its `RecordInPlace` composite drop (the container's
+    /// element drop-thunk owns the disjoint clone). Excluding the composite
+    /// here leaked the original field buffer (#2721).
     #[test]
-    fn vec_copy_in_tail_split_keeps_local_candidate_but_excludes_composite_binder() {
+    fn vec_copy_in_tail_split_retains_local_candidate_and_composite_binder() {
         let callee = "hew_vec_push_owned";
         let call_builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee);
 
@@ -5408,9 +5423,11 @@ mod owned_record_drop_derivation {
             &record_local_tys,
         );
         assert!(
-            !record_allowed.contains(&record),
-            "a composite field binder used as the copy-in element operand is a \
-             tail read and must exclude the composite; allowed: {record_allowed:?}"
+            record_allowed.contains(&record),
+            "a composite field binder used as the copy-in element operand is \
+             DEEP-CLONED, not consumed, so the record keeps sole ownership of \
+             the original field and must retain its composite drop; excluding \
+             it leaks the original buffer (#2721); allowed: {record_allowed:?}"
         );
 
         let elem = BindingId(11);

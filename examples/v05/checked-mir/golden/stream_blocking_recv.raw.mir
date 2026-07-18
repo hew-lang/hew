@@ -760,6 +760,7 @@ fn fs$read(string) -> string [conv=default]
     _23 = call string_concat(_18, _22) -> bb17
   bb17:
     drop _22 ty=string fn=release(hew_string_drop)
+    drop _18 ty=string fn=release(hew_string_drop)
     call panic(_23) -> bb18
   bb18:
     stmt: eval site=SiteId(228) ty=!
@@ -778,6 +779,7 @@ fn fs$read(string) -> string [conv=default]
     _30 = call string_concat(_28, _29) -> bb23
   bb23:
     drop _29 ty=string fn=release(hew_string_drop)
+    drop _28 ty=string fn=release(hew_string_drop)
     call panic(_30) -> bb24
   bb24:
     stmt: eval site=SiteId(251) ty=!

@@ -582,6 +582,7 @@ fn main() -> i64 [conv=default]
     _162 = call string_concat(_160, _161) -> bb82
   bb82:
     drop _161 ty=string fn=release(hew_string_drop)
+    drop _160 ty=string fn=release(hew_string_drop)
     call println_str(_162) -> bb83
   bb83:
     stmt: eval site=SiteId(102) ty=()

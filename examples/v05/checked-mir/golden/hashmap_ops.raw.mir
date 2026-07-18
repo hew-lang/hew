@@ -159,6 +159,7 @@ fn main() -> () [conv=default]
     _36 = call string_concat(_34, _35) -> bb23
   bb23:
     drop _35 ty=string fn=release(hew_string_drop)
+    drop _34 ty=string fn=release(hew_string_drop)
     _37 = string_lit " len="
     _38 = call string_concat(_36, _37) -> bb24
   bb24:
@@ -171,6 +172,7 @@ fn main() -> () [conv=default]
     _41 = call string_concat(_38, _40) -> bb27
   bb27:
     drop _40 ty=string fn=release(hew_string_drop)
+    drop _38 ty=string fn=release(hew_string_drop)
     call println_str(_41) -> bb28
   bb28:
     stmt: eval site=SiteId(29) ty=()

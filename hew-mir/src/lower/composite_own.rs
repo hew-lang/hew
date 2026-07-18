@@ -1230,7 +1230,21 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         let benign_handoff = dest_local
                             .is_some_and(|dl| payload_binders.contains_key(&dl))
                             && matches!(dest, Place::Local(_));
-                        if !benign_handoff {
+                        // A bitcopy destructure of a nested payload binder — an
+                        // `Ok(st)` whose inner `match st { Loaded(v) => … }` binds
+                        // the SCALAR `v: i64` — moves an interior projection into a
+                        // non-heap-owning local. No heap leaves the composite (the
+                        // scalar carries no owner), so this is NOT a payload escape;
+                        // the composite still solely owns the heap payload of any
+                        // sibling variant. Left unexempted, the `Loaded(i64)` control
+                        // arm wrongly excluded the outer composite and leaked the
+                        // `Described(string)` sibling on every iteration (#2717).
+                        // Mirrors the `local_is_heap_owning` guard the payload-binder
+                        // seeding/propagation loops already apply, and the sibling
+                        // `place_is_tag_read` discriminant exemption above.
+                        let benign_bitcopy_extract = matches!(dest, Place::Local(_))
+                            && dest_local.is_some_and(|dl| !local_is_heap_owning(dl));
+                        if !benign_handoff && !benign_bitcopy_extract {
                             note_payload_escape(
                                 &payload_binders,
                                 sl,

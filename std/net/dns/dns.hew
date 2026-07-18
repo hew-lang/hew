@@ -116,8 +116,12 @@ pub fn lookup_host_timed(hostname: string, deadline_ms: i64) -> string {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
+    #[runtime_capability("blocking_offload")]
     fn hew_dns_resolve(hostname: string) -> Vec<string>;
+    #[runtime_capability("blocking_offload")]
     fn hew_dns_lookup_host(hostname: string) -> string;
+    #[runtime_capability("blocking_offload")]
     fn hew_dns_resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string>;
+    #[runtime_capability("blocking_offload")]
     fn hew_dns_lookup_host_timed(hostname: string, deadline_ms: i64) -> string;
 }

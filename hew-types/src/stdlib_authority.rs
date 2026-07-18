@@ -28,6 +28,8 @@ pub enum StdlibRoot {
     LinkMonitor,
     String,
     Io,
+    Net,
+    NetDns,
     Prelude,
 }
 
@@ -42,6 +44,8 @@ impl StdlibRoot {
             Self::LinkMonitor => "link_monitor",
             Self::String => "string",
             Self::Io => "io",
+            Self::Net => "net",
+            Self::NetDns => "net::dns",
             Self::Prelude => "prelude",
         }
     }
@@ -111,6 +115,16 @@ pub const SUBSTRATE_SOURCES: &[AuthoritySource<'static>] = &[
         include_str!("../../std/io.hew"),
     ),
     AuthoritySource::embedded(
+        StdlibRoot::Net,
+        "std/net/net.hew",
+        include_str!("../../std/net/net.hew"),
+    ),
+    AuthoritySource::embedded(
+        StdlibRoot::NetDns,
+        "std/net/dns/dns.hew",
+        include_str!("../../std/net/dns/dns.hew"),
+    ),
+    AuthoritySource::embedded(
         StdlibRoot::Prelude,
         "std/prelude.hew",
         include_str!("../../std/prelude.hew"),
@@ -123,6 +137,7 @@ const RESERVED_SUBSTRATE_ATTRIBUTES: &[&str] = &[
     "intrinsic",
     "diagnostic_item",
     "overload",
+    "runtime_capability",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -216,6 +231,34 @@ pub struct ExternAbiEntry {
     pub facts: Vec<ExternAbiFact>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternRuntimeCapabilityEntry {
+    pub binding: AuthorityBinding,
+    pub capability: ExternRuntimeCapability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternRuntimeCapability {
+    BlockingOffload,
+}
+
+impl ExternRuntimeCapability {
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::BlockingOffload => "blocking_offload",
+        }
+    }
+
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "blocking_offload" => Some(Self::BlockingOffload),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OverloadGroup {
     Println,
@@ -304,6 +347,7 @@ pub struct StdlibAuthority {
     lang_items: BTreeMap<LangItem, AuthorityBinding>,
     intrinsics: BTreeMap<Intrinsic, AuthorityBinding>,
     extern_abi: BTreeMap<String, ExternAbiEntry>,
+    extern_runtime_capabilities: BTreeMap<String, ExternRuntimeCapabilityEntry>,
     overload_groups: BTreeMap<OverloadGroup, Vec<AuthorityBinding>>,
     diagnostic_items: BTreeMap<DiagnosticItem, AuthorityBinding>,
     enum_variant_orders: BTreeMap<String, EnumVariantOrder>,
@@ -324,6 +368,11 @@ impl StdlibAuthority {
     #[must_use]
     pub fn extern_abi(&self) -> &BTreeMap<String, ExternAbiEntry> {
         &self.extern_abi
+    }
+
+    #[must_use]
+    pub fn extern_runtime_capabilities(&self) -> &BTreeMap<String, ExternRuntimeCapabilityEntry> {
+        &self.extern_runtime_capabilities
     }
 
     #[must_use]
@@ -357,6 +406,7 @@ pub enum AuthorityErrorKind {
     UnknownIntrinsic { key: String },
     UnknownAbiKey { key: String },
     UnknownAbiValue { key: String, value: String },
+    UnknownRuntimeCapability { key: String },
     UnknownOverloadGroup { key: String },
     UnknownDiagnosticItem { key: String },
     DuplicateBinding { family: String, key: String },
@@ -401,6 +451,9 @@ impl fmt::Display for AuthorityError {
             }
             AuthorityErrorKind::UnknownAbiValue { key, value } => {
                 write!(f, "unknown `#[abi]` value `{value}` for key `{key}`")
+            }
+            AuthorityErrorKind::UnknownRuntimeCapability { key } => {
+                write!(f, "unknown `#[runtime_capability]` key `{key}`")
             }
             AuthorityErrorKind::UnknownOverloadGroup { key } => {
                 write!(f, "unknown `#[overload]` group `{key}`")
@@ -588,6 +641,45 @@ fn load_source(
                                     ));
                                 }
                             }
+                            "runtime_capability" => {
+                                let key = positional_key(source, &declaration, attr)?;
+                                let capability = ExternRuntimeCapability::from_key(key)
+                                    .ok_or_else(|| {
+                                        error(
+                                            source,
+                                            Some(declaration.clone()),
+                                            AuthorityErrorKind::UnknownRuntimeCapability {
+                                                key: key.to_string(),
+                                            },
+                                        )
+                                    })?;
+                                let binding = make_binding(
+                                    source,
+                                    declaration.clone(),
+                                    AuthorityDeclarationKind::ExternFunction,
+                                )?;
+                                let qualified = qualified(source, &declaration);
+                                if authority
+                                    .extern_runtime_capabilities
+                                    .insert(
+                                        qualified.clone(),
+                                        ExternRuntimeCapabilityEntry {
+                                            binding,
+                                            capability,
+                                        },
+                                    )
+                                    .is_some()
+                                {
+                                    return Err(error(
+                                        source,
+                                        Some(declaration),
+                                        AuthorityErrorKind::DuplicateBinding {
+                                            family: "extern runtime capability".to_string(),
+                                            key: qualified,
+                                        },
+                                    ));
+                                }
+                            }
                             "lang_item" | "intrinsic" | "diagnostic_item" | "overload" => {
                                 return Err(error(
                                     source,
@@ -706,7 +798,7 @@ fn load_function_attributes(
                     .or_default()
                     .push(binding.clone());
             }
-            "abi" => {
+            "abi" | "runtime_capability" => {
                 return Err(error(
                     source,
                     Some(declaration),
@@ -989,6 +1081,20 @@ mod tests {
                 .contains_key("failure::CrashAction"),
             "failure enum orders must be collected"
         );
+        for symbol in [
+            "net::hew_tcp_connect",
+            "net::hew_tcp_connect_timeout",
+            "net::dns::hew_dns_resolve",
+            "net::dns::hew_dns_lookup_host",
+            "net::dns::hew_dns_resolve_timed",
+            "net::dns::hew_dns_lookup_host_timed",
+        ] {
+            assert_eq!(
+                authority.extern_runtime_capabilities()[symbol].capability,
+                ExternRuntimeCapability::BlockingOffload,
+                "missing blocking-offload capability on {symbol}"
+            );
+        }
     }
 
     #[test]
@@ -1013,6 +1119,9 @@ pub fn println_i64(value: i64) {}
 extern "C" {
     #[abi(ret = bytes_triple, bytes_param = ptr, drop = cow_null_tolerant)]
     fn hew_bytes();
+
+    #[runtime_capability("blocking_offload")]
+    fn hew_connect();
 }
 "#,
             ),
@@ -1048,6 +1157,10 @@ extern "C" {
                 ExternAbiFact::BytesParamPointer,
                 ExternAbiFact::CowDropNullTolerant,
             ]
+        );
+        assert_eq!(
+            authority.extern_runtime_capabilities()["builtins::hew_connect"].capability,
+            ExternRuntimeCapability::BlockingOffload
         );
         assert_eq!(
             authority.enum_variant_orders()["builtins::Maybe"].variants,
@@ -1178,6 +1291,71 @@ extern "C" {
             error.kind,
             AuthorityErrorKind::AttributeOutsideStdRoot {
                 attribute: "abi".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_capability_on_non_extern_declaration_is_rejected() {
+        let source = AuthoritySource::embedded(
+            StdlibRoot::Net,
+            "std/net/net.hew",
+            r#"#[runtime_capability("blocking_offload")] pub fn connect() {}"#,
+        );
+        let error = load_stdlib_authority(&[source])
+            .expect_err("runtime capabilities must only decorate extern declarations");
+
+        assert_eq!(error.declaration.as_deref(), Some("connect"));
+        assert_eq!(
+            error.kind,
+            AuthorityErrorKind::InvalidAttributePlacement {
+                attribute: "runtime_capability".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_capability_outside_std_roots_is_rejected() {
+        let source = AuthoritySource::external(
+            "src/main.hew",
+            r#"
+extern "C" {
+    #[runtime_capability("blocking_offload")]
+    fn connect();
+}
+"#,
+        );
+        let error = load_stdlib_authority(&[source])
+            .expect_err("runtime capabilities outside std roots must fail closed");
+
+        assert_eq!(error.declaration.as_deref(), Some("connect"));
+        assert_eq!(
+            error.kind,
+            AuthorityErrorKind::AttributeOutsideStdRoot {
+                attribute: "runtime_capability".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_runtime_capability_is_rejected() {
+        let source = AuthoritySource::embedded(
+            StdlibRoot::Net,
+            "std/net/net.hew",
+            r#"
+extern "C" {
+    #[runtime_capability("blocking_forever")]
+    fn connect();
+}
+"#,
+        );
+        let error = load_stdlib_authority(&[source])
+            .expect_err("unknown runtime capabilities must fail closed");
+
+        assert_eq!(
+            error.kind,
+            AuthorityErrorKind::UnknownRuntimeCapability {
+                key: "blocking_forever".to_string(),
             }
         );
     }

@@ -1,92 +1,177 @@
-# Hew v0.5 Value-Semantics and Ownership Contract
+# Hew Value-Semantics and Ownership Contract
 
-## Core principle: single ownership, move by default
+## Core principle: copy-on-write, immutable by default
 
-Hew's owned heap types (`string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, and
-user-defined types) have exactly one owner at a time. Assigning a binding,
-passing an owned value to a function, or sending it to an actor **moves**
-it — the source binding becomes invalid, and using it afterward is a
-compile-time `use of moved value` error. There is no implicit copy-on-call.
-
-Reaching for a second independent copy is explicit: `val.clone()` (method
-form) or `clone val` (prefix form) — see below.
-
-Sending a value to another actor is also a move at the language level, with a
-runtime-level optimization for immutable-shareable types (`string`, `bytes`)
-— see "Move on send" below.
-
-## `&T` — immutable borrow marker
+Values in Hew are immutable views shared by refcount; a copy is made only on
+mutation of shared data. Passing an owned value to a function is a **borrow** —
+the caller retains ownership and drops the value at its scope exit; the callee
+gets an immutable copy-on-write view. Reuse after a call (`f(p); g(p)`) and
+value-receiver method chains are legal. There is no use-of-moved-value error for
+function calls, no `&`/`*`, and no lifetimes — ownership and borrowing are
+inferred. The entire binding surface is two keywords, `let` (immutable) and
+`var` (mutable); there are no ownership annotations to write. Lifetimes, a
+user-surface `&`/`&mut`, and a capability lattice are permanent refusals, not
+deferred features.
 
 ```hew
-fn describe(s: &string) -> string {
-    return s;
+let p = build_point();
+let a = area(p);        // borrow — p is still yours
+let b = perimeter(p);   // borrow again — legal, no clone needed
+println(p.describe());  // value-receiver chain — still legal
+```
+
+Reaching for a second *independent, divergent* copy is a `clone`: `clone val`
+(prefix form, the natural spelling) or `val.clone()` (method form) — see below.
+`clone` is a cost operation, not an ownership keyword: you never need it to keep
+using a value after passing or sending it somewhere. Copy-on-write already keeps
+your binding valid.
+
+## How the compiler manages memory: the drop-obligation invariant
+
+The user-facing promise is simple: **you never free, annotate, or move — the
+compiler balances the books.**
+
+Under the hood, every live heap value carries exactly one *drop obligation*.
+Creating a value — or retaining a share of one — mints an obligation; scope
+exit, consumption, or hand-off discharges it, recursively through everything the
+value owns. Sharing a value (reading a field out of a live composite, reading a
+collection element, passing it by value while the caller continues) is a
+refcount **retain**, not a raw alias and not a deep copy. Mutating a value whose
+buffer is shared **forks** it first (copy-on-write). Every one of these
+obligations is inferred by the compiler; none is written by you.
+
+## `&T` — FFI-boundary annotation only
+
+`&T` exists to describe C-ABI boundaries in `extern` declarations, where the
+foreign function borrows a value it does not own:
+
+```hew
+extern "C" {
+    fn hew_hash_bytes(data: &bytes) -> u64;
 }
 ```
 
-`&T` marks a parameter (or return type) as a **non-owning immutable borrow**:
+Idiomatic Hew code never writes `&`. Borrowing is inferred at every ordinary
+call site — a parameter is a borrow by default — so `&T` carries no meaning in
+normal function signatures and is not a user surface for expressing intent. The
+parser rejects `&mut T` and the legacy `&var T` spelling with a diagnostic:
+Hew has no mutable-reference surface, and exclusive-mutation intent, if it is
+ever needed, will be an inferred property or an intent keyword, not a reference
+type.
 
-- The callee gets a read-only view into the caller's value.
-- No retain/release is performed — the borrow cannot outlive the owner.
-- `&T` lowers to `ValueClass::View` in the HIR, exactly as the existing `IntentKind::Read`
-  path for call arguments.
+## `clone x` — the eager-copy cost operation
 
-**What `&T` is not (v0.5 constraints):**
-
-| Form | Status | Reason |
-|------|--------|--------|
-| `&T` (immutable borrow) | ✅ Supported | Q320 — read-only view |
-| `&mut T` (mutable borrow) | ❌ Not in v0.5 | Q320 — no exclusive-borrow surface yet |
-| `&var T` (legacy spelling) | ❌ Parse error | Rejected at the parser |
-| Reference cycles via `&T` | ⚠️ Leak risk | Q321 — no cycle collector; avoid cycles |
-
-The parser will reject `&mut T` with a diagnostic. `&var T` is also rejected. These forms
-are reserved for future work.
-
-## `.clone()` / `clone x` — explicit copy
-
-`val.clone()` (method form) and `clone val` (prefix form, unary precedence) are
-equivalent and are the canonical way to get a second independent copy of an
-owned value without consuming the original:
+`clone` is not an ownership keyword. It is a stdlib **cost operation** that means
+"make an independent, eager copy of this value *now*" — the opposite of
+copy-on-write's lazy, on-demand fork. `clone x` (prefix form, the natural and
+primary spelling) and `x.clone()` (method form) are equivalent:
 
 ```hew
 let a: Vec<i64> = Vec::new();
 a.push(1); a.push(2);
-let b = clone a;      // == a.clone() — independent copy
+let b = clone a;      // == a.clone() — independent copy, forked eagerly now
 b.push(99);
 println(a.len());     // 2
 println(b.len());     // 3
 ```
 
+You reach for `clone` only when you want a **second, divergent** copy that
+mutates independently of the original — as above, where `b` grows while `a` does
+not. You never need it for correctness: passing a value to a function borrows it,
+and sending a value to an actor takes a snapshot, so your binding stays valid
+either way (see the two sections above and below). Because it eagerly duplicates,
+`clone` is a cost you opt into, never a ceremony the compiler demands.
+
 `string`, `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`, and records (via the
 `RecordCloneInplace`/`CopyCloneNoop` MIR rewrites) all have a wired copy path
 and clone correctly. The `CloneNotYetSupported` diagnostic is a fail-closed
-backstop: it fires for a `.clone()` call the checker cannot map to any real
-copy path (a type with no clone method at all, or a heap type whose runtime
-copy path genuinely isn't wired yet, e.g. `bytes`). It never fires for
-already-resolved clones, and it never silently aliases — every unresolved
-`.clone()` call is a compile-time error, not a runtime surprise.
+backstop: it fires for a `clone` the checker cannot map to any real copy path (a
+type with no clone method at all, or a heap type whose runtime copy path
+genuinely isn't wired yet, e.g. `bytes`). It never fires for already-resolved
+clones, and it never silently aliases — every unresolved `clone` is a
+compile-time error, not a runtime surprise.
 
-## Move on send
+## Snapshot on send
 
-When a value crosses an actor boundary — a `receive fn` method call or
-`.send()` on a lambda-actor handle — it is **moved**: the sender can no
-longer use it.
+Sending a value across an **actor boundary** is a **copy-on-write snapshot**, not
+a move. A `receive fn` method call or `.send()` on a lambda-actor handle gives
+the receiver an independent snapshot of the value, and the sender's binding
+**stays valid** — there is no use-of-moved-value error:
 
 ```hew
 let greeting = "hello";
 printer.print_message(greeting);
-// println(greeting);  // compile error: use of moved value `greeting`
+println(greeting);   // still legal — send took a snapshot, greeting is yours
 ```
 
-At the runtime level the send mechanism is gated by the value's
-admissibility class: immutable-shareable owned types (`string`, `bytes`) are
-alias-shared by refcount retain (no byte copy, with a copy-on-write fork on
-first mutation of a shared buffer); mutable collections (`Vec<T>`,
-`HashMap<K,V>`, `HashSet<T>`) are deep-copied into the receiver's per-actor
-heap. From the program's perspective both are indistinguishable from
-move-then-independent-value — the sender's binding is invalid either way.
-Reach for `.clone()` first if you need to keep using the value after
-sending it. See HEW-SPEC-2026.md §3.4.4 and §3.7.2 for the full model.
+Isolation is preserved by copy-on-write itself, not by invalidating the sender.
+The receiver and the sender each own a fork of the value: if either mutates its
+copy, the write forks the shared buffer, so neither can observe the other's
+changes. Actors never share memory, and a snapshot guarantees they never need to.
+
+This makes fan-out natural — send the same value to many workers in a loop with
+no ceremony:
+
+```hew
+for conn in batch {
+    worker.handle(conn_info, conn);   // conn_info sent each iteration, still valid
+}
+```
+
+At the runtime level the snapshot mechanism is a cost detail chosen per value,
+never a difference in meaning: a provably-unique value (refcount 1 at the send,
+with no later use) is transferred by pointer with zero copy; an
+immutable-shareable value (`string`, `bytes`) is retain-shared with a
+copy-on-write fork on first mutation; a shared mutable collection (`Vec<T>`,
+`HashMap<K,V>`, `HashSet<T>`) is deep-copied into the receiver's per-actor heap
+today, converging to retain-share-plus-copy-on-write as the model completes. Each
+tier is indistinguishable from the others at the source level — the sender always
+keeps a valid, independent value.
+
+Move-on-send returns only for a provably-unique or `resource`-kind value as a
+runtime optimization (the pointer-transfer fast path above), never as a surface
+rule you must reason about. Sending a **non-sendable** value — a resource-shaped
+type, before the `resource` kind ships (see below) — is a fail-closed compile
+error, not a silent copy. See HEW-SPEC-2026.md §3.4.4 and §3.7.2 for the full
+model.
+
+## `resource` — reserved for a future affine kind
+
+`resource` is a **reserved word**. It names an affine (move-only) kind that will
+ship after the first release: a `resource type` — a file, a socket, a unique
+handle — is never clonable, never implicitly shared, has a deterministic
+exactly-once destructor, and moves on send (the sender is invalidated, because a
+unique resource genuinely cannot exist in two places). That is the *one* place a
+surface move will ever return.
+
+At rc1 the feature is not yet user-visible; only the **seam** is reserved:
+
+- the word `resource` is reserved in the grammar;
+- no generic or stdlib code may assume universal clonability — `clone` stays a
+  capability-gated operation, so a future non-clonable kind slots in without a
+  breaking retrofit;
+- sending a resource-shaped value is a fail-closed compile error today (there is
+  no unsound window before the kind ships).
+
+Reserving the seam now — rather than the whole feature — closes the retrofit
+danger (generics silently assuming every type is copyable) while keeping the
+affine kind itself severable as the first post-rc1 ownership feature.
+
+## The complete rejection surface: three walls
+
+The entire ownership model rejects your program in exactly **three** places. Each
+wall names the binding, its state, and the span that put it there, and each ships
+a one-line escape:
+
+| Wall | When it fires | Escape |
+|---|---|---|
+| mutation of a `let` | you mutate a value bound with `let` | declare it `var` |
+| clone of a non-cloneable | you `clone` a value with no copy path | restructure now; the `resource` lifecycle later |
+| send of a non-sendable | you send a resource-shaped value | use the owning-actor pattern; lifts when `resource` transfer ships |
+
+There is no fourth wall. Use-after-send of a value is **not** an error (send takes
+a snapshot); use-after-call is **not** an error (calls borrow). The model has no
+lifetime errors, no borrow-checker vocabulary, and no capability terms to learn.
 
 ## Equality: structural only (Q322)
 
@@ -103,17 +188,20 @@ compare equal. This invariant holds even after COW splits a shared buffer.
 
 ## Reference cycles (Q321)
 
-Hew v0.5 uses atomic reference counting without a cycle collector. Constructing reference
-cycles via `&T` borrows or actor state will cause the involved values to leak (neither the
-cycle collector nor weak references exist yet).
+Hew uses atomic reference counting without a cycle collector. Constructing
+reference cycles through actor state or stored self-referential structures will
+cause the involved values to leak (neither the cycle collector nor weak
+references exist yet).
 
 **Guideline:** design data structures as DAGs (trees, acyclic graphs). Cycles are a
 documented limitation for v0.5; future work will evaluate ORCA-style cycle collection.
 
 ## Remaining work
 
-A zero-copy ownership-move fast path for provably-unique, single-recipient
-sends of `Linear`/`iso` values is designed but not yet surfaced in edition
-2026 — see HEW-SPEC-2026.md §3.7.2. Every other mechanism described above
-(move-on-assignment, move-on-send with the alias-share/deep-copy gate,
-`.clone()`/`clone x`) is shipped.
+The pointer-transfer fast path for provably-unique sends is an inferred cost
+optimization, never a user-facing annotation and never required for correctness —
+see HEW-SPEC-2026.md §3.7.2. It converges further as retain-on-share extends
+across all heap types, at which point the deep-copy send tier retires and every
+snapshot is near-zero-copy. Everything else described above — borrow-by-default
+calls with caller-side drop, copy-on-write sharing, snapshot-on-send, and
+`clone x` as the eager-copy cost operation — is the model as it stands.

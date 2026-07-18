@@ -1,0 +1,82 @@
+import std::encoding::xml;
+
+import std::testing;
+
+type ParseError {
+    message: string;
+    offset: i64;
+}
+
+enum ParseOutcome {
+    Parsed(xml.Node);
+    Failed(ParseError);
+    Skipped(string);
+}
+
+enum ScalarSibling {
+    Loaded(xml.Node);
+    Count(i64);
+}
+
+fn classify(s: string) -> ParseOutcome {
+    if s == "" {
+        ParseOutcome::Skipped("empty".to_upper())
+    } else {
+        match xml.try_parse(s) {
+            Ok(node) => ParseOutcome::Parsed(node),
+            Err(message) => ParseOutcome::Failed(ParseError { message: message, offset: 0 }),
+        }
+    }
+}
+
+#[test]
+fn result_resource_and_string_variants() {
+    match xml.try_parse("<a/>") {
+        Ok(node) => testing.assert_eq_str(node.get_tag(), "a"),
+        Err(_) => testing.assert_true(false),
+    }
+    match xml.try_parse("<a>") {
+        Ok(node) => {
+            node.close();
+            testing.assert_true(false);
+        },
+        Err(message) => testing.assert_true(message.starts_with("xml:")),
+    }
+}
+
+#[test]
+fn user_enum_resource_and_heap_siblings() {
+    match classify("<doc/>") {
+        ParseOutcome::Parsed(node) => testing.assert_eq_str(node.get_tag(), "doc"),
+        ParseOutcome::Failed(_) => testing.assert_true(false),
+        ParseOutcome::Skipped(_) => testing.assert_true(false),
+    }
+    match classify("<doc>") {
+        ParseOutcome::Parsed(node) => {
+            node.close();
+            testing.assert_true(false);
+        },
+        ParseOutcome::Failed(error) => {
+            testing.assert_eq(error.offset, 0);
+            testing.assert_true(error.message.starts_with("xml:"));
+        },
+        ParseOutcome::Skipped(_) => testing.assert_true(false),
+    }
+    match classify("") {
+        ParseOutcome::Parsed(node) => {
+            node.close();
+            testing.assert_true(false);
+        },
+        ParseOutcome::Failed(_) => testing.assert_true(false),
+        ParseOutcome::Skipped(message) => testing.assert_eq_str(message, "EMPTY"),
+    }
+}
+
+#[test]
+fn scalar_sibling_control() {
+    let value = ScalarSibling::Loaded(xml.parse("<x/>"));
+    match value {
+        ScalarSibling::Loaded(node) => testing.assert_eq_str(node.get_tag(), "x"),
+        ScalarSibling::Count(_) => testing.assert_true(false),
+    }
+}

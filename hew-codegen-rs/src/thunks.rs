@@ -1028,7 +1028,15 @@ pub(crate) fn emit_tuple_inplace_thunk_bodies<'ctx>(
 
     let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
     if clone_fn.count_basic_blocks() == 0 {
-        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, tuple_struct, &kinds, &w)?;
+        emit_aggregate_clone_inplace_body(
+            ctx,
+            llvm_mod,
+            clone_fn,
+            tuple_struct,
+            &kinds,
+            false,
+            &w,
+        )?;
     }
     let drop_fn = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, tuple_key);
     if drop_fn.count_basic_blocks() == 0 {

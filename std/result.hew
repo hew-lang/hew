@@ -4,10 +4,8 @@
 //! operations.  They use `match` on the built-in `Result` type and avoid
 //! FFI calls entirely for the supported element types.
 //!
-//! v0.5 supports user functions returning `Result<T, E>` for bitcopy payloads
-//! (i64, f64, bool, and other non-heap-owning types). Composite returns of
-//! heap-owning payloads (e.g. `Result<string, string>`) are rejected at compile
-//! time until tag-aware drop is implemented.
+//! Results may carry both bitcopy and heap-owning payloads. Heap-owning values
+//! are released through tag-aware drop glue when the result remains owned.
 //!
 //! # Examples
 //!

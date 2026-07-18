@@ -1389,14 +1389,22 @@ fn fresh_string_producer_dest(instr: &Instr) -> Option<Place> {
 /// getter `hew_vec_get_str` lower to block-terminating calls, not `Instr`s).
 fn fresh_string_producer_term_dest(term: &Terminator) -> Option<Place> {
     match term {
-        Terminator::Call { callee, dest, .. }
-            if crate::runtime_symbols::callee_ownership_contract(callee)
-                .produces_fresh_owned_string() =>
-        {
-            *dest
-        }
+        Terminator::Call {
+            callee,
+            builtin: None,
+            dest,
+            ..
+        } if fresh_string_producer_term_admissible(callee) => *dest,
         _ => None,
     }
+}
+fn fresh_string_producer_term_admissible(callee: &str) -> bool {
+    let contract = crate::runtime_symbols::callee_ownership_contract(callee);
+    if contract.returns_receiver_interior_alias() {
+        return false;
+    }
+    !crate::runtime_symbols::is_known_runtime_symbol(callee)
+        || contract.produces_fresh_owned_string()
 }
 /// The dest of a `string`-typed record/tuple/closure-env field load — a fresh
 /// `+1` owner once codegen retains it (`retain_string_field_load`,

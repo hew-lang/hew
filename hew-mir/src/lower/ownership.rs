@@ -952,7 +952,8 @@ impl Builder {
             return Some(order);
         }
         // Fallback: strip the module prefix and try the bare type name.
-        if let Some(bare) = type_name.rsplit_once('.').map(|(_, bare)| bare) {
+        let bare = hew_types::short_name(type_name);
+        if bare != type_name {
             if let Some(order) = self.record_field_orders.get(bare) {
                 return Some(order);
             }
@@ -1878,10 +1879,10 @@ impl Builder {
                     )
             }
             ResolvedTy::Named { name, args, .. } => {
-                let short = crate::model::short_name(name);
+                let short = hew_types::short_name(name);
                 let layout = if args.is_empty() {
                     self.enum_layouts.iter().find(|layout| {
-                        layout.name == *name || crate::model::short_name(&layout.name) == short
+                        layout.name == *name || hew_types::short_name(&layout.name) == short
                     })
                 } else {
                     let mangled = mangle_layout_key(short, args);

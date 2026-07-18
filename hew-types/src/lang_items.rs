@@ -23,11 +23,13 @@
 
 use std::collections::HashMap;
 
+use strum::{EnumIter, IntoEnumIterator};
+
 /// Closed compiler-recognised lang-item key vocabulary.
 ///
 /// The stdlib may move these attributes between declarations, but adding a new
 /// semantic hook requires a compiler change so misspelled keys fail closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, EnumIter)]
 pub enum LangItem {
     Index,
     IndexGet,
@@ -68,45 +70,6 @@ pub enum LangItem {
 }
 
 impl LangItem {
-    pub const ALL: [Self; 36] = [
-        Self::Index,
-        Self::IndexGet,
-        Self::IndexAt,
-        Self::Display,
-        Self::DisplayFmt,
-        Self::Option,
-        Self::OptionIsSome,
-        Self::OptionIsNone,
-        Self::OptionUnwrap,
-        Self::OptionUnwrapOr,
-        Self::Result,
-        Self::ResultIsOk,
-        Self::ResultIsErr,
-        Self::ResultUnwrap,
-        Self::ResultUnwrapOr,
-        Self::VecIterState,
-        Self::Iterator,
-        Self::IteratorNext,
-        Self::CollectionNew,
-        Self::MarkerSend,
-        Self::MarkerSync,
-        Self::MarkerFrozen,
-        Self::MarkerCopy,
-        Self::MarkerClone,
-        Self::MarkerEq,
-        Self::MarkerPartialOrd,
-        Self::MarkerOrd,
-        Self::MarkerNum,
-        Self::MarkerHash,
-        Self::MarkerDebug,
-        Self::MarkerDrop,
-        Self::MarkerDecode,
-        Self::MarkerEncode,
-        Self::MarkerSerializable,
-        Self::MarkerRcFree,
-        Self::MarkerResource,
-    ];
-
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -151,7 +114,7 @@ impl LangItem {
 
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|item| item.key() == key)
+        Self::iter().find(|item| item.key() == key)
     }
 }
 
@@ -239,5 +202,17 @@ impl LangItemRegistry {
     /// Iterate registered (key, binding) pairs in arbitrary order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &LangItemBinding)> {
         self.entries.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_lang_item_key_round_trips() {
+        for item in LangItem::iter() {
+            assert_eq!(LangItem::from_key(item.key()), Some(item));
+        }
     }
 }

@@ -156,9 +156,7 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
             builtin,
             is_opaque,
         } => ResolvedTy::Named {
-            name: name
-                .rsplit_once('.')
-                .map_or(name.clone(), |(_, short)| short.to_string()),
+            name: hew_types::short_name(&name).to_string(),
             args: args.into_iter().map(shorten_named_arg_qualifiers).collect(),
             builtin,
             is_opaque,
@@ -203,10 +201,7 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
             traits: traits
                 .into_iter()
                 .map(|b| hew_types::ResolvedTraitBound {
-                    trait_name: b
-                        .trait_name
-                        .rsplit_once('.')
-                        .map_or(b.trait_name.clone(), |(_, short)| short.to_string()),
+                    trait_name: hew_types::short_name(&b.trait_name).to_string(),
                     args: b
                         .args
                         .into_iter()

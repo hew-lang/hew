@@ -6201,11 +6201,7 @@ impl Checker {
         //     spelled in a DECLARING module is never the importer's local trait of
         //     the same name; gating this on `Current` is the H11 scope correctness.
         if matches!(scope, TraitRefScope::Current) && self.local_trait_defs.contains(name) {
-            if let Some(module) = self
-                .current_module
-                .as_deref()
-                .and_then(|current| current.rsplit('.').next())
-            {
+            if let Some(module) = self.current_module.as_deref().map(crate::short_name) {
                 let qualified = format!("{module}.{name}");
                 if self.trait_defs.contains_key(&qualified) {
                     return self.identity_from_trait_defs_key(&qualified);
@@ -6264,7 +6260,7 @@ impl Checker {
                         || self
                             .current_module
                             .as_deref()
-                            .is_some_and(|current| current.rsplit('.').next() == Some(*module)))
+                            .is_some_and(|current| crate::short_name(current) == *module))
             })
             .collect();
         owners.sort_unstable();

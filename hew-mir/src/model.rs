@@ -4,7 +4,9 @@ use std::{
 };
 
 use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
-use hew_types::{NumericWidth, ResolvedTy, TryConversionKind, WireCodecDirection, WireLayoutTable};
+use hew_types::{
+    short_name, NumericWidth, ResolvedTy, TryConversionKind, WireCodecDirection, WireLayoutTable,
+};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
 
@@ -1470,14 +1472,6 @@ pub fn machine_enum_view(layout: &MachineLayout) -> EnumLayout {
 #[must_use]
 pub fn machine_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLayout> {
     machine_layouts.iter().map(machine_enum_view).collect()
-}
-
-/// Unqualified tail of a possibly module-qualified type name
-/// (`"mod.Expr"` → `"Expr"`). The single short-name authority shared by
-/// the MIR drop elaborator and the codegen layout lookup.
-#[must_use]
-pub fn short_name(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
 /// THE single enum-layout lookup authority for this module.

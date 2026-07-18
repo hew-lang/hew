@@ -1311,9 +1311,7 @@ impl Checker {
                     let acc_module = self.current_module.as_deref();
                     if !visibility::access_allowed(decl_module, acc_module, vis) {
                         // Extract just the function name (last segment after '.').
-                        let symbol = resolved_fn_name
-                            .rsplit_once('.')
-                            .map_or(resolved_fn_name.as_str(), |(_, n)| n);
+                        let symbol = crate::short_name(&resolved_fn_name);
                         let decl_span = self
                             .fn_def_spans
                             .get(&resolved_fn_name)

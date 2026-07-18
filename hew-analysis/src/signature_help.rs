@@ -135,7 +135,7 @@ fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<(String, Opt
 
 fn find_receiver_method_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
     let receiver_end = context.receiver_end?;
-    let method = context.callee.rsplit('.').next()?;
+    let method = hew_types::short_name(&context.callee);
     let receiver_ty = find_receiver_type(tc, receiver_end)?;
     lookup_receiver_method_sig(tc, receiver_ty, method)
 }

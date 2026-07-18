@@ -1483,11 +1483,11 @@ pub(super) fn ty_is_heap_owning_enum_composite(
     // not an opaque/builtin handle). Indirect (heap-boxed) enums route their
     // payload drop through the boxed-storage release path, not this in-place
     // helper, so they are excluded here.
-    let short = crate::model::short_name(name);
+    let short = hew_types::short_name(name);
     let layout = if args.is_empty() {
         enum_layouts
             .iter()
-            .find(|el| el.name == *name || crate::model::short_name(&el.name) == short)
+            .find(|el| el.name == *name || hew_types::short_name(&el.name) == short)
     } else {
         let mangled = mangle_layout_key(short, args);
         enum_layouts

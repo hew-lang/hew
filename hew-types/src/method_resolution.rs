@@ -37,11 +37,9 @@ fn lookup_user_type_def<'a>(
     type_defs: &'a HashMap<String, TypeDef>,
     type_name: &str,
 ) -> Option<&'a TypeDef> {
-    type_defs.get(type_name).or_else(|| {
-        type_name
-            .rsplit_once('.')
-            .and_then(|(_, short)| type_defs.get(short))
-    })
+    type_defs
+        .get(type_name)
+        .or_else(|| type_defs.get(crate::short_name(type_name)))
 }
 
 fn lookup_user_fn_sig<'a>(fn_sigs: &'a HashMap<String, FnSig>, key: &str) -> Option<&'a FnSig> {
@@ -49,7 +47,10 @@ fn lookup_user_fn_sig<'a>(fn_sigs: &'a HashMap<String, FnSig>, key: &str) -> Opt
         .get(key)
         .or_else(|| {
             let (type_name, method_name) = key.split_once("::")?;
-            let (_, short) = type_name.rsplit_once('.')?;
+            let short = crate::short_name(type_name);
+            if short == type_name {
+                return None;
+            }
             fn_sigs.get(&format!("{short}::{method_name}"))
         })
         .or_else(|| {
@@ -112,9 +113,10 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
 
 fn scoped_method_name<'a>(sig_name: &'a str, type_name: &str) -> Option<&'a str> {
     let scoped_prefix = format!("{type_name}::");
-    sig_name
-        .rsplit_once('.')
-        .and_then(|(_, unqualified)| unqualified.strip_prefix(&scoped_prefix))
+    let unqualified = crate::short_name(sig_name);
+    (unqualified != sig_name)
+        .then(|| unqualified.strip_prefix(&scoped_prefix))
+        .flatten()
 }
 
 fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig> {
@@ -337,9 +339,8 @@ pub fn collect_method_sigs_for_named_type(
     }
 
     let exact_prefix = format!("{type_name}::");
-    let short_prefix = type_name
-        .rsplit_once('.')
-        .map(|(_, short)| format!("{short}::"));
+    let short = crate::short_name(type_name);
+    let short_prefix = (short != type_name).then(|| format!("{short}::"));
     for (sig_name, sig) in fn_sigs {
         let method_name = sig_name
             .strip_prefix(&exact_prefix)

@@ -409,18 +409,15 @@ pub(crate) fn resource_wrapper_shadowing_handle<'a>(
     handle_types: &'a HashSet<String>,
     resource_wrapper_types: &'a HashSet<String>,
 ) -> Option<(&'a str, &'a str)> {
-    // A free fn (not a closure) so the "return lifetime = input lifetime"
-    // relationship is expressible for both the map keys and the lookup argument.
-    fn short_name(qualified: &str) -> &str {
-        qualified.rsplit('.').next().unwrap_or(qualified)
-    }
     let handle_by_short: HashMap<&str, &str> = handle_types
         .iter()
-        .map(|h| (short_name(h), h.as_str()))
+        .map(|h| (crate::short_name(h), h.as_str()))
         .collect();
-    resource_wrapper_types
-        .iter()
-        .find_map(|w| handle_by_short.get(short_name(w)).map(|h| (w.as_str(), *h)))
+    resource_wrapper_types.iter().find_map(|w| {
+        handle_by_short
+            .get(crate::short_name(w))
+            .map(|h| (w.as_str(), *h))
+    })
 }
 
 /// Resolve an `impl` block's target type to its fully-qualified name,
@@ -1031,7 +1028,7 @@ fn wrapper_constructor_call_from_expr(
             fields,
             base: None,
             ..
-        } if name.rsplit('.').next() == Some(wrapper_simple_name)
+        } if crate::short_name(name) == wrapper_simple_name
             && fields.len() == 1
             && field_names.len() == 1 =>
         {
@@ -1076,7 +1073,7 @@ fn extract_handle_methods(
     // so nothing it registers can feed the `is_handle_type`-gated rewrite.
     let wrapper_field_names = wrapper_resource_fields.get(&type_name);
     let is_resource_wrapper = wrapper_field_names.is_some();
-    let wrapper_simple_name = type_name.rsplit('.').next().unwrap_or(type_name.as_str());
+    let wrapper_simple_name = crate::short_name(&type_name);
 
     for method in &impl_decl.methods {
         // A fieldless `#[resource]` handle (e.g. process.Child) IS a handle
@@ -1110,12 +1107,9 @@ fn extract_handle_methods(
             } else {
                 format!("{module_short}.{name}")
             };
-            wrapper_resource_fields.get(&qualified).map(|field_names| {
-                (
-                    name.rsplit('.').next().unwrap_or(name.as_str()),
-                    field_names,
-                )
-            })
+            wrapper_resource_fields
+                .get(&qualified)
+                .map(|field_names| (crate::short_name(name), field_names))
         });
         let extracted = extract_call_target(&method.body)
             .map(|target| (target, false))

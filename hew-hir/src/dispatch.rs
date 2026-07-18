@@ -139,7 +139,7 @@ pub fn lookup_trait_impl_entry<'a, S: std::hash::BuildHasher>(
             return Some(entry);
         }
         // Also try bare-leaf of the mangled name for module-qualified receivers.
-        let bare_mangled = mangled.rsplit('.').next().unwrap_or(&mangled);
+        let bare_mangled = hew_types::short_name(&mangled);
         if bare_mangled != mangled {
             let bare_concrete_key = (
                 declaring_trait.to_string(),
@@ -161,7 +161,7 @@ pub fn lookup_trait_impl_entry<'a, S: std::hash::BuildHasher>(
     if let Some(entry) = index.get(&key) {
         return Some(entry);
     }
-    let bare = self_type_name.rsplit('.').next().unwrap_or(self_type_name);
+    let bare = hew_types::short_name(self_type_name);
     if bare == self_type_name {
         return None;
     }

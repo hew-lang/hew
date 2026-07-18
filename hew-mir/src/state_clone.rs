@@ -1164,7 +1164,7 @@ fn classify_named(
     // qualified (`regex.Pattern`) while the registry key is the unqualified
     // decl name (`Pattern`); match both spellings, mirroring the opaque
     // name-set fallback below.
-    let resource_short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    let resource_short = hew_types::short_name(name);
     if let Some((_, close_symbol)) = resource_close
         .iter()
         .find(|(n, _)| n == name || n == resource_short)
@@ -1251,7 +1251,7 @@ fn classify_named(
     // carries the unqualified decl name (`"Value"`); use sites may carry the
     // qualified form (`"json.Value"`), so match both the full name and the
     // short suffix.
-    let short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    let short = hew_types::short_name(name);
     if opaque_handle_names.iter().any(|n| n == name || n == short) {
         return Ok(StateFieldCloneKind::OpaqueHandle {
             name: name.to_string(),
@@ -1464,7 +1464,7 @@ fn lookup_enum_layout<'a>(
     args: &[ResolvedTy],
     enum_layouts: &'a [EnumLayout],
 ) -> Option<&'a EnumLayout> {
-    let short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    let short = hew_types::short_name(name);
     if args.is_empty() {
         enum_layouts
             .iter()
@@ -1505,7 +1505,7 @@ fn lookup_record_layout<'a>(
     args: &[ResolvedTy],
     record_layouts: &'a [RecordLayout],
 ) -> Option<&'a RecordLayout> {
-    let short = name.rsplit_once('.').map_or(name, |(_, s)| s);
+    let short = hew_types::short_name(name);
     if args.is_empty() {
         record_layouts
             .iter()

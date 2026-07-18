@@ -13,6 +13,7 @@ use hew_parser::ast::{
     Attribute, AttributeArg, FnDecl, ImportSpec, Item, TraitItem, TypeBodyItem, TypeDeclKind,
     TypeExpr,
 };
+use strum::{EnumIter, IntoEnumIterator};
 
 use crate::LangItem;
 
@@ -116,6 +117,14 @@ pub const SUBSTRATE_SOURCES: &[AuthoritySource<'static>] = &[
     ),
 ];
 
+const RESERVED_SUBSTRATE_ATTRIBUTES: &[&str] = &[
+    "lang_item",
+    "abi",
+    "intrinsic",
+    "diagnostic_item",
+    "overload",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AuthorityDeclarationKind {
     Type,
@@ -133,7 +142,7 @@ pub struct AuthorityBinding {
     pub kind: AuthorityDeclarationKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, EnumIter)]
 pub enum Intrinsic {
     MathExp,
     MathLog,
@@ -160,31 +169,6 @@ pub enum Intrinsic {
 }
 
 impl Intrinsic {
-    pub const ALL: [Self; 22] = [
-        Self::MathExp,
-        Self::MathLog,
-        Self::MathSqrt,
-        Self::MathSin,
-        Self::MathCos,
-        Self::MathFloor,
-        Self::MathCeil,
-        Self::MathAbs,
-        Self::MathTanh,
-        Self::MathLog2,
-        Self::MathLog10,
-        Self::MathExp2,
-        Self::MathPow,
-        Self::MathMax,
-        Self::MathMin,
-        Self::MathPi,
-        Self::MathE,
-        Self::MemAlloc,
-        Self::MemRealloc,
-        Self::MemDealloc,
-        Self::MemPtrOffset,
-        Self::MemPtrCopy,
-    ];
-
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -215,9 +199,7 @@ impl Intrinsic {
 
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|intrinsic| intrinsic.key() == key)
+        Self::iter().find(|intrinsic| intrinsic.key() == key)
     }
 }
 
@@ -840,12 +822,7 @@ fn ensure_substrate_attribute(
     declaration: &str,
     attr: &Attribute,
 ) -> Result<(), AuthorityError> {
-    if source.root.is_none()
-        && matches!(
-            attr.name.as_str(),
-            "lang_item" | "abi" | "intrinsic" | "diagnostic_item" | "overload"
-        )
-    {
+    if source.root.is_none() && RESERVED_SUBSTRATE_ATTRIBUTES.contains(&attr.name.as_str()) {
         return Err(error(
             source,
             Some(declaration.to_string()),
@@ -974,6 +951,13 @@ fn error(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_intrinsic_key_round_trips() {
+        for intrinsic in Intrinsic::iter() {
+            assert_eq!(Intrinsic::from_key(intrinsic.key()), Some(intrinsic));
+        }
+    }
 
     #[test]
     fn embedded_substrate_populates_existing_authorities() {
@@ -1152,6 +1136,49 @@ extern "C" {
         assert!(
             error.to_string().contains("substrate-only"),
             "outside-root error must explain the privilege boundary: {error}"
+        );
+    }
+
+    #[test]
+    fn abi_on_non_extern_declaration_is_rejected() {
+        let source = AuthoritySource::embedded(
+            StdlibRoot::Io,
+            "std/io.hew",
+            r"#[abi(ret = bytes_triple)] pub fn hew_bytes() -> bytes {}",
+        );
+        let error = load_stdlib_authority(&[source])
+            .expect_err("ABI facts must only decorate extern declarations");
+
+        assert_eq!(error.declaration.as_deref(), Some("hew_bytes"));
+        assert_eq!(
+            error.kind,
+            AuthorityErrorKind::InvalidAttributePlacement {
+                attribute: "abi".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn abi_outside_std_roots_is_rejected() {
+        let source = AuthoritySource::external(
+            "src/main.hew",
+            r#"
+extern "C" {
+    #[abi(ret = bytes_triple)]
+    fn hew_bytes() -> bytes;
+}
+"#,
+        );
+        let error = load_stdlib_authority(&[source])
+            .expect_err("ABI facts outside std roots must fail closed");
+
+        assert_eq!(error.source_path, "src/main.hew");
+        assert_eq!(error.declaration.as_deref(), Some("hew_bytes"));
+        assert_eq!(
+            error.kind,
+            AuthorityErrorKind::AttributeOutsideStdRoot {
+                attribute: "abi".to_string(),
+            }
         );
     }
 }

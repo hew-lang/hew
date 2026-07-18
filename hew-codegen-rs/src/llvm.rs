@@ -8192,11 +8192,13 @@ fn collect_vec_owned_element_seeds(
                 // channel (string-bearing records were masked by the
                 // direct-string record seed). Carrier names may be
                 // module-qualified (`channel.Receiver`) — compare short.
-                if name == "Vec" || matches!(short_name(name), "Sender" | "Receiver" | "Stream") {
+                if ty.is_builtin(BuiltinType::Vec)
+                    || matches!(short_name(name), "Sender" | "Receiver" | "Stream")
+                {
                     if let Some(elem) = args.first() {
                         on_vec_elem(elem);
                     }
-                } else if name == "HashMap" || short_name(name) == "HashMap" {
+                } else if ty.is_builtin(BuiltinType::HashMap) {
                     // Seed BOTH the value (heap-owning V drop thunk) AND the key
                     // (managed-record-key drop thunk). A `string`-bearing record
                     // key is owned by the map and dropped via its per-record
@@ -8330,24 +8332,22 @@ fn collect_wire_value_owned_vec_element_seeds(
         match &ty {
             ResolvedTy::Named { name, args, .. } => {
                 let short = short_name(name);
-                if name == "Vec" || matches!(short, "Sender" | "Receiver" | "Stream") {
+                if ty.is_builtin(BuiltinType::Vec)
+                    || matches!(short, "Sender" | "Receiver" | "Stream")
+                {
                     if let Some(elem) = args.first() {
                         consider_elem(elem, &mut record_seeds, &mut enum_seeds);
                         stack.push(elem.clone());
                     }
                     continue;
                 }
-                if name == "HashMap"
-                    || short == "HashMap"
-                    || name == "HashSet"
-                    || short == "HashSet"
-                {
+                if ty.is_builtin(BuiltinType::HashMap) || ty.is_builtin(BuiltinType::HashSet) {
                     for a in args {
                         stack.push(a.clone());
                     }
                     continue;
                 }
-                if matches!(short, "Option" | "Result" | "Range") {
+                if ty.is_builtin(BuiltinType::Option) || matches!(short, "Result" | "Range") {
                     for a in args {
                         stack.push(a.clone());
                     }
@@ -35350,12 +35350,11 @@ mod tests {
             params: vec![],
             locals: vec![
                 // local_0: Option<i64> — must resolve via mangled key
-                ResolvedTy::Named {
-                    name: "Option".to_string(),
-                    args: vec![ResolvedTy::I64],
-                    builtin: None,
-                    is_opaque: false,
-                },
+                ResolvedTy::named_builtin(
+                    BuiltinType::Option.canonical_name(),
+                    BuiltinType::Option,
+                    vec![ResolvedTy::I64],
+                ),
                 // local_1: i64 — return value
                 ResolvedTy::I64,
             ],
@@ -38266,8 +38265,8 @@ mod tests {
         );
     }
 
-    /// Positive guard: layout-sourced genuine builtins can carry `builtin: None`
-    /// and must stay on the runtime layout ABI.
+    /// Positive guard: layout-sourced genuine builtins carry their discriminant
+    /// and stay on the runtime layout ABI.
     #[test]
     fn hashmap_layout_ops_get_emits_clone_call_and_option_branches() {
         let ctx = Context::create();
@@ -38278,9 +38277,10 @@ mod tests {
             &[fixture_option_i64_layout()],
         );
         let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-        let map_ty = ResolvedTy::Named {
-            name: "HashMap".to_string(),
-            args: vec![
+        let map_ty = ResolvedTy::named_builtin(
+            BuiltinType::HashMap.canonical_name(),
+            BuiltinType::HashMap,
+            vec![
                 ResolvedTy::Named {
                     name: "Point".to_string(),
                     args: vec![],
@@ -38289,21 +38289,20 @@ mod tests {
                 },
                 ResolvedTy::I64,
             ],
-            builtin: None,
-            is_opaque: false,
-        };
+        );
         let point_ty = ResolvedTy::Named {
             name: "Point".to_string(),
             args: vec![],
             builtin: None,
             is_opaque: false,
         };
-        let option_i64_ty = ResolvedTy::Named {
-            name: "Option".to_string(),
-            args: vec![ResolvedTy::I64],
-            builtin: None,
-            is_opaque: false,
-        };
+        let option_i64_ty = ResolvedTy::named_builtin(
+            BuiltinType::Option.canonical_name(),
+            BuiltinType::Option,
+            vec![ResolvedTy::I64],
+        );
+        assert!(map_ty.is_builtin(BuiltinType::HashMap));
+        assert!(option_i64_ty.is_builtin(BuiltinType::Option));
         alloc_local(&mut fn_ctx, 0, map_ty);
         alloc_local(&mut fn_ctx, 1, point_ty);
         alloc_local(&mut fn_ctx, 2, option_i64_ty);
@@ -38343,6 +38342,59 @@ mod tests {
             !ir.contains("llvm.memcpy"),
             "HashMap::get must not memcpy a borrowed slot into owned Option<V>; got IR:\n{ir}"
         );
+    }
+
+    #[test]
+    fn hashmap_layout_ops_reject_user_named_collision() {
+        let ctx = Context::create();
+        let m = ctx.create_module("hashmap_get_user_collision_test");
+        let harness = build_harness(
+            &ctx,
+            &[fixture_point_layout()],
+            &[fixture_option_i64_layout()],
+        );
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        let user_map_ty = ResolvedTy::Named {
+            name: "HashMap".to_string(),
+            args: vec![
+                ResolvedTy::Named {
+                    name: "Point".to_string(),
+                    args: vec![],
+                    builtin: None,
+                    is_opaque: false,
+                },
+                ResolvedTy::I64,
+            ],
+            builtin: None,
+            is_opaque: false,
+        };
+        let point_ty = ResolvedTy::Named {
+            name: "Point".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        let option_i64_ty = ResolvedTy::named_builtin(
+            BuiltinType::Option.canonical_name(),
+            BuiltinType::Option,
+            vec![ResolvedTy::I64],
+        );
+        alloc_local(&mut fn_ctx, 0, user_map_ty);
+        alloc_local(&mut fn_ctx, 1, point_ty);
+        alloc_local(&mut fn_ctx, 2, option_i64_ty);
+
+        let err = lower_hashmap_get_layout_call(
+            &fn_ctx,
+            &[Place::Local(0), Place::Local(1)],
+            Some(&Place::Local(2)),
+            1,
+        )
+        .expect_err("a user type named HashMap must not route to the runtime map ABI");
+        assert!(
+            matches!(&err, CodegenError::FailClosed(message) if message.contains("arg0 must be HashMap<K,V>")),
+            "unexpected error: {err:?}"
+        );
+        finish_test_fn(&fn_ctx);
     }
 
     // ---- emit_result_ok ----------------------------------------------------

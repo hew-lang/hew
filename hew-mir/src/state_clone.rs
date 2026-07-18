@@ -1744,6 +1744,10 @@ mod tests {
         ResolvedTy::named_user(name, args)
     }
 
+    fn builtin(kind: hew_types::BuiltinType, args: Vec<ResolvedTy>) -> ResolvedTy {
+        ResolvedTy::named_builtin(kind.canonical_name(), kind, args)
+    }
+
     /// Build a `Named` type carrying the `#[opaque]` discriminator, as
     /// `lower_type` stamps for an opaque-handle reference (e.g. `json.Value`).
     fn named_opaque(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
@@ -1833,12 +1837,7 @@ mod tests {
     #[test]
     fn vec_of_primitive_recurses_to_bitcopy_element() {
         let mut v = HashSet::new();
-        let ty = ResolvedTy::Named {
-            name: "Vec".to_string(),
-            args: vec![ResolvedTy::I32],
-            builtin: None,
-            is_opaque: false,
-        };
+        let ty = builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::I32]);
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
             StateFieldCloneKind::Vec {
@@ -1850,12 +1849,7 @@ mod tests {
     #[test]
     fn vec_of_string_recurses_to_string_element() {
         let mut v = HashSet::new();
-        let ty = ResolvedTy::Named {
-            name: "Vec".to_string(),
-            args: vec![ResolvedTy::String],
-            builtin: None,
-            is_opaque: false,
-        };
+        let ty = builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::String]);
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
             StateFieldCloneKind::Vec {
@@ -2006,17 +2000,15 @@ mod tests {
         // Connection-in-container and emit the codegen-time FailClosed
         // at supervisor sites.
         let mut v = HashSet::new();
-        let ty = ResolvedTy::Named {
-            name: "Vec".to_string(),
-            args: vec![ResolvedTy::Named {
+        let ty = builtin(
+            hew_types::BuiltinType::Vec,
+            vec![ResolvedTy::Named {
                 name: "Connection".to_string(),
                 args: vec![],
                 builtin: None,
                 is_opaque: false,
             }],
-            builtin: None,
-            is_opaque: false,
-        };
+        );
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
             StateFieldCloneKind::Vec {
@@ -2030,12 +2022,10 @@ mod tests {
     #[test]
     fn hashmap_recurses_into_both_key_and_value() {
         let mut v = HashSet::new();
-        let ty = ResolvedTy::Named {
-            name: "HashMap".to_string(),
-            args: vec![ResolvedTy::String, ResolvedTy::I64],
-            builtin: None,
-            is_opaque: false,
-        };
+        let ty = builtin(
+            hew_types::BuiltinType::HashMap,
+            vec![ResolvedTy::String, ResolvedTy::I64],
+        );
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
             StateFieldCloneKind::HashMap {
@@ -2055,17 +2045,15 @@ mod tests {
             RecordLayout {
                 name: "Workspace".to_string(),
                 field_tys: vec![
-                    ResolvedTy::Named {
-                        name: "Vec".to_string(),
-                        args: vec![ResolvedTy::Named {
+                    builtin(
+                        hew_types::BuiltinType::Vec,
+                        vec![ResolvedTy::Named {
                             name: "Entry".to_string(),
                             args: vec![],
                             builtin: None,
                             is_opaque: false,
                         }],
-                        builtin: None,
-                        is_opaque: false,
-                    },
+                    ),
                     ResolvedTy::String,
                 ],
                 field_names: vec![],
@@ -2074,12 +2062,7 @@ mod tests {
                 name: "Entry".to_string(),
                 field_tys: vec![
                     ResolvedTy::String,
-                    ResolvedTy::Named {
-                        name: "Vec".to_string(),
-                        args: vec![ResolvedTy::I32],
-                        builtin: None,
-                        is_opaque: false,
-                    },
+                    builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::I32]),
                 ],
                 field_names: vec![],
             },
@@ -2489,12 +2472,7 @@ mod tests {
         // mangled `Option$$string`) and return `Enum`, NOT fail closed as
         // `MissingRecordLayout`.
         let layouts = vec![option_string_layout()];
-        let ty = ResolvedTy::Named {
-            name: "Option".to_string(),
-            args: vec![ResolvedTy::String],
-            builtin: None,
-            is_opaque: false,
-        };
+        let ty = builtin(hew_types::BuiltinType::Option, vec![ResolvedTy::String]);
         let mut v = HashSet::new();
         let result =
             classify_state_field_with_enum_layouts(&ty, &no_records(), &layouts, &mut v).unwrap();
@@ -2626,12 +2604,7 @@ mod tests {
         // `MissingRecordLayout`. This pins that the additive enum-aware API
         // does not silently change the legacy call sites (llvm.rs record /
         // dyn-trait classification) that pass no enum layouts.
-        let ty = ResolvedTy::Named {
-            name: "Option".to_string(),
-            args: vec![ResolvedTy::String],
-            builtin: None,
-            is_opaque: false,
-        };
+        let ty = builtin(hew_types::BuiltinType::Option, vec![ResolvedTy::String]);
         let mut v = HashSet::new();
         let result = classify_state_field(&ty, &no_records(), &mut v);
         assert!(
@@ -2965,7 +2938,10 @@ mod tests {
         // this classified as `Vec { OpaqueHandle }` and codegen cloned the vec
         // handle with a plain element witness — the UAF.
         let mut v = HashSet::new();
-        let ty = ResolvedTy::named_user("Vec", vec![named_opaque("Value", vec![])]);
+        let ty = builtin(
+            hew_types::BuiltinType::Vec,
+            vec![named_opaque("Value", vec![])],
+        );
         assert_opaque_in_container(classify_state_field_full(
             &ty,
             &no_records(),
@@ -2979,7 +2955,10 @@ mod tests {
     #[test]
     fn hashset_of_opaque_handle_fails_closed() {
         let mut v = HashSet::new();
-        let ty = ResolvedTy::named_user("HashSet", vec![named_opaque("Value", vec![])]);
+        let ty = builtin(
+            hew_types::BuiltinType::HashSet,
+            vec![named_opaque("Value", vec![])],
+        );
         assert_opaque_in_container(classify_state_field_full(
             &ty,
             &no_records(),
@@ -2992,8 +2971,8 @@ mod tests {
     #[test]
     fn hashmap_with_opaque_value_fails_closed() {
         let mut v = HashSet::new();
-        let ty = ResolvedTy::named_user(
-            "HashMap",
+        let ty = builtin(
+            hew_types::BuiltinType::HashMap,
             vec![ResolvedTy::String, named_opaque("Value", vec![])],
         );
         assert_opaque_in_container(classify_state_field_full(
@@ -3008,8 +2987,8 @@ mod tests {
     #[test]
     fn hashmap_with_opaque_key_fails_closed() {
         let mut v = HashSet::new();
-        let ty = ResolvedTy::named_user(
-            "HashMap",
+        let ty = builtin(
+            hew_types::BuiltinType::HashMap,
             vec![named_opaque("Value", vec![]), ResolvedTy::I64],
         );
         assert_opaque_in_container(classify_state_field_full(
@@ -3027,8 +3006,11 @@ mod tests {
         // transitive authority recurses through the `Option<T>` type-arg, so the
         // outer Vec fails closed even though its immediate element is an enum.
         let mut v = HashSet::new();
-        let inner_opt = ResolvedTy::named_user("Option", vec![named_opaque("Value", vec![])]);
-        let ty = ResolvedTy::named_user("Vec", vec![inner_opt]);
+        let inner_opt = builtin(
+            hew_types::BuiltinType::Option,
+            vec![named_opaque("Value", vec![])],
+        );
+        let ty = builtin(hew_types::BuiltinType::Vec, vec![inner_opt]);
         assert_opaque_in_container(classify_state_field_full(
             &ty,
             &no_records(),
@@ -3049,7 +3031,10 @@ mod tests {
             field_names: vec![],
         }];
         let mut v = HashSet::new();
-        let ty = ResolvedTy::named_user("Vec", vec![ResolvedTy::named_user("Holder", vec![])]);
+        let ty = builtin(
+            hew_types::BuiltinType::Vec,
+            vec![ResolvedTy::named_user("Holder", vec![])],
+        );
         assert_opaque_in_container(classify_state_field_full(&ty, &records, &[], &[], &mut v));
     }
 
@@ -3067,7 +3052,7 @@ mod tests {
         }];
         let opaque_names = vec!["Value".to_string()];
         let mut v = HashSet::new();
-        let ty = ResolvedTy::named_user("Vec", vec![named("Value", vec![])]); // is_opaque: false
+        let ty = builtin(hew_types::BuiltinType::Vec, vec![named("Value", vec![])]); // is_opaque: false
         let result = classify_state_field_full(&ty, &records, &[], &opaque_names, &mut v).unwrap();
         assert_eq!(
             result,

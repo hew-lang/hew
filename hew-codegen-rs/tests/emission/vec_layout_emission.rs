@@ -148,7 +148,7 @@ fn vec_layout_new_constructs_with_descriptor() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -177,7 +177,7 @@ fn vec_bitcopy_tuple_new_constructs_with_plain_descriptor() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![tuple_ty],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -211,7 +211,7 @@ fn vec_non_bitcopy_tuple_new_constructor_routes_to_owned_abi() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![tuple_ty],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -267,7 +267,7 @@ fn vec_payload_free_enum_new_routes_bitcopy_not_owned() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![enum_ty.clone()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -337,7 +337,7 @@ fn vec_scalar_payload_enum_new_routes_bitcopy_not_owned() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![enum_ty.clone()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -389,7 +389,7 @@ fn vec_layout_push_synthesizes_descriptor_and_data_pointer() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -421,7 +421,7 @@ fn vec_layout_get_loads_returned_element_pointer_into_dest() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -461,7 +461,7 @@ fn vec_layout_set_synthesizes_descriptor_index_and_data_pointer() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -500,7 +500,7 @@ fn vec_layout_pop_traps_when_runtime_reports_empty() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -538,7 +538,7 @@ fn vec_layout_contains_thunk_emits_per_type_equality_function() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -600,7 +600,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let return_block = BasicBlock {
@@ -759,7 +759,7 @@ fn vec_layout_contains_thunk_enum_tag_dispatches_not_byte_compares() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![enum_ty.clone()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -843,7 +843,7 @@ fn vec_layout_contains_thunk_emits_for_wasm_target() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {
@@ -907,7 +907,7 @@ fn vec_layout_clone_synthesizes_descriptor_and_returns_new_vec() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let cloned_vec_ty = vec_ty.clone();
@@ -966,7 +966,7 @@ fn vec_layout_remove_synthesizes_descriptor_index_and_out_slot() {
     let vec_ty = ResolvedTy::Named {
         name: "Vec".to_string(),
         args: vec![point_ty()],
-        builtin: None,
+        builtin: Some(hew_types::BuiltinType::Vec),
         is_opaque: false,
     };
     let block = BasicBlock {

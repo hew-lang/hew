@@ -17658,15 +17658,43 @@ impl LowerCtx {
             span: span.clone(),
         });
 
-        let lowered_value = self.lower_expr(value, IntentKind::Read);
-        let value_name = format!("__hew_repeat_value_{}", self.ids.binding().0);
-        let value_binding = self.bind(value_name.clone(), elem_ty.clone(), false, value.1.clone());
-        let value_id = value_binding.id;
-        statements.push(HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(value_binding, Some(lowered_value)),
-            span: value.1.clone(),
-        });
+        // Classify the source. A PLACE source (identifier / field / index) must
+        // NOT be bound to an intermediate owned temp: a `Read`-load of a place is
+        // a shallow struct memcpy for an owned record, so the temp would alias the
+        // still-live source's field heap and BOTH would drop it (#2724 —
+        // double-free of a Vec field, over-release of a string field). Instead a
+        // place source pushes a fresh `Read`-load of the place on each loop
+        // iteration (as `lower_array_literal` does per element): the already-sound
+        // per-slot `push_owned`/`push_str` clone deep-copies each slot into an
+        // independent owner and the source place drops exactly ONCE at its own
+        // enclosing scope. No second owner is ever materialised, and the source
+        // stays live (no accept-set regression to use-of-moved-value).
+        //
+        // A VALUE-PRODUCING source (call, constructor, literal, array/map
+        // literal, ...) keeps the eval-once temp: the produced value moves in and
+        // nothing else aliases it, so it is already the SOLE owner. Evaluating it
+        // once is required so a side-effecting source runs exactly once (e.g.
+        // `[f(); 0]` must still call `f` once and drop it once).
+        let source_is_place = matches!(
+            value.0,
+            Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. }
+        );
+
+        let value_binding_ref: Option<(String, BindingId)> = if source_is_place {
+            None
+        } else {
+            let lowered_value = self.lower_expr(value, IntentKind::Read);
+            let value_name = format!("__hew_repeat_value_{}", self.ids.binding().0);
+            let value_binding =
+                self.bind(value_name.clone(), elem_ty.clone(), false, value.1.clone());
+            let value_id = value_binding.id;
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(value_binding, Some(lowered_value)),
+                span: value.1.clone(),
+            });
+            Some((value_name, value_id))
+        };
 
         let lowered_count = self.lower_expr(count, IntentKind::Read);
         let count_name = format!("__hew_repeat_count_{}", self.ids.binding().0);
@@ -17696,14 +17724,22 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let value_ref = self.make_binding_ref(
-            value_name,
-            value_id,
-            elem_ty.clone(),
-            IntentKind::Read,
-            value.1.clone(),
-        );
-        let Some(push_expr) = self.make_vec_push_expr(vec_ref, value_ref, &elem_ty, span.clone())
+        // Element pushed each iteration: for a value-producing source, the
+        // eval-once temp's binding-ref (the temp is the sole owner, cloned per
+        // slot); for a place source, a FRESH `Read`-load of the place, re-read
+        // every iteration so each slot is an independent clone and no aliasing
+        // temp is ever created.
+        let push_elem = match &value_binding_ref {
+            Some((value_name, value_id)) => self.make_binding_ref(
+                value_name.clone(),
+                *value_id,
+                elem_ty.clone(),
+                IntentKind::Read,
+                value.1.clone(),
+            ),
+            None => self.lower_expr(value, IntentKind::Read),
+        };
+        let Some(push_expr) = self.make_vec_push_expr(vec_ref, push_elem, &elem_ty, span.clone())
         else {
             self.pop_scope();
             return (

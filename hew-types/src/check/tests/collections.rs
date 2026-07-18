@@ -1022,12 +1022,14 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
 }
 
 #[test]
-fn array_repeat_collection_bearing_record_fails_closed() {
-    // Admitting a collection-bearing record as a Vec element (copy-in `.push`)
-    // must NOT widen array-repeat `[b; N]`: the repeat clone-N lowering aliases
-    // the source's collection buffer in an unconsumed temp and double-frees it.
-    // `[Bag; N]` stays fail-closed with the array-repeat Clone diagnostic while
-    // `Bag.push` is admitted; a collection-free record `[Point; N]` still repeats.
+fn array_repeat_collection_bearing_record_is_admitted() {
+    // With the aliasing repeat-value temp eliminated (#2724), array-repeat
+    // clonability is identical to Vec-storage admissibility: both route the
+    // per-slot clone through the same `hew_vec_push_owned` deep copy-in. A
+    // collection-bearing record `[Bag; N]` is therefore admitted exactly like
+    // `Bag.push` -- each slot is an independent deep clone and the source drops
+    // once. A collection-free record `[Point; N]` also repeats; an `Rc`-field
+    // record stays fail-closed (asserted below).
     let bag = check_source(
         r"
         type Bag { items: Vec<i64> }
@@ -1039,12 +1041,12 @@ fn array_repeat_collection_bearing_record_fails_closed() {
         ",
     );
     assert!(
-        bag.errors.iter().any(|error| {
+        !bag.errors.iter().any(|error| {
             error
                 .message
                 .contains("array repeat requires the element type to be Clone")
         }),
-        "[Bag; N] array-repeat of a collection-bearing record must fail closed: {:#?}",
+        "[Bag; N] array-repeat of a collection-bearing record must be admitted: {:#?}",
         bag.errors
     );
 
@@ -1066,6 +1068,28 @@ fn array_repeat_collection_bearing_record_fails_closed() {
         }),
         "[Point; N] array-repeat of a collection-free record must remain admitted: {:#?}",
         point.errors
+    );
+
+    // The surviving boundary: a record whose field is `Rc` (not RcFree) has no
+    // clone/drop thunk and stays fail-closed for `[x; N]`.
+    let shared = check_source(
+        r"
+        type Shared { handle: Rc<i64> }
+
+        fn main() {
+            let s = Shared { handle: Rc::new(7) };
+            let ss = [s; 3];
+        }
+        ",
+    );
+    assert!(
+        shared.errors.iter().any(|error| {
+            error
+                .message
+                .contains("array repeat requires the element type to be Clone")
+        }),
+        "[Shared; N] array-repeat of an Rc-field record must stay fail-closed: {:#?}",
+        shared.errors
     );
 }
 

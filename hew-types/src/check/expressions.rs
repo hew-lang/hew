@@ -923,14 +923,20 @@ impl Checker {
         }
         // Owned (non-Copy) elements are cloned per slot at runtime (N independent
         // owned copies, source dropped once at block exit — matching `vec![x; n]`
-        // semantics). Gate on clone admissibility: `string` and `bytes` always
-        // admit (push_str / push_bytes copies independently); record/enum admit
-        // when the owned-element thunk path exists. Anything else fails closed
+        // semantics). Array-repeat clonability is now identical to Vec-storage
+        // admissibility: both route the per-slot clone through the same
+        // `hew_vec_push_owned` deep copy-in (the HIR desugar reuses the Vec push
+        // path and no longer materialises an aliasing temp). Gate on the single
+        // authority: `string`/`bytes` always admit (push_str / push_bytes copy
+        // independently); an owned record/enum admits exactly when it is
+        // RcFree-clonable via `vec_owned_element_admissible` — which admits a
+        // record/enum transitively holding a `Vec`/`HashMap`/`HashSet` field and
+        // keeps an `Rc`/closure-field element rejected. Anything else fails closed
         // with a clear diagnostic rather than a silent double-free.
         if !self.vec_element_has_copy_layout(&elem_ty) {
             let resolved_elem = self.subst.resolve(&elem_ty);
             let clonable = matches!(resolved_elem, Ty::String | Ty::Bytes)
-                || self.array_repeat_owned_element_clonable(&elem_ty);
+                || self.vec_owned_element_admissible(&elem_ty);
             if !clonable {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
@@ -938,41 +944,14 @@ impl Checker {
                     format!(
                         "`[{elem}; N]` array repeat requires the element type to be Clone, \
                          but `{elem}` has no clone path (not a string, bytes, or record/enum \
-                         with a synthesised clone thunk, and a record/enum transitively \
-                         holding a `Vec`/`HashMap`/`HashSet` field is not yet array-repeat \
-                         clonable); use an explicit loop with `.clone()` or a Copy element type",
+                         with a synthesised clone thunk); use an explicit loop with `.clone()` \
+                         or a Copy element type",
                         elem = resolved_elem.user_facing()
                     ),
                 );
             }
         }
         self.make_vec_type(elem_ty, span)
-    }
-
-    /// Array-repeat `[x; N]` clone admissibility for an owned (non-Copy)
-    /// record/enum element. Narrower than the Vec-storage authority
-    /// [`Self::vec_owned_element_admissible`]: a user record/enum that
-    /// transitively holds a `Vec`/`HashMap`/`HashSet` field is a valid Vec
-    /// element for copy-in `.push` (the outer Vec's per-element `drop_fn` frees
-    /// each clone) but is NOT yet array-repeat clonable — the repeat lowering
-    /// byte-copies the source into an unconsumed repeat-value temp that aliases
-    /// its collection field, and both the source and the temp drop it, so a
-    /// `Vec`-field element double-frees and a refcounted field over-releases.
-    /// Keep those shapes fail-closed for `[x; N]` until the repeat clone-N path
-    /// is wired. Bare collection elements (`[v; N]`) and nested tuples keep their
-    /// existing array-repeat behaviour (unchanged by this narrowing).
-    fn array_repeat_owned_element_clonable(&self, elem_ty: &Ty) -> bool {
-        if !self.vec_owned_element_admissible(elem_ty) {
-            return false;
-        }
-        if let Ty::Named { builtin: None, .. } = self.subst.resolve(elem_ty) {
-            return !self.vec_element_contains_unowned_container(
-                elem_ty,
-                &std::collections::HashSet::new(),
-                &mut std::collections::HashSet::new(),
-            );
-        }
-        true
     }
 
     pub(super) fn synthesize_array_literal(&mut self, elems: &[Spanned<Expr>], span: &Span) -> Ty {

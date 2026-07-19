@@ -835,6 +835,7 @@ pub(super) fn compute_param_ownership(
         param_consume,
         borrow_arg_sites,
         proven_borrow_arg_sites,
+        call_param_consume,
     }
 }
 /// True when `expr` is a bare reference to binding `b_p`.

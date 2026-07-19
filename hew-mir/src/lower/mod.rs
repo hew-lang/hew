@@ -3567,6 +3567,17 @@ pub(crate) struct ParamOwnershipFacts {
     /// lets owned collection drop elaboration distinguish a genuine handoff from
     /// a call-boundary borrow such as `first<T>(v: Vec<T>) { v.get(0) }`.
     proven_borrow_arg_sites: HashSet<hew_hir::SiteId>,
+    /// `(origin fn ItemId, param index) -> true` iff that parameter (of ANY
+    /// type, not just resources) is CONSUMED by the callee body — returned,
+    /// stored, sent, captured, forwarded to a consuming param, or destructured
+    /// by a `match` scrutinee. The all-parameter body summary that seeds
+    /// `proven_borrow_arg_sites`; unlike `param_consume` it covers non-resource
+    /// composites (a by-value `Result<string, string>` / user enum), which
+    /// `lower_params` needs to decide whether a heap-owning enum-composite param
+    /// is the CALLEE's drop obligation (CONSUME) or the caller's (BORROW). A
+    /// BORROW param is `false`; a param absent from the map is treated as BORROW
+    /// (fail-safe: the caller keeps and drops it, no callee double-free).
+    call_param_consume: HashMap<(hew_hir::ItemId, usize), bool>,
 }
 
 /// Shared context for the consume-detection and borrow-site walkers. Bundles
@@ -4713,6 +4724,52 @@ impl Builder {
                 // branch still drops exactly once. A no-op for a binding whose
                 // close is idempotent/refcounted (`resource_needs_drop_flag`).
                 self.maybe_alloc_resource_drop_flag(param.id, &owned_ty);
+            }
+            // #2732 — callee-side drop for a by-value heap-owning ENUM COMPOSITE
+            // param (`Result<T, string>`, `Option<string>`, a user enum with an
+            // owned-payload variant) the body-summary classifies CONSUME: a
+            // `match e { .. }` scrutinee destructures the param, so the caller
+            // moved it in and does NOT drop it. `param_consume` is resource-only,
+            // so such a param was never registered into `owned_locals` and its
+            // heap payload leaked on every consuming path — the enum twin of the
+            // record match-drain callee-drop.
+            //
+            // Register it into `owned_locals` + the body scope, exactly like a
+            // `let`-bound local enum, so `derive_enum_composite_drop_allowed`
+            // picks it up and emits the tag-aware `DropKind::EnumInPlace` shell
+            // drop on every consuming path. That prover's escape scan already
+            // excludes the composite when a match arm MOVES its payload out into
+            // an owning sink (return / store / send / owning call), so a move-out
+            // arm never double-frees the payload the binder now owns — it
+            // fail-closed leaks the sibling remainder instead. Gated on
+            // `call_param_consume` = CONSUME: a BORROW enum param is absent and
+            // stays the caller's drop (#2735 named / #2743 temporary), mutually
+            // exclusive with this callee drop.
+            //
+            // Records/tuples are deliberately NOT registered here — their owned
+            // fields drain through per-field match binders that each own and drop
+            // their extracted value, so a whole-composite drop would double-free.
+            // The enum is unique in that its payload binders are non-owning
+            // aliases, making the `EnumInPlace` shell drop the one balancing
+            // release. `!param_is_consumed` keeps the resource path (already
+            // registered above) from double-registering.
+            if !param_is_consumed
+                && self
+                    .param_ownership
+                    .call_param_consume
+                    .get(&(func.id, i))
+                    .copied()
+                    == Some(true)
+            {
+                let owned_ty = self.subst_ty(&param.ty);
+                if ty_is_heap_owning_enum_composite(
+                    &owned_ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                ) {
+                    self.register_owned_local(param.id, param.name.clone(), owned_ty);
+                    self.binding_scope.insert(param.id, func.body.scope);
+                }
             }
         }
     }

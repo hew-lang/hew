@@ -265,6 +265,16 @@ const SYNTHETIC_OWNED_TEMP_BINDING_BASE: u32 = u32::MAX - 64;
 const SYNTHETIC_CALL_SCRUTINEE_NAME: &str = "__hew_call_scrutinee";
 const SYNTHETIC_WHILE_LET_ITERATION_NAME: &str = "__hew_while_let_iteration";
 const SYNTHETIC_DISCARDED_CALL_RESULT_NAME: &str = "__hew_discarded_call_result";
+/// Name for the #2743 synthetic owner minted over a fresh owned composite/string
+/// argument TEMPORARY (`g(Row{..})`, `f(E::A(..))`, `tf((..,..))`, `h("a"+"b")`)
+/// passed to a proven-BORROW parameter. The temporary has no user `let`, so no
+/// `BindingId` and no scope-exit drop; #2735's preserve-the-drop exemption is a
+/// no-op for it (nothing to preserve). Minting a synthetic owner routes it
+/// through the SAME `owned_locals` + `proven_borrow_whole_arg_locals` machinery
+/// as the named `let x = Row{..}; g(x)` shape, so the fresh value is dropped
+/// once at caller scope exit. Gated on the target param being BORROW (a CONSUME
+/// target's temporary is the callee's obligation — no caller drop).
+const SYNTHETIC_TEMP_ARG_NAME: &str = "__hew_temp_arg";
 
 /// Prefix of the synthetic for-iteration cursor binding minted by the HIR
 /// for-loop desugar (`hew-hir/src/lower.rs`, `lower_for_iter_desugar`:

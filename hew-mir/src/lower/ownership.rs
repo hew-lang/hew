@@ -179,6 +179,60 @@ impl Builder {
         }
         Some(ty)
     }
+    /// #2743 — the owned type of a fresh composite/string argument TEMPORARY that
+    /// earns a caller-side scope-exit drop when passed to a proven-BORROW
+    /// parameter, or `None` for every other arg shape.
+    ///
+    /// The gap #2735 left: a NAMED owned composite arg (`let x = Row{..}; g(x)`)
+    /// keeps its scope-exit drop through the alias-escape scan because
+    /// `proven_borrow_whole_arg_locals` exempts its owning binding. A fresh
+    /// rvalue TEMPORARY (`g(Row{..})`) has no `let`, no `BindingId`, and no
+    /// scope-exit drop to preserve — the exemption is a no-op and nobody frees
+    /// it. Minting a synthetic owner over the temporary's MIR local (at the call
+    /// site) routes it through the identical `owned_locals` machinery.
+    ///
+    /// ## Why the top-level producer allowlist is sound
+    ///
+    /// A fresh top-level constructor/producer (`StructInit` / `TupleLiteral` /
+    /// `MachineVariantCtor` enum ctor / a string-producing `Binary`/`Unary`
+    /// concat / an explicit `RecordCloneCall`) allocates an aggregate that SOLELY
+    /// owns itself. The synthetic owner then flows through the SAME
+    /// `derive_{record,tuple,enum}_composite_drop_allowed` / `derive_cow_sole_owner`
+    /// prover as a `let`-bound composite, so field/element provenance (a moved-in
+    /// vs cloned field) is decided by that authority exactly as for the named
+    /// shape — registration alone never forces a drop (an escaping value is still
+    /// excluded → leak, never a double-free).
+    ///
+    /// EVERYTHING ELSE fails closed to today's leak-not-double-free posture:
+    /// - a `BindingRef` already has an owner (its `let`/param) — a second owner
+    ///   over the same value double-frees;
+    /// - a projection (`g(r.field)`, `g(t.0)`, `g(xs[i])`) is an interior alias
+    ///   of an owner's storage;
+    /// - a call return (`g(f())`) may hand back a borrowed parameter alias
+    ///   (#2648) — never trusted fresh here;
+    /// - a bare string `Literal` (`h("abc")`) is a static/interned constant that
+    ///   allocates nothing and must not be freed (verified: 0 leaks unminted).
+    pub(crate) fn caller_borrowed_temp_arg_owned_ty(&self, arg: &HirExpr) -> Option<ResolvedTy> {
+        let ty = self.subst_ty(&arg.ty);
+        // Only a heap-owning value carries a drop obligation.
+        if !crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts) {
+            return None;
+        }
+        let is_fresh_producer = match &arg.kind {
+            HirExprKind::StructInit { .. }
+            | HirExprKind::TupleLiteral { .. }
+            | HirExprKind::MachineVariantCtor { .. }
+            | HirExprKind::RecordCloneCall { .. } => true,
+            // A string-producing concat/interpolation allocates a fresh buffer;
+            // a bare string `Literal` is excluded above by being a non-producer
+            // arm (it interns a static — freeing it is unsound).
+            HirExprKind::Binary { .. } | HirExprKind::Unary { .. } => {
+                matches!(ty, ResolvedTy::String)
+            }
+            _ => false,
+        };
+        is_fresh_producer.then_some(ty)
+    }
     /// #2648 preflight admission classifier — pure HIR, run at the TOP of every
     /// call-scrutinee consumer BEFORE `lower_value`/CFG allocation. Returns the
     /// admission token the from-call owner mint and the #2523 origin consume, or

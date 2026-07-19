@@ -11,7 +11,7 @@
 //! siblings `hew_vec_push_owned_move` / `hew_vec_set_owned_move`, which
 //! byte-transfer the element's heap into the slot without a clone (the source
 //! temp is then dead). `push` was already routed; this oracle also pins `set`,
-//! whose move sibling this lane added.
+//! whose move sibling this fix adds.
 //!
 //! ## Why a DEEP-OWNED element (not a string field)
 //!
@@ -110,7 +110,7 @@ fn push_temp_source(frames: usize) -> String {
 }
 
 /// P2 — unbound `Holder { .. }` SET per iteration over a one-element seed. The
-/// element is routed to `hew_vec_set_owned_move` (the sibling this lane added);
+/// element is routed to `hew_vec_set_owned_move` (the sibling this fix adds);
 /// `set`'s overwrite-drop frees the replaced element and the move transfers the
 /// new element's heap, so the source temp leaks nothing. Pre-fix
 /// (`hew_vec_set_owned`, COPY-IN) this leaks ~4 nodes/frame.
@@ -181,7 +181,7 @@ fn main() {\n\
 /// deep-clone COPY-IN rather than transfer the source's heap into the slot. A
 /// wrongly-routed move double-frees or reads freed heap; under the poisoned
 /// allocator triple that aborts (or scribbles) before the checksums print. These
-/// are the four shapes cross-eco review hand-verified route COPY on the fix base:
+/// are the four shapes hand-verified to route COPY on the fix base:
 ///
 /// * `setBoundLive` — a BOUND local read after `v.set(0, h)` (h still live).
 /// * `setBoundTwice` — the same bound temp fed to two sets (both COPY; the
@@ -408,7 +408,7 @@ fn vec_push_owned_temp_no_per_frame_leak_slope() {
 /// P2: an unbound `Holder { .. }` SET per iteration must not leak — the fresh
 /// materialised element is routed to `hew_vec_set_owned_move`. Reverting the set
 /// routing (or the runtime move sibling) fails this by ~188 nodes: this is the
-/// hole the lane closed, and the fixture whose absence let it ship.
+/// hole the fix closes, and the fixture whose absence let it ship.
 #[test]
 fn vec_set_owned_temp_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("set_temp", set_temp_source, LOW_FRAMES, HIGH_FRAMES);
@@ -459,7 +459,7 @@ fn vec_element_store_copy_shapes_run_clean_under_malloc_scribble() {
 /// local read after, the same bound temp set twice, a closure-captured value, and
 /// a by-value param embedded in a construction); routing any to move double-frees
 /// or reads transferred-out heap, which aborts or scribbles here. Guards the
-/// move-in `set` sibling this lane added against a future unsafe widening.
+/// move-in `set` sibling this fix adds against a future unsafe widening.
 #[test]
 fn vec_set_copy_shapes_run_clean_under_malloc_scribble() {
     require_codegen();

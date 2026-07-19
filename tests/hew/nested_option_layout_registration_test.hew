@@ -1,0 +1,122 @@
+//! Nested field-type layout registration must derive from a constructed
+//! record's TYPE STRUCTURE, not from a live value of the inner type being
+//! lowered (#2746).
+//!
+//! A record with a transitively-nested `Option<…>` / `Result<…>` / generic
+//! user-enum field, constructed while NO live path ever constructs or matches
+//! that inner enum, must still compile: the nested `Option$$string` /
+//! `Result$$i64$string` / `Box$$Color` `EnumLayout` is registered from the
+//! constructed record's field structure, upstream of the actor-state /
+//! value-class classifier.
+//!
+//! Before the fix this failed closed with:
+//!   `could not resolve RecordLayout for nested user record Option
+//!    (record layouts must precede actor layouts in lower_hir_module)`
+//! because the inner enum layout was only ever registered as a side effect of
+//! a live `Some`/`None`/match on that Option — which these programs never hit.
+//!
+//! Teeth: the `*_unexercised_*` tests preserve the exact defect trigger (the
+//! inner enum is NEVER exercised) and assert exact structural values; the
+//! `exercised_*` test pins the already-working matched-Option path so the fix
+//! does not perturb it.
+
+import std::testing;
+
+// ── SF2-shape: transitively-nested `Option<string>`, never exercised. ──
+type CSlot {
+    generation: i64;
+    value: Option<string>;
+}
+
+type CArena {
+    slots: Vec<CSlot>;
+    free: Vec<i64>;
+}
+
+fn cnew() -> CArena {
+    CArena { slots: Vec::new(), free: Vec::new() }
+}
+
+#[test]
+fn constructs_record_with_unexercised_nested_option_field() {
+    // Construct the outer record but NEVER build or match the nested Option.
+    let a: CArena = cnew();
+    // Assert exact structural values without touching the Option field, so the
+    // present-but-unexercised trigger is preserved.
+    testing.assert_eq(a.slots.len(), 0);
+    testing.assert_eq(a.free.len(), 0);
+}
+
+// ── Nested-enum coverage: `Result<i64, string>`, never exercised. ──
+type RSlot {
+    code: i64;
+    outcome: Result<i64, string>;
+}
+
+type RBox {
+    slots: Vec<RSlot>;
+}
+
+fn rnew() -> RBox {
+    RBox { slots: Vec::new() }
+}
+
+#[test]
+fn constructs_record_with_unexercised_nested_result_field() {
+    let b: RBox = rnew();
+    testing.assert_eq(b.slots.len(), 0);
+}
+
+// ── Nested generic-enum-of-user-enum: `Option<Colour>`, never exercised. ──
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+type Pixel {
+    id: i64;
+    tint: Option<Colour>;
+}
+
+type Canvas {
+    pixels: Vec<Pixel>;
+}
+
+fn canvas_new() -> Canvas {
+    Canvas { pixels: Vec::new() }
+}
+
+#[test]
+fn constructs_record_with_unexercised_nested_generic_enum_field() {
+    let c: Canvas = canvas_new();
+    testing.assert_eq(c.pixels.len(), 0);
+}
+
+// ── Regression pin: the matched-Option path still round-trips its value. ──
+type XSlot {
+    generation: i64;
+    value: Option<string>;
+}
+
+type XArena {
+    slots: Vec<XSlot>;
+}
+
+fn xnew() -> XArena {
+    XArena { slots: Vec::new() }
+}
+
+#[test]
+fn exercised_nested_option_field_roundtrips_value() {
+    let a: XArena = xnew();
+    a.slots.push(XSlot { generation: 0, value: Some("hello") });
+    let got = match a.slots.get(0) {
+        Some(slot) => match slot.value {
+            Some(v) => v,
+            None => "MISS",
+        },
+        None => "NONE",
+    };
+    testing.assert_eq_str(got, "hello");
+}

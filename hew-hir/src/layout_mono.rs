@@ -742,6 +742,13 @@ impl Discovery<'_> {
     ) {
         let substituted = substitute_ty(ty, subst);
         let mut worklist = vec![substituted];
+        // Guards the type-structure descent (below) against unbounded recursion
+        // on a recursive type shape (`type Node { next: Option<Node> }`). Keyed
+        // by the mangled instantiation name (bare name for a monomorphic type),
+        // so each distinct shape's fields/variants are enqueued at most once per
+        // `visit_ty` call. Registration itself is separately deduped by
+        // `seen_records`/`seen_enums`, so this guard never suppresses a layout.
+        let mut expanded: HashSet<String> = HashSet::new();
         while let Some(t) = worklist.pop() {
             // Enqueue nested args first so `Box<Pair<i64,bool>>` reaches
             // through both `Box<...>` and `Pair<i64,bool>`.
@@ -750,10 +757,18 @@ impl Discovery<'_> {
                 continue;
             };
             if args.is_empty() {
-                // A bare name is either a monomorphic type (no per-instantiation
-                // layout needed) or a residual abstract symbol. A residual is
-                // caught when it appears *as an arg* of a generic instantiation
-                // below; a top-level bare name is never a generic-layout site.
+                // A bare name is either a monomorphic type or a residual abstract
+                // symbol. A residual is caught when it appears *as an arg* of a
+                // generic instantiation below. A monomorphic named type needs no
+                // per-instantiation layout of its own, but it may carry a generic
+                // FIELD (`type CSlot { value: Option<string> }`) whose layout is
+                // registered ONLY from the constructed type's structure — never
+                // from a live value if that field is never exercised. Descend
+                // into its declared field/variant types so the nested
+                // `Option<string>` instantiation is discovered. A name that is
+                // not a user record/enum decl (a type-param, `Vec`, …) is a
+                // no-op descent.
+                self.enqueue_decl_fields(name, &[], &mut worklist, &mut expanded);
                 continue;
             }
             // Classify the args once. An instantiation is registrable only
@@ -790,7 +805,85 @@ impl Discovery<'_> {
                 }
                 self.register_enum(name, decl, args, span);
             }
+            // Descend into this instantiation's SUBSTITUTED field/variant types
+            // so a nested generic field reached only through structure — e.g.
+            // `Slot<string>`'s `value: Option<string>` → `Option$$string` — is
+            // discovered even when no live value of the inner type is lowered.
+            self.enqueue_decl_fields(name, args, &mut worklist, &mut expanded);
         }
+    }
+
+    /// Enqueue the (substituted) declared field / variant types of the user
+    /// record or enum `name` instantiated with `args` onto `worklist`, so the
+    /// discovery walk descends through the constructed type's structure. This is
+    /// what lets a present-but-unexercised generic field type (`Option<string>`
+    /// inside a constructed record whose Option is never a live value) register
+    /// its layout from TYPE STRUCTURE rather than from a value-lowering side
+    /// effect. `args` is empty for a monomorphic type (substitution is then the
+    /// identity). `expanded` dedups by mangled/bare name to bound recursion on a
+    /// recursive type shape. A `name` that resolves to no user record/enum decl
+    /// (a builtin like `Vec`, or a type-parameter symbol) is a no-op.
+    fn enqueue_decl_fields(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+        worklist: &mut Vec<ResolvedTy>,
+        expanded: &mut HashSet<String>,
+    ) {
+        let dedup_key = if args.is_empty() {
+            name.to_string()
+        } else {
+            mangle(name, args)
+        };
+        if !expanded.insert(dedup_key) {
+            return;
+        }
+        let substituted_fields: Vec<ResolvedTy> = if let Some(decl) = self.record_decls.get(name) {
+            if args.len() != decl.type_params.len() {
+                return;
+            }
+            decl.fields
+                .iter()
+                .map(|(_, fty)| {
+                    crate::monomorph::substitute_type_params(fty, &decl.type_params, args)
+                })
+                .collect()
+        } else if let Some(decl) = self.enum_decls.get(name) {
+            if args.len() != decl.type_params.len() {
+                return;
+            }
+            decl.variants
+                .iter()
+                .flat_map(|variant| {
+                    variant
+                        .field_tys()
+                        .into_iter()
+                        .map(|fty| {
+                            crate::monomorph::substitute_type_params(&fty, &decl.type_params, args)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        } else {
+            // Not a user record/enum decl (builtin container, type-param
+            // symbol, …): nothing to descend into.
+            return;
+        };
+        // Do NOT descend through a recursive-polymorphic-diverging instantiation.
+        // `register_record` / `register_enum` reject such an instantiation with
+        // `RecursiveGenericTypeUnsupported` and register no layout; its
+        // substituted fields reference the same origin with strictly-larger args
+        // (`Grow<i64>` → field `Grow<Grow<i64>>`), so seeding them would drive
+        // unbounded layout expansion the origin path never performs. Match that
+        // guard here so structural descent registers exactly the layouts the
+        // (bounded) type graph admits — no more.
+        if substituted_fields
+            .iter()
+            .any(|fty| contains_recursive_polymorphic_self(fty, name, args))
+        {
+            return;
+        }
+        worklist.extend(substituted_fields);
     }
 
     /// Classify a generic instantiation's type arguments for registration.

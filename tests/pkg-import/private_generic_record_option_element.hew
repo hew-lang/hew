@@ -1,0 +1,24 @@
+// The Arena acceptance shape (#2755): a module-PRIVATE generic `Slot<T>` whose
+// field is a nested `Option<T>`, used as the element of a pub `Arena<T>`'s
+// `Vec<Slot<T>>`, monomorphised across a module boundary to a `string` payload.
+//
+// Beyond the bare private-record discovery, this exercises the nested
+// `Option<T>` reached only through the private record's TYPE STRUCTURE (Bug A
+// #2746 discipline): both `Slot$$string` and `Option$$string` must register
+// from the substituted `Arena::insert$$string` body. The heap-owning `string`
+// payload rides inside the private slot's `Option` and is read back and matched
+// at the call site, proving the full round-trip incl. owned-payload release.
+//
+// Harness verb: hew run
+// Expected: the stored payload of the second insertion ("world").
+import hew::privarena;
+
+fn main() {
+    let arena: privarena.Arena<string> = privarena.new();
+    arena.insert("hello");
+    arena.insert("world");
+    match arena.value_at(1) {
+        Some(v) => println(v),
+        None => println("empty"),
+    }
+}

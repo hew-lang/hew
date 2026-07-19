@@ -1,0 +1,6 @@
+[package]
+name = "hew::privslot"
+version = "0.1.0"
+description = "Module-private generic record used as a Vec element behind a pub API (#2755)"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

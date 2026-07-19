@@ -1,0 +1,6 @@
+[package]
+name = "hew::privarena"
+version = "0.1.0"
+description = "Arena shape: private generic Slot<T> with nested Option<T> behind a pub Arena<T> (#2755)"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

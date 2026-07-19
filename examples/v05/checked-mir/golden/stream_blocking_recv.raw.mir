@@ -759,6 +759,7 @@ fn fs$read(string) -> string [conv=default]
   bb16:
     _23 = call string_concat(_18, _22) -> bb17
   bb17:
+    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(229) ty=string
     drop _22 ty=string fn=release(hew_string_drop)
     drop _18 ty=string fn=release(hew_string_drop)
     call panic(_23) -> bb18
@@ -778,6 +779,7 @@ fn fs$read(string) -> string [conv=default]
   bb22:
     _30 = call string_concat(_28, _29) -> bb23
   bb23:
+    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(252) ty=string
     drop _29 ty=string fn=release(hew_string_drop)
     drop _28 ty=string fn=release(hew_string_drop)
     call panic(_30) -> bb24

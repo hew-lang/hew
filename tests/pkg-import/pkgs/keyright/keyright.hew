@@ -1,0 +1,17 @@
+//! Two-module same-name generic known-gap reject pin (#2653), right module.
+//!
+//! Declares a generic value record `Key<T>` whose sole field `v` is `string`
+//! — the same bare name as `hew::keyleft`'s `Key<T>` (whose `v` is `i64`).
+//! Both monomorphise to the bare mangled symbol `Key$$i32`; the two distinct
+//! layouts collide on identity (#2653). The collision fails CLOSED; see the
+//! reject pin in `run.sh`.
+
+/// Generic value record with a string payload field.
+pub type Key<T> {
+    v: string;
+}
+
+/// Build a `Key<T>` from a string.
+pub fn mk<T>(x: string) -> Key<T> {
+    Key { v: x }
+}

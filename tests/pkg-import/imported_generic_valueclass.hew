@@ -13,6 +13,12 @@
 // use-site) and a single-file generic `Key<T>` (bare origin everywhere) both
 // already pass — only imported-origin + generic-mono hits the qualified key.
 //
+// This is the SINGLE-module case (#2744, fixed here). The TWO-module case —
+// two imported modules each defining a same-named generic `Key<T>` — is a
+// separate qualified-mono-identity gap (#2653, deferred): both collapse to the
+// bare mangled symbol and collide. That collision fails CLOSED (memory-safe);
+// see the `two_module_same_generic_valueclass_reject` known-gap pin in run.sh.
+//
 // Harness verb: hew run
 // Expected: the field read returns the constructed index (7).
 import hew::keyed;

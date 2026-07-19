@@ -1,0 +1,6 @@
+[package]
+name = "hew::keyright"
+version = "0.1.0"
+description = "Two-module same-name generic reject pin (#2653): Key<T> with a string payload field"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

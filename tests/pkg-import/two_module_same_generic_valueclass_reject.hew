@@ -1,0 +1,31 @@
+// KNOWN-GAP REJECT PIN (#2653) — NOT a desired-behaviour test.
+//
+// Two imported modules each define a generic value record named `Key<T>` with
+// DIFFERENT payload types (`keyleft.Key<T>.v: i64` vs `keyright.Key<T>.v:
+// string`). Both monomorphise to the bare mangled symbol `Key$$i32`, so the two
+// distinct layouts collide on identity. This is the qualified-mono-identity gap
+// tracked by #2653 (layout mangling keys on the bare origin name, not the
+// module-qualified definition identity).
+//
+// Contrast the SINGLE-module case (`imported_generic_valueclass.hew`), which is
+// #2744 and is FIXED: an imported generic value record with no same-named twin
+// resolves its BitCopy value class correctly and runs.
+//
+// This pin asserts the two-module collision fails CLOSED — the compiler REJECTS
+// the program at the codegen-front slot-type gate (`E_CODEGEN_FRONT_FAIL_CLOSED`,
+// the RecordInit/RecordFieldLoad slot-type mismatch), never a silent miscompile.
+// It proves the collision is memory-safe, not that the rejection is desirable.
+// When #2653 lands the qualified-identity reshape (layout mangling + MIR keying
+// + codegen symbols), this program becomes VALID and both `Key<T>`s resolve to
+// their own module's instantiation — at which point this reject pin flips to a
+// compile+run oracle. Keyed in `run.sh` under the #2653 known-gap reject block.
+import hew::keyleft;
+
+import hew::keyright;
+
+fn main() {
+    let a: keyleft.Key<i32> = keyleft.mk(12345);
+    let b: keyright.Key<i32> = keyright.mk("hello");
+    println(a.v);
+    println(b.v);
+}

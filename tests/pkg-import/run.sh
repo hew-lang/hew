@@ -871,6 +871,39 @@ if grep -q "ResourceBoundaryParamMustConsume" <<<"${imported_trait_ok_out}"; the
 fi
 echo "PASS ${imported_trait_ok}"
 
+# KNOWN-GAP REJECT PIN (#2653) — the boundary of the #2744 fix, NOT a
+# desired-behaviour test.
+#
+# The #2744 fix (imported single-module generic value record → resolves its
+# BitCopy value class; see `imported_generic_valueclass` above) closes the
+# common case. Its boundary is the two-module collision: TWO imported modules
+# each defining a generic value record named `Key<T>` with DIFFERENT payload
+# types (`keyleft.Key<T>.v: i64` vs `keyright.Key<T>.v: string`) both
+# monomorphise to the bare mangled symbol `Key$$i32`, so the two distinct
+# layouts collide on identity. That is the qualified-mono-identity gap tracked
+# by #2653 (layout mangling keys on the bare origin name, not the
+# module-qualified definition identity), a cross-layer reshape out of scope for
+# #2744.
+#
+# This pin asserts the collision fails CLOSED: `hew check` REJECTS the program
+# at the codegen-front slot-type gate (`E_CODEGEN_FRONT_FAIL_CLOSED`), proving
+# the collision is memory-safe (no silent miscompile / type confusion), never
+# that the rejection is desirable. When #2653 lands, this program becomes VALID
+# (each `Key<T>` resolves to its own module's instantiation) and this pin flips
+# to a compile+run oracle — update it then, do not delete it.
+two_module_generic_reject="two_module_same_generic_valueclass_reject"
+two_module_generic_reject_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${two_module_generic_reject}.hew" 2>&1)" && {
+  echo "FAIL ${two_module_generic_reject}: hew check unexpectedly succeeded — the #2653 two-module same-name generic collision must fail closed until #2653 lands" >&2
+  echo "${two_module_generic_reject_out}" >&2
+  exit 1
+}
+if ! grep -q "E_CODEGEN_FRONT_FAIL_CLOSED" <<<"${two_module_generic_reject_out}"; then
+  echo "FAIL ${two_module_generic_reject}: expected the codegen-front slot-type fail-closed diagnostic (#2653 known gap)" >&2
+  echo "${two_module_generic_reject_out}" >&2
+  exit 1
+fi
+echo "PASS ${two_module_generic_reject}"
+
 # Memory-safety pass on the ask-reply + explicit-release path (macOS only:
 # MallocScribble/MallocGuardEdges are libmalloc features).
 if [[ "$(uname -s)" == "Darwin" ]]; then

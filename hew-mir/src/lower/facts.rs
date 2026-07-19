@@ -638,6 +638,88 @@ fn force_consume_method_nonreceiver_resource_params(
         }
     }
 }
+/// Collect every `impl`/trait method whose PARAM 0 is a by-value `self`
+/// receiver of a NON-resource type — the receiver slot the borrow-site
+/// collector records for Shape A of #2753 so the caller keeps a value-receiver
+/// record/collection's scope-exit drop.
+///
+/// Receiver identity follows the checker's rule (mirrors the receiver-arity
+/// split in `force_consume_method_nonreceiver_resource_params` /
+/// `is_receiver_param`): param 0 is the receiver iff it is named `self` OR its
+/// type is the impl Self type (the stdlib writes `fn close(child: Child)`).
+///
+/// Two exclusions keep the caller-side receiver drop fail-closed against a
+/// double-free:
+///   * a `#[resource]` receiver — a `close`-style `self` reads BORROW in the
+///     body scan yet CONSUMES at the call site via terminal-consume
+///     registration (`raii-null-after-move`, LESSONS #19); the destructor
+///     consume is invisible to `param_consumed_in_body`, so recording it would
+///     free the receiver at BOTH the caller and the callee.
+///   * an associated/static function (param 0 is NOT a receiver) — its first
+///     argument keeps today's move-in-and-callee-drops posture; the ratified
+///     borrow-default surface is free-function value params and method
+///     receivers, not method non-receiver args.
+///
+/// Heap-ownership is intentionally NOT gated here: the recording only marks the
+/// receiver's `SiteId`, and the downstream per-type sole-owner prover
+/// (`derive_{record,tuple,enum}_composite_drop_allowed` /
+/// `caller_borrowed_temp_arg_owned_ty`) decides the actual drop exactly as for
+/// a free-fn positional borrow arg — a non-heap-owning receiver yields no drop.
+/// Consuming the layout-blind checker verdict here and deferring the structural
+/// question to the one heap-ownership authority avoids re-deriving it
+/// (`checker-authority`).
+fn collect_borrow_receiver_methods(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    items: &[HirItem],
+    methods: &HashSet<hew_hir::ItemId>,
+    type_classes: &hew_hir::TypeClassTable,
+) -> HashSet<hew_hir::ItemId> {
+    let method_self_type: HashMap<&str, &str> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Impl(b) => Some(
+                b.method_symbols
+                    .iter()
+                    .map(|sym| (sym.as_str(), b.self_type_name.as_str())),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    fns.iter()
+        .filter(|(id, _)| methods.contains(id))
+        .filter_map(|(&id, &f)| {
+            let param0 = f.params.first()?;
+            let is_receiver = param0.name == "self"
+                || method_self_type.get(f.name.as_str()).is_some_and(
+                    |self_ty| matches!(&param0.ty, ResolvedTy::Named { name, .. } if name == self_ty),
+                );
+            (is_receiver && !is_user_resource_ty(&param0.ty, type_classes)).then_some(id)
+        })
+        .collect()
+}
+/// A method receiver earns the caller-side borrow-drop only when it is a WHOLE
+/// owned operand: a bare binding reference (a named `let`/owned local — the
+/// #2735 `proven_borrow_whole_arg_locals` preserve path) or a fresh
+/// materialised producer temporary (the #2743 caller-side temp mint). A
+/// projection (`a.b.touch()`), an index/slice, a call result, or any other
+/// alias is EXCLUDED: its drop belongs to the base owner, and `base_local` of a
+/// projection base would misattribute the preserve to a live owner
+/// (leak-not-double-free). Mirrors `caller_borrowed_temp_arg_owned_ty`'s
+/// fresh-producer allowlist and `proven_borrow_whole_arg_locals`'s whole-arg
+/// requirement.
+fn receiver_is_whole_owned_operand(receiver: &HirExpr) -> bool {
+    matches!(
+        &receiver.kind,
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(_),
+            ..
+        } | HirExprKind::StructInit { .. }
+            | HirExprKind::TupleLiteral { .. }
+            | HirExprKind::MachineVariantCtor { .. }
+            | HirExprKind::RecordCloneCall { .. }
+    )
+}
 /// Prove borrow-only direct-call parameters across every free function. This
 /// broader summary is consumed only by collection escape analysis; it does not
 /// change call-site move intent or register non-resource parameters for
@@ -645,6 +727,7 @@ fn force_consume_method_nonreceiver_resource_params(
 fn compute_call_param_consumption(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     methods: &HashSet<hew_hir::ItemId>,
+    receiver_methods: &HashSet<hew_hir::ItemId>,
     resource_param_consume: &HashMap<(hew_hir::ItemId, usize), bool>,
 ) -> HashMap<(hew_hir::ItemId, usize), bool> {
     // Seed every parameter as BORROW, except explicit `consume` parameters and
@@ -673,6 +756,7 @@ fn compute_call_param_consumption(
                     let cx = ScanCtx {
                         consume: &consume,
                         methods,
+                        receiver_methods,
                     };
                     param_consumed_in_body(&f.body, param.id, &cx)
                 };
@@ -760,6 +844,13 @@ pub(super) fn compute_param_ownership(
     // move intent and is never relaxed by the borrow downgrade; associated/static
     // `impl` functions are captured here too.
     let methods = collect_method_item_ids(fns, items);
+    // Shape A of #2753: the subset of `methods` whose param 0 is a by-value
+    // NON-resource `self` receiver — the receiver slot the borrow-site collector
+    // records so the caller keeps a value-receiver record/collection's
+    // scope-exit drop. Excludes resource receivers (double-free trap) and
+    // associated/static functions (no receiver). Consulted only in the
+    // `proven_borrow_arg_sites` walk.
+    let receiver_methods = collect_borrow_receiver_methods(fns, items, &methods, type_classes);
     // Force-consume non-receiver resource params of `impl`/trait methods so the
     // callee owns and drops them (the borrow collector skips method-call args).
     force_consume_method_nonreceiver_resource_params(
@@ -786,6 +877,7 @@ pub(super) fn compute_param_ownership(
                     let cx = ScanCtx {
                         consume: &param_consume,
                         methods: &methods,
+                        receiver_methods: &receiver_methods,
                     };
                     param_consumed_in_body(&f.body, param.id, &cx)
                 };
@@ -799,7 +891,8 @@ pub(super) fn compute_param_ownership(
             break;
         }
     }
-    let call_param_consume = compute_call_param_consumption(fns, &methods, &param_consume);
+    let call_param_consume =
+        compute_call_param_consumption(fns, &methods, &receiver_methods, &param_consume);
     // With the verdict final, collect every free-call argument `SiteId` whose
     // target parameter is a resource BORROW. The arg's `Use` is then emitted
     // `Read` instead of the HIR-over-stamped `Consume`, so the caller keeps the
@@ -822,6 +915,7 @@ pub(super) fn compute_param_ownership(
         &ScanCtx {
             consume: &param_consume,
             methods: &methods,
+            receiver_methods: &receiver_methods,
         },
     );
     let proven_borrow_arg_sites = collect_module_borrow_arg_sites(
@@ -829,6 +923,7 @@ pub(super) fn compute_param_ownership(
         &ScanCtx {
             consume: &call_param_consume,
             methods: &methods,
+            receiver_methods: &receiver_methods,
         },
     );
     ParamOwnershipFacts {
@@ -1284,6 +1379,38 @@ fn collect_borrow_arg_sites_in_expr(
                     for (j, arg) in args.iter().enumerate() {
                         if pc.consume.get(&(id, j)).copied() == Some(false) {
                             out.insert(arg.site);
+                        }
+                    }
+                } else if pc.receiver_methods.contains(&id) {
+                    // Shape A of #2753: a value-receiver non-consuming method
+                    // (`p.touch()`) lowers to `Call { callee: Item(m), args:
+                    // [recv, ..] }`. The receiver (arg 0) is a BORROW — the
+                    // callee reads `self` and releases nothing — so record its
+                    // `SiteId` and the caller keeps the receiver record's
+                    // scope-exit drop, converging method dispatch with the
+                    // free-fn positional borrow path on ONE drop authority.
+                    //
+                    // Gated identically to the free-fn arm on `pc.consume ==
+                    // Some(false)` (the exactly-once boundary): a method that
+                    // CONSUMES `self` — returns `self`, moves `self.field` out,
+                    // stores/sends/captures/forwards it — is flipped to CONSUME
+                    // by the `compute_call_param_consumption` fixpoint, so its
+                    // receiver is absent here → not recorded → the callee owns
+                    // and drops it (mutually exclusive). Because a non-resource
+                    // composite receiver is absent from the resource-only
+                    // `param_consume` map, this fires ONLY in the
+                    // `proven_borrow_arg_sites` walk (which passes
+                    // `call_param_consume`), never in the intent-downgrade
+                    // `borrow_arg_sites` walk. Only a whole owned local / fresh
+                    // producer receiver is admitted (a projection/alias fails
+                    // closed to leak-not-double-free). The method's non-receiver
+                    // args stay unrecorded — the borrow-default surface is the
+                    // receiver only.
+                    if let Some(receiver) = args.first() {
+                        if pc.consume.get(&(id, 0)).copied() == Some(false)
+                            && receiver_is_whole_owned_operand(receiver)
+                        {
+                            out.insert(receiver.site);
                         }
                     }
                 }

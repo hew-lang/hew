@@ -1461,7 +1461,8 @@ fn owned_vec_fn_type<'ctx>(
         // ptr hew_vec_get_owned(ptr vec, i64 index)
         "hew_vec_get_owned" => Ok(ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false)),
         // void hew_vec_set_owned(ptr vec, i64 index, ptr data)
-        "hew_vec_set_owned" => Ok(ctx
+        // void hew_vec_set_owned_move(ptr vec, i64 index, ptr data)
+        "hew_vec_set_owned" | "hew_vec_set_owned_move" => Ok(ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false)),
         // i32 hew_vec_pop_owned(ptr vec, ptr out)
@@ -1520,7 +1521,7 @@ pub(crate) fn lower_owned_vec_direct_call(
         | "hew_vec_push_owned_move"
         | "hew_vec_get_owned"
         | "hew_vec_contains_owned" => 2,
-        "hew_vec_set_owned" => 3,
+        "hew_vec_set_owned" | "hew_vec_set_owned_move" => 3,
         "hew_vec_slice_range_owned" => 3,
         "hew_vec_remove_at_owned" => 2,
         "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
@@ -1596,10 +1597,17 @@ pub(crate) fn lower_owned_vec_direct_call(
                 .build_store(dest_ptr, loaded)
                 .llvm_ctx("hew_vec_get_owned store")?;
         }
-        "hew_vec_set_owned" => {
+        // COPY-IN set (`hew_vec_set_owned`, deep-clone) and MOVE-in set
+        // (`hew_vec_set_owned_move`, byte-transfer, no clone) share an identical
+        // LLVM call shape — same `(vec, i64 index, ptr data)` signature and the
+        // same argument marshalling. Only the runtime callee differs (chosen at
+        // MIR lowering by whether the element operand is a fresh materialised
+        // owner); the runtime function name in `fv` carries the move-vs-copy
+        // discrimination, so codegen emits the identical instruction sequence.
+        "hew_vec_set_owned" | "hew_vec_set_owned_move" => {
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
-                    "hew_vec_set_owned returns unit; producer must not supply dest={d:?}"
+                    "{callee} returns unit; producer must not supply dest={d:?}"
                 )));
             }
             let index = load_int_arg(

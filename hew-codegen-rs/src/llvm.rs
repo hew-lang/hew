@@ -1311,6 +1311,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::VecSetI32
         | F::VecSetLayout
         | F::VecSetOwned
+        | F::VecSetOwnedMove
         | F::VecSliceRange(_)
         | F::VtableDispatchPanicOnOob => false,
     }

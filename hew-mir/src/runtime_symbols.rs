@@ -503,6 +503,7 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_set_i64"
         | "hew_vec_set_i8"
         | "hew_vec_set_layout"
+        | "hew_vec_set_owned_move"
         | "hew_vec_set_ptr"
         | "hew_vec_set_u16"
         | "hew_vec_set_u8"
@@ -803,6 +804,7 @@ mod tests {
         "hew_vec_set_i8",
         "hew_vec_set_layout",
         "hew_vec_set_owned",
+        "hew_vec_set_owned_move",
         "hew_vec_set_ptr",
         "hew_vec_set_str",
         "hew_vec_set_u16",
@@ -887,7 +889,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 171);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 172);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

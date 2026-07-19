@@ -553,6 +553,7 @@ pub enum RuntimeCallFamily {
     VecSetI32,
     VecSetLayout,
     VecSetOwned,
+    VecSetOwnedMove,
     VecSliceRange(VecSliceElem),
 
     // --- Trait-object dispatch diagnostics ---------------------------------
@@ -847,6 +848,7 @@ impl RuntimeCallFamily {
             Self::VecSetI32 => "hew_vec_set_i32",
             Self::VecSetLayout => "hew_vec_set_layout",
             Self::VecSetOwned => "hew_vec_set_owned",
+            Self::VecSetOwnedMove => "hew_vec_set_owned_move",
             Self::VecSliceRange(VecSliceElem::Bytesize) => "hew_vec_slice_range_bytesize",
             Self::VecSliceRange(VecSliceElem::F64) => "hew_vec_slice_range_f64",
             Self::VecSliceRange(VecSliceElem::I32) => "hew_vec_slice_range_i32",
@@ -1138,6 +1140,7 @@ impl RuntimeCallFamily {
             "hew_vec_set_i32" => Self::VecSetI32,
             "hew_vec_set_layout" => Self::VecSetLayout,
             "hew_vec_set_owned" => Self::VecSetOwned,
+            "hew_vec_set_owned_move" => Self::VecSetOwnedMove,
             "hew_vec_slice_range_bytesize" => Self::VecSliceRange(VecSliceElem::Bytesize),
             "hew_vec_slice_range_f64" => Self::VecSliceRange(VecSliceElem::F64),
             "hew_vec_slice_range_i32" => Self::VecSliceRange(VecSliceElem::I32),
@@ -1192,6 +1195,7 @@ impl RuntimeCallFamily {
                 | Self::VecSetI32
                 | Self::VecSetLayout
                 | Self::VecSetOwned
+                | Self::VecSetOwnedMove
         )
     }
 
@@ -1221,6 +1225,7 @@ impl RuntimeCallFamily {
                 | Self::VecSetI32
                 | Self::VecSetLayout
                 | Self::VecSetOwned
+                | Self::VecSetOwnedMove
                 | Self::VecSliceRange(_)
         )
     }
@@ -1373,6 +1378,7 @@ impl RuntimeCallFamily {
             | Self::VecPushOwnedMove
             | Self::VecGet(VecGetElem::Owned)
             | Self::VecSetOwned
+            | Self::VecSetOwnedMove
             | Self::VecPopOwned
             | Self::VecRemoveAtOwned
             | Self::VecCloneOwned
@@ -1674,6 +1680,7 @@ impl RuntimeCallFamily {
             | F::VecSetI32
             | F::VecSetLayout
             | F::VecSetOwned
+            | F::VecSetOwnedMove
             | F::VecSliceRange(_)
             | F::VtableDispatchPanicOnOob => None,
         }
@@ -2124,6 +2131,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::VecSetI32
             | F::VecSetLayout
             | F::VecSetOwned
+            | F::VecSetOwnedMove
     )
 }
 
@@ -2241,10 +2249,11 @@ mod tests {
             F::VecSetI32,
             F::VecSetLayout,
             F::VecSetOwned,
+            F::VecSetOwnedMove,
         ]
         .into_iter()
         .collect();
-        assert_eq!(expected.len(), 25);
+        assert_eq!(expected.len(), 26);
 
         let actual: HashSet<RuntimeCallFamily> = all_runtime_call_families()
             .into_iter()

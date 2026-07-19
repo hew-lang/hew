@@ -1203,8 +1203,9 @@ pub(super) fn derive_enum_composite_drop_allowed(
             // exempts ONLY the whole-composite alias escape below; a pushed
             // PAYLOAD BINDER (a matched inner payload) still excludes its
             // composite via the payload-escape scan, because that discharge path
-            // double-frees if relaxed. The MOVE variant (`hew_vec_push_owned_move`)
-            // is deliberately NOT exempt — it consumes its source.
+            // double-frees if relaxed. The MOVE variants
+            // (`hew_vec_push_owned_move` / `hew_vec_set_owned_move`) are
+            // deliberately NOT exempt — they consume their source.
             let copy_in_elem_store = matches!(instr, Instr::CallRuntimeAbi(call)
                 if crate::runtime_symbols::callee_ownership_contract(call.symbol())
                     .is_vec_copy_in_element_store());
@@ -1797,9 +1798,9 @@ pub(super) fn derive_owned_record_drop_allowed(
             // record keeps sole ownership of the ORIGINAL field and must retain
             // its composite drop — excluding it leaks the original buffer
             // (#2721; the container's element drop-thunk owns the disjoint
-            // clone). The MOVE variant (`hew_vec_push_owned_move`) is
-            // deliberately NOT exempt — it consumes its source, which must then
-            // be excluded.
+            // clone). The MOVE variants (`hew_vec_push_owned_move` /
+            // `hew_vec_set_owned_move`) are deliberately NOT exempt — they
+            // consume their source, which must then be excluded.
             let copy_in_elem_store = matches!(instr, Instr::CallRuntimeAbi(call)
                 if crate::runtime_symbols::callee_ownership_contract(call.symbol())
                     .is_vec_copy_in_element_store());

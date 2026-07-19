@@ -3817,6 +3817,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::VecSetI32
         | F::VecSetLayout
         | F::VecSetOwned
+        | F::VecSetOwnedMove
         | F::VtableDispatchPanicOnOob => {
             return Err(CodegenError::FailClosed(format!(
                 "Instr::CallRuntimeAbi(symbol={symbol:?}, family={:?}): codegen has no \

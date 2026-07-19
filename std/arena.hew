@@ -61,3 +61,54 @@ pub fn new<T>() -> Arena<T> {
     let free: Vec<i64> = Vec::new();
     Arena { slots: slots, free: free }
 }
+
+impl<T> Arena<T> {
+    /// Insert `value` and return a fresh `Key<T>` naming it.
+    ///
+    /// Reuses a freed slot when one is available (issuing the slot's current,
+    /// already-bumped generation); otherwise appends a new slot at generation
+    /// zero. O(1).
+    fn insert(self, value: T) -> Key<T> {
+        if self.free.is_empty() {
+            self.slots.push(Slot { generation: 0, value: Some(value) });
+            Key { index: self.slots.len() - 1, generation: 0 }
+        } else {
+            let index = self.free.pop();
+            let generation = match self.slots.get(index) {
+                Some(slot) => slot.generation,
+                None => 0,
+            };
+            self.slots.set(index, Slot { generation: generation, value: Some(value) });
+            Key { index: index, generation: generation }
+        }
+    }
+
+    /// Return the value named by `key`, or `None` if the key is stale.
+    ///
+    /// Fails closed: a key whose slot was removed (or whose generation no
+    /// longer matches after slot reuse) returns `None`, as does an
+    /// out-of-range key.
+    fn get(self, key: Key<T>) -> Option<T> {
+        match self.slots.get(key.index) {
+            Some(slot) => match slot.value {
+                Some(value) => if slot.generation == key.generation {
+                    Some(value)
+                } else {
+                    None
+                },
+                None => None,
+            },
+            None => None,
+        }
+    }
+
+    /// The number of live values in the arena.
+    fn len(self) -> i64 {
+        self.slots.len() - self.free.len()
+    }
+
+    /// Return `true` if `key` still names a live value.
+    fn contains(self, key: Key<T>) -> bool {
+        self.get(key).is_some()
+    }
+}

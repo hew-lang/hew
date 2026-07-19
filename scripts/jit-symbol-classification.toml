@@ -1507,3 +1507,26 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free_owned"
 discharge-depth = "deep"
+
+# hew-runtime/src/vec.rs:2641-2658 byte-moves the element into a fresh slot with no
+# clone; the source temp is dead after the call. params: Vec receiver (borrow),
+# element data ptr (consume — its heap transfers to the Vec slot). The Vec then
+# owns the element; the slot is released by hew_vec_free_owned, so no per-call
+# result to discharge.
+[[ownership.contracts]]
+symbol = "hew_vec_push_owned_move"
+result = "none"
+params = ["borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/vec.rs:2820-2843 drops the replaced element, then byte-moves the
+# new element into the slot with no clone; the source temp is dead after the call.
+# params: Vec receiver (borrow), index i64 (borrow — a by-value scalar), element
+# data ptr (consume — its heap transfers to the Vec slot).
+[[ownership.contracts]]
+symbol = "hew_vec_set_owned_move"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"

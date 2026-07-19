@@ -102,6 +102,28 @@ impl<T> Arena<T> {
         }
     }
 
+    /// Remove and return the value named by `key`.
+    ///
+    /// On a live match: bumps the slot's generation, frees the slot, and
+    /// returns `Some(value)`. On a stale, already-removed, or out-of-range
+    /// key: returns `None`. Double-remove is idempotent — the second call
+    /// returns `None`.
+    fn remove(self, key: Key<T>) -> Option<T> {
+        match self.slots.get(key.index) {
+            Some(slot) => match slot.value {
+                Some(value) => if slot.generation == key.generation {
+                    self.slots.set(key.index, Slot { generation: slot.generation + 1, value: None });
+                    self.free.push(key.index);
+                    Some(value)
+                } else {
+                    None
+                },
+                None => None,
+            },
+            None => None,
+        }
+    }
+
     /// The number of live values in the arena.
     fn len(self) -> i64 {
         self.slots.len() - self.free.len()

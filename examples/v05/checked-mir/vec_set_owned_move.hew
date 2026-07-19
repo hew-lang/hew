@@ -1,0 +1,24 @@
+// MIR-corpus fixture: owned-element `Vec::set` move-in.
+//
+// Pins `hew_vec_set_owned_move`: a fresh, unbound aggregate rvalue used as a
+// `Vec::set` element source moves its owned heap into the slot (the slot's
+// prior element is dropped, the source temp is not). A DEEP-OWNED element (a
+// record carrying a nested `Vec<string>`) is required — a refcount-shared
+// string/Option field would not route to the move sibling.
+record Holder {
+    items: Vec<string>
+}
+
+fn mkItems() -> Vec<string> {
+    let xs: Vec<string> = Vec::new();
+    xs.push("deep-elem-a");
+    xs.push("deep-elem-b");
+    return xs;
+}
+
+fn main() {
+    var v: Vec<Holder> = Vec::new();
+    v.push(Holder { items: mkItems() });
+    v.set(0, Holder { items: mkItems() });
+    println(v.len());
+}

@@ -55,7 +55,7 @@ pub type Arena<T> {
 /// Create a new, empty arena.
 ///
 /// The element type is inferred from the binding, e.g.
-/// `let store: Arena<i64> = arena.new();`.
+/// `let store: arena.Arena<i64> = arena.new();`.
 pub fn new<T>() -> Arena<T> {
     let slots: Vec<Slot<T>> = Vec::new();
     let free: Vec<i64> = Vec::new();
@@ -82,7 +82,6 @@ impl<T> Arena<T> {
             Key { index: index, generation: generation }
         }
     }
-
     /// Return the value named by `key`, or `None` if the key is stale.
     ///
     /// Fails closed: a key whose slot was removed (or whose generation no
@@ -101,7 +100,6 @@ impl<T> Arena<T> {
             None => None,
         }
     }
-
     /// Remove and return the value named by `key`.
     ///
     /// On a live match: bumps the slot's generation, frees the slot, and
@@ -123,12 +121,10 @@ impl<T> Arena<T> {
             None => None,
         }
     }
-
     /// The number of live values in the arena.
     fn len(self) -> i64 {
         self.slots.len() - self.free.len()
     }
-
     /// Return `true` if `key` still names a live value.
     fn contains(self, key: Key<T>) -> bool {
         self.get(key).is_some()

@@ -1,0 +1,63 @@
+//! Generational-index slotmap (`Arena<T>`).
+//!
+//! An `Arena<T>` is an owned, `Vec`-backed store that hands out stable,
+//! generation-checked handles (`Key<T>`) instead of pointers. Insert and
+//! remove are O(1); a key keeps working across unrelated mutations and fails
+//! closed once the value it named is removed, even if the slot is later
+//! reused. This is the primitive for stable references under the value model:
+//! graph/tree node stores, ECS-style component tables, interner back-stores,
+//! and handle registries.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::arena;
+//!
+//! fn main() {
+//!     let store: arena.Arena<string> = arena.new();
+//!     let key = store.insert("hello");
+//!     println(store.get(key).unwrap());   // hello
+//!     store.remove(key);
+//!     println(store.get(key).is_none());  // true
+//! }
+//! ```
+
+/// A stable, generation-checked handle into an `Arena<T>`.
+///
+/// Returned by `insert`; pass it to `get`, `remove`, or `contains`. A key
+/// stays valid until its value is removed. Once removed, the key fails
+/// closed forever — `get` returns `None` even after the slot is reused by a
+/// later `insert`, because that reuse issues a fresh key with a higher
+/// generation. The `T` tag ties a key to the arena that produced it.
+pub type Key<T> {
+    index: i64;
+    generation: i64;
+}
+
+// A slot in the backing store. `value: None` marks the slot free; the slot's
+// `generation` is bumped on each remove so every previously-issued `Key` for
+// that index mismatches. The next `insert` reusing the slot hands out the
+// already-bumped generation.
+type Slot<T> {
+    generation: i64;
+    value: Option<T>;
+}
+
+/// A generational-index slotmap with O(1) insert and remove.
+///
+/// Construct with `arena.new()`. Values are owned by the arena; accessors
+/// return `Option<T>` copies under the value model, never references.
+pub type Arena<T> {
+    slots: Vec<Slot<T>>;
+    free: Vec<i64>;
+}
+
+/// Create a new, empty arena.
+///
+/// The element type is inferred from the binding, e.g.
+/// `let store: Arena<i64> = arena.new();`.
+pub fn new<T>() -> Arena<T> {
+    let slots: Vec<Slot<T>> = Vec::new();
+    let free: Vec<i64> = Vec::new();
+    Arena { slots: slots, free: free }
+}

@@ -1,0 +1,42 @@
+//! Module-private generic record as a `Vec` element behind a pub API (#2755).
+//!
+//! `Slot<T>` is module-PRIVATE and generic, so it never becomes an emitted HIR
+//! item (the imported-module emission guard admits only pub, enum, or
+//! non-generic-struct type decls). It is used only as the element type of the
+//! pub `Store<T>`'s `Vec<Slot<T>>`. Before #2755 the consumer had no
+//! `RecordLayout` for `Slot` — the `Slot { .. }` construction dropped its type
+//! args (bare `Slot`, no layout) and `Vec::push` on the type-parameter element
+//! failed closed with `E_NOT_YET_IMPLEMENTED`.
+//!
+//! Visibility governs naming, not ABI: the private generic record's layout is
+//! discovered from its instantiation reachability through the substituted
+//! `Store::add$$string` body, keyed bare, with no naming-surface leak.
+
+type Slot<T> {
+    generation: i64;
+    value: T;
+}
+
+pub type Store<T> {
+    slots: Vec<Slot<T>>;
+}
+
+pub fn new<T>() -> Store<T> {
+    Store { slots: Vec::new() }
+}
+
+impl<T> Store<T> {
+    /// Push a value into a fresh private `Slot`, stamping its generation with
+    /// the pre-insertion length, and return the new length.
+    fn add(self, value: T) -> i64 {
+        self.slots.push(Slot { generation: self.slots.len(), value: value });
+        self.slots.len()
+    }
+
+    /// Read back the generation stamp of the slot at `i` — proves the private
+    /// record's field-order table resolved cross-module.
+    fn generation_at(self, i: i64) -> i64 {
+        let slot = self.slots[i];
+        slot.generation
+    }
+}

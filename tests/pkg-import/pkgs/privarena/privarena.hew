@@ -1,0 +1,43 @@
+//! Arena shape: a module-private generic `Slot<T>` with a nested `Option<T>`
+//! field, used as a `Vec` element behind a pub `Arena<T>` (#2755).
+//!
+//! `Slot<T>` is module-PRIVATE and generic, so it never becomes an emitted HIR
+//! item, and its `value: Option<T>` field means the discovery must also reach
+//! the nested `Option<T>` instantiation from the private record's structure
+//! (Bug A #2746 discipline, preserved through the widened decl universe). Both
+//! `Slot$$string` and `Option$$string` are discovered from the substituted
+//! `Arena::insert$$string` body's type structure, keyed bare.
+//!
+//! The heap-owning `string` payload rides inside the private slot's `Option`
+//! and round-trips: `value_at` returns the stored `Option<T>`, matched at the
+//! call site.
+
+type Slot<T> {
+    generation: i64;
+    value: Option<T>;
+}
+
+pub type Arena<T> {
+    slots: Vec<Slot<T>>;
+}
+
+pub fn new<T>() -> Arena<T> {
+    Arena { slots: Vec::new() }
+}
+
+impl<T> Arena<T> {
+    /// Insert a value wrapped in a fresh private `Slot`, returning its index.
+    fn insert(self, value: T) -> i64 {
+        let index = self.slots.len();
+        self.slots.push(Slot { generation: index, value: Some(value) });
+        index
+    }
+
+    /// Read back the (owned) payload at `i` — proves the private record's
+    /// nested `Option<T>` field resolved and the heap-owning payload
+    /// round-trips cross-module.
+    fn value_at(self, i: i64) -> Option<T> {
+        let slot = self.slots[i];
+        slot.value
+    }
+}

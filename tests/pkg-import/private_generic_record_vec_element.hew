@@ -1,0 +1,25 @@
+// A module-PRIVATE generic record (`Slot<T>`) used only as the element of a
+// pub `Store<T>`'s `Vec<Slot<T>>`, monomorphised across a module boundary to a
+// `string` payload (#2755).
+//
+// `Slot<T>` is never nameable by the importer and never emitted as a HIR item,
+// so before #2755 the consumer had no `RecordLayout` for it: the `Slot { .. }`
+// construction inside `Store::add` dropped its type args and `Vec::push` on the
+// type-parameter element failed closed. The layout is now discovered from the
+// substituted `Store::add$$string` body's type structure, keyed bare, and the
+// heap-owning `string` payload round-trips through the private slot.
+//
+// Reading `generation_at` back proves the private record's field-order table
+// resolved end-to-end cross-module.
+//
+// Harness verb: hew run
+// Expected: two generation stamps, one per inserted value (0 then 1).
+import hew::privslot;
+
+fn main() {
+    let store: privslot.Store<string> = privslot.new();
+    store.add("hello");
+    store.add("world");
+    println(store.generation_at(0));
+    println(store.generation_at(1));
+}

@@ -139,6 +139,14 @@ struct Discovery<'a> {
 /// `existing_records` / `existing_enums` are the origin-site registrations
 /// already produced during lowering; they seed the dedup set so this pass
 /// never re-emits an entry the concrete-site path already produced.
+///
+/// `extra_decls` is the discovery-only decl universe (#2755): record/enum
+/// decls of imported modules that never became emitted `HirItem`s because the
+/// imported-module visibility guard excludes them (a module-private generic
+/// record behind a pub API). They are folded into the decl registries so the
+/// substituted-body walk can register their layouts, but are NOT walked as
+/// origin bodies and NEVER emitted into the module — visibility still governs
+/// naming, only ABI discovery is widened.
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -146,6 +154,7 @@ struct Discovery<'a> {
 )]
 pub fn run_layout_mono_pass(
     items: &[HirItem],
+    extra_decls: &[HirItem],
     monomorphisations: &[MonomorphizedFn],
     existing_records: &[RecordLayout],
     existing_enums: &[EnumLayout],
@@ -226,6 +235,73 @@ pub fn run_layout_mono_pass(
             // entries; actor/machine bodies carry concrete `expr.ty`s walked
             // via their monomorphic-fn analogue when reachable).
             HirItem::Machine(_)
+            | HirItem::Actor(_)
+            | HirItem::Supervisor(_)
+            | HirItem::ExternFn(_)
+            | HirItem::Const(_) => {}
+        }
+    }
+
+    // Widen the decl universe with record/enum decls that never became emitted
+    // `HirItem`s (#2755). A module-private generic record used as a `Vec`
+    // element behind a pub API is excluded from HIR-item emission by the
+    // imported-module visibility guard, so the walk below would find `Slot<i64>`
+    // in a substituted `Store::add$$i64` body with no `record_decls` entry and
+    // skip it silently → the consumer's MIR fails closed with a missing
+    // `RecordLayout`. These decls carry their defining module's field/variant
+    // shapes lowered under the owning module's context; visibility governs
+    // NAMING (unchanged — no new `HirItem` is emitted and the checker's
+    // authority is untouched), while layout existence follows ABI reachability.
+    // Keyed bare, exactly like the emitted decls above (R1 preserves the
+    // existing bare keying; cross-module same-bare-name collision remains
+    // #2653's concern). `entry(..).or_insert_with` lets an emitted decl win, so
+    // the universe only fills genuine gaps — it never shadows an emitted decl.
+    for item in extra_decls {
+        match item {
+            HirItem::Record(r) => {
+                all_type_params.extend(r.type_params.iter().cloned());
+                record_decls
+                    .entry(r.name.clone())
+                    .or_insert_with(|| RecordDecl {
+                        id: r.id,
+                        type_params: r.type_params.clone(),
+                        fields: r
+                            .fields
+                            .iter()
+                            .map(|f| (f.name.clone(), f.ty.clone()))
+                            .collect(),
+                    });
+            }
+            HirItem::TypeDecl(td) => {
+                all_type_params.extend(td.type_params.iter().cloned());
+                if td.variants.is_empty() {
+                    record_decls
+                        .entry(td.name.clone())
+                        .or_insert_with(|| RecordDecl {
+                            id: td.id,
+                            type_params: td.type_params.clone(),
+                            fields: td
+                                .fields
+                                .iter()
+                                .map(|f| (f.name.clone(), f.ty.clone()))
+                                .collect(),
+                        });
+                } else {
+                    enum_decls
+                        .entry(td.name.clone())
+                        .or_insert_with(|| EnumDecl {
+                            id: td.id,
+                            type_params: td.type_params.clone(),
+                            variants: td.variants.clone(),
+                        });
+                }
+            }
+            // The universe carries only record/enum decls (private types
+            // excluded from emission). Any other item variant here is a
+            // caller error; contribute nothing.
+            HirItem::Function(_)
+            | HirItem::Impl(_)
+            | HirItem::Machine(_)
             | HirItem::Actor(_)
             | HirItem::Supervisor(_)
             | HirItem::ExternFn(_)

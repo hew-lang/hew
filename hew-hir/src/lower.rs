@@ -2932,6 +2932,15 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
+    // Discovery-only layout universe (#2755): imported record/enum decls that
+    // the visibility guard below excludes from HIR-item emission (a module-
+    // private generic record behind a pub API). Collected under each owning
+    // module's context in §4b so their field types resolve correctly, then
+    // handed to `run_layout_mono_pass` so a `Vec<PrivateSlot<T>>` element
+    // reached through a substituted body gets its `RecordLayout` registered.
+    // These are NEVER pushed into `items` — no naming-surface leak.
+    let mut layout_universe_decls: Vec<HirItem> = Vec::new();
+
     // §4b — Imported-module type-decl + machine pre-pass.
     //
     // Mirror the root second pass above for `program.module_graph` non-root
@@ -3121,14 +3130,82 @@ pub fn lower_program_with_mono_cap(
                             ctx.enum_variants_by_name
                                 .insert(event_type_name, event_variants);
                         }
+                        // #2755: a type-decl the emission guard above excluded
+                        // (a module-private generic struct — pub/enum/non-generic
+                        // structs are handled by the guarded arm) never becomes a
+                        // `HirItem`, so `run_layout_mono_pass` has no decl for it
+                        // and a `Vec<Slot<T>>` element behind a pub API fails
+                        // closed with a missing `RecordLayout`. Lower its shape
+                        // once under this module's context, then (a) register it
+                        // in `record_registry` (bare + qualified) so an imported
+                        // fn body lowered later keeps the concrete type args on a
+                        // `Slot { .. }` StructInit's `expr.ty` — without this the
+                        // args are dropped and MIR probes the bare `Slot` field
+                        // order — and (b) hand it to the discovery-only layout
+                        // universe. No `HirItem` is emitted: visibility still
+                        // governs NAMING (the checker's authority and the emit
+                        // guard are untouched), only ABI discovery is widened.
+                        Item::TypeDecl(decl) => {
+                            let hir_decl =
+                                ctx.lower_imported_type_decl(decl, span.clone(), module_short);
+                            let entry_fields: Vec<(String, ResolvedTy)> = hir_decl
+                                .fields
+                                .iter()
+                                .map(|f| (f.name.clone(), f.ty.clone()))
+                                .collect();
+                            ctx.record_registry.insert(
+                                format!("{module_short}.{}", hir_decl.name),
+                                RecordEntry {
+                                    id: hir_decl.id,
+                                    type_params: hir_decl.type_params.clone(),
+                                    fields: entry_fields.clone(),
+                                },
+                            );
+                            ctx.record_registry.insert(
+                                hir_decl.name.clone(),
+                                RecordEntry {
+                                    id: hir_decl.id,
+                                    type_params: hir_decl.type_params.clone(),
+                                    fields: entry_fields,
+                                },
+                            );
+                            layout_universe_decls.push(HirItem::TypeDecl(hir_decl));
+                        }
+                        // A module-private record excluded from emission (the
+                        // emission arm admits only pub records) — same rationale.
+                        Item::Record(decl) if !decl.visibility.is_pub() => {
+                            let mut hir_record = ctx.lower_record_decl(decl, span.clone());
+                            hir_record.defining_module = Some(module_short.to_string());
+                            let entry_fields: Vec<(String, ResolvedTy)> = hir_record
+                                .fields
+                                .iter()
+                                .map(|f| (f.name.clone(), f.ty.clone()))
+                                .collect();
+                            ctx.record_registry.insert(
+                                format!("{module_short}.{}", hir_record.name),
+                                RecordEntry {
+                                    id: hir_record.id,
+                                    type_params: hir_record.type_params.clone(),
+                                    fields: entry_fields.clone(),
+                                },
+                            );
+                            ctx.record_registry.insert(
+                                hir_record.name.clone(),
+                                RecordEntry {
+                                    id: hir_record.id,
+                                    type_params: hir_record.type_params.clone(),
+                                    fields: entry_fields,
+                                },
+                            );
+                            layout_universe_decls.push(HirItem::Record(hir_record));
+                        }
                         // No enum-variant/machine descriptors to cache for
                         // these items in imported modules (§4b pre-pass). If
                         // a new Item variant is added, the compiler will force
                         // a conscious decision here. Item::Machine is handled
-                        // by the arm above.
+                        // by the arm above; pub records are emitted elsewhere.
                         Item::Import(_)
                         | Item::Const(_)
-                        | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Trait(_)
                         | Item::Impl(_)
@@ -4201,6 +4278,7 @@ pub fn lower_program_with_mono_cap(
     let (extra_record_layouts, extra_enum_layouts, layout_mono_diagnostics) =
         crate::layout_mono::run_layout_mono_pass(
             &items,
+            &layout_universe_decls,
             &monomorphisations,
             &record_layouts,
             &enum_layouts,

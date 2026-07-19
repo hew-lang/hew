@@ -68,6 +68,23 @@ fixtures=(
   # only imported-origin + generic-mono hits the qualified key. Output "7"
   # proves the mono instance classified BitCopy and the field read lowered.
   imported_generic_valueclass
+  # A module-PRIVATE generic record (`Slot<T>`) used only as the element of a
+  # pub `Store<T>`'s `Vec<Slot<T>>`, monomorphised across the module boundary to
+  # a `string` payload (#2755). The private generic record never becomes an
+  # emitted HIR item, so before the fix the consumer had no `RecordLayout` for
+  # it: the `Slot { .. }` construction dropped its type args and `Vec::push` on
+  # the type-parameter element failed closed. The layout is now discovered from
+  # the substituted `Store::add$$string` body's type structure, keyed bare, and
+  # `generation_at` reads a private-slot field back cross-module. Output "0\n1".
+  private_generic_record_vec_element
+  # The Arena acceptance shape (#2755): a module-PRIVATE generic `Slot<T>` whose
+  # field is a nested `Option<T>`, behind a pub `Arena<T>`'s `Vec<Slot<T>>`. The
+  # nested `Option$$string` must register from the private record's TYPE
+  # STRUCTURE (Bug A #2746 discipline), alongside `Slot$$string`, from the
+  # substituted `Arena::insert$$string` body. The heap-owning `string` payload
+  # rides inside the private slot's `Option` and round-trips: `value_at` returns
+  # it and the call site matches it. Output "world".
+  private_generic_record_option_element
   # A monomorphic record (`Point`) and a generic record (`Holder<Box>`) both
   # CONSTRUCTED through their module-qualified OUTER name (`qualshapes.Point`,
   # `qualshapes.Holder<qualshapes.Box>`) under qualified-by-default. Layout

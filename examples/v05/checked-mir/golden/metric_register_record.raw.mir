@@ -193,6 +193,7 @@ fn metrics$counter(string) -> Counter [conv=default]
     _10 = string_lit "`"
     _11 = call string_concat(_9, _10) -> bb6
   bb6:
+    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(81) ty=string
     drop _9 ty=string fn=release(hew_string_drop)
     call panic(_11) -> bb7
   bb7:
@@ -298,6 +299,7 @@ fn metrics$gauge(string) -> Gauge [conv=default]
     _10 = string_lit "`"
     _11 = call string_concat(_9, _10) -> bb6
   bb6:
+    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(120) ty=string
     drop _9 ty=string fn=release(hew_string_drop)
     call panic(_11) -> bb7
   bb7:
@@ -403,6 +405,7 @@ fn metrics$histogram(string) -> Histogram [conv=default]
     _10 = string_lit "`"
     _11 = call string_concat(_9, _10) -> bb6
   bb6:
+    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(159) ty=string
     drop _9 ty=string fn=release(hew_string_drop)
     call panic(_11) -> bb7
   bb7:

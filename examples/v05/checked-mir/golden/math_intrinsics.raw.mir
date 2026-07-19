@@ -201,6 +201,7 @@ fn math$clamp(i64, i64, i64) -> i64 [conv=default]
   bb7:
     _11 = call string_concat(_9, _10) -> bb8
   bb8:
+    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(87) ty=string
     drop _10 ty=string fn=release(hew_string_drop)
     drop _9 ty=string fn=release(hew_string_drop)
     call panic(_11) -> bb9

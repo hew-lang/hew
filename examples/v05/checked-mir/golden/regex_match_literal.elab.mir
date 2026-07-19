@@ -393,7 +393,9 @@ fn regex$new -> Pattern
     eval site=SiteId(209) ty=()
     use BindingId(41) re site=SiteId(210) ty=Pattern intent=Read
     return site=Some(SiteId(188)) ty=Pattern
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(200) ty=string
     eval site=SiteId(199) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
     drop BindingId(41) re ty=Pattern
   drop_plans:
     call[bb0 hew_regex_new -> bb1] ->
@@ -415,9 +417,9 @@ fn regex$new -> Pattern
     call[bb7 panic -> bb8] ->
       (none)
     goto[bb8->bb5] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb8] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
 
 fn i8::fmt -> string
   statements:

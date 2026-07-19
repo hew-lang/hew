@@ -678,6 +678,7 @@ fn regex$new(string) -> Pattern [conv=default]
   bb6:
     _12 = call string_concat(_10, _11) -> bb7
   bb7:
+    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(200) ty=string
     drop _11 ty=string fn=release(hew_string_drop)
     call panic(_12) -> bb8
   bb8:

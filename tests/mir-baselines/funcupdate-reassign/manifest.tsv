@@ -12,6 +12,16 @@
 #   purely additively — every hunk replaces a `(none)` scope-exit slot with a
 #   `drop _N ty=<record/tuple> kind=record_in_place`, no CFG/terminator/value
 #   change. The other three baselines remain byte-identical.
+#   Refreshed for the fresh string-call/f-string temp-arg drop: a fresh
+#   string produced by a string-returning call (or f-string) and passed to a
+#   borrowing fn now carries a caller-side temp binding (`bind __hew_temp_arg
+#   ty=string`) and its exactly-once scope-exit drop (`drop _N ty=string
+#   kind=cow_heap(hew_string_drop)`), one drop per mutually-exclusive CFG exit
+#   edge — no double-free. funcupdate_owned_field_drop_test.elab.mir and
+#   var_record_reassign_ownership_test.elab.mir shifted purely additively
+#   (paired temp-arg bind/drop plus `(none)` scope-exit slots becoming string
+#   drops, no CFG/terminator/value change). The closure/gen-fn baselines remain
+#   byte-identical.
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
 # normalization: two run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both

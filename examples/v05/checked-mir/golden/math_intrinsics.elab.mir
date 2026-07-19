@@ -104,6 +104,7 @@ fn math$clamp -> i64
     use BindingId(5) x site=SiteId(106) ty=i64 intent=Read
     use BindingId(6) lo site=SiteId(107) ty=i64 intent=Read
     use BindingId(7) hi site=SiteId(93) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(87) ty=string
     eval site=SiteId(86) ty=!
     use BindingId(6) lo site=SiteId(108) ty=i64 intent=Consume
     return site=Some(SiteId(108)) ty=i64
@@ -115,6 +116,7 @@ fn math$clamp -> i64
     eval site=SiteId(116) ty=()
     use BindingId(5) x site=SiteId(117) ty=i64 intent=Read
     return site=Some(SiteId(117)) ty=i64
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -137,9 +139,9 @@ fn math$clamp -> i64
     call[bb8 panic -> bb9] ->
       (none)
     goto[bb9->bb3] ->
-      (none)
+      drop _11 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb9] ->
-      (none)
+      drop _11 ty=string kind=cow_heap(hew_string_drop)
     return[bb10] ->
       (none)
     goto[bb11->bb12] ->

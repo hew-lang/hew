@@ -126,7 +126,9 @@ fn metrics$counter -> Counter
     eval site=SiteId(93) ty=()
     use BindingId(15) id site=SiteId(95) ty=i64 intent=Read
     return site=Some(SiteId(94)) ty=metrics.Counter
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(81) ty=string
     eval site=SiteId(80) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -145,9 +147,9 @@ fn metrics$counter -> Counter
     call[bb6 panic -> bb7] ->
       (none)
     goto[bb7->bb3] ->
-      (none)
+      drop _11 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb7] ->
-      (none)
+      drop _11 ty=string kind=cow_heap(hew_string_drop)
 
 fn metrics$try_counter -> Result<Counter, MetricsError>
   statements:
@@ -178,7 +180,9 @@ fn metrics$gauge -> Gauge
     eval site=SiteId(132) ty=()
     use BindingId(19) id site=SiteId(134) ty=i64 intent=Read
     return site=Some(SiteId(133)) ty=metrics.Gauge
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(120) ty=string
     eval site=SiteId(119) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -197,9 +201,9 @@ fn metrics$gauge -> Gauge
     call[bb6 panic -> bb7] ->
       (none)
     goto[bb7->bb3] ->
-      (none)
+      drop _11 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb7] ->
-      (none)
+      drop _11 ty=string kind=cow_heap(hew_string_drop)
 
 fn metrics$try_gauge -> Result<Gauge, MetricsError>
   statements:
@@ -230,7 +234,9 @@ fn metrics$histogram -> Histogram
     eval site=SiteId(171) ty=()
     use BindingId(23) id site=SiteId(173) ty=i64 intent=Read
     return site=Some(SiteId(172)) ty=metrics.Histogram
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(159) ty=string
     eval site=SiteId(158) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -249,9 +255,9 @@ fn metrics$histogram -> Histogram
     call[bb6 panic -> bb7] ->
       (none)
     goto[bb7->bb3] ->
-      (none)
+      drop _11 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb7] ->
-      (none)
+      drop _11 ty=string kind=cow_heap(hew_string_drop)
 
 fn metrics$try_histogram -> Result<Histogram, MetricsError>
   statements:

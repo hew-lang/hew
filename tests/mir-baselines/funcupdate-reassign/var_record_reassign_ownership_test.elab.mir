@@ -999,7 +999,9 @@ fn testing$assert_eq -> ()
     use BindingId(48) expected site=SiteId(549) ty=i64 intent=Read
     return site=Some(SiteId(541)) ty=()
     use BindingId(47) actual site=SiteId(553) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(547) ty=string
     eval site=SiteId(546) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1022,9 +1024,9 @@ fn testing$assert_eq -> ()
     call[bb8 panic -> bb9] ->
       (none)
     goto[bb9->bb3] ->
-      (none)
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb9] ->
-      (none)
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
 
 fn testing$assert_eq_u8 -> ()
   statements:
@@ -1033,7 +1035,9 @@ fn testing$assert_eq_u8 -> ()
     use BindingId(50) expected site=SiteId(572) ty=u8 intent=Read
     return site=Some(SiteId(563)) ty=()
     use BindingId(49) actual site=SiteId(577) ty=u8 intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(569) ty=string
     eval site=SiteId(568) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1056,9 +1060,9 @@ fn testing$assert_eq_u8 -> ()
     call[bb8 panic -> bb9] ->
       (none)
     goto[bb9->bb3] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb9] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
 
 fn testing$assert_ne_u8 -> ()
   statements:
@@ -1067,7 +1071,9 @@ fn testing$assert_ne_u8 -> ()
     use BindingId(51) a site=SiteId(596) ty=u8 intent=Read
     return site=Some(SiteId(587)) ty=()
     use BindingId(52) b site=SiteId(601) ty=u8 intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(593) ty=string
     eval site=SiteId(592) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1092,9 +1098,9 @@ fn testing$assert_ne_u8 -> ()
     call[bb9 panic -> bb10] ->
       (none)
     goto[bb10->bb3] ->
-      (none)
+      drop _14 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb10] ->
-      (none)
+      drop _14 ty=string kind=cow_heap(hew_string_drop)
 
 fn testing$assert_eq_str -> ()
   statements:
@@ -1103,7 +1109,9 @@ fn testing$assert_eq_str -> ()
     use BindingId(54) expected site=SiteId(622) ty=string intent=Read
     return site=Some(SiteId(614)) ty=()
     use BindingId(53) actual site=SiteId(626) ty=string intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(620) ty=string
     eval site=SiteId(619) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1128,9 +1136,9 @@ fn testing$assert_eq_str -> ()
     call[bb9 panic -> bb10] ->
       (none)
     goto[bb10->bb3] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb10] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
 
 fn testing$assert_ne -> ()
   statements:
@@ -1139,7 +1147,9 @@ fn testing$assert_ne -> ()
     use BindingId(55) a site=SiteId(647) ty=i64 intent=Read
     return site=Some(SiteId(639)) ty=()
     use BindingId(56) b site=SiteId(651) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(645) ty=string
     eval site=SiteId(644) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1164,9 +1174,9 @@ fn testing$assert_ne -> ()
     call[bb9 panic -> bb10] ->
       (none)
     goto[bb10->bb3] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb10] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
 
 fn testing$assert_true -> ()
   statements:
@@ -1217,7 +1227,9 @@ fn testing$assert_gt -> ()
     use BindingId(59) a site=SiteId(685) ty=i64 intent=Read
     return site=Some(SiteId(677)) ty=()
     use BindingId(60) b site=SiteId(689) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(683) ty=string
     eval site=SiteId(682) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1240,9 +1252,9 @@ fn testing$assert_gt -> ()
     call[bb8 panic -> bb9] ->
       (none)
     goto[bb9->bb3] ->
-      (none)
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb9] ->
-      (none)
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
 
 fn testing$assert_lt -> ()
   statements:
@@ -1251,7 +1263,9 @@ fn testing$assert_lt -> ()
     use BindingId(61) a site=SiteId(707) ty=i64 intent=Read
     return site=Some(SiteId(699)) ty=()
     use BindingId(62) b site=SiteId(711) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(705) ty=string
     eval site=SiteId(704) ty=!
+    drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1274,9 +1288,9 @@ fn testing$assert_lt -> ()
     call[bb8 panic -> bb9] ->
       (none)
     goto[bb9->bb3] ->
-      (none)
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb9] ->
-      (none)
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
 
 fn i8::fmt -> string
   statements:

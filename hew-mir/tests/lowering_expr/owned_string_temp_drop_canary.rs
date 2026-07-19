@@ -286,6 +286,44 @@ fn canary4_return_transfers_and_user_call_borrows() {
 }
 
 // ---------------------------------------------------------------------------
+// Canary 4b — TEMP-arg caller-side mint (#2428 residual). A fresh string-CALL
+// (`s.to_upper()`) or f-string (`f"n={n}"`) result passed BY VALUE as a
+// temporary argument to a BORROWING user function has no `let`, so the
+// #2743/#2745 caller-side mint gives its otherwise-unowned temp exactly one
+// scope-exit drop. Before this fix the classifier recognised only the
+// `Binary`/`Unary` concat producer (`arg_concat`, the baseline here); a
+// string-returning `Call` hit the catch-all, skipped the mint, and leaked
+// 32 B/call. Each producer now earns exactly one scope-exit release.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn canary4b_string_call_temp_arg_releases_once() {
+    let pl = pipeline_with_tc(
+        "fn borrow_len(s: string) -> i64 {\n    s.len() as i64\n}\n\
+         fn arg_concat(a: string, b: string) -> i64 {\n    borrow_len(a + b)\n}\n\
+         fn arg_upper(s: string) -> i64 {\n    borrow_len(s.to_upper())\n}\n\
+         fn arg_fstring(n: i64) -> i64 {\n    borrow_len(f\"n={n}\")\n}\n",
+    );
+    assert_no_nyi(&pl);
+    // The by-value temp arg has no binding, so the release is the caller-side
+    // synthetic-owner scope-exit drop (never an inline nested drop): exactly one
+    // per producer. `arg_fstring` additionally carries one inline drop for its
+    // `to_string_i64` intermediate (a nested fresh temp borrowed by the concat),
+    // which is orthogonal to the arg-temp mint under test here.
+    for f in ["arg_concat", "arg_upper", "arg_fstring"] {
+        assert_eq!(
+            return_exit_string_drops(&pl, f),
+            1,
+            "{f}: the fresh string temp arg to a borrowing fn must earn exactly one scope-exit drop"
+        );
+    }
+    // The concat baseline and the string-call producer have no intermediate, so
+    // their ONLY string drop is the arg-temp scope-exit release.
+    assert_eq!(total_string_drops(&pl, "arg_concat"), 1);
+    assert_eq!(total_string_drops(&pl, "arg_upper"), 1);
+}
+
+// ---------------------------------------------------------------------------
 // Canary 5 — DISCARD compatibility: a discarded fresh producer (`a + b;`) is
 // released by exactly one inline drop, producer-agnostically (this folds the
 // vec-branch's Vec-specific discard fix into the general substrate).

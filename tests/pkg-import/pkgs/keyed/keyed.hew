@@ -1,0 +1,25 @@
+//! Imported-generic value-class fixture (owner module) for #2744.
+//!
+//! Exports a GENERIC pure-value record `Key<T>` — two `i64` fields, no owned
+//! or `Option` field, so every monomorphisation is BitCopy. The importer
+//! instantiates `Key<string>` across the module boundary, which monomorphises
+//! to `Key$$string` and reads a field.
+//!
+//! `Key$$string`'s value-class marker is registered under the bare-origin
+//! mangling the DECLARATION produced (`Key$$string`), but the importer's
+//! use-site carries the module-qualified name (`keyed.Key<string>`). The MIR
+//! value-class probe must shorten that qualified origin before mangling, or the
+//! qualified `keyed.Key$$string` misses the registered bare marker and the
+//! mono instance is misclassified `Unknown` → the fail-closed value-class gate
+//! rejects a valid BitCopy record.
+
+/// Generic pure-value handle: two `i64` fields, no owned payload → BitCopy.
+pub type Key<T> {
+    index: i64;
+    generation: i64;
+}
+
+/// Build a `Key<T>` from an index.
+pub fn mk<T>(i: i64) -> Key<T> {
+    Key { index: i, generation: 0 }
+}

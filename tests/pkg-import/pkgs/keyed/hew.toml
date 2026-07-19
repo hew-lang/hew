@@ -1,0 +1,6 @@
+[package]
+name = "hew::keyed"
+version = "0.1.0"
+description = "Imported generic pure-value record fixture: a BitCopy Key<T> monomorphised across a module boundary (#2744)"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

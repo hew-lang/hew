@@ -1,0 +1,18 @@
+//! Two-module same-name generic known-gap reject pin (#2653), left module.
+//!
+//! Declares a generic value record `Key<T>` whose sole field `v` is `i64`.
+//! The right module (`hew::keyright`) declares a same-named `Key<T>` whose
+//! `v` is `string`. Both monomorphise to the bare mangled symbol
+//! `Key$$i32`, so the two distinct layouts collide on identity — the
+//! qualified-identity gap tracked by #2653. The collision fails CLOSED
+//! (never a silent miscompile); see the reject pin in `run.sh`.
+
+/// Generic value record with an i64 payload field.
+pub type Key<T> {
+    v: i64;
+}
+
+/// Build a `Key<T>` from an i64.
+pub fn mk<T>(x: i64) -> Key<T> {
+    Key { v: x }
+}

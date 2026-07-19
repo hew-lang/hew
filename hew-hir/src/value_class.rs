@@ -94,6 +94,27 @@ pub fn lookup_type_marker_for_ty(
         if let Some((marker, _)) = type_classes.get(&concrete_key) {
             return Some(*marker);
         }
+        // A generic value record defined in an IMPORTED module carries a
+        // module-qualified USE-site name (`k.Key<string>`), but its layout is
+        // registered under the bare-origin mangling the DECLARATION produced
+        // (`Key$$string`) — `RecordLayoutRegistry::insert` shortens the type
+        // args but keeps the origin name verbatim, and the declaration's own
+        // name is unqualified. So the qualified `concrete_key`
+        // (`k.Key$$string`) misses while the bare per-instantiation marker is
+        // present. Probe the short-origin mangling too so an imported-origin
+        // generic instance resolves to the same per-instantiation value class
+        // as its single-file / non-generic siblings (#2744). Without this the
+        // probe falls through to the coarse outer-name lookup below, which
+        // sees the generic origin's `ResourceMarker::None` and misclassifies
+        // the mono instance as `Unknown` → the MIR value-class gate rejects a
+        // valid BitCopy record.
+        let short_origin = hew_types::short_name(name);
+        if short_origin != name.as_str() {
+            let short_key = crate::monomorph::mangle(short_origin, &short_args);
+            if let Some((marker, _)) = type_classes.get(&short_key) {
+                return Some(*marker);
+            }
+        }
     }
 
     let exact = type_classes.get(name).map(|(marker, _)| *marker);
@@ -448,6 +469,45 @@ mod tests {
             Some(ResourceMarker::BitCopy),
             "the qualified-payload probe must shorten its spine to hit the \
              bare-key per-instantiation marker"
+        );
+    }
+
+    // ── #2744 qualified-ORIGIN concrete-key symmetry ────────────────────────
+    //
+    // A generic value record defined in an IMPORTED module is used through its
+    // module-qualified OUTER name (`keyed.Key<string>`), but its layout — and
+    // therefore its per-instantiation value-class marker — is registered under
+    // the bare-origin mangling the declaration produced (`Key$$string`). The
+    // probe must shorten the qualified ORIGIN (not just the payload spine) or
+    // the concrete key (`keyed.Key$$string`) diverges from the registered
+    // `Key$$string`, the outer-name fallback sees the generic origin's
+    // `ResourceMarker::None`, and the mono instance is misclassified Unknown.
+
+    #[test]
+    fn qualified_origin_resolves_per_instantiation_marker() {
+        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
+
+        let mut table: TypeClassTable = std::collections::HashMap::default();
+        // The mono instance is registered under the BARE origin, exactly as the
+        // declaration-side registry / finalize keys it.
+        let bare_key = crate::monomorph::mangle("Key", &[ResolvedTy::String]);
+        table.insert(bare_key, (ResourceMarker::BitCopy, None));
+        // The generic origin itself carries `ResourceMarker::None` under both
+        // its qualified and bare spellings (finalize seeds every registry key),
+        // so the coarse outer-name fallback must NOT be what answers the probe.
+        table.insert("keyed.Key".to_string(), (ResourceMarker::None, None));
+        table.insert("Key".to_string(), (ResourceMarker::None, None));
+
+        // Probe with the QUALIFIED origin (`keyed.Key<string>`), the import-use
+        // form. A raw `mangle("keyed.Key", [string])` keys `keyed.Key$$string`
+        // and misses the registered bare `Key$$string`.
+        let qualified = ResolvedTy::named_user("keyed.Key", vec![ResolvedTy::String]);
+        assert_eq!(
+            lookup_type_marker_for_ty(&qualified, &table),
+            Some(ResourceMarker::BitCopy),
+            "the qualified-origin probe must shorten the outer name to hit the \
+             bare-key per-instantiation marker, not fall through to the \
+             generic origin's None marker"
         );
     }
 

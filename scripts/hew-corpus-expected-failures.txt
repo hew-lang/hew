@@ -233,6 +233,7 @@ tests/pkg-import/imported_actor_ask_record.hew
 tests/pkg-import/imported_actor_ask_string.hew
 tests/pkg-import/imported_deep_chain_inline_supermethods_accept.hew
 tests/pkg-import/imported_diamond_inline_supermethods_accept.hew
+tests/pkg-import/imported_generic_valueclass.hew
 tests/pkg-import/imported_redeclared_super_separate_impl_accept.hew
 tests/pkg-import/imported_subtrait_inline_supermethod_accept.hew
 tests/pkg-import/imported_trait_method.hew

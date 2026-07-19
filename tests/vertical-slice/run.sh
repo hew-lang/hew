@@ -847,6 +847,15 @@ run_accept_expect_stdout "payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_inequality_result"
 run_accept_expect_stdout "generic_aggregate_eq"
+# Arena<T> generational-index slotmap (std/arena.hew): the first stdlib
+# consumer of the generic Vec<Composite<T>> codegen path. Each fixture asserts
+# exact/boundary/negative values — stale-key None, generation +1, exact len.
+run_accept_expect_stdout "arena_insert_get_roundtrip"
+run_accept_expect_stdout "arena_remove_stale_key"
+run_accept_expect_stdout "arena_generation_reuse"
+run_accept_expect_stdout "arena_len_live_count"
+run_accept_expect_stdout "arena_composite_value"
+run_accept_expect_stdout "arena_no_leak_cycle"
 if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
     grep -qF 'IntCmp lhs is not an integer' "${reject_output}"; then
   echo "managed_record_or_enum_eq leaked codegen-front diagnostics" >&2

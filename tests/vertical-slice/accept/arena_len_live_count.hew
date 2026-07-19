@@ -1,0 +1,16 @@
+// Arena<T>: len tracks the exact live count across a sequence of inserts and
+// removes.
+import std::arena::{ Arena, Key };
+
+fn main() {
+    let store: Arena<i64> = arena.new();
+    let a = store.insert(1);
+    let b = store.insert(2);
+    let c = store.insert(3);
+    println(store.len());
+    store.remove(b);
+    println(store.len());
+    let d = store.insert(4);
+    println(store.len());
+    println(a.index == 0 && c.index == 2 && d.index == b.index);
+}

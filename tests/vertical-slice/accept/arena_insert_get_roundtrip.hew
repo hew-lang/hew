@@ -1,0 +1,15 @@
+// Arena<T>: three distinct inserts round-trip to their exact values, and a
+// never-issued key fails closed.
+import std::arena::{ Arena, Key };
+
+fn main() {
+    let store: Arena<string> = arena.new();
+    let k0 = store.insert("zero");
+    let k1 = store.insert("one");
+    let k2 = store.insert("two");
+    let never: Key<string> = Key { index: 99, generation: 0 };
+    println(store.get(k0).unwrap());
+    println(store.get(k1).unwrap());
+    println(store.get(k2).unwrap());
+    println(store.get(never).is_none());
+}

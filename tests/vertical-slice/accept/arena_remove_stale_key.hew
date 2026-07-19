@@ -1,0 +1,12 @@
+// Arena<T>: remove returns the exact value once, then the key fails closed —
+// double-remove, get, and contains all reject the stale key.
+import std::arena::{ Arena, Key };
+
+fn main() {
+    let store: Arena<i64> = arena.new();
+    let key = store.insert(42);
+    println(store.remove(key).unwrap());
+    println(store.remove(key).is_none());
+    println(store.get(key).is_none());
+    println(store.contains(key));
+}

@@ -4511,6 +4511,37 @@ impl Builder {
                     callee
                 };
 
+                // A user-authored owned-element `set` of a fresh materialised
+                // rvalue (`v.set(i, Name { .. })`, `v.set(i, make())`) has the
+                // SAME unbound-temp hole `push` does: `hew_vec_set_owned` is
+                // COPY-IN (deep-clones the element into the slot), but the
+                // throwaway `record_init` temp has no binding and no scope-exit
+                // drop to balance that clone, so its owned heap leaks (measured:
+                // a deep-owned element leaks ~4 nodes per store; a refcount-
+                // shared string element is reclaimed via the vec free and does
+                // not). Route it to the MOVE-in sibling `hew_vec_set_owned_move`,
+                // which byte-transfers the element's heap into the slot without a
+                // clone; the source temp is then dead. The element operand is
+                // `args[1]` (`args[0]` is the index). `expr_is_materialized_owner`
+                // is the identical fresh-rvalue predicate push uses: a bare
+                // `BindingRef` (a shared/after-read local — N1/N2) returns false
+                // and stays COPY-IN (moving it would double-free the live
+                // binding's heap), and a construction embedding a whole by-value
+                // parameter returns false too (moving would double-free the
+                // caller's `p`). "No other reader" holds by construction — a
+                // fresh unbound constructor operand has no name.
+                let callee = if callee == "hew_vec_set_owned"
+                    && args.len() == 2
+                    && Self::expr_is_materialized_owner(
+                        &args[1],
+                        &self.funcupdate_fn_returns_fresh,
+                        &self.funcupdate_param_ids,
+                    ) {
+                    "hew_vec_set_owned_move".to_string()
+                } else {
+                    callee
+                };
+
                 // Array literals are HIR-desugared to pushes into a synthetic
                 // Vec temp. Treat each pushed element as aggregate ingress so
                 // `[s, "x"]; s` is rejected without changing ordinary

@@ -17,7 +17,7 @@ use super::{
     NumericMethodFamily, Place, ProjectedPayloadOrigin, ProjectedPayloadRejectReason,
     ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, RuntimeCallContext, SiteId, SuspendKind,
     Terminator, TrapKind, UnaryOp, ValueClass, VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX,
-    SENTINEL_RECV_GEN_COMPANION_BINDING,
+    SENTINEL_RECV_GEN_COMPANION_BINDING, SYNTHETIC_TEMP_ARG_NAME,
 };
 #[cfg(test)]
 use super::{FieldLoadClass, PlaceProvenance, Projection, ValueProvenance};
@@ -7703,6 +7703,70 @@ impl Builder {
                     .then_some(index)
             })
             .collect();
+        // #2743 — mint a caller-side scope-exit drop for every fresh owned
+        // composite/string argument TEMPORARY passed to a BORROWING parameter.
+        // The temporary has no user `let`, so #2735's preserve-the-drop exemption
+        // (`proven_borrow_whole_arg_locals`) has nothing to preserve and the fresh
+        // value leaks. Binding the already-materialised arg local to a synthetic
+        // owned local routes it through the SAME `owned_locals` machinery as
+        // `let x = Row{..}; g(x)` — the per-type sole-owner prover then decides
+        // admission, so an escaping value is still excluded (leak, never a
+        // double-free), and registration alone never forces a drop.
+        //
+        // Exactly-once gate is per type, aligned with the prover's own
+        // borrow-vs-consume exemption:
+        //  - record / tuple / enum: BORROW iff the arg site is in
+        //    `proven_borrow_args` (the same `proven_borrow_call_args` exemption
+        //    the composite provers read). A CONSUMING composite callee's temp is
+        //    NOT registered here (its arg is absent from `proven_borrow_args`); the
+        //    callee owns and drops it (#2732 for enums) — mutually exclusive.
+        //  - string: minted iff the callee is a USER free function (a string
+        //    param is never recorded in `proven_borrow_arg_sites` — its borrow
+        //    model is the separate refcount contract). The string sole-owner
+        //    prover then gates the actual drop exactly as for the named
+        //    `let s = a+b; h(s)` shape (borrow admits, consume/escape excludes).
+        //    Runtime borrowing receivers (`(a+b).len()` = `hew_string_length`)
+        //    are deliberately excluded: their nested temp already gets an
+        //    exactly-once inline release from `apply_nested_fresh_string_temp_drops`.
+        for (index, arg) in hir_args.iter().enumerate() {
+            let Some(owned_ty) = self.caller_borrowed_temp_arg_owned_ty(arg) else {
+                continue;
+            };
+            let callee_borrows = if matches!(owned_ty, ResolvedTy::String) {
+                // A string temp earns a caller drop only when passed to a USER
+                // free function (the #2735/#2743 seam), NOT to a runtime borrowing
+                // receiver: `(a + b).len()` lowers `hew_string_length` through this
+                // same `lower_direct_call` path (its stdlib shim is registered in
+                // `module_fn_names`), and that nested temp already gets its
+                // exactly-once INLINE release from
+                // `apply_nested_fresh_string_temp_drops` — minting a synthetic
+                // scope-exit owner over it merely relocates the drop and drifts the
+                // nested-producer canary. A runtime string op carries a
+                // `borrows_string_call_args` ownership contract; a user free fn does
+                // not, so that contract is the exact discriminator. The string
+                // sole-owner prover then gates the actual drop (borrow admits,
+                // consume/escape excludes), as for the named `let s = a+b; h(s)`.
+                !crate::runtime_symbols::callee_ownership_contract(callee_symbol)
+                    .borrows_string_call_args()
+                    && (self.module_fn_names.contains(callee_symbol)
+                        || self.module_generic_fn_names.contains(callee_symbol))
+            } else {
+                proven_borrow_args.contains(&index)
+            };
+            if !callee_borrows {
+                continue;
+            }
+            // A fresh producer always materialises into a fresh MIR local (never a
+            // parameter slot or an existing binding base); the guard keeps the mint
+            // fail-closed if a future arg shape reuses a slot.
+            let Some(Place::Local(local)) = arg_places.get(index).copied() else {
+                continue;
+            };
+            if self.parameter_locals.contains(&local) {
+                continue;
+            }
+            self.register_synthetic_owned_local(SYNTHETIC_TEMP_ARG_NAME, arg.site, local, owned_ty);
+        }
         if !proven_borrow_args.is_empty() {
             self.proven_borrow_call_args
                 .insert(self.current_block_id, proven_borrow_args);

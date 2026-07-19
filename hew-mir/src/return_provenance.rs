@@ -47,7 +47,9 @@ use std::collections::HashMap;
 
 use std::collections::HashSet;
 
-use hew_hir::{BindingId, HirBlock, HirExpr, HirExprKind, HirFn, ResolvedRef};
+use hew_hir::{
+    BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirStmt, HirStmtKind, ResolvedRef,
+};
 use hew_types::ResolvedTy;
 
 // ---------------------------------------------------------------------------
@@ -196,22 +198,89 @@ pub trait LeafPolicy {
 /// reproducing the pre-refactor boolean walk's `is_none_or(..)`/`arms.is_empty()`
 /// semantics.
 pub fn return_alias_bits<P: LeafPolicy>(expr: &HirExpr, policy: &P) -> AliasBits {
+    // The public entry has no enclosing-block scope, so a bare `let`-bound-local
+    // return leaf falls to the policy leaf (fail closed). The freshness fixpoint
+    // uses [`return_alias_bits_in_block`] to seed the scope with the function
+    // body, enabling the fix-(i) see-through.
+    return_alias_bits_scoped(expr, policy, None)
+}
+
+/// [`return_alias_bits`] seeded with `body` as the enclosing scope, so a
+/// return-value expression that is (or reaches) a `let`-bound-local reference is
+/// seen through to the values that flow into that local (fix (i)). This is the
+/// entry the module freshness fixpoint uses for every return path of a function.
+pub fn return_alias_bits_in_block<P: LeafPolicy>(
+    expr: &HirExpr,
+    body: &HirBlock,
+    policy: &P,
+) -> AliasBits {
+    let root = SeeThroughScope {
+        block: body,
+        parent: None,
+    };
+    return_alias_bits_scoped(expr, policy, Some(&root))
+}
+
+/// A chain of enclosing blocks whose `let`-bound locals the see-through may
+/// resolve. Each `Block` the walk descends through pushes a frame; a
+/// `BindingRef` leaf resolves against the chain (innermost first).
+///
+/// `pub(crate)` so the frozen reference threads the IDENTICAL scope plumbing
+/// (only the may-alias transfer is reimplemented there).
+pub(crate) struct SeeThroughScope<'a, 'p> {
+    pub(crate) block: &'a HirBlock,
+    pub(crate) parent: Option<&'p SeeThroughScope<'a, 'p>>,
+}
+
+impl<'a> SeeThroughScope<'a, '_> {
+    /// The enclosing block that defines `id` as a single-assignment `let` local
+    /// (never a `var`), searching innermost-first. `None` when `id` is a
+    /// parameter, a `var`, or defined outside every tracked block.
+    pub(crate) fn resolve(&self, id: BindingId) -> Option<&'a HirBlock> {
+        if block_defines_immutable_let(self.block, id) {
+            return Some(self.block);
+        }
+        self.parent.and_then(|p| p.resolve(id))
+    }
+}
+
+/// True when `block` has exactly one `let <id> = ..` statement for `id` and that
+/// binding is immutable (a `let`, not a `var`). A `var` is never seen through —
+/// a later store could clobber its proven-fresh init with a param alias.
+fn block_defines_immutable_let(block: &HirBlock, id: BindingId) -> bool {
+    block.statements.iter().any(|stmt| {
+        matches!(&stmt.kind, HirStmtKind::Let(binding, _) if binding.id == id && !binding.mutable)
+    })
+}
+
+fn return_alias_bits_scoped<P: LeafPolicy>(
+    expr: &HirExpr,
+    policy: &P,
+    scope: Option<&SeeThroughScope>,
+) -> AliasBits {
     match &expr.kind {
         // Value-passthrough wrappers: the value flows from the tail / both
-        // branches / every arm — aliases iff ANY reachable value aliases.
+        // branches / every arm — aliases iff ANY reachable value aliases. A block
+        // pushes a see-through scope frame for its own `let` locals.
         HirExprKind::Block(block) => match &block.tail {
             None => policy.missing_position_bits(expr),
-            Some(tail) => return_alias_bits(tail, policy),
+            Some(tail) => {
+                let child = SeeThroughScope {
+                    block,
+                    parent: scope,
+                };
+                return_alias_bits_scoped(tail, policy, Some(&child))
+            }
         },
         HirExprKind::If {
             then_expr,
             else_expr,
             ..
         } => {
-            let mut bits = return_alias_bits(then_expr, policy);
+            let mut bits = return_alias_bits_scoped(then_expr, policy, scope);
             bits |= match else_expr.as_deref() {
                 None => policy.missing_position_bits(expr),
-                Some(e) => return_alias_bits(e, policy),
+                Some(e) => return_alias_bits_scoped(e, policy, scope),
             };
             bits
         }
@@ -220,13 +289,13 @@ pub fn return_alias_bits<P: LeafPolicy>(expr: &HirExpr, policy: &P) -> AliasBits
                 policy.missing_position_bits(expr)
             } else {
                 arms.iter().fold(AliasBits::EMPTY, |acc, arm| {
-                    acc | return_alias_bits(&arm.body, policy)
+                    acc | return_alias_bits_scoped(&arm.body, policy, scope)
                 })
             }
         }
         HirExprKind::Return { value } => match value.as_deref() {
             None => policy.missing_position_bits(expr),
-            Some(v) => return_alias_bits(v, policy),
+            Some(v) => return_alias_bits_scoped(v, policy, scope),
         },
         // Fresh leaves — never a caller-owned alias. A `.clone()` is a deep copy;
         // a `Vec<T>` element load / slice is an independent heap element; a
@@ -238,38 +307,178 @@ pub fn return_alias_bits<P: LeafPolicy>(expr: &HirExpr, policy: &P) -> AliasBits
         // A construction aliases a parameter iff one of its owned operands does.
         HirExprKind::StructInit { fields, base, .. } => {
             let mut bits = fields.iter().fold(AliasBits::EMPTY, |acc, (_, v)| {
-                acc | return_alias_bits(v, policy)
+                acc | return_alias_bits_scoped(v, policy, scope)
             });
             if let Some(base) = base.as_deref() {
-                bits |= return_alias_bits(base, policy);
+                bits |= return_alias_bits_scoped(base, policy, scope);
             }
             bits
         }
         HirExprKind::TupleLiteral { elements } => {
             elements.iter().fold(AliasBits::EMPTY, |acc, e| {
-                acc | return_alias_bits(e, policy)
+                acc | return_alias_bits_scoped(e, policy, scope)
             })
         }
         HirExprKind::MachineVariantCtor { payload, .. } => match payload {
             None => AliasBits::EMPTY,
             Some(fields) => fields.iter().fold(AliasBits::EMPTY, |acc, (_, v)| {
-                acc | return_alias_bits(v, policy)
+                acc | return_alias_bits_scoped(v, policy, scope)
             }),
         },
         HirExprKind::Call { callee, args } => match policy.classify_call(callee) {
             CallClass::Opaque => AliasBits::OPAQUE,
             CallClass::Fresh => AliasBits::EMPTY,
             CallClass::ParamSubst => args.iter().fold(AliasBits::EMPTY, |acc, a| {
-                acc | return_alias_bits(a, policy)
+                acc | return_alias_bits_scoped(a, policy, scope)
             }),
         },
         // A projection aliases a parameter iff its object chain does.
-        HirExprKind::FieldAccess { object, .. } => return_alias_bits(object, policy),
-        HirExprKind::TupleIndex { tuple, .. } => return_alias_bits(tuple, policy),
-        // Every other form (a bare `BindingRef`, a `Binary`, a method call, a
-        // deref, any unmodelled shape) is not provably fresh → the policy's leaf.
+        HirExprKind::FieldAccess { object, .. } => return_alias_bits_scoped(object, policy, scope),
+        HirExprKind::TupleIndex { tuple, .. } => return_alias_bits_scoped(tuple, policy, scope),
+        // A reference to a `let`-bound local in scope: see THROUGH it to the
+        // values that flow into that local (fix (i)) — the `let x = <fresh>; x`
+        // idiom and the `[..]` array-literal desugar. Fails closed (the policy
+        // leaf) for a `var`, a reassignment, a param root, or any use of the
+        // local that could inject an unmeasured alias.
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => scope
+            .and_then(|s| s.resolve(*id))
+            .and_then(|block| see_through_let_binding_bits(block, *id, policy, scope))
+            .unwrap_or_else(|| policy.leaf_bits(expr)),
+        // Every other form (a `Binary`, a method call, a deref, any unmodelled
+        // shape) is not provably fresh → the policy's leaf.
         _ => policy.leaf_bits(expr),
     }
+}
+
+/// Fresh-owner see-through (fix (i)): the alias bits contributed by a reference
+/// to a `let`-bound local `id` defined in `block`, computed by seeing THROUGH the
+/// binding to the values that actually flow into it.
+///
+/// Returns `None` — leaving the caller to keep the fail-closed `OPAQUE` leaf —
+/// unless `id` is a single-assignment `let` local (never a `var`, never a param,
+/// never reassigned) whose value is provably the union of its `let` initializer
+/// and a set of interior container appends (`id.push(e)` — the array-literal
+/// desugar). The returned bits are that union.
+///
+/// # Soundness (the double-free crux)
+///
+/// The value `id` holds at the tail read is EXACTLY its initializer plus every
+/// element appended to it in the block; nothing else can be part of the value.
+/// The walk therefore:
+/// - unions `return_alias_bits(init)` and every append argument's bits — so a
+///   param-aliasing element (`[h]` for a by-value heap param `h`) re-derives the
+///   `OPAQUE`/`PARAM` leaf through the argument and the binding stays non-fresh
+///   (a push that MOVES a borrowed param is conservatively rejected — the
+///   over-approximation is a leak, never a double-free);
+/// - refuses (`None`) to see through a `mutable` (`var`) binding, whose init a
+///   later store could clobber with a param alias;
+/// - refuses on any whole-binding reassignment (`Assign` targeting `id`);
+/// - refuses on ANY other use of `id` — a call argument, an aggregate operand, a
+///   field object that escapes — because such a use is a channel through which a
+///   param alias could enter the value unmeasured.
+///
+/// A param root is structurally excluded: a parameter has no `Let` in the block,
+/// so `init_bits` stays `None` and the reference falls to the leaf. This is the
+/// `let x = h; x` re-derivation the crux requires — `x`'s init is the param
+/// `BindingRef`, whose bits are `OPAQUE`.
+fn see_through_let_binding_bits<P: LeafPolicy>(
+    block: &HirBlock,
+    id: BindingId,
+    policy: &P,
+    scope: Option<&SeeThroughScope>,
+) -> Option<AliasBits> {
+    let mut init_bits: Option<AliasBits> = None;
+    let mut content = AliasBits::EMPTY;
+    for stmt in &block.statements {
+        match &stmt.kind {
+            // The defining `let`. A `var` (mutable) binding is never seen through
+            // — a later store can replace the fresh init with a param alias. `id`
+            // cannot appear in its own initializer, so the init bits are its base
+            // value directly (walked with the SAME scope so a chained
+            // `let y = ..; let x = y; x` re-derives `y`'s bits).
+            HirStmtKind::Let(binding, init) if binding.id == id => {
+                if binding.mutable {
+                    return None;
+                }
+                let init = init.as_ref()?;
+                init_bits = Some(return_alias_bits_scoped(init, policy, scope));
+            }
+            // A whole-binding reassignment of `id` clobbers the proven-fresh init.
+            HirStmtKind::Assign { target, .. } if place_root_binding(target) == Some(id) => {
+                return None;
+            }
+            _ => {
+                // An interior container append rooted at `id` (`id.push(e)` — the
+                // array-literal desugar's push statements): its arguments become
+                // the container's content, so union their bits. A self-referential
+                // append (`id.push(id)`) is unmodelled → fail closed.
+                if let HirStmtKind::Expr(e) = &stmt.kind {
+                    if let Some((receiver, args)) = method_receiver_and_args(e) {
+                        if place_root_binding(receiver) == Some(id) {
+                            for arg in &args {
+                                if expr_mentions_binding(arg, id) {
+                                    return None;
+                                }
+                                content |= return_alias_bits_scoped(arg, policy, scope);
+                            }
+                            continue;
+                        }
+                    }
+                }
+                // Any other statement that so much as mentions `id` could read it
+                // out into an aliasable position → fail closed.
+                if stmt_mentions_binding(stmt, id) {
+                    return None;
+                }
+            }
+        }
+    }
+    init_bits.map(|base| base | content)
+}
+
+/// The receiver and argument expressions of a method-call form, or `None` for a
+/// non-method expression. Used by [`see_through_let_binding_bits`] to recognise
+/// an interior container append (`id.push(e)`) rooted at a tracked binding.
+///
+/// `pub(crate)` so the frozen-reference see-through reuses the IDENTICAL
+/// structural append-recognition (only the may-alias recursion is reimplemented
+/// there), keeping the `coarse_verdict_differential` pin byte-identical.
+pub(crate) fn method_receiver_and_args(expr: &HirExpr) -> Option<(&HirExpr, Vec<&HirExpr>)> {
+    match &expr.kind {
+        HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            Some((receiver, args.iter().collect()))
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => Some((receiver, vec![arg])),
+        _ => None,
+    }
+}
+
+/// True when `expr` references the binding `id` anywhere — including through an
+/// unmodelled heap-bearing form (the `Reachable::unknown` fail-closed marker).
+/// Reuses the total reachability visitor so no HIR shape can hide the reference.
+///
+/// `pub(crate)` so the frozen reference shares the identical mention check.
+pub(crate) fn expr_mentions_binding(expr: &HirExpr, id: BindingId) -> bool {
+    let mut r = Reachable::default();
+    reachable_bindings(expr, &mut r);
+    r.unknown || r.bindings.contains(&id)
+}
+
+/// True when any expression reachable from `stmt` references the binding `id`
+/// (fail-closed on an unmodelled form). The statement-level companion of
+/// [`expr_mentions_binding`].
+///
+/// `pub(crate)` so the frozen reference shares the identical mention check.
+pub(crate) fn stmt_mentions_binding(stmt: &HirStmt, id: BindingId) -> bool {
+    let mut r = Reachable::default();
+    reachable_bindings_in_stmt(stmt, &mut r);
+    r.unknown || r.bindings.contains(&id)
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +534,25 @@ impl LeafPolicy for CoarsePolicy<'_> {
 )]
 pub fn coarse_may_alias_borrow(expr: &HirExpr, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
     !return_alias_bits(expr, &CoarsePolicy { fresh }).is_fresh()
+}
+
+/// [`coarse_may_alias_borrow`] seeded with the function `body` as the enclosing
+/// scope, so a return-value that reaches a `let`-bound-local reference is seen
+/// through to its fresh contents (fix (i)). The freshness fixpoint's
+/// `return_value_may_alias_borrow` uses this; the bare
+/// [`coarse_may_alias_borrow`] (no scope) is kept for any consumer without a
+/// function body in hand.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "only ever called with the pipeline's default-hasher freshness summary map"
+)]
+pub fn coarse_may_alias_borrow_in_body(
+    expr: &HirExpr,
+    body: &HirBlock,
+    fresh: &HashMap<hew_hir::ItemId, bool>,
+) -> bool {
+    !return_alias_bits_in_block(expr, body, &CoarsePolicy { fresh }).is_fresh()
 }
 
 // ---------------------------------------------------------------------------
@@ -839,35 +1067,46 @@ pub fn reachable_bindings(expr: &HirExpr, out: &mut Reachable) {
 )]
 fn reachable_bindings_in_block(block: &HirBlock, out: &mut Reachable) {
     for stmt in &block.statements {
-        match &stmt.kind {
-            hew_hir::HirStmtKind::Let(_, Some(init)) => reachable_bindings(init, out),
-            hew_hir::HirStmtKind::Let(_, None) => {}
-            hew_hir::HirStmtKind::Assign { target, value } => {
-                reachable_bindings(target, out);
-                reachable_bindings(value, out);
-            }
-            hew_hir::HirStmtKind::Expr(e) => reachable_bindings(e, out),
-            hew_hir::HirStmtKind::Return(Some(e)) => reachable_bindings(e, out),
-            hew_hir::HirStmtKind::Return(None) => {}
-            hew_hir::HirStmtKind::Defer { body, .. } => reachable_bindings(body, out),
-            hew_hir::HirStmtKind::LetElse {
-                scrutinee,
-                success_prelude,
-                else_body,
-                ..
-            } => {
-                reachable_bindings(scrutinee, out);
-                for s in success_prelude {
-                    if let hew_hir::HirStmtKind::Let(_, Some(v)) = &s.kind {
-                        reachable_bindings(v, out);
-                    }
-                }
-                reachable_bindings_in_block(else_body, out);
-            }
-        }
+        reachable_bindings_in_stmt(stmt, out);
     }
     if let Some(tail) = &block.tail {
         reachable_bindings(tail, out);
+    }
+}
+
+/// Reachability over a single statement — the per-statement body of
+/// [`reachable_bindings_in_block`], factored out so the fresh-owner see-through
+/// (`stmt_mentions_binding`) can ask the same total question of one statement.
+#[allow(
+    clippy::match_same_arms,
+    reason = "statement arms mirror the sealed HirStmtKind surface exhaustively"
+)]
+fn reachable_bindings_in_stmt(stmt: &HirStmt, out: &mut Reachable) {
+    match &stmt.kind {
+        hew_hir::HirStmtKind::Let(_, Some(init)) => reachable_bindings(init, out),
+        hew_hir::HirStmtKind::Let(_, None) => {}
+        hew_hir::HirStmtKind::Assign { target, value } => {
+            reachable_bindings(target, out);
+            reachable_bindings(value, out);
+        }
+        hew_hir::HirStmtKind::Expr(e) => reachable_bindings(e, out),
+        hew_hir::HirStmtKind::Return(Some(e)) => reachable_bindings(e, out),
+        hew_hir::HirStmtKind::Return(None) => {}
+        hew_hir::HirStmtKind::Defer { body, .. } => reachable_bindings(body, out),
+        hew_hir::HirStmtKind::LetElse {
+            scrutinee,
+            success_prelude,
+            else_body,
+            ..
+        } => {
+            reachable_bindings(scrutinee, out);
+            for s in success_prelude {
+                if let hew_hir::HirStmtKind::Let(_, Some(v)) = &s.kind {
+                    reachable_bindings(v, out);
+                }
+            }
+            reachable_bindings_in_block(else_body, out);
+        }
     }
 }
 
@@ -2735,6 +2974,59 @@ mod tests {
             }
         }
         panic!("function {name} not found");
+    }
+
+    /// Fix (i) — the fresh-owner see-through. A helper that tail-returns a
+    /// single-assignment `let`-bound fresh construction (directly OR through the
+    /// `[..]` array-literal desugar) is proven fresh; every borrowed-alias-return
+    /// shape STAYS non-fresh. This is the freshness half of the double-free crux:
+    /// if any adversarial alias-return flipped to fresh, the caller-side mint
+    /// (fix (ii)) would double-free it.
+    #[test]
+    fn see_through_flips_fresh_construction_keeps_alias_returns_closed() {
+        let module = lower_source(
+            r#"
+            type Holder { items: Vec<string> }
+            type Wrap { h: Holder }
+            fn mkHolder(i: i64) -> Holder { Holder { items: [f"x{i}", f"y{i}"] } }
+            fn mkLetBound(i: i64) -> Holder { let x: Holder = Holder { items: [f"x{i}"] }; x }
+            fn passthrough(h: Holder) -> Holder { h }
+            fn cond(a: Holder, b: Holder, c: bool) -> Holder { if c { a } else { b } }
+            fn getself(w: Wrap) -> Holder { w.h }
+            fn remake(h: Holder) -> Holder { var x: Holder = Holder { items: [] }; x = h; x }
+            fn viaLet(h: Holder) -> Holder { let x: Holder = h; x }
+            fn arrayOfParam(h: Holder) -> Vec<Holder> { [h] }
+            "#,
+        );
+        let origin_fns = origin_fns_of(&module);
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        // Newly proven fresh by the see-through.
+        for name in ["mkHolder", "mkLetBound"] {
+            assert!(
+                coarse[&fn_id(&module, name)],
+                "`{name}` tail-returns a fresh construction through a `let` local — must be proven fresh"
+            );
+        }
+        // The double-free guard: every alias-return STAYS non-fresh.
+        for name in [
+            "passthrough",  // bare param forwarder
+            "cond",         // conditional param passthrough
+            "getself",      // field projection of a param
+            "remake",       // `var` reassigned from a param
+            "viaLet",       // `let x = h; x` re-derives the param leaf
+            "arrayOfParam", // `[h]` — the see-through must union the pushed param
+        ] {
+            assert!(
+                !coarse[&fn_id(&module, name)],
+                "`{name}` may alias a by-value param — the see-through must NOT prove it fresh (double-free risk)"
+            );
+        }
+        // The shared walk stays byte-identical to the frozen reference.
+        let frozen = compute_fn_returns_fresh_owner_ref(&origin_fns);
+        assert_eq!(
+            coarse, frozen,
+            "see-through drift between the shared walk and the frozen reference"
+        );
     }
 
     #[test]

@@ -229,9 +229,47 @@ impl Builder {
             HirExprKind::Binary { .. } | HirExprKind::Unary { .. } => {
                 matches!(ty, ResolvedTy::String)
             }
+            // A string-returning direct `Call` whose callee carries the runtime
+            // `produces_fresh_owned_string` contract: the `cstring` transforms
+            // (`to_upper`/`to_lower`/`trim`/`repeat`, lowered through their
+            // `RewriteToFunction` c-symbol) and an f-string interpolation (a
+            // `Call`-chain of `string_concat`, `hew-hir/src/lower.rs`). Each
+            // hands the caller a genuinely fresh rc==1 buffer it solely owns —
+            // the last leaking #2428 shape, before this arm the `_ => false`
+            // catch-all skipped the #2743/#2745 caller-side temp mint and the
+            // buffer leaked (32 B/call). The runtime contract is the EXACT
+            // fresh-vs-non-fresh discriminator: a call returning a BORROWED /
+            // interior-alias string (`ResultOwnership::Borrowed`) or an
+            // un-catalogued USER function (`FAIL_CLOSED`) is NOT
+            // `produces_fresh_owned_string`, so it fails closed here (leak,
+            // never a caller-side double-free). Registration alone never forces
+            // the drop — the SAME string sole-owner prover then gates it, so a
+            // fresh result that ESCAPES (consumed/returned) is still excluded.
+            HirExprKind::Call { callee, .. } => {
+                matches!(ty, ResolvedTy::String) && Self::call_produces_fresh_owned_string(callee)
+            }
             _ => false,
         };
         is_fresh_producer.then_some(ty)
+    }
+    /// Whether a direct-`Call` callee resolves to a runtime symbol carrying the
+    /// `produces_fresh_owned_string` ownership contract. The symbol is resolved
+    /// from the callee identity exactly as value-lowering does
+    /// (`runtime_symbol_for_call_expr`): a `ResolvedRef::Builtin` family via its
+    /// catalog `c_symbol()`, every other resolved callee via the checker-minted
+    /// callee name — the `RewriteToFunction` c-symbol for a method rewrite (e.g.
+    /// `hew_string_to_uppercase`), or the catalog presentation name for f-string
+    /// concat (`string_concat`). Both spellings are dual-listed in
+    /// `callee_ownership_contract`.
+    fn call_produces_fresh_owned_string(callee: &HirExpr) -> bool {
+        let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
+            return false;
+        };
+        let symbol = match resolved {
+            ResolvedRef::Builtin(family) => family.c_symbol(),
+            _ => name.as_str(),
+        };
+        crate::runtime_symbols::callee_ownership_contract(symbol).produces_fresh_owned_string()
     }
     /// #2648 preflight admission classifier — pure HIR, run at the TOP of every
     /// call-scrutinee consumer BEFORE `lower_value`/CFG allocation. Returns the

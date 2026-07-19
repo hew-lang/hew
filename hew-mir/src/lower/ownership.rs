@@ -209,7 +209,10 @@ impl Builder {
     /// - a projection (`g(r.field)`, `g(t.0)`, `g(xs[i])`) is an interior alias
     ///   of an owner's storage;
     /// - a call return (`g(f())`) may hand back a borrowed parameter alias
-    ///   (#2648) — never trusted fresh here;
+    ///   (#2648) — trusted fresh ONLY when `callee_returns_fresh_owner` proves
+    ///   (via the module freshness fixpoint) that EVERY return path of the callee
+    ///   is a fresh sole owner, never a param/interior alias; an unproven or
+    ///   alias-forwarding callee stays excluded (leak, never a double-free);
     /// - a bare string `Literal` (`h("abc")`) is a static/interned constant that
     ///   allocates nothing and must not be freed (verified: 0 leaks unminted).
     pub(crate) fn caller_borrowed_temp_arg_owned_ty(&self, arg: &HirExpr) -> Option<ResolvedTy> {
@@ -246,7 +249,22 @@ impl Builder {
             // the drop — the SAME string sole-owner prover then gates it, so a
             // fresh result that ESCAPES (consumed/returned) is still excluded.
             HirExprKind::Call { callee, .. } => {
-                matches!(ty, ResolvedTy::String) && Self::call_produces_fresh_owned_string(callee)
+                if matches!(ty, ResolvedTy::String) {
+                    Self::call_produces_fresh_owned_string(callee)
+                } else {
+                    // A composite (record/tuple/enum) result: admit a PROVEN-fresh
+                    // producer, gated by the SAME module sole-owner prover the push
+                    // consult site uses (`callee_returns_fresh_owner`). A callee
+                    // whose freshness fixpoint verdict is `false` — because a
+                    // return path forwards, projects, or launders a by-value param
+                    // (#2648) — stays excluded (leak, never a caller-side
+                    // double-free). The mint caller then gates the actual drop on
+                    // `proven_borrow_args` (borrow vs consume), so a CONSUMING
+                    // composite callee's temp is never double-registered, and a
+                    // fresh result that ESCAPES is still excluded by the sole-owner
+                    // prover exactly as for the named `let x = mk(); g(x)` shape.
+                    callee_returns_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
+                }
             }
             _ => false,
         };

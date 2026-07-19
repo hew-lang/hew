@@ -3589,6 +3589,14 @@ pub(crate) struct ParamOwnershipFacts {
 struct ScanCtx<'a> {
     consume: &'a HashMap<(hew_hir::ItemId, usize), bool>,
     methods: &'a HashSet<hew_hir::ItemId>,
+    /// The subset of `methods` whose PARAM 0 is a by-value `self` receiver of a
+    /// NON-resource type (`collect_borrow_receiver_methods`). Shape A of #2753:
+    /// the borrow-site collector records such a receiver's `SiteId` so the
+    /// caller keeps the value-receiver record/collection's scope-exit drop.
+    /// Empty of effect except in the `proven_borrow_arg_sites` walk (a
+    /// non-resource composite receiver is absent from the resource-only
+    /// `param_consume` map, so the borrow-pass gate never fires for it).
+    receiver_methods: &'a HashSet<hew_hir::ItemId>,
 }
 
 #[derive(Debug)]

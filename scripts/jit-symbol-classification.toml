@@ -825,6 +825,7 @@ stable = [
   "hew_vec_set_i8",
   "hew_vec_set_layout",
   "hew_vec_set_owned",
+  "hew_vec_set_owned_move",
   "hew_vec_set_ptr",
   "hew_vec_set_str",
   "hew_vec_set_u16",

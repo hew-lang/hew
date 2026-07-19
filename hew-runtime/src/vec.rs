@@ -2794,6 +2794,54 @@ pub unsafe extern "C" fn hew_vec_set_owned(
     }
 }
 
+/// Overwrite an owned element by MOVE: drop the replaced element (descriptor
+/// `drop_fn`), then byte-copy the new one into the slot and transfer ownership
+/// of its heap to the Vec WITHOUT running the descriptor `clone_fn`.
+///
+/// This is the move-in sibling of [`hew_vec_set_owned`] (COPY-IN: deep-clone,
+/// source retains its own heap) for a FRESH, single-use element source — an
+/// unbound materialised rvalue (`v.set(i, Record { .. })`, `v.set(i, make())`)
+/// constructed solely to hand to the Vec. A COPY-IN deep clone would allocate a
+/// second copy and leak the source temp's owned heap (the transient
+/// `record_init` temp has no binding and no scope-exit drop). Moving the bytes
+/// transfers the element's owned heap into the slot; the caller's source is dead
+/// after the call and must NOT be dropped (the MIR routes the materialised-owner
+/// set here exactly because the element operand is a throwaway temp). The
+/// overwrite-drop of the REPLACED element is preserved identically to
+/// [`hew_vec_set_owned`], so the previous element is freed exactly once and the
+/// new element's heap is freed exactly once by `hew_vec_free_owned`.
+///
+/// # Safety
+///
+/// `v` must be an owned-element `HewVec` (created by
+/// [`hew_vec_new_with_elem_layout`]). `data` must point to at least
+/// `descriptor.size` readable bytes whose ownership is transferred to the Vec.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_set_owned_move(
+    v: *mut HewVec,
+    index: i64,
+    data: *const core::ffi::c_void,
+) {
+    cabi_guard!(v.is_null() || data.is_null());
+    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let elem_size = layout.size;
+        let drop_fn = owned_drop_fn(layout);
+        let index = index as usize;
+        if index >= (*v).len {
+            abort_oob("Vec.set()", index, (*v).len);
+        }
+        let slot = (*v).data.add(index * elem_size);
+        // Drop the replaced element exactly once (identical to the copy-in set),
+        // then MOVE the new element in: byte-copy transfers BitCopy fields, enum
+        // tag bytes, AND owned-heap pointers into the slot. No `clone_fn` — the
+        // source's heap is now owned by the Vec; the source temp is dead.
+        drop_fn(slot.cast::<core::ffi::c_void>());
+        core::ptr::copy_nonoverlapping(data.cast::<u8>(), slot, elem_size);
+    }
+}
+
 /// Pop the last owned element, moving it into `out`. The element's ownership
 /// transfers to the caller, so NO drop runs — `out` is the new owner. Returns 1
 /// on success, 0 if the vec is empty.
@@ -4977,6 +5025,68 @@ mod vec_owned_tests {
 
             hew_vec_free_owned(v);
             assert_eq!(live_allocations(), 0, "no leak after set + free");
+        }
+    }
+
+    /// set-move drops the old element exactly once and MOVES the new one in
+    /// WITHOUT a clone: the source temp's heap transfers into the slot, so the
+    /// caller must NOT free the source (it is dead after the move). The moved-in
+    /// element is freed exactly once by `hew_vec_free_owned`. This is the fix for
+    /// the unbound-temp COPY-IN leak: with `hew_vec_set_owned` the source temp's
+    /// heap would leak (deep-clone allocates a second copy, source never freed);
+    /// the move-in transfers the single owner and leaks nothing.
+    #[test]
+    fn set_move_drops_old_once_and_moves_new_without_clone() {
+        let _guard = reset_counters();
+        // SAFETY: owned ops use a valid descriptor.
+        unsafe {
+            let layout = owned_layout();
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let s0 = make_source(1);
+            hew_vec_push_owned(v, (&raw const s0).cast());
+            free_source(s0);
+            // 1 element live (the vec's cloned copy).
+            assert_eq!(live_allocations(), 1);
+
+            let clones_before = CLONE_CALLS.load(Ordering::SeqCst);
+            // The source temp owning a fresh heap box (2 live: vec copy + source).
+            let s1 = make_source(99);
+            assert_eq!(live_allocations(), 2);
+
+            hew_vec_set_owned_move(v, 0, (&raw const s1).cast());
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                1,
+                "old element dropped exactly once (overwrite-drop preserved)"
+            );
+            assert_eq!(
+                CLONE_CALLS.load(Ordering::SeqCst),
+                clones_before,
+                "move-in must NOT clone the new element"
+            );
+            // The old vec copy was freed; s1's heap moved into the slot — no new
+            // allocation, no source to free. Exactly one live element (the slot).
+            assert_eq!(
+                live_allocations(),
+                1,
+                "move transferred the single owner; nothing leaked, nothing cloned"
+            );
+            // The caller MUST NOT free s1 — its heap is now owned by the vec.
+
+            let borrowed = hew_vec_get_owned(v, 0).cast::<OwnedElem>();
+            assert_eq!(*(*borrowed).payload, 99, "set-move replaced the value");
+
+            hew_vec_free_owned(v);
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                2,
+                "free drops the moved-in element (old + moved-in = 2 drops total)"
+            );
+            assert_eq!(
+                live_allocations(),
+                0,
+                "no leak, no double-free after set-move + free"
+            );
         }
     }
 

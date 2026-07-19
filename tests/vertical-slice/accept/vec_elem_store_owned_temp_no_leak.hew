@@ -1,0 +1,31 @@
+// Owned-Vec element-store temp-leak fixture (Linux ASan/LSan arm of the macOS
+// `vec_push_temp_leak_oracle.rs` slope oracle). A fresh, unbound aggregate
+// rvalue used as a `Vec::push` / `Vec::set` element source is routed to the
+// MOVE-in siblings (`hew_vec_push_owned_move` / `hew_vec_set_owned_move`), so
+// the source temp's owned heap transfers into the slot and is freed exactly
+// once — nothing leaks. A DEEP-OWNED element (a record with a nested
+// `Vec<string>`, deep-cloned by `clone_fn` into a distinct buffer) is required:
+// a string/Option field is refcount-shared and would not expose the leak.
+// Pre-fix, the per-iteration `set` temp leaked its inner Vec under COPY-IN.
+record Holder {
+    items: Vec<string>
+}
+
+fn mkItems(i: i64) -> Vec<string> {
+    var xs: Vec<string> = Vec::new();
+    xs.push("deep-elem-a");
+    xs.push("deep-elem-b");
+    return xs;
+}
+
+fn main() {
+    var v: Vec<Holder> = Vec::new();
+    v.push(Holder { items: mkItems(0) });
+    var i: i64 = 0;
+    while i < 16 {
+        v.push(Holder { items: mkItems(i) });
+        v.set(0, Holder { items: mkItems(i) });
+        i = i + 1;
+    }
+    println(v.len());
+}

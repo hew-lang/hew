@@ -1,0 +1,23 @@
+// Imported generic pure-value record monomorphised across a module boundary
+// (#2744). `hew::keyed` exports a generic BitCopy record `Key<T>` (two `i64`
+// fields, no owned/Option payload). The importer instantiates `Key<string>`
+// through the module-qualified use-site name and reads a field.
+//
+// The monomorphised `Key$$string` layout registers its BitCopy value-class
+// marker under the bare-origin mangling (`Key$$string`), but this use-site
+// carries the qualified name `keyed.Key<string>`. The MIR value-class probe
+// must shorten the qualified origin before mangling; otherwise the qualified
+// `keyed.Key$$string` misses the bare marker, the instance falls to `Unknown`,
+// and the fail-closed value-class gate rejects a valid BitCopy record. Both
+// axes are necessary: an imported NON-generic `Key` (bare origin at the
+// use-site) and a single-file generic `Key<T>` (bare origin everywhere) both
+// already pass — only imported-origin + generic-mono hits the qualified key.
+//
+// Harness verb: hew run
+// Expected: the field read returns the constructed index (7).
+import hew::keyed;
+
+fn main() {
+    let key: keyed.Key<string> = keyed.mk(7);
+    println(key.index);
+}

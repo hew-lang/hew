@@ -56,6 +56,18 @@ fixtures=(
   # `Holder$$Box` lookup and the heap-owning Box drop / field read falls through
   # the codegen fail-closed.
   postmono_qualified_layout
+  # An IMPORTED generic pure-value record (`keyed.Key<T>`, two i64, no owned or
+  # Option field) monomorphised to `Key$$string` across the module boundary
+  # (#2744). Its BitCopy value-class marker registers under the bare-origin
+  # mangling (`Key$$string`) the declaration produces, but the importer's
+  # use-site carries the qualified name `keyed.Key<string>`. The MIR value-class
+  # probe must shorten the qualified origin before mangling, or the qualified
+  # `keyed.Key$$string` misses the bare marker, the instance falls to `Unknown`,
+  # and the fail-closed value-class gate rejects a valid BitCopy record. Both
+  # axes are necessary: imported NON-generic and single-file generic both pass —
+  # only imported-origin + generic-mono hits the qualified key. Output "7"
+  # proves the mono instance classified BitCopy and the field read lowered.
+  imported_generic_valueclass
   # A monomorphic record (`Point`) and a generic record (`Holder<Box>`) both
   # CONSTRUCTED through their module-qualified OUTER name (`qualshapes.Point`,
   # `qualshapes.Holder<qualshapes.Box>`) under qualified-by-default. Layout

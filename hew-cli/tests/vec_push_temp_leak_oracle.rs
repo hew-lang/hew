@@ -40,7 +40,11 @@
 //! completion under `MallocScribble`/`MallocPreScribble`/`MallocGuardEdges` and
 //! must exit with the expected value. Routing a `BindingRef` source to move
 //! would transfer heap a live binding (or the second push) still reads, so the
-//! poisoned allocator would crash or scribble before the checksum prints.
+//! poisoned allocator would crash or scribble before the checksum prints. The
+//! `set` route carries the same guard across four live-source shapes (bound-local
+//! read-after, same bound temp set twice, closure-captured value, and a by-value
+//! param embedded in a construction) so a future unsafe widening of the
+//! `set` → `hew_vec_set_owned_move` route fails CI.
 //!
 //! ## Skip behaviour
 //!
@@ -169,6 +173,75 @@ fn readAfter() -> i64 {\n\
 fn main() {\n\
 \x20   print(sharedTwice());\n\
 \x20   print(readAfter());\n\
+\x20   print(\"OK\");\n\
+}\n";
+
+/// `Vec::set` no-double-free pins — the COPY shapes the SET router must NOT relax.
+/// Each probe keeps the element source LIVE past the `set`, so the router must
+/// deep-clone COPY-IN rather than transfer the source's heap into the slot. A
+/// wrongly-routed move double-frees or reads freed heap; under the poisoned
+/// allocator triple that aborts (or scribbles) before the checksums print. These
+/// are the four shapes cross-eco review hand-verified route COPY on the fix base:
+///
+/// * `setBoundLive` — a BOUND local read after `v.set(0, h)` (h still live).
+/// * `setBoundTwice` — the same bound temp fed to two sets (both COPY; the
+///   local's scope-exit drop releases the original once).
+/// * `setClosureCapture` — a value captured by a CLOSURE, `v.set(0, h)`, then the
+///   closure invoked (the capture keeps h live across the store).
+/// * `setParamEmbed` — a whole by-value PARAM embedded in a construction
+///   `v.set(0, Wrap { inner: p })` with `p` read after (the param binding lives to
+///   the caller's post-call read).
+///
+/// Each `Holder.items` has len 2, so every probe returns 2. Expected stdout:
+/// `setBoundLive`=2, `setBoundTwice`=2, `setClosureCapture`=2, `setParamEmbed`'s
+/// pre-set read=2, and the caller's post-call `p.items.len()`=2, then `OK` — so
+/// `22222OK`.
+const SET_NO_DOUBLE_FREE_SOURCE: &str = "\
+record Holder { items: Vec<string> }\n\
+record Wrap { inner: Holder }\n\
+fn mkItems(i: i64) -> Vec<string> {\n\
+\x20   var xs: Vec<string> = Vec::new();\n\
+\x20   xs.push(\"deep-elem-a\");\n\
+\x20   xs.push(\"deep-elem-b\");\n\
+\x20   return xs;\n\
+}\n\
+fn setBoundLive() -> i64 {\n\
+\x20   var v: Vec<Holder> = Vec::new();\n\
+\x20   v.push(Holder { items: mkItems(0) });\n\
+\x20   let h = Holder { items: mkItems(1) };\n\
+\x20   v.set(0, h);\n\
+\x20   return h.items.len();\n\
+}\n\
+fn setBoundTwice() -> i64 {\n\
+\x20   var v: Vec<Holder> = Vec::new();\n\
+\x20   v.push(Holder { items: mkItems(0) });\n\
+\x20   let h = Holder { items: mkItems(1) };\n\
+\x20   v.set(0, h);\n\
+\x20   v.set(0, h);\n\
+\x20   return h.items.len();\n\
+}\n\
+fn setClosureCapture() -> i64 {\n\
+\x20   var v: Vec<Holder> = Vec::new();\n\
+\x20   v.push(Holder { items: mkItems(0) });\n\
+\x20   let h = Holder { items: mkItems(1) };\n\
+\x20   let read_h = || h.items.len();\n\
+\x20   v.set(0, h);\n\
+\x20   return read_h();\n\
+}\n\
+fn setParamEmbed(p: Holder) -> i64 {\n\
+\x20   var v: Vec<Wrap> = Vec::new();\n\
+\x20   v.push(Wrap { inner: Holder { items: mkItems(0) } });\n\
+\x20   let before = p.items.len();\n\
+\x20   v.set(0, Wrap { inner: p });\n\
+\x20   return before;\n\
+}\n\
+fn main() {\n\
+\x20   print(setBoundLive());\n\
+\x20   print(setBoundTwice());\n\
+\x20   print(setClosureCapture());\n\
+\x20   let p = Holder { items: mkItems(1) };\n\
+\x20   print(setParamEmbed(p));\n\
+\x20   print(p.items.len());\n\
 \x20   print(\"OK\");\n\
 }\n";
 
@@ -376,6 +449,49 @@ fn vec_element_store_copy_shapes_run_clean_under_malloc_scribble() {
         "copy shapes must print sharedTwice()=6, readAfter()=6, then OK — a \
          scribbled or wrong value indicates the source local's heap was moved out \
          while a live reader (the second push, or the after-read) still needed it;\n{}",
+        describe_output(&output)
+    );
+}
+
+/// No-double-free pin for the SET route: the four COPY shapes the `set` router
+/// must NOT relax run clean under the poisoned-allocator triple and print the
+/// expected checksums. Each keeps the element source live past `v.set` (a bound
+/// local read after, the same bound temp set twice, a closure-captured value, and
+/// a by-value param embedded in a construction); routing any to move double-frees
+/// or reads transferred-out heap, which aborts or scribbles here. Guards the
+/// move-in `set` sibling this lane added against a future unsafe widening.
+#[test]
+fn vec_set_copy_shapes_run_clean_under_malloc_scribble() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("vec-set-copy-shapes-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(SET_NO_DOUBLE_FREE_SOURCE, dir.path(), "set_copy_shapes");
+
+    let output = Command::new(&bin)
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1")
+        .output()
+        .expect("run set-copy-shapes binary");
+
+    assert!(
+        output.status.success(),
+        "set copy shapes must run clean under the poisoned allocator — a crash here \
+         indicates a live element source (bound local, closure capture, or by-value \
+         param) was wrongly routed to `hew_vec_set_owned_move` (double free / \
+         read-after-move);\n{}",
+        describe_output(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout,
+        "22222OK",
+        "set copy shapes must print each probe's live-source read as 2 (five 2s) \
+         then OK — a scribbled or wrong value indicates the source's heap was moved \
+         into the slot while a live reader still needed it;\n{}",
         describe_output(&output)
     );
 }

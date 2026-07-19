@@ -247,6 +247,8 @@ tests/pkg-import/mixed_collision_reply.hew
 tests/pkg-import/mixed_import_impl_collision.hew
 tests/pkg-import/nested_qualified_payload.hew
 tests/pkg-import/package_module_type_alias.hew
+tests/pkg-import/private_generic_record_option_element.hew
+tests/pkg-import/private_generic_record_vec_element.hew
 
 # requires-package-resolver: sub-packages (each depends on sibling packages)
 tests/pkg-import/pkgs/aliasmember/aliasmember.hew

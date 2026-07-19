@@ -4771,6 +4771,44 @@ impl Builder {
                     self.binding_scope.insert(param.id, func.body.scope);
                 }
             }
+            // #2747 — callee-side drop for a by-value owned-aggregate RECORD
+            // message param delivered to an actor `receive fn` handler. The
+            // mailbox hand-off (`sink.take(b)`) CONSUMES the caller's `b` into
+            // the mailbox `memcpy`; the delivered copy handed to the handler is
+            // a fresh SOLE owner of its heap field buffers. Nobody else frees
+            // it: the caller's original was consumed, so it is NOT the borrow a
+            // by-value record param is in a `FunctionCallConv::Default` call
+            // (where the caller retains ownership and drops it — the reason
+            // records are deliberately NOT registered in the enum branch above).
+            // A handler that only BORROWS its heap field (`b.payload.len()` / a
+            // field read) never drains it through a consuming iterator or a
+            // move-into-state, so the buffer leaked once per delivered message.
+            //
+            // Register the message record into `owned_locals` + the body scope so
+            // `derive_owned_record_drop_allowed` picks it up and emits the
+            // recursive `DropKind::RecordInPlace` field teardown on the
+            // read-and-discard path. That prover's escape scan already excludes a
+            // record whose owned field ESCAPES into actor state (`store =
+            // b.payload` / `spawn A(field: v)`): for a retained field the
+            // synthesised `state_drop_fn` is the single free, so the escape-scan's
+            // field-binder exclusion keeps the handler from double-freeing it
+            // (fail-closed: leak a non-escaped sibling, never double-free). The
+            // consume path (a `for v in b.payload` drain that frees the buffer as
+            // it iterates) is likewise excluded by the same escape/consume scan,
+            // so the iterate handler keeps its single free. Gated on the
+            // `ActorHandler` call convention: a `Default` record param stays the
+            // caller's drop. The synthetic trailing sink param of a `receive gen
+            // fn` shell is a stream handle, not an owned-aggregate record, so
+            // `is_owned_aggregate_record_ty` filters it out.
+            if !param_is_consumed
+                && self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler
+            {
+                let owned_ty = self.subst_ty(&param.ty);
+                if self.is_owned_aggregate_record_ty(&owned_ty) {
+                    self.register_owned_local(param.id, param.name.clone(), owned_ty);
+                    self.binding_scope.insert(param.id, func.body.scope);
+                }
+            }
         }
     }
 

@@ -1581,6 +1581,92 @@ fn user_record_string_return_admits_and_excludes_drop_on_escape() {
     );
 }
 
+/// True when the named function earns at least one `RecordInPlace` drop.
+fn fn_has_record_inplace_drop(pipeline: &hew_mir::IrPipeline, fn_name: &str) -> bool {
+    pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in elaborated_mir"))
+        .drop_plans
+        .iter()
+        .any(|(_, plan)| {
+            plan.drops
+                .iter()
+                .any(|d| d.kind == hew_mir::DropKind::RecordInPlace)
+        })
+}
+
+/// #2747 — a by-value owned-aggregate RECORD message param delivered to an actor
+/// `receive fn` and only BORROWED (`b.payload.len()`) is a transient
+/// read-and-discard the handler frame solely owns: the mailbox `memcpy`
+/// consumed the caller's original. It must earn a `RecordInPlace` scope-exit
+/// drop in the handler so its collection field buffer is freed once per
+/// delivered message (pre-fix it leaked — the handler was never registered as
+/// owning the delivered record).
+#[test]
+fn recv_handler_borrow_only_record_param_earns_record_inplace_drop() {
+    let pipeline = lower_source(
+        r"
+        type Boxed { payload: Vec<i64> }
+        actor Sink {
+            var seen: i64;
+            receive fn take(b: Boxed) {
+                seen = seen + b.payload.len();
+            }
+            receive fn total() -> i64 { seen }
+        }
+        fn main() -> i64 {
+            let sink = spawn Sink(seen: 0);
+            sink.take(Boxed { payload: [1, 2, 3] });
+            0
+        }
+        ",
+    );
+    assert!(
+        fn_has_record_inplace_drop(&pipeline, "Sink__recv__take"),
+        "a borrow-only receive-handler record param must earn a RecordInPlace \
+         scope-exit drop (else its field buffer leaks per message): {:?}",
+        pipeline.elaborated_mir
+    );
+}
+
+/// #2747 boundary (the double-free guard) — when the handler MOVES the delivered
+/// record's owned field INTO actor state (`store = b.payload`), the field
+/// escapes; the synthesised `state_drop_fn` is that buffer's single free. The
+/// escape-scan must therefore SUPPRESS the handler's `RecordInPlace` drop for
+/// that record — admitting it would free the same buffer twice. Fail-closed: a
+/// retained record is excluded, never re-admitted.
+#[test]
+fn recv_handler_record_param_retained_into_state_suppresses_record_inplace_drop() {
+    let pipeline = lower_source(
+        r"
+        type Boxed { payload: Vec<i64> }
+        actor Sink {
+            var seen: i64;
+            var store: Vec<i64>;
+            receive fn take(b: Boxed) {
+                store = b.payload;
+                seen = seen + store.len();
+            }
+            receive fn total() -> i64 { seen }
+        }
+        fn main() -> i64 {
+            let sink = spawn Sink(seen: 0, store: []);
+            sink.take(Boxed { payload: [1, 2, 3] });
+            0
+        }
+        ",
+    );
+    assert!(
+        !fn_has_record_inplace_drop(&pipeline, "Sink__recv__take"),
+        "a receive-handler record whose owned field is retained into actor \
+         state must NOT earn a RecordInPlace drop — the state_drop_fn is its \
+         single free; admitting it double-frees: {:?}",
+        pipeline.elaborated_mir
+    );
+}
+
 /// A functional-update (`..user`) consumes the source record's fields into the
 /// new record; both are owned-by-value and admitted. The source's owned field
 /// moves out, so the new record owns it. Migrated forward from the reject test.

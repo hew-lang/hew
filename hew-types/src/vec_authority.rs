@@ -151,13 +151,34 @@ impl VecMethod {
     clippy::implicit_hasher,
     reason = "uses the checker's concrete TypeDef table shape"
 )]
-#[allow(
-    clippy::match_same_arms,
-    reason = "tuple and nested-collection ownership cases stay explicit"
-)]
 pub fn classify_element<S: std::hash::BuildHasher>(
     ty: &Ty,
     type_defs: &HashMap<String, TypeDef, S>,
+) -> Option<VecElementToken> {
+    classify_element_with(ty, &|name, _args| {
+        type_defs.get(name).map(|td| td.is_indirect)
+    })
+}
+
+/// Classify a concrete Vec element token over an abstract nominal-indirection
+/// lookup, so the checker (which resolves user nominals through its `TypeDef`
+/// table) and the MIR monomorphisation re-resolver (which resolves them through
+/// its record/enum layout registries) share ONE element-token classifier
+/// (`dedup-semantic-boundary`). `nominal_indirect(name)` returns `Some(true)`
+/// for a registered indirect enum, `Some(false)` for a registered inline
+/// record/enum, and `None` when the name resolves to no user layout in scope.
+/// The lookup receives the nominal's type ARGUMENTS as well as its name so a
+/// consumer keying its layout registry by the monomorphised mangle (`W$$i64`)
+/// can form the concrete key; a consumer keying by base name (the checker's
+/// `TypeDef` table) ignores them.
+#[must_use]
+#[allow(
+    clippy::match_same_arms,
+    reason = "tuple, Option/Result, and nested-collection layout cases stay explicit"
+)]
+pub fn classify_element_with(
+    ty: &Ty,
+    nominal_indirect: &dyn Fn(&str, &[Ty]) -> Option<bool>,
 ) -> Option<VecElementToken> {
     Some(match ty {
         Ty::Bool => VecElementToken::Bool,
@@ -175,6 +196,23 @@ pub fn classify_element<S: std::hash::BuildHasher>(
         Ty::F64 => VecElementToken::F64,
         Ty::String => VecElementToken::Str,
         Ty::Tuple(_) => VecElementToken::Layout,
+        // `Option<T>` / `Result<T, E>` lower to an inline tagged-union value
+        // (a fixed-size `{ tag, payload }` struct), exactly like a user
+        // record/enum — so they ride the layout-descriptor element family. The
+        // `Copy` gate downstream (`is_copy_layout`) keeps an all-bit-copy
+        // instantiation (`Option<i64>`) on the plain `_layout` ops while a
+        // heap-owning payload (`Option<string>`) stays fail-closed (no owned
+        // thunk path for a builtin nominal). Without this arm `Vec<Option<T>>`
+        // fell through to the user-nominal lookup, which has no `Option`
+        // `TypeDef`, and the element was rejected as unclassifiable (#2737).
+        Ty::Named {
+            builtin:
+                Some(
+                    crate::builtin_type::BuiltinType::Option
+                    | crate::builtin_type::BuiltinType::Result,
+                ),
+            ..
+        } => VecElementToken::Layout,
         Ty::Named {
             builtin: Some(b), ..
         } if b.lowers_as_pointer_vec_element() => VecElementToken::Ptr,
@@ -198,9 +236,9 @@ pub fn classify_element<S: std::hash::BuildHasher>(
             ..
         } => VecElementToken::Layout,
         Ty::Function { .. } | Ty::Closure { .. } => VecElementToken::Ptr,
-        Ty::Named { name, .. } => match type_defs.get(name) {
-            Some(td) if td.is_indirect => VecElementToken::Ptr,
-            Some(_) => VecElementToken::Layout,
+        Ty::Named { name, args, .. } => match nominal_indirect(name, args) {
+            Some(true) => VecElementToken::Ptr,
+            Some(false) => VecElementToken::Layout,
             None => return None,
         },
         _ => return None,
@@ -493,6 +531,97 @@ pub fn resolve_runtime_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtin_type::BuiltinType;
+
+    /// #2737 agreement pin: the SHARED element-token classifier
+    /// [`classify_element_with`] — the single seam the checker (over its
+    /// `TypeDef` table) and the MIR monomorphisation resolver (over its
+    /// record/enum layout registries) both consult — classifies a composite
+    /// type-parameter instantiation the SAME way regardless of which side's
+    /// nominal lookup backs it. A record/enum nominal is `Layout` when inline,
+    /// `Ptr` when indirect, `None` when unregistered; `Option`/`Result` are
+    /// inline tagged-union `Layout` elements independent of the nominal lookup.
+    /// This is the classification whose eager-on-the-generic-spine divergence
+    /// from the constructor produced the clone-thunk panic; pinning the ONE
+    /// classifier keeps both sides congruent by construction
+    /// (`dedup-semantic-boundary`).
+    #[test]
+    fn shared_classifier_agrees_on_composite_instantiations() {
+        let composite = Ty::Named {
+            builtin: None,
+            name: "W".to_string(),
+            args: vec![Ty::I64],
+        };
+        // A registered inline record/enum → layout-descriptor element.
+        assert_eq!(
+            classify_element_with(&composite, &|_, _| Some(false)),
+            Some(VecElementToken::Layout)
+        );
+        // A registered indirect enum → heap-boxed pointer element.
+        assert_eq!(
+            classify_element_with(&composite, &|_, _| Some(true)),
+            Some(VecElementToken::Ptr)
+        );
+        // Unregistered nominal → unclassifiable (fail closed downstream).
+        assert_eq!(classify_element_with(&composite, &|_, _| None), None);
+
+        // `Option<T>` / `Result<T, E>` are inline tagged-union layout elements
+        // independent of the nominal lookup (they carry a builtin tag and are
+        // classified before the user-nominal arm). Was: `None` → the element
+        // rejected as unclassifiable, `Vec<Option<T>>` NYI (#2737 Bug B).
+        for builtin in [BuiltinType::Option, BuiltinType::Result] {
+            let ty = Ty::Named {
+                builtin: Some(builtin),
+                name: builtin.canonical_name().to_string(),
+                args: vec![Ty::I64, Ty::I64],
+            };
+            assert_eq!(
+                classify_element_with(&ty, &|_, _| None),
+                Some(VecElementToken::Layout),
+                "{builtin:?} must classify as an inline layout Vec element"
+            );
+        }
+    }
+
+    /// #2737: given the shared classifier's `Layout` verdict, a `Copy` composite
+    /// selects the plain `_layout` push while a heap-owning composite selects the
+    /// owned push — the two ABI families the constructor codegen stamps for the
+    /// all-scalar vs heap-owning monomorphisation. Pinning both off ONE resolver
+    /// is the congruence the constructor/push divergence broke.
+    #[test]
+    fn copy_composite_pushes_layout_owned_composite_pushes_owned() {
+        let copy_layout = VecElementProfile {
+            abi: Some(VecElementToken::Layout),
+            is_owned: false,
+            is_copy_layout: true,
+            is_function_like: false,
+            is_abstract: false,
+        };
+        assert_eq!(
+            resolve_runtime_symbol(
+                VecMethod::Push,
+                copy_layout,
+                VecResolutionContext::MonomorphizedPlaceholder
+            ),
+            VecSymbolResolution::Resolved("hew_vec_push_layout".to_string())
+        );
+
+        let owned_composite = VecElementProfile {
+            abi: Some(VecElementToken::Layout),
+            is_owned: true,
+            is_copy_layout: false,
+            is_function_like: false,
+            is_abstract: false,
+        };
+        assert_eq!(
+            resolve_runtime_symbol(
+                VecMethod::Push,
+                owned_composite,
+                VecResolutionContext::MonomorphizedPlaceholder
+            ),
+            VecSymbolResolution::Resolved("hew_vec_push_owned".to_string())
+        );
+    }
 
     #[test]
     fn source_declares_each_runtime_backed_vec_method_once() {

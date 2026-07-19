@@ -520,6 +520,15 @@ impl Checker {
             if crate::vec_authority::classify_element(&elem_ty, &self.type_defs)
                 == Some(crate::vec_authority::VecElementToken::Layout)
                 && matches!(elem_ty, Ty::Named { .. })
+                // An element that still carries an unresolved type parameter
+                // (`Option<T>`, `W<T>`) cannot have its Copy-vs-owned verdict
+                // decided on the generic spine — the abstract `T` reads
+                // non-Copy AND non-owned-admissible for a builtin nominal, which
+                // would falsely reject `Vec<Option<T>>::new()`. Admit here and
+                // let the per-monomorphisation resolver classify the substituted
+                // element (fail-closed there if genuinely unsupported) — the
+                // same deferral the element-typed method resolution takes (#2737).
+                && !self.vec_element_contains_abstract_type_param(&elem_ty)
             {
                 let is_copy = self.vec_element_has_copy_layout(&elem_ty);
                 // W5.016: admit a non-Copy record/enum element with a

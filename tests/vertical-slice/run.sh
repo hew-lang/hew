@@ -4535,9 +4535,14 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_option_option_rejected.hew" \
     "ambiguous under the null encoding" \
     "wire_cbor_option_option_rejected"
+# `Vec<Option<string>>` now fails closed at the earlier owned-element Vec
+# admission (a heap-owning `Option` payload has no synthesised clone/drop thunk
+# path), before the wire-body floor is reached — a stricter, clearer rejection
+# point for the same unsupported shape. The wire-body floor itself stays covered
+# by `wire_cbor_vec_nested_rejected` below (#2737).
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_owned_compound_rejected.hew" \
-    "outside the supported wire-body floor" \
+    "cannot be a \`Vec\` element" \
     "wire_cbor_vec_owned_compound_rejected"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_nested_rejected.hew" \

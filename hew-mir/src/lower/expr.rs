@@ -8087,14 +8087,9 @@ impl Builder {
                 self.lower_string_sentinel_option(symbol, hir_args, site, context, result_ty)
             }
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
-            // Cross-node monitor extern surface, both `(...) -> i64`:
-            //  - `hew_node_monitor_location(target)` reached as a direct `extern "C"`
-            //    call (statement position; the value-position `monitor(RemotePid)`
-            //    builtin routes through `lower_node_monitor`).
-            //  - `hew_node_monitor_recv(ref_id, timeout_ms)` blocks for the
-            //    distributed monitor's terminal signal and returns the carried
-            //    down-reason; called from the std `MonitorRef::recv_down` body.
-            "hew_node_monitor_location" | "hew_node_monitor_recv" => {
+            // Cross-node monitor extern surface. Value-position
+            // `monitor(RemotePid)` routes through `lower_node_monitor`.
+            "hew_node_monitor_location" => {
                 self.lower_simple_int_runtime_call(symbol, hir_args, site, context, result_ty)
             }
             // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`

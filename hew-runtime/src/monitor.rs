@@ -14,12 +14,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::LazyLock;
 #[cfg(test)]
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier};
+use std::sync::{Mutex, PoisonError};
 
 use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
 use crate::lifetime::poison_safe::PoisonSafeRw;
 use crate::mailbox;
+use crate::node_identity::{Location, NodeId};
 use crate::supervisor::SYS_MSG_DOWN;
 
 /// Number of shards for monitor table to reduce contention.
@@ -28,11 +30,6 @@ const MONITOR_SHARDS: usize = 16;
 /// Entry in the monitor table.
 #[derive(Debug, Clone)]
 struct MonitorEntry {
-    /// Actor that is monitoring (will receive DOWN message).
-    /// Using usize instead of *mut `HewActor` for thread safety.
-    monitoring_actor: usize,
-    /// Actor ID for O(1) liveness lookup in notification paths.
-    monitoring_actor_id: u64,
     /// Unique reference ID for this monitor (for demonitor).
     ref_id: u64,
 }
@@ -42,10 +39,16 @@ struct MonitorEntry {
 struct MonitorShard {
     /// Maps `monitored_actor_id` -> Vec of monitors watching that actor.
     monitors: HashMap<u64, Vec<MonitorEntry>>,
-    /// Maps `ref_id` -> (`monitored_actor_id`, `monitoring_actor`) for demonitor.
-    ref_to_monitor: HashMap<u64, (u64, usize)>,
+    /// Maps `ref_id` -> monitored actor id for O(1) local-index cleanup.
+    ref_to_monitor: HashMap<u64, u64>,
     /// Tracks actors whose terminal monitor sweep has already completed.
-    terminal_reasons: HashMap<u64, i32>,
+    terminal_reasons: HashMap<u64, TerminalMonitorReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalMonitorReason {
+    state: i32,
+    crash_kind: u32,
 }
 
 /// Per-runtime actor-monitor state: the sharded monitor table plus the
@@ -57,7 +60,65 @@ struct MonitorShard {
 /// sharing entries or DOWN delivery.
 pub(crate) struct MonitorState {
     table: [PoisonSafeRw<MonitorShard>; MONITOR_SHARDS],
+    /// Sole watcher-side observation authority for local/remote monitors and links.
+    observations: Mutex<HashMap<u64, ObservationEntry>>,
+    /// Target-side remote registrations used only to fan terminal frames to peers.
+    remote_targets: Mutex<HashMap<u64, Vec<RemoteWatcher>>>,
     ref_counter: AtomicU64,
+}
+
+/// Reason sentinel used when a remote target becomes unreachable.
+pub const MONITOR_REASON_LOST: i32 = -1;
+
+/// What one watcher-side observation does when its target terminates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WatcherAction {
+    Monitor { watcher_actor_id: u64 },
+    Link { local_actor_id: u64, policy_tag: u8 },
+}
+
+/// Target identity for one observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservationTarget {
+    Local(u64),
+    Remote(Location),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObservationEntry {
+    target: ObservationTarget,
+    action: WatcherAction,
+}
+
+/// A claimed remote monitor terminal action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MonitorDown {
+    pub monitor_id: u64,
+    pub watcher_actor_id: u64,
+    pub target: Location,
+}
+
+/// A claimed cross-node link terminal action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LinkDown {
+    pub local_actor_id: u64,
+    pub remote_target_serial: u64,
+    pub reason: i32,
+    pub policy_tag: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RemoteWatcher {
+    watcher: Location,
+    ref_id: u64,
+    is_link: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RemoteWatcherTarget {
+    pub watcher: Location,
+    pub ref_id: u64,
+    pub is_link: bool,
 }
 
 impl MonitorState {
@@ -71,8 +132,412 @@ impl MonitorState {
                     terminal_reasons: HashMap::new(),
                 })
             }),
+            observations: Mutex::new(HashMap::new()),
+            remote_targets: Mutex::new(HashMap::new()),
             ref_counter: AtomicU64::new(1),
         }
+    }
+
+    /// Allocate one non-zero observation id without wrap or reuse.
+    pub(crate) fn next_observation_id(&self) -> Option<u64> {
+        self.ref_counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1).filter(|next| *next != 0)
+            })
+            .ok()
+            .filter(|id| *id != 0)
+    }
+
+    pub(crate) fn register_remote_monitor(
+        &self,
+        target: Location,
+        watcher_actor_id: u64,
+    ) -> Option<u64> {
+        self.register_remote_observation(target, WatcherAction::Monitor { watcher_actor_id })
+    }
+
+    pub(crate) fn register_link_watcher(
+        &self,
+        target: Location,
+        local_actor_id: u64,
+        policy_tag: u8,
+    ) -> Option<u64> {
+        self.register_remote_observation(
+            target,
+            WatcherAction::Link {
+                local_actor_id,
+                policy_tag,
+            },
+        )
+    }
+
+    fn register_remote_observation(&self, target: Location, action: WatcherAction) -> Option<u64> {
+        let monitor_id = self.next_observation_id()?;
+        self.observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                monitor_id,
+                ObservationEntry {
+                    target: ObservationTarget::Remote(target),
+                    action,
+                },
+            );
+        Some(monitor_id)
+    }
+
+    /// Remove one setup-time remote observation without sending a demonitor.
+    pub(crate) fn remove_remote_observation(&self, monitor_id: u64) -> Option<Location> {
+        let mut observations = self
+            .observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = observations.get(&monitor_id).copied()?;
+        let ObservationTarget::Remote(target) = entry.target else {
+            return None;
+        };
+        observations.remove(&monitor_id);
+        Some(target)
+    }
+
+    pub(crate) fn deliver_monitor_to_ref(
+        &self,
+        monitor_id: u64,
+        target: Location,
+    ) -> Option<MonitorDown> {
+        let mut observations = self
+            .observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = observations.get(&monitor_id).copied()?;
+        match (entry.target, entry.action) {
+            (
+                ObservationTarget::Remote(entry_target),
+                WatcherAction::Monitor { watcher_actor_id },
+            ) if entry_target == target => {
+                observations.remove(&monitor_id);
+                Some(MonitorDown {
+                    monitor_id,
+                    watcher_actor_id,
+                    target,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn deliver_link_down_to_ref(
+        &self,
+        monitor_id: u64,
+        target: Location,
+        reason: i32,
+    ) -> Option<LinkDown> {
+        let mut observations = self
+            .observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = observations.get(&monitor_id).copied()?;
+        match (entry.target, entry.action) {
+            (
+                ObservationTarget::Remote(entry_target),
+                WatcherAction::Link {
+                    local_actor_id,
+                    policy_tag,
+                },
+            ) if entry_target == target => {
+                observations.remove(&monitor_id);
+                Some(LinkDown {
+                    local_actor_id,
+                    remote_target_serial: target.slot(),
+                    reason,
+                    policy_tag,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn take_monitor_downs_for_node(&self, remote_node: NodeId) -> Vec<MonitorDown> {
+        self.take_monitor_downs_matching(|target| target.node() == remote_node)
+    }
+
+    pub(crate) fn take_monitor_downs_for_session(
+        &self,
+        remote_node: NodeId,
+        session_incarnation: u32,
+    ) -> Vec<MonitorDown> {
+        self.take_monitor_downs_matching(|target| {
+            target.node() == remote_node && target.incarnation() == session_incarnation
+        })
+    }
+
+    pub(crate) fn drain_remote_observations_for_shutdown(&self) {
+        for down in self.take_monitor_downs_matching(|_| true) {
+            self.enqueue_shutdown(down);
+        }
+        for down in self.take_link_downs_matching(|_| true, MONITOR_REASON_LOST) {
+            crate::link::deliver_cross_node_link_exit(
+                down.local_actor_id,
+                down.remote_target_serial,
+                down.reason,
+                down.policy_tag,
+            );
+        }
+    }
+
+    fn take_monitor_downs_matching(&self, matches: impl Fn(Location) -> bool) -> Vec<MonitorDown> {
+        let mut observations = self
+            .observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let ids: Vec<_> = observations
+            .iter()
+            .filter_map(|(&monitor_id, entry)| match (entry.target, entry.action) {
+                (
+                    ObservationTarget::Remote(target),
+                    WatcherAction::Monitor { watcher_actor_id },
+                ) if matches(target) => Some((monitor_id, watcher_actor_id, target)),
+                _ => None,
+            })
+            .collect();
+        for (monitor_id, _, _) in &ids {
+            observations.remove(monitor_id);
+        }
+        ids.into_iter()
+            .map(|(monitor_id, watcher_actor_id, target)| MonitorDown {
+                monitor_id,
+                watcher_actor_id,
+                target,
+            })
+            .collect()
+    }
+
+    pub(crate) fn take_link_downs_for_node(
+        &self,
+        remote_node: NodeId,
+        reason: i32,
+    ) -> Vec<LinkDown> {
+        self.take_link_downs_matching(|target| target.node() == remote_node, reason)
+    }
+
+    pub(crate) fn take_link_downs_for_session(
+        &self,
+        remote_node: NodeId,
+        session_incarnation: u32,
+        reason: i32,
+    ) -> Vec<LinkDown> {
+        self.take_link_downs_matching(
+            |target| target.node() == remote_node && target.incarnation() == session_incarnation,
+            reason,
+        )
+    }
+
+    fn take_link_downs_matching(
+        &self,
+        matches: impl Fn(Location) -> bool,
+        reason: i32,
+    ) -> Vec<LinkDown> {
+        let mut observations = self
+            .observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let ids: Vec<_> = observations
+            .iter()
+            .filter_map(|(&monitor_id, entry)| match (entry.target, entry.action) {
+                (
+                    ObservationTarget::Remote(target),
+                    WatcherAction::Link {
+                        local_actor_id,
+                        policy_tag,
+                    },
+                ) if matches(target) => Some((
+                    monitor_id,
+                    LinkDown {
+                        local_actor_id,
+                        remote_target_serial: target.slot(),
+                        reason,
+                        policy_tag,
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
+        for (monitor_id, _) in &ids {
+            observations.remove(monitor_id);
+        }
+        ids.into_iter().map(|(_, down)| down).collect()
+    }
+
+    pub(crate) fn register_remote_watcher(
+        &self,
+        target_serial: u64,
+        watcher: Location,
+        monitor_id: u64,
+    ) {
+        self.register_remote_watcher_kind(target_serial, watcher, monitor_id, false);
+    }
+
+    pub(crate) fn register_remote_link_watcher(
+        &self,
+        target_serial: u64,
+        watcher: Location,
+        monitor_id: u64,
+    ) {
+        self.register_remote_watcher_kind(target_serial, watcher, monitor_id, true);
+    }
+
+    fn register_remote_watcher_kind(
+        &self,
+        target_serial: u64,
+        watcher: Location,
+        monitor_id: u64,
+        is_link: bool,
+    ) {
+        let mut targets = self
+            .remote_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let watchers = targets.entry(target_serial).or_default();
+        if !watchers
+            .iter()
+            .any(|entry| entry.watcher == watcher && entry.ref_id == monitor_id)
+        {
+            watchers.push(RemoteWatcher {
+                watcher,
+                ref_id: monitor_id,
+                is_link,
+            });
+        }
+    }
+
+    pub(crate) fn remove_remote_watcher(
+        &self,
+        target_serial: u64,
+        watcher: Location,
+        monitor_id: u64,
+    ) {
+        let mut targets = self
+            .remote_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(watchers) = targets.get_mut(&target_serial) {
+            watchers.retain(|entry| !(entry.watcher == watcher && entry.ref_id == monitor_id));
+            if watchers.is_empty() {
+                targets.remove(&target_serial);
+            }
+        }
+    }
+
+    pub(crate) fn take_remote_watchers(&self, target_serial: u64) -> Vec<RemoteWatcherTarget> {
+        self.remote_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&target_serial)
+            .map(|watchers| {
+                watchers
+                    .into_iter()
+                    .map(|entry| RemoteWatcherTarget {
+                        watcher: entry.watcher,
+                        ref_id: entry.ref_id,
+                        is_link: entry.is_link,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn has_remote_watchers(&self, target_serial: u64) -> bool {
+        self.remote_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&target_serial)
+            .is_some_and(|watchers| !watchers.is_empty())
+    }
+
+    pub(crate) fn prune_remote_watchers_for_node(&self, dead_watcher: NodeId) -> usize {
+        self.prune_remote_watchers_matching(|watcher| watcher.node() == dead_watcher)
+    }
+
+    pub(crate) fn prune_remote_watchers_for_session(
+        &self,
+        dead_watcher: NodeId,
+        session_incarnation: u32,
+    ) -> usize {
+        self.prune_remote_watchers_matching(|watcher| {
+            watcher.node() == dead_watcher && watcher.incarnation() == session_incarnation
+        })
+    }
+
+    fn prune_remote_watchers_matching(&self, matches: impl Fn(Location) -> bool) -> usize {
+        let mut targets = self
+            .remote_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut pruned = 0;
+        targets.retain(|_, watchers| {
+            let before = watchers.len();
+            watchers.retain(|entry| !matches(entry.watcher));
+            pruned += before - watchers.len();
+            !watchers.is_empty()
+        });
+        pruned
+    }
+
+    pub(crate) fn remote_watcher_count(&self) -> usize {
+        self.remote_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(Vec::len)
+            .sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_observation_count(&self) -> usize {
+        self.observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
+    )]
+    pub(crate) fn enqueue_down(
+        &self,
+        watcher_actor_id: u64,
+        monitor_id: u64,
+        target: Location,
+        reason: i32,
+        crash_kind: u32,
+    ) {
+        deliver_down_message(
+            watcher_actor_id,
+            HewDownMessage::remote(monitor_id, target, reason, crash_kind),
+        );
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
+    )]
+    pub(crate) fn enqueue_lost(&self, down: MonitorDown) {
+        deliver_down_message(
+            down.watcher_actor_id,
+            HewDownMessage::remote_lost(down.monitor_id, down.target),
+        );
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
+    )]
+    pub(crate) fn enqueue_shutdown(&self, down: MonitorDown) {
+        deliver_down_message(
+            down.watcher_actor_id,
+            HewDownMessage::remote_shutdown(down.monitor_id, down.target),
+        );
     }
 }
 
@@ -138,38 +603,140 @@ fn terminal_monitor_reason(actor_state: i32) -> Option<i32> {
     }
 }
 
-fn send_down_notification(monitor: &MonitorEntry, monitored_actor_id: u64, reason: i32) {
-    let monitoring_actor_addr = monitor.monitoring_actor;
-    if monitoring_actor_addr == 0 {
-        return;
+const DOWN_TARGET_LOCAL: u32 = 0;
+const DOWN_TARGET_REMOTE: u32 = 1;
+const DOWN_REASON_EXITED: u32 = 0;
+const DOWN_REASON_CRASHED: u32 = 1;
+const DOWN_REASON_MONITOR_LOST: u32 = 2;
+const DOWN_REASON_LOCAL_SHUTDOWN: u32 = 3;
+
+/// Fixed actor-mailbox DOWN payload.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HewDownMessage {
+    pub monitor_id: u64,
+    pub target_kind: u32,
+    pub reason_kind: u32,
+    pub node_hi: u64,
+    pub node_lo: u64,
+    pub slot: u64,
+    pub session_incarnation: u32,
+    pub crash_kind: u32,
+}
+
+impl HewDownMessage {
+    fn local(monitor_id: u64, actor_id: u64, terminal: i32, crash_kind: u32) -> Self {
+        let reason_kind = if terminal == HewActorState::Stopped as i32 {
+            DOWN_REASON_EXITED
+        } else {
+            DOWN_REASON_CRASHED
+        };
+        Self {
+            monitor_id,
+            target_kind: DOWN_TARGET_LOCAL,
+            reason_kind,
+            node_hi: 0,
+            node_lo: 0,
+            slot: crate::pid::hew_pid_serial(actor_id),
+            session_incarnation: 0,
+            crash_kind: if reason_kind == DOWN_REASON_CRASHED {
+                crash_kind
+            } else {
+                0
+            },
+        }
     }
 
-    let monitoring_actor = monitoring_actor_addr as *mut HewActor;
+    pub(crate) fn remote(
+        monitor_id: u64,
+        target: Location,
+        terminal: i32,
+        crash_kind: u32,
+    ) -> Self {
+        let reason_kind = if terminal == HewActorState::Stopped as i32 {
+            DOWN_REASON_EXITED
+        } else {
+            DOWN_REASON_CRASHED
+        };
+        Self {
+            monitor_id,
+            target_kind: DOWN_TARGET_REMOTE,
+            reason_kind,
+            node_hi: target.node().hi(),
+            node_lo: target.node().lo(),
+            slot: target.slot(),
+            session_incarnation: target.incarnation(),
+            crash_kind: if reason_kind == DOWN_REASON_CRASHED {
+                crash_kind
+            } else {
+                0
+            },
+        }
+    }
 
+    pub(crate) fn remote_lost(monitor_id: u64, target: Location) -> Self {
+        Self {
+            monitor_id,
+            target_kind: DOWN_TARGET_REMOTE,
+            reason_kind: DOWN_REASON_MONITOR_LOST,
+            node_hi: target.node().hi(),
+            node_lo: target.node().lo(),
+            slot: target.slot(),
+            session_incarnation: target.incarnation(),
+            crash_kind: 0,
+        }
+    }
+
+    pub(crate) fn remote_shutdown(monitor_id: u64, target: Location) -> Self {
+        Self {
+            reason_kind: DOWN_REASON_LOCAL_SHUTDOWN,
+            ..Self::remote_lost(monitor_id, target)
+        }
+    }
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<HewDownMessage>() == 48);
+    assert!(std::mem::offset_of!(HewDownMessage, monitor_id) == 0);
+    assert!(std::mem::offset_of!(HewDownMessage, target_kind) == 8);
+    assert!(std::mem::offset_of!(HewDownMessage, reason_kind) == 12);
+    assert!(std::mem::offset_of!(HewDownMessage, node_hi) == 16);
+    assert!(std::mem::offset_of!(HewDownMessage, node_lo) == 24);
+    assert!(std::mem::offset_of!(HewDownMessage, slot) == 32);
+    assert!(std::mem::offset_of!(HewDownMessage, session_incarnation) == 40);
+    assert!(std::mem::offset_of!(HewDownMessage, crash_kind) == 44);
+};
+
+pub(crate) fn deliver_down_message(watcher_actor_id: u64, down_data: HewDownMessage) {
+    let Some(monitoring_actor) =
+        crate::lifetime::live_actors::get_actor_ptr_by_id(watcher_actor_id)
+    else {
+        return;
+    };
+    let mut wake_actor = false;
+    let mut enqueue_failed = false;
     crate::actor::with_live_actor_by_id(
-        monitor.monitoring_actor_id,
+        watcher_actor_id,
         monitoring_actor,
         |monitoring_actor_ref| {
             let mailbox = monitoring_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
 
             if !mailbox.is_null() {
-                let down_data = DownMessage {
-                    monitored_actor_id,
-                    ref_id: monitor.ref_id,
-                    reason,
-                };
-
                 let data_ptr = (&raw const down_data).cast::<c_void>();
-                let data_size = std::mem::size_of::<DownMessage>();
+                let data_size = std::mem::size_of::<HewDownMessage>();
 
                 // SAFETY: LIVE_ACTORS keeps the monitoring actor and mailbox live.
-                unsafe {
-                    mailbox::hew_mailbox_send_sys(
+                let sent = unsafe {
+                    mailbox::hew_mailbox_send_sys_checked(
                         mailbox,
                         SYS_MSG_DOWN,
                         data_ptr.cast_mut(),
                         data_size,
-                    );
+                    )
+                };
+                if !sent {
+                    enqueue_failed = true;
+                    return;
                 }
 
                 if monitoring_actor_ref
@@ -188,7 +755,7 @@ fn send_down_notification(monitor: &MonitorEntry, monitored_actor_id: u64, reaso
                     monitoring_actor_ref
                         .hibernating
                         .store(0, std::sync::atomic::Ordering::Relaxed);
-                    crate::scheduler::sched_enqueue(monitoring_actor);
+                    wake_actor = true;
                 }
             }
 
@@ -196,18 +763,45 @@ fn send_down_notification(monitor: &MonitorEntry, monitored_actor_id: u64, reaso
             run_notify_monitors_hook();
         },
     );
+    if wake_actor {
+        crate::scheduler::sched_enqueue(monitoring_actor);
+    }
+    if enqueue_failed {
+        crate::actor::with_live_actor_by_id(
+            watcher_actor_id,
+            monitoring_actor,
+            |_monitoring_actor_ref| {
+                // SAFETY: the live-actor authority validated the pointer.
+                unsafe {
+                    crate::actor::hew_actor_trap(
+                        monitoring_actor,
+                        crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED,
+                    );
+                }
+            },
+        );
+    }
 }
 
 /// Create a monitor: watcher monitors target.
-/// Returns a unique reference ID for this monitor.
+///
+/// Returns zero and writes a unique monitor id on success. Non-zero returns are
+/// one-based `MonitorError` discriminants.
 ///
 /// # Safety
 ///
-/// Both `watcher` and `target` must be valid pointers to [`HewActor`] structs.
+/// `watcher`, `target`, and `out_monitor_id` must be valid pointers.
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut HewActor) -> u64 {
-    if watcher.is_null() || target.is_null() {
-        return 0;
+pub unsafe extern "C" fn hew_actor_monitor(
+    watcher: *mut HewActor,
+    target: *mut HewActor,
+    out_monitor_id: *mut u64,
+) -> i32 {
+    const INVALID_TARGET: i32 = 2;
+    const RESOURCE_EXHAUSTED: i32 = 11;
+
+    if watcher.is_null() || target.is_null() || out_monitor_id.is_null() {
+        return INVALID_TARGET;
     }
 
     // SAFETY: Caller guarantees both pointers are valid.
@@ -217,14 +811,19 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
 
     let target_id = target_ref.id;
 
-    // Generate unique reference ID.
+    // Generate one shared local/remote observation ID.
     let state = monitor_state();
-    let ref_id = state.ref_counter.fetch_add(1, Ordering::Relaxed);
+    let Some(ref_id) = state.next_observation_id() else {
+        crate::set_last_error("hew_actor_monitor: monitor id space exhausted");
+        return RESOURCE_EXHAUSTED;
+    };
 
-    let monitor_entry = MonitorEntry {
-        monitoring_actor: watcher as usize,
-        monitoring_actor_id: watcher_ref.id,
-        ref_id,
+    let monitor_entry = MonitorEntry { ref_id };
+    let observation = ObservationEntry {
+        target: ObservationTarget::Local(target_id),
+        action: WatcherAction::Monitor {
+            watcher_actor_id: watcher_ref.id,
+        },
     };
 
     let shard_index = get_shard_index(target_id);
@@ -234,7 +833,17 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
         } else if let Some(reason) =
             terminal_monitor_reason(target_ref.actor_state.load(Ordering::Acquire))
         {
-            Some(reason)
+            Some(TerminalMonitorReason {
+                state: reason,
+                crash_kind: if reason == HewActorState::Crashed as i32 {
+                    crate::internal::types::CrashKind::tag_from_error_code(
+                        target_ref.error_code.load(Ordering::Acquire),
+                    )
+                    .cast_unsigned()
+                } else {
+                    0
+                },
+            })
         } else {
             shard
                 .monitors
@@ -242,19 +851,47 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
                 .or_default()
                 .push(monitor_entry.clone());
 
-            // Add to ref lookup: ref_id -> (target_id, watcher)
-            shard
-                .ref_to_monitor
-                .insert(ref_id, (target_id, watcher as usize));
+            shard.ref_to_monitor.insert(ref_id, target_id);
+            state
+                .observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(ref_id, observation);
             None
         }
     });
 
     if let Some(reason) = terminal_reason {
-        send_down_notification(&monitor_entry, target_id, reason);
+        let down = HewDownMessage::local(ref_id, target_id, reason.state, reason.crash_kind);
+        deliver_down_message(watcher_ref.id, down);
     }
 
-    ref_id
+    // SAFETY: caller provided a writable out pointer; write only on success.
+    unsafe { *out_monitor_id = ref_id };
+    0
+}
+
+/// Rust convenience wrapper around the explicit status/out-id monitor ABI.
+///
+/// # Safety
+///
+/// `watcher` and `target` must satisfy [`hew_actor_monitor`]'s pointer contract.
+///
+/// # Errors
+///
+/// Returns the non-zero monitor setup status when registration fails.
+pub unsafe fn register_actor_monitor(
+    watcher: *mut HewActor,
+    target: *mut HewActor,
+) -> Result<u64, i32> {
+    let mut monitor_id = 0;
+    // SAFETY: inherited from the caller; the local out pointer is writable.
+    let status = unsafe { hew_actor_monitor(watcher, target, &raw mut monitor_id) };
+    if status == 0 {
+        Ok(monitor_id)
+    } else {
+        Err(status)
+    }
 }
 
 /// Remove a monitor by its reference ID.
@@ -283,46 +920,34 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
         return;
     }
 
-    // Locality split: a cross-node MonitorRef's ref_id is allocated in the high
-    // `DIST_REF_ID_BASE` namespace, disjoint from the local monitor counter.
-    // `MonitorRef::close` (and the implicit Drop) lower to this symbol for BOTH
-    // local and cross-node refs; route a cross-node ref to the cross-node teardown
-    // (tear down the watcher entry + send CTRL_DEMONITOR to the peer) so the
-    // watcher-side entry is reclaimed instead of silently no-op'ing on the local
-    // table. The std `MonitorRef::close` body is unchanged — the locality dispatch
-    // lives entirely here. A local ref (below the base) always hits the local table
-    // below; the namespaces never collide.
-    if crate::dist_monitor::is_cross_node_ref(ref_id) {
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "cross-node ref_id is a counter far below i64::MAX; hew_node_demonitor reads i64"
-        )]
-        crate::hew_node::hew_node_demonitor(ref_id as i64);
-        return;
-    }
-
-    // Find which shard contains this ref_id by checking all shards.
-    // This is not optimal but monitors are typically rare operations.
     let Some(state) = monitor_state_opt() else {
         return;
     };
-    for shard_index in 0..MONITOR_SHARDS {
-        let removed = state.table[shard_index].access(|shard| {
-            if let Some((target_id, _watcher_addr)) = shard.ref_to_monitor.remove(&ref_id) {
-                // Remove from monitors list
+    let entry = state
+        .observations
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&ref_id);
+    let Some(entry) = entry else {
+        return;
+    };
+    match entry.target {
+        ObservationTarget::Local(target_id) => {
+            let shard_index = get_shard_index(target_id);
+            state.table[shard_index].access(|shard| {
+                shard.ref_to_monitor.remove(&ref_id);
                 if let Some(monitor_list) = shard.monitors.get_mut(&target_id) {
                     monitor_list.retain(|entry| entry.ref_id != ref_id);
                     if monitor_list.is_empty() {
                         shard.monitors.remove(&target_id);
                     }
                 }
-                true
-            } else {
-                false
+            });
+        }
+        ObservationTarget::Remote(target) => {
+            if let WatcherAction::Monitor { watcher_actor_id } = entry.action {
+                crate::hew_node::send_remote_demonitor(ref_id, target, watcher_actor_id);
             }
-        });
-        if removed {
-            return;
         }
     }
 }
@@ -332,7 +957,7 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
 /// This function is called from `hew_actor_trap` after the actor has
 /// transitioned to a terminal state. It removes all monitors for the
 /// dead actor and sends DOWN messages to all monitoring actors.
-pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
+pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u32) {
     let shard_index = get_shard_index(actor_id);
     // No runtime → no per-runtime monitor table → no monitors to notify. This
     // path is reachable from `hew_actor_trap` without an installed runtime
@@ -345,7 +970,13 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
     // Take all monitors for this actor ID.
     let monitors = state.table[shard_index].access(|shard| {
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
-        shard.terminal_reasons.insert(actor_id, reason);
+        shard.terminal_reasons.insert(
+            actor_id,
+            TerminalMonitorReason {
+                state: reason,
+                crash_kind,
+            },
+        );
 
         // Also remove from ref_to_monitor mapping
         for monitor in &monitors {
@@ -355,9 +986,31 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
         monitors
     });
 
-    // Send DOWN messages to all monitoring actors.
-    for monitor in monitors {
-        send_down_notification(&monitor, actor_id, reason);
+    let claimed: Vec<_> = {
+        let mut observations = state
+            .observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        monitors
+            .into_iter()
+            .filter_map(|monitor| {
+                let entry = observations.remove(&monitor.ref_id)?;
+                match (entry.target, entry.action) {
+                    (
+                        ObservationTarget::Local(target),
+                        WatcherAction::Monitor { watcher_actor_id },
+                    ) if target == actor_id => Some((monitor.ref_id, watcher_actor_id)),
+                    _ => None,
+                }
+            })
+            .collect()
+    };
+
+    for (monitor_id, watcher_actor_id) in claimed {
+        deliver_down_message(
+            watcher_actor_id,
+            HewDownMessage::local(monitor_id, actor_id, reason, crash_kind),
+        );
     }
 
     // Cross-node terminal sweep: if any REMOTE node monitors this
@@ -365,7 +1018,11 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
     // terminal reason. The distributed table keys on the actor's serial; the
     // fan-out is fail-closed and no-ops when no remote watcher exists or no
     // node/conn-mgr is installed (R7), so the local sweep above is unaffected.
-    crate::hew_node::fan_out_remote_monitor_down(crate::pid::hew_pid_serial(actor_id), reason);
+    crate::hew_node::fan_out_remote_monitor_down(
+        crate::pid::hew_pid_serial(actor_id),
+        reason,
+        crash_kind,
+    );
 }
 
 #[cfg(test)]
@@ -419,8 +1076,7 @@ impl Drop for NotifyMonitorsHookGuard {
 ///
 /// Called from `hew_actor_free` before deallocation to prevent
 /// `notify_monitors_on_death` from dereferencing freed memory.
-pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) {
-    let actor_usize = actor_addr as usize;
+pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, _actor_addr: *mut HewActor) {
     // Like `notify_monitors_on_death`, this teardown read runs from the actor
     // free path with OR without an installed runtime. No runtime → no table →
     // no entries to scrub, matching the old empty-global-table no-op.
@@ -430,78 +1086,86 @@ pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, actor_addr: *mut HewA
 
     // Remove any monitors-on-this-actor entry from its shard.
     let own_shard = get_shard_index(actor_id);
-    state.table[own_shard].access(|shard| {
+    let target_refs = state.table[own_shard].access(|shard| {
         shard.terminal_reasons.remove(&actor_id);
-        if let Some(monitors) = shard.monitors.remove(&actor_id) {
-            for m in &monitors {
-                shard.ref_to_monitor.remove(&m.ref_id);
-            }
+        let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
+        for m in &monitors {
+            shard.ref_to_monitor.remove(&m.ref_id);
         }
+        monitors
+            .into_iter()
+            .map(|monitor| monitor.ref_id)
+            .collect::<Vec<_>>()
     });
+    let watcher_local_refs: Vec<(u64, u64)> = {
+        let mut observations = state
+            .observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for ref_id in target_refs {
+            observations.remove(&ref_id);
+        }
+        let refs: Vec<_> = observations
+            .iter()
+            .filter_map(|(&ref_id, entry)| {
+                let owns = matches!(
+                    entry.action,
+                    WatcherAction::Monitor { watcher_actor_id } if watcher_actor_id == actor_id
+                ) || matches!(
+                    entry.action,
+                    WatcherAction::Link { local_actor_id, .. } if local_actor_id == actor_id
+                );
+                if !owns {
+                    return None;
+                }
+                match entry.target {
+                    ObservationTarget::Local(target) => Some((ref_id, target)),
+                    ObservationTarget::Remote(_) => Some((ref_id, 0)),
+                }
+            })
+            .collect();
+        for (ref_id, _) in &refs {
+            observations.remove(ref_id);
+        }
+        refs
+    };
 
-    // Scan all shards and remove this actor's address from other actors'
-    // monitor watcher lists (where this actor was the watcher).
-    for shard_rw in &state.table {
-        shard_rw.access(|shard| {
-            let mut refs_to_remove = Vec::new();
-            for monitor_list in shard.monitors.values_mut() {
-                monitor_list.retain(|entry| {
-                    if entry.monitoring_actor == actor_usize {
-                        refs_to_remove.push(entry.ref_id);
-                        false
-                    } else {
-                        true
-                    }
-                });
-            }
-            // Clean up empty entries and ref lookups.
-            shard.monitors.retain(|_id, list| !list.is_empty());
-            for ref_id in refs_to_remove {
+    for (ref_id, target_id) in watcher_local_refs {
+        if target_id != 0 {
+            state.table[get_shard_index(target_id)].access(|shard| {
                 shard.ref_to_monitor.remove(&ref_id);
-            }
-        });
+                if let Some(monitors) = shard.monitors.get_mut(&target_id) {
+                    monitors.retain(|monitor| monitor.ref_id != ref_id);
+                    if monitors.is_empty() {
+                        shard.monitors.remove(&target_id);
+                    }
+                }
+            });
+        }
     }
-}
-
-/// Message data for DOWN system messages.
-#[repr(C)]
-#[derive(Debug)]
-struct DownMessage {
-    /// ID of the monitored actor that died.
-    monitored_actor_id: u64,
-    /// Reference ID of the monitor (from `hew_actor_monitor`).
-    ref_id: u64,
-    /// Reason code (`error_code` from `hew_actor_trap`).
-    reason: i32,
 }
 
 /// Returns true if any monitor entries reference the given actor (as monitored
 /// target by ID or as watcher by address).
 #[cfg(test)]
-pub(crate) fn has_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> bool {
-    let actor_usize = actor_addr as usize;
-    let own_shard = get_shard_index(actor_id);
+pub(crate) fn has_monitors_for_actor(actor_id: u64, _actor_addr: *mut HewActor) -> bool {
     let state = monitor_state();
-
-    let found_as_target =
-        state.table[own_shard].read_access(|shard| shard.monitors.contains_key(&actor_id));
-    if found_as_target {
-        return true;
-    }
-
-    // Check if this actor appears as a watcher in any shard.
-    for shard_rw in &state.table {
-        let found = shard_rw.read_access(|shard| {
-            shard
-                .monitors
-                .values()
-                .any(|monitors| monitors.iter().any(|m| m.monitoring_actor == actor_usize))
-        });
-        if found {
-            return true;
-        }
-    }
-    false
+    state
+        .observations
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .values()
+        .any(|entry| {
+            matches!(entry.target, ObservationTarget::Local(target) if target == actor_id)
+                || matches!(
+                    entry.action,
+                    WatcherAction::Monitor { watcher_actor_id } if watcher_actor_id == actor_id
+                )
+                || matches!(
+                    entry.action,
+                    WatcherAction::Link { local_actor_id, .. } if local_actor_id == actor_id
+                )
+        })
 }
 
 #[cfg(test)]
@@ -518,6 +1182,14 @@ mod tests {
         _borrow_mode: i32,
     ) -> *mut c_void {
         std::ptr::null_mut()
+    }
+
+    unsafe fn monitor_for_test(watcher: *mut HewActor, target: *mut HewActor) -> u64 {
+        let mut monitor_id = 0;
+        // SAFETY: caller supplies the actor pointers; the out pointer is writable.
+        let status = unsafe { hew_actor_monitor(watcher, target, &raw mut monitor_id) };
+        assert_eq!(status, 0);
+        monitor_id
     }
 
     fn create_test_actor(id: u64) -> HewActor {
@@ -619,7 +1291,7 @@ mod tests {
 
         // Create monitor
         // SAFETY: Both pointers are valid stack-allocated test actors.
-        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        let ref_id = unsafe { monitor_for_test(watcher_ptr, target_ptr) };
 
         assert_ne!(ref_id, 0);
 
@@ -633,10 +1305,23 @@ mod tests {
             // Find our specific monitor entry.
             let our_monitor = monitors.iter().find(|m| m.ref_id == ref_id);
             assert!(our_monitor.is_some(), "our monitor entry should exist");
-            assert_eq!(our_monitor.unwrap().monitoring_actor, watcher_ptr as usize);
-            assert_eq!(our_monitor.unwrap().monitoring_actor_id, watcher_id);
             assert!(shard.ref_to_monitor.contains_key(&ref_id));
         });
+        let observation = monitor_state()
+            .observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&ref_id)
+            .copied();
+        assert_eq!(
+            observation,
+            Some(ObservationEntry {
+                target: ObservationTarget::Local(target_id),
+                action: WatcherAction::Monitor {
+                    watcher_actor_id: watcher_id,
+                },
+            })
+        );
 
         // Remove monitor
         hew_actor_demonitor(ref_id);
@@ -668,9 +1353,9 @@ mod tests {
 
         // Create two monitors for same target
         // SAFETY: Both pointers are valid stack-allocated test actors.
-        let ref_id1 = unsafe { hew_actor_monitor(watcher1_ptr, target_ptr) };
+        let ref_id1 = unsafe { monitor_for_test(watcher1_ptr, target_ptr) };
         // SAFETY: Both pointers are valid stack-allocated test actors.
-        let ref_id2 = unsafe { hew_actor_monitor(watcher2_ptr, target_ptr) };
+        let ref_id2 = unsafe { monitor_for_test(watcher2_ptr, target_ptr) };
 
         assert_ne!(ref_id1, ref_id2);
 
@@ -718,12 +1403,24 @@ mod tests {
         // These should not panic and should return 0
         // SAFETY: Testing null pointer handling; function returns 0 for null.
         unsafe {
-            assert_eq!(hew_actor_monitor(std::ptr::null_mut(), actor_ptr), 0);
-            assert_eq!(hew_actor_monitor(actor_ptr, std::ptr::null_mut()), 0);
+            let mut monitor_id = 99;
             assert_eq!(
-                hew_actor_monitor(std::ptr::null_mut(), std::ptr::null_mut()),
-                0
+                hew_actor_monitor(std::ptr::null_mut(), actor_ptr, &raw mut monitor_id),
+                2
             );
+            assert_eq!(
+                hew_actor_monitor(actor_ptr, std::ptr::null_mut(), &raw mut monitor_id),
+                2
+            );
+            assert_eq!(
+                hew_actor_monitor(
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &raw mut monitor_id,
+                ),
+                2
+            );
+            assert_eq!(monitor_id, 99, "failure must not write the out id");
         }
 
         // Demonitor with invalid ref_id should not panic
@@ -741,7 +1438,7 @@ mod tests {
         let target_ptr = &raw mut target;
 
         // SAFETY: Valid stack-allocated test actors.
-        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        let ref_id = unsafe { monitor_for_test(watcher_ptr, target_ptr) };
         assert_ne!(ref_id, 0);
 
         // Precondition: target has monitors, watcher appears as a watcher.
@@ -767,7 +1464,7 @@ mod tests {
         let target_ptr = &raw mut target;
 
         // SAFETY: Valid stack-allocated test actors.
-        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        let ref_id = unsafe { monitor_for_test(watcher_ptr, target_ptr) };
         assert_ne!(ref_id, 0);
 
         // Act: remove all entries where watcher appears (as if freeing watcher).
@@ -815,11 +1512,11 @@ mod tests {
                 std::sync::atomic::Ordering::Release,
             );
 
-            let ref_id = hew_actor_monitor(watcher, target);
+            let ref_id = monitor_for_test(watcher, target);
             assert_ne!(ref_id, 0);
 
             let target_id = (*target).id;
-            let notify = std::thread::spawn(move || notify_monitors_on_death(target_id, 77));
+            let notify = std::thread::spawn(move || notify_monitors_on_death(target_id, 77, 0));
             entered.wait();
 
             // The DOWN message has now been delivered: `notify` is parked in
@@ -832,10 +1529,11 @@ mod tests {
             let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
             assert!(!node.is_null());
             assert_eq!((*node).msg_type, SYS_MSG_DOWN);
-            let payload = &*((*node).data.cast::<DownMessage>());
-            assert_eq!(payload.monitored_actor_id, target_id);
-            assert_eq!(payload.ref_id, ref_id);
-            assert_eq!(payload.reason, 77);
+            let payload = &*((*node).data.cast::<HewDownMessage>());
+            assert_eq!(payload.monitor_id, ref_id);
+            assert_eq!(payload.target_kind, DOWN_TARGET_LOCAL);
+            assert_eq!(payload.slot, crate::pid::hew_pid_serial(target_id));
+            assert_eq!(payload.reason_kind, DOWN_REASON_CRASHED);
             mailbox::hew_msg_node_free(node);
 
             (*watcher).actor_state.store(
@@ -889,7 +1587,7 @@ mod tests {
         let target_ptr = &raw mut target;
 
         // SAFETY: Valid stack-allocated test actors.
-        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        let ref_id = unsafe { monitor_for_test(watcher_ptr, target_ptr) };
         assert_ne!(ref_id, 0, "monitor creation must succeed");
 
         {
@@ -921,7 +1619,7 @@ mod tests {
         let target_ptr = &raw mut target;
 
         // SAFETY: Valid stack-allocated test actors.
-        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        let ref_id = unsafe { monitor_for_test(watcher_ptr, target_ptr) };
         assert_ne!(ref_id, 0);
 
         TestMonitorRef::new(ref_id).close();
@@ -952,7 +1650,7 @@ mod tests {
         let target_ptr = &raw mut target;
 
         // SAFETY: Valid stack-allocated test actors.
-        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        let ref_id = unsafe { monitor_for_test(watcher_ptr, target_ptr) };
         assert_ne!(ref_id, 0);
 
         // Simulate actor-free: sweep all monitor entries for the target.
@@ -1006,7 +1704,7 @@ mod tests {
             // SAFETY: rt_a lives for the whole entered scope.
             let _enter = unsafe { crate::runtime::enter(&rt_a) };
             // SAFETY: watcher_a and target_a are valid test actors for the call.
-            let ref_a = unsafe { hew_actor_monitor(&raw mut watcher_a, &raw mut target_a) };
+            let ref_a = unsafe { monitor_for_test(&raw mut watcher_a, &raw mut target_a) };
             assert_eq!(ref_a, 1);
         }
 
@@ -1014,7 +1712,7 @@ mod tests {
             // SAFETY: rt_b lives for the whole entered scope.
             let _enter = unsafe { crate::runtime::enter(&rt_b) };
             // SAFETY: watcher_b and target_b are valid test actors for the call.
-            let ref_b = unsafe { hew_actor_monitor(&raw mut watcher_b, &raw mut target_b) };
+            let ref_b = unsafe { monitor_for_test(&raw mut watcher_b, &raw mut target_b) };
             assert_eq!(
                 ref_b, 1,
                 "each runtime owns an independent monitor reference counter"
@@ -1024,7 +1722,7 @@ mod tests {
         {
             // SAFETY: rt_a lives for the whole entered scope.
             let _enter = unsafe { crate::runtime::enter(&rt_a) };
-            notify_monitors_on_death(60_200, HewActorState::Stopped as i32);
+            notify_monitors_on_death(60_200, HewActorState::Stopped as i32, 0);
         }
 
         monitor_shard_for_runtime_test(&rt_a, 60_200).read_access(|shard| {
@@ -1064,7 +1762,7 @@ mod tests {
         // here; both calls must now return silently. (A global default runtime
         // installed by a concurrent scheduler test would also be tolerated —
         // it resolves an empty table and no-ops just the same.)
-        notify_monitors_on_death(70_200, HewActorState::Crashed as i32);
+        notify_monitors_on_death(70_200, HewActorState::Crashed as i32, 0);
 
         let actor = create_test_actor(70_200);
         let ptr = (&raw const actor).cast_mut();
@@ -1082,14 +1780,123 @@ mod tests {
         // SAFETY: rt lives for the whole entered scope.
         let _enter = unsafe { crate::runtime::enter(&rt) };
 
-        notify_monitors_on_death(71_200, HewActorState::Crashed as i32);
+        notify_monitors_on_death(71_200, HewActorState::Crashed as i32, 0);
 
         monitor_shard_for_runtime_test(&rt, 71_200).read_access(|shard| {
             assert_eq!(
                 shard.terminal_reasons.get(&71_200).copied(),
-                Some(HewActorState::Crashed as i32),
+                Some(TerminalMonitorReason {
+                    state: HewActorState::Crashed as i32,
+                    crash_kind: 0,
+                }),
                 "the installed runtime's monitor table must record the terminal sweep"
             );
         });
+    }
+
+    fn remote_location(byte: u8, slot: u64, incarnation: u32) -> Location {
+        Location::new(NodeId::from_bytes([byte; 16]), slot, incarnation).unwrap()
+    }
+
+    #[test]
+    fn observation_id_allocator_exhausts_without_wrapping_or_reusing_zero() {
+        let state = MonitorState::new();
+        state.ref_counter.store(u64::MAX, Ordering::Release);
+        assert_eq!(
+            state.register_remote_monitor(remote_location(1, 10, 1), 20),
+            None
+        );
+        assert_eq!(state.ref_counter.load(Ordering::Acquire), u64::MAX);
+        assert_eq!(state.pending_observation_count(), 0);
+    }
+
+    #[test]
+    fn remote_monitor_claim_is_exactly_once_and_rejects_stale_incarnation() {
+        let state = MonitorState::new();
+        let target = remote_location(2, 10, 7);
+        let stale_target = remote_location(2, 10, 6);
+        let monitor_id = state
+            .register_remote_monitor(target, 20)
+            .expect("monitor id");
+
+        assert_eq!(state.deliver_monitor_to_ref(monitor_id, stale_target), None);
+        assert_eq!(state.pending_observation_count(), 1);
+
+        let down = state
+            .deliver_monitor_to_ref(monitor_id, target)
+            .expect("matching terminal claim");
+        assert_eq!(down.monitor_id, monitor_id);
+        assert_eq!(down.watcher_actor_id, 20);
+        assert_eq!(down.target, target);
+        assert_eq!(state.deliver_monitor_to_ref(monitor_id, target), None);
+        assert_eq!(state.pending_observation_count(), 0);
+    }
+
+    #[test]
+    fn close_wins_over_later_remote_terminal_delivery() {
+        let state = MonitorState::new();
+        let target = remote_location(3, 11, 8);
+        let monitor_id = state
+            .register_remote_monitor(target, 21)
+            .expect("monitor id");
+
+        assert_eq!(state.remove_remote_observation(monitor_id), Some(target));
+        assert_eq!(state.deliver_monitor_to_ref(monitor_id, target), None);
+    }
+
+    #[test]
+    fn session_loss_claims_only_the_matching_incarnation() {
+        let state = MonitorState::new();
+        let old = remote_location(4, 12, 1);
+        let current = remote_location(4, 12, 2);
+        let old_id = state
+            .register_remote_monitor(old, 22)
+            .expect("old monitor id");
+        let current_id = state
+            .register_remote_monitor(current, 23)
+            .expect("current monitor id");
+
+        let downs = state.take_monitor_downs_for_session(old.node(), old.incarnation());
+        assert_eq!(downs.len(), 1);
+        assert_eq!(downs[0].monitor_id, old_id);
+        assert_eq!(downs[0].target, old);
+        assert_eq!(state.pending_observation_count(), 1);
+        assert!(state.deliver_monitor_to_ref(current_id, current).is_some());
+    }
+
+    #[test]
+    fn remote_link_terminal_claim_is_exactly_once() {
+        let state = MonitorState::new();
+        let target = remote_location(5, 13, 3);
+        let link_id = state
+            .register_link_watcher(target, 24, 3)
+            .expect("link observation id");
+
+        let down = state
+            .deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32)
+            .expect("link terminal claim");
+        assert_eq!(down.local_actor_id, 24);
+        assert_eq!(down.remote_target_serial, target.slot());
+        assert_eq!(down.policy_tag, 3);
+        assert_eq!(
+            state.deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32),
+            None
+        );
+    }
+
+    #[test]
+    fn shutdown_claims_all_remote_monitor_and_link_observations() {
+        let state = MonitorState::new();
+        state
+            .register_remote_monitor(remote_location(6, 60, 1), 70)
+            .expect("monitor observation");
+        state
+            .register_link_watcher(remote_location(7, 80, 1), 90, 2)
+            .expect("link observation");
+
+        state.drain_remote_observations_for_shutdown();
+        state.drain_remote_observations_for_shutdown();
+
+        assert_eq!(state.pending_observation_count(), 0);
     }
 }

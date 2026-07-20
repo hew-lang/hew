@@ -349,18 +349,13 @@ pub enum RuntimeCallFamily {
     NodeLoadKeys,
     NodeLookup,
     /// `monitor(RemotePid<T>)` →
-    /// `hew_node_monitor_location(target: *const Location) -> i64`.
-    /// Positive returns are distributed-monitor ref ids; negative returns encode
-    /// `MonitorError` as `-(variant + 1)`. Codegen assembles
+    /// `hew_node_monitor_location(target, out_monitor_id) -> i32`.
+    /// Zero returns success and writes the distributed-monitor id; non-zero is
+    /// one plus the `MonitorError` discriminant. Codegen assembles
     /// `Result<MonitorRef, MonitorError>`. The current node is resolved
     /// internally, so the single runtime argument is a pointer to the carried
     /// full `Location`; non-consuming.
     NodeMonitor,
-    /// `MonitorRef::recv_down` → `hew_node_monitor_recv(ref_id: i64,
-    /// timeout_ms: i64) -> i64`. Blocks until the distributed monitor's terminal
-    /// signal arrives for `ref_id` (or `timeout_ms` elapses), returning the
-    /// carried down-reason. Both args are `BitCopy` `i64`; non-consuming.
-    NodeMonitorRecv,
     NodeRegister,
     NodeSetTransport,
     NodeShutdown,
@@ -719,7 +714,6 @@ impl RuntimeCallFamily {
             Self::NodeLoadKeys => "Node::load_keys",
             Self::NodeLookup => "Node::lookup",
             Self::NodeMonitor => "hew_node_monitor_location",
-            Self::NodeMonitorRecv => "hew_node_monitor_recv",
             Self::NodeRegister => "Node::register",
             Self::NodeSetTransport => "Node::set_transport",
             Self::NodeShutdown => "Node::shutdown",
@@ -1013,7 +1007,6 @@ impl RuntimeCallFamily {
             "Node::load_keys" => Self::NodeLoadKeys,
             "Node::lookup" => Self::NodeLookup,
             "hew_node_monitor_location" => Self::NodeMonitor,
-            "hew_node_monitor_recv" => Self::NodeMonitorRecv,
             "Node::register" => Self::NodeRegister,
             "Node::set_transport" => Self::NodeSetTransport,
             "Node::shutdown" => Self::NodeShutdown,
@@ -1606,7 +1599,6 @@ impl RuntimeCallFamily {
             | F::NodeLoadKeys
             | F::NodeLookup
             | F::NodeMonitor
-            | F::NodeMonitorRecv
             | F::NodeRegister
             | F::NodeSetTransport
             | F::NodeShutdown

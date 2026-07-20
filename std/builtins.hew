@@ -178,6 +178,7 @@ pub enum LinkError {
     StaleRef;
     EncodeFailure;
     LocalShutdown;
+    ResourceExhausted;
 }
 
 /// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.
@@ -220,19 +221,15 @@ impl<T> RemotePid<T> {
     /// Return the complete carried actor location.
     #[extern_symbol(hew_remote_pid_location)]
     fn location(pid: RemotePid<T>) -> Location {}
-
     /// Return the stable node identity.
     #[extern_symbol(hew_remote_pid_node_id)]
     fn node_id(pid: RemotePid<T>) -> NodeId {}
-
     /// Return the actor's node-local slot.
     #[extern_symbol(hew_remote_pid_slot)]
     fn slot(pid: RemotePid<T>) -> u64 {}
-
     /// Return the node-session incarnation.
     #[extern_symbol(hew_remote_pid_incarnation)]
     fn incarnation(pid: RemotePid<T>) -> u32 {}
-
     #[extern_symbol(hew_remote_pid_display)]
     fn display(pid: RemotePid<T>) -> string {}
 }
@@ -241,15 +238,12 @@ impl Location {
     /// Return the stable node identity.
     #[extern_symbol(hew_location_node_id)]
     fn node_id(location: Location) -> NodeId {}
-
     /// Return the actor's node-local slot.
     #[extern_symbol(hew_location_slot)]
     fn slot(location: Location) -> u64 {}
-
     /// Return the node-session incarnation.
     #[extern_symbol(hew_location_incarnation)]
     fn incarnation(location: Location) -> u32 {}
-
     #[extern_symbol(hew_location_display)]
     fn display(location: Location) -> string {}
 }

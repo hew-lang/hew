@@ -52,7 +52,7 @@ impl Builder {
     /// actor dispatch context. The "only valid in actor context" fail-closed gate
     /// belongs to the actor-messaging lane and is not installed here. Calls from
     /// `main` / free functions are an out-of-context window; the runtime handles
-    /// null self gracefully (`hew_actor_monitor` returns `ref_id = 0`).
+    /// null self gracefully (`hew_actor_monitor` returns `InvalidTarget`).
     pub(crate) fn lower_actor_link_or_monitor(
         &mut self,
         symbol: &str,
@@ -114,7 +114,7 @@ impl Builder {
         // Value-needed: construct the composite return.
         // `result_ty` carries the checker-authoritative return type:
         //   hew_actor_link   → Result<(), LinkError>
-        //   hew_actor_monitor → MonitorRef
+        //   hew_actor_monitor → Result<MonitorRef, MonitorError>
         // Fail closed if the checker did not record a return type — a
         // checker-boundary violation that the HIR→MIR handoff must not
         // propagate silently.
@@ -146,23 +146,9 @@ impl Builder {
                 Some(result_local)
             }
             "hew_actor_monitor" => {
-                // hew_actor_monitor returns a u64 ref_id. Store the raw i64
-                // into a temp local, then assemble MonitorRef { ref_id } via
-                // RecordInit. The codegen ActorMonitor handler stores the i64
-                // call result into the raw dest; RecordInit copies it into the
-                // struct field.
-                let ref_id_local = self.alloc_local(ResolvedTy::I64);
-                self.push_runtime_call(symbol, vec![self_handle, target], Some(ref_id_local));
-                // Assemble MonitorRef { ref_id: i64 } from the raw ref_id.
-                // FieldOffset(0) is the declaration-order index of `ref_id`
-                // in `MonitorRef { ref_id: i64 }`.
-                let monitor_ref_local = self.alloc_local(composite_ty.clone());
-                self.push_instr(Instr::RecordInit {
-                    ty: composite_ty,
-                    fields: vec![(FieldOffset(0), ref_id_local)],
-                    dest: monitor_ref_local,
-                });
-                Some(monitor_ref_local)
+                let result_local = self.alloc_local(composite_ty);
+                self.push_runtime_call(symbol, vec![self_handle, target], Some(result_local));
+                Some(result_local)
             }
             _ => unreachable!("only hew_actor_link / hew_actor_monitor reach this helper"),
         }
@@ -172,11 +158,11 @@ impl Builder {
     ///
     /// Unlike the local `hew_actor_monitor(watcher_ptr, target_ptr)` (which keys
     /// on `HewActor*` pointers), the remote target has no pointer in this
-    /// address space. `hew_node_monitor_location(target: *const Location) -> i64`
+    /// address space. `hew_node_monitor_location(target, out_monitor_id) -> i32`
     /// registers a distributed-table entry keyed by the exact target identity,
     /// sending a `CTRL_MONITOR_REQ` to the owning peer.
-    /// Positive returns are the `ref_id` keying the registration; negative
-    /// returns encode `MonitorError` as `-(variant + 1)`. Codegen assembles the
+    /// returns status zero and writes the id on success; non-zero statuses are
+    /// one plus the `MonitorError` discriminant. Codegen assembles the
     /// checker-authoritative `Result<MonitorRef, MonitorError>` directly.
     fn lower_node_monitor(
         &mut self,
@@ -215,7 +201,7 @@ impl Builder {
             return None;
         };
 
-        // Codegen decodes the signed setup return and writes either
+        // Codegen decodes the explicit status/out-id ABI and writes either
         // Ok(MonitorRef { ref_id }) or Err(MonitorError::<variant>) in place.
         let result_local = self.alloc_local(composite_ty);
         self.push_runtime_call(
@@ -237,9 +223,9 @@ impl Builder {
     /// enum whose discriminant tag is extracted via `Place::EnumTag` and passed
     /// as the `policy_tag` i64.
     ///
-    /// The return is `Result<(), LinkError>` (matching the local `link`). Positive
-    /// ABI returns signal registration success; negative returns encode
-    /// `LinkError` as `-(variant + 1)`. The EXIT arrives asynchronously when the
+    /// The return is `Result<(), LinkError>` (matching the local `link`). ABI
+    /// status zero signals registration success; non-zero is one plus the
+    /// `LinkError` discriminant. The EXIT arrives asynchronously when the
     /// remote dies.
     pub(crate) fn lower_node_link_remote(
         &mut self,
@@ -317,7 +303,7 @@ impl Builder {
             return None;
         };
         // Allocate the Result<(), LinkError> dest and pass it to the ABI call.
-        // Codegen decodes the signed setup return into Ok(()) or the precise Err.
+        // Codegen decodes the explicit setup status into Ok(()) or the precise Err.
         let result_local = self.alloc_local(composite_ty);
         self.push_runtime_call(
             "hew_node_link_remote_location",
@@ -412,7 +398,7 @@ impl Builder {
     /// Lowers each argument to a Place and emits the call. In value position the
     /// i64 return is stored into a fresh i64 dest; in statement position the
     /// return is discarded. Used by the cross-node monitor extern surface
-    /// (`hew_node_monitor_location` / `hew_node_monitor_recv`), whose returns are plain
+    /// (`hew_node_monitor_location`), whose returns are plain
     /// scalar reason / ref-id codes (no composite spine).
     pub(crate) fn lower_simple_int_runtime_call(
         &mut self,

@@ -646,6 +646,10 @@ pub extern "C" fn hew_runtime_cleanup() {
     // SAFETY: shutdown_ticker joins the thread, so no concurrent ticks after this.
     unsafe { crate::timer_periodic::hew_periodic_shutdown() };
 
+    if let Some(rt) = crate::runtime::rt_default() {
+        rt.monitors.drain_remote_observations_for_shutdown();
+    }
+
     // Join lingering workers WITHOUT detaching the runtime yet (`take=false`).
     // The supervisor/actor/registry sweep below reads runtime-owned state
     // (the live-actor registry, deferred-teardown join handles), so the runtime
@@ -1595,7 +1599,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             // Clean self-stop on the resume path: notify monitors with the
             // Stopped reason, mirroring the crash trap and the non-resume
             // finalize. See the companion comment in `activate_actor`.
-            crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32);
+            crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             unsafe { crate::actor::call_terminate_fn(actor) };
@@ -2456,7 +2460,7 @@ fn activate_actor(actor: *mut HewActor) {
             // path runs this from `hew_actor_trap`; the self-stop finalize is the
             // only place the Stopping → Stopped transition completes, so it must
             // run it too.
-            crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32);
+            crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             unsafe { crate::actor::call_terminate_fn(actor) };

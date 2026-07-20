@@ -20,7 +20,7 @@ use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetData;
 use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType, StructType};
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+    BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -30,6 +30,9 @@ use hew_mir::{
     SpawnEnvFieldOwnership, StateFieldCloneKind,
 };
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
+use hew_runtime::supervisor::{
+    SYS_MSG_DOWN as RUNTIME_SYS_MSG_DOWN, SYS_MSG_EXIT as RUNTIME_SYS_MSG_EXIT,
+};
 use hew_types::{BuiltinType, ResolvedTy};
 
 use crate::layout::mix_into_hash_acc;
@@ -2847,10 +2850,12 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     // one is declared. The case block (emitted after the handler arms) unpacks
     // the `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind: i32 }`
     // payload and calls `__on_exit(ctx, actor_id, crash_kind)`.
-    const SYS_MSG_EXIT: u64 = 103;
     let on_exit_bb = if layout.on_exit_symbol.is_some() {
         let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_exit");
-        cases.push((i32_ty.const_int(SYS_MSG_EXIT, false), bb));
+        cases.push((
+            i32_ty.const_int(RUNTIME_SYS_MSG_EXIT.cast_unsigned().into(), false),
+            bb,
+        ));
         Some(bb)
     } else {
         None
@@ -2864,24 +2869,32 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     // the scheduler crash frame (terminal `Crashed`, the carried reason stamped).
     let unhandled_exit_bb = if layout.on_exit_symbol.is_none() {
         let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_exit_unhandled");
-        cases.push((i32_ty.const_int(SYS_MSG_EXIT, false), bb));
+        cases.push((
+            i32_ty.const_int(RUNTIME_SYS_MSG_EXIT.cast_unsigned().into(), false),
+            bb,
+        ));
         Some(bb)
     } else {
         None
     };
     // DOWN is always consumed by actor dispatch. Actors with a typed hook receive
     // the reconstructed notification; actors without one explicitly ignore it.
-    const SYS_MSG_DOWN: u64 = 100;
     let on_down_bb = if layout.on_down_symbol.is_some() {
         let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_down");
-        cases.push((i32_ty.const_int(SYS_MSG_DOWN, false), bb));
+        cases.push((
+            i32_ty.const_int(RUNTIME_SYS_MSG_DOWN.cast_unsigned().into(), false),
+            bb,
+        ));
         Some(bb)
     } else {
         None
     };
     let ignored_down_bb = if layout.on_down_symbol.is_none() {
         let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_down_ignored");
-        cases.push((i32_ty.const_int(SYS_MSG_DOWN, false), bb));
+        cases.push((
+            i32_ty.const_int(RUNTIME_SYS_MSG_DOWN.cast_unsigned().into(), false),
+            bb,
+        ));
         Some(bb)
     } else {
         None
@@ -3347,7 +3360,10 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
         let monitor_id = load_down_field(0, "down_monitor_id")?;
         let target_kind = load_down_field(1, "down_target_kind")?;
         let reason_kind = load_down_field(2, "down_reason_kind")?;
+        let node_hi = load_down_field(3, "down_node_hi")?.into_int_value();
+        let node_lo = load_down_field(4, "down_node_lo")?.into_int_value();
         let slot = load_down_field(5, "down_slot")?;
+        let session_incarnation = load_down_field(6, "down_session_incarnation")?.into_int_value();
         let crash_kind = load_down_field(7, "down_crash_kind")?;
         let location_ty = resolve_ty(
             ctx,
@@ -3355,12 +3371,192 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
             &ResolvedTy::named_builtin("Location", hew_types::BuiltinType::Location, Vec::new()),
             record_layouts,
         )?;
+        let BasicTypeEnum::StructType(location_st) = location_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "actor dispatch `{dispatch_name}` resolved Location to non-struct {location_ty:?}"
+            )));
+        };
+        if location_st.count_fields() != 5 {
+            return Err(CodegenError::FailClosed(format!(
+                "actor dispatch `{dispatch_name}` resolved Location with {} fields, expected 5",
+                location_st.count_fields()
+            )));
+        }
         let location_ptr = builder
-            .build_struct_gep(down_msg_st, payload_src, 3, "down_location_ptr")
-            .llvm_ctx("on_down location gep")?;
+            .build_alloca(location_st, "down_location_ptr")
+            .llvm_ctx("on_down location alloca")?;
+        for (index, value) in [
+            (0, node_hi.as_basic_value_enum()),
+            (1, node_lo.as_basic_value_enum()),
+            (2, slot.as_basic_value_enum()),
+            (3, session_incarnation.as_basic_value_enum()),
+            (4, i32_ty.const_zero().as_basic_value_enum()),
+        ] {
+            let field_ptr = builder
+                .build_struct_gep(
+                    location_st,
+                    location_ptr,
+                    index,
+                    &format!("down_location_field_{index}_ptr"),
+                )
+                .llvm_ctx("on_down Location field gep")?;
+            builder
+                .build_store(field_ptr, value)
+                .llvm_ctx("on_down Location field store")?;
+        }
         let location = builder
-            .build_load(location_ty, location_ptr, "down_location")
+            .build_load(location_st, location_ptr, "down_location")
             .llvm_ctx("on_down location load")?;
+
+        let target_kind_int = target_kind.into_int_value();
+        let reason_kind_int = reason_kind.into_int_value();
+        let slot_int = slot.into_int_value();
+        let crash_kind_int = crash_kind.into_int_value();
+        let target_known = builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                target_kind_int,
+                i32_ty.const_int(1, false),
+                "down_target_known",
+            )
+            .llvm_ctx("validate DOWN target tag")?;
+        let reason_known = builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                reason_kind_int,
+                i32_ty.const_int(3, false),
+                "down_reason_known",
+            )
+            .llvm_ctx("validate DOWN reason tag")?;
+        let crash_known = builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                crash_kind_int,
+                i32_ty.const_int(2, false),
+                "down_crash_kind_known",
+            )
+            .llvm_ctx("validate DOWN crash tag")?;
+        let crash_is_zero = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                crash_kind_int,
+                i32_ty.const_zero(),
+                "down_crash_kind_zero",
+            )
+            .llvm_ctx("validate DOWN non-crash payload")?;
+        let reason_is_crashed = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                reason_kind_int,
+                i32_ty.const_int(1, false),
+                "down_reason_is_crashed",
+            )
+            .llvm_ctx("classify DOWN crash reason")?;
+        let crash_consistent = builder
+            .build_select(
+                reason_is_crashed,
+                crash_known,
+                crash_is_zero,
+                "down_crash_consistent",
+            )
+            .llvm_ctx("validate DOWN crash payload consistency")?
+            .into_int_value();
+        let target_is_local = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                target_kind_int,
+                i32_ty.const_zero(),
+                "down_target_is_local",
+            )
+            .llvm_ctx("classify DOWN target")?;
+        let node_hi_zero = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                node_hi,
+                u64_ty.const_zero(),
+                "down_node_hi_zero",
+            )
+            .llvm_ctx("validate local DOWN node_hi")?;
+        let node_lo_zero = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                node_lo,
+                u64_ty.const_zero(),
+                "down_node_lo_zero",
+            )
+            .llvm_ctx("validate local DOWN node_lo")?;
+        let session_zero = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                session_incarnation,
+                i32_ty.const_zero(),
+                "down_session_zero",
+            )
+            .llvm_ctx("validate local DOWN session")?;
+        let slot_nonzero = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                slot_int,
+                u64_ty.const_zero(),
+                "down_slot_nonzero",
+            )
+            .llvm_ctx("validate DOWN slot")?;
+        let local_location_zero = builder
+            .build_and(node_hi_zero, node_lo_zero, "down_local_node_zero")
+            .llvm_ctx("validate local DOWN node")?;
+        let local_location_zero = builder
+            .build_and(
+                local_location_zero,
+                session_zero,
+                "down_local_location_zero",
+            )
+            .llvm_ctx("validate local DOWN location")?;
+        let local_valid = builder
+            .build_and(local_location_zero, slot_nonzero, "down_local_valid")
+            .llvm_ctx("validate local DOWN fields")?;
+        let node_nonzero = builder
+            .build_or(
+                builder
+                    .build_not(node_hi_zero, "down_node_hi_nonzero")
+                    .llvm_ctx("validate remote DOWN node_hi")?,
+                builder
+                    .build_not(node_lo_zero, "down_node_lo_nonzero")
+                    .llvm_ctx("validate remote DOWN node_lo")?,
+                "down_node_nonzero",
+            )
+            .llvm_ctx("validate remote DOWN node")?;
+        let session_nonzero = builder
+            .build_not(session_zero, "down_session_nonzero")
+            .llvm_ctx("validate remote DOWN session")?;
+        let remote_valid = builder
+            .build_and(node_nonzero, slot_nonzero, "down_remote_node_slot_valid")
+            .llvm_ctx("validate remote DOWN node and slot")?;
+        let remote_valid = builder
+            .build_and(remote_valid, session_nonzero, "down_remote_valid")
+            .llvm_ctx("validate remote DOWN fields")?;
+        let target_fields_valid = builder
+            .build_select(
+                target_is_local,
+                local_valid,
+                remote_valid,
+                "down_target_fields_valid",
+            )
+            .llvm_ctx("validate DOWN target fields")?
+            .into_int_value();
+        let tags_valid = builder
+            .build_and(target_known, reason_known, "down_tags_valid")
+            .llvm_ctx("validate DOWN tags")?;
+        let payload_valid = builder
+            .build_and(tags_valid, crash_consistent, "down_reason_payload_valid")
+            .llvm_ctx("validate DOWN reason payload")?;
+        let payload_valid = builder
+            .build_and(payload_valid, target_fields_valid, "down_payload_valid")
+            .llvm_ctx("validate DOWN payload")?;
+        let valid_down_bb = ctx.append_basic_block(dispatch_fn, "msg_sys_down_valid");
+        builder
+            .build_conditional_branch(payload_valid, valid_down_bb, default_bb)
+            .llvm_ctx("branch on DOWN payload validity")?;
+        builder.position_at_end(valid_down_bb);
 
         let ctx_arg = dispatch_fn
             .get_nth_param(0)
@@ -3380,7 +3576,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
         builder
             .build_unconditional_branch(after_bb)
             .llvm_ctx("actor dispatch on_down branch")?;
-        return_incomings.push((ptr_ty.const_null(), on_down_bb));
+        return_incomings.push((ptr_ty.const_null(), valid_down_bb));
     }
 
     if let Some(ignored_down_bb) = ignored_down_bb {

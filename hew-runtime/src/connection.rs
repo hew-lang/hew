@@ -1890,11 +1890,8 @@ fn handle_monitor_req_frame(
         set_last_error("connection reader monitor req: no runtime installed");
         return;
     };
-    rt.dist_monitors.register_remote_watcher(
-        payload.target.slot(),
-        payload.watcher,
-        payload.ref_id,
-    );
+    rt.monitors
+        .register_remote_watcher(payload.target.slot(), payload.watcher, payload.ref_id);
 }
 
 /// Handle an inbound `CTRL_DEMONITOR`: a remote node retracted its
@@ -1931,18 +1928,17 @@ fn handle_demonitor_frame(
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
-    rt.dist_monitors
+    rt.monitors
         .remove_remote_watcher(payload.target.slot(), payload.watcher, payload.ref_id);
 }
 
 /// Handle an inbound `CTRL_MONITOR_DOWN`: the node owning an actor we
-/// monitor reports that actor reached a terminal state. Arm the watcher slot for
-/// `ref_id` with the carried reason so the blocked `hew_node_monitor_recv` wakes.
+/// monitor reports that actor reached a terminal state. Atomically claim the
+/// observation and enqueue DOWN in the local watcher's system mailbox.
 ///
-/// Fail-closed on malformed input. Arming the slot removes it from the
-/// connection-drop / SWIM-DEAD fan-out's reach (the slot is no longer
-/// `Pending`), which is the exactly-once disambiguation: a definitive DOWN beats
-/// a later partition signal for the same registration.
+/// Fail-closed on malformed input. Removing the observation before enqueue is
+/// the exactly-once disambiguation: a definitive DOWN beats a later partition
+/// signal for the same registration.
 fn handle_monitor_down_frame(
     mgr: *mut HewConnMgr,
     conn_id: c_int,
@@ -1971,8 +1967,27 @@ fn handle_monitor_down_frame(
         set_last_error("connection reader monitor down: no runtime installed");
         return;
     };
-    rt.dist_monitors
-        .deliver_to_ref(payload.ref_id, payload.target, payload.reason);
+    let crashed = payload.reason == crate::internal::types::HewActorState::Crashed as i32;
+    if !crashed && payload.reason != crate::internal::types::HewActorState::Stopped as i32 {
+        set_last_error("connection reader monitor down invalid terminal reason");
+        return;
+    }
+    if !(0..=2).contains(&payload.crash_kind) || (!crashed && payload.crash_kind != 0) {
+        set_last_error("connection reader monitor down invalid crash kind");
+        return;
+    }
+    if let Some(down) = rt
+        .monitors
+        .deliver_monitor_to_ref(payload.ref_id, payload.target)
+    {
+        rt.monitors.enqueue_down(
+            down.watcher_actor_id,
+            down.monitor_id,
+            down.target,
+            payload.reason,
+            payload.crash_kind.cast_unsigned(),
+        );
+    }
 }
 
 /// Handle an inbound `CTRL_LINK_REQ`: a remote node is linking one of our local
@@ -2048,9 +2063,9 @@ fn handle_unlink_frame(
 /// Handle an inbound `CTRL_LINK_DOWN`: the node owning an actor we LINK
 /// reports it reached a terminal state. Fire the cross-node link cascade —
 /// synthesize a `SYS_MSG_EXIT` into the LOCAL linked actor's mailbox and crash it
-/// (for `CrashLinked`). THE divergence from a monitor DOWN (which arms a recv
-/// slot): a link DOWN crashes the linked actor through its mailbox. Fail-closed
-/// on malformed input; the EXIT fires exactly once and ONLY for a link entry
+/// (for `CrashLinked`). A monitor DOWN queues a typed mailbox notification,
+/// while a link DOWN queues EXIT and applies the link policy. Fail-closed on
+/// malformed input; the EXIT fires exactly once and ONLY for a link entry
 /// this node registered AND ONLY when the handshake-authenticated sender of this
 /// connection is the same peer that entry is linked to — otherwise neither a
 /// forged `ref_id` this node never linked NOR a different, genuinely-connected
@@ -5114,14 +5129,14 @@ mod tests {
         handle_control_frame(mgr_ptr, 0, 10, conn10_token, &link_req);
         assert!(
             crate::runtime::rt_current()
-                .dist_monitors
+                .monitors
                 .take_remote_watchers(payload.target.slot())
                 .is_empty(),
             "a link request claiming another node must not register a watcher"
         );
 
         crate::runtime::rt_current()
-            .dist_monitors
+            .monitors
             .register_remote_link_watcher(
                 payload.target.slot(),
                 test_location(2, payload.linker.slot()),
@@ -5136,7 +5151,7 @@ mod tests {
         handle_control_frame(mgr_ptr, 0, 10, conn10_token, &unlink);
 
         let watchers = crate::runtime::rt_current()
-            .dist_monitors
+            .monitors
             .take_remote_watchers(payload.target.slot());
         assert_eq!(
             watchers.len(),
@@ -6076,7 +6091,10 @@ mod tests {
         let rt = crate::runtime::rt_current_opt().expect("test guard installs a runtime");
         let peer: u16 = 42;
         let target = test_location(peer, 7);
-        let ref_id = rt.dist_monitors.register_watcher(target);
+        let _ref_id = rt
+            .monitors
+            .register_remote_monitor(target, 999)
+            .expect("test monitor id");
 
         with_reserved_claim(peer, 95, 400, true, |mgr| {
             // SAFETY: mgr is live for the whole closure.
@@ -6091,8 +6109,8 @@ mod tests {
                 // fan-out never runs and the watcher stays pending.
                 retire_connection_publication(&*mgr, peer, 96, 500, &publication_sync);
                 assert_eq!(
-                    rt.dist_monitors.recv_down(ref_id, Duration::ZERO),
-                    crate::dist_monitor::MONITOR_REASON_TIMEOUT,
+                    rt.monitors.pending_observation_count(),
+                    1,
                     "a superseded (non-owner) connection's retire must NOT fan out \
                      MonitorLost while the peer is live under a newer claim"
                 );
@@ -6101,8 +6119,8 @@ mod tests {
                 // fan-out arms the pending watcher with MonitorLost.
                 retire_connection_publication(&*mgr, peer, 95, 400, &publication_sync);
                 assert_eq!(
-                    rt.dist_monitors.recv_down(ref_id, Duration::ZERO),
-                    crate::dist_monitor::MONITOR_REASON_LOST,
+                    rt.monitors.pending_observation_count(),
+                    0,
                     "the owning connection's retire must fan out MonitorLost"
                 );
             }
@@ -6869,6 +6887,7 @@ mod tests {
                 ref_id,
                 target: test_location(route_slot, 1),
                 reason: 2,
+                crash_kind: 0,
             };
             let bytes =
                 crate::envelope::encode_link_down_payload(&payload).expect("link down encodes");

@@ -384,7 +384,6 @@ stable = [
   "hew_node_connect",
   "hew_node_demonitor",
   "hew_node_free",
-  "hew_node_monitor_recv",
   "hew_node_new",
   "hew_node_register",
   "hew_node_start",

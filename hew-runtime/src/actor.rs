@@ -5213,7 +5213,12 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION);
     crate::link::propagate_exit_to_links(actor_id, error_code);
     run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION);
-    crate::monitor::notify_monitors_on_death(actor_id, terminal);
+    let crash_kind = if terminal == HewActorState::Crashed as i32 {
+        crate::internal::types::CrashKind::tag_from_error_code(error_code).cast_unsigned()
+    } else {
+        0
+    };
+    crate::monitor::notify_monitors_on_death(actor_id, terminal, crash_kind);
 
     // Wake any actor group condvars waiting on this actor.
     crate::actor_group::notify_actor_death(actor_id);
@@ -9761,7 +9766,10 @@ mod tests {
             crate::link::hew_actor_link(actor_one, actor_two);
         }
         // SAFETY: both actor pointers were returned by spawn and are still live.
-        let monitor_ref = unsafe { crate::monitor::hew_actor_monitor(actor_three, actor_one) };
+        let monitor_ref = unsafe {
+            crate::monitor::register_actor_monitor(actor_three, actor_one)
+                .expect("monitor registration")
+        };
         assert_ne!(monitor_ref, 0, "monitor registration should succeed");
 
         assert_eq!(crate::timer_periodic::timer_count_for_actor(actor_one), 1);
@@ -10058,7 +10066,10 @@ mod tests {
 
         // Register `observer` as a monitor of `monitored`.
         // SAFETY: both actor pointers were returned by spawn and are still live.
-        let monitor_ref = unsafe { crate::monitor::hew_actor_monitor(observer, monitored) };
+        let monitor_ref = unsafe {
+            crate::monitor::register_actor_monitor(observer, monitored)
+                .expect("monitor registration")
+        };
         assert_ne!(monitor_ref, 0, "monitor registration should succeed");
         assert!(
             crate::monitor::has_monitors_for_actor(monitored_id, monitored),

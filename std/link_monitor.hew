@@ -1,16 +1,15 @@
 //! Actor monitor / link handle helpers.
 //!
 //! Import `std::link_monitor` when you want to name `MonitorRef`,
-//! `MonitorError`, or `PartitionPolicy` explicitly. `monitor(LocalPid)` returns
-//! `MonitorRef`; `monitor(RemotePid)` returns
-//! `Result<MonitorRef, MonitorError>`; and `link(actor)` returns
+//! `MonitorError`, or `PartitionPolicy` explicitly. `monitor(LocalPid)` and
+//! `monitor(RemotePid)` return `Result<MonitorRef, MonitorError>`; `link(actor)` returns
 //! `Result<(), LinkError>` — `LinkError` is prelude-published from
 //! `std/builtins.hew` (like `SendError`), so it needs no import.
 //!
 //! Link/monitor builtins return through the value-position composite-return
-//! spine: `link()` builds `Result<(), LinkError>`, local `monitor()` builds
-//! `MonitorRef`, and remote `monitor()` builds
-//! `Result<MonitorRef, MonitorError>` from the runtime setup result.
+//! spine: `link()` builds `Result<(), LinkError>`, while local and remote
+//! `monitor()` both build `Result<MonitorRef, MonitorError>` from explicit
+//! runtime setup statuses.
 
 // WASM-TODO(#1451): `MonitorRef` and `LinkError` depend on the native actor
 // monitor / link runtime. The checker rejects `monitor()` and `link()` on
@@ -42,6 +41,8 @@ pub enum MonitorError {
     DecodeFailure;
     /// The monitor channel was lost before a definitive actor failure arrived.
     MonitorLost;
+    /// The runtime exhausted its non-reusing monitor-id space.
+    ResourceExhausted;
 }
 
 /// Policy for resolving actor operations across network partitions.

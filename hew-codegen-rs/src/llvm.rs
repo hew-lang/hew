@@ -1248,7 +1248,6 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::NodeLoadKeys
         | F::NodeLookup
         | F::NodeMonitor
-        | F::NodeMonitorRecv
         | F::NodeRegister
         | F::NodeSetTransport
         | F::NodeShutdown

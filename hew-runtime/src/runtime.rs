@@ -92,12 +92,6 @@ pub(crate) struct RuntimeInner {
     /// `monitor::MONITOR_TABLE` + `MONITOR_REF_COUNTER` globals; resolved
     /// through `rt_current().monitors` by the monitor module.
     pub(crate) monitors: crate::monitor::MonitorState,
-    /// Distributed (cross-node) monitor table. Resolved through
-    /// `rt_current().dist_monitors` by the `dist_monitor` module — the
-    /// node-keyed analogue of `monitors`, holding watcher-side registrations
-    /// (the `hew_node_monitor_recv` observation slots) and target-side remote
-    /// watchers (the terminal-sweep fan-out list).
-    pub(crate) dist_monitors: crate::dist_monitor::DistMonitorState,
     /// Blocking-work thread pool for deadline-bounded syscall offload (DNS,
     /// TCP connect). Was the process-global `blocking_pool::SHARED_POOL`
     /// singleton; resolved through `rt_current()` by `shared_blocking_pool()`.
@@ -137,7 +131,6 @@ impl RuntimeInner {
             node: NodeSlot::new(),
             metrics: crate::metrics::MetricsState::new(),
             monitors: crate::monitor::MonitorState::new(),
-            dist_monitors: crate::dist_monitor::DistMonitorState::new(),
             blocking_pool: std::sync::OnceLock::new(),
             #[cfg(test)]
             drop_probe: std::sync::Mutex::new(None),

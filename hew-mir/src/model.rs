@@ -2642,6 +2642,9 @@ pub enum ActorHandlerKind {
     Init,
     Start,
     Stop,
+    Crash,
+    Exit,
+    Down,
 }
 
 /// PROVEN source attribution and synthesised identity for a MIR function.

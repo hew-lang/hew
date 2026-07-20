@@ -80,9 +80,9 @@ pub const CTRL_LINK_REQ: u64 = 6;
 /// Control-frame kind for a cross-node link DOWN notification.
 ///
 /// Sent to a linked node when its remote peer reaches a terminal state. Unlike
-/// a `CTRL_MONITOR_DOWN` (which arms a recv slot a program polls), a
-/// `CrashLinked` `CTRL_LINK_DOWN` synthesizes a `SYS_MSG_EXIT` into the local
-/// linked actor's MAILBOX and crashes it (the OTP fail-together semantic).
+/// a `CTRL_MONITOR_DOWN` (which queues typed `SYS_MSG_DOWN`), a `CrashLinked`
+/// `CTRL_LINK_DOWN` synthesizes a `SYS_MSG_EXIT` into the local linked actor's
+/// mailbox and crashes it (the OTP fail-together semantic).
 /// Carries the linked node's `ref_id` and the terminal reason code.
 pub const CTRL_LINK_DOWN: u64 = 7;
 
@@ -324,6 +324,8 @@ pub struct MonitorDownPayload {
     pub target: Location,
     /// Carried terminal reason code, encoded with a typed reason tag.
     pub reason: i32,
+    /// `CrashKind` discriminant when `reason` is crashed, otherwise zero.
+    pub crash_kind: i32,
 }
 
 /// Bounded cross-node link REQUEST / UNLINK control payload.
@@ -1249,6 +1251,10 @@ pub fn encode_monitor_down_payload(
             Value::Integer(Integer::from(3u64)),
             down_reason_to_value(payload.reason),
         ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(payload.crash_kind)),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
@@ -1278,11 +1284,12 @@ pub fn decode_monitor_down_payload(
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
     Ok(MonitorDownPayload {
         ref_id: value_to_u64(required(&map, 1)?, 1)?,
         target: value_to_location(required(&map, 2)?, 2)?,
         reason: value_to_down_reason(required(&map, 3)?, 3)?,
+        crash_kind: value_to_i32(required(&map, 4)?, 4)?,
     })
 }
 

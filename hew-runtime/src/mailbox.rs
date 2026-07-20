@@ -2234,6 +2234,23 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
     data: *mut c_void,
     size: usize,
 ) {
+    // SAFETY: forwarded caller contract.
+    let _ = unsafe { hew_mailbox_send_sys_checked(mb, msg_type, data, size) };
+}
+
+/// Internal checked system send. Returns false when the message node cannot be
+/// allocated; callers that claim one-shot delivery can then take an explicit
+/// controlled-failure path instead of silently losing the message.
+///
+/// # Safety
+///
+/// Same requirements as [`hew_mailbox_send`].
+pub(crate) unsafe fn hew_mailbox_send_sys_checked(
+    mb: *mut HewMailbox,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> bool {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
 
@@ -2250,11 +2267,12 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
         eprintln!(
             "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"
         );
-        return;
+        return false;
     }
 
     // SAFETY: `node` is freshly allocated and owned by this mailbox send.
     unsafe { enqueue_sys_node(mb, node) };
+    true
 }
 
 unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {

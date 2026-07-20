@@ -543,7 +543,14 @@ impl Checker {
         self.register_builtin_fn(
             "monitor",
             vec![Ty::local_pid(Ty::Var(monitor_t))],
-            Ty::monitor_ref(),
+            Ty::result(
+                Ty::monitor_ref(),
+                Ty::Named {
+                    name: "MonitorError".to_string(),
+                    args: vec![],
+                    builtin: None,
+                },
+            ),
         );
         // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
         // links a local actor to a remote actor so the remote's death fires the

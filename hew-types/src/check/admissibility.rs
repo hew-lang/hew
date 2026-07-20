@@ -1821,6 +1821,28 @@ impl Checker {
 
     pub(super) fn validate_rc_payload_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
+        let unresolved_generic = matches!(&resolved, Ty::Var(_))
+            || matches!(
+                &resolved,
+                Ty::Named {
+                    name,
+                    args,
+                    builtin: None,
+                } if args.is_empty() && self.is_type_param_in_scope(name)
+            );
+        if unresolved_generic {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`Rc<{}>` is not currently supported; Rc only accepts Copy payloads \
+                     or concrete payloads with a proven aggregate clone/drop strategy; \
+                     unresolved generic payloads fail closed",
+                    resolved.user_facing()
+                ),
+            );
+            return false;
+        }
         if self.rc_payload_clone_drop_supported(&resolved, &mut HashSet::new(), false) {
             return true;
         }

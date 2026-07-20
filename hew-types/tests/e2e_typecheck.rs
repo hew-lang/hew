@@ -2225,22 +2225,16 @@ fn rc_nested_payload_construction_ok() {
 }
 
 #[test]
-fn rc_owned_option_payload_rejected() {
-    let output = typecheck_inline(r#"fn main() { let _rc = Rc::new(Some("hello")); }"#);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message
-                    .contains("does not recursively drop owned contents")
-        }),
-        "Rc::new with Option<string> should fail closed, got: {:#?}",
-        output.errors
+fn rc_owned_option_payload_supported() {
+    assert_inline_typechecks_cleanly(
+        r#"fn main() { let _rc = Rc::new(Some("hello")); }"#,
+        "Rc::new with Option<string> should use aggregate clone/drop support",
     );
 }
 
 #[test]
-fn rc_owned_struct_payload_rejected() {
-    let output = typecheck_inline(
+fn rc_owned_struct_payload_supported() {
+    assert_inline_typechecks_cleanly(
         r#"
         type Labelled {
             name: string
@@ -2250,15 +2244,7 @@ fn rc_owned_struct_payload_rejected() {
             let _rc = Rc::new(Labelled { name: "hello" });
         }
         "#,
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message
-                    .contains("does not recursively drop owned contents")
-        }),
-        "Rc::new with a struct containing owned fields should fail closed, got: {:#?}",
-        output.errors
+        "Rc::new with an owned struct should use aggregate clone/drop support",
     );
 }
 
@@ -2296,16 +2282,10 @@ fn rc_user_drop_payload_rejected() {
 }
 
 #[test]
-fn rc_owned_payload_annotation_rejected() {
-    let output = typecheck_inline(r"fn borrow(_r: Rc<Option<string>>) {}");
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message
-                    .contains("does not recursively drop owned contents")
-        }),
-        "Rc<Option<string>> annotations should fail closed, got: {:#?}",
-        output.errors
+fn rc_owned_payload_annotation_supported() {
+    assert_inline_typechecks_cleanly(
+        r"fn borrow(_r: Rc<Option<string>>) {}",
+        "Rc<Option<string>> annotations should use aggregate clone/drop support",
     );
 }
 
@@ -3920,23 +3900,8 @@ fn vec_result_wrapper_array_annotation_rejected() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  UnsafeCollectionElement — Rc<T> in collections
+//  Rc<T> in collections
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/// Helper: assert that source produces at least one `UnsafeCollectionElement` error.
-fn assert_unsafe_collection_element(source: &str, context: &str) {
-    let output = typecheck_inline(source);
-    let hits: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::UnsafeCollectionElement)
-        .collect();
-    assert!(
-        !hits.is_empty(),
-        "{context}: expected UnsafeCollectionElement error, got: {:#?}",
-        output.errors
-    );
-}
 
 /// Helper: assert that source produces NO `UnsafeCollectionElement` error.
 fn assert_no_unsafe_collection_element(source: &str, context: &str) {
@@ -3953,8 +3918,8 @@ fn assert_no_unsafe_collection_element(source: &str, context: &str) {
 }
 
 #[test]
-fn rc_vec_push_rejected() {
-    assert_unsafe_collection_element(
+fn rc_vec_push_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         fn main() {
             let r = Rc::new(42);
@@ -3966,8 +3931,8 @@ fn rc_vec_push_rejected() {
 }
 
 #[test]
-fn rc_vec_set_rejected() {
-    assert_unsafe_collection_element(
+fn rc_vec_set_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         fn main() {
             var v: Vec<Rc<i64>> = Vec::new();
@@ -3979,8 +3944,8 @@ fn rc_vec_set_rejected() {
 }
 
 #[test]
-fn rc_vec_append_rejected() {
-    assert_unsafe_collection_element(
+fn rc_vec_append_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         fn main() {
             var v: Vec<Rc<i64>> = Vec::new();
@@ -3992,8 +3957,8 @@ fn rc_vec_append_rejected() {
 }
 
 #[test]
-fn rc_vec_pop_rejected() {
-    assert_unsafe_collection_element(
+fn rc_vec_pop_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Rc<i64> {
@@ -4004,11 +3969,11 @@ fn rc_vec_pop_rejected() {
 }
 
 #[test]
-fn rc_vec_get_rejected() {
-    assert_unsafe_collection_element(
+fn rc_vec_get_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder { v: Vec<Rc<i64>> }
-        fn extract(h: Holder) -> Rc<i64> {
+        fn extract(h: Holder) -> Option<Rc<i64>> {
             h.v.get(0)
         }",
         "Vec.get(_) on Vec<Rc<i64>>",
@@ -4016,8 +3981,8 @@ fn rc_vec_get_rejected() {
 }
 
 #[test]
-fn rc_vec_remove_rejected() {
-    assert_unsafe_collection_element(
+fn rc_vec_remove_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Rc<i64> {
@@ -4028,8 +3993,8 @@ fn rc_vec_remove_rejected() {
 }
 
 #[test]
-fn rc_vec_map_rejected() {
-    assert_unsafe_collection_element(
+fn rc_vec_map_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Vec<Rc<i64>> {
@@ -4040,8 +4005,8 @@ fn rc_vec_map_rejected() {
 }
 
 #[test]
-fn rc_vec_filter_rejected() {
-    assert_unsafe_collection_element(
+fn rc_vec_filter_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Vec<Rc<i64>> {
@@ -4052,8 +4017,8 @@ fn rc_vec_filter_rejected() {
 }
 
 #[test]
-fn rc_vec_fold_rejected() {
-    assert_unsafe_collection_element(
+fn rc_vec_fold_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Rc<i64> {
@@ -4064,8 +4029,8 @@ fn rc_vec_fold_rejected() {
 }
 
 #[test]
-fn rc_hashmap_insert_value_rejected() {
-    assert_unsafe_collection_element(
+fn rc_hashmap_insert_value_supported() {
+    assert_inline_typechecks_cleanly(
         r#"
         fn main() {
             var m = HashMap::new();
@@ -4077,21 +4042,28 @@ fn rc_hashmap_insert_value_rejected() {
 }
 
 #[test]
-fn rc_hashmap_insert_key_rejected() {
-    assert_unsafe_collection_element(
+fn rc_hashmap_insert_key_rejected_without_hash_eq() {
+    let output = typecheck_inline(
         r#"
         fn main() {
             var m = HashMap::new();
             let r = Rc::new(42);
             m.insert(r, "val");
         }"#,
-        "HashMap.insert(Rc<i64>, _)",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::BoundsNotSatisfied),
+        "HashMap.insert(Rc<i64>, _) should require Hash + Eq, got: {:#?}",
+        output.errors
     );
 }
 
 #[test]
-fn rc_hashmap_get_value_rejected() {
-    assert_unsafe_collection_element(
+fn rc_hashmap_get_value_supported() {
+    assert_inline_typechecks_cleanly(
         r#"
         type Holder {
             items: HashMap<string, Rc<i64>>
@@ -4104,13 +4076,13 @@ fn rc_hashmap_get_value_rejected() {
 }
 
 #[test]
-fn rc_hashmap_remove_value_rejected() {
-    assert_unsafe_collection_element(
+fn rc_hashmap_remove_value_supported() {
+    assert_inline_typechecks_cleanly(
         r#"
         type Holder {
             items: HashMap<string, Rc<i64>>
         }
-        fn remove_key(h: Holder) -> bool {
+        fn remove_key(h: Holder) -> Option<Rc<i64>> {
             h.items.remove("key")
         }"#,
         "HashMap.remove() on HashMap<string, Rc<i64>>",
@@ -4118,8 +4090,8 @@ fn rc_hashmap_remove_value_rejected() {
 }
 
 #[test]
-fn rc_hashmap_keys_rejected_when_value_type_is_rc() {
-    assert_unsafe_collection_element(
+fn rc_hashmap_keys_supported_when_value_type_is_rc() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder {
             items: HashMap<string, Rc<i64>>
@@ -4132,8 +4104,8 @@ fn rc_hashmap_keys_rejected_when_value_type_is_rc() {
 }
 
 #[test]
-fn rc_hashmap_values_rejected() {
-    assert_unsafe_collection_element(
+fn rc_hashmap_values_rejected_without_projection_lowering() {
+    assert_invalid_operation_contains(
         r"
         type Holder {
             items: HashMap<string, Rc<i64>>
@@ -4141,39 +4113,48 @@ fn rc_hashmap_values_rejected() {
         fn leak(h: Holder) -> Vec<Rc<i64>> {
             h.items.values()
         }",
-        "HashMap.values() on HashMap<string, Rc<i64>>",
+        "is not lowered",
+        "HashMap.values() on HashMap<string, Rc<i64>> should fail closed at projection lowering",
     );
 }
 
 #[test]
-fn rc_hashset_insert_rejected() {
-    assert_unsafe_collection_element(
+fn rc_hashset_insert_rejected_without_hash_eq() {
+    let output = typecheck_inline(
         r"
         fn main() {
             var s = HashSet::new();
             let r = Rc::new(42);
             s.insert(r);
         }",
-        "HashSet.insert(Rc<i64>)",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::BoundsNotSatisfied),
+        "HashSet.insert(Rc<i64>) should require Hash + Eq, got: {:#?}",
+        output.errors
     );
 }
 
 #[test]
-fn rc_nested_in_vec_element_rejected() {
-    assert_unsafe_collection_element(
+fn rc_nested_in_vec_element_rejected_without_clone_drop_thunk() {
+    assert_invalid_operation_contains(
         r"
         fn main() {
             var v = Vec::new();
             let r = Rc::new(42);
             v.push(Some(r));
         }",
-        "Vec.push(Option<Rc<i64>>)",
+        "no clone/drop thunk path",
+        "Vec.push(Option<Rc<i64>>) should fail closed without owned-element lowering",
     );
 }
 
 #[test]
-fn rc_tuple_in_vec_element_rejected() {
-    assert_unsafe_collection_element(
+fn rc_tuple_in_vec_element_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         fn main() {
             var v = Vec::new();
@@ -4458,15 +4439,14 @@ fn hashset_clone_method_typechecks_and_returns_hashset() {
     );
 }
 
-// ── Named-wrapper transitive Rc rejection ───────────────────────────────────────
+// ── Named-wrapper transitive Rc support ─────────────────────────────────────────
 //
-// Regression coverage for the named-wrapper hole: a struct/enum that
-// *contains* Rc<T> in its fields must be rejected from collections even when
-// the type argument list of the outer container shows no Rc directly.
+// Aggregate collection lowering must carry Rc<T> fields through named
+// structs/enums, including nested wrappers.
 
 #[test]
-fn rc_in_named_struct_field_vec_push_rejected() {
-    assert_unsafe_collection_element(
+fn rc_in_named_struct_field_vec_push_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder {
             val: Rc<i64>
@@ -4476,13 +4456,13 @@ fn rc_in_named_struct_field_vec_push_rejected() {
             let h = Holder { val: Rc::new(1) };
             v.push(h);
         }",
-        "Vec.push(Holder { val: Rc<i64> }) — named struct wrapping Rc should be rejected",
+        "Vec.push(Holder { val: Rc<i64> }) should carry aggregate Rc drop facts",
     );
 }
 
 #[test]
-fn rc_in_named_struct_field_hashmap_value_rejected() {
-    assert_unsafe_collection_element(
+fn rc_in_named_struct_field_hashmap_value_supported() {
+    assert_inline_typechecks_cleanly(
         r#"
         type Holder {
             val: Rc<i64>
@@ -4492,13 +4472,13 @@ fn rc_in_named_struct_field_hashmap_value_rejected() {
             let h = Holder { val: Rc::new(1) };
             m.insert("k", h);
         }"#,
-        "HashMap.insert(_, Holder { val: Rc<i64> }) — named struct wrapping Rc should be rejected",
+        "HashMap.insert(_, Holder { val: Rc<i64> }) should carry aggregate Rc drop facts",
     );
 }
 
 #[test]
-fn rc_in_doubly_nested_named_struct_vec_push_rejected() {
-    assert_unsafe_collection_element(
+fn rc_in_doubly_nested_named_struct_vec_push_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         type Inner {
             x: Rc<i64>
@@ -4511,13 +4491,13 @@ fn rc_in_doubly_nested_named_struct_vec_push_rejected() {
             let o = Outer { inner: Inner { x: Rc::new(1) } };
             v.push(o);
         }",
-        "Vec.push(Outer wrapping Inner wrapping Rc<i64>) — doubly-nested named struct should be rejected",
+        "Vec.push(Outer wrapping Inner wrapping Rc<i64>) should carry nested Rc drop facts",
     );
 }
 
 #[test]
-fn rc_in_named_enum_variant_vec_push_rejected() {
-    assert_unsafe_collection_element(
+fn rc_in_named_enum_variant_vec_push_supported() {
+    assert_inline_typechecks_cleanly(
         r"
         enum MaybeHolder {
             Some(Rc<i64>);
@@ -4527,7 +4507,7 @@ fn rc_in_named_enum_variant_vec_push_rejected() {
             var v = Vec::new();
             v.push(MaybeHolder::Some(Rc::new(1)));
         }",
-        "Vec.push(MaybeHolder::Some(Rc<i64>)) — named enum wrapping Rc should be rejected",
+        "Vec.push(MaybeHolder::Some(Rc<i64>)) should carry enum Rc drop facts",
     );
 }
 

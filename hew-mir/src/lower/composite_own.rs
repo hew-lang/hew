@@ -20,6 +20,73 @@ use super::{
     FOR_ITER_CURSOR_NAME_PREFIX,
 };
 
+/// Prove retained string field-load destinations are predicate-only owners.
+///
+/// Admission is intentionally exact: the load, equality comparison feeding
+/// the block's branch, and one `hew_string_drop` must occur in that order in
+/// one block, and the loaded place must have no other read. Such a temporary
+/// owns only the retain minted by codegen; it never takes ownership from the
+/// aggregate field and therefore must not suppress the aggregate's composite
+/// scope-exit drop.
+fn predicate_string_temp_drop_proof(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+) -> HashSet<u32> {
+    let mut proven = HashSet::new();
+    for block in blocks {
+        let Terminator::Branch { cond, .. } = block.terminator else {
+            continue;
+        };
+        for (load_idx, load) in block.instructions.iter().enumerate() {
+            let Some(loaded) = string_field_load_producer_dest(load, local_tys) else {
+                continue;
+            };
+            let Some(loaded_local) = base_local(loaded) else {
+                continue;
+            };
+            let comparisons = block
+                .instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, instr)| match instr {
+                    Instr::IntCmp { lhs, rhs, dest, .. }
+                        if *dest == cond && (*lhs == loaded || *rhs == loaded) =>
+                    {
+                        Some(idx)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let drops = block
+                .instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, instr)| match instr {
+                    Instr::Drop {
+                        place,
+                        ty: ResolvedTy::String,
+                        drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+                    } if *place == loaded => Some(idx),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let ([cmp_idx], [drop_idx]) = (comparisons.as_slice(), drops.as_slice()) else {
+                continue;
+            };
+            if !(load_idx < *cmp_idx && *cmp_idx < *drop_idx) {
+                continue;
+            }
+            let reads_are_exact = block.instructions.iter().enumerate().all(|(idx, instr)| {
+                !instr_source_places(instr).contains(&loaded) || idx == *cmp_idx || idx == *drop_idx
+            });
+            if reads_are_exact {
+                proven.insert(loaded_local);
+            }
+        }
+    }
+    proven
+}
+
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
 /// composite drop the sole-owner prover excludes because ONE of its fields
 /// escaped through a field binder.
@@ -1585,6 +1652,9 @@ pub(super) fn derive_owned_record_drop_allowed(
     // root; unprovable provenance keeps the blanket every-root exclusion.
     let mut binder_provenance =
         attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
+    let predicate_string_temps = predicate_string_temp_drop_proof(blocks, local_tys);
+    field_binders.retain(|local| !predicate_string_temps.contains(local));
+    binder_provenance.retain(|local, _| !predicate_string_temps.contains(local));
 
     // Fold the recorded byte-copy interior-alias binders (the `let mid = o.mid;
     // let leaf = mid.leaf` projection chain) into the field-binder set,
@@ -2885,6 +2955,8 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             break;
         }
     }
+    let predicate_string_temps = predicate_string_temp_drop_proof(blocks, local_tys);
+    elem_binders.retain(|local| !predicate_string_temps.contains(local));
 
     // Fold the recorded byte-copy interior-alias binders (the `let mid = o.0;
     // let leaf = mid.0` projection chain) into the element-binder set. The

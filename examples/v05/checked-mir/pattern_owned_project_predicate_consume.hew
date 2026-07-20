@@ -1,0 +1,42 @@
+#[resource]
+type Token {
+    id: i64;
+}
+
+impl Token {
+    fn close(self) {}
+}
+
+type Packet {
+    tag: i64;
+    token: Token;
+    text: string;
+}
+
+fn record_join(p: Packet) -> i64 {
+    match p {
+        Packet { tag: 0, token, text: _ } => token.id,
+        Packet { tag: _, token, text: _ } => token.id,
+    }
+}
+
+fn tuple_join(p: (i64, Token, string)) -> i64 {
+    match p {
+        (0, token, _) => token.id,
+        (_, token, _) => token.id,
+    }
+}
+
+fn record_whole(p: Packet) -> i64 {
+    match p {
+        Packet { tag: 1, token, text: _ } => token.id,
+        whole => whole.token.id,
+    }
+}
+
+fn direct_return(p: Packet) -> i64 {
+    match p {
+        Packet { tag: 2, token, text: _ } => return token.id,
+        Packet { tag: _, token, text: _ } => token.id,
+    }
+}

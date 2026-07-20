@@ -1,0 +1,54 @@
+type Packet {
+    tag: i64,
+    left: string,
+    right: string,
+}
+
+fn make(tag: i64) -> Packet {
+    Packet { tag: tag, left: "l" + "eft", right: "r" + "ight" }
+}
+
+fn full(tag: i64) -> i64 {
+    let value = make(tag);
+    match value {
+        Packet { tag: 0, left, right } => left.len() + right.len(),
+        Packet { tag: _, left: _, right: _ } => 20,
+    }
+}
+
+fn partial(tag: i64) -> i64 {
+    let value = make(tag);
+    let result = match value {
+        Packet { tag: 1, left, right: _ } => left.len(),
+        Packet { tag: _, left: _, right: _ } => 30,
+    };
+    result
+}
+
+fn whole(tag: i64) -> i64 {
+    let value = make(tag);
+    match value {
+        Packet { tag: 2, left, right: _ } => left.len(),
+        packet => packet.right.len(),
+    }
+}
+
+fn direct(tag: i64) -> i64 {
+    let value = make(tag);
+    match value {
+        Packet { tag: 3, left, right: _ } => return left.len(),
+        Packet { tag: _, left: _, right: _ } => 40,
+    }
+}
+
+fn main() -> i64 {
+    println(full(0));
+    println(full(9));
+    println(partial(1));
+    println(partial(9));
+    println(whole(2));
+    println(whole(9));
+    println(direct(3));
+    println(direct(9));
+    0
+}

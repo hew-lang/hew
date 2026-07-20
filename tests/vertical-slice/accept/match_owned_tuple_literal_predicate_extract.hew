@@ -1,0 +1,48 @@
+fn make(tag: i64) -> (i64, string, string) {
+    (tag, "l" + "eft", "r" + "ight")
+}
+
+fn full(tag: i64) -> i64 {
+    let value = make(tag);
+    match value {
+        (0, left, right) => left.len() + right.len(),
+        (_, _, _) => 20,
+    }
+}
+
+fn partial(tag: i64) -> i64 {
+    let value = make(tag);
+    let result = match value {
+        (1, left, _) => left.len(),
+        (_, _, _) => 30,
+    };
+    result
+}
+
+fn whole(tag: i64) -> i64 {
+    let value = make(tag);
+    match value {
+        (2, left, _) => left.len(),
+        tuple => tuple.2.len(),
+    }
+}
+
+fn direct(tag: i64) -> i64 {
+    let value = make(tag);
+    match value {
+        (3, left, _) => return left.len(),
+        (_, _, _) => 40,
+    }
+}
+
+fn main() -> i64 {
+    println(full(0));
+    println(full(9));
+    println(partial(1));
+    println(partial(9));
+    println(whole(2));
+    println(whole(9));
+    println(direct(3));
+    println(direct(9));
+    0
+}

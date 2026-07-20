@@ -1,5 +1,8 @@
-use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, FieldOffset, Instr, IrPipeline, MirDiagnosticKind};
+use hew_hir::{lower_program, IntentKind, ResolutionCtx};
+use hew_mir::{
+    lower_hir_module, DropKind, ElabDrop, ExitPath, FieldOffset, Instr, IrPipeline,
+    MirDiagnosticKind, MirStatement,
+};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn pipeline_with_tc(source: &str) -> IrPipeline {
@@ -72,6 +75,72 @@ fn find_fn<'a>(p: &'a IrPipeline, name: &str) -> &'a hew_mir::RawMirFunction {
         .iter()
         .find(|f| f.name == name)
         .unwrap_or_else(|| panic!("function `{name}` not found in raw_mir"))
+}
+
+fn all_drops(pipeline: &IrPipeline, name: &str) -> Vec<ElabDrop> {
+    pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == name)
+        .unwrap_or_else(|| panic!("function `{name}` not found in elaborated MIR"))
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| plan.drops.iter().cloned())
+        .collect()
+}
+
+fn return_drops(pipeline: &IrPipeline, name: &str) -> Vec<ElabDrop> {
+    pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == name)
+        .unwrap_or_else(|| panic!("function `{name}` not found in elaborated MIR"))
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+        .flat_map(|(_, plan)| plan.drops.iter().cloned())
+        .collect()
+}
+
+fn drop_kind_counts(drops: &[ElabDrop]) -> (usize, usize, usize) {
+    drops.iter().fold(
+        (0, 0, 0),
+        |(cow_heap, record_in_place, tuple_in_place), drop| match drop.kind {
+            DropKind::CowHeap { .. } => (cow_heap + 1, record_in_place, tuple_in_place),
+            DropKind::RecordInPlace => (cow_heap, record_in_place + 1, tuple_in_place),
+            DropKind::TupleInPlace => (cow_heap, record_in_place, tuple_in_place + 1),
+            _ => (cow_heap, record_in_place, tuple_in_place),
+        },
+    )
+}
+
+fn cow_drop_places(drops: &[ElabDrop]) -> std::collections::HashSet<hew_mir::Place> {
+    drops
+        .iter()
+        .filter(|drop| matches!(drop.kind, DropKind::CowHeap { .. }))
+        .map(|drop| drop.place)
+        .collect()
+}
+
+fn source_consume_count(pipeline: &IrPipeline, name: &str, source_name: &str) -> usize {
+    pipeline
+        .thir
+        .iter()
+        .find(|function| function.name == name)
+        .unwrap_or_else(|| panic!("function `{name}` not found in THIR"))
+        .statements
+        .iter()
+        .filter(|statement| {
+            matches!(
+                statement,
+                MirStatement::Use {
+                    name,
+                    intent: IntentKind::Consume,
+                    ..
+                } if name == source_name
+            )
+        })
+        .count()
 }
 
 #[test]
@@ -220,4 +289,144 @@ fn diff(r: R) -> i64 {
         FieldOffset(0),
         "binding `b` must load from FieldOffset(0) — declaration position of `b` in `R {{ b, a }}`; got loads: {loads:?}"
     );
+}
+
+#[test]
+fn owned_project_param_tail_and_nontail_have_identical_release_authority() {
+    let pipeline = pipeline_with_tc(
+        r"
+type Packet {
+    tag: string,
+    body: string,
+}
+
+fn record_tail(p: Packet) -> i64 {
+    match p {
+        Packet { tag, body } => tag.len() + body.len(),
+    }
+}
+
+fn record_nontail(p: Packet) -> i64 {
+    let total = match p {
+        Packet { tag, body } => tag.len() + body.len(),
+    };
+    total
+}
+
+fn tuple_tail(p: (string, string)) -> i64 {
+    match p {
+        (left, right) => left.len() + right.len(),
+    }
+}
+
+fn tuple_nontail(p: (string, string)) -> i64 {
+    let total = match p {
+        (left, right) => left.len() + right.len(),
+    };
+    total
+}
+",
+    );
+
+    let record_tail = all_drops(&pipeline, "record_tail");
+    let record_nontail = all_drops(&pipeline, "record_nontail");
+    let tuple_tail = all_drops(&pipeline, "tuple_tail");
+    let tuple_nontail = all_drops(&pipeline, "tuple_nontail");
+
+    assert_eq!(drop_kind_counts(&record_tail), (6, 0, 0));
+    assert_eq!(drop_kind_counts(&record_nontail), (6, 0, 0));
+    assert_eq!(drop_kind_counts(&tuple_tail), (6, 0, 0));
+    assert_eq!(drop_kind_counts(&tuple_nontail), (6, 0, 0));
+    assert_eq!(cow_drop_places(&record_tail).len(), 2);
+    assert_eq!(cow_drop_places(&record_nontail).len(), 2);
+    assert_eq!(cow_drop_places(&tuple_tail).len(), 2);
+    assert_eq!(cow_drop_places(&tuple_nontail).len(), 2);
+    assert_eq!(
+        drop_kind_counts(&return_drops(&pipeline, "record_tail")),
+        (2, 0, 0)
+    );
+    assert_eq!(
+        drop_kind_counts(&return_drops(&pipeline, "record_nontail")),
+        (2, 0, 0)
+    );
+    assert_eq!(
+        drop_kind_counts(&return_drops(&pipeline, "tuple_tail")),
+        (2, 0, 0)
+    );
+    assert_eq!(
+        drop_kind_counts(&return_drops(&pipeline, "tuple_nontail")),
+        (2, 0, 0)
+    );
+    assert_eq!(
+        drop_kind_counts(&record_tail),
+        drop_kind_counts(&record_nontail)
+    );
+    assert_eq!(
+        drop_kind_counts(&tuple_tail),
+        drop_kind_counts(&tuple_nontail)
+    );
+
+    assert_eq!(source_consume_count(&pipeline, "record_tail", "p"), 1);
+    assert_eq!(source_consume_count(&pipeline, "record_nontail", "p"), 1);
+    assert_eq!(source_consume_count(&pipeline, "tuple_tail", "p"), 1);
+    assert_eq!(source_consume_count(&pipeline, "tuple_nontail", "p"), 1);
+}
+
+#[test]
+fn wildcard_project_param_borrows_and_keeps_one_caller_composite_drop() {
+    let pipeline = pipeline_with_tc(
+        r#"
+type Packet {
+    tag: string,
+    body: string,
+}
+
+fn borrow_record(p: Packet) -> i64 {
+    match p { _ => 1 }
+}
+
+fn borrow_tuple(p: (string, string)) -> i64 {
+    match p { _ => 1 }
+}
+
+fn caller() -> i64 {
+    let packet = Packet { tag: "o" + "k", body: "a" + "b" };
+    let record_result = borrow_record(packet);
+    let record_reuse = packet.tag.len();
+    let tuple = ("c" + "d", "e" + "f");
+    let tuple_result = borrow_tuple(tuple);
+    let tuple_reuse = tuple.0.len();
+    record_result + record_reuse + tuple_result + tuple_reuse
+}
+"#,
+    );
+
+    assert_eq!(source_consume_count(&pipeline, "borrow_record", "p"), 0);
+    assert_eq!(source_consume_count(&pipeline, "borrow_tuple", "p"), 0);
+    assert_eq!(
+        drop_kind_counts(&all_drops(&pipeline, "borrow_record")),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        drop_kind_counts(&all_drops(&pipeline, "borrow_tuple")),
+        (0, 0, 0)
+    );
+    let caller_drops = all_drops(&pipeline, "caller");
+    assert_eq!(drop_kind_counts(&caller_drops), (0, 4, 4));
+    assert_eq!(
+        drop_kind_counts(&return_drops(&pipeline, "caller")),
+        (0, 1, 1)
+    );
+    let record_places = caller_drops
+        .iter()
+        .filter(|drop| matches!(drop.kind, DropKind::RecordInPlace))
+        .map(|drop| drop.place)
+        .collect::<std::collections::HashSet<_>>();
+    let tuple_places = caller_drops
+        .iter()
+        .filter(|drop| matches!(drop.kind, DropKind::TupleInPlace))
+        .map(|drop| drop.place)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(record_places.len(), 1);
+    assert_eq!(tuple_places.len(), 1);
 }

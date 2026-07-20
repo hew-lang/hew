@@ -1,0 +1,64 @@
+// Owned record/tuple parameters use one chain-wide ownership decision. Full
+// projection transfers both string fields to binders in tail and non-tail
+// position; wildcard-only helpers borrow so their caller can reuse and drop the
+// original composite once.
+type Packet {
+    tag: string;
+    body: string;
+}
+
+fn record_tail(p: Packet) -> i64 {
+    match p {
+        Packet { tag, body } => tag.len() + body.len(),
+    }
+}
+
+fn record_nontail(p: Packet) -> i64 {
+    let total = match p {
+        Packet { tag, body } => tag.len() + body.len(),
+    };
+    total
+}
+
+fn tuple_tail(p: (string, string)) -> i64 {
+    match p {
+        (left, right) => left.len() + right.len(),
+    }
+}
+
+fn tuple_nontail(p: (string, string)) -> i64 {
+    let total = match p {
+        (left, right) => left.len() + right.len(),
+    };
+    total
+}
+
+fn borrow_record(p: Packet) -> i64 {
+    match p {
+        _ => 1,
+    }
+}
+
+fn borrow_tuple(p: (string, string)) -> i64 {
+    match p {
+        _ => 1,
+    }
+}
+
+fn main() -> i64 {
+    let a = record_tail(Packet { tag: "r" + "t", body: "a" + "b" });
+    let b = record_nontail(Packet { tag: "r" + "n", body: "c" + "d" });
+    let c = tuple_tail(("t" + "t", "e" + "f"));
+    let d = tuple_nontail(("t" + "n", "g" + "h"));
+    let packet = Packet { tag: "o" + "k", body: "i" + "j" };
+    let record_borrow = borrow_record(packet);
+    let record_reuse = packet.tag.len();
+    let tuple = ("k" + "l", "m" + "n");
+    let tuple_borrow = borrow_tuple(tuple);
+    let tuple_reuse = tuple.0.len();
+    if a + b + c + d == 16 && record_borrow + record_reuse == 3 && tuple_borrow + tuple_reuse == 3 {
+        0
+    } else {
+        1
+    }
+}

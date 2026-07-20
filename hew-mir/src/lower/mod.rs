@@ -69,6 +69,8 @@ mod suspend_places;
 mod task;
 mod temp_drop;
 
+use self::pattern::{project_match_ownership_mode, ProjectMatchOwnershipMode};
+
 #[cfg(not(test))]
 use self::cfg_util::{
     block_by_id, blocks_reachable_from, call_terminator_next, local_is_used_after,

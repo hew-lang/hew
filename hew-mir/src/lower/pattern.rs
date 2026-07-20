@@ -12,6 +12,48 @@ use super::{
     VecElementRelease,
 };
 
+/// Chain-wide ownership mode for record/tuple project matches.
+///
+/// Project arms that introduce no field bindings, together with wildcard
+/// fallbacks, only inspect the scrutinee. Any projected field binding or
+/// whole-value binding transfers ownership on selection. Other predicate
+/// families are not project chains and retain their existing classification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ProjectMatchOwnershipMode {
+    Borrow,
+    Consume,
+    NotApplicable,
+}
+
+/// Classify a complete match chain before either parameter-consumption facts
+/// or project lowering make an ownership decision.
+pub(super) fn project_match_ownership_mode(
+    arms: &[hew_hir::HirMatchArm],
+) -> ProjectMatchOwnershipMode {
+    if arms.is_empty()
+        || arms.iter().any(|arm| {
+            !matches!(
+                arm.predicate,
+                hew_hir::HirMatchArmPredicate::RecordProject { .. }
+                    | hew_hir::HirMatchArmPredicate::TupleProject { .. }
+                    | hew_hir::HirMatchArmPredicate::Wildcard
+                    | hew_hir::HirMatchArmPredicate::Binding { .. }
+            )
+        })
+    {
+        return ProjectMatchOwnershipMode::NotApplicable;
+    }
+
+    if arms.iter().any(|arm| {
+        !arm.bindings.is_empty()
+            || matches!(arm.predicate, hew_hir::HirMatchArmPredicate::Binding { .. })
+    }) {
+        ProjectMatchOwnershipMode::Consume
+    } else {
+        ProjectMatchOwnershipMode::Borrow
+    }
+}
+
 impl Builder {
     /// Lower an `HirExprKind::Match` expression to a tag-dispatch CFG.
     ///

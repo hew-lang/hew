@@ -5493,11 +5493,21 @@ mod tests {
         Location::new(test_node_id(route_slot), actor_slot, 1).unwrap()
     }
 
-    fn test_remote_pid(actor_id: u64) -> HewRemotePid {
-        HewRemotePid::from(test_location(
-            crate::pid::hew_pid_node(actor_id),
+    fn remote_pid_for_node(node: &TestNode, actor_id: u64) -> HewRemotePid {
+        // SAFETY: `TestNode` owns a live, non-null node pointer for this test.
+        let node = unsafe { node.as_ptr().as_ref() }.expect("test node must be live");
+        assert_eq!(crate::pid::hew_pid_node(actor_id), node.route_slot);
+        let location = Location::new(
+            node.auth
+                .node_identity()
+                .expect("authorized test node must have an identity"),
             crate::pid::hew_pid_serial(actor_id),
-        ))
+            node.auth
+                .session_incarnation()
+                .expect("authorized test node must have a session"),
+        )
+        .expect("test actor must produce a valid location");
+        HewRemotePid::from(location)
     }
 
     unsafe fn lookup_exact(node: *mut HewNode, name: *const c_char) -> Option<Location> {
@@ -9346,7 +9356,7 @@ mod tests {
 
         // Fire-and-forget from node1 to the actor on node2.
         let msg_type_sent: i32 = 77;
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: null payload / size 0 is valid for a bare signal message.
         let rc = unsafe {
             hew_node_send_location(
@@ -9481,7 +9491,7 @@ mod tests {
         // This exercises a real CBOR-framed round-trip across the mTLS-pinned
         // mesh transport — not just process startup.
         let msg_type_sent: i32 = 91;
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: null payload / size 0 is valid for a bare signal message.
         let rc = unsafe {
             hew_node_send_location(
@@ -9784,7 +9794,7 @@ mod tests {
         // SAFETY: both node pointers remain valid until the end of the test.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -9861,7 +9871,7 @@ mod tests {
         // send_reply_envelope uses hew_connmgr_conn_id_for_node to find the accepted
         // connection whose peer_node_id == 311, enabling the reply to flow back to node1.
         let send_value: u32 = 21;
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: send_value is a valid u32 on the stack; reply is malloc'd, freed below.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -9943,7 +9953,7 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         let send_value: u32 = 21;
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: send_value is a valid u32 on the stack; caller is a live actor.
         let handle = unsafe {
             hew_node_api_ask_async_location(
@@ -10043,7 +10053,7 @@ mod tests {
         // SAFETY: both node pointers remain valid until teardown.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -10108,7 +10118,7 @@ mod tests {
         // SAFETY: actor was spawned above and remains valid while stopped here.
         unsafe { crate::actor::hew_actor_stop(actor) };
 
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -10191,7 +10201,7 @@ mod tests {
         // SAFETY: both node pointers remain valid until teardown.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -10254,7 +10264,7 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -10347,7 +10357,7 @@ mod tests {
 
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         let ask_start = std::time::Instant::now();
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -10415,7 +10425,7 @@ mod tests {
         // SAFETY: both node pointers remain valid until the end of the test.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: non-void remote ask expects a u32-sized reply; an empty success must fail closed.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -10479,7 +10489,7 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         let ask_start = std::time::Instant::now();
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -10606,7 +10616,7 @@ mod tests {
         // SAFETY: both node pointers remain valid until the end of the test.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
             let ptr = hew_node_api_ask_location(
@@ -10718,7 +10728,7 @@ mod tests {
             outbound_conn_id,
         );
 
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
             let ptr = hew_node_api_ask_location(
@@ -10837,7 +10847,7 @@ mod tests {
             outbound_conn_id,
         );
 
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
             let ptr = hew_node_api_ask_location(
@@ -11163,7 +11173,7 @@ mod tests {
         let baseline = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
 
         let payload: u32 = 0xDEAD_BEEF;
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: payload is a valid u32 on the stack; its address is valid for this call.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -11262,7 +11272,7 @@ mod tests {
         // Void ask: reply_size == 0. Before the fix this would have returned
         // the void-success sentinel because the rejection sent an empty payload
         // which remote_reply_data_to_ptr mistook for a void success.
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: null payload / size-0 are valid; this is a void ask.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
@@ -11335,7 +11345,7 @@ mod tests {
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
 
         let payload: u32 = 42;
-        let target = test_remote_pid(actor_id);
+        let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: payload is a valid u32; its address is valid for this call.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(

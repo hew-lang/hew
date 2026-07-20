@@ -1880,11 +1880,36 @@ impl Builder {
                 self.enforce_closure_pair_ingress(value);
                 let arg_places = vec![receiver_place, index_place, src];
                 let next = self.alloc_block();
+                // A Vec index-assignment of a fresh materialised rvalue
+                // (`v[i] = Name { .. }`, `v[i] = make()`) has the SAME
+                // unbound-temp hole the `.set(i, ..)` method path does:
+                // `hew_vec_set_owned` is COPY-IN (deep-clones the element into
+                // the slot), but the throwaway constructor temp has no binding
+                // and no scope-exit drop to balance that clone, so its owned
+                // heap leaks. Route it to the MOVE-in sibling
+                // `hew_vec_set_owned_move` (byte-transfers the element's heap
+                // into the slot without a clone; the source temp is then dead).
+                // `expr_is_materialized_owner` is the identical fresh-rvalue
+                // predicate the `.set()`/push paths use: a bare `BindingRef`
+                // (a shared/after-read local) returns false and stays COPY-IN
+                // (moving it would double-free the live binding's heap), and a
+                // construction embedding a whole by-value parameter returns
+                // false too. This mirrors the method path's Vec::Set routing.
+                let effective_symbol = if target_symbol.as_str() == "hew_vec_set_owned"
+                    && Self::expr_is_materialized_owner(
+                        value,
+                        &self.funcupdate_fn_returns_fresh,
+                        &self.funcupdate_param_ids,
+                    ) {
+                    "hew_vec_set_owned_move"
+                } else {
+                    target_symbol.as_str()
+                };
                 let builtin = hew_types::runtime_call::RuntimeCallFamily::from_mir_builtin_symbol(
-                    target_symbol,
+                    effective_symbol,
                 );
                 self.finish_current_block(Terminator::Call {
-                    callee: target_symbol.clone(),
+                    callee: effective_symbol.to_string(),
                     builtin,
                     args: arg_places,
                     dest: None,

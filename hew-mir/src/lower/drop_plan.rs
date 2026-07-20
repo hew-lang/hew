@@ -792,8 +792,7 @@ pub(super) fn elaborate(
             .collect::<HashSet<_>>(),
         &builder.binding_scope,
         &builder.loop_back_edge_blocks,
-        &builder.locals,
-        &builder.match_project_consumed_binder_locals,
+        &projection_alias_tainted,
     );
 
     for (exit, plan) in &mut drop_plans {
@@ -3728,8 +3727,7 @@ pub(super) fn enumerate_exits(
     cancellation_blocks: &HashSet<u32>,
     binding_scope: &HashMap<BindingId, ScopeId>,
     loop_back_edge_blocks: &HashMap<u32, ScopeId>,
-    locals: &[ResolvedTy],
-    match_project_consumed_binder_locals: &HashSet<u32>,
+    projection_alias_tainted: &HashSet<u32>,
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
     // Track the highest block id observed so cleanup-block ids can
     // start past it. Slice 2 onwards may emit multiple non-trivial
@@ -3902,8 +3900,9 @@ pub(super) fn enumerate_exits(
     // scope-close pass exists to close — while a payload alias is left to its
     // composite's single recursive free.
     //
-    // The REAL `locals` table is threaded through (not an empty slice) so the
-    // `string` `RecordFieldLoad`/`TupleFieldLoad` exemption stays active: a
+    // The single function-wide taint set was computed with the REAL `locals`
+    // table (not an empty slice), so the `string`
+    // `RecordFieldLoad`/`TupleFieldLoad` exemption stays active: a
     // `let name = r.name` reads a fresh `+1`-retained string owner that the
     // composite does NOT recursively free, so it must drop on the scope-close
     // edge. Tainting it (empty `locals` disables the exemption) would strand its
@@ -3913,8 +3912,6 @@ pub(super) fn enumerate_exits(
     // consumed-project binder set exempts only field-load destinations whose
     // parent composite is consume-marked on the selected arm; those destinations
     // are sole owners and must close on this edge before the join loses them.
-    let scope_close_alias_tainted =
-        compute_projection_alias_taint(blocks, match_project_consumed_binder_locals, locals);
     let drops_for_scope_close_goto = |block_id: u32, target: u32| -> Vec<ElabDrop> {
         drops_for_exit(block_id)
             .into_iter()
@@ -3923,7 +3920,7 @@ pub(super) fn enumerate_exits(
                 // which frees it recursively at its own exit — never drop it on a
                 // scope-close edge (no double-free).
                 if let Some(l) = base_local(drop.place) {
-                    if scope_close_alias_tainted.contains(&l) {
+                    if projection_alias_tainted.contains(&l) {
                         return false;
                     }
                 }

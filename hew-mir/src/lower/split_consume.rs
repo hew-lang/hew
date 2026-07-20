@@ -2428,7 +2428,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[], &HashSet::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
 
             // Exactly one Return plan for the single block.
             prop_assert_eq!(plans.len(), 1);
@@ -2483,7 +2483,7 @@ mod slice3_narrowing_proptests {
             let lifo = build_lifo(n);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[], &HashSet::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
             let (_, plan) = &plans[0];
 
             // Expected: every binding NOT Consumed survives in the drop
@@ -2522,8 +2522,8 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[], &HashSet::new());
-            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[], &HashSet::new());
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
 
             prop_assert_eq!(b1.len(), b2.len());
             prop_assert_eq!(p1.len(), p2.len());
@@ -2549,7 +2549,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &[], &HashSet::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
             let (_, plan) = &plans[0];
 
             for d in &plan.drops {
@@ -2609,7 +2609,6 @@ mod slice3_narrowing_proptests {
             &HashSet::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &[],
             &HashSet::new(),
         );
         let (exit, plan) = &plans[0];
@@ -2637,7 +2636,6 @@ mod slice3_narrowing_proptests {
             &HashSet::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &[],
             &HashSet::new(),
         );
         let (_, plan) = &plans[0];
@@ -2665,7 +2663,6 @@ mod slice3_narrowing_proptests {
             &HashSet::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &[],
             &HashSet::new(),
         );
         let (exit, plan) = &plans[0];
@@ -2688,7 +2685,6 @@ mod slice3_narrowing_proptests {
             &HashSet::new(),
             &HashMap::new(),
             &HashMap::new(),
-            &[],
             &HashSet::new(),
         );
         assert!(

@@ -439,22 +439,30 @@ fn see_through_let_binding_bits<P: LeafPolicy>(
     init_bits.map(|base| base | content)
 }
 
-/// The receiver and argument expressions of a method-call form, or `None` for a
-/// non-method expression. Used by [`see_through_let_binding_bits`] to recognise
-/// an interior container append (`id.push(e)`) rooted at a tracked binding.
+/// The receiver and argument expressions of an audited append method, or `None`
+/// for every other expression. Used by [`see_through_let_binding_bits`] to
+/// recognise an interior container append (`id.push(e)`) rooted at a tracked
+/// binding.
+///
+/// The checker-authored [`hew_types::MethodTargetFamily`] is the identity
+/// authority here: every supported `Vec<T>` push ABI has the same
+/// `Vec(VecMethod::Push)` family even though its emitted symbol varies with
+/// `T`. Dynamic/static trait dispatch, user var-self methods, numeric methods,
+/// and every non-push collection method stay fail-closed. Merely having a
+/// receiver and arguments is not proof that a call only appends those arguments
+/// to the receiver.
 ///
 /// `pub(crate)` so the frozen-reference see-through reuses the IDENTICAL
 /// structural append-recognition (only the may-alias recursion is reimplemented
 /// there), keeping the `coarse_verdict_differential` pin byte-identical.
 pub(crate) fn method_receiver_and_args(expr: &HirExpr) -> Option<(&HirExpr, Vec<&HirExpr>)> {
     match &expr.kind {
-        HirExprKind::ResolvedImplCall { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
-        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
-            Some((receiver, args.iter().collect()))
-        }
-        HirExprKind::NumericMethod { receiver, arg, .. } => Some((receiver, vec![arg])),
+        HirExprKind::ResolvedImplCall {
+            receiver,
+            target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push),
+            args,
+            ..
+        } => Some((receiver, args.iter().collect())),
         _ => None,
     }
 }
@@ -3026,6 +3034,39 @@ mod tests {
         assert_eq!(
             coarse, frozen,
             "see-through drift between the shared walk and the frozen reference"
+        );
+    }
+
+    #[test]
+    fn see_through_accepts_only_audited_vec_push_methods() {
+        let module = lower_source(
+            r"
+            fn appendThenReturn() -> Vec<i64> {
+                let items: Vec<i64> = [];
+                items.push(1);
+                items
+            }
+            fn inspectThenReturn() -> Vec<i64> {
+                let items: Vec<i64> = [];
+                items.len();
+                items
+            }
+            ",
+        );
+        let origin_fns = origin_fns_of(&module);
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        assert!(
+            coarse[&fn_id(&module, "appendThenReturn")],
+            "the checker-authoritative Vec::push identity preserves freshness"
+        );
+        assert!(
+            !coarse[&fn_id(&module, "inspectThenReturn")],
+            "a non-append receiver method must remain an other-use and fail closed"
+        );
+        assert_eq!(
+            coarse,
+            compute_fn_returns_fresh_owner_ref(&origin_fns),
+            "the shared walk and frozen reference must apply the same audited append identity"
         );
     }
 

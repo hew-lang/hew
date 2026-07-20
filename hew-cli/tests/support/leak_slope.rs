@@ -85,10 +85,17 @@ pub fn compile_to_native(source: &str, dir: &Path, name: &str) -> PathBuf {
 /// attach or does not emit the expected summary line — the caller treats that
 /// as a graceful skip rather than a failure.
 pub fn measure_leaks(bin: &Path) -> Option<usize> {
+    measure_leaks_with_args(bin, &[])
+}
+
+/// Run [`measure_leaks`] with command-line arguments for a runtime-configurable
+/// probe. This lets a slope test compile one binary and exercise it at multiple
+/// iteration counts without rebuilding the same program shape.
+pub fn measure_leaks_with_args(bin: &Path, args: &[&str]) -> Option<usize> {
     let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
+        .args(["--atExit", "--"])
         .arg(bin)
+        .args(args)
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
         .env("MallocGuardEdges", "1")

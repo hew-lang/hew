@@ -36,10 +36,12 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use support::leak_slope::{
-    leaks_supported, measure_leaks, HIGH_FRAMES, LOW_FRAMES, SLOPE_TOLERANCE,
-};
+use support::leak_slope::{leaks_supported, measure_leaks_with_args, LOW_FRAMES, SLOPE_TOLERANCE};
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
+
+/// A one-node-per-frame leak grows by 12 nodes between the probes, more than
+/// twice the shared five-node noise tolerance.
+const BORROW_BOUNDARY_HIGH_FRAMES: usize = 15;
 
 const BORROW_BOUNDARY_RUST: &str = r#"static VALUES: [i64; 4] = [i64::MIN, -1, 0, i64::MAX];
 
@@ -77,11 +79,12 @@ fn main() {
 }
 "#;
 
-fn borrow_boundary_loop_source(iterations: usize) -> String {
+fn borrow_boundary_loop_source() -> String {
     format!(
         r#"extern "C" {{
     fn borrow_boundary_get(index: i64) -> &i64;
     fn borrow_boundary_read(value: &i64) -> i64;
+    fn hew_args_count() -> i32;
 }}
 
 fn read_at(index: i64) -> i64 {{
@@ -90,8 +93,12 @@ fn read_at(index: i64) -> i64 {{
 }}
 
 fn main() {{
+    var iterations: i64 = {LOW_FRAMES};
+    if unsafe {{ hew_args_count() }} > 1 {{
+        iterations = {BORROW_BOUNDARY_HIGH_FRAMES};
+    }}
     var i: i64 = 0;
-    while i < {iterations} {{
+    while i < iterations {{
         let low = read_at(0);
         let high = read_at(3);
         if low == high {{
@@ -727,21 +734,22 @@ fn ffi_borrow_boundary_has_no_drop_or_leak_slope() {
         return;
     };
 
-    let build_loop = |iterations, name: &str| {
-        let program = write_program(dir.path(), name, &borrow_boundary_loop_source(iterations));
-        let binary = dir.path().join(name);
-        let link = hew_build(Some(&lib), &program, &binary, dir.path());
-        assert!(
-            link.status.success(),
-            "foreign borrow loop must link:\n{}",
-            describe_output(&link),
-        );
-        binary
-    };
+    let program = write_program(
+        dir.path(),
+        "borrow_boundary_slope",
+        &borrow_boundary_loop_source(),
+    );
+    let binary = dir.path().join("borrow_boundary_slope");
+    let link = hew_build(Some(&lib), &program, &binary, dir.path());
+    assert!(
+        link.status.success(),
+        "foreign borrow loop must link:\n{}",
+        describe_output(&link),
+    );
 
-    let high_binary = build_loop(HIGH_FRAMES, "borrow_boundary_high");
-    let mut scribble = Command::new(&high_binary);
+    let mut scribble = Command::new(&binary);
     scribble
+        .arg("high")
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
         .env("MallocGuardEdges", "1");
@@ -755,17 +763,17 @@ fn ffi_borrow_boundary_has_no_drop_or_leak_slope() {
     if !leaks_supported("ffi_borrow_boundary") {
         return;
     }
-    let low_binary = build_loop(LOW_FRAMES, "borrow_boundary_low");
-    let Some(low_leaks) = measure_leaks(&low_binary) else {
+    let Some(low_leaks) = measure_leaks_with_args(&binary, &[]) else {
         return;
     };
-    let Some(high_leaks) = measure_leaks(&high_binary) else {
+    let Some(high_leaks) = measure_leaks_with_args(&binary, &["high"]) else {
         return;
     };
     assert!(
         high_leaks <= low_leaks + SLOPE_TOLERANCE,
-        "foreign borrow leak slope exceeded tolerance: low={low_leaks}, \
-         high={high_leaks}, tolerance={SLOPE_TOLERANCE}",
+        "foreign borrow leak slope exceeded tolerance: low_frames={LOW_FRAMES}, \
+         low_leaks={low_leaks}, high_frames={BORROW_BOUNDARY_HIGH_FRAMES}, \
+         high_leaks={high_leaks}, tolerance={SLOPE_TOLERANCE}",
     );
 }
 

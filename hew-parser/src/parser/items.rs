@@ -1431,12 +1431,13 @@ impl Parser<'_> {
                 let name = self.expect_ident()?;
 
                 self.expect(&Token::LeftParen)?;
-                let params = self.parse_params();
+                let params = self.parse_params_with_context(TypeParseContext::ExternSignature);
 
                 let is_variadic = self.eat(&Token::DotDot);
                 self.expect(&Token::RightParen)?;
 
-                let return_type = self.parse_opt_return_type()?;
+                let return_type =
+                    self.parse_opt_return_type_with_context(TypeParseContext::ExternSignature)?;
 
                 self.expect(&Token::Semicolon)?;
 

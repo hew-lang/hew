@@ -442,7 +442,7 @@ externBlock
     ;
 
 externFnDecl
-    : 'fn' ident '(' ( externParams ( '..' )? )? ')' retType? ';'
+    : 'fn' ident '(' ( externParams ( '..' )? )? ')' ffiRetType? ';'
     ;
 
 externParams
@@ -450,7 +450,11 @@ externParams
     ;
 
 externParam
-    : ident ':' type_
+    : ident ':' ffiType
+    ;
+
+ffiRetType
+    : '->' ffiType
     ;
 
 // ----------------------------------------------------------------
@@ -894,6 +898,38 @@ typeArgs
     // closing '>>' because the lexer produces a single GreaterGreater token.
     // The Grammarinator serializer should insert spaces around '>' in type
     // contexts.  The parser does not split '>>' into two '>' tokens.
+    ;
+
+// Extern signatures recursively admit immutable foreign boundary views.
+ffiType
+    : primitiveType
+    | ident ffiTypeArgs?
+    | '(' ffiTypeList? ')'
+    | '[' ffiType ';' INT_LIT ']'
+    | '[' ffiType ']'
+    | 'fn' '(' ffiTypeList? ')' ffiRetType?
+    | '*' 'mut' ffiType
+    | '*' 'const' ffiType
+    | '&' ffiType
+    | 'dyn' ffiTraitBound
+    | 'dyn' '(' ffiTraitBounds ')'
+    | '_'
+    ;
+
+ffiTypeArgs
+    : '<' ffiType ( ',' ffiType )* '>'
+    ;
+
+ffiTypeList
+    : ffiType ( ',' ffiType )*
+    ;
+
+ffiTraitBound
+    : ident ffiTypeArgs?
+    ;
+
+ffiTraitBounds
+    : ffiTraitBound ( '+' ffiTraitBound )*
     ;
 
 // ----------------------------------------------------------------

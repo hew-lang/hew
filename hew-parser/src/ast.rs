@@ -461,11 +461,10 @@ pub enum TypeExpr {
         is_mutable: bool,
         pointee: Box<Spanned<TypeExpr>>,
     },
-    /// Immutable non-owning borrow marker: `&T`.
+    /// Immutable non-owning foreign boundary view: `&T`.
     ///
-    /// Lowers to `ResolvedTy::Pointer { is_mutable: false }` today
-    /// (→ `ValueClass::View`).  No retain is emitted on borrow; borrow
-    /// cannot outlive its owner (enforcement added in P4).
+    /// This syntax is admitted only within an `extern` function signature.
+    /// It remains distinct from a raw pointer and carries no ownership.
     Borrow(Box<Spanned<TypeExpr>>),
     TraitObject(Vec<TraitBound>),
     Infer,

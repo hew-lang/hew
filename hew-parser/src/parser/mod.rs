@@ -49,6 +49,12 @@ const EMBEDDED_NUL_STRING_MESSAGE: &str =
 pub(crate) type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
 pub(crate) type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeParseContext {
+    Ordinary,
+    ExternSignature,
+}
+
 /// Parse an integer literal string, returning both value and radix.
 ///
 /// Handles hex (`0x`), octal (`0o`), binary (`0b`) prefixes and underscore separators.

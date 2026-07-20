@@ -19065,7 +19065,7 @@ impl LowerCtx {
                 is_mutable: *is_mutable,
                 pointee: Box::new(self.lower_type(pointee)),
             },
-            // `&T` immutable borrow — first-class no-retain shared reference.
+            // Preserve an extern signature's non-owning foreign boundary view.
             TypeExpr::Borrow(inner) => ResolvedTy::Borrow {
                 pointee: Box::new(self.lower_type(inner)),
             },

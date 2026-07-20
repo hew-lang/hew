@@ -218,14 +218,12 @@ pub enum Ty {
         pointee: Box<Ty>,
     },
 
-    /// Immutable borrow `&T` — a first-class, no-retain shared reference to a
-    /// value owned elsewhere. Distinct from `Pointer { is_mutable: false }`:
-    /// a borrow is non-owning, never retained on copy (the M-COW retain-skip
-    /// opt-out), classified `View` for drop purposes, and carries
-    /// borrow-specific send/return-escape semantics. `&mut`/`&var` are rejected
-    /// at parse today, so a borrow is always immutable.
+    /// Immutable foreign boundary view `&T`. Distinct from
+    /// `Pointer { is_mutable: false }`: this carrier is non-owning, never
+    /// retained on copy, and classified `View` for drop purposes. Written
+    /// borrow types are admitted only in extern function signatures.
     Borrow {
-        /// Borrowed (pointee) type
+        /// Foreign-view pointee type.
         pointee: Box<Ty>,
     },
 

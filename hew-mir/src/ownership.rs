@@ -781,7 +781,7 @@ impl OwnershipDecision {
                 }
             }
 
-            // Non-owning views.
+            // Non-owning views, including extern-signature `&T` carriers.
             ResolvedTy::Slice(_) | ResolvedTy::Borrow { .. } | ResolvedTy::Pointer { .. } => {
                 OwnershipDecision::Borrowed {
                     provenance: ValueProvenance::of_place(PlaceProvenance::from(place)),

@@ -1471,9 +1471,9 @@ run_accept_expect_status "supervisor_lifecycle_fires" 220
 # with dest=None and reach codegen.
 run_accept_expect_status "link_monitor_discarded" 0
 
-# Value-needed monitor(): MIR/codegen construct MonitorRef from the i64 ref_id
-# returned by hew_actor_monitor. The MonitorRef resource is dropped at scope
-# exit via hew_actor_demonitor.
+# Value-needed monitor(): MIR/codegen construct Result<MonitorRef, MonitorError>
+# from the explicit status/ref-id ABI. The Ok payload is dropped at scope exit
+# via hew_actor_demonitor.
 run_accept_expect_status "link_monitor_value_monitor" 0
 
 # Value-needed link(): MIR/codegen construct Result<(), LinkError> from the void
@@ -1484,11 +1484,10 @@ run_accept_expect_status "link_monitor_value_result" 0
 
 # Drop-safety: value-needed monitor() INSIDE an actor receive handler. The handler
 # gets a FunctionEntry cooperate site whose cancel branch leaves the prologue
-# BEFORE the MonitorRef is constructed, so the cancel-exit drop set must EXCLUDE
-# the not-yet-live MonitorRef — demonitoring an uninitialised slot could cancel an
-# unrelated monitor (fail-open). Run (exit 0) AND inspect the dispatch IR: the
-# handler's `cancel_exit` block must carry NO hew_actor_demonitor call (the
-# demonitor appears only on the normal return path, after construction).
+# BEFORE the field is replaced with an Ok MonitorRef, so the cancel-exit path
+# must not demonitor a monitor id that was never created. Run (exit 0) AND inspect
+# the dispatch IR: the handler's `cancel_exit` block must carry no
+# hew_actor_demonitor call.
 run_accept_expect_status "link_monitor_value_monitor_in_actor" 0
 # Extract the Watcher__recv__watch function's cancel_exit basic block from the
 # emitted LLVM IR and assert it contains no demonitor of the not-yet-live ref.

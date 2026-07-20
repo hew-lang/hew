@@ -70,6 +70,7 @@ pub enum BuiltinType {
     AskError,
     RecvError,
     LinkError,
+    MonitorError,
     MonitorRef,
     CloseError,
     Iterator,
@@ -202,6 +203,7 @@ builtin_types! {
     AskError => "AskError",
     RecvError => "RecvError",
     LinkError => "LinkError",
+    MonitorError => "MonitorError",
     MonitorRef => "MonitorRef",
     CloseError => "CloseError",
     Iterator => "Iterator",
@@ -341,6 +343,7 @@ impl BuiltinType {
             | Self::AskError
             | Self::RecvError
             | Self::LinkError
+            | Self::MonitorError
             | Self::MonitorRef
             | Self::CloseError
             | Self::Iterator

@@ -379,6 +379,7 @@ pub(crate) const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
 pub(crate) const SYNTHETIC_HASHMAP_ITER_ITEM: ItemId = ItemId(u32::MAX - 1006);
 const SYNTHETIC_CRASH_ACTION_ITEM: ItemId = ItemId(u32::MAX - 1007);
 const SYNTHETIC_CRASH_KIND_ITEM: ItemId = ItemId(u32::MAX - 1008);
+const SYNTHETIC_MONITOR_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1009);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 
 /// Field shape of the synthetic `VecIter<elem>` record — `{ vec: Vec<elem>,
@@ -603,6 +604,7 @@ const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
     ("AskError", SYNTHETIC_ASK_ERROR_ITEM),
     ("CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
     ("CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
+    ("MonitorError", SYNTHETIC_MONITOR_ERROR_ITEM),
 ];
 
 const fn const_str_eq(left: &str, right: &str) -> bool {

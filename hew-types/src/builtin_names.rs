@@ -402,6 +402,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::AskError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
+            | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
             | BuiltinType::CloseError
             | BuiltinType::Iterator

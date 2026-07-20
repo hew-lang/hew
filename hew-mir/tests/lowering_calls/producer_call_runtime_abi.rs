@@ -467,17 +467,10 @@ fn value_needed_monitor_emits_call_runtime_abi_with_result_dest() {
     let pipeline = pipeline_with_tc(&source);
     let raw = main_raw(&pipeline);
 
-    // This isolated MIR harness does not load the stdlib enum layout graph, so
-    // MonitorError is the only allowed readiness diagnostic. Full compilation
-    // loads that layout and is covered by the distributed fixture gate.
     assert!(
-        pipeline
-            .diagnostics
-            .iter()
-            .all(|diagnostic| format!("{:?}", diagnostic.kind)
-                == "UnknownType { name: \"MonitorError\" }"),
-        "value-needed monitor() must produce only the isolated-harness \
-         MonitorError readiness diagnostic; got: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "value-needed monitor() must use the authoritative builtin MonitorError \
+         layout without diagnostics; got: {:?}",
         pipeline.diagnostics
     );
 

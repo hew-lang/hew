@@ -66,6 +66,13 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
+        module: "link_monitor",
+        name: "MonitorError",
+        variant_count: 11,
+        order_fingerprint: 0xba69_94e8_654d_0ac6,
+        suppress_from_sandbox_emit: true,
+    },
+    BuiltinEnumAbi {
         module: "failure",
         name: "CrashAction",
         variant_count: 3,
@@ -101,6 +108,12 @@ pub fn derive_builtin_enums(
                 continue;
             };
             if decl.kind != TypeDeclKind::Enum {
+                continue;
+            }
+            if !BUILTIN_ENUM_ABI
+                .iter()
+                .any(|abi| abi.module == source.module && abi.name == decl.name)
+            {
                 continue;
             }
             let mut variants = Vec::new();
@@ -309,6 +322,11 @@ mod tests {
                 module: "failure",
                 path: "scratch/failure.hew",
                 source: &reordered_failure,
+            },
+            AuthoritySource {
+                module: "link_monitor",
+                path: "std/link_monitor.hew",
+                source: include_str!("../../../std/link_monitor.hew"),
             },
         ];
 

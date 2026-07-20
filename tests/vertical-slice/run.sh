@@ -15,7 +15,7 @@ resolve_timeout() {
 TIMEOUT="$(resolve_timeout)"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${ROOT}/target/debug/hew"
+HEW="${HEW_BIN:-${ROOT}/target/debug/hew}"
 
 # libhew.a is the combined runtime+stdlib static library linked into native outputs.
 cargo build -q -p hew-lib

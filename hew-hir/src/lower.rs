@@ -31592,8 +31592,8 @@ mod tests {
 mod builtin_enum_catalog_fingerprint_tests {
     use super::BUILTIN_ENUM_SPECS;
 
-    const TRANSITION_FINGERPRINT: u64 = 0xe519_e1ac_f5ca_13d3;
-    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0x3bef_d3ad_73ec_fe8b;
+    const TRANSITION_FINGERPRINT: u64 = 0x83e6_8437_693c_a927;
+    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0xc1be_3c6a_3ff5_be4f;
 
     fn hash_byte(hash: &mut u64, byte: u8) {
         *hash ^= u64::from(byte);

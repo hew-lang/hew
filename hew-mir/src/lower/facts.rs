@@ -2,10 +2,11 @@
 use super::*;
 #[cfg(not(test))]
 use super::{
-    named_type_names, short_name, BindingId, Builder, BuiltinType, HashMap, HashSet, HirBlock,
-    HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind, Instr, IntentKind, LayoutReadiness,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, ParamOwnershipFacts, Place, ResolvedRef,
-    ResolvedTy, ResourceMarker, ScanCtx, Strategy, ValueClass,
+    named_type_names, project_match_ownership_mode, short_name, BindingId, Builder, BuiltinType,
+    HashMap, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind, Instr,
+    IntentKind, LayoutReadiness, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    ParamOwnershipFacts, Place, ProjectMatchOwnershipMode, ResolvedRef, ResolvedTy, ResourceMarker,
+    ScanCtx, Strategy, ValueClass,
 };
 
 /// Flow-insensitive prescan deciding, for every binding in `func`, whether a
@@ -1272,7 +1273,15 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
                 || scan_block_for_consume(body, b_p, pc)
         }
         HirExprKind::Match { scrutinee, arms } => {
-            scan_expr_for_consume(scrutinee, b_p, pc)
+            let scrutinee_consumes = if is_binding_ref(scrutinee, b_p) {
+                !matches!(
+                    project_match_ownership_mode(arms),
+                    ProjectMatchOwnershipMode::Borrow
+                )
+            } else {
+                scan_expr_for_consume(scrutinee, b_p, pc)
+            };
+            scrutinee_consumes
                 || arms.iter().any(|arm| {
                     arm.guard
                         .as_ref()

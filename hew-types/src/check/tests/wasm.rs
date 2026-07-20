@@ -1087,9 +1087,14 @@ fn main() {
 
             fn main() {
                 let worker = spawn Worker;
-                let m: MonitorRef = monitor(worker);
+                let result = monitor(worker);
                 link(worker);
-                let _ = m.close();
+                match result {
+                    Ok(m) => {
+                        let _ = m.close();
+                    },
+                    Err(_) => {},
+                }
             }
         "
     }
@@ -1102,7 +1107,7 @@ fn main() {
 
             fn main() {
                 let worker = spawn Worker;
-                let _ok: MonitorRef = monitor(worker);
+                let _ok: Result<MonitorRef, MonitorError> = monitor(worker);
                 let x: i64 = monitor(worker);
                 println(x);
             }
@@ -1117,9 +1122,13 @@ fn main() {
 
             fn main() {
                 let worker = spawn Worker;
-                let m: MonitorRef = monitor(worker);
-                let _ = m.close();
-                let _ = m.close();
+                match monitor(worker) {
+                    Ok(m) => {
+                        let _ = m.close();
+                        let _ = m.close();
+                    },
+                    Err(_) => {},
+                }
             }
         "
     }

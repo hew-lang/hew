@@ -179,7 +179,7 @@ pub enum RuntimeCallFamily {
     ActorGenSinkRegister,
     ActorLink,
     /// `link_remote(RemotePid<T>, PartitionPolicy)` →
-    /// `hew_node_link_remote(target_pid, policy_tag) -> i64`. Establishes a
+    /// `hew_node_link_remote_location(target, policy_tag) -> i64`. Establishes a
     /// cross-node link: a local actor links a remote actor so the remote's
     /// death (exit / crash / partition) fires the per-link `PartitionPolicy`
     /// (`CrashLinked` crashes the local actor). Distinct from `ActorLink` (the
@@ -344,21 +344,18 @@ pub enum RuntimeCallFamily {
     // MIR, and codegen dispatch.
     NodeAllowPeer,
     NodeConnect,
+    NodeId,
     NodeIdentityKey,
     NodeLoadKeys,
     NodeLookup,
-    /// `monitor(RemotePid<T>)` → `hew_node_monitor(target_pid: i64) -> i64`.
-    /// Positive returns are distributed-monitor ref ids; negative returns encode
-    /// `MonitorError` as `-(variant + 1)`. Codegen assembles
+    /// `monitor(RemotePid<T>)` →
+    /// `hew_node_monitor_location(target, out_monitor_id) -> i32`.
+    /// Zero returns success and writes the distributed-monitor id; non-zero is
+    /// one plus the `MonitorError` discriminant. Codegen assembles
     /// `Result<MonitorRef, MonitorError>`. The current node is resolved
-    /// internally (like `hew_actor_self`), so the single runtime arg is the
-    /// remote target pid (`BitCopy` `i64`); non-consuming.
+    /// internally, so the single runtime argument is a pointer to the carried
+    /// full `Location`; non-consuming.
     NodeMonitor,
-    /// `MonitorRef::recv_down` → `hew_node_monitor_recv(ref_id: i64,
-    /// timeout_ms: i64) -> i64`. Blocks until the distributed monitor's terminal
-    /// signal arrives for `ref_id` (or `timeout_ms` elapses), returning the
-    /// carried down-reason. Both args are `BitCopy` `i64`; non-consuming.
-    NodeMonitorRecv,
     NodeRegister,
     NodeSetTransport,
     NodeShutdown,
@@ -594,7 +591,7 @@ impl RuntimeCallFamily {
             Self::ActorGenSinkComplete => "hew_actor_gen_sink_complete",
             Self::ActorGenSinkRegister => "hew_actor_gen_sink_register",
             Self::ActorLink => "hew_actor_link",
-            Self::LinkRemote => "hew_node_link_remote",
+            Self::LinkRemote => "hew_node_link_remote_location",
             Self::ActorMonitor => "hew_actor_monitor",
             Self::ActorSelf => "hew_actor_self",
             Self::ActorSendById => "hew_actor_send_by_id",
@@ -712,11 +709,11 @@ impl RuntimeCallFamily {
             // Node (pre-staged)
             Self::NodeAllowPeer => "Node::allow_peer",
             Self::NodeConnect => "Node::connect",
+            Self::NodeId => "Node::id",
             Self::NodeIdentityKey => "Node::identity_key",
             Self::NodeLoadKeys => "Node::load_keys",
             Self::NodeLookup => "Node::lookup",
-            Self::NodeMonitor => "hew_node_monitor",
-            Self::NodeMonitorRecv => "hew_node_monitor_recv",
+            Self::NodeMonitor => "hew_node_monitor_location",
             Self::NodeRegister => "Node::register",
             Self::NodeSetTransport => "Node::set_transport",
             Self::NodeShutdown => "Node::shutdown",
@@ -887,7 +884,7 @@ impl RuntimeCallFamily {
             "hew_actor_gen_sink_complete" => Self::ActorGenSinkComplete,
             "hew_actor_gen_sink_register" => Self::ActorGenSinkRegister,
             "hew_actor_link" => Self::ActorLink,
-            "hew_node_link_remote" => Self::LinkRemote,
+            "hew_node_link_remote_location" => Self::LinkRemote,
             "hew_actor_monitor" => Self::ActorMonitor,
             "hew_actor_self" => Self::ActorSelf,
             "hew_actor_send_by_id" => Self::ActorSendById,
@@ -1005,11 +1002,11 @@ impl RuntimeCallFamily {
             // Node
             "Node::allow_peer" => Self::NodeAllowPeer,
             "Node::connect" => Self::NodeConnect,
+            "Node::id" => Self::NodeId,
             "Node::identity_key" => Self::NodeIdentityKey,
             "Node::load_keys" => Self::NodeLoadKeys,
             "Node::lookup" => Self::NodeLookup,
-            "hew_node_monitor" => Self::NodeMonitor,
-            "hew_node_monitor_recv" => Self::NodeMonitorRecv,
+            "hew_node_monitor_location" => Self::NodeMonitor,
             "Node::register" => Self::NodeRegister,
             "Node::set_transport" => Self::NodeSetTransport,
             "Node::shutdown" => Self::NodeShutdown,
@@ -1296,6 +1293,7 @@ impl RuntimeCallFamily {
             self,
             Self::NodeAllowPeer
                 | Self::NodeConnect
+                | Self::NodeId
                 | Self::NodeIdentityKey
                 | Self::NodeLoadKeys
                 | Self::NodeLookup
@@ -1596,11 +1594,11 @@ impl RuntimeCallFamily {
             | F::MetricVecWith
             | F::NodeAllowPeer
             | F::NodeConnect
+            | F::NodeId
             | F::NodeIdentityKey
             | F::NodeLoadKeys
             | F::NodeLookup
             | F::NodeMonitor
-            | F::NodeMonitorRecv
             | F::NodeRegister
             | F::NodeSetTransport
             | F::NodeShutdown
@@ -2095,6 +2093,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::HashSetToVecLayout
             | F::NodeAllowPeer
             | F::NodeConnect
+            | F::NodeId
             | F::NodeIdentityKey
             | F::NodeLoadKeys
             | F::NodeLookup

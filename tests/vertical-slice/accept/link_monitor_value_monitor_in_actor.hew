@@ -1,23 +1,24 @@
 // Value-needed monitor() INSIDE an actor receive handler — the real home of
 // cooperative cancellation. A `receive fn` is a non-leaf function, so it gets a
 // FunctionEntry cooperate site whose cancel branch leaves the prologue BEFORE
-// the handler body runs. The MonitorRef is constructed inside the body (after
-// the cooperate site), so the cancel-exit drop set must NOT demonitor it: at the
-// cancel point the MonitorRef slot is not yet live, and demonitoring a not-yet-
-// constructed (garbage) ref_id could cancel an unrelated monitor (fail-open).
+// the handler body runs. The handler replaces an initialized Err field with the
+// Result carrying the MonitorRef only after the cooperate site, so cancel_exit
+// must NOT demonitor a not-yet-created monitor id (fail-open).
 //
 // Drop-safety gate: run.sh inspects the dispatch IR and asserts the handler's
 // `cancel_exit` block carries NO `hew_actor_demonitor` call (the demonitor must
 // appear only on the normal return path, after construction). Exit 0 proves the
 // program runs the watch handler and tears the monitor down cleanly.
+import std::link_monitor::{MonitorError};
+
 actor Target {
     receive fn ping() {}
 }
 
 actor Watcher {
+    var active_monitor: Result<MonitorRef, MonitorError> = Err(MonitorError::InvalidTarget);
     receive fn watch(t: LocalPid<Target>) {
-        let m: MonitorRef = monitor(t);
-        let _ = m;
+        active_monitor = monitor(t);
     }
 }
 

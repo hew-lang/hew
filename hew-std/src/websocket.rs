@@ -266,15 +266,22 @@ fn websocket_config_from_env() -> Result<WebSocketConfig, String> {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct HewLocation {
+    node: [u8; 16],
+    slot: u64,
+    incarnation: u32,
+    reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct HewActorRefRemote {
-    actor_id: u64,
+    // This struct is read by value from a runtime-produced `HewActorRef` and
+    // passed back across the FFI boundary, so its layout MUST stay
+    // byte-identical to the runtime definition.
+    location: HewLocation,
     conn: c_int,
     transport: *mut c_void,
-    // Mirror of the runtime's `HewActorRefRemote` (transport.rs): the captured
-    // actor-slot/registration incarnation. This struct is read by value from a
-    // runtime-produced `HewActorRef` and passed back across the FFI boundary,
-    // so its layout MUST stay byte-identical to the runtime definition.
-    incarnation: u32,
 }
 
 #[repr(C)]

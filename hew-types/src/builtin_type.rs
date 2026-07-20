@@ -28,6 +28,8 @@ pub enum BuiltinType {
     /// supervisor `S`. Runtime representation is `{ LocalPid<S>, i64 pool_key }`.
     SupervisorPool,
     LocalPid,
+    NodeId,
+    Location,
     RemotePid,
     HewActor,
     HewDuplex,
@@ -56,10 +58,19 @@ pub enum BuiltinType {
     /// `std/failure.hew::CrashKind { Crashed; HeapExceeded; PartitionDetected }`
     /// — the crash-class enum delivered in a `CrashNotification` (M-7-R).
     CrashKind,
+    /// `std/link_monitor.hew::MonitorId { value: u64 }`.
+    MonitorId,
+    /// `std/link_monitor.hew::DownTarget`.
+    DownTarget,
+    /// `std/link_monitor.hew::DownReason`.
+    DownReason,
+    /// Canonical payload accepted by `#[on(down)]`.
+    DownNotification,
     SendError,
     AskError,
     RecvError,
     LinkError,
+    MonitorError,
     MonitorRef,
     CloseError,
     Iterator,
@@ -166,6 +177,8 @@ builtin_types! {
     Duplex => "Duplex",
     SupervisorPool => "SupervisorPool",
     LocalPid => "LocalPid",
+    NodeId => "NodeId",
+    Location => "Location",
     RemotePid => "RemotePid",
     HewActor => "HewActor",
     HewDuplex => "HewDuplex",
@@ -182,10 +195,15 @@ builtin_types! {
     CrashAction => "CrashAction",
     CrashNotification => "CrashNotification",
     CrashKind => "CrashKind",
+    MonitorId => "MonitorId",
+    DownTarget => "DownTarget",
+    DownReason => "DownReason",
+    DownNotification => "DownNotification",
     SendError => "SendError",
     AskError => "AskError",
     RecvError => "RecvError",
     LinkError => "LinkError",
+    MonitorError => "MonitorError",
     MonitorRef => "MonitorRef",
     CloseError => "CloseError",
     Iterator => "Iterator",
@@ -207,7 +225,6 @@ impl BuiltinType {
             | Self::Sender
             | Self::Receiver
             | Self::LocalPid
-            | Self::RemotePid
             | Self::HewActor
             | Self::HewDuplex
             | Self::HewSendHalf
@@ -219,7 +236,14 @@ impl BuiltinType {
             | Self::LambdaPid
             | Self::CancellationToken
             | Self::MonitorRef => BuiltinTypeMarker::Resource,
-            Self::SupervisorPool => BuiltinTypeMarker::BitCopy,
+            Self::SupervisorPool
+            | Self::NodeId
+            | Self::Location
+            | Self::RemotePid
+            | Self::MonitorId
+            | Self::DownTarget
+            | Self::DownReason
+            | Self::DownNotification => BuiltinTypeMarker::BitCopy,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             // `CrashInfo` carries an owned `message: string` (M-5), so it is no
             // longer a `BitCopy` aggregate. `None` lets the owned-aggregate
@@ -305,14 +329,21 @@ impl BuiltinType {
             | Self::HewSendHalf
             | Self::HewRecvHalf
             | Self::BoxedActor
+            | Self::NodeId
+            | Self::Location
             | Self::CrashInfo
             | Self::CrashAction
             | Self::CrashNotification
             | Self::CrashKind
+            | Self::MonitorId
+            | Self::DownTarget
+            | Self::DownReason
+            | Self::DownNotification
             | Self::SendError
             | Self::AskError
             | Self::RecvError
             | Self::LinkError
+            | Self::MonitorError
             | Self::MonitorRef
             | Self::CloseError
             | Self::Iterator
@@ -381,8 +412,8 @@ impl BuiltinType {
     /// the element ops disagree (null-layout `hew_vec_new_ptr` + layout push),
     /// tripping the runtime "layout-aware operation is not implemented" abort.
     ///
-    /// `RemotePid<T>` is intentionally excluded: it lowers to a bare `i64`
-    /// packed PID, not a pointer, so it takes a different element ABI.
+    /// `RemotePid<T>` is intentionally excluded: it lowers to an inline
+    /// aggregate, not a pointer, so it takes a different element ABI.
     /// Substrate handles (`Duplex`/`Stream`/`Sink`/channel halves) are affine
     /// move-only resources and are not admitted as Vec elements here.
     #[must_use]
@@ -463,7 +494,7 @@ mod tests {
             ),
             (
                 BuiltinType::RemotePid,
-                BuiltinTypeMarker::Resource,
+                BuiltinTypeMarker::BitCopy,
                 None,
                 Some(BuiltinHandleFamily::ActorPid),
                 1,

@@ -28,6 +28,7 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use crate::actor::{self, HewActor};
 use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::internal::types::HewActorState;
+use crate::node_identity::{HewLocation, Location};
 use crate::set_last_error;
 
 // ---------------------------------------------------------------------------
@@ -92,19 +93,12 @@ unsafe impl Sync for HewTransport {}
 
 /// Remote portion of an actor reference.
 ///
-/// `incarnation` is the actor-slot / registration incarnation captured for this
-/// reference — the explicit identity carrier of the spec's `(NodeId, slot,
-/// incarnation)` tuple. It is a SEPARATE dimension from the packed `actor_id`
-/// (whose 64 bits are fully consumed by `(node_id, serial)`), never bit-stolen
-/// from the serial. `0` means "no incarnation tracked" (the fresh-registration
-/// default). It is distinct from the node-level SWIM peer incarnation.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HewActorRefRemote {
-    pub actor_id: u64,
+    pub location: HewLocation,
     pub conn: c_int,
     pub transport: *mut HewTransport,
-    pub incarnation: u32,
 }
 
 /// Data payload of an actor reference (union).
@@ -149,28 +143,30 @@ pub unsafe extern "C" fn hew_actor_ref_local(actor: *mut HewActor) -> HewActorRe
 
 /// Create a remote actor reference.
 ///
-/// `incarnation` is the captured actor-slot / registration incarnation (the
-/// spec's `(NodeId, slot, incarnation)` carrier); pass `0` when none is
-/// tracked.
-///
 /// # Safety
 ///
+/// `location` must point to a valid exact actor location.
 /// `transport` must be a valid pointer to a live [`HewTransport`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_ref_remote(
-    actor_id: u64,
+    location: *const HewLocation,
     conn: c_int,
     transport: *mut HewTransport,
-    incarnation: u32,
 ) -> HewActorRef {
+    let location = if location.is_null() {
+        set_last_error("hew_actor_ref_remote: location is null");
+        HewLocation::default()
+    } else {
+        // SAFETY: caller guarantees `location` is readable.
+        unsafe { *location }
+    };
     HewActorRef {
         kind: ACTOR_REF_REMOTE,
         data: HewActorRefData {
             remote: HewActorRefRemote {
-                actor_id,
+                location,
                 conn,
                 transport,
-                incarnation,
             },
         },
     }
@@ -192,8 +188,8 @@ pub unsafe extern "C" fn hew_actor_ref_remote(
 pub(crate) unsafe fn wire_send_envelope(
     transport: *mut HewTransport,
     conn: c_int,
-    target_actor_id: u64,
-    source_actor_id: u64,
+    target: Location,
+    source: Option<Location>,
     msg_type: i32,
     payload: *mut u8,
     payload_len: usize,
@@ -201,12 +197,11 @@ pub(crate) unsafe fn wire_send_envelope(
     // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
     let bytes = match unsafe {
         encode_envelope_frame_from_raw_parts(
-            target_actor_id,
-            source_actor_id,
+            Some(target),
+            source,
             msg_type,
             payload.cast_const(),
             payload_len,
-            0,
             0,
         )
     } {
@@ -277,14 +272,17 @@ pub unsafe extern "C" fn hew_actor_ref_send(
         return HEW_ERR_TRANSPORT;
     }
 
+    let Ok(target) = Location::try_from(remote.location) else {
+        return HEW_ERR_TRANSPORT;
+    };
     // SAFETY: remote.transport and remote.conn are valid per the earlier null-check;
-    //         data is valid for size bytes per caller contract.
+    // data is valid for size bytes per caller contract.
     unsafe {
         wire_send_envelope(
             remote.transport,
             remote.conn,
-            remote.actor_id,
-            0,
+            target,
+            None,
             msg_type,
             data.cast::<u8>(),
             size,

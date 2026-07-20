@@ -375,7 +375,6 @@ stable = [
   "hew_node_api_connect",
   "hew_node_api_identity_key",
   "hew_node_api_load_keys",
-  "hew_node_api_lookup",
   "hew_node_api_register_by_pid",
   "hew_node_api_set_transport",
   "hew_node_api_shutdown",
@@ -385,13 +384,8 @@ stable = [
   "hew_node_connect",
   "hew_node_demonitor",
   "hew_node_free",
-  "hew_node_link_remote",
-  "hew_node_lookup",
-  "hew_node_monitor",
-  "hew_node_monitor_recv",
   "hew_node_new",
   "hew_node_register",
-  "hew_node_send",
   "hew_node_start",
   "hew_node_stop",
   "hew_node_unregister",
@@ -412,11 +406,9 @@ stable = [
   "hew_path_is_dir",
   "hew_path_is_file",
   "hew_pid",
-  "hew_pid_incarnation",
   "hew_pid_is_local",
   "hew_pid_local_node",
   "hew_pid_make",
-  "hew_pid_make_with_incarnation",
   "hew_pid_node",
   "hew_pid_serial",
   "hew_pool_add",
@@ -467,7 +459,6 @@ stable = [
   "hew_registry_lookup",
   "hew_registry_register",
   "hew_registry_unregister",
-  "hew_remote_pid_from_raw",
   "hew_reply",
   "hew_reply_channel_cancel",
   "hew_reply_channel_free",
@@ -480,12 +471,6 @@ stable = [
   "hew_reply_payload_free",
   "hew_reply_wait",
   "hew_reply_wait_timeout",
-  "hew_routing_add_route",
-  "hew_routing_is_local",
-  "hew_routing_lookup",
-  "hew_routing_remove_route",
-  "hew_routing_table_free",
-  "hew_routing_table_new",
   "hew_seconds",
   "hew_select_first",
   "hew_select_ready_index",
@@ -970,10 +955,19 @@ codegen-stable = [
   "hew_lambda_body_alloc_reply_buf",
   "hew_lambda_drain_all",
   "hew_listener_await_accept",
+  "hew_location_format",
   "hew_machine_emit_push",
   "hew_machine_emit_step_enter",
   "hew_machine_emit_step_exit_keep",
   "hew_machine_emit_take",
+  "hew_node_api_ask_async_location",
+  "hew_node_api_ask_location",
+  "hew_node_api_id",
+  "hew_node_api_lookup_location",
+  "hew_node_api_send_location",
+  "hew_node_id_format",
+  "hew_node_link_remote_location",
+  "hew_node_monitor_location",
   "hew_read_slot_cancel",
   "hew_read_slot_cancel_cleanup",
   "hew_read_slot_free",
@@ -1029,6 +1023,8 @@ internal = [
   # target-side monitor table. Used by two-process fixtures to assert bounded
   # table growth after a watcher node dies. Not user-callable; not JIT-reachable.
   "hew_dist_monitor_remote_watcher_count",
+  "hew_dist_monitor_current_actor_ref_id",
+  "hew_dist_monitor_pending_observation_count",
   # Test-introspection probe: returns the current actor's id (-1 outside a
   # dispatch). A linker actor reports its id so a two-process link fixture can
   # poll its terminal state. Not user-callable; not JIT-reachable.
@@ -1061,6 +1057,10 @@ internal = [
   # the process, so a shipped libhew exports the symbol but exposes no usable
   # drain capability. Not JIT-reachable.
   "hew_dist_partition_pending_remote_asks",
+  # Test-only setup-race probe: identifies which inbound monitor/link setup is
+  # paused by HEW_DIST_SETUP_RACE_PROBE so the two-process fixture can stop the
+  # exact target before registration. Inert by default; not JIT-reachable.
+  "hew_dist_setup_race_kind",
   "hew_fault_clear",
   "hew_fault_clear_all",
   "hew_fault_count",
@@ -1069,11 +1069,11 @@ internal = [
   "hew_fault_inject_drop",
   "hew_is_shutting_down",
   "hew_mailbox_send_aliased",
-  "hew_node_api_ask",
-  "hew_node_api_ask_async",
   "hew_node_api_ask_cancel",
   "hew_node_api_ask_finish",
   "hew_node_api_register",
+  "hew_node_lookup_location",
+  "hew_node_send_location",
   "hew_periodic_shutdown",
   "hew_pid_set_local_node",
   "hew_register_handler_name",
@@ -1137,6 +1137,34 @@ internal = [
 ]
 
 [ownership]
+
+[[ownership.contracts]]
+symbol = "hew_node_api_id"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_api_send_location"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_id_format"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_location_format"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
 
 # hew-std/src/json.rs:379-384 reconstructs and drops `val`.
 [[ownership.contracts]]

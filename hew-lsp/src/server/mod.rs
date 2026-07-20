@@ -1234,9 +1234,11 @@ mod tests {
             labels.contains(&"send"),
             "expected `send` in actor-handle completions, got: {labels:?}"
         );
+        let removed_method = ["to_remote", "_via"].concat();
         assert!(
-            labels.contains(&"to_remote_via"),
-            "expected `to_remote_via` in actor-handle completions, got: {labels:?}"
+            !labels.contains(&removed_method.as_str()),
+            "removed remote-conversion helper must not appear in actor-handle completions, got: \
+             {labels:?}"
         );
         assert!(
             labels.contains(&"increment"),

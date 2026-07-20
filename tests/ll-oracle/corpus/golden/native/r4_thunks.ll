@@ -285,10 +285,6 @@ declare i64 @hew_actor_pid(ptr)
 
 declare i32 @hew_node_api_register_by_pid(ptr, i64)
 
-declare i64 @hew_remote_pid_from_raw(i64, i64)
-
-declare i64 @hew_node_api_lookup(ptr)
-
 declare ptr @hew_stream_channel(i64)
 
 declare ptr @hew_stream_pair_sink(ptr)

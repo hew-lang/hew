@@ -1379,14 +1379,10 @@ pub(super) fn ty_is_nonowning_handle_leaf(ty: &ResolvedTy) -> bool {
 /// creates the two-free hazard this gate guards.
 ///
 /// Deliberately EXCLUDES the NON-OWNING actor-pid leaves
-/// (`Pid`/`LocalPid`/`RemotePid`). Although they carry the `Resource` marker
-/// (for affine move-tracking), a pid has NO drop glue: its `close_method()` is
-/// `None`, `resource_drop_fn` yields `None`, and codegen lowers a `None`
-/// `drop_fn` to a no-op (`hew-codegen-rs/src/llvm.rs` `DropKind::Resource` arm) —
-/// there is no `hew_pid_*` free symbol. A pid is a copyable by-value reference
-/// to a runtime-supervised actor whose lifetime is independent of the
-/// pid-holder, so it can NEVER alias a second free in ANY context (call-arg,
-/// actor-state field, tuple, return, re-aggregation). Gating it over-refuses
+/// (`Pid`/`LocalPid`) and the inline `RemotePid` identity aggregate. None has
+/// drop glue: local pid handles do not own actor lifetime, while `RemotePid` is
+/// `BitCopy`. They can NEVER alias a second free in ANY context (call-arg,
+/// actor-state field, tuple, return, re-aggregation). Gating them over-refuses
 /// the stored-pid idiom (`spawn Conn(fetcher: f)`); excluding it here un-gates
 /// the pid in every context and subsumes the per-call-arg borrow carve in
 /// `terminator_escape_places`. The `close_method().is_none()` guard inside

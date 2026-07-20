@@ -46,7 +46,7 @@ wasmparser = "0.252.0"
 libc.workspace = true
 
 [dev-dependencies]
-fd-lock = "4"
+fd-lock.workspace = true
 hew-testutil = { path = "../hew-testutil" }
 object = "0.39"
 

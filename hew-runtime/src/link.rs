@@ -461,10 +461,11 @@ struct ExitMessage {
 //
 // The cross-node link fixtures need to confirm a LOCAL linked actor actually
 // CRASHED (terminal Crashed) after a cross-node link-down — proving the link-down
-// landed in the mailbox as a SYS_MSG_EXIT and crashed the actor, not in a monitor
-// recv slot. A crashed actor is freed, so the death must be recorded somewhere it
-// survives the free. This ledger does that, gated by HEW_LINK_PROBE so production
-// pays nothing (the env is read once into a LazyLock).
+// landed in the mailbox as a SYS_MSG_EXIT and applied link policy, rather than
+// being mistaken for a typed monitor DOWN. A crashed actor is freed, so the death
+// must be recorded somewhere it survives the free. This ledger does that, gated
+// by HEW_LINK_PROBE so production pays nothing (the env is read once into a
+// LazyLock).
 
 /// Sentinel returned by `hew_link_probe_terminal_state` when the actor has not
 /// (yet) reached a terminal state recorded in the probe ledger.

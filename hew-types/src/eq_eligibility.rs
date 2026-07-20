@@ -59,7 +59,11 @@ fn eq_ineligibility(
         // (bitwise/total semantics — reflexive, NaN==NaN iff identical bits).
         | Ty::F32
         | Ty::F64
-        | Ty::String => None,
+        | Ty::String
+        | Ty::Named {
+            builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
+            ..
+        } => None,
         Ty::Tuple(elems) => elems
             .iter()
             .find_map(|elem| eq_ineligibility(elem, type_defs, type_params)),

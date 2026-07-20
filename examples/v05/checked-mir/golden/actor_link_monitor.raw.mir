@@ -14,7 +14,7 @@ fn Boss__recv__go() -> () [conv=actor_handler]
     _5: LocalPid<()>
   bb0:
     stmt: eval site=SiteId(0) ty=Result<(), LinkError>
-    stmt: eval site=SiteId(3) ty=MonitorRef
+    stmt: eval site=SiteId(3) ty=Result<MonitorRef, MonitorError>
     stmt: eval site=SiteId(6) ty=()
     enter_context
     _0 = actor_state_load field[0]

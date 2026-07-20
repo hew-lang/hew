@@ -125,15 +125,15 @@ impl LoweringFact {
 
 /// Key-type discriminant for `HashMap` lowering facts.
 ///
-/// Only `i64`, `u64`, and Copy named-record keys are admitted.  Other integer
-/// widths, floats, strings, tuples, and managed types are rejected at the
-/// admissibility gate.
+/// Only `i64`, `u64`, Copy named-record keys, and compiler-owned identity
+/// aggregates are admitted. Other integer widths, floats, strings, tuples, and
+/// managed types are rejected at the admissibility gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HashMapKeyType {
     I64,
     U64,
-    /// Copy named-record key; size and alignment are carried in the owning fact.
+    /// Copy aggregate key; size and alignment are carried in the owning fact.
     ///
     /// Full hash-eligibility is verified by the predicate in C-2a, wired in C-2c.
     Layout,
@@ -171,7 +171,7 @@ pub enum HashMapAbi {
     Int64Key,
     /// Existing string key ABI path.
     StringKey,
-    /// Copy named-record key ABI backed by `hew_hashmap_*_layout`.  Wired in C-2c.
+    /// Copy aggregate key ABI backed by `hew_hashmap_*_layout`. Wired in C-2c.
     LayoutKey {
         /// Name of the record type used as the map key (e.g. `"Point"`).
         key_record_name: std::string::String,

@@ -23,10 +23,12 @@ use ciborium::value::{Integer, Value};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::node_identity::{Location, NodeId};
+
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 1;
+pub const WIRE_VERSION: u8 = 2;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
 pub const FRAME_TYPE_CONTROL: u8 = 0;
@@ -78,9 +80,9 @@ pub const CTRL_LINK_REQ: u64 = 6;
 /// Control-frame kind for a cross-node link DOWN notification.
 ///
 /// Sent to a linked node when its remote peer reaches a terminal state. Unlike
-/// a `CTRL_MONITOR_DOWN` (which arms a recv slot a program polls), a
-/// `CrashLinked` `CTRL_LINK_DOWN` synthesizes a `SYS_MSG_EXIT` into the local
-/// linked actor's MAILBOX and crashes it (the OTP fail-together semantic).
+/// a `CTRL_MONITOR_DOWN` (which queues typed `SYS_MSG_DOWN`), a `CrashLinked`
+/// `CTRL_LINK_DOWN` synthesizes a `SYS_MSG_EXIT` into the local linked actor's
+/// mailbox and crashes it (the OTP fail-together semantic).
 /// Carries the linked node's `ref_id` and the terminal reason code.
 pub const CTRL_LINK_DOWN: u64 = 7;
 
@@ -91,6 +93,20 @@ pub const CTRL_LINK_DOWN: u64 = 7;
 /// entry. Idempotent on the receiver. Carries the same identifying payload as
 /// `CTRL_LINK_REQ`.
 pub const CTRL_UNLINK: u64 = 8;
+
+/// Control-frame kind acknowledging a cross-node monitor setup request.
+///
+/// The target node sends this only after it has atomically installed the
+/// target-side watcher, or with a terminal setup status when the target no
+/// longer exists. The watcher node does not report setup success until this
+/// result arrives.
+pub const CTRL_MONITOR_SETUP_RESULT: u64 = 9;
+
+/// Control-frame kind acknowledging a cross-node link setup request.
+///
+/// For an original bidirectional link this is sent only after the reverse half
+/// has also completed, so the caller never observes a half-established link.
+pub const CTRL_LINK_SETUP_RESULT: u64 = 10;
 
 /// Maximum accepted cross-node link control payload size, in bytes.
 ///
@@ -172,15 +188,15 @@ pub struct EnvelopeFrame {
     /// CDDL key 1.
     pub version: u8,
 
-    /// Target actor identity. MUST be non-zero.
+    /// Target actor identity. `None` only for reply envelopes.
     ///
     /// CDDL key 3.
-    pub target_actor_id: u64,
+    pub target: Option<Location>,
 
-    /// Source actor identity.
+    /// Source actor identity when the sender is an actor.
     ///
     /// CDDL key 4.
-    pub source_actor_id: u64,
+    pub source: Option<Location>,
 
     /// Message type tag.
     ///
@@ -204,25 +220,6 @@ pub struct EnvelopeFrame {
     ///
     /// CDDL key 7.
     pub request_id: u64,
-
-    /// Source node ID for routing replies back to the requester.
-    ///
-    /// Non-zero on outbound ask requests; zero on reply envelopes and
-    /// fire-and-forget messages.
-    ///
-    /// # Invariant
-    ///
-    /// `source_node_id` must equal `hew_pid_node(sender_pid)` for every
-    /// outbound ask frame. The remote peer uses this value to select the
-    /// return connection; a mismatch causes the reply to be unroutable.
-    ///
-    /// W4.025 risk: if a multi-node PID is sent across a node-ID boundary
-    /// without re-encoding, `source_node_id` will encode the *original*
-    /// node rather than the forwarding node, breaking the reply path.
-    /// Reject or re-encode any forwarded ask at the transport boundary.
-    ///
-    /// CDDL key 8.
-    pub source_node_id: u16,
 }
 
 /// Top-level wire-frame dispatch.
@@ -236,15 +233,24 @@ pub enum WireFrame {
 
 /// Bounded registry-gossip control payload.
 ///
-/// Encoded as a definite CBOR map `{1: op, 2: name, 3: actor_id}`.
+/// Encoded as a definite CBOR map `{1: op, 2: name, 3: location}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryGossipPayload {
     /// Registry operation (`REGISTRY_GOSSIP_OP_ADD` or `_REMOVE`).
     pub op: u8,
     /// Registered actor name.
     pub name: String,
-    /// Packed actor PID. Non-zero for add events; ignored for removals.
-    pub actor_id: u64,
+    /// Exact actor identity being added or retracted.
+    pub location: Location,
+}
+
+/// Key-derived node identity paired with its durable session incarnation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeSessionIdentity {
+    /// Key-derived node identity.
+    pub node_id: NodeId,
+    /// Durable session incarnation.
+    pub session_incarnation: u32,
 }
 
 /// A single piggybacked membership-gossip entry carried on a SWIM frame.
@@ -255,8 +261,8 @@ pub struct RegistryGossipPayload {
 /// not directly connected to a failing peer still learn of its state change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwimGossipEntry {
-    /// Affected member node ID.
-    pub node_id: u16,
+    /// Affected member identity and durable session.
+    pub member: NodeSessionIdentity,
     /// New member state (`MEMBER_ALIVE` / `_SUSPECT` / `_DEAD` / `_LEFT`).
     pub state: i32,
     /// Incarnation of the affected member at the time of the transition.
@@ -281,37 +287,39 @@ pub struct SwimGossipEntry {
 pub struct SwimControlPayload {
     /// SWIM message type (`SWIM_MSG_PING` / `_ACK` / `_PING_REQ`).
     pub msg_type: i32,
-    /// Sender's node ID.
-    pub from_node: u16,
+    /// Sender's authenticated identity and durable session.
+    pub from: NodeSessionIdentity,
     /// Sender's incarnation number.
     pub incarnation: u64,
-    /// Indirect-probe target for `PING_REQ`; `0` for direct messages.
-    pub target_node: u16,
+    /// Indirect-probe target for `PING_REQ`; absent for direct messages.
+    pub target: Option<NodeSessionIdentity>,
     /// Piggybacked membership-gossip batch.
     pub gossip: Vec<SwimGossipEntry>,
 }
 
 /// Bounded cross-node monitor REQUEST / DEMONITOR control payload.
 ///
-/// Encoded as a definite CBOR map `{1: watcher_node_id, 2: ref_id,
-/// 3: target_serial}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`:
-/// the request registers, the demonitor retracts, the identifying triple
-/// `(watcher_node_id, ref_id, target_serial)` is the same.
+/// Encoded as a definite CBOR map `{1: watcher, 2: ref_id, 3: target,
+/// 4: setup_id}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`: the
+/// request registers with a nonzero setup id, while demonitor retracts with
+/// `setup_id = 0`.
 ///
-/// - `watcher_node_id` is the monitoring node's id; the receiver routes the
-///   eventual `CTRL_MONITOR_DOWN` back to it.
+/// - `watcher` is the exact monitoring actor location; the receiver routes the
+///   eventual `CTRL_MONITOR_DOWN` back to its node.
 /// - `ref_id` is the watcher's local monitor-registration id (the `MonitorRef`
 ///   value); the receiver echoes it verbatim in the DOWN so the watcher can
 ///   match the registration.
-/// - `target_serial` is the monitored actor's serial on the owning node.
+/// - `target` is the exact monitored actor location on the owning node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorReqPayload {
-    /// Monitoring node's id (DOWN destination).
-    pub watcher_node_id: u16,
+    /// Exact watcher actor identity.
+    pub watcher: Location,
     /// Watcher's local monitor-registration id.
     pub ref_id: u64,
-    /// Monitored actor's serial on the owning node.
-    pub target_serial: u64,
+    /// Exact monitored actor identity.
+    pub target: Location,
+    /// Correlation id for the acknowledged setup result. Zero for demonitor.
+    pub setup_id: u64,
 }
 
 /// Bounded cross-node monitor DOWN control payload.
@@ -328,47 +336,68 @@ pub struct MonitorReqPayload {
 pub struct MonitorDownPayload {
     /// Watcher's monitor-registration id (echoed from the request).
     pub ref_id: u64,
-    /// Carried terminal reason code.
+    /// Exact actor whose terminal state triggered the DOWN.
+    pub target: Location,
+    /// Carried terminal reason code, encoded with a typed reason tag.
     pub reason: i32,
+    /// `CrashKind` discriminant when `reason` is crashed, otherwise zero.
+    pub crash_kind: i32,
 }
 
 /// Bounded cross-node link REQUEST / UNLINK control payload.
 ///
-/// Encoded as a definite CBOR map `{1: linker_node_id, 2: ref_id,
-/// 3: target_serial, 4: linker_serial, 5: policy_tag, 6: reciprocate}`. Used by both
-/// `CTRL_LINK_REQ` and `CTRL_UNLINK`: the request establishes the bidirectional
-/// link, the unlink retracts it; the identifying tuple is the same.
+/// Encoded as a definite CBOR map `{1: linker, 2: ref_id, 3: target,
+/// 4: policy_tag, 5: reciprocate, 6: setup_id}`. Used by both `CTRL_LINK_REQ`
+/// and `CTRL_UNLINK`: a request carries a nonzero setup id, while unlink
+/// retracts the identifying tuple with `setup_id = 0`.
 ///
-/// - `linker_node_id` is the linking node's id; the receiver routes the eventual
-///   `CTRL_LINK_DOWN` back to it AND registers a reverse link toward it.
+/// - `linker` is the exact linking actor location; the receiver routes the
+///   eventual `CTRL_LINK_DOWN` back to it AND registers a reverse link toward it.
 /// - `ref_id` is the linker's local link-registration id; the receiver echoes it
 ///   verbatim in the DOWN so the linker can match the registration and find the
 ///   local actor to crash.
-/// - `target_serial` is the linked actor's serial on the owning (receiver) node.
-/// - `linker_serial` is the LINKING actor's serial on the linker node — so the
-///   receiver's reverse link knows which remote actor to crash when its own
-///   local linked actor dies (the OTP bidirectional half).
+/// - `target` is the exact linked actor location on the owning (receiver) node.
 /// - `policy_tag` is the `PartitionPolicy` discriminant governing the link
 ///   (`CrashLinked` == 3 crashes the linked actor on the peer's death).
 /// - `reciprocate` is 1 for the ORIGINAL request (the receiver registers the
 ///   reverse half and sends a `reciprocate = 0` reverse request back) and 0 for
 ///   that reverse request (the original linker completes its target-side
-///   registration and does NOT reply again — bounding the handshake to one round
-///   trip, never an infinite reciprocation).
+///   registration, acknowledges that reverse setup, and does NOT reciprocate
+///   again — bounding the handshake without an infinite request loop).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkReqPayload {
-    /// Linking node's id (DOWN destination + reverse-link target node).
-    pub linker_node_id: u16,
+    /// Exact linking actor identity.
+    pub linker: Location,
     /// Linker's local link-registration id.
     pub ref_id: u64,
-    /// Linked actor's serial on the owning (receiver) node.
-    pub target_serial: u64,
-    /// Linking actor's serial on the linker node (reverse-link subject).
-    pub linker_serial: u64,
+    /// Exact linked actor identity on the owning node.
+    pub target: Location,
     /// `PartitionPolicy` discriminant governing the link.
     pub policy_tag: u8,
     /// 1 = original request (receiver reciprocates); 0 = the reverse request.
     pub reciprocate: u8,
+    /// Correlation id for the acknowledged setup result. Zero for unlink.
+    pub setup_id: u64,
+}
+
+/// Setup-result status shared by monitor and link acknowledgements.
+pub const SETUP_STATUS_ACCEPTED: u8 = 0;
+/// The exact target actor was already terminal or no longer present.
+pub const SETUP_STATUS_TARGET_GONE: u8 = 1;
+/// The receiver could not allocate the state needed to complete setup.
+pub const SETUP_STATUS_RESOURCE_EXHAUSTED: u8 = 2;
+
+/// Bounded acknowledged monitor/link setup result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupResultPayload {
+    /// Correlation id copied from the request.
+    pub setup_id: u64,
+    /// Watcher/linker observation id copied from the request.
+    pub ref_id: u64,
+    /// Exact target identity from the request.
+    pub target: Location,
+    /// One of the `SETUP_STATUS_*` constants.
+    pub status: u8,
 }
 
 struct PayloadBytes<'a>(&'a [u8]);
@@ -401,15 +430,14 @@ impl Serialize for EnvelopeFrame {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(8))?;
+        let mut map = serializer.serialize_map(Some(7))?;
         map.serialize_entry(&1u64, &self.version)?;
         map.serialize_entry(&2u64, &FRAME_TYPE_ENVELOPE)?;
-        map.serialize_entry(&3u64, &self.target_actor_id)?;
-        map.serialize_entry(&4u64, &self.source_actor_id)?;
+        map.serialize_entry(&3u64, &location_option_to_value(self.target))?;
+        map.serialize_entry(&4u64, &location_option_to_value(self.source))?;
         map.serialize_entry(&5u64, &self.msg_type)?;
         map.serialize_entry(&6u64, &PayloadBytes(&self.payload))?;
         map.serialize_entry(&7u64, &self.request_id)?;
-        map.serialize_entry(&8u64, &self.source_node_id)?;
         map.end()
     }
 }
@@ -758,23 +786,21 @@ impl From<DecodeError> for MonitorPayloadError {
 impl EnvelopeFrame {
     /// Construct a fire-and-forget envelope with no reply routing.
     ///
-    /// Convenience constructor for the common case: `request_id = 0`,
-    /// `source_node_id = 0`.
+    /// Convenience constructor for the common case: `request_id = 0`.
     #[must_use]
     pub fn fire_and_forget(
-        target_actor_id: u64,
-        source_actor_id: u64,
+        target: Location,
+        source: Option<Location>,
         msg_type: i32,
         payload: Vec<u8>,
     ) -> Self {
         Self {
             version: WIRE_VERSION,
-            target_actor_id,
-            source_actor_id,
+            target: Some(target),
+            source,
             msg_type,
             payload,
             request_id: 0,
-            source_node_id: 0,
         }
     }
 }
@@ -814,13 +840,12 @@ pub fn encode_envelope_frame(frame: &EnvelopeFrame) -> Result<Vec<u8>, EncodeErr
 // live on not(wasm32) — transport/connection/hew_node; dead on wasm32; callers in native-only modules
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
-    target_actor_id: u64,
-    source_actor_id: u64,
+    target: Option<Location>,
+    source: Option<Location>,
     msg_type: i32,
     payload: *const u8,
     payload_len: usize,
     request_id: u64,
-    source_node_id: u16,
 ) -> Result<Vec<u8>, EncodeError> {
     let payload = if payload_len == 0 {
         Vec::new()
@@ -832,12 +857,11 @@ pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
     };
     encode_envelope_frame(&EnvelopeFrame {
         version: WIRE_VERSION,
-        target_actor_id,
-        source_actor_id,
+        target,
+        source,
         msg_type,
         payload,
         request_id,
-        source_node_id,
     })
 }
 
@@ -863,7 +887,7 @@ pub fn encode_registry_gossip_payload(
         ),
         (
             Value::Integer(Integer::from(3u64)),
-            Value::Integer(Integer::from(payload.actor_id)),
+            location_to_value(payload.location),
         ),
     ]);
     let mut bytes = Vec::new();
@@ -1052,7 +1076,7 @@ pub fn decode_registry_gossip_payload(
             2,
         )
         .map_err(RegistryGossipPayloadError::from)?,
-        actor_id: value_to_u64(
+        location: value_to_location(
             required(&map, 3).map_err(RegistryGossipPayloadError::from)?,
             3,
         )
@@ -1085,7 +1109,7 @@ pub fn encode_swim_payload(payload: &SwimControlPayload) -> Result<Vec<u8>, Swim
                 Value::Map(vec![
                     (
                         Value::Integer(Integer::from(1u64)),
-                        Value::Integer(Integer::from(entry.node_id)),
+                        node_session_to_value(entry.member),
                     ),
                     (
                         Value::Integer(Integer::from(2u64)),
@@ -1107,7 +1131,7 @@ pub fn encode_swim_payload(payload: &SwimControlPayload) -> Result<Vec<u8>, Swim
         ),
         (
             Value::Integer(Integer::from(2u64)),
-            Value::Integer(Integer::from(payload.from_node)),
+            node_session_to_value(payload.from),
         ),
         (
             Value::Integer(Integer::from(3u64)),
@@ -1115,7 +1139,7 @@ pub fn encode_swim_payload(payload: &SwimControlPayload) -> Result<Vec<u8>, Swim
         ),
         (
             Value::Integer(Integer::from(4u64)),
-            Value::Integer(Integer::from(payload.target_node)),
+            node_session_option_to_value(payload.target),
         ),
         (Value::Integer(Integer::from(5u64)), gossip),
     ]);
@@ -1168,7 +1192,7 @@ pub fn decode_swim_payload(bytes: &[u8]) -> Result<SwimControlPayload, SwimPaylo
         let entry_map = collect_map(entry)?;
         ensure_exact_keys(&entry_map, &[1, 2, 3])?;
         gossip.push(SwimGossipEntry {
-            node_id: value_to_u16(required(&entry_map, 1)?, 1)?,
+            member: value_to_node_session(required(&entry_map, 1)?, 1)?,
             state: value_to_i32(required(&entry_map, 2)?, 2)?,
             incarnation: value_to_u64(required(&entry_map, 3)?, 3)?,
         });
@@ -1176,9 +1200,9 @@ pub fn decode_swim_payload(bytes: &[u8]) -> Result<SwimControlPayload, SwimPaylo
 
     Ok(SwimControlPayload {
         msg_type: value_to_i32(required(&map, 1)?, 1)?,
-        from_node: value_to_u16(required(&map, 2)?, 2)?,
+        from: value_to_node_session(required(&map, 2)?, 2)?,
         incarnation: value_to_u64(required(&map, 3)?, 3)?,
-        target_node: value_to_u16(required(&map, 4)?, 4)?,
+        target: value_to_node_session_option(required(&map, 4)?, 4)?,
         gossip,
     })
 }
@@ -1195,7 +1219,7 @@ pub fn encode_monitor_req_payload(
     let value = Value::Map(vec![
         (
             Value::Integer(Integer::from(1u64)),
-            Value::Integer(Integer::from(payload.watcher_node_id)),
+            location_to_value(payload.watcher),
         ),
         (
             Value::Integer(Integer::from(2u64)),
@@ -1203,7 +1227,11 @@ pub fn encode_monitor_req_payload(
         ),
         (
             Value::Integer(Integer::from(3u64)),
-            Value::Integer(Integer::from(payload.target_serial)),
+            location_to_value(payload.target),
+        ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(payload.setup_id)),
         ),
     ]);
     let mut bytes = Vec::new();
@@ -1232,11 +1260,12 @@ pub fn decode_monitor_req_payload(bytes: &[u8]) -> Result<MonitorReqPayload, Mon
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
     Ok(MonitorReqPayload {
-        watcher_node_id: value_to_u16(required(&map, 1)?, 1)?,
+        watcher: value_to_location(required(&map, 1)?, 1)?,
         ref_id: value_to_u64(required(&map, 2)?, 2)?,
-        target_serial: value_to_u64(required(&map, 3)?, 3)?,
+        target: value_to_location(required(&map, 3)?, 3)?,
+        setup_id: value_to_u64(required(&map, 4)?, 4)?,
     })
 }
 
@@ -1256,7 +1285,15 @@ pub fn encode_monitor_down_payload(
         ),
         (
             Value::Integer(Integer::from(2u64)),
-            Value::Integer(Integer::from(payload.reason)),
+            location_to_value(payload.target),
+        ),
+        (
+            Value::Integer(Integer::from(3u64)),
+            down_reason_to_value(payload.reason),
+        ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(payload.crash_kind)),
         ),
     ]);
     let mut bytes = Vec::new();
@@ -1287,10 +1324,12 @@ pub fn decode_monitor_down_payload(
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
     Ok(MonitorDownPayload {
         ref_id: value_to_u64(required(&map, 1)?, 1)?,
-        reason: value_to_i32(required(&map, 2)?, 2)?,
+        target: value_to_location(required(&map, 2)?, 2)?,
+        reason: value_to_down_reason(required(&map, 3)?, 3)?,
+        crash_kind: value_to_i32(required(&map, 4)?, 4)?,
     })
 }
 
@@ -1304,7 +1343,7 @@ pub fn encode_link_req_payload(payload: &LinkReqPayload) -> Result<Vec<u8>, Moni
     let value = Value::Map(vec![
         (
             Value::Integer(Integer::from(1u64)),
-            Value::Integer(Integer::from(payload.linker_node_id)),
+            location_to_value(payload.linker),
         ),
         (
             Value::Integer(Integer::from(2u64)),
@@ -1312,19 +1351,19 @@ pub fn encode_link_req_payload(payload: &LinkReqPayload) -> Result<Vec<u8>, Moni
         ),
         (
             Value::Integer(Integer::from(3u64)),
-            Value::Integer(Integer::from(payload.target_serial)),
+            location_to_value(payload.target),
         ),
         (
             Value::Integer(Integer::from(4u64)),
-            Value::Integer(Integer::from(payload.linker_serial)),
-        ),
-        (
-            Value::Integer(Integer::from(5u64)),
             Value::Integer(Integer::from(payload.policy_tag)),
         ),
         (
-            Value::Integer(Integer::from(6u64)),
+            Value::Integer(Integer::from(5u64)),
             Value::Integer(Integer::from(payload.reciprocate)),
+        ),
+        (
+            Value::Integer(Integer::from(6u64)),
+            Value::Integer(Integer::from(payload.setup_id)),
         ),
     ]);
     let mut bytes = Vec::new();
@@ -1357,12 +1396,83 @@ pub fn decode_link_req_payload(bytes: &[u8]) -> Result<LinkReqPayload, MonitorPa
     let map = collect_map(&value)?;
     ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6])?;
     Ok(LinkReqPayload {
-        linker_node_id: value_to_u16(required(&map, 1)?, 1)?,
+        linker: value_to_location(required(&map, 1)?, 1)?,
         ref_id: value_to_u64(required(&map, 2)?, 2)?,
-        target_serial: value_to_u64(required(&map, 3)?, 3)?,
-        linker_serial: value_to_u64(required(&map, 4)?, 4)?,
-        policy_tag: value_to_u8(required(&map, 5)?, 5)?,
-        reciprocate: value_to_u8(required(&map, 6)?, 6)?,
+        target: value_to_location(required(&map, 3)?, 3)?,
+        policy_tag: value_to_u8(required(&map, 4)?, 4)?,
+        reciprocate: value_to_u8(required(&map, 5)?, 5)?,
+        setup_id: value_to_u64(required(&map, 6)?, 6)?,
+    })
+}
+
+/// Encode a bounded acknowledged monitor/link setup result.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if CBOR serialisation fails or the encoded
+/// payload exceeds [`MAX_LINK_PAYLOAD_BYTES`].
+pub fn encode_setup_result_payload(
+    payload: &SetupResultPayload,
+) -> Result<Vec<u8>, MonitorPayloadError> {
+    let value = Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            Value::Integer(Integer::from(payload.setup_id)),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(payload.ref_id)),
+        ),
+        (
+            Value::Integer(Integer::from(3u64)),
+            location_to_value(payload.target),
+        ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(payload.status)),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
+    if bytes.len() > MAX_LINK_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_LINK_PAYLOAD_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Decode a bounded acknowledged monitor/link setup result.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if the payload is oversized, malformed, has
+/// unknown keys, or carries an unknown setup status.
+pub fn decode_setup_result_payload(
+    bytes: &[u8],
+) -> Result<SetupResultPayload, MonitorPayloadError> {
+    if bytes.len() > MAX_LINK_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_LINK_PAYLOAD_BYTES,
+        });
+    }
+    let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
+    let map = collect_map(&value)?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
+    let status = value_to_u8(required(&map, 4)?, 4)?;
+    if status > SETUP_STATUS_RESOURCE_EXHAUSTED {
+        return Err(MonitorPayloadError::MalformedField {
+            key: 4,
+            expected: "a known setup status (0..=2)",
+        });
+    }
+    Ok(SetupResultPayload {
+        setup_id: value_to_u64(required(&map, 1)?, 1)?,
+        ref_id: value_to_u64(required(&map, 2)?, 2)?,
+        target: value_to_location(required(&map, 3)?, 3)?,
+        status,
     })
 }
 
@@ -1415,15 +1525,14 @@ fn control_frame_from_map(map: &BTreeMap<u64, &Value>) -> Result<ControlFrame, D
 
 fn envelope_frame_from_map(map: &BTreeMap<u64, &Value>) -> Result<EnvelopeFrame, DecodeError> {
     ensure_frame_type(map, FRAME_TYPE_ENVELOPE)?;
-    ensure_exact_keys(map, &[1, 2, 3, 4, 5, 6, 7, 8])?;
+    ensure_exact_keys(map, &[1, 2, 3, 4, 5, 6, 7])?;
     Ok(EnvelopeFrame {
         version: value_to_u8(required(map, 1)?, 1)?,
-        target_actor_id: value_to_u64(required(map, 3)?, 3)?,
-        source_actor_id: value_to_u64(required(map, 4)?, 4)?,
+        target: value_to_location_option(required(map, 3)?, 3)?,
+        source: value_to_location_option(required(map, 4)?, 4)?,
         msg_type: value_to_i32(required(map, 5)?, 5)?,
         payload: value_to_bytes(required(map, 6)?, 6)?,
         request_id: value_to_u64(required(map, 7)?, 7)?,
-        source_node_id: value_to_u16(required(map, 8)?, 8)?,
     })
 }
 
@@ -1503,14 +1612,6 @@ fn value_to_u8(value: &Value, key: u64) -> Result<u8, DecodeError> {
     })
 }
 
-fn value_to_u16(value: &Value, key: u64) -> Result<u16, DecodeError> {
-    let integer = value_to_integer(value, key, "a u16 integer")?;
-    u16::try_from(integer).map_err(|_| DecodeError::MalformedField {
-        key,
-        expected: "a u16 integer",
-    })
-}
-
 fn value_to_u64(value: &Value, key: u64) -> Result<u64, DecodeError> {
     let integer = value_to_integer(value, key, "a u64 integer")?;
     u64::try_from(integer).map_err(|_| DecodeError::MalformedField {
@@ -1554,19 +1655,169 @@ fn value_to_text(value: &Value, key: u64) -> Result<String, DecodeError> {
     }
 }
 
+fn node_id_to_value(node_id: NodeId) -> Value {
+    Value::Bytes(node_id.to_bytes().to_vec())
+}
+
+fn value_to_node_id(value: &Value, key: u64) -> Result<NodeId, DecodeError> {
+    let Value::Bytes(bytes) = value else {
+        return Err(DecodeError::MalformedField {
+            key,
+            expected: "a 16-byte node id",
+        });
+    };
+    let bytes: [u8; 16] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| DecodeError::MalformedField {
+            key,
+            expected: "a 16-byte node id",
+        })?;
+    if bytes == [0; 16] {
+        return Err(DecodeError::MalformedField {
+            key,
+            expected: "a non-zero 16-byte node id",
+        });
+    }
+    Ok(NodeId::from_bytes(bytes))
+}
+
+fn location_to_value(location: Location) -> Value {
+    Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            node_id_to_value(location.node()),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(location.slot())),
+        ),
+        (
+            Value::Integer(Integer::from(3u64)),
+            Value::Integer(Integer::from(location.incarnation())),
+        ),
+    ])
+}
+
+fn location_option_to_value(location: Option<Location>) -> Value {
+    location.map_or(Value::Null, location_to_value)
+}
+
+fn value_to_location(value: &Value, key: u64) -> Result<Location, DecodeError> {
+    let map = collect_map(value).map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a location map",
+    })?;
+    ensure_exact_keys(&map, &[1, 2, 3])?;
+    let node = value_to_node_id(required(&map, 1)?, key)?;
+    let slot = value_to_u64(required(&map, 2)?, key)?;
+    let incarnation_raw = value_to_u64(required(&map, 3)?, key)?;
+    let incarnation = u32::try_from(incarnation_raw).map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a location with a u32 session incarnation",
+    })?;
+    Location::new(node, slot, incarnation).map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a location with non-zero actor slot and session incarnation",
+    })
+}
+
+fn value_to_location_option(value: &Value, key: u64) -> Result<Option<Location>, DecodeError> {
+    if matches!(value, Value::Null) {
+        Ok(None)
+    } else {
+        value_to_location(value, key).map(Some)
+    }
+}
+
+fn node_session_to_value(identity: NodeSessionIdentity) -> Value {
+    Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            node_id_to_value(identity.node_id),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(identity.session_incarnation)),
+        ),
+    ])
+}
+
+fn node_session_option_to_value(identity: Option<NodeSessionIdentity>) -> Value {
+    identity.map_or(Value::Null, node_session_to_value)
+}
+
+fn value_to_node_session(value: &Value, key: u64) -> Result<NodeSessionIdentity, DecodeError> {
+    let map = collect_map(value).map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a node-session map",
+    })?;
+    ensure_exact_keys(&map, &[1, 2])?;
+    let session_raw = value_to_u64(required(&map, 2)?, key)?;
+    let session_incarnation =
+        u32::try_from(session_raw).map_err(|_| DecodeError::MalformedField {
+            key,
+            expected: "a node session with a u32 incarnation",
+        })?;
+    if session_incarnation == 0 {
+        return Err(DecodeError::MalformedField {
+            key,
+            expected: "a node session with non-zero incarnation",
+        });
+    }
+    Ok(NodeSessionIdentity {
+        node_id: value_to_node_id(required(&map, 1)?, key)?,
+        session_incarnation,
+    })
+}
+
+fn value_to_node_session_option(
+    value: &Value,
+    key: u64,
+) -> Result<Option<NodeSessionIdentity>, DecodeError> {
+    if matches!(value, Value::Null) {
+        Ok(None)
+    } else {
+        value_to_node_session(value, key).map(Some)
+    }
+}
+
+const DOWN_REASON_ACTOR_STATE: u8 = 1;
+
+fn down_reason_to_value(reason: i32) -> Value {
+    Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            Value::Integer(Integer::from(DOWN_REASON_ACTOR_STATE)),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(reason)),
+        ),
+    ])
+}
+
+fn value_to_down_reason(value: &Value, key: u64) -> Result<i32, DecodeError> {
+    let map = collect_map(value).map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a typed DOWN reason map",
+    })?;
+    ensure_exact_keys(&map, &[1, 2])?;
+    let tag = value_to_u8(required(&map, 1)?, key)?;
+    if tag != DOWN_REASON_ACTOR_STATE {
+        return Err(DecodeError::MalformedField {
+            key,
+            expected: "a known DOWN reason tag",
+        });
+    }
+    value_to_i32(required(&map, 2)?, key)
+}
+
 fn validate_registry_gossip_payload(
     payload: &RegistryGossipPayload,
 ) -> Result<(), RegistryGossipPayloadError> {
     match payload.op {
-        REGISTRY_GOSSIP_OP_ADD => {
-            if payload.actor_id == 0 {
-                return Err(RegistryGossipPayloadError::MalformedField {
-                    key: 3,
-                    expected: "a non-zero actor id for add",
-                });
-            }
-        }
-        REGISTRY_GOSSIP_OP_REMOVE => {}
+        REGISTRY_GOSSIP_OP_ADD | REGISTRY_GOSSIP_OP_REMOVE => {}
         op => return Err(RegistryGossipPayloadError::InvalidOp { op }),
     }
 

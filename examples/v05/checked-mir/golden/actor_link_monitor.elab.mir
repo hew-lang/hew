@@ -6,7 +6,7 @@ fn Probe__recv__ping -> ()
 fn Boss__recv__go -> ()
   statements:
     eval site=SiteId(0) ty=Result<(), LinkError>
-    eval site=SiteId(3) ty=MonitorRef
+    eval site=SiteId(3) ty=Result<MonitorRef, MonitorError>
     eval site=SiteId(6) ty=()
   drop_plans:
     return[bb0] ->

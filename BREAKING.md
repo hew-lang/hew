@@ -18,6 +18,32 @@ The compiler-foundation reference document is
 
 ---
 
+## Distributed identity and remote PIDs in v0.6.0-rc1
+
+- Node identity is derived from the stable authenticated Noise key or TLS SPKI.
+  Operators persist keys with `Node::load_keys` and exchange
+  `Node::identity_key()` output.
+- `Node::allow_peer(route_slot, credential_hex)` binds a credential to a
+  receiver-local non-zero route slot. Slot `0` is reserved; route slots are not
+  identity and may differ between nodes.
+- `RemotePid<T>` carries the complete key-derived node identity, actor slot, and
+  durable session incarnation. It is allocation-free and cannot be forged from
+  scalar PID components.
+- Same-key restarts advance the session incarnation. Previously captured remote
+  PIDs then fail with `StaleRef`; callers must perform a fresh
+  `Node::lookup`.
+- Registry names are discovery aliases. Repointing or unregistering a name does
+  not mutate an already issued PID.
+- Monitor termination is delivered through `#[on(down)]` with
+  `DownNotification`; `MonitorRef::id()` provides exact correlation.
+- Distributed nodes, remote messaging, and cross-node monitor/link operations
+  are native-only and are rejected for wasm32 targets.
+
+See [`docs/specs/HEW-DIST-SPEC.md`](docs/specs/HEW-DIST-SPEC.md) for the
+normative protocol.
+
+---
+
 ## Main-branch freeze rules (effective immediately)
 
 The following categories of change are **frozen on `main`** until the

@@ -2173,7 +2173,9 @@ mod tests {
         // SAFETY: hew_actor_ref_remote has no preconditions; a null transport
         // with HEW_CONN_INVALID is the canonical "dead remote ref".
         // Incarnation 0 = no incarnation tracked (irrelevant to liveness).
-        unsafe { crate::transport::hew_actor_ref_remote(0, -1, std::ptr::null_mut(), 0) }
+        unsafe {
+            crate::transport::hew_actor_ref_remote(std::ptr::null(), -1, std::ptr::null_mut())
+        }
     }
 
     #[cfg(unix)]

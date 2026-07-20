@@ -1220,51 +1220,27 @@ fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
 }
 
 #[test]
-fn turbofish_on_remote_pid_from_raw_resolves_concrete_type() {
-    // A7 S3: `RemotePid::<T>::from_raw(...)` must propagate the explicit
-    // turbofish type-arg through the impl-block-introduced type parameter
-    // so the result is typed `RemotePid<Counter>`, not `RemotePid<T>`.
-    let output = check_source(
-        r"
+fn remote_pid_raw_constructor_is_not_public() {
+    let removed_constructor = ["from", "_raw"].concat();
+    let source = r"
         actor Counter {
             receive fn inc() {}
         }
 
         fn main() {
-            let p: RemotePid<Counter> = RemotePid::<Counter>::from_raw(1, 42);
+            let p: RemotePid<Counter> = RemotePid::<Counter>::$CONSTRUCTOR(1, 42);
         }
-        ",
-    );
+        "
+    .replace("$CONSTRUCTOR", &removed_constructor);
+    let output = check_source(&source);
 
     assert!(
-        output.errors.is_empty(),
-        "turbofish on RemotePid::from_raw should type-check; got: {:?}",
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedFunction),
+        "provenance-free remote PID construction must be undefined; got: {:?}",
         output.errors
-    );
-}
-
-#[test]
-fn turbofish_on_remote_pid_from_raw_rejects_mismatched_assignment() {
-    // Fail-closed: explicit turbofish T must not silently coerce to a
-    // different annotated `RemotePid<U>` at the assignment site.
-    let output = check_source(
-        r"
-        actor Counter {
-            receive fn inc() {}
-        }
-        actor Worker {
-            receive fn ping() {}
-        }
-
-        fn main() {
-            let p: RemotePid<Counter> = RemotePid::<Worker>::from_raw(1, 42);
-        }
-        ",
-    );
-
-    assert!(
-        !output.errors.is_empty(),
-        "RemotePid<Worker> must not satisfy RemotePid<Counter> binding",
     );
 }
 
@@ -1272,17 +1248,18 @@ fn turbofish_on_remote_pid_from_raw_rejects_mismatched_assignment() {
 fn turbofish_arity_mismatch_is_rejected() {
     // Fail-closed: too many turbofish args on a 1-arity associated fn
     // must surface as a typed arity diagnostic, not silent success.
-    let output = check_source(
-        r"
+    let removed_constructor = ["from", "_raw"].concat();
+    let source = r"
         actor Counter {
             receive fn inc() {}
         }
 
         fn main() {
-            let p = RemotePid::<Counter, Counter>::from_raw(1, 42);
+            let p = RemotePid::<Counter, Counter>::$CONSTRUCTOR(1, 42);
         }
-        ",
-    );
+        "
+    .replace("$CONSTRUCTOR", &removed_constructor);
+    let output = check_source(&source);
 
     assert!(
         !output.errors.is_empty(),

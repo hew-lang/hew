@@ -543,7 +543,7 @@ impl Checker {
         self.register_builtin_fn(
             "monitor",
             vec![Ty::local_pid(Ty::Var(monitor_t))],
-            Ty::monitor_ref(),
+            Ty::result(Ty::monitor_ref(), Ty::monitor_error()),
         );
         // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
         // links a local actor to a remote actor so the remote's death fires the
@@ -731,6 +731,11 @@ impl Checker {
         // credential for the pinned transport as lowercase hex (issue #2652);
         // `""` when no stable identity has been loaded.
         self.register_builtin_fn("Node::identity_key", vec![], Ty::String);
+        self.register_builtin_fn(
+            "Node::id",
+            vec![],
+            Ty::option(Ty::builtin_named(BuiltinType::NodeId, vec![])),
+        );
         // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
         // The second argument is tightened to `LocalPid<T>` so that passing a
         // `RemotePid<T>` or bare `u64` is caught at the checker rather than
@@ -878,8 +883,8 @@ impl Checker {
         self.register_builtins_hew_impls();
         if !self.module_registry.has_search_paths() {
             self.register_builtin_closable_surface();
-            self.register_builtin_monitor_ref_surface();
             self.register_builtin_failure_surface();
+            self.register_builtin_monitor_ref_surface();
             self.register_builtin_lookup_error_surface();
         }
     }
@@ -9572,6 +9577,7 @@ mod node_builtin_catalog_tests {
             [
                 "Node::allow_peer",
                 "Node::connect",
+                "Node::id",
                 "Node::identity_key",
                 "Node::load_keys",
                 "Node::lookup",

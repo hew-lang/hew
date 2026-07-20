@@ -1489,9 +1489,9 @@ run_accept_expect_status "supervisor_lifecycle_fires" 220
 # with dest=None and reach codegen.
 run_accept_expect_status "link_monitor_discarded" 0
 
-# Value-needed monitor(): MIR/codegen construct MonitorRef from the i64 ref_id
-# returned by hew_actor_monitor. The MonitorRef resource is dropped at scope
-# exit via hew_actor_demonitor.
+# Value-needed monitor(): MIR/codegen construct Result<MonitorRef, MonitorError>
+# from the explicit status/ref-id ABI. The Ok payload is dropped at scope exit
+# via hew_actor_demonitor.
 run_accept_expect_status "link_monitor_value_monitor" 0
 
 # Value-needed link(): MIR/codegen construct Result<(), LinkError> from the void
@@ -1502,11 +1502,10 @@ run_accept_expect_status "link_monitor_value_result" 0
 
 # Drop-safety: value-needed monitor() INSIDE an actor receive handler. The handler
 # gets a FunctionEntry cooperate site whose cancel branch leaves the prologue
-# BEFORE the MonitorRef is constructed, so the cancel-exit drop set must EXCLUDE
-# the not-yet-live MonitorRef — demonitoring an uninitialised slot could cancel an
-# unrelated monitor (fail-open). Run (exit 0) AND inspect the dispatch IR: the
-# handler's `cancel_exit` block must carry NO hew_actor_demonitor call (the
-# demonitor appears only on the normal return path, after construction).
+# BEFORE the field is replaced with an Ok MonitorRef, so the cancel-exit path
+# must not demonitor a monitor id that was never created. Run (exit 0) AND inspect
+# the dispatch IR: the handler's `cancel_exit` block must carry no
+# hew_actor_demonitor call.
 run_accept_expect_status "link_monitor_value_monitor_in_actor" 0
 # Extract the Watcher__recv__watch function's cancel_exit basic block from the
 # emitted LLVM IR and assert it contains no demonitor of the not-yet-live ref.
@@ -1576,6 +1575,10 @@ run_accept_expect_status "on_crash_escalate_root" 0
 # Watcher__on_exit; codegen routes SYS_MSG_EXIT to it in the dispatch
 # trampoline; the supervisor boots; main exits 42.
 run_accept_expect_status "on_exit_hook" 42
+
+# Typed monitor terminal hook: checker/HIR/MIR/codegen reconstruct the canonical
+# DownNotification payload and route SYS_MSG_DOWN through actor dispatch.
+run_accept_expect_status "on_down_hook" 42
 
 # `#[max_heap(N)]` wire-through — direct spawn path:
 #   1. MIR dump confirms SpawnActor carries max_heap=65536,
@@ -3384,21 +3387,14 @@ run_accept_expect_status "tuple_heap_return" 42
     "${ROOT}/tests/vertical-slice/accept/result_handler_heap_oracle.hew" \
     >"${accept_output}" 2>&1
 
-# ---------------------------------------------------------------------------
-# RemotePid<T>::send — in-place Result<(), SendError> construction gate
-# ---------------------------------------------------------------------------
-
-# Accept: RemotePid<T>::send on a synthetic pid (no peer online) must lower
-# end-to-end and return SendError::NodeRoutingNotWired (variant 2) in the Err
-# arm. Exit 42 asserts the correct tag/payload written by
-# emit_remote_pid_send_call. Regression in the in-place construction would
-# produce a wrong SendError discriminant, exiting 1 or 2 instead.
-run_accept_expect_status "remote_pid_send" 42
-
 # Accept: Node::lookup(name) must expose the registered local actor as a
 # RemotePid<T>, and pid.send(msg) must deliver through the in-process
 # send-by-id path.
 run_accept_expect_status "node_lookup_send" 0
+
+# Accept: compiler-owned identity aggregates project, compare, hash, display,
+# and round-trip through Node::lookup without scalar reinterpretation.
+run_accept_expect_status "identity_aggregates" 0
 
 # A640/S3: compile-time Serializable floor for RemotePid<T>::send.
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/positive_record_remote_send.hew" \
@@ -3413,10 +3409,10 @@ printf '%s\n' \
     'record Ping { n: i64 }' \
     'actor Worker { receive fn ping(msg: Ping) {} }' \
     'impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }' \
-    'fn main() {' \
-    '    let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);' \
+    'fn probe(pid: RemotePid<Worker>) {' \
     '    let result = pid.tell(Ping { n: 1 });' \
     '}' \
+    'fn main() {}' \
     >"${old_verb_output}"
 expect_check_fail_contains \
     "${old_verb_output}" \

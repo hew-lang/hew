@@ -23,6 +23,7 @@ impl ActorMsg for Worker {
 
 fn main() -> i64 {
     Node::set_transport("tcp");
+    Node::load_keys("/tmp/hew-cap13-node-lookup-send.key");
     Node::start("127.0.0.1:0");
 
     let worker = spawn Worker(count: 0);

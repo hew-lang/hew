@@ -86,6 +86,7 @@ serde_yaml = "0.9"
 hew-cabi = { path = "../hew-cabi" }
 libc.workspace = true
 tracing.workspace = true
+sha2.workspace = true
 zeroize = { version = "1.9.0", features = ["zeroize_derive"] }
 
 # Threading/networking deps — not available on wasm32
@@ -94,6 +95,7 @@ crossbeam-deque = "0.8"
 crossbeam-utils = "0.8"
 rand = "0.10.1"
 socket2 = "0.6.4"
+fd-lock.workspace = true
 
 # Optional ecosystem dependencies
 snow = { version = "0.10", optional = true }

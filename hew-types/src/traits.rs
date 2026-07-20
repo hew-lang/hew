@@ -830,10 +830,9 @@ impl TraitRegistry {
                     | MarkerTrait::Debug
             ),
 
-            // RemotePid<T>: remote actor pid, from peer-discovery or explicit construction.
-            // Same marker set as LocalPid — the pid value itself is an opaque u64.
+            // Key-backed node identity values are immutable inline aggregates.
             Ty::Named {
-                builtin: Some(BuiltinType::RemotePid),
+                builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
                 ..
             } => matches!(
                 marker,
@@ -842,6 +841,9 @@ impl TraitRegistry {
                     | MarkerTrait::Frozen
                     | MarkerTrait::Copy
                     | MarkerTrait::Clone
+                    | MarkerTrait::Eq
+                    | MarkerTrait::Hash
+                    | MarkerTrait::Display
                     | MarkerTrait::Debug
             ),
 

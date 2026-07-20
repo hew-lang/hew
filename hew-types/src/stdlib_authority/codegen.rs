@@ -61,8 +61,15 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "builtins",
         name: "LinkError",
-        variant_count: 9,
-        order_fingerprint: 0xda19_d893_a012_c3e0,
+        variant_count: 10,
+        order_fingerprint: 0x3a85_b1f1_0849_9938,
+        suppress_from_sandbox_emit: true,
+    },
+    BuiltinEnumAbi {
+        module: "link_monitor",
+        name: "MonitorError",
+        variant_count: 11,
+        order_fingerprint: 0xba69_94e8_654d_0ac6,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
@@ -101,6 +108,12 @@ pub fn derive_builtin_enums(
                 continue;
             };
             if decl.kind != TypeDeclKind::Enum {
+                continue;
+            }
+            if !BUILTIN_ENUM_ABI
+                .iter()
+                .any(|abi| abi.module == source.module && abi.name == decl.name)
+            {
                 continue;
             }
             let mut variants = Vec::new();
@@ -181,7 +194,13 @@ pub fn derive_monitor_ref_projection(
                     if source.module == "link_monitor"
                         && matches!(
                             decl.name.as_str(),
-                            "MonitorError" | "PartitionPolicy" | "MonitorRef"
+                            "MonitorError"
+                                | "PartitionPolicy"
+                                | "MonitorId"
+                                | "DownTarget"
+                                | "DownReason"
+                                | "DownNotification"
+                                | "MonitorRef"
                         ) =>
                 {
                     Some(Item::TypeDecl(decl))
@@ -190,7 +209,8 @@ pub fn derive_monitor_ref_projection(
                     if source.module == "link_monitor"
                         && impl_target_name(&decl) == Some("MonitorRef") =>
                 {
-                    decl.methods.retain(|method| method.name == "close");
+                    decl.methods
+                        .retain(|method| method.name == "close" || method.name == "id");
                     (!decl.methods.is_empty()).then_some(Item::Impl(decl))
                 }
                 Item::ExternBlock(mut block) if source.module == "link_monitor" => {
@@ -220,7 +240,16 @@ pub fn derive_monitor_ref_projection(
 }
 
 fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
-    for expected in ["LinkError", "MonitorError", "PartitionPolicy", "MonitorRef"] {
+    for expected in [
+        "LinkError",
+        "MonitorError",
+        "PartitionPolicy",
+        "MonitorId",
+        "DownTarget",
+        "DownReason",
+        "DownNotification",
+        "MonitorRef",
+    ] {
         if !items
             .iter()
             .any(|item| matches!(item, Item::TypeDecl(decl) if decl.name == expected))
@@ -293,6 +322,11 @@ mod tests {
                 module: "failure",
                 path: "scratch/failure.hew",
                 source: &reordered_failure,
+            },
+            AuthoritySource {
+                module: "link_monitor",
+                path: "std/link_monitor.hew",
+                source: include_str!("../../../std/link_monitor.hew"),
             },
         ];
 

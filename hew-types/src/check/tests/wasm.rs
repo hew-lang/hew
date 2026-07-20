@@ -1087,9 +1087,14 @@ fn main() {
 
             fn main() {
                 let worker = spawn Worker;
-                let m: MonitorRef = monitor(worker);
+                let result = monitor(worker);
                 link(worker);
-                let _ = m.close();
+                match result {
+                    Ok(m) => {
+                        let _ = m.close();
+                    },
+                    Err(_) => {},
+                }
             }
         "
     }
@@ -1102,7 +1107,7 @@ fn main() {
 
             fn main() {
                 let worker = spawn Worker;
-                let _ok: MonitorRef = monitor(worker);
+                let _ok: Result<MonitorRef, MonitorError> = monitor(worker);
                 let x: i64 = monitor(worker);
                 println(x);
             }
@@ -1117,9 +1122,13 @@ fn main() {
 
             fn main() {
                 let worker = spawn Worker;
-                let m: MonitorRef = monitor(worker);
-                let _ = m.close();
-                let _ = m.close();
+                match monitor(worker) {
+                    Ok(m) => {
+                        let _ = m.close();
+                        let _ = m.close();
+                    },
+                    Err(_) => {},
+                }
             }
         "
     }
@@ -1131,7 +1140,7 @@ fn main() {
             }
 
             fn main() {
-                let remote: RemotePid<Worker> = RemotePid::from_raw(2, 1);
+                let remote: RemotePid<Worker>;
                 let result: Result<MonitorRef, MonitorError> = monitor(remote);
                 match result {
                     Ok(m) => {
@@ -1467,7 +1476,7 @@ fn main() {
             "actor Worker { receive fn ping(msg: Ping) {} }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }\n",
             "fn main() {\n",
-            "    let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);\n",
+            "    let pid: RemotePid<Worker>;\n",
             "    let _ = pid.send(Ping { n: 0 });\n",
             "}\n",
         )
@@ -1479,7 +1488,7 @@ fn main() {
             "actor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n",
             "fn main() {\n",
-            "    let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);\n",
+            "    let pid: RemotePid<Worker>;\n",
             "    let _ = pid.ask(Ping { n: 0 }, 1000);\n",
             "}\n",
         )

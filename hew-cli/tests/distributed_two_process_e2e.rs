@@ -60,58 +60,61 @@ const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// headroom for loopback gossip under load without masking a true hang.
 const CLIENT_RUN_TIMEOUT: Duration = Duration::from_secs(40);
 
+struct CompiledNodeBinary {
+    _emit_dir: tempfile::TempDir,
+    path: PathBuf,
+}
+
 /// Compile `dist_node.hew` exactly once per test binary and cache the resulting
 /// native executable path. All scenario tests in this file share the artifact.
 fn compiled_node_binary() -> &'static Path {
-    static NODE_BINARY: OnceLock<PathBuf> = OnceLock::new();
-    NODE_BINARY.get_or_init(|| {
-        require_codegen();
+    static NODE_BINARY: OnceLock<CompiledNodeBinary> = OnceLock::new();
+    &NODE_BINARY
+        .get_or_init(|| {
+            require_codegen();
 
-        let source = repo_root()
-            .join("hew-cli")
-            .join("tests")
-            .join("fixtures")
-            .join("distributed")
-            .join("dist_node.hew");
-        assert!(
-            source.is_file(),
-            "dist_node fixture missing at {}",
-            source.display()
-        );
+            let source = repo_root()
+                .join("hew-cli")
+                .join("tests")
+                .join("fixtures")
+                .join("distributed")
+                .join("dist_node.hew");
+            assert!(
+                source.is_file(),
+                "dist_node fixture missing at {}",
+                source.display()
+            );
 
-        // Emit into a stable, leaked temp dir: the binary must outlive this
-        // function and be reused across every scenario test in the process.
-        let emit_dir = tempfile::tempdir()
-            .expect("create dist_node compile dir (leaked for process lifetime)");
-        let emit_path = emit_dir.path().to_path_buf();
-        // Intentionally leak the TempDir guard so the compiled binary survives
-        // for the whole test-binary lifetime (the OS reclaims it at process
-        // exit). Without this the dir would be removed when the guard drops.
-        std::mem::forget(emit_dir);
+            let emit_dir = tempfile::tempdir().expect("create dist_node compile dir");
+            let emit_path = emit_dir.path().to_path_buf();
 
-        let mut command = Command::new(hew_binary());
-        command
-            .arg("compile")
-            .arg("--emit-dir")
-            .arg(&emit_path)
-            .arg(&source)
-            .current_dir(repo_root());
-        let output =
-            support::run_bounded_command(command, format!("hew compile {}", source.display()));
-        assert!(
-            output.status.success(),
-            "compiling dist_node.hew failed\n{}",
-            support::describe_output(&output)
-        );
+            let mut command = Command::new(hew_binary());
+            command
+                .arg("compile")
+                .arg("--emit-dir")
+                .arg(&emit_path)
+                .arg(&source)
+                .current_dir(repo_root());
+            let output =
+                support::run_bounded_command(command, format!("hew compile {}", source.display()));
+            assert!(
+                output.status.success(),
+                "compiling dist_node.hew failed\n{}",
+                support::describe_output(&output)
+            );
 
-        let binary = emit_path.join("dist_node");
-        assert!(
-            binary.is_file(),
-            "compiled dist_node binary missing at {}",
-            binary.display()
-        );
-        binary
-    })
+            let binary = emit_path.join("dist_node");
+            assert!(
+                binary.is_file(),
+                "compiled dist_node binary missing at {}",
+                binary.display()
+            );
+            CompiledNodeBinary {
+                _emit_dir: emit_dir,
+                path: binary,
+            }
+        })
+        .path
 }
 
 /// Pre-allocate an ephemeral loopback port and release it so the server can
@@ -143,20 +146,12 @@ impl Drop for ManagedChild {
     }
 }
 
-/// Operator-pinned stable `NodeId`s for the two roles (`HEW_NODE_ID`). Strict
-/// distributed mode requires a nonzero `u16` on each side; the client connects
-/// to `"1@…"` so admission binds the server's claimed id to its authenticated
-/// Noise key (fail-closed on mismatch).
-const SERVER_NODE_ID: &str = "1";
-const CLIENT_NODE_ID: &str = "2";
-
 /// A shared credentialed-TCP-Noise scenario context (issue #2652). Both node
 /// processes read the same key-exchange directory: each mints its own stable
 /// Noise identity under `<kx>/<role>.key`, publishes its `identity_key()` to
-/// `<kx>/<role>.pub`, and binds the peer's published key via `allow_peer` before
-/// the handshake — a real authorized mutual pin under strict peer binding, never
-/// an injected test-only posture. The directory is held for the scenario's
-/// lifetime and reclaimed when this value drops.
+/// `<kx>/<role>.pub`, and pins the peer credential to receiver-local route slot
+/// 1 or 2 before the v2 handshake. The directory also holds each key's durable
+/// session journal and is reclaimed when this value drops.
 struct SecureScenario {
     kx_dir: tempfile::TempDir,
     port: u16,
@@ -170,16 +165,9 @@ impl SecureScenario {
         }
     }
 
-    /// Spawn one node process with the strict-binding environment: the shared
-    /// key-exchange directory and this role's pinned `HEW_NODE_ID`, plus the
-    /// role/port/scenario the fixture dispatches on.
-    fn spawn(
-        &self,
-        role: &str,
-        node_id: &str,
-        scenario: &str,
-        extra_env: &[(&str, &str)],
-    ) -> ManagedChild {
+    /// Spawn one node process with the strict-binding environment, shared
+    /// key-exchange directory, and fixture role/port/scenario.
+    fn spawn(&self, role: &str, scenario: &str, extra_env: &[(&str, &str)]) -> ManagedChild {
         let binary = compiled_node_binary();
         let mut command = Command::new(binary);
         command
@@ -188,7 +176,6 @@ impl SecureScenario {
             .env("HEW_DIST_PORT", self.port.to_string())
             .env("HEW_DIST_SCENARIO", scenario)
             .env("HEW_DIST_KX_DIR", self.kx_dir.path())
-            .env("HEW_NODE_ID", node_id)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (key, value) in extra_env {
@@ -204,11 +191,15 @@ impl SecureScenario {
     }
 
     fn spawn_server(&self, scenario: &str) -> ManagedChild {
-        self.spawn("server", SERVER_NODE_ID, scenario, &[])
+        self.spawn("server", scenario, &[])
+    }
+
+    fn spawn_server_with_env(&self, scenario: &str, extra_env: &[(&str, &str)]) -> ManagedChild {
+        self.spawn("server", scenario, extra_env)
     }
 
     fn spawn_client(&self, scenario: &str, extra_env: &[(&str, &str)]) -> ManagedChild {
-        self.spawn("client", CLIENT_NODE_ID, scenario, extra_env)
+        self.spawn("client", scenario, extra_env)
     }
 }
 
@@ -303,6 +294,18 @@ fn run_two_process_scenario(scenario: &str) -> String {
     stdout
 }
 
+fn run_handshake_rejection_scenario() -> String {
+    let scene = SecureScenario::new();
+    let mut server =
+        scene.spawn_server_with_env("handshake_reject", &[("HEW_DIST_BAD_PEER_PIN", "1")]);
+    let client = scene.spawn_client("handshake_reject", &[]);
+
+    let _server_stdout = wait_for_server_ready(&mut server);
+    let stdout = run_client_to_completion(client);
+    drop(server);
+    stdout
+}
+
 /// Run a cross-node link cascade scenario where the REMOTE actor dies on its own
 /// (clean exit or crash) and the client polls its local linker's terminal state.
 /// The client runs with `HEW_LINK_PROBE=1` so the runtime records actor terminal
@@ -318,6 +321,20 @@ fn run_link_cascade_scenario(scenario: &str) -> String {
     let _server_stdout = wait_for_server_ready(&mut server);
     let stdout = run_client_to_completion(client);
 
+    drop(server);
+    stdout
+}
+
+fn run_setup_exit_race_scenario() -> String {
+    let scene = SecureScenario::new();
+    let mut server = scene.spawn_server_with_env(
+        "remote_setup_exit_race",
+        &[("HEW_DIST_SETUP_RACE_PROBE", "1")],
+    );
+    let client = scene.spawn_client("remote_setup_exit_race", &[("HEW_LINK_PROBE", "1")]);
+
+    let _server_stdout = wait_for_server_ready(&mut server);
+    let stdout = run_client_to_completion(client);
     drop(server);
     stdout
 }
@@ -612,6 +629,84 @@ fn run_server_verdict_scenario(scenario: &str) -> String {
     server_out
 }
 
+fn run_stale_incarnation_restart_scenario() -> String {
+    let scene = SecureScenario::new();
+    let mut first_server = scene.spawn_server("stale_incarnation_restart");
+    let mut client = scene.spawn_client("stale_incarnation_restart", &[]);
+
+    let _first_server_stdout = wait_for_server_ready(&mut first_server);
+    let client_stdout = client
+        .child
+        .stdout
+        .take()
+        .expect("client stdout was captured");
+    let mut client_reader = BufReader::new(client_stdout);
+    let mut captured = String::new();
+    let capture_deadline = Instant::now() + CLIENT_RUN_TIMEOUT;
+    loop {
+        assert!(
+            Instant::now() < capture_deadline,
+            "client did not capture the first-session pid within {CLIENT_RUN_TIMEOUT:?}"
+        );
+        let mut line = String::new();
+        match client_reader.read_line(&mut line) {
+            Ok(0) => {
+                panic!("client stdout closed before READY_STALE_CAPTURED; captured:\n{captured}")
+            }
+            Ok(_) => {
+                captured.push_str(&line);
+                if line.contains("READY_STALE_CAPTURED ") {
+                    break;
+                }
+            }
+            Err(error) => panic!("error reading stale-incarnation client stdout: {error}"),
+        }
+    }
+
+    first_server
+        .child
+        .kill()
+        .expect("kill first-session server");
+    first_server
+        .child
+        .wait()
+        .expect("wait for first-session server");
+
+    let mut replacement =
+        scene.spawn_server_with_env("stale_incarnation_restart", &[("HEW_DIST_RESTARTED", "1")]);
+    let _replacement_stdout = wait_for_server_ready(&mut replacement);
+
+    let drain_deadline = Instant::now() + CLIENT_RUN_TIMEOUT;
+    loop {
+        let mut line = String::new();
+        match client_reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => captured.push_str(&line),
+            Err(error) => panic!("error draining stale-incarnation client stdout: {error}"),
+        }
+        assert!(
+            Instant::now() < drain_deadline,
+            "client did not finish stale-incarnation proof within {CLIENT_RUN_TIMEOUT:?}"
+        );
+    }
+
+    let status = client
+        .child
+        .wait()
+        .expect("wait for stale-incarnation client");
+    let mut stderr = String::new();
+    if let Some(mut err) = client.child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+    assert!(
+        status.success(),
+        "stale-incarnation client exited non-zero ({status:?})\nstdout:\n{captured}\nstderr:\n{stderr}"
+    );
+
+    drop(replacement);
+    captured
+}
+
 /// Clean cross-node exit: a client monitoring a remote actor receives exactly
 /// one DOWN carrying the clean-exit reason (`HewActorState::Stopped` == 6) when
 /// the remote actor stops itself.
@@ -629,6 +724,10 @@ fn remote_monitor_down_on_clean_exit() {
     assert!(
         stdout.contains("PASS remote_monitor_clean_exit no-dup"),
         "expected no duplicate DOWN for the clean-exit monitor; client stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("PASS remote_monitor_clean_exit monitor-id-match="),
+        "DOWN monitor id must match MonitorRef::id(); client stdout:\n{stdout}"
     );
     assert!(
         !stdout.contains("FAIL "),
@@ -653,6 +752,10 @@ fn remote_monitor_down_on_crash() {
         "expected no duplicate DOWN for the crash monitor; client stdout:\n{stdout}"
     );
     assert!(
+        stdout.contains("PASS remote_monitor_crash monitor-id-match="),
+        "DOWN monitor id must match MonitorRef::id(); client stdout:\n{stdout}"
+    );
+    assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on the crash monitor; client stdout:\n{stdout}"
     );
@@ -674,6 +777,10 @@ fn remote_monitor_down_on_connection_drop() {
         "expected no duplicate DOWN for the connection-drop monitor; client stdout:\n{stdout}"
     );
     assert!(
+        stdout.contains("PASS remote_monitor_conn_drop monitor-id-match="),
+        "DOWN monitor id must match MonitorRef::id(); client stdout:\n{stdout}"
+    );
+    assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on the connection-drop monitor; client stdout:\n{stdout}"
     );
@@ -691,6 +798,26 @@ fn remote_monitor_setup_after_drop_returns_typed_partition() {
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on monitor setup after drop; client stdout:\n{stdout}"
+    );
+}
+
+/// A target that exits after the request reaches its owner but before target-side
+/// registration completes must resolve setup terminally. The monitor receives
+/// one immediate DOWN and the linked actor's local monitor receives one DOWN
+/// from the link cascade; neither setup may hang or duplicate delivery.
+#[test]
+fn remote_monitor_and_link_target_exit_during_setup_deliver_once() {
+    let stdout = run_setup_exit_race_scenario();
+    assert!(
+        stdout.contains("PASS remote_setup_exit_race_monitor reason=-1")
+            && stdout.contains("PASS remote_setup_exit_race_monitor no-dup")
+            && stdout.contains("PASS remote_setup_exit_race link-down=5")
+            && stdout.contains("PASS remote_setup_exit_race link-no-dup"),
+        "monitor/link setup races must terminate exactly once; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the setup-exit race; client stdout:\n{stdout}"
     );
 }
 
@@ -780,10 +907,25 @@ fn remote_ask_round_trip_returns_exact_values() {
     );
 }
 
+/// A valid v2 Noise handshake admits the key-derived peer identity and carries a
+/// typed request/reply round trip; a validly encoded but unpinned peer credential
+/// must remain unroutable with no legacy handshake fallback.
+#[test]
+fn authenticated_v2_handshake_rejects_wrong_credential_pin() {
+    let stdout = run_handshake_rejection_scenario();
+    assert!(
+        stdout.contains("PASS handshake_reject unroutable"),
+        "wrong peer credential must be rejected before routing; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on handshake rejection; client stdout:\n{stdout}"
+    );
+}
+
 /// Node identity/location proof across two OS processes. The remote actor's
-/// packed `(node_id, serial)` identity must match the registry lookup exactly,
-/// carry fresh registration incarnation 0, and name an ALIVE SWIM member that is
-/// distinct from the client's non-zero node id.
+/// key-backed node id, slot, and session incarnation must match the registry
+/// lookup exactly, and its node id must differ from the client's.
 #[test]
 fn node_identity_location_and_incarnation_cross_process() {
     let stdout = run_two_process_scenario("identity_location");
@@ -791,32 +933,37 @@ fn node_identity_location_and_incarnation_cross_process() {
         .lines()
         .find(|line| line.starts_with("PASS identity_location "))
         .unwrap_or_else(|| panic!("missing identity PASS line; client stdout:\n{stdout}"));
-    let field = |name: &str| -> u64 {
+    let field = |name: &str| -> &str {
         line.split_whitespace()
             .find_map(|part| part.strip_prefix(&format!("{name}=")))
             .unwrap_or_else(|| panic!("missing {name}= field in {line}"))
-            .parse()
-            .unwrap_or_else(|error| panic!("invalid {name}= field in {line}: {error}"))
     };
     let local = field("local");
     let remote = field("remote");
-    let serial = field("serial");
-    assert_ne!(local, 0, "local node id must be non-zero: {line}");
-    assert_ne!(remote, 0, "remote node id must be non-zero: {line}");
+    let parse_u64 = |name: &str| {
+        field(name)
+            .parse::<u64>()
+            .unwrap_or_else(|error| panic!("invalid {name}= field in {line}: {error}"))
+    };
+    assert!(
+        local.len() == 32 && local.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "local node id must be 32 hexadecimal digits: {line}"
+    );
+    assert!(
+        remote.len() == 32 && remote.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "remote node id must be 32 hexadecimal digits: {line}"
+    );
+    assert_ne!(local, "00000000000000000000000000000000", "{line}");
+    assert_ne!(remote, "00000000000000000000000000000000", "{line}");
     assert_ne!(
         local, remote,
         "two processes must have distinct node ids: {line}"
     );
-    assert_ne!(serial, 0, "actor serial must be non-zero: {line}");
-    assert_eq!(
-        field("incarnation"),
+    assert_ne!(parse_u64("slot"), 0, "actor slot must be non-zero: {line}");
+    assert_ne!(
+        parse_u64("incarnation"),
         0,
-        "fresh registration incarnation: {line}"
-    );
-    assert_eq!(
-        field("state"),
-        0,
-        "remote SWIM member must be ALIVE: {line}"
+        "session incarnation must be non-zero: {line}"
     );
     assert!(
         !stdout.contains("FAIL "),
@@ -824,32 +971,20 @@ fn node_identity_location_and_incarnation_cross_process() {
     );
 }
 
-/// `StaleRef` supersession: a captured `RemotePid<T>` fails closed with `StaleRef` once
-/// its registration is superseded by a re-registration of the same name to a
-/// DIFFERENT actor — on both `send` and `ask`, across two OS processes.
-///
-/// The client looks up "kv" (capturing the original actor's pid), the server
-/// re-points "kv" to a fresh actor (unregister + re-register, which supersedes
-/// the original serial and gossips the re-point), and the client's captured ref
-/// must observe `SendError::StaleRef` / `AskError::StaleRef` — never a silent
-/// delivery to the replacement, never a generic routing error.
-///
-/// Teeth: the scenario fails if the captured ref ever succeeds after the
-/// re-point, and the exact `StaleRef` discriminant is required on BOTH verbs.
+/// Re-pointing a registry name changes future lookups without revoking an
+/// already-issued Location for a still-live actor.
 #[test]
-fn captured_remote_ref_fails_closed_with_stale_ref_after_repoint() {
-    let stdout = run_two_process_scenario("stale_ref");
+fn captured_remote_ref_survives_name_repoint() {
+    let stdout = run_two_process_scenario("repoint_preserves_ref");
 
     assert!(
-        stdout.contains("PASS stale_ref send=stale ask=stale"),
-        "expected the captured ref to go StaleRef on both send and ask after the \
-         server re-pointed the name; client stdout:\n{stdout}"
+        stdout.contains("PASS repoint_preserves_ref captured=live future=replacement"),
+        "expected the captured ref to remain live while a future lookup selected \
+         the replacement actor; client stdout:\n{stdout}"
     );
-    // Negative guard: no FAIL line — in particular not `send-never-stale` (the ref
-    // kept delivering to the replacement) or a wrong-error discriminant.
     assert!(
         !stdout.contains("FAIL "),
-        "client reported a FAIL on the StaleRef scenario; client stdout:\n{stdout}"
+        "client reported a FAIL on the re-point scenario; client stdout:\n{stdout}"
     );
 }
 
@@ -907,8 +1042,8 @@ fn wire_cbor_cross_process_round_trip() {
 /// target actor itself is NOT reported as DOWN (the watcher dying must not affect
 /// the watched actor's liveness), and that no FAIL line appears.
 ///
-/// Teeth: the server-side assertion is an exact count (pruned > 0 would pass over
-/// a table that never grew); the wait loop has a bounded timeout that fails if the
+/// Teeth: the server-side assertion requires exactly one registration; the wait
+/// loop has a bounded timeout that fails if the
 /// prune never fires; the no-FAIL guard catches any scenario-level error.
 #[test]
 fn monitor_watcher_node_death_prunes_target_table() {
@@ -929,10 +1064,9 @@ fn monitor_watcher_node_death_prunes_target_table() {
         .and_then(|l| l.split("pruned=").nth(1))
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
-    assert!(
-        pruned_count > 0,
-        "pruned count must be > 0 (watcher registered at least one entry); \
-         server out:\n{server_out}"
+    assert_eq!(
+        pruned_count, 1,
+        "pruned count must be exactly 1; server out:\n{server_out}"
     );
     // No FAIL line — no scenario-level error.
     assert!(
@@ -1036,15 +1170,31 @@ fn cross_node_monitor_close_reclaims_watcher_entry() {
         .and_then(|l| l.split("reclaimed=").nth(1))
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
-    assert!(
-        reclaimed > 0,
-        "reclaimed count must be > 0 (the monitor DID register an entry that was \
-         then reclaimed on close); server out:\n{server_out}"
+    assert_eq!(
+        reclaimed, 1,
+        "reclaimed count must be exactly 1; server out:\n{server_out}"
     );
     assert!(
         !server_out.contains("FAIL "),
         "server reported a FAIL on the cross-node demonitor reclamation; \
          server out:\n{server_out}"
+    );
+}
+
+/// Repeated cross-node monitor setup/close keeps both authorities exact: every
+/// handle id is distinct, close delivers no DOWN, and both watcher- and
+/// target-side tables finish at zero.
+#[test]
+fn repeated_cross_node_monitor_close_keeps_tables_empty() {
+    let server_out = run_server_verdict_scenario("monitor_leak_low");
+    assert!(
+        server_out.contains("PASS monitor_leak_low iterations=3 target=0 max=1"),
+        "server must observe one live registration at a time and exact zero cleanup; \
+         server out:\n{server_out}"
+    );
+    assert!(
+        !server_out.contains("FAIL "),
+        "server reported a FAIL on repeated monitor cleanup; server out:\n{server_out}"
     );
 }
 
@@ -1076,5 +1226,25 @@ fn quarantine_rejoin_stale_rejected_higher_readmitted() {
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on the rejoin-admission proof; client stdout:\n{stdout}"
+    );
+}
+
+/// A carried `RemotePid` is fenced across a same-key process restart. The
+/// replacement has the same key-derived `NodeId` and a strictly higher durable
+/// session incarnation; its fresh PID works while the captured PID fails with
+/// the exact stale-reference error.
+#[test]
+fn carried_remote_pid_rejected_after_same_key_restart() {
+    let stdout = run_stale_incarnation_restart_scenario();
+    assert!(
+        stdout.contains("PASS stale_incarnation_restart old=")
+            && stdout.contains(" new=")
+            && stdout.contains(" error=StaleRef"),
+        "same-key restart must admit only the higher incarnation and reject the \
+         captured PID with StaleRef; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on stale-incarnation fencing; client stdout:\n{stdout}"
     );
 }

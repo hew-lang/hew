@@ -22,7 +22,7 @@ impl ActorMsg for Echo {
 }
 
 fn main() {
-    let peer: RemotePid<Echo> = RemotePid::from_raw<Echo>(1, 0);
+    let peer: RemotePid<Echo>;
     let reply: Result<i64, AskError> = peer.ask(7, 100);
     match reply {
         Ok(v) => println(f"answer={v}"),

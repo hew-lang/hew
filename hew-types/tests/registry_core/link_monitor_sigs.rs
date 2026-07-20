@@ -2,7 +2,7 @@
 //!
 //! B2 slice: pins that
 //!   - `link(handle)` → `Result<(), LinkError>`
-//!   - `monitor(handle)` → `MonitorRef`
+//!   - `monitor(handle)` → `Result<MonitorRef, MonitorError>`
 //!   - `link(non_actor)` → `TYPE_MISMATCH`
 //!   - `monitor(non_actor)` → `TYPE_MISMATCH`
 
@@ -81,25 +81,25 @@ fn link_result_bound_to_let_wildcard_typechecks() {
 // ── monitor return type ───────────────────────────────────────────────────────
 
 #[test]
-fn monitor_actor_ref_returns_monitor_ref() {
-    // `monitor(handle) -> MonitorRef` — binding to that type must produce no errors.
+fn monitor_actor_ref_returns_typed_result() {
+    // `monitor(handle) -> Result<MonitorRef, MonitorError>` must typecheck.
     let src = with_actor(
         r"
         let w = spawn Worker;
-        let m: MonitorRef = monitor(w);
+        let m: Result<MonitorRef, MonitorError> = monitor(w);
     ",
     );
     let out = typecheck(&src);
     assert!(
         out.errors.is_empty(),
-        "monitor(actor_ref) should produce MonitorRef with no errors; got: {:?}",
+        "monitor(actor_ref) should produce Result<MonitorRef, MonitorError> with no errors; got: {:?}",
         out.errors
     );
 }
 
 #[test]
-fn monitor_ref_not_assignable_to_int() {
-    // `MonitorRef` must not unify with `i64` — the type system must reject this.
+fn monitor_result_not_assignable_to_int() {
+    // The typed monitor result must not unify with `i64`.
     let src = with_actor(
         r"
         let w = spawn Worker;

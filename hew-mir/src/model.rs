@@ -887,6 +887,9 @@ pub struct ActorLayout {
     /// `SYS_MSG_EXIT` (103) to it, unpacking the delivered `CrashNotification`
     /// (`actor_id`, `crash_kind` tag) from the `ExitMessage` payload.
     pub on_exit_symbol: Option<String>,
+    /// `#[on(down)]` monitor terminal hook symbol. `None` when the actor has no
+    /// DOWN hook. Dispatch consumes `SYS_MSG_DOWN` in either case.
+    pub on_down_symbol: Option<String>,
     /// Per-actor arena cap in bytes from `#[max_heap(N)]`. `None` means no
     /// annotation (unbounded arena). Codegen reads this to select
     /// `hew_actor_spawn` (None) vs `hew_actor_spawn_opts` with
@@ -2639,6 +2642,9 @@ pub enum ActorHandlerKind {
     Init,
     Start,
     Stop,
+    Crash,
+    Exit,
+    Down,
 }
 
 /// PROVEN source attribution and synthesised identity for a MIR function.

@@ -36,7 +36,7 @@ fn main() {
     let builtins = read_source("builtins", &builtins_path);
     let failure = read_source("failure", &failure_path);
     let link_monitor = read_source("link_monitor", &link_monitor_path);
-    let enums = derive_builtin_enums(&[builtins, failure])
+    let enums = derive_builtin_enums(&[builtins, failure, link_monitor])
         .unwrap_or_else(|error| panic!("failed to derive builtin enum ABI facts: {error}"));
     let monitor_projection = derive_monitor_ref_projection(builtins, link_monitor)
         .unwrap_or_else(|error| panic!("failed to derive monitor prelude projection: {error}"));

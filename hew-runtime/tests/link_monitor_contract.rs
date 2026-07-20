@@ -15,7 +15,7 @@
 
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::hew_actor_link;
-use hew_runtime::monitor::{hew_actor_demonitor, hew_actor_monitor};
+use hew_runtime::monitor::{hew_actor_demonitor, register_actor_monitor, HewDownMessage};
 use hew_runtime::supervisor::{SYS_MSG_DOWN, SYS_MSG_EXIT};
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor};
 use std::ffi::c_void;
@@ -84,16 +84,8 @@ impl ExitSignal {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-struct DownMessageView {
-    monitored_actor_id: u64,
-    ref_id: u64,
-    reason: i32,
-}
-
 struct DownSignal {
-    state: Mutex<Vec<DownMessageView>>,
+    state: Mutex<Vec<HewDownMessage>>,
     cond: Condvar,
 }
 
@@ -112,17 +104,17 @@ impl DownSignal {
     fn record(&self, msg_type: i32, data: *mut c_void, data_size: usize) {
         if msg_type == SYS_MSG_DOWN
             && !data.is_null()
-            && data_size == std::mem::size_of::<DownMessageView>()
+            && data_size == std::mem::size_of::<HewDownMessage>()
         {
             // SAFETY: runtime sent SYS_MSG_DOWN with exact expected size.
-            let msg = unsafe { (data.cast::<DownMessageView>().cast_const()).read_unaligned() };
+            let msg = unsafe { (data.cast::<HewDownMessage>().cast_const()).read_unaligned() };
             let mut state = self.state.lock().unwrap();
             state.push(msg);
             self.cond.notify_all();
         }
     }
 
-    fn wait_for_count(&self, n: usize, timeout: Duration) -> Option<Vec<DownMessageView>> {
+    fn wait_for_count(&self, n: usize, timeout: Duration) -> Option<Vec<HewDownMessage>> {
         let deadline = Instant::now() + timeout;
         let mut state = self.state.lock().unwrap();
         loop {
@@ -291,7 +283,9 @@ fn monitor_to_dead_actor_returns_ok() {
 
     // Late monitor registration — must return a non-zero ref_id.
     // SAFETY: watcher is live; target is dead but pointer still valid.
-    let ref_id = unsafe { hew_actor_monitor(watcher.as_ptr(), target.as_ptr()) };
+    let ref_id = unsafe {
+        register_actor_monitor(watcher.as_ptr(), target.as_ptr()).expect("monitor registration")
+    };
     assert_ne!(
         ref_id, 0,
         "monitor on dead target must return a valid (non-zero) ref_id"
@@ -303,11 +297,12 @@ fn monitor_to_dead_actor_returns_ok() {
         .expect("monitor on dead target must deliver DOWN immediately");
     let down = downs.last().copied().unwrap();
     assert_eq!(
-        down.monitored_actor_id, target_id,
+        down.slot,
+        hew_runtime::pid::hew_pid_serial(target_id),
         "DOWN must identify the dead target"
     );
     assert_eq!(
-        down.ref_id, ref_id,
+        down.monitor_id, ref_id,
         "DOWN ref_id must match the ref_id returned by hew_actor_monitor"
     );
 
@@ -342,7 +337,9 @@ fn demonitor_after_target_death_is_silent_ok() {
 
     // Establish a live monitor before the target dies.
     // SAFETY: both actors are live at this point.
-    let ref_id = unsafe { hew_actor_monitor(watcher.as_ptr(), target.as_ptr()) };
+    let ref_id = unsafe {
+        register_actor_monitor(watcher.as_ptr(), target.as_ptr()).expect("monitor registration")
+    };
     assert_ne!(ref_id, 0, "monitor setup must succeed");
 
     // Kill the target — this sweeps the monitor table entry via

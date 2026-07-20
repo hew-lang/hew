@@ -88,8 +88,8 @@ pub enum BuiltinLinkage {
     /// gate treats them like `CompilerIntrinsic` (no C-ABI symbol to
     /// classify).
     ///
-    /// Used by S5 `hew_remote_pid_send`: the user-visible call expands
-    /// into `hew_actor_send_by_id` (declared via `intern_runtime_decl`)
+    /// Used by `hew_remote_pid_send`: the user-visible call expands
+    /// into `hew_node_api_send_location` (declared via `intern_runtime_decl`)
     /// followed by an in-place `Result<(), SendError>` construction; no
     /// separate stub symbol is needed.
     CalleeNameDispatchOnly,
@@ -2429,6 +2429,13 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_node_api_identity_key",
         },
     ),
+    direct(
+        "Node::id",
+        BuiltinClass::ClassB,
+        EMPTY,
+        BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
     // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
     //
     // Per R81, `LocalPid<T>` lowers to a bare `u64` PID at the C-ABI
@@ -2446,40 +2453,19 @@ pub const CATALOG: &[BuiltinEntry] = &[
             pid_accessor: "hew_actor_pid",
         },
     ),
-    // `RemotePid::from_raw(node_id: u64, serial: u64) -> RemotePid<T>`
-    //
-    // Constructs a `RemotePid<T>` from a raw (node_id, serial) pair.  The
-    // `RemotePid<T>` type lowers to a bare `u64` PID — identical encoding to
-    // `LocalPid<T>` — so the return type is `U64` at the C-ABI boundary.
-    // The runtime validates that `node_id` is non-zero and fits in u16 (the
-    // packed encoding constraint).  See `hew-runtime/src/hew_node.rs`.
-    direct(
-        "RemotePid::from_raw",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::U64, BuiltinTy::U64],
-        BuiltinTy::U64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_remote_pid_from_raw",
-        },
-    ),
     // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`
     //
-    // The C-ABI shape is `hew_node_api_lookup(name: ptr) -> u64`: a packed
-    // RemotePid encoding on success, or `0` on not-found / no-node / null-name.
-    // The catalog entry carries the FFI-level types (String → U64); the
-    // codegen Terminator::Call branch for "Node::lookup" wraps the raw `u64`
-    // into the user-visible `Result<RemotePid<T>, LookupError>` by storing
-    // tag and payload directly into the dest enum slot. RuntimeFfiShim is the
-    // correct linkage because the call is a single C extern — no new
-    // `FnSymbol::*` variant is needed (codegen branches by callee name).
+    // Codegen allocates the aggregate Ok payload in the destination Result and
+    // passes it to `hew_node_api_lookup_location(name, out) -> i32`. A zero
+    // status selects Ok; any non-zero status selects LookupError::NotFound.
+    // The scalar catalog types are dispatch placeholders only and never define
+    // the C ABI for this CalleeNameDispatchOnly entry.
     direct(
         "Node::lookup",
         BuiltinClass::ClassB,
         STRING,
         BuiltinTy::U64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_lookup",
-        },
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // `RemotePid<T>::send(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError>`
     //
@@ -2489,7 +2475,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // RemotePid<T> receiver (see hew-types::check::methods); the HIR
     // direct-call lowering produces a Terminator::Call("hew_remote_pid_send",
     // [pid, msg]). Codegen branches on callee name in
-    // `emit_remote_pid_send_call` to emit the `hew_actor_send_by_id`
+    // `emit_remote_pid_send_call` to emit the `hew_node_api_send_location`
     // call sequence and construct the user-visible `Result<(), SendError>`
     // in place (mirrors the Node::lookup precedent).
     //
@@ -2499,8 +2485,8 @@ pub const CATALOG: &[BuiltinEntry] = &[
     //
     // Linkage is `CalleeNameDispatchOnly` (not `RuntimeFfiShim`): there
     // is no dedicated `hew_remote_pid_send` runtime symbol — the real
-    // underlying extern `hew_actor_send_by_id` has a different ABI
-    // (`(u64, i32, ptr, usize) -> i32`) and is declared via
+    // underlying extern `hew_node_api_send_location` has a different ABI
+    // (`(ptr, ptr, i32, ptr, usize) -> i32`) and is declared via
     // `intern_runtime_decl` directly inside `emit_remote_pid_send_call`,
     // not through the catalog FFI predeclare path. The catalog entry's
     // params/return shape only needs to satisfy HIR's fn_registry lookup
@@ -2511,6 +2497,76 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassB,
         &[BuiltinTy::U64, BuiltinTy::U64],
         BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_node_id_display",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::String,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_location_node_id",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_location_slot",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_location_incarnation",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::U32,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_location_display",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::String,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_remote_pid_location",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_remote_pid_node_id",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_remote_pid_slot",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::U64,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_remote_pid_incarnation",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::U32,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_remote_pid_display",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::U64],
+        BuiltinTy::String,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // Active-mode `conn.attach(handler)` dispatch symbol.

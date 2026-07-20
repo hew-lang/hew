@@ -28,7 +28,7 @@ hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.11.0"
+sha2.workspace = true
 wasm-bindgen = "0.2.125"
 
 [dev-dependencies]

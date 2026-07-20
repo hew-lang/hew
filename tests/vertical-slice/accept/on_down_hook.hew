@@ -1,0 +1,37 @@
+import std::failure;
+import std::link_monitor;
+
+actor Watcher {
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        let _id = note.monitor.value;
+        match note.target {
+            DownTarget::Local(slot) => {
+                let _slot = slot;
+            }
+            DownTarget::Remote(location) => {
+                let _location = location;
+            }
+        }
+        match note.reason {
+            DownReason::Exited => {}
+            DownReason::Crashed(kind) => {
+                let _kind = kind;
+            }
+            DownReason::MonitorLost => {}
+            DownReason::LocalShutdown => {}
+        }
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child watcher: Watcher;
+}
+
+fn main() -> i64 {
+    spawn AppSupervisor;
+    42
+}

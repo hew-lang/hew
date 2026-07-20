@@ -52,7 +52,7 @@ impl Builder {
     /// actor dispatch context. The "only valid in actor context" fail-closed gate
     /// belongs to the actor-messaging lane and is not installed here. Calls from
     /// `main` / free functions are an out-of-context window; the runtime handles
-    /// null self gracefully (`hew_actor_monitor` returns `ref_id = 0`).
+    /// null self gracefully (`hew_actor_monitor` returns `InvalidTarget`).
     pub(crate) fn lower_actor_link_or_monitor(
         &mut self,
         symbol: &str,
@@ -85,9 +85,10 @@ impl Builder {
         // Cross-node monitor: a `monitor(RemotePid<T>)` receiver routes
         // to the node-monitor ABI instead of the in-process actor-monitor ABI.
         // The remote receiver has no `HewActor*` in this address space, so the
-        // 2-arg (watcher_ptr, target_ptr) shape does not apply: `hew_node_monitor`
-        // takes the packed remote pid (an i64) and registers a distributed-table
-        // entry keyed by (node_id, serial). Detected from the target argument's
+        // 2-arg (watcher_ptr, target_ptr) shape does not apply:
+        // `hew_node_monitor_location` takes the exact target Location by pointer
+        // and registers a distributed-table entry keyed by that identity.
+        // Detected from the target argument's
         // checker-authoritative resolved type. Only `hew_actor_monitor` reaches
         // the cross-node route; `hew_actor_link` of a remote target is deferred
         // (no cross-node link surface), so it keeps the local 2-arg shape.
@@ -113,7 +114,7 @@ impl Builder {
         // Value-needed: construct the composite return.
         // `result_ty` carries the checker-authoritative return type:
         //   hew_actor_link   → Result<(), LinkError>
-        //   hew_actor_monitor → MonitorRef
+        //   hew_actor_monitor → Result<MonitorRef, MonitorError>
         // Fail closed if the checker did not record a return type — a
         // checker-boundary violation that the HIR→MIR handoff must not
         // propagate silently.
@@ -145,23 +146,9 @@ impl Builder {
                 Some(result_local)
             }
             "hew_actor_monitor" => {
-                // hew_actor_monitor returns a u64 ref_id. Store the raw i64
-                // into a temp local, then assemble MonitorRef { ref_id } via
-                // RecordInit. The codegen ActorMonitor handler stores the i64
-                // call result into the raw dest; RecordInit copies it into the
-                // struct field.
-                let ref_id_local = self.alloc_local(ResolvedTy::I64);
-                self.push_runtime_call(symbol, vec![self_handle, target], Some(ref_id_local));
-                // Assemble MonitorRef { ref_id: i64 } from the raw ref_id.
-                // FieldOffset(0) is the declaration-order index of `ref_id`
-                // in `MonitorRef { ref_id: i64 }`.
-                let monitor_ref_local = self.alloc_local(composite_ty.clone());
-                self.push_instr(Instr::RecordInit {
-                    ty: composite_ty,
-                    fields: vec![(FieldOffset(0), ref_id_local)],
-                    dest: monitor_ref_local,
-                });
-                Some(monitor_ref_local)
+                let result_local = self.alloc_local(composite_ty);
+                self.push_runtime_call(symbol, vec![self_handle, target], Some(result_local));
+                Some(result_local)
             }
             _ => unreachable!("only hew_actor_link / hew_actor_monitor reach this helper"),
         }
@@ -171,11 +158,11 @@ impl Builder {
     ///
     /// Unlike the local `hew_actor_monitor(watcher_ptr, target_ptr)` (which keys
     /// on `HewActor*` pointers), the remote target has no pointer in this
-    /// address space. `hew_node_monitor(target_remote_pid: i64) -> i64` takes the
-    /// packed remote pid and registers a distributed-table entry keyed by
-    /// `(node_id, serial)`, sending a `CTRL_MONITOR_REQ` to the owning peer.
-    /// Positive returns are the `ref_id` keying the registration; negative
-    /// returns encode `MonitorError` as `-(variant + 1)`. Codegen assembles the
+    /// address space. `hew_node_monitor_location(target, out_monitor_id) -> i32`
+    /// registers a distributed-table entry keyed by the exact target identity,
+    /// sending a `CTRL_MONITOR_REQ` to the owning peer.
+    /// returns status zero and writes the id on success; non-zero statuses are
+    /// one plus the `MonitorError` discriminant. Codegen assembles the
     /// checker-authoritative `Result<MonitorRef, MonitorError>` directly.
     fn lower_node_monitor(
         &mut self,
@@ -184,13 +171,13 @@ impl Builder {
         context: RuntimeCallContext,
         result_ty: Option<&ResolvedTy>,
     ) -> Option<Place> {
-        // The target is the remote pid; it lowers to a bare i64 (node<<48|serial).
+        // The target is the remote pid; it lowers to the inline Location aggregate.
         let target = self.lower_value(&hir_args[0])?;
 
         if context != RuntimeCallContext::ValueNeeded {
             // Statement-position monitor: register but discard the ref. The
             // codegen handler calls the ABI and ignores the signed setup return.
-            self.push_runtime_call("hew_node_monitor", vec![target], None);
+            self.push_runtime_call("hew_node_monitor_location", vec![target], None);
             return None;
         }
 
@@ -202,10 +189,10 @@ impl Builder {
         } else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_node_monitor` value result".to_string(),
+                    construct: "runtime call `hew_node_monitor_location` value result".to_string(),
                     site,
                 },
-                note: "`hew_node_monitor` value-needed path requires a \
+                note: "`hew_node_monitor_location` value-needed path requires a \
                        checker-authoritative result type; result_ty was None \
                        (checker did not record a type for this call site — \
                        boundary violation)"
@@ -214,10 +201,14 @@ impl Builder {
             return None;
         };
 
-        // Codegen decodes the signed setup return and writes either
+        // Codegen decodes the explicit status/out-id ABI and writes either
         // Ok(MonitorRef { ref_id }) or Err(MonitorError::<variant>) in place.
         let result_local = self.alloc_local(composite_ty);
-        self.push_runtime_call("hew_node_monitor", vec![target], Some(result_local));
+        self.push_runtime_call(
+            "hew_node_monitor_location",
+            vec![target],
+            Some(result_local),
+        );
         Some(result_local)
     }
 
@@ -227,14 +218,14 @@ impl Builder {
     /// The user surface is 2-arg: the remote target pid and the `PartitionPolicy`
     /// governing what happens to the LOCAL linked actor when the remote dies. The
     /// linking subject (self) is resolved inside the runtime (like
-    /// `hew_node_monitor` / `hew_actor_self`), so the ABI takes only
-    /// `(target_pid: i64, policy_tag: i64)`. The target lowers to a bare i64
-    /// (node<<48|serial); the policy is a fieldless enum whose discriminant tag is
-    /// extracted via `Place::EnumTag` and passed as the `policy_tag` i64.
+    /// `hew_node_monitor_location` / `hew_actor_self`), so the ABI takes only
+    /// `(target: *const Location, policy_tag: i64)`. The policy is a fieldless
+    /// enum whose discriminant tag is extracted via `Place::EnumTag` and passed
+    /// as the `policy_tag` i64.
     ///
-    /// The return is `Result<(), LinkError>` (matching the local `link`). Positive
-    /// ABI returns signal registration success; negative returns encode
-    /// `LinkError` as `-(variant + 1)`. The EXIT arrives asynchronously when the
+    /// The return is `Result<(), LinkError>` (matching the local `link`). ABI
+    /// status zero signals registration success; non-zero is one plus the
+    /// `LinkError` discriminant. The EXIT arrives asynchronously when the
     /// remote dies.
     pub(crate) fn lower_node_link_remote(
         &mut self,
@@ -246,7 +237,7 @@ impl Builder {
         if hir_args.len() != 2 {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_node_link_remote` arity".to_string(),
+                    construct: "runtime call `hew_node_link_remote_location` arity".to_string(),
                     site,
                 },
                 note: format!(
@@ -257,7 +248,7 @@ impl Builder {
             return None;
         }
 
-        // arg0: the remote pid (a bare i64 node<<48|serial).
+        // arg0: the remote pid (an inline Location aggregate).
         let target = self.lower_value(&hir_args[0])?;
         // arg1: the PartitionPolicy fieldless enum value; extract its discriminant
         // tag into an i64 the ABI consumes as the policy selector.
@@ -265,7 +256,8 @@ impl Builder {
         let Place::Local(policy_local) = policy_value else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_node_link_remote` policy operand".to_string(),
+                    construct: "runtime call `hew_node_link_remote_location` policy operand"
+                        .to_string(),
                     site,
                 },
                 note: "`link_remote` lowers the PartitionPolicy through the \
@@ -283,7 +275,11 @@ impl Builder {
 
         if context != RuntimeCallContext::ValueNeeded {
             // Statement-position: register the link, discard the ref_id.
-            self.push_runtime_call("hew_node_link_remote", vec![target, policy_tag], None);
+            self.push_runtime_call(
+                "hew_node_link_remote_location",
+                vec![target, policy_tag],
+                None,
+            );
             return None;
         }
 
@@ -294,10 +290,11 @@ impl Builder {
         } else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_node_link_remote` value result".to_string(),
+                    construct: "runtime call `hew_node_link_remote_location` value result"
+                        .to_string(),
                     site,
                 },
-                note: "`hew_node_link_remote` value-needed path requires a \
+                note: "`hew_node_link_remote_location` value-needed path requires a \
                        checker-authoritative result type; result_ty was None \
                        (checker did not record a type for this call site — \
                        boundary violation)"
@@ -306,10 +303,10 @@ impl Builder {
             return None;
         };
         // Allocate the Result<(), LinkError> dest and pass it to the ABI call.
-        // Codegen decodes the signed setup return into Ok(()) or the precise Err.
+        // Codegen decodes the explicit setup status into Ok(()) or the precise Err.
         let result_local = self.alloc_local(composite_ty);
         self.push_runtime_call(
-            "hew_node_link_remote",
+            "hew_node_link_remote_location",
             vec![target, policy_tag],
             Some(result_local),
         );
@@ -401,7 +398,7 @@ impl Builder {
     /// Lowers each argument to a Place and emits the call. In value position the
     /// i64 return is stored into a fresh i64 dest; in statement position the
     /// return is discarded. Used by the cross-node monitor extern surface
-    /// (`hew_node_monitor` / `hew_node_monitor_recv`), whose returns are plain
+    /// (`hew_node_monitor_location`), whose returns are plain
     /// scalar reason / ref-id codes (no composite spine).
     pub(crate) fn lower_simple_int_runtime_call(
         &mut self,

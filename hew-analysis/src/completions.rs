@@ -1535,9 +1535,8 @@ impl Box {
         // declared receive handler (`increment`) and must NOT leak the actor's
         // internal struct fields (`count`).
         //
-        // This test uses an empty module registry (no stdlib), so `tell` /
-        // `to_remote_via` won't appear here — those are covered by the stdlib-
-        // loaded hew-lsp integration test.
+        // This test uses an empty module registry (no stdlib), so `tell` won't
+        // appear here; it is covered by the stdlib-loaded hew-lsp integration test.
         let source = r"actor Counter {
     count: i64;
     receive fn increment(n: i64) { count = count + n; }

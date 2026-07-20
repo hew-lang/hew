@@ -3273,6 +3273,7 @@ mod enum_layout_tests {
                     && l.name != "LinkError"
                     && l.name != "CrashAction"
                     && l.name != "CrashKind"
+                    && l.name != "MonitorError"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
@@ -3333,6 +3334,7 @@ mod enum_layout_tests {
                     && l.name != "LinkError"
                     && l.name != "CrashAction"
                     && l.name != "CrashKind"
+                    && l.name != "MonitorError"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
@@ -3524,8 +3526,8 @@ mod enum_layout_tests {
         );
         // The MIR pipeline emits the layout under the mangled name (not "Option").
         // Codegen finds it via the mangled key in machine_layout_map.
-        // The builtin `LookupError` layout is always registered out-of-band; filter
-        // it out so this test asserts on the user-declared layouts only.
+        // Builtin enum layouts are always registered out-of-band; filter them
+        // out so this test asserts on the user-declared layouts only.
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
@@ -3537,6 +3539,7 @@ mod enum_layout_tests {
                     && l.name != "LinkError"
                     && l.name != "CrashAction"
                     && l.name != "CrashKind"
+                    && l.name != "MonitorError"
             })
             .collect();
         assert_eq!(

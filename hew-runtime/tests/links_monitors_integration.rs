@@ -3,7 +3,7 @@
 use hew_runtime::actor::hew_actor_get_error;
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::{hew_actor_link, hew_actor_unlink};
-use hew_runtime::monitor::{hew_actor_demonitor, hew_actor_monitor};
+use hew_runtime::monitor::{hew_actor_demonitor, register_actor_monitor, HewDownMessage};
 use hew_runtime::supervisor::{SYS_MSG_DOWN, SYS_MSG_EXIT};
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor};
 use std::ffi::c_void;
@@ -13,17 +13,9 @@ use std::time::{Duration, Instant};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-struct DownMessageView {
-    monitored_actor_id: u64,
-    ref_id: u64,
-    reason: i32,
-}
-
 #[derive(Clone, Debug, Default)]
 struct MonitorDispatchState {
-    down_messages: Vec<DownMessageView>,
+    down_messages: Vec<HewDownMessage>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,11 +53,11 @@ impl MonitorDispatchSignal {
         let mut state = self.state.lock().unwrap();
         if msg_type == SYS_MSG_DOWN
             && !data.is_null()
-            && data_size == std::mem::size_of::<DownMessageView>()
+            && data_size == std::mem::size_of::<HewDownMessage>()
         {
             // SAFETY: The runtime sent a SYS_MSG_DOWN payload with the exact
             // expected size, so reading the packed value is valid here.
-            let down = unsafe { (data.cast::<DownMessageView>().cast_const()).read_unaligned() };
+            let down = unsafe { (data.cast::<HewDownMessage>().cast_const()).read_unaligned() };
             state.down_messages.push(down);
             self.cond.notify_all();
         }
@@ -75,7 +67,7 @@ impl MonitorDispatchSignal {
         &self,
         expected: usize,
         timeout: Duration,
-    ) -> Option<Vec<DownMessageView>> {
+    ) -> Option<Vec<HewDownMessage>> {
         let deadline = Instant::now() + timeout;
         let mut state = self.state.lock().unwrap();
         while state.down_messages.len() < expected {
@@ -197,7 +189,8 @@ fn test_link_and_monitor_basic() {
     // actors remain alive for the test's duration via their TestActor wrappers.
     unsafe {
         hew_actor_link(actor_a.as_ptr(), actor_b.as_ptr());
-        let ref_id = hew_actor_monitor(actor_a.as_ptr(), actor_b.as_ptr());
+        let ref_id = register_actor_monitor(actor_a.as_ptr(), actor_b.as_ptr())
+            .expect("monitor registration");
         assert_ne!(ref_id, 0);
         hew_actor_unlink(actor_a.as_ptr(), actor_b.as_ptr());
         hew_actor_demonitor(ref_id);
@@ -211,8 +204,8 @@ fn test_null_handling() {
     unsafe {
         hew_actor_link(ptr::null_mut(), ptr::null_mut());
         hew_actor_unlink(ptr::null_mut(), ptr::null_mut());
-        let ref_id = hew_actor_monitor(ptr::null_mut(), ptr::null_mut());
-        assert_eq!(ref_id, 0);
+        let result = register_actor_monitor(ptr::null_mut(), ptr::null_mut());
+        assert_eq!(result, Err(2));
     }
     hew_actor_demonitor(0);
     hew_actor_demonitor(99999);
@@ -242,20 +235,19 @@ fn test_monitor_after_crash_delivers_down_without_stale_registration() {
     );
 
     // SAFETY: late monitor registration takes live watcher/target pointers.
-    let ref_id = unsafe { hew_actor_monitor(watcher.as_ptr(), target.as_ptr()) };
+    let ref_id = unsafe {
+        register_actor_monitor(watcher.as_ptr(), target.as_ptr()).expect("monitor registration")
+    };
     assert_ne!(ref_id, 0, "late monitor should still return a reference");
 
     let down_messages = MONITOR_DISPATCH_SIGNAL
         .wait_for_down_count(1, Duration::from_secs(5))
         .expect("late monitor registration should deliver DOWN immediately");
-    assert_eq!(
-        down_messages.last().copied(),
-        Some(DownMessageView {
-            monitored_actor_id: target_id,
-            ref_id,
-            reason: HewActorState::Crashed as i32,
-        })
-    );
+    let down = down_messages.last().copied().expect("captured DOWN");
+    assert_eq!(down.monitor_id, ref_id);
+    assert_eq!(down.target_kind, 0);
+    assert_eq!(down.reason_kind, 1);
+    assert_eq!(down.slot, hew_runtime::pid::hew_pid_serial(target_id));
 
     hew_actor_demonitor(ref_id);
     hew_deterministic_reset();

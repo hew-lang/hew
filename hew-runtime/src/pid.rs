@@ -1,8 +1,9 @@
-//! Location-transparent actor PIDs.
+//! Temporary packed actor IDs for node-internal dispatch.
 //!
 //! Encodes a 16-bit node ID and 48-bit serial number into a single `u64`
-//! actor identifier. Local actors (node 0) have IDs identical to plain
-//! serial numbers, preserving backward compatibility.
+//! actor identifier. Distributed identity is carried by
+//! [`crate::node_identity::Location`]; these values are receiver-local aliases
+//! retained until the Stage 3b compiler aggregate migration.
 //!
 //! # Encoding
 //!
@@ -20,32 +21,12 @@
 //! # C ABI
 //!
 //! - [`hew_pid_make`] — Compose a PID from node ID and serial.
-//! - [`hew_pid_make_with_incarnation`] — Compose a PID + carry its incarnation.
 //! - [`hew_pid_node`] — Extract the node ID from a PID.
 //! - [`hew_pid_serial`] — Extract the serial number from a PID.
-//! - [`hew_pid_incarnation`] — Resolve a PID's live registration incarnation.
 //! - [`hew_pid_is_local`] — Check if a PID refers to a local actor.
 //! - [`hew_pid_set_local_node`] — Set this node's ID for routing.
 //! - [`hew_pid_local_node`] — Get this node's ID.
 //!
-//! # Incarnation
-//!
-//! The packed `u64` is the internal routing slot: `(node_id, serial)` consume
-//! all 64 bits, so the actor-slot/registration **incarnation** is a SEPARATE
-//! dimension, never bit-stolen from the serial. It is the explicit identity
-//! carrier on the remote actor reference
-//! ([`crate::transport::HewActorRefRemote`]) and travels through the ABI as a
-//! distinct `u32`.
-//!
-//! A captured `RemotePid<T>` is itself a bare `u64` value with no struct field
-//! for an incarnation, so the `StaleRef` boundary does not compare an
-//! incarnation carried inside the value. Instead it consults the per-node
-//! supersession set keyed by the bare `serial`: serials are monotonic and never
-//! reused, so a captured pid uniquely names its original registration, and a
-//! re-registration that supersedes it is detected by serial. Carrying the
-//! incarnation inside the `RemotePid` value would require a `{pid, incarnation}`
-//! value reshape across the IR layers — a future direction if cross-node
-//! incarnation-travel is wanted, not the current model.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -57,6 +38,12 @@ use std::ffi::c_int;
 const SERIAL_BITS: u32 = 48;
 /// Mask for the serial portion (lower 48 bits).
 const SERIAL_MASK: u64 = (1u64 << SERIAL_BITS) - 1;
+
+/// Whether an exact actor slot can be represented by the temporary packed
+/// node-internal actor ID without truncation.
+pub(crate) const fn actor_slot_fits_internal_alias(slot: u64) -> bool {
+    slot != 0 && slot <= SERIAL_MASK
+}
 
 /// Compose a PID from a node ID and serial number.
 ///
@@ -71,33 +58,6 @@ pub extern "C" fn hew_pid_make(node_id: u16, serial: u64) -> u64 {
     (u64::from(node_id) << SERIAL_BITS) | (serial & SERIAL_MASK)
 }
 
-/// Compose a PID from `(node_id, serial)` and carry its registration
-/// `incarnation` back out through `out_incarnation`.
-///
-/// The packed `u64` is identical to [`hew_pid_make`]'s — the incarnation is a
-/// SEPARATE identity dimension (the packed bits are fully consumed by
-/// `(node_id, serial)`), returned alongside so a caller constructing a remote
-/// actor reference can thread it into
-/// [`crate::transport::hew_actor_ref_remote`]. When `out_incarnation` is null
-/// the incarnation is simply not surfaced (the packed pid is still composed).
-///
-/// # Safety
-///
-/// `out_incarnation`, if non-null, must point to a writable `u32`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_pid_make_with_incarnation(
-    node_id: u16,
-    serial: u64,
-    incarnation: u32,
-    out_incarnation: *mut u32,
-) -> u64 {
-    if !out_incarnation.is_null() {
-        // SAFETY: caller guarantees out_incarnation points to a writable u32.
-        unsafe { out_incarnation.write(incarnation) };
-    }
-    hew_pid_make(node_id, serial)
-}
-
 /// Extract the node ID from a PID.
 #[no_mangle]
 pub extern "C" fn hew_pid_node(pid: u64) -> u16 {
@@ -108,25 +68,6 @@ pub extern "C" fn hew_pid_node(pid: u64) -> u16 {
 #[no_mangle]
 pub extern "C" fn hew_pid_serial(pid: u64) -> u64 {
     pid & SERIAL_MASK
-}
-
-/// Resolve a PID's live registration incarnation from the node's registration
-/// tables, keyed by the PID's serial.
-///
-/// Returns the current incarnation for the registration that `pid`'s serial
-/// names, or `0` when no incarnation is tracked for it (an untracked / never
-/// re-registered registration, or no runtime/node installed). `0` is the
-/// "no incarnation tracked" sentinel — a fresh registration starts at
-/// incarnation `0` and a re-registration bumps it, so a non-zero value is
-/// always a re-registration that superseded an earlier slot.
-///
-/// This is the bare-`u64` resolution path the `StaleRef` boundary needs: a
-/// captured `RemotePid<T>` is a plain `u64` with no incarnation field, so the
-/// live incarnation is looked up rather than carried inside the value.
-#[no_mangle]
-pub extern "C" fn hew_pid_incarnation(pid: u64) -> u32 {
-    let serial = hew_pid_serial(pid);
-    crate::hew_node::registration_incarnation_for_serial(serial)
 }
 
 /// Check if a PID refers to an actor on the local node.
@@ -141,7 +82,7 @@ pub extern "C" fn hew_pid_incarnation(pid: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
     let pid_node = hew_pid_node(pid);
-    let local = crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_node_id());
+    let local = crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_route_slot());
     c_int::from(pid_node == local || pid_node == 0)
 }
 
@@ -151,7 +92,9 @@ pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
 /// Node ID 0 means "local/standalone" (the default).
 #[no_mangle]
 pub extern "C" fn hew_pid_set_local_node(node_id: u16) {
-    crate::runtime::rt_current().node.set_local_node_id(node_id);
+    crate::runtime::rt_current()
+        .node
+        .set_local_route_slot(node_id);
 }
 
 /// Get this process's node ID.
@@ -163,14 +106,14 @@ pub extern "C" fn hew_pid_set_local_node(node_id: u16) {
 /// The mutate path (`hew_pid_set_local_node`) stays fail-closed.
 #[no_mangle]
 pub extern "C" fn hew_pid_local_node() -> u16 {
-    crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_node_id())
+    crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_route_slot())
 }
 
 /// Allocate the next actor ID for the local node.
 ///
 /// Combines the local node ID with a monotonically-increasing serial.
 pub(crate) fn next_actor_id(serial: u64) -> u64 {
-    let node = crate::runtime::rt_current().node.local_node_id();
+    let node = crate::runtime::rt_current().node.local_route_slot();
     hew_pid_make(node, serial)
 }
 
@@ -232,35 +175,6 @@ mod tests {
         let too_large = 1u64 << 48;
         let pid = hew_pid_make(0, too_large);
         assert_eq!(hew_pid_serial(pid), 0);
-    }
-
-    #[test]
-    fn make_with_incarnation_packs_pid_and_carries_incarnation() {
-        // The packed pid is identical to hew_pid_make; the incarnation rides
-        // out through the out-param as a SEPARATE dimension (not in the packed
-        // bits).
-        let mut inc: u32 = 0;
-        // SAFETY: &mut inc is a valid writable u32.
-        let pid = unsafe { hew_pid_make_with_incarnation(3, 100, 7, &raw mut inc) };
-        assert_eq!(pid, hew_pid_make(3, 100));
-        assert_eq!(hew_pid_node(pid), 3);
-        assert_eq!(hew_pid_serial(pid), 100);
-        assert_eq!(inc, 7, "incarnation must round-trip through the out-param");
-    }
-
-    #[test]
-    fn make_with_incarnation_tolerates_null_out_param() {
-        // A null out_incarnation still composes the packed pid (incarnation
-        // simply not surfaced) — never aborts.
-        // SAFETY: null out-param is the documented "don't surface" path.
-        let pid = unsafe { hew_pid_make_with_incarnation(5, 42, 9, std::ptr::null_mut()) };
-        assert_eq!(pid, hew_pid_make(5, 42));
-    }
-
-    #[test]
-    fn incarnation_is_zero_without_runtime() {
-        // No runtime / no node installed → no incarnation tracked → 0 sentinel.
-        assert_eq!(hew_pid_incarnation(hew_pid_make(7, 123)), 0);
     }
 
     #[test]

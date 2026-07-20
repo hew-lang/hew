@@ -28,7 +28,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/stdlib-expected-failures.txt"
-HEW_BIN="$REPO_ROOT/target/debug/hew"
+HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
 STDLIB_DIR="$REPO_ROOT/std"
 
 usage() {

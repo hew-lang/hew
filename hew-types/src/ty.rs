@@ -40,6 +40,8 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
+            | BuiltinType::NodeId
+            | BuiltinType::Location
             | BuiltinType::HewActor
             | BuiltinType::HewDuplex
             | BuiltinType::HewSendHalf
@@ -55,10 +57,15 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::CrashAction
             | BuiltinType::CrashNotification
             | BuiltinType::CrashKind
+            | BuiltinType::MonitorId
+            | BuiltinType::DownTarget
+            | BuiltinType::DownReason
+            | BuiltinType::DownNotification
             | BuiltinType::SendError
             | BuiltinType::AskError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
+            | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
             | BuiltinType::CloseError
             | BuiltinType::Iterator
@@ -990,11 +997,7 @@ impl Ty {
     /// Construct `MonitorError` — setup error for `monitor(RemotePid<T>)`.
     #[must_use]
     pub fn monitor_error() -> Ty {
-        Ty::Named {
-            name: "MonitorError".to_string(),
-            args: vec![],
-            builtin: None,
-        }
+        Self::builtin_named(BuiltinType::MonitorError, vec![])
     }
 
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.

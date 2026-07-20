@@ -695,6 +695,8 @@ pub mod mailbox_header;
 pub mod mailbox_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mpsc;
+/// Key-derived distributed node identity and carried actor-location values.
+pub mod node_identity;
 /// Runtime-instance state — the de-globalized home for process-wide
 /// authorities (native-only; the WASM cooperative scheduler keeps its own state
 /// model).
@@ -788,12 +790,8 @@ pub mod cluster;
 pub mod connection;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deterministic;
-/// Distributed (cross-node) actor monitor table: the node-keyed
-/// analogue of the process-local `monitor` table, plus the `hew_node_monitor` /
-/// `hew_node_monitor_recv` ABI that registers a remote monitor and blocks for
-/// its terminal signal. Native-only (cross-node messaging is not on wasm32).
-#[cfg(not(target_arch = "wasm32"))]
-pub mod dist_monitor;
+/// Distributed messaging is native-only; mailbox monitor delivery shares the
+/// process-local `monitor` authority.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod env;
 #[cfg(not(target_arch = "wasm32"))]

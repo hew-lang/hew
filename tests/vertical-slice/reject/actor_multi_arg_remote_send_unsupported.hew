@@ -20,10 +20,15 @@ impl ActorMsg for Logger {
 }
 
 fn main() {
-    let peer: RemotePid<Logger> = RemotePid::from_raw<Logger>(1, 0);
-    let sent: Result<(), SendError> = peer.send(7);
-    match sent {
-        Ok(_) => println("sent"),
-        Err(_) => println("send failed"),
+    let found: Result<RemotePid<Logger>, LookupError> = Node::lookup("logger");
+    match found {
+        Ok(peer) => {
+            let sent: Result<(), SendError> = peer.send(7);
+            match sent {
+                Ok(_) => println("sent"),
+                Err(_) => println("send failed"),
+            }
+        },
+        Err(_) => println("lookup failed"),
     }
 }

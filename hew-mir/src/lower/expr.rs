@@ -8110,25 +8110,20 @@ impl Builder {
                 self.lower_string_sentinel_option(symbol, hir_args, site, context, result_ty)
             }
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
-            // Cross-node monitor extern surface, both `(...) -> i64`:
-            //  - `hew_node_monitor(target_pid)` reached as a direct `extern "C"`
-            //    call (statement position; the value-position `monitor(RemotePid)`
-            //    builtin routes through `lower_node_monitor`).
-            //  - `hew_node_monitor_recv(ref_id, timeout_ms)` blocks for the
-            //    distributed monitor's terminal signal and returns the carried
-            //    down-reason; called from the std `MonitorRef::recv_down` body.
-            "hew_node_monitor" | "hew_node_monitor_recv" => {
+            // Cross-node monitor extern surface. Value-position
+            // `monitor(RemotePid)` routes through `lower_node_monitor`.
+            "hew_node_monitor_location" => {
                 self.lower_simple_int_runtime_call(symbol, hir_args, site, context, result_ty)
             }
             // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
             // establishes a cross-node link and returns `Result<(), LinkError>`.
             // The remote target has no `HewActor*` in this address space, so it
-            // routes to the node-link ABI keyed by the packed remote pid + the
-            // policy discriminant; the linking subject (self) is resolved inside
+            // routes to the node-link ABI keyed by the exact Location + the policy
+            // discriminant; the linking subject (self) is resolved inside
             // the runtime. Unlike `monitor(RemotePid)` (which is dispatched out of
             // `hew_actor_monitor` by the RemotePid receiver type), `link_remote`
             // is its own builtin that always reaches the cross-node form.
-            "hew_node_link_remote" => {
+            "hew_node_link_remote_location" => {
                 self.lower_node_link_remote(hir_args, site, context, result_ty)
             }
             "hew_observe_read_u64"

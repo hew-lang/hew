@@ -3,7 +3,7 @@
 // Proving gate for the hew_actor_link / hew_actor_monitor composite-return path:
 //   link(child)    -> Result<(), LinkError>  (Ok(()) because hew_actor_link is
 //                     void/infallible at the runtime today)
-//   monitor(child) -> MonitorRef             (constructs the struct from the u64
+//   monitor(child) -> Result<MonitorRef, MonitorError> (constructs Ok with the
 //                     ref_id returned by hew_actor_monitor)
 //
 // The actor-context gate ("only valid in actor context") is wired in a later
@@ -43,10 +43,9 @@ fn main() -> i64 {
             exit(4);
         },
     }
-    // monitor() in value position: constructs MonitorRef { ref_id: i64 }.
-    // The value is move-only (#[resource]); constructing it without NYI and
-    // letting it drop proves the MonitorRef struct was assembled correctly.
-    // MonitorRef.close() (hew_actor_demonitor) runs at scope exit.
+    // monitor() in value position constructs Result<MonitorRef, MonitorError>.
+    // Letting the aggregate drop proves the Ok payload was assembled correctly
+    // and runs MonitorRef.close() (hew_actor_demonitor) at scope exit.
     let _m = monitor(child);
     0
 }

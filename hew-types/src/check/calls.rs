@@ -1216,7 +1216,8 @@ impl Checker {
             // a registration exists, so it must not manufacture a zero-valued
             // handle. The MIR lowering branches on the argument's resolved type
             // to route a remote receiver to the node monitor ABI
-            // (`hew_node_monitor`) instead of the in-process `hew_actor_monitor`.
+            // (`hew_node_monitor_location`) instead of the in-process
+            // `hew_actor_monitor`.
             // The cross-node LINK form is `link_remote(RemotePid<T>,
             // PartitionPolicy)` — its own builtin, routed via the generic
             // `fn_sigs` path; a bare `link(RemotePid)` is rejected above with a
@@ -1231,8 +1232,8 @@ impl Checker {
                     return result_ty;
                 }
                 // Not a RemotePid — fall through to the generic `fn_sigs` path,
-                // which applies the `monitor(LocalPid<T>) -> MonitorRef` builtin
-                // signature (and reports the precise mismatch for a bad arg).
+                // which applies the local typed-result builtin signature (and
+                // reports the precise mismatch for a bad argument).
             }
             "supervisor_child" if args.len() == 2 => {
                 // supervisor_child(sup, index) → typed LocalPid based on supervisor decl

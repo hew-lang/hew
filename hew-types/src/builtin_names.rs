@@ -320,15 +320,10 @@ builtin_named_types! {
     },
     // RemotePid<T>: actor pid on a remote node.
     //
-    // The production constructor is `Node::lookup<T>(name) ->
-    // Result<RemotePid<T>, LookupError>`, which snapshots the registration the
-    // StaleRef boundary tracks. `RemotePid::from_raw` is a test-only raw
-    // constructor for fixtures that fabricate a `(node_id, serial)` pid directly;
-    // it is functional (codegen lowers it via `hew_remote_pid_from_raw`), not a
-    // shim, but a from_raw pid carries no registration provenance so it is not
-    // subject to the supersession / StaleRef check. `RemotePid<T>` does NOT unify
-    // with `LocalPid<T>`; coercion from local → remote is explicit via
-    // `local_pid.to_remote_via(node_handle)`.
+    // The constructor is `Node::lookup<T>(name) ->
+    // Result<RemotePid<T>, LookupError>`, which snapshots the full registration
+    // Location the StaleRef boundary tracks. `RemotePid<T>` does NOT unify with
+    // `LocalPid<T>` and has no provenance-free public constructor.
     //
     // `.send` returns Result<(), SendError>; a captured ref whose registration
     // was superseded fails closed with `SendError::StaleRef`.
@@ -382,6 +377,8 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
+            | BuiltinType::NodeId
+            | BuiltinType::Location
             | BuiltinType::HewActor
             | BuiltinType::HewDuplex
             | BuiltinType::HewSendHalf
@@ -397,10 +394,15 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::CrashAction
             | BuiltinType::CrashNotification
             | BuiltinType::CrashKind
+            | BuiltinType::MonitorId
+            | BuiltinType::DownTarget
+            | BuiltinType::DownReason
+            | BuiltinType::DownNotification
             | BuiltinType::SendError
             | BuiltinType::AskError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
+            | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
             | BuiltinType::CloseError
             | BuiltinType::Iterator

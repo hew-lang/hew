@@ -1,6 +1,7 @@
 //! Construction and match coverage for distributed error taxonomy enums.
 
 import std::link_monitor::{MonitorError, PartitionPolicy};
+
 import std::testing;
 
 fn send_error_id(err: SendError) -> i64 {
@@ -70,6 +71,7 @@ fn monitor_error_id(err: MonitorError) -> i64 {
         MonitorError::Unauthorized => 8,
         MonitorError::DecodeFailure => 9,
         MonitorError::MonitorLost => 10,
+        MonitorError::ResourceExhausted => 11,
     }
 }
 
@@ -147,6 +149,7 @@ fn test_monitor_error_taxonomy_variants() {
     testing.assert_eq(monitor_error_id(MonitorError::Unauthorized), 8);
     testing.assert_eq(monitor_error_id(MonitorError::DecodeFailure), 9);
     testing.assert_eq(monitor_error_id(MonitorError::MonitorLost), 10);
+    testing.assert_eq(monitor_error_id(MonitorError::ResourceExhausted), 11);
 }
 
 #[test]

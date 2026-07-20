@@ -599,6 +599,8 @@ pub enum HirLifecycleHookKind {
     /// payload and returns `()`. Fired on the linked actor's own dispatch via
     /// the `SYS_MSG_EXIT` delivery (M-7-R, Q210/A211).
     Exit,
+    /// `#[on(down)]` — receives a typed monitor terminal notification.
+    Down,
     /// `#[on(upgrade)]` — reserved marker for hot-upgrade flows. No
     /// runtime invocation in v0.5.
     Upgrade,

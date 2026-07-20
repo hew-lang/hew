@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 use std::ffi::CString;
 
+use hew_runtime::node_identity::NodeId;
 use hew_runtime::peer_binding::{
     PeerAuthConfig, PeerAuthSnapshot, PeerCredential, TransportSelection,
 };
@@ -27,18 +28,14 @@ use hew_runtime::transport::HewTransport;
 /// Build a frozen snapshot that binds `peer_spkis` for the quic-mesh transport,
 /// mirroring what `Node::allow_peer` stages before `Node::start`.
 fn snapshot_allowing(peer_spkis: &[Vec<u8>]) -> PeerAuthSnapshot {
-    let mut cfg = PeerAuthConfig {
-        transport: Some(TransportSelection::QuicMesh),
-        ..PeerAuthConfig::default()
-    };
-    // Bind each SPKI under a distinct synthetic NodeId (values are irrelevant to
+    let mut cfg = PeerAuthConfig::default();
+    cfg.transport = Some(TransportSelection::QuicMesh);
+    // Bind each SPKI under a distinct synthetic route slot (values are irrelevant to
     // the mesh allowlist, which is derived from the union of Spki credentials).
     for (i, spki) in peer_spkis.iter().enumerate() {
-        let node_id = u16::try_from(i + 2).expect("small index");
-        cfg.bindings
-            .entry(node_id)
-            .or_default()
-            .insert(PeerCredential::Spki(spki.clone()));
+        let route_slot = u16::try_from(i + 2).expect("small index");
+        cfg.pin_peer(route_slot, PeerCredential::Spki(spki.clone()))
+            .expect("distinct synthetic peer pin");
     }
     cfg.snapshot()
 }
@@ -206,6 +203,16 @@ async fn two_mesh_listeners_with_cross_pinned_spkis_exchange_a_payload() {
     let peer_from_a = a_inbound_res
         .expect("accept returned None")
         .expect("accept handshake");
+    assert_eq!(
+        peer_from_b.authenticated_node_id(),
+        Some(NodeId::from_spki(&spki_alpha)),
+        "dialer must derive node A's locally computed NodeId from the authenticated certificate",
+    );
+    assert_eq!(
+        peer_from_a.authenticated_node_id(),
+        Some(NodeId::from_spki(&spki_beta)),
+        "listener must derive node B's locally computed NodeId from the authenticated certificate",
+    );
 
     // Exchange a payload over a fresh lane to prove send/recv work end-to-end
     // (not just the handshake).

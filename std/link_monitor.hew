@@ -1,16 +1,15 @@
 //! Actor monitor / link handle helpers.
 //!
 //! Import `std::link_monitor` when you want to name `MonitorRef`,
-//! `MonitorError`, or `PartitionPolicy` explicitly. `monitor(LocalPid)` returns
-//! `MonitorRef`; `monitor(RemotePid)` returns
-//! `Result<MonitorRef, MonitorError>`; and `link(actor)` returns
+//! `MonitorError`, or `PartitionPolicy` explicitly. `monitor(LocalPid)` and
+//! `monitor(RemotePid)` return `Result<MonitorRef, MonitorError>`; `link(actor)` returns
 //! `Result<(), LinkError>` — `LinkError` is prelude-published from
 //! `std/builtins.hew` (like `SendError`), so it needs no import.
 //!
 //! Link/monitor builtins return through the value-position composite-return
-//! spine: `link()` builds `Result<(), LinkError>`, local `monitor()` builds
-//! `MonitorRef`, and remote `monitor()` builds
-//! `Result<MonitorRef, MonitorError>` from the runtime setup result.
+//! spine: `link()` builds `Result<(), LinkError>`, while local and remote
+//! `monitor()` both build `Result<MonitorRef, MonitorError>` from explicit
+//! runtime setup statuses.
 
 // WASM-TODO(#1451): `MonitorRef` and `LinkError` depend on the native actor
 // monitor / link runtime. The checker rejects `monitor()` and `link()` on
@@ -42,6 +41,8 @@ pub enum MonitorError {
     DecodeFailure;
     /// The monitor channel was lost before a definitive actor failure arrived.
     MonitorLost;
+    /// The runtime exhausted its non-reusing monitor-id space.
+    ResourceExhausted;
 }
 
 /// Policy for resolving actor operations across network partitions.
@@ -58,13 +59,49 @@ pub enum PartitionPolicy {
     Quarantine;
 }
 
+/// Stable identifier for one monitor registration.
+pub type MonitorId {
+    value: u64;
+}
+
+/// Actor identity carried by a DOWN notification.
+pub enum DownTarget {
+    /// A process-local actor slot.
+    Local(u64);
+    /// A complete remote actor location.
+    Remote(Location);
+}
+
+/// Terminal cause carried by a DOWN notification.
+pub enum DownReason {
+    /// The monitored actor exited normally.
+    Exited;
+    /// The monitored actor crashed.
+    Crashed(CrashKind);
+    /// The remote actor became unreachable.
+    MonitorLost;
+    /// The local node shut down before observation completed.
+    LocalShutdown;
+}
+
+/// Typed payload delivered to an actor's `#[on(down)]` hook.
+pub type DownNotification {
+    monitor: MonitorId;
+    target: DownTarget;
+    reason: DownReason;
+}
+
 /// A handle to an active monitor registration.
 #[resource]
 pub type MonitorRef {
-    ref_id: i64;
+    ref_id: u64;
 }
 
 impl MonitorRef {
+    /// Return this registration's stable monitor id without consuming the handle.
+    fn id(monitor_ref: MonitorRef) -> MonitorId {
+        MonitorId { value: monitor_ref.ref_id }
+    }
     /// Remove the monitor registration.
     ///
     /// `hew_actor_demonitor` is idempotent for stale or already-swept ref_ids,
@@ -73,24 +110,6 @@ impl MonitorRef {
         unsafe {
             hew_actor_demonitor(monitor_ref.ref_id)
         };
-    }
-    /// Block until this cross-node monitor's terminal signal arrives, or until
-    /// `timeout_ms` elapses.
-    ///
-    /// Returns the carried down-reason code: the remote actor's terminal
-    /// `HewActorState` value for a clean exit or crash, a `MonitorLost`
-    /// sentinel when the connection drops or the peer node is declared dead, or
-    /// a timeout sentinel if the deadline elapses before any signal arrives.
-    /// Exactly one terminal signal is delivered per registration: a second call
-    /// after the signal has been observed returns the timeout sentinel.
-    ///
-    /// For a local monitor (`monitor(LocalPid)`) the runtime delivers DOWN into
-    /// the watcher actor's mailbox instead; this reader observes the
-    /// distributed-table delivery used by `monitor(RemotePid)`.
-    fn recv_down(monitor_ref: MonitorRef, timeout_ms: i64) -> i64 {
-        unsafe {
-            hew_node_monitor_recv(monitor_ref.ref_id, timeout_ms)
-        }
     }
 }
 
@@ -123,7 +142,6 @@ pub fn set_partition_policy(policy: PartitionPolicy) -> bool {
 }
 
 extern "C" {
-    fn hew_actor_demonitor(ref_id: i64);
-    fn hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64;
+    fn hew_actor_demonitor(ref_id: u64);
     fn hew_set_partition_policy(tag: i64) -> bool;
 }

@@ -8,17 +8,19 @@ use hew_runtime::cluster::{GOSSIP_REGISTRY_ADD, GOSSIP_REGISTRY_REMOVE};
 use hew_runtime::envelope::{
     decode_control_frame, decode_envelope_frame, decode_link_down_payload, decode_link_req_payload,
     decode_monitor_down_payload, decode_monitor_req_payload, decode_registry_gossip_payload,
-    decode_swim_payload, decode_wire_frame, encode_control_frame, encode_envelope_frame,
-    encode_link_down_payload, encode_link_req_payload, encode_monitor_down_payload,
-    encode_monitor_req_payload, encode_registry_gossip_payload, encode_swim_payload, ControlFrame,
-    DecodeError, EnvelopeFrame, LinkReqPayload, MonitorDownPayload, MonitorPayloadError,
-    MonitorReqPayload, NodeSessionIdentity, RegistryGossipPayload, RegistryGossipPayloadError,
+    decode_setup_result_payload, decode_swim_payload, decode_wire_frame, encode_control_frame,
+    encode_envelope_frame, encode_link_down_payload, encode_link_req_payload,
+    encode_monitor_down_payload, encode_monitor_req_payload, encode_registry_gossip_payload,
+    encode_setup_result_payload, encode_swim_payload, ControlFrame, DecodeError, EnvelopeFrame,
+    LinkReqPayload, MonitorDownPayload, MonitorPayloadError, MonitorReqPayload,
+    NodeSessionIdentity, RegistryGossipPayload, RegistryGossipPayloadError, SetupResultPayload,
     SwimControlPayload, SwimGossipEntry, SwimPayloadError, WireFrame, CTRL_DEMONITOR,
-    CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ, CTRL_REGISTRY_GOSSIP,
-    CTRL_UNLINK, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, MAX_LINK_PAYLOAD_BYTES,
-    MAX_MONITOR_PAYLOAD_BYTES, MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES,
-    MAX_SWIM_GOSSIP_ENTRIES, MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD,
-    REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
+    CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_LINK_SETUP_RESULT, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
+    CTRL_MONITOR_SETUP_RESULT, CTRL_REGISTRY_GOSSIP, CTRL_UNLINK, FRAME_TYPE_CONTROL,
+    FRAME_TYPE_ENVELOPE, MAX_LINK_PAYLOAD_BYTES, MAX_MONITOR_PAYLOAD_BYTES,
+    MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES, MAX_SWIM_GOSSIP_ENTRIES,
+    MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE,
+    SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
 };
 use hew_runtime::node_identity::{Location, NodeId};
 
@@ -1266,6 +1268,7 @@ fn monitor_ctrl_kinds_are_distinct_and_stable() {
     assert_eq!(CTRL_MONITOR_REQ, 3);
     assert_eq!(CTRL_MONITOR_DOWN, 4);
     assert_eq!(CTRL_DEMONITOR, 5);
+    assert_eq!(CTRL_MONITOR_SETUP_RESULT, 9);
     assert_eq!(CTRL_REGISTRY_GOSSIP, 1);
 }
 
@@ -1275,19 +1278,21 @@ fn monitor_req_payload_round_trips_with_cddl_shape() {
         watcher: location(50, 55, 181),
         ref_id: 4242,
         target: location(51, 99, 191),
+        setup_id: 8080,
     };
     let bytes = encode_monitor_req_payload(&original).expect("req should encode");
     let decoded = decode_monitor_req_payload(&bytes).expect("req should decode");
     assert_eq!(decoded, original);
 
-    // CDDL shape: definite map keyed {1,2,3} with exact Location values.
+    // CDDL shape: definite map keyed {1,2,3,4} with exact Location values.
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 3);
-    assert_integer_keys_and_order(entries, &[1, 2, 3]);
+    assert_eq!(entries.len(), 4);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4]);
     assert_location_value(find_field(entries, 1), original.watcher);
     assert_integer_value(find_field(entries, 2), 4242);
     assert_location_value(find_field(entries, 3), original.target);
+    assert_integer_value(find_field(entries, 4), 8080);
 }
 
 #[test]
@@ -1375,22 +1380,24 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
 
 #[test]
 fn monitor_req_payload_codec_rejects_malformed_payloads() {
-    // Unknown key: a fourth key beyond the {1,2,3} set must be rejected.
+    // Unknown key beyond the required {1,2,3,4} set must be rejected.
     let unknown_key = Value::Map(vec![
         (int(1u64), location_value(location(53, 1, 197))),
         (int(2u64), int(2u64)),
         (int(3u64), location_value(location(54, 3, 199))),
         (int(4u64), int(4u64)),
+        (int(5u64), int(5u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&unknown_key)),
-        Err(MonitorPayloadError::UnknownKey { key: 4 })
+        Err(MonitorPayloadError::UnknownKey { key: 5 })
     ));
 
     // Missing required key 3 (target Location).
     let missing = Value::Map(vec![
         (int(1u64), location_value(location(53, 1, 197))),
         (int(2u64), int(2u64)),
+        (int(4u64), int(4u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&missing)),
@@ -1402,6 +1409,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(1u64), Value::Text("nope".to_owned())),
         (int(2u64), int(2u64)),
         (int(3u64), location_value(location(54, 3, 199))),
+        (int(4u64), int(4u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&wrong_type)),
@@ -1424,6 +1432,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
             (int(1u64), malformed_watcher),
             (int(2u64), int(2u64)),
             (int(3u64), location_value(location(54, 3, 199))),
+            (int(4u64), int(4u64)),
         ]);
         assert!(matches!(
             decode_monitor_req_payload(&value_to_cbor(&malformed)),
@@ -1435,6 +1444,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(1u64), location_value(location(53, 1, 197))),
         (int(2u64), int(2u64)),
         (int(3u64), Value::Null),
+        (int(4u64), int(4u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&malformed_target)),
@@ -1463,6 +1473,7 @@ fn monitor_payload_truncated_cbor_returns_error() {
         watcher: location(56, 3, 211),
         ref_id: 7,
         target: location(57, 11, 223),
+        setup_id: 9,
     };
     let bytes = encode_monitor_req_payload(&req).expect("req should encode");
     for cut in 1..bytes.len() {
@@ -1496,10 +1507,33 @@ fn link_ctrl_kinds_are_distinct_and_stable() {
     assert_eq!(CTRL_LINK_REQ, 6);
     assert_eq!(CTRL_LINK_DOWN, 7);
     assert_eq!(CTRL_UNLINK, 8);
+    assert_eq!(CTRL_LINK_SETUP_RESULT, 10);
     // Distinct from the monitor family (3/4/5) and the others.
     assert_ne!(CTRL_LINK_REQ, CTRL_MONITOR_REQ);
     assert_ne!(CTRL_LINK_DOWN, CTRL_MONITOR_DOWN);
     assert_ne!(CTRL_UNLINK, CTRL_DEMONITOR);
+}
+
+#[test]
+fn setup_result_payload_round_trips_with_cddl_shape() {
+    let original = SetupResultPayload {
+        setup_id: 8083,
+        ref_id: 4242,
+        target: location(66, 99, 269),
+        status: SETUP_STATUS_TARGET_GONE,
+    };
+    let bytes = encode_setup_result_payload(&original).expect("setup result should encode");
+    let decoded = decode_setup_result_payload(&bytes).expect("setup result should decode");
+    assert_eq!(decoded, original);
+
+    let value = decode_value(&bytes);
+    let entries = map_entries(&value);
+    assert_eq!(entries.len(), 4);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4]);
+    assert_integer_value(find_field(entries, 1), 8083);
+    assert_integer_value(find_field(entries, 2), 4242);
+    assert_location_value(find_field(entries, 3), original.target);
+    assert_integer_value(find_field(entries, 4), i128::from(SETUP_STATUS_TARGET_GONE));
 }
 
 #[test]
@@ -1512,21 +1546,23 @@ fn link_req_payload_round_trips_with_cddl_shape() {
         target: location(59, 99, 229),
         policy_tag: 3,
         reciprocate: 1,
+        setup_id: 8081,
     };
     let bytes = encode_link_req_payload(&original).expect("link req should encode");
     let decoded = decode_link_req_payload(&bytes).expect("link req should decode");
     assert_eq!(decoded, original);
 
-    // CDDL shape: definite map keyed {1,2,3,4,5} with exact Locations.
+    // CDDL shape: definite map keyed {1,2,3,4,5,6} with exact Locations.
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 5);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5]);
+    assert_eq!(entries.len(), 6);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6]);
     assert_location_value(find_field(entries, 1), original.linker);
     assert_integer_value(find_field(entries, 2), 4242);
     assert_location_value(find_field(entries, 3), original.target);
     assert_integer_value(find_field(entries, 4), 3);
     assert_integer_value(find_field(entries, 5), 1);
+    assert_integer_value(find_field(entries, 6), 8081);
 }
 
 #[test]
@@ -1555,7 +1591,7 @@ fn link_down_payload_reuses_monitor_down_shape() {
 
 #[test]
 fn link_req_payload_codec_rejects_malformed_payloads() {
-    // Unknown key beyond the {1..5} set: a fabricated link request with an extra
+    // Unknown key beyond the {1..6} set: a fabricated link request with an extra
     // key must be rejected — a HIGHER-stakes bar than monitor because a forged
     // link can later crash a real actor.
     let unknown_key = Value::Map(vec![
@@ -1565,10 +1601,11 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(10u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&unknown_key)),
-        Err(MonitorPayloadError::UnknownKey { key: 6 })
+        Err(MonitorPayloadError::UnknownKey { key: 7 })
     ));
 
     // Missing required key 3 (target Location): the reverse-link half cannot be
@@ -1579,6 +1616,7 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(2u64), int(2u64)),
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
+        (int(6u64), int(9u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&missing)),
@@ -1591,6 +1629,7 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(3u64), location_value(location(61, 3, 239))),
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
+        (int(6u64), int(9u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&malformed_linker)),
@@ -1603,6 +1642,7 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(3u64), raw_location_value([61; 16], 3, 0)),
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
+        (int(6u64), int(9u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&malformed_target)),
@@ -1616,6 +1656,7 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(3u64), location_value(location(61, 3, 239))),
         (int(4u64), int(9000u64)),
         (int(5u64), int(1u64)),
+        (int(6u64), int(9u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&oob_policy)),
@@ -1628,6 +1669,7 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(3u64), location_value(location(61, 3, 239))),
         (int(4u64), int(3u64)),
         (int(5u64), int(9000u64)),
+        (int(6u64), int(9u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&oob_reciprocate)),
@@ -1653,6 +1695,7 @@ fn link_req_payload_truncated_cbor_returns_error() {
         target: location(63, 11, 251),
         policy_tag: 3,
         reciprocate: 1,
+        setup_id: 10,
     };
     let bytes = encode_link_req_payload(&req).expect("link req should encode");
     for cut in 1..bytes.len() {
@@ -1671,6 +1714,7 @@ fn monitor_control_frame_round_trips_through_wire_frame() {
         watcher: location(64, 55, 257),
         ref_id: 4242,
         target: location(65, 99, 263),
+        setup_id: 8082,
     };
     let frame = ControlFrame {
         version: WIRE_VERSION,

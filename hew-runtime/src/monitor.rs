@@ -122,6 +122,12 @@ pub(crate) struct RemoteWatcherTarget {
     pub is_link: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteWatcherSetup {
+    Registered,
+    TargetGone,
+}
+
 impl MonitorState {
     /// Construct an empty monitor table for a fresh runtime.
     pub(crate) fn new() -> Self {
@@ -178,17 +184,35 @@ impl MonitorState {
         local_actor_id: u64,
         policy_tag: u8,
     ) -> Option<u64> {
-        self.register_remote_observation(
+        let monitor_id = self.next_observation_id()?;
+        self.register_link_watcher_with_id(monitor_id, target, local_actor_id, policy_tag);
+        Some(monitor_id)
+    }
+
+    pub(crate) fn register_link_watcher_with_id(
+        &self,
+        monitor_id: u64,
+        target: Location,
+        local_actor_id: u64,
+        policy_tag: u8,
+    ) {
+        self.insert_remote_observation(
+            monitor_id,
             target,
             WatcherAction::Link {
                 local_actor_id,
                 policy_tag,
             },
-        )
+        );
     }
 
     fn register_remote_observation(&self, target: Location, action: WatcherAction) -> Option<u64> {
         let monitor_id = self.next_observation_id()?;
+        self.insert_remote_observation(monitor_id, target, action);
+        Some(monitor_id)
+    }
+
+    fn insert_remote_observation(&self, monitor_id: u64, target: Location, action: WatcherAction) {
         self.observations
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -199,7 +223,6 @@ impl MonitorState {
                     action,
                 },
             );
-        Some(monitor_id)
     }
 
     /// Remove one setup-time remote observation without sending a demonitor.
@@ -404,44 +427,87 @@ impl MonitorState {
 
     pub(crate) fn register_remote_watcher(
         &self,
-        target_serial: u64,
+        target_actor_id: u64,
         watcher: Location,
         monitor_id: u64,
-    ) {
-        self.register_remote_watcher_kind(target_serial, watcher, monitor_id, false);
+    ) -> RemoteWatcherSetup {
+        self.register_remote_watcher_kind(target_actor_id, watcher, monitor_id, false)
     }
 
     pub(crate) fn register_remote_link_watcher(
         &self,
-        target_serial: u64,
+        target_actor_id: u64,
         watcher: Location,
         monitor_id: u64,
-    ) {
-        self.register_remote_watcher_kind(target_serial, watcher, monitor_id, true);
+    ) -> RemoteWatcherSetup {
+        self.register_remote_watcher_kind(target_actor_id, watcher, monitor_id, true)
     }
 
     fn register_remote_watcher_kind(
         &self,
-        target_serial: u64,
+        target_actor_id: u64,
         watcher: Location,
         monitor_id: u64,
         is_link: bool,
-    ) {
-        let mut targets = self
-            .remote_targets
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let watchers = targets.entry(target_serial).or_default();
-        if !watchers
-            .iter()
-            .any(|entry| entry.watcher == watcher && entry.ref_id == monitor_id)
+    ) -> RemoteWatcherSetup {
+        let shard_index = get_shard_index(target_actor_id);
+        let register = |actor: &HewActor| {
+            self.table[shard_index].access(|shard| {
+                if shard.terminal_reasons.contains_key(&target_actor_id)
+                    || terminal_monitor_reason(actor.actor_state.load(Ordering::Acquire)).is_some()
+                {
+                    return RemoteWatcherSetup::TargetGone;
+                }
+                let target_serial = crate::pid::hew_pid_serial(target_actor_id);
+                let mut targets = self
+                    .remote_targets
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let watchers = targets.entry(target_serial).or_default();
+                if !watchers
+                    .iter()
+                    .any(|entry| entry.watcher == watcher && entry.ref_id == monitor_id)
+                {
+                    watchers.push(RemoteWatcher {
+                        watcher,
+                        ref_id: monitor_id,
+                        is_link,
+                    });
+                }
+                RemoteWatcherSetup::Registered
+            })
+        };
+
+        if let Some(result) =
+            crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
+                // SAFETY: the send pin keeps the tracked actor allocation alive
+                // for this closure.
+                register(unsafe { &*actor })
+            })
         {
-            watchers.push(RemoteWatcher {
+            return result;
+        }
+
+        RemoteWatcherSetup::TargetGone
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register_remote_link_watcher_for_test(
+        &self,
+        target_serial: u64,
+        watcher: Location,
+        monitor_id: u64,
+    ) {
+        self.remote_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(target_serial)
+            .or_default()
+            .push(RemoteWatcher {
                 watcher,
                 ref_id: monitor_id,
-                is_link,
+                is_link: true,
             });
-        }
     }
 
     pub(crate) fn remove_remote_watcher(
@@ -462,6 +528,7 @@ impl MonitorState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn take_remote_watchers(&self, target_serial: u64) -> Vec<RemoteWatcherTarget> {
         self.remote_targets
             .lock()
@@ -478,14 +545,6 @@ impl MonitorState {
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    pub(crate) fn has_remote_watchers(&self, target_serial: u64) -> bool {
-        self.remote_targets
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&target_serial)
-            .is_some_and(|watchers| !watchers.is_empty())
     }
 
     pub(crate) fn prune_remote_watchers_for_node(&self, dead_watcher: NodeId) -> usize {
@@ -1001,7 +1060,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u
     };
 
     // Take all monitors for this actor ID.
-    let monitors = state.table[shard_index].access(|shard| {
+    let (monitors, remote_watchers) = state.table[shard_index].access(|shard| {
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
         shard.terminal_reasons.insert(
             actor_id,
@@ -1016,7 +1075,22 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u
             shard.ref_to_monitor.remove(&monitor.ref_id);
         }
 
-        monitors
+        let target_serial = crate::pid::hew_pid_serial(actor_id);
+        let remote_watchers = state
+            .remote_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&target_serial)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| RemoteWatcherTarget {
+                watcher: entry.watcher,
+                ref_id: entry.ref_id,
+                is_link: entry.is_link,
+            })
+            .collect();
+
+        (monitors, remote_watchers)
     });
 
     let claimed: Vec<_> = {
@@ -1051,11 +1125,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u
     // terminal reason. The distributed table keys on the actor's serial; the
     // fan-out is fail-closed and no-ops when no remote watcher exists or no
     // node/conn-mgr is installed (R7), so the local sweep above is unaffected.
-    crate::hew_node::fan_out_remote_monitor_down(
-        crate::pid::hew_pid_serial(actor_id),
-        reason,
-        crash_kind,
-    );
+    crate::hew_node::fan_out_remote_monitor_down(actor_id, remote_watchers, reason, crash_kind);
 }
 
 #[cfg(test)]

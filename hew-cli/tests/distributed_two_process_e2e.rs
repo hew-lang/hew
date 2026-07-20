@@ -325,6 +325,20 @@ fn run_link_cascade_scenario(scenario: &str) -> String {
     stdout
 }
 
+fn run_setup_exit_race_scenario() -> String {
+    let scene = SecureScenario::new();
+    let mut server = scene.spawn_server_with_env(
+        "remote_setup_exit_race",
+        &[("HEW_DIST_SETUP_RACE_PROBE", "1")],
+    );
+    let client = scene.spawn_client("remote_setup_exit_race", &[("HEW_LINK_PROBE", "1")]);
+
+    let _server_stdout = wait_for_server_ready(&mut server);
+    let stdout = run_client_to_completion(client);
+    drop(server);
+    stdout
+}
+
 /// Run the server + client pair for a connection-drop scenario: the client
 /// prints `READY_DROP <name>` once its monitor is registered, the harness then
 /// kills the server process (dropping the connection mid-scenario), and the
@@ -784,6 +798,26 @@ fn remote_monitor_setup_after_drop_returns_typed_partition() {
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on monitor setup after drop; client stdout:\n{stdout}"
+    );
+}
+
+/// A target that exits after the request reaches its owner but before target-side
+/// registration completes must resolve setup terminally. The monitor receives
+/// one immediate DOWN and the linked actor's local monitor receives one DOWN
+/// from the link cascade; neither setup may hang or duplicate delivery.
+#[test]
+fn remote_monitor_and_link_target_exit_during_setup_deliver_once() {
+    let stdout = run_setup_exit_race_scenario();
+    assert!(
+        stdout.contains("PASS remote_setup_exit_race_monitor reason=-1")
+            && stdout.contains("PASS remote_setup_exit_race_monitor no-dup")
+            && stdout.contains("PASS remote_setup_exit_race link-down=5")
+            && stdout.contains("PASS remote_setup_exit_race link-no-dup"),
+        "monitor/link setup races must terminate exactly once; client stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the setup-exit race; client stdout:\n{stdout}"
     );
 }
 

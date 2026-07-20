@@ -43,6 +43,8 @@ wire-frame = control-frame / envelope-frame
 ;                                              receiver's mailbox-EXIT handling).
 ; ctrl_kind = 8 carries link-req-payload      (cross-node unlink request; same
 ;                                              identifying payload as link req).
+; ctrl_kind = 9 carries setup-result-payload  (monitor setup acknowledgement).
+; ctrl_kind = 10 carries setup-result-payload (link setup acknowledgement).
 
 control-frame = {
     version:    1 => wire-version,
@@ -72,6 +74,7 @@ monitor-req-payload = {
     watcher: 1 => location,
     ref_id:  2 => uint,            ; watcher's local monitor-registration id
     target:  3 => location,
+    setup_id: 4 => uint,           ; zero for demonitor
 }
 
 monitor-down-payload = {
@@ -104,6 +107,14 @@ link-req-payload = {
     policy_tag:  4 => uint,        ; PartitionPolicy discriminant (0..4)
     reciprocate: 5 => uint,        ; 1 = original request, 0 = reverse (bounds the
                                    ; bidirectional handshake to one round trip)
+    setup_id:    6 => uint,        ; zero for unlink
+}
+
+setup-result-payload = {
+    setup_id: 1 => uint,
+    ref_id:   2 => uint,
+    target:   3 => location,
+    status:   4 => 0..2,
 }
 
 ; ── Envelope frame ───────────────────────────────────────────────────────────

@@ -94,6 +94,20 @@ pub const CTRL_LINK_DOWN: u64 = 7;
 /// `CTRL_LINK_REQ`.
 pub const CTRL_UNLINK: u64 = 8;
 
+/// Control-frame kind acknowledging a cross-node monitor setup request.
+///
+/// The target node sends this only after it has atomically installed the
+/// target-side watcher, or with a terminal setup status when the target no
+/// longer exists. The watcher node does not report setup success until this
+/// result arrives.
+pub const CTRL_MONITOR_SETUP_RESULT: u64 = 9;
+
+/// Control-frame kind acknowledging a cross-node link setup request.
+///
+/// For an original bidirectional link this is sent only after the reverse half
+/// has also completed, so the caller never observes a half-established link.
+pub const CTRL_LINK_SETUP_RESULT: u64 = 10;
+
 /// Maximum accepted cross-node link control payload size, in bytes.
 ///
 /// A link request payload is a fixed small CBOR map of bounded integers (two
@@ -285,17 +299,17 @@ pub struct SwimControlPayload {
 
 /// Bounded cross-node monitor REQUEST / DEMONITOR control payload.
 ///
-/// Encoded as a definite CBOR map `{1: watcher_node_id, 2: ref_id,
-/// 3: target_serial}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`:
-/// the request registers, the demonitor retracts, the identifying triple
-/// `(watcher_node_id, ref_id, target_serial)` is the same.
+/// Encoded as a definite CBOR map `{1: watcher, 2: ref_id, 3: target,
+/// 4: setup_id}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`: the
+/// request registers with a nonzero setup id, while demonitor retracts with
+/// `setup_id = 0`.
 ///
-/// - `watcher_node_id` is the monitoring node's id; the receiver routes the
-///   eventual `CTRL_MONITOR_DOWN` back to it.
+/// - `watcher` is the exact monitoring actor location; the receiver routes the
+///   eventual `CTRL_MONITOR_DOWN` back to its node.
 /// - `ref_id` is the watcher's local monitor-registration id (the `MonitorRef`
 ///   value); the receiver echoes it verbatim in the DOWN so the watcher can
 ///   match the registration.
-/// - `target_serial` is the monitored actor's serial on the owning node.
+/// - `target` is the exact monitored actor location on the owning node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorReqPayload {
     /// Exact watcher actor identity.
@@ -304,6 +318,8 @@ pub struct MonitorReqPayload {
     pub ref_id: u64,
     /// Exact monitored actor identity.
     pub target: Location,
+    /// Correlation id for the acknowledged setup result. Zero for demonitor.
+    pub setup_id: u64,
 }
 
 /// Bounded cross-node monitor DOWN control payload.
@@ -330,27 +346,24 @@ pub struct MonitorDownPayload {
 
 /// Bounded cross-node link REQUEST / UNLINK control payload.
 ///
-/// Encoded as a definite CBOR map `{1: linker_node_id, 2: ref_id,
-/// 3: target_serial, 4: linker_serial, 5: policy_tag, 6: reciprocate}`. Used by both
-/// `CTRL_LINK_REQ` and `CTRL_UNLINK`: the request establishes the bidirectional
-/// link, the unlink retracts it; the identifying tuple is the same.
+/// Encoded as a definite CBOR map `{1: linker, 2: ref_id, 3: target,
+/// 4: policy_tag, 5: reciprocate, 6: setup_id}`. Used by both `CTRL_LINK_REQ`
+/// and `CTRL_UNLINK`: a request carries a nonzero setup id, while unlink
+/// retracts the identifying tuple with `setup_id = 0`.
 ///
-/// - `linker_node_id` is the linking node's id; the receiver routes the eventual
-///   `CTRL_LINK_DOWN` back to it AND registers a reverse link toward it.
+/// - `linker` is the exact linking actor location; the receiver routes the
+///   eventual `CTRL_LINK_DOWN` back to it AND registers a reverse link toward it.
 /// - `ref_id` is the linker's local link-registration id; the receiver echoes it
 ///   verbatim in the DOWN so the linker can match the registration and find the
 ///   local actor to crash.
-/// - `target_serial` is the linked actor's serial on the owning (receiver) node.
-/// - `linker_serial` is the LINKING actor's serial on the linker node — so the
-///   receiver's reverse link knows which remote actor to crash when its own
-///   local linked actor dies (the OTP bidirectional half).
+/// - `target` is the exact linked actor location on the owning (receiver) node.
 /// - `policy_tag` is the `PartitionPolicy` discriminant governing the link
 ///   (`CrashLinked` == 3 crashes the linked actor on the peer's death).
 /// - `reciprocate` is 1 for the ORIGINAL request (the receiver registers the
 ///   reverse half and sends a `reciprocate = 0` reverse request back) and 0 for
 ///   that reverse request (the original linker completes its target-side
-///   registration and does NOT reply again — bounding the handshake to one round
-///   trip, never an infinite reciprocation).
+///   registration, acknowledges that reverse setup, and does NOT reciprocate
+///   again — bounding the handshake without an infinite request loop).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkReqPayload {
     /// Exact linking actor identity.
@@ -363,6 +376,28 @@ pub struct LinkReqPayload {
     pub policy_tag: u8,
     /// 1 = original request (receiver reciprocates); 0 = the reverse request.
     pub reciprocate: u8,
+    /// Correlation id for the acknowledged setup result. Zero for unlink.
+    pub setup_id: u64,
+}
+
+/// Setup-result status shared by monitor and link acknowledgements.
+pub const SETUP_STATUS_ACCEPTED: u8 = 0;
+/// The exact target actor was already terminal or no longer present.
+pub const SETUP_STATUS_TARGET_GONE: u8 = 1;
+/// The receiver could not allocate the state needed to complete setup.
+pub const SETUP_STATUS_RESOURCE_EXHAUSTED: u8 = 2;
+
+/// Bounded acknowledged monitor/link setup result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupResultPayload {
+    /// Correlation id copied from the request.
+    pub setup_id: u64,
+    /// Watcher/linker observation id copied from the request.
+    pub ref_id: u64,
+    /// Exact target identity from the request.
+    pub target: Location,
+    /// One of the `SETUP_STATUS_*` constants.
+    pub status: u8,
 }
 
 struct PayloadBytes<'a>(&'a [u8]);
@@ -1194,6 +1229,10 @@ pub fn encode_monitor_req_payload(
             Value::Integer(Integer::from(3u64)),
             location_to_value(payload.target),
         ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(payload.setup_id)),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
@@ -1221,11 +1260,12 @@ pub fn decode_monitor_req_payload(bytes: &[u8]) -> Result<MonitorReqPayload, Mon
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
     Ok(MonitorReqPayload {
         watcher: value_to_location(required(&map, 1)?, 1)?,
         ref_id: value_to_u64(required(&map, 2)?, 2)?,
         target: value_to_location(required(&map, 3)?, 3)?,
+        setup_id: value_to_u64(required(&map, 4)?, 4)?,
     })
 }
 
@@ -1321,6 +1361,10 @@ pub fn encode_link_req_payload(payload: &LinkReqPayload) -> Result<Vec<u8>, Moni
             Value::Integer(Integer::from(5u64)),
             Value::Integer(Integer::from(payload.reciprocate)),
         ),
+        (
+            Value::Integer(Integer::from(6u64)),
+            Value::Integer(Integer::from(payload.setup_id)),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
@@ -1350,13 +1394,85 @@ pub fn decode_link_req_payload(bytes: &[u8]) -> Result<LinkReqPayload, MonitorPa
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6])?;
     Ok(LinkReqPayload {
         linker: value_to_location(required(&map, 1)?, 1)?,
         ref_id: value_to_u64(required(&map, 2)?, 2)?,
         target: value_to_location(required(&map, 3)?, 3)?,
         policy_tag: value_to_u8(required(&map, 4)?, 4)?,
         reciprocate: value_to_u8(required(&map, 5)?, 5)?,
+        setup_id: value_to_u64(required(&map, 6)?, 6)?,
+    })
+}
+
+/// Encode a bounded acknowledged monitor/link setup result.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if CBOR serialisation fails or the encoded
+/// payload exceeds [`MAX_LINK_PAYLOAD_BYTES`].
+pub fn encode_setup_result_payload(
+    payload: &SetupResultPayload,
+) -> Result<Vec<u8>, MonitorPayloadError> {
+    let value = Value::Map(vec![
+        (
+            Value::Integer(Integer::from(1u64)),
+            Value::Integer(Integer::from(payload.setup_id)),
+        ),
+        (
+            Value::Integer(Integer::from(2u64)),
+            Value::Integer(Integer::from(payload.ref_id)),
+        ),
+        (
+            Value::Integer(Integer::from(3u64)),
+            location_to_value(payload.target),
+        ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(payload.status)),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
+    if bytes.len() > MAX_LINK_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_LINK_PAYLOAD_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Decode a bounded acknowledged monitor/link setup result.
+///
+/// # Errors
+///
+/// Returns [`MonitorPayloadError`] if the payload is oversized, malformed, has
+/// unknown keys, or carries an unknown setup status.
+pub fn decode_setup_result_payload(
+    bytes: &[u8],
+) -> Result<SetupResultPayload, MonitorPayloadError> {
+    if bytes.len() > MAX_LINK_PAYLOAD_BYTES {
+        return Err(MonitorPayloadError::PayloadTooLarge {
+            len: bytes.len(),
+            max: MAX_LINK_PAYLOAD_BYTES,
+        });
+    }
+    let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
+    let map = collect_map(&value)?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
+    let status = value_to_u8(required(&map, 4)?, 4)?;
+    if status > SETUP_STATUS_RESOURCE_EXHAUSTED {
+        return Err(MonitorPayloadError::MalformedField {
+            key: 4,
+            expected: "a known setup status (0..=2)",
+        });
+    }
+    Ok(SetupResultPayload {
+        setup_id: value_to_u64(required(&map, 1)?, 1)?,
+        ref_id: value_to_u64(required(&map, 2)?, 2)?,
+        target: value_to_location(required(&map, 3)?, 3)?,
+        status,
     })
 }
 

@@ -1057,6 +1057,10 @@ internal = [
   # the process, so a shipped libhew exports the symbol but exposes no usable
   # drain capability. Not JIT-reachable.
   "hew_dist_partition_pending_remote_asks",
+  # Test-only setup-race probe: identifies which inbound monitor/link setup is
+  # paused by HEW_DIST_SETUP_RACE_PROBE so the two-process fixture can stop the
+  # exact target before registration. Inert by default; not JIT-reachable.
+  "hew_dist_setup_race_kind",
   "hew_fault_clear",
   "hew_fault_clear_all",
   "hew_fault_count",

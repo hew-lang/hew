@@ -415,6 +415,7 @@ fn quarantine_blocks_send(node: &HewNode, target_node_id: u16) -> bool {
 /// The value is intentionally generous (64) so that legitimate high-fanout
 /// workloads are unaffected while still preventing unbounded growth.
 pub(crate) const INBOUND_ASK_WORKER_LIMIT: usize = 64;
+const REVERSE_LINK_SETUP_WORKER_LIMIT: usize = 64;
 
 /// Sentinel `msg_type` value used in reply envelopes to signal that the
 /// inbound ask was **rejected** (worker-limit exceeded) rather than answered.
@@ -434,6 +435,7 @@ pub(crate) const HEW_REPLY_REJECT_MSG_TYPE: i32 = 65_535;
 /// Incremented before spawning, decremented by [`InboundAskGuard`] when the
 /// handler thread exits (or panics — the `Drop` impl runs in both cases).
 static INBOUND_ASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static REVERSE_LINK_SETUP_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// RAII guard that decrements [`INBOUND_ASK_ACTIVE`] and the per-manager
 /// active counter exactly once on drop.
@@ -450,6 +452,15 @@ impl Drop for InboundAskGuard {
         // signal the Phase-1 drain waits on. A worker only reaches here after
         // `handle_inbound_ask` has flushed its reply, so when the drain observes
         // the counter hit zero, every counted worker's reply has been sent.
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct ReverseLinkSetupGuard(Arc<AtomicUsize>);
+
+impl Drop for ReverseLinkSetupGuard {
+    fn drop(&mut self) {
+        REVERSE_LINK_SETUP_ACTIVE.fetch_sub(1, Ordering::AcqRel);
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -648,9 +659,22 @@ impl ConnectionKey {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RemoteSetupKind {
+    Monitor,
+    Link,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingReplyKind {
+    Ask,
+    Setup(RemoteSetupKind, u64),
+}
+
 struct PendingReply {
     connection: ConnectionKey,
     request_id: u64,
+    kind: PendingReplyKind,
     outcome: Mutex<Option<ReplyOutcome>>,
     cond: Condvar,
     /// When non-null, the remote ask was issued by a SUSPENDABLE caller (NEW-5):
@@ -687,11 +711,13 @@ impl ReplyRoutingTable {
         &self,
         connection: ConnectionKey,
         parked_caller: *mut crate::actor::HewActor,
+        kind: PendingReplyKind,
     ) -> (u64, Arc<PendingReply>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let entry = Arc::new(PendingReply {
             connection,
             request_id: id,
+            kind,
             outcome: Mutex::new(None),
             cond: Condvar::new(),
             parked_caller: AtomicPtr::new(parked_caller),
@@ -706,7 +732,7 @@ impl ReplyRoutingTable {
 
     /// Allocate a new request ID and register a blocking (condvar) pending reply.
     fn register(&self, connection: ConnectionKey) -> (u64, Arc<PendingReply>) {
-        self.register_with_caller(connection, ptr::null_mut())
+        self.register_with_caller(connection, ptr::null_mut(), PendingReplyKind::Ask)
     }
 
     /// Allocate a new request ID and register a SUSPENDED (NEW-5) pending reply
@@ -716,7 +742,20 @@ impl ReplyRoutingTable {
         connection: ConnectionKey,
         parked_caller: *mut crate::actor::HewActor,
     ) -> (u64, Arc<PendingReply>) {
-        self.register_with_caller(connection, parked_caller)
+        self.register_with_caller(connection, parked_caller, PendingReplyKind::Ask)
+    }
+
+    fn register_setup(
+        &self,
+        connection: ConnectionKey,
+        kind: RemoteSetupKind,
+        publication_token: u64,
+    ) -> (u64, Arc<PendingReply>) {
+        self.register_with_caller(
+            connection,
+            ptr::null_mut(),
+            PendingReplyKind::Setup(kind, publication_token),
+        )
     }
 
     /// Complete a pending reply by depositing the payload and signalling
@@ -886,13 +925,16 @@ impl ReplyRoutingTable {
         &self,
         request_id: u64,
         expected: ConnectionKey,
+        kind: PendingReplyKind,
     ) -> Option<Arc<PendingReply>> {
         let mut map = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.get(&request_id) {
-            Some(pending) if pending.connection == expected => map.remove(&request_id),
+            Some(pending) if pending.connection == expected && pending.kind == kind => {
+                map.remove(&request_id)
+            }
             _ => None,
         }
     }
@@ -905,7 +947,36 @@ impl ReplyRoutingTable {
         expected: ConnectionKey,
         payload: Vec<u8>,
     ) -> bool {
-        if let Some(pending) = self.remove_if_connection(request_id, expected) {
+        if let Some(pending) =
+            self.remove_if_connection(request_id, expected, PendingReplyKind::Ask)
+        {
+            Self::complete_pending(
+                &pending,
+                ReplyOutcome {
+                    status: ReplyStatus::Success,
+                    data: payload,
+                    ask_error: AskError::None,
+                },
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    fn complete_setup_from_connection(
+        &self,
+        request_id: u64,
+        expected: ConnectionKey,
+        kind: RemoteSetupKind,
+        publication_token: u64,
+        payload: Vec<u8>,
+    ) -> bool {
+        if let Some(pending) = self.remove_if_connection(
+            request_id,
+            expected,
+            PendingReplyKind::Setup(kind, publication_token),
+        ) {
             Self::complete_pending(
                 &pending,
                 ReplyOutcome {
@@ -928,7 +999,9 @@ impl ReplyRoutingTable {
         expected: ConnectionKey,
         ask_error: AskError,
     ) -> bool {
-        if let Some(pending) = self.remove_if_connection(request_id, expected) {
+        if let Some(pending) =
+            self.remove_if_connection(request_id, expected, PendingReplyKind::Ask)
+        {
             Self::fail_pending_with_reason(&pending, ask_error);
             true
         } else {
@@ -964,6 +1037,26 @@ pub(crate) fn complete_remote_reply(
     let expected = ConnectionKey::new(conn_mgr, conn_id);
     reply_table_opt()
         .is_some_and(|table| table.complete_from_connection(request_id, expected, payload.to_vec()))
+}
+
+pub(crate) fn complete_remote_setup_reply(
+    conn_mgr: *const HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    setup_id: u64,
+    kind: RemoteSetupKind,
+    payload: &[u8],
+) -> bool {
+    let expected = ConnectionKey::new(conn_mgr, conn_id);
+    reply_table_opt().is_some_and(|table| {
+        table.complete_setup_from_connection(
+            setup_id,
+            expected,
+            kind,
+            publication_token,
+            payload.to_vec(),
+        )
+    })
 }
 
 fn ask_error_from_code(code: i32) -> Option<AskError> {
@@ -2932,6 +3025,330 @@ const LINK_ERR_STALE_REF: i32 = setup_error(6);
 const LINK_ERR_ENCODE_FAILURE: i32 = setup_error(7);
 const LINK_ERR_LOCAL_SHUTDOWN: i32 = setup_error(8);
 const LINK_ERR_RESOURCE_EXHAUSTED: i32 = setup_error(9);
+const REMOTE_SETUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const REVERSE_LINK_SETUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+const SETUP_RACE_MONITOR: u8 = 1;
+const SETUP_RACE_LINK: u8 = 2;
+static SETUP_RACE_KIND: AtomicU8 = AtomicU8::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupSendError {
+    StaleRef,
+    Encode,
+    Send,
+}
+
+unsafe fn resolve_monitor_connection(node: &HewNode, target: Location) -> Result<c_int, c_int> {
+    if node.conn_mgr.is_null() || node.routing_table.is_null() {
+        set_last_error("cross-node monitor: node has no connection manager / routing table");
+        return Err(-1);
+    }
+    // SAFETY: routing table pointer is valid while the node is running.
+    match unsafe { routing::hew_routing_lookup_location(node.routing_table, target) } {
+        routing::LocationRoute::Remote { conn, .. } => Ok(conn),
+        routing::LocationRoute::Partition => {
+            set_last_error("cross-node monitor: target identity is partitioned");
+            Err(-1)
+        }
+        routing::LocationRoute::Local { .. } | routing::LocationRoute::StaleRef => {
+            set_last_error("cross-node monitor: target Location is invalid or stale");
+            Err(HEW_ERR_STALE_REF)
+        }
+    }
+}
+
+fn encode_node_control_frame(ctrl_kind: u64, payload: Vec<u8>) -> Option<Vec<u8>> {
+    let frame = crate::envelope::ControlFrame {
+        version: crate::envelope::WIRE_VERSION,
+        ctrl_kind,
+        payload,
+    };
+    match crate::envelope::encode_control_frame(&frame) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            set_last_error(format!(
+                "cross-node monitor control frame encode failure: {err}"
+            ));
+            None
+        }
+    }
+}
+
+unsafe fn send_control_frame_on_connection(
+    conn_mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    ctrl_kind: u64,
+    payload: Vec<u8>,
+) -> c_int {
+    let Some(bytes) = encode_node_control_frame(ctrl_kind, payload) else {
+        return -1;
+    };
+    // SAFETY: caller pins the manager and connection for this call; send copies
+    // the complete encoded frame.
+    unsafe {
+        connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
+    }
+}
+
+unsafe fn send_control_frame_on_claimed_connection(
+    conn_mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    ctrl_kind: u64,
+    payload: Vec<u8>,
+) -> c_int {
+    let Some(bytes) = encode_node_control_frame(ctrl_kind, payload) else {
+        return -1;
+    };
+    // SAFETY: caller pins the manager; the connection layer additionally
+    // requires this exact publication token before copying the frame.
+    unsafe {
+        connection::hew_connmgr_send_preencoded_claimed(
+            conn_mgr,
+            conn_id,
+            claim_token,
+            bytes.as_ptr(),
+            bytes.len(),
+        )
+    }
+}
+
+unsafe fn send_acknowledged_setup(
+    conn_mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    ctrl_kind: u64,
+    kind: RemoteSetupKind,
+    encode_payload: impl FnOnce(u64) -> Result<Vec<u8>, crate::envelope::MonitorPayloadError>,
+) -> Result<(u64, Arc<PendingReply>), SetupSendError> {
+    let prepared = prepare_acknowledged_setup(
+        conn_mgr,
+        conn_id,
+        publication_token,
+        ctrl_kind,
+        kind,
+        encode_payload,
+    )?;
+    // SAFETY: inherited manager/connection validity from the caller.
+    unsafe {
+        send_prepared_acknowledged_setup(conn_mgr, conn_id, publication_token, &prepared)?;
+    }
+    Ok((prepared.setup_id, prepared.pending))
+}
+
+struct PreparedRemoteSetup {
+    setup_id: u64,
+    pending: Arc<PendingReply>,
+    bytes: Vec<u8>,
+}
+
+fn prepare_acknowledged_setup(
+    conn_mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    ctrl_kind: u64,
+    kind: RemoteSetupKind,
+    encode_payload: impl FnOnce(u64) -> Result<Vec<u8>, crate::envelope::MonitorPayloadError>,
+) -> Result<PreparedRemoteSetup, SetupSendError> {
+    let (setup_id, pending) = reply_table().register_setup(
+        ConnectionKey::new(conn_mgr, conn_id),
+        kind,
+        publication_token,
+    );
+    let payload = match encode_payload(setup_id) {
+        Ok(payload) => payload,
+        Err(err) => {
+            reply_table().remove(setup_id);
+            set_last_error(format!("remote setup payload encode failure: {err}"));
+            return Err(SetupSendError::Encode);
+        }
+    };
+    let Some(bytes) = encode_node_control_frame(ctrl_kind, payload) else {
+        reply_table().remove(setup_id);
+        return Err(SetupSendError::Encode);
+    };
+    Ok(PreparedRemoteSetup {
+        setup_id,
+        pending,
+        bytes,
+    })
+}
+
+unsafe fn send_prepared_acknowledged_setup(
+    conn_mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    prepared: &PreparedRemoteSetup,
+) -> Result<(), SetupSendError> {
+    // SAFETY: caller pins the manager; the connection layer additionally
+    // requires this exact publication token before copying the frame.
+    if unsafe {
+        connection::hew_connmgr_send_preencoded_claimed(
+            conn_mgr,
+            conn_id,
+            publication_token,
+            prepared.bytes.as_ptr(),
+            prepared.bytes.len(),
+        )
+    } != 0
+    {
+        reply_table().remove(prepared.setup_id);
+        return Err(SetupSendError::Send);
+    }
+    Ok(())
+}
+
+fn wait_for_setup_result(
+    setup_id: u64,
+    pending: &PendingReply,
+    expected_ref_id: u64,
+    expected_target: Location,
+) -> u8 {
+    wait_for_setup_result_with_timeout(
+        setup_id,
+        pending,
+        expected_ref_id,
+        expected_target,
+        REMOTE_SETUP_TIMEOUT,
+    )
+}
+
+fn wait_for_setup_result_with_timeout(
+    setup_id: u64,
+    pending: &PendingReply,
+    expected_ref_id: u64,
+    expected_target: Location,
+    timeout: std::time::Duration,
+) -> u8 {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut outcome = pending
+        .outcome
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while outcome.is_none() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            reply_table().remove(setup_id);
+            return crate::envelope::SETUP_STATUS_TARGET_GONE;
+        }
+
+        let (next, wait_result) = pending.cond.wait_timeout_or_recover(outcome, remaining);
+        outcome = next;
+        if wait_result.timed_out() && outcome.is_none() {
+            reply_table().remove(setup_id);
+            return crate::envelope::SETUP_STATUS_TARGET_GONE;
+        }
+    }
+
+    let Some(result) = outcome.take() else {
+        return crate::envelope::SETUP_STATUS_TARGET_GONE;
+    };
+    if result.status != ReplyStatus::Success {
+        return crate::envelope::SETUP_STATUS_TARGET_GONE;
+    }
+    match crate::envelope::decode_setup_result_payload(&result.data) {
+        Ok(payload)
+            if payload.setup_id == setup_id
+                && payload.ref_id == expected_ref_id
+                && payload.target == expected_target =>
+        {
+            payload.status
+        }
+        Ok(_) => {
+            set_last_error("remote setup result did not match the pending request");
+            crate::envelope::SETUP_STATUS_TARGET_GONE
+        }
+        Err(err) => {
+            set_last_error(format!("remote setup result decode failure: {err}"));
+            crate::envelope::SETUP_STATUS_TARGET_GONE
+        }
+    }
+}
+
+unsafe fn acquire_reverse_link_setup_worker(
+    conn_mgr: *mut HewConnMgr,
+) -> Result<ReverseLinkSetupGuard, u8> {
+    let active = REVERSE_LINK_SETUP_ACTIVE.fetch_add(1, Ordering::AcqRel);
+    if active >= REVERSE_LINK_SETUP_WORKER_LIMIT {
+        REVERSE_LINK_SETUP_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        return Err(crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED);
+    }
+
+    // SAFETY: the connection reader pins `conn_mgr` for this handler.
+    let Some(per_mgr_active) = (unsafe { connection::hew_connmgr_inbound_ask_active(conn_mgr) })
+    else {
+        REVERSE_LINK_SETUP_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        return Err(crate::envelope::SETUP_STATUS_TARGET_GONE);
+    };
+    // SAFETY: the connection reader pins `conn_mgr` for this handler.
+    let Some(spawn_gate) = (unsafe { connection::hew_connmgr_inbound_spawn_closed_flag(conn_mgr) })
+    else {
+        REVERSE_LINK_SETUP_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        return Err(crate::envelope::SETUP_STATUS_TARGET_GONE);
+    };
+    // SAFETY: the connection reader pins `conn_mgr` for this handler.
+    let Some(shutdown) = (unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) }) else {
+        REVERSE_LINK_SETUP_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        return Err(crate::envelope::SETUP_STATUS_TARGET_GONE);
+    };
+
+    per_mgr_active.fetch_add(1, Ordering::SeqCst);
+    if spawn_gate.load(Ordering::SeqCst) || shutdown.load(Ordering::SeqCst) {
+        per_mgr_active.fetch_sub(1, Ordering::SeqCst);
+        REVERSE_LINK_SETUP_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        return Err(crate::envelope::SETUP_STATUS_TARGET_GONE);
+    }
+    Ok(ReverseLinkSetupGuard(per_mgr_active))
+}
+
+pub(crate) fn remote_setup_race_probe_wait(kind: RemoteSetupKind, target_actor_id: u64) {
+    let enabled = crate::env::ENV_LOCK
+        .read_access(|()| std::env::var("HEW_DIST_SETUP_RACE_PROBE").ok())
+        .is_some_and(|value| value == "1");
+    if !enabled {
+        return;
+    }
+    let kind = match kind {
+        RemoteSetupKind::Monitor => SETUP_RACE_MONITOR,
+        RemoteSetupKind::Link => SETUP_RACE_LINK,
+    };
+    if SETUP_RACE_KIND
+        .compare_exchange(0, kind, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let deadline = std::time::Instant::now() + REMOTE_SETUP_TIMEOUT;
+    loop {
+        let terminal =
+            crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
+                // SAFETY: the send pin keeps the actor allocation alive.
+                let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+                state == crate::internal::types::HewActorState::Stopped as i32
+                    || state == crate::internal::types::HewActorState::Crashed as i32
+            })
+            .unwrap_or(true);
+        if terminal || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    SETUP_RACE_KIND.store(0, Ordering::Release);
+}
+
+/// Test-only distributed setup-race seam. Inert unless
+/// `HEW_DIST_SETUP_RACE_PROBE=1`.
+#[no_mangle]
+pub extern "C" fn hew_dist_setup_race_kind() -> i64 {
+    let enabled = crate::env::ENV_LOCK
+        .read_access(|()| std::env::var("HEW_DIST_SETUP_RACE_PROBE").ok())
+        .is_some_and(|value| value == "1");
+    if enabled {
+        i64::from(SETUP_RACE_KIND.load(Ordering::Acquire))
+    } else {
+        0
+    }
+}
 
 /// Encode a `CTRL_MONITOR_*` control frame and send it on the connection routing
 /// to `target_pid`'s node. Returns 0 on a successful send, -1 otherwise (no
@@ -2946,41 +3363,13 @@ unsafe fn send_monitor_control_frame(
     ctrl_kind: u64,
     payload: Vec<u8>,
 ) -> c_int {
-    if node.conn_mgr.is_null() || node.routing_table.is_null() {
-        set_last_error("cross-node monitor: node has no connection manager / routing table");
-        return -1;
-    }
-    // SAFETY: routing table pointer is valid while the node is running.
-    let conn_id = match unsafe { routing::hew_routing_lookup_location(node.routing_table, target) }
-    {
-        routing::LocationRoute::Remote { conn, .. } => conn,
-        routing::LocationRoute::Partition => {
-            set_last_error("cross-node monitor: target identity is partitioned");
-            return -1;
-        }
-        routing::LocationRoute::Local { .. } | routing::LocationRoute::StaleRef => {
-            set_last_error("cross-node monitor: target Location is invalid or stale");
-            return HEW_ERR_STALE_REF;
-        }
+    // SAFETY: inherited node/routing validity from the caller.
+    let conn_id = match unsafe { resolve_monitor_connection(node, target) } {
+        Ok(conn_id) => conn_id,
+        Err(error) => return error,
     };
-    let frame = crate::envelope::ControlFrame {
-        version: crate::envelope::WIRE_VERSION,
-        ctrl_kind,
-        payload,
-    };
-    let bytes = match crate::envelope::encode_control_frame(&frame) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            set_last_error(format!(
-                "cross-node monitor control frame encode failure: {err}"
-            ));
-            return -1;
-        }
-    };
-    // SAFETY: conn_mgr validated above; bytes is a complete encoded frame.
-    unsafe {
-        connection::hew_connmgr_send_preencoded(node.conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
-    }
+    // SAFETY: node pins the manager for this call.
+    unsafe { send_control_frame_on_connection(node.conn_mgr, conn_id, ctrl_kind, payload) }
 }
 
 fn local_actor_location(node: &HewNode, actor_id: u64) -> Option<crate::node_identity::Location> {
@@ -3106,23 +3495,7 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         return MONITOR_ERR_LOCAL_SHUTDOWN;
     }
 
-    let payload =
-        match crate::envelope::encode_monitor_req_payload(&crate::envelope::MonitorReqPayload {
-            watcher,
-            ref_id,
-            target,
-        }) {
-            Ok(payload) => payload,
-            Err(err) => {
-                set_last_error(format!(
-                    "hew_node_monitor_location: req payload encode failure: {err}"
-                ));
-                rt.monitors.remove_remote_observation(ref_id);
-                return MONITOR_ERR_ENCODE_FAILURE;
-            }
-        };
-
-    let send_result = with_current_node_read(|guard| {
+    let setup = with_current_node_read(|guard| {
         if *guard == 0 {
             set_last_error("hew_node_monitor_location: no current node");
             return None;
@@ -3130,22 +3503,70 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         let node = *guard as *const HewNode;
         // SAFETY: read lock pins the current node pointer for this call.
         let node_ref = unsafe { &*node };
-        // SAFETY: node_ref is valid for this call.
+        // SAFETY: node_ref pins the routing table and manager for this call.
+        let conn_id = match unsafe { resolve_monitor_connection(node_ref, target) } {
+            Ok(conn_id) => conn_id,
+            Err(HEW_ERR_STALE_REF) => return Some(Err(SetupSendError::StaleRef)),
+            Err(_) => return Some(Err(SetupSendError::Send)),
+        };
+        // SAFETY: the current-node read lock pins this manager for the lookup.
+        let Some(publication_token) = (unsafe {
+            connection::hew_connmgr_publication_token_for_target(node_ref.conn_mgr, conn_id, target)
+        }) else {
+            return Some(Err(SetupSendError::Send));
+        };
+        // SAFETY: node_ref pins the manager/connection while the frame is encoded
+        // and copied into the transport.
         Some(unsafe {
-            send_monitor_control_frame(node_ref, target, crate::envelope::CTRL_MONITOR_REQ, payload)
+            send_acknowledged_setup(
+                node_ref.conn_mgr,
+                conn_id,
+                publication_token,
+                crate::envelope::CTRL_MONITOR_REQ,
+                RemoteSetupKind::Monitor,
+                |setup_id| {
+                    crate::envelope::encode_monitor_req_payload(
+                        &crate::envelope::MonitorReqPayload {
+                            watcher,
+                            ref_id,
+                            target,
+                            setup_id,
+                        },
+                    )
+                },
+            )
         })
     });
-    match send_result {
-        Some(0) => {
+    match setup {
+        Some(Ok((setup_id, pending))) => {
+            let status = wait_for_setup_result(setup_id, &pending, ref_id, target);
+            match status {
+                crate::envelope::SETUP_STATUS_ACCEPTED => {}
+                crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED => {
+                    send_remote_demonitor(ref_id, target, watcher_actor_id);
+                    rt.monitors.remove_remote_observation(ref_id);
+                    return MONITOR_ERR_RESOURCE_EXHAUSTED;
+                }
+                _ => {
+                    send_remote_demonitor(ref_id, target, watcher_actor_id);
+                    if let Some(down) = rt.monitors.deliver_monitor_to_ref(ref_id, target) {
+                        rt.monitors.enqueue_lost(down);
+                    }
+                }
+            }
             // SAFETY: caller provided a writable out pointer; write only on success.
             unsafe { *out_monitor_id = ref_id };
             0
         }
-        Some(HEW_ERR_STALE_REF) => {
+        Some(Err(SetupSendError::StaleRef)) => {
             rt.monitors.remove_remote_observation(ref_id);
             MONITOR_ERR_STALE_REF
         }
-        Some(_) => {
+        Some(Err(SetupSendError::Encode)) => {
+            rt.monitors.remove_remote_observation(ref_id);
+            MONITOR_ERR_ENCODE_FAILURE
+        }
+        Some(Err(SetupSendError::Send)) => {
             rt.monitors.remove_remote_observation(ref_id);
             if current_node_accepts_observations() == Some(true) {
                 MONITOR_ERR_PARTITION
@@ -3282,26 +3703,7 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         return LINK_ERR_STALE_REF;
     };
 
-    let payload = match crate::envelope::encode_link_req_payload(&crate::envelope::LinkReqPayload {
-        linker,
-        ref_id,
-        target,
-        policy_tag,
-        // Original request: the receiver reciprocates with a reverse request so
-        // the link is bidirectional (the linker's death also crashes the target).
-        reciprocate: 1,
-    }) {
-        Ok(payload) => payload,
-        Err(err) => {
-            set_last_error(format!(
-                "hew_node_link_remote_location: req payload encode failure: {err}"
-            ));
-            rt.monitors.remove_remote_observation(ref_id);
-            return LINK_ERR_ENCODE_FAILURE;
-        }
-    };
-
-    let send_result = with_current_node_read(|guard| {
+    let setup = with_current_node_read(|guard| {
         if *guard == 0 {
             set_last_error("hew_node_link_remote_location: no current node");
             return None;
@@ -3309,18 +3711,79 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         let node = *guard as *const HewNode;
         // SAFETY: read lock pins the current node pointer for this call.
         let node_ref = unsafe { &*node };
-        // SAFETY: node_ref is valid for this call.
+        // SAFETY: node_ref pins the routing table and manager for this call.
+        let conn_id = match unsafe { resolve_monitor_connection(node_ref, target) } {
+            Ok(conn_id) => conn_id,
+            Err(HEW_ERR_STALE_REF) => return Some(Err(SetupSendError::StaleRef)),
+            Err(_) => return Some(Err(SetupSendError::Send)),
+        };
+        // SAFETY: the current-node read lock pins this manager for the lookup.
+        let Some(publication_token) = (unsafe {
+            connection::hew_connmgr_publication_token_for_target(node_ref.conn_mgr, conn_id, target)
+        }) else {
+            return Some(Err(SetupSendError::Send));
+        };
+        // SAFETY: node_ref pins the manager/connection while the frame is encoded
+        // and copied into the transport.
         Some(unsafe {
-            send_monitor_control_frame(node_ref, target, crate::envelope::CTRL_LINK_REQ, payload)
+            send_acknowledged_setup(
+                node_ref.conn_mgr,
+                conn_id,
+                publication_token,
+                crate::envelope::CTRL_LINK_REQ,
+                RemoteSetupKind::Link,
+                |setup_id| {
+                    crate::envelope::encode_link_req_payload(&crate::envelope::LinkReqPayload {
+                        linker,
+                        ref_id,
+                        target,
+                        policy_tag,
+                        // Original request: the receiver reciprocates with a reverse request so
+                        // the link is bidirectional (the linker's death also crashes the target).
+                        reciprocate: 1,
+                        setup_id,
+                    })
+                },
+            )
         })
     });
-    match send_result {
-        Some(0) => 0,
-        Some(HEW_ERR_STALE_REF) => {
+    match setup {
+        Some(Ok((setup_id, pending))) => {
+            let status = wait_for_setup_result(setup_id, &pending, ref_id, target);
+            match status {
+                crate::envelope::SETUP_STATUS_ACCEPTED => {}
+                crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED => {
+                    send_outbound_unlink(ref_id, target, linker, policy_tag);
+                    rt.monitors.remove_remote_observation(ref_id);
+                    return LINK_ERR_RESOURCE_EXHAUSTED;
+                }
+                _ => {
+                    send_outbound_unlink(ref_id, target, linker, policy_tag);
+                    if let Some(down) = rt.monitors.deliver_link_down_to_ref(
+                        ref_id,
+                        target,
+                        crate::monitor::MONITOR_REASON_LOST,
+                    ) {
+                        let _ = crate::link::deliver_cross_node_link_exit(
+                            down.local_actor_id,
+                            down.remote_target_serial,
+                            down.reason,
+                            down.policy_tag,
+                        );
+                    }
+                }
+            }
+            0
+        }
+        Some(Err(SetupSendError::StaleRef)) => {
             rt.monitors.remove_remote_observation(ref_id);
             LINK_ERR_STALE_REF
         }
-        Some(_) => {
+        Some(Err(SetupSendError::Encode)) => {
+            rt.monitors.remove_remote_observation(ref_id);
+            LINK_ERR_ENCODE_FAILURE
+        }
+        Some(Err(SetupSendError::Send)) => {
             rt.monitors.remove_remote_observation(ref_id);
             if current_node_accepts_observations() == Some(true) {
                 LINK_ERR_PARTITION
@@ -3353,6 +3816,7 @@ pub(crate) fn send_remote_demonitor(ref_id: u64, target: Location, watcher_actor
             watcher,
             ref_id,
             target,
+            setup_id: 0,
         }) {
             Ok(payload) => payload,
             Err(err) => {
@@ -3371,6 +3835,25 @@ pub(crate) fn send_remote_demonitor(ref_id: u64, target: Location, watcher_actor
         let _ = unsafe {
             send_monitor_control_frame(node_ref, target, crate::envelope::CTRL_DEMONITOR, payload)
         };
+    });
+}
+
+fn send_outbound_unlink(ref_id: u64, target: Location, linker: Location, policy_tag: u8) {
+    let unlink = crate::envelope::LinkReqPayload {
+        linker,
+        ref_id,
+        target,
+        policy_tag,
+        reciprocate: 1,
+        setup_id: 0,
+    };
+    with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return;
+        }
+        // SAFETY: the current-node read lock pins the node for this call.
+        send_link_unlink_frame(unsafe { &*node }, target, &unlink);
     });
 }
 
@@ -3398,15 +3881,12 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
 /// supervisor-cascade unit tests), it no-ops without sending or panicking,
 /// exactly as the local sweep does. The remote watchers are still removed so a
 /// later sweep finds nothing.
-pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32, crash_kind: u32) {
-    let Some(rt) = crate::runtime::rt_current_opt() else {
-        return;
-    };
-    // Fast path: no remote watcher for this actor → nothing to send.
-    if !rt.monitors.has_remote_watchers(target_serial) {
-        return;
-    }
-    let watchers = rt.monitors.take_remote_watchers(target_serial);
+pub(crate) fn fan_out_remote_monitor_down(
+    target_actor_id: u64,
+    watchers: Vec<crate::monitor::RemoteWatcherTarget>,
+    reason: i32,
+    crash_kind: u32,
+) {
     if watchers.is_empty() {
         return;
     }
@@ -3420,7 +3900,6 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32, crash
         if node_ref.conn_mgr.is_null() || node_ref.routing_table.is_null() {
             return;
         }
-        let target_actor_id = crate::pid::hew_pid_make(node_ref.route_slot, target_serial);
         let Some(target) = local_actor_location(node_ref, target_actor_id) else {
             set_last_error("monitor down fan-out: exact target Location is unavailable");
             return;
@@ -3472,6 +3951,8 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32, crash
 ///    policy, so the linker's death crashes our actor (Direction 2 receive).
 /// 3. Send a reverse `CTRL_LINK_REQ` (`reciprocate == 0`) back to the linker so
 ///    IT registers the target-side watcher that fans Direction 2's DOWN to us.
+/// 4. Complete the original setup only after the reverse ACK arrives. The wait
+///    runs off the connection reader so that reader remains free to consume it.
 ///
 /// On the REVERSE request (`reciprocate == 0`): only step 1 — register the
 /// target-side remote LINK watcher — and do NOT reciprocate again (bounding the
@@ -3480,72 +3961,324 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32, crash
 /// Fail-closed: a no-runtime / no-current-node / no-route state no-ops without
 /// panicking; the EXIT is only ever synthesized later for an entry THIS node
 /// registered, so a forged frame cannot crash an actor this node never linked.
-pub(crate) fn handle_inbound_link_req(payload: &crate::envelope::LinkReqPayload) {
+pub(crate) fn handle_inbound_link_req(
+    payload: &crate::envelope::LinkReqPayload,
+    target_actor_id: u64,
+    conn_mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+) -> Option<u8> {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("handle_inbound_link_req: no runtime installed");
-        return;
+        return Some(crate::envelope::SETUP_STATUS_TARGET_GONE);
     };
-    // Step 1 (both directions): our local `target_serial` gains a remote LINK
-    // watcher on the linker node. The terminal sweep fans CTRL_LINK_DOWN to it.
-    rt.monitors
-        .register_remote_link_watcher(payload.target.slot(), payload.linker, payload.ref_id);
-
     if payload.reciprocate == 0 {
         // Reverse request: target-side registration only; do not loop.
-        return;
+        return Some(
+            match rt.monitors.register_remote_link_watcher(
+                target_actor_id,
+                payload.linker,
+                payload.ref_id,
+            ) {
+                crate::monitor::RemoteWatcherSetup::Registered => {
+                    crate::envelope::SETUP_STATUS_ACCEPTED
+                }
+                crate::monitor::RemoteWatcherSetup::TargetGone => {
+                    crate::envelope::SETUP_STATUS_TARGET_GONE
+                }
+            },
+        );
     }
 
-    // Step 2 (original only): register the reverse watcher-side LINK entry so the
-    // linker's death crashes OUR target actor per the policy.
-    let local_node = rt.node.local_route_slot();
-    let our_target_id = crate::pid::hew_pid_make(local_node, payload.target.slot());
-    let Some(reverse_ref) =
-        rt.monitors
-            .register_link_watcher(payload.linker, our_target_id, payload.policy_tag)
-    else {
-        rt.monitors
-            .remove_remote_watcher(payload.target.slot(), payload.linker, payload.ref_id);
-        set_last_error("handle_inbound_link_req: observation id space exhausted");
-        return;
+    handle_inbound_original_link_req(rt, payload, target_actor_id, conn_mgr, conn_id, claim_token)
+}
+
+fn handle_inbound_original_link_req(
+    rt: &crate::runtime::RuntimeInner,
+    payload: &crate::envelope::LinkReqPayload,
+    target_actor_id: u64,
+    conn_mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+) -> Option<u8> {
+    // Reserve every fallible setup resource before publishing the target-side
+    // watcher. A ResourceExhausted result must never race a LINK_DOWN from a
+    // link that the caller was told did not exist.
+    // SAFETY: the connection reader pins the manager for this handler.
+    let worker_guard = match unsafe { acquire_reverse_link_setup_worker(conn_mgr) } {
+        Ok(guard) => guard,
+        Err(status) => return Some(status),
+    };
+    let job_tx = match spawn_reverse_link_setup_worker(worker_guard, conn_mgr, conn_id, claim_token)
+    {
+        Ok(sender) => sender,
+        Err(status) => return Some(status),
     };
 
-    // Step 3 (original only): send the reverse CTRL_LINK_REQ so the linker node
-    // registers the target-side watcher that fans Direction 2's DOWN back to us.
-    let reverse_payload = crate::envelope::LinkReqPayload {
+    // Reserve the reverse ref without publishing an observation yet, so payload
+    // encoding can still fail with ResourceExhausted without activating a link.
+    let Some(reverse_ref) = rt.monitors.next_observation_id() else {
+        set_last_error("handle_inbound_link_req: observation id space exhausted");
+        return Some(crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED);
+    };
+
+    let reverse_setup = prepare_acknowledged_setup(
+        conn_mgr,
+        conn_id,
+        claim_token,
+        crate::envelope::CTRL_LINK_REQ,
+        RemoteSetupKind::Link,
+        |setup_id| {
+            crate::envelope::encode_link_req_payload(&crate::envelope::LinkReqPayload {
+                linker: payload.target,
+                ref_id: reverse_ref,
+                // From the linker's perspective the roles swap: its linker actor is now
+                // our "target" to watch, and our target is now the reverse "linker".
+                target: payload.linker,
+                policy_tag: payload.policy_tag,
+                reciprocate: 0,
+                setup_id,
+            })
+        },
+    );
+    let prepared = match reverse_setup {
+        Ok(prepared) => prepared,
+        Err(SetupSendError::Encode) => {
+            rt.monitors.remove_remote_observation(reverse_ref);
+            return Some(crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED);
+        }
+        Err(SetupSendError::StaleRef | SetupSendError::Send) => {
+            rt.monitors.remove_remote_observation(reverse_ref);
+            return Some(crate::envelope::SETUP_STATUS_TARGET_GONE);
+        }
+    };
+
+    // Step 2: all fallible reservations are complete, so publish the reverse
+    // observation before sending. Connection-loss fan-out can now safely claim it.
+    rt.monitors.register_link_watcher_with_id(
+        reverse_ref,
+        payload.linker,
+        target_actor_id,
+        payload.policy_tag,
+    );
+
+    // Step 1: publish the target watcher only after all setup resources have
+    // been reserved. The terminal sweep shares the shard lock with registration.
+    if rt
+        .monitors
+        .register_remote_link_watcher(target_actor_id, payload.linker, payload.ref_id)
+        == crate::monitor::RemoteWatcherSetup::TargetGone
+    {
+        reply_table().remove(prepared.setup_id);
+        rt.monitors.remove_remote_observation(reverse_ref);
+        return Some(crate::envelope::SETUP_STATUS_TARGET_GONE);
+    }
+
+    // Step 3 (original only): send the already-encoded reverse CTRL_LINK_REQ so
+    // the linker node registers the target-side watcher for Direction 2.
+    // SAFETY: the connection reader pins this manager/connection for the handler.
+    if unsafe { send_prepared_acknowledged_setup(conn_mgr, conn_id, claim_token, &prepared) }
+        .is_err()
+    {
+        rollback_inbound_link_setup(payload, reverse_ref);
+        return Some(crate::envelope::SETUP_STATUS_TARGET_GONE);
+    }
+
+    let setup_id = prepared.setup_id;
+    let pending = prepared.pending;
+    if job_tx
+        .send((setup_id, pending, payload.clone(), reverse_ref))
+        .is_err()
+    {
+        reply_table().remove(setup_id);
+        rollback_inbound_link_setup(payload, reverse_ref);
+        send_reverse_unlink(
+            payload,
+            reverse_ref,
+            SendConnMgr(conn_mgr),
+            conn_id,
+            claim_token,
+        );
+        return Some(crate::envelope::SETUP_STATUS_TARGET_GONE);
+    }
+    None
+}
+
+type ReverseLinkSetupJob = (u64, Arc<PendingReply>, crate::envelope::LinkReqPayload, u64);
+
+fn spawn_reverse_link_setup_worker(
+    worker_guard: ReverseLinkSetupGuard,
+    conn_mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+) -> Result<std::sync::mpsc::SyncSender<ReverseLinkSetupJob>, u8> {
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<ReverseLinkSetupJob>(1);
+    let deferred_conn_mgr = SendConnMgr(conn_mgr);
+    let worker = thread::Builder::new()
+        .name("hew-reverse-link-setup".to_string())
+        .spawn(move || {
+            let _worker_guard = worker_guard;
+            let Ok((setup_id, pending, deferred_payload, reverse_ref)) = job_rx.recv() else {
+                return;
+            };
+            let status = wait_for_setup_result_with_timeout(
+                setup_id,
+                &pending,
+                reverse_ref,
+                deferred_payload.linker,
+                REVERSE_LINK_SETUP_TIMEOUT,
+            );
+            complete_inbound_link_setup(
+                &deferred_payload,
+                reverse_ref,
+                status,
+                deferred_conn_mgr,
+                conn_id,
+                claim_token,
+            );
+        })
+        .map_err(|_| crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED)?;
+    // SAFETY: the connection reader pins the manager for this handler.
+    unsafe { connection::hew_connmgr_track_reverse_link_worker(conn_mgr, worker) };
+    Ok(job_tx)
+}
+
+fn rollback_inbound_link_setup(payload: &crate::envelope::LinkReqPayload, reverse_ref: u64) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return;
+    };
+    rt.monitors
+        .remove_remote_watcher(payload.target.slot(), payload.linker, payload.ref_id);
+    if let Some(down) = rt.monitors.deliver_link_down_to_ref(
+        reverse_ref,
+        payload.linker,
+        crate::monitor::MONITOR_REASON_LOST,
+    ) {
+        let _ = crate::link::deliver_cross_node_link_exit(
+            down.local_actor_id,
+            down.remote_target_serial,
+            down.reason,
+            down.policy_tag,
+        );
+    }
+}
+
+fn discard_inbound_link_setup(payload: &crate::envelope::LinkReqPayload, reverse_ref: u64) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return;
+    };
+    rt.monitors
+        .remove_remote_watcher(payload.target.slot(), payload.linker, payload.ref_id);
+    rt.monitors.remove_remote_observation(reverse_ref);
+}
+
+fn send_reverse_unlink(
+    payload: &crate::envelope::LinkReqPayload,
+    reverse_ref: u64,
+    conn_mgr: SendConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+) {
+    let unlink = crate::envelope::LinkReqPayload {
         linker: payload.target,
         ref_id: reverse_ref,
-        // From the linker's perspective the roles swap: its linker actor is now
-        // our "target" to watch, and our target is now the reverse "linker".
         target: payload.linker,
         policy_tag: payload.policy_tag,
         reciprocate: 0,
+        setup_id: 0,
     };
-    let bytes = match crate::envelope::encode_link_req_payload(&reverse_payload) {
+    let bytes = match crate::envelope::encode_link_req_payload(&unlink) {
         Ok(bytes) => bytes,
         Err(err) => {
             set_last_error(format!(
-                "handle_inbound_link_req: reverse payload encode failure: {err}"
+                "reverse link cleanup payload encode failure: {err}"
             ));
             return;
         }
     };
-    with_current_node_read(|guard| {
-        if *guard == 0 {
+    // SAFETY: the worker's per-manager guard keeps the manager alive; the
+    // connection send fails closed if this exact connection has retired.
+    let _ = unsafe {
+        send_control_frame_on_claimed_connection(
+            conn_mgr.0,
+            conn_id,
+            claim_token,
+            crate::envelope::CTRL_UNLINK,
+            bytes,
+        )
+    };
+}
+
+fn send_link_unlink_frame(
+    node: &HewNode,
+    recipient: Location,
+    unlink: &crate::envelope::LinkReqPayload,
+) {
+    let bytes = match crate::envelope::encode_link_req_payload(unlink) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            set_last_error(format!("link cleanup payload encode failure: {err}"));
             return;
         }
-        let node = *guard as *const HewNode;
-        // SAFETY: read lock pins the current node pointer for this call.
-        let node_ref = unsafe { &*node };
-        // SAFETY: node_ref is valid for this call.
-        let _ = unsafe {
-            send_monitor_control_frame(
-                node_ref,
-                payload.linker,
-                crate::envelope::CTRL_LINK_REQ,
-                bytes,
-            )
+    };
+    // SAFETY: the current-node read lock held by the caller pins `node`.
+    let _ =
+        unsafe { send_monitor_control_frame(node, recipient, crate::envelope::CTRL_UNLINK, bytes) };
+}
+
+fn complete_inbound_link_setup(
+    payload: &crate::envelope::LinkReqPayload,
+    reverse_ref: u64,
+    status: u8,
+    conn_mgr: SendConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+) {
+    match status {
+        crate::envelope::SETUP_STATUS_ACCEPTED => {}
+        crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED => {
+            discard_inbound_link_setup(payload, reverse_ref);
+            send_reverse_unlink(payload, reverse_ref, conn_mgr, conn_id, claim_token);
+        }
+        _ => {
+            rollback_inbound_link_setup(payload, reverse_ref);
+            send_reverse_unlink(payload, reverse_ref, conn_mgr, conn_id, claim_token);
+        }
+    }
+
+    let result =
+        match crate::envelope::encode_setup_result_payload(&crate::envelope::SetupResultPayload {
+            setup_id: payload.setup_id,
+            ref_id: payload.ref_id,
+            target: payload.target,
+            status,
+        }) {
+            Ok(result) => result,
+            Err(err) => {
+                if status == crate::envelope::SETUP_STATUS_ACCEPTED {
+                    rollback_inbound_link_setup(payload, reverse_ref);
+                    send_reverse_unlink(payload, reverse_ref, conn_mgr, conn_id, claim_token);
+                }
+                set_last_error(format!("deferred link setup result encode failure: {err}"));
+                return;
+            }
         };
-    });
+    // SAFETY: the worker's per-manager guard keeps the manager alive; the
+    // connection send fails closed if this exact connection has retired.
+    if unsafe {
+        send_control_frame_on_claimed_connection(
+            conn_mgr.0,
+            conn_id,
+            claim_token,
+            crate::envelope::CTRL_LINK_SETUP_RESULT,
+            result,
+        )
+    } != 0
+        && status == crate::envelope::SETUP_STATUS_ACCEPTED
+    {
+        rollback_inbound_link_setup(payload, reverse_ref);
+        send_reverse_unlink(payload, reverse_ref, conn_mgr, conn_id, claim_token);
+    }
 }
 
 /// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
@@ -8740,6 +9473,42 @@ mod tests {
             .expect("outcome set by originating connection");
         assert_eq!(outcome.status, ReplyStatus::Success);
         assert_eq!(outcome.data, vec![9, 9]);
+    }
+
+    #[test]
+    fn setup_completion_requires_the_originating_publication_token() {
+        let table = ReplyRoutingTable::new();
+        let connection = ConnectionKey::new(std::ptr::without_provenance(0x5050), 25);
+        let (setup_id, pending) = table.register_setup(connection, RemoteSetupKind::Link, 41);
+
+        assert!(
+            !table.complete_setup_from_connection(
+                setup_id,
+                connection,
+                RemoteSetupKind::Link,
+                42,
+                vec![1],
+            ),
+            "a successor reusing the connection slot must not complete setup"
+        );
+        assert!(pending.outcome.lock_or_recover().is_none());
+
+        assert!(table.complete_setup_from_connection(
+            setup_id,
+            connection,
+            RemoteSetupKind::Link,
+            41,
+            vec![2],
+        ));
+        assert_eq!(
+            pending
+                .outcome
+                .lock_or_recover()
+                .as_ref()
+                .expect("matching publication should complete")
+                .data,
+            vec![2]
+        );
     }
 
     #[test]

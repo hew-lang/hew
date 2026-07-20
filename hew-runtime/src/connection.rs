@@ -54,12 +54,14 @@ use crate::cluster::HewCluster;
 use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::envelope::{
     decode_link_down_payload, decode_link_req_payload, decode_monitor_down_payload,
-    decode_monitor_req_payload, decode_registry_gossip_payload, decode_swim_payload,
-    decode_wire_frame, encode_control_frame, encode_registry_gossip_payload, encode_swim_payload,
-    ControlFrame, EnvelopeFrame, RegistryGossipPayload, SwimControlPayload, SwimGossipEntry,
-    WireFrame, CTRL_DEMONITOR, CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
-    CTRL_REGISTRY_GOSSIP, CTRL_SWIM, CTRL_UNLINK, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
-    REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
+    decode_monitor_req_payload, decode_registry_gossip_payload, decode_setup_result_payload,
+    decode_swim_payload, decode_wire_frame, encode_control_frame, encode_registry_gossip_payload,
+    encode_setup_result_payload, encode_swim_payload, ControlFrame, EnvelopeFrame,
+    RegistryGossipPayload, SetupResultPayload, SwimControlPayload, SwimGossipEntry, WireFrame,
+    CTRL_DEMONITOR, CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_LINK_SETUP_RESULT, CTRL_MONITOR_DOWN,
+    CTRL_MONITOR_REQ, CTRL_MONITOR_SETUP_RESULT, CTRL_REGISTRY_GOSSIP, CTRL_SWIM, CTRL_UNLINK,
+    FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE,
+    SETUP_STATUS_ACCEPTED, SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
@@ -190,6 +192,9 @@ struct ConnectionActor {
     publication_sync: Arc<Mutex<()>>,
     /// Set once removal begins so delayed establish publication can abort.
     publication_removed: Arc<AtomicBool>,
+    /// Pins this transport slot against manager removal/reuse while a deferred
+    /// setup result is being sent. Teardown closes first, then waits for idle.
+    claimed_send_lifecycle: Arc<ReaderLifecycle>,
     /// Remote node identity from handshake.
     peer_node_id: u16,
     /// Authenticated key-derived identity from the v2 handshake.
@@ -272,7 +277,7 @@ pub struct HewConnMgr {
     /// Global shutdown signal shared with reconnect workers and stop-time
     /// ask-reply teardown guards.
     reconnect_shutdown: Arc<AtomicBool>,
-    /// Spawn gate for inbound-ask workers, distinct from `reconnect_shutdown`.
+    /// Spawn gate for inbound workers, distinct from `reconnect_shutdown`.
     ///
     /// `hew_node_stop` sets this FIRST — before draining in-flight workers —
     /// so the drain terminates (no new workers spawn) while already-running
@@ -280,7 +285,8 @@ pub struct HewConnMgr {
     /// wire (those threads bail only on `reconnect_shutdown` / `CURRENT_NODE`,
     /// which are set AFTER the drain). Separating the gate from the teardown
     /// guard is what lets a graceful stop deliver in-flight replies instead of
-    /// abandoning them as a spurious `ConnectionDropped`.
+    /// abandoning them as a spurious `ConnectionDropped`. Reverse-link setup
+    /// workers use the same gate and drain because they also access node state.
     ///
     /// This flag and `inbound_ask_active` form a Dekker pair accessed under
     /// `SeqCst` (see `node_inbound_router` and `drain_inbound_ask_workers`): the
@@ -288,16 +294,17 @@ pub struct HewConnMgr {
     /// router which passes the gate is always visible to a concurrent drain, so
     /// no worker can spawn after the drain observed a zero counter.
     inbound_spawn_closed: Arc<AtomicBool>,
-    /// Count of inbound-ask worker threads currently active for this manager.
+    /// Count of inbound ask and reverse-link setup workers active for this manager.
     ///
-    /// Incremented in `node_inbound_router` before the gate re-check (so a
-    /// concurrent drain always sees a spawning worker), decremented by the
-    /// worker's `InboundAskGuard` on exit. Used by `hew_node_stop` to drain
-    /// workers before freeing node resources. Accessed under `SeqCst` on the
-    /// spawn/drain path — see `inbound_spawn_closed`.
+    /// Incremented before each worker's gate re-check (so a concurrent drain
+    /// always sees a spawning worker), then decremented by its RAII guard. Used
+    /// by `hew_node_stop` to drain workers before freeing node resources.
+    /// Accessed under `SeqCst` on the spawn/drain path.
     pub(crate) inbound_ask_active: Arc<AtomicUsize>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
+    /// Deferred reverse-link setup workers, joined before manager teardown.
+    reverse_link_workers: PoisonSafe<Vec<JoinHandle<()>>>,
     /// Counts every spawned reader until its thread function fully returns.
     ///
     /// A reader can remove and drop its own [`ConnectionActor`] on an unexpected
@@ -407,6 +414,13 @@ impl Drop for ReaderLifecycleGuard {
     }
 }
 
+struct ClaimedSendLease {
+    _guard: ReaderLifecycleGuard,
+    publication_removed: Arc<AtomicBool>,
+    #[cfg(feature = "encryption")]
+    noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
+}
+
 #[derive(Clone, Debug)]
 struct ReconnectSettings {
     target_addr: String,
@@ -469,6 +483,7 @@ impl ConnectionActor {
             publication_token: 0,
             publication_sync: Arc::new(Mutex::new(())),
             publication_removed: Arc::new(AtomicBool::new(false)),
+            claimed_send_lifecycle: Arc::new(ReaderLifecycle::default()),
             peer_node_id: 0,
             peer_identity: None,
             peer_session_incarnation: 0,
@@ -1414,7 +1429,7 @@ fn local_schema_hash() -> u32 {
     hash = fnv1a32_update(hash, b"CBOR-ENVELOPE");
     hash = fnv1a32_update(hash, &[WIRE_VERSION]);
     hash = fnv1a32_update(hash, &[FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE]);
-    fnv1a32_update(hash, &[1, 2, 3, 4, 5, 6, 7, 8])
+    fnv1a32_update(hash, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 }
 
 fn local_handshake(
@@ -1701,6 +1716,16 @@ fn handle_control_frame(
             handle_monitor_down_frame(mgr, conn_id, claim_token, control);
             return;
         }
+        CTRL_MONITOR_SETUP_RESULT => {
+            handle_setup_result_frame(
+                mgr,
+                conn_id,
+                claim_token,
+                control,
+                crate::hew_node::RemoteSetupKind::Monitor,
+            );
+            return;
+        }
         CTRL_LINK_REQ => {
             handle_link_req_frame(mgr, conn_id, claim_token, control);
             return;
@@ -1711,6 +1736,16 @@ fn handle_control_frame(
         }
         CTRL_LINK_DOWN => {
             handle_link_down_frame(mgr, conn_id, claim_token, control);
+            return;
+        }
+        CTRL_LINK_SETUP_RESULT => {
+            handle_setup_result_frame(
+                mgr,
+                conn_id,
+                claim_token,
+                control,
+                crate::hew_node::RemoteSetupKind::Link,
+            );
             return;
         }
         other => {
@@ -1852,6 +1887,49 @@ fn location_matches_local(mgr: &HewConnMgr, location: Location) -> bool {
     crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_some()
 }
 
+fn location_matches_local_session(mgr: &HewConnMgr, location: Location) -> bool {
+    Some(location.node()) == mgr.local_identity
+        && Some(location.incarnation()) == mgr.local_session_incarnation
+        && crate::pid::actor_slot_fits_internal_alias(location.slot())
+}
+
+fn send_setup_result_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    ctrl_kind: u64,
+    result: &SetupResultPayload,
+) {
+    let payload = match encode_setup_result_payload(result) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader setup result payload encode failure: {err}"
+            ));
+            return;
+        }
+    };
+    let frame = ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind,
+        payload,
+    };
+    let bytes = match encode_control_frame(&frame) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader setup result frame encode failure: {err}"
+            ));
+            return;
+        }
+    };
+    // SAFETY: the reader owns this exact manager/connection publication claim;
+    // the send copies the encoded frame before returning.
+    let _ = unsafe {
+        hew_connmgr_send_preencoded_claimed(mgr, conn_id, claim_token, bytes.as_ptr(), bytes.len())
+    };
+}
+
 /// Handle an inbound `CTRL_MONITOR_REQ`: a remote node is monitoring
 /// one of our local actors. Record a target-side remote-watcher entry so the
 /// terminal sweep can fan out a `CTRL_MONITOR_DOWN` when that actor dies.
@@ -1880,8 +1958,9 @@ fn handle_monitor_req_frame(
     };
     // SAFETY: the authenticated identity helper verified the manager.
     let mgr_ref = unsafe { &*mgr };
-    if !location_matches_node_session(payload.watcher, peer_identity)
-        || !location_matches_local(mgr_ref, payload.target)
+    if payload.setup_id == 0
+        || !location_matches_node_session(payload.watcher, peer_identity)
+        || !location_matches_local_session(mgr_ref, payload.target)
     {
         set_last_error("connection reader monitor req Location mismatch");
         return;
@@ -1890,8 +1969,31 @@ fn handle_monitor_req_frame(
         set_last_error("connection reader monitor req: no runtime installed");
         return;
     };
-    rt.monitors
-        .register_remote_watcher(payload.target.slot(), payload.watcher, payload.ref_id);
+    let target_actor_id = crate::pid::hew_pid_make(mgr_ref.local_node_id, payload.target.slot());
+    crate::hew_node::remote_setup_race_probe_wait(
+        crate::hew_node::RemoteSetupKind::Monitor,
+        target_actor_id,
+    );
+    let status =
+        match rt
+            .monitors
+            .register_remote_watcher(target_actor_id, payload.watcher, payload.ref_id)
+        {
+            crate::monitor::RemoteWatcherSetup::Registered => SETUP_STATUS_ACCEPTED,
+            crate::monitor::RemoteWatcherSetup::TargetGone => SETUP_STATUS_TARGET_GONE,
+        };
+    send_setup_result_frame(
+        mgr,
+        conn_id,
+        claim_token,
+        CTRL_MONITOR_SETUP_RESULT,
+        &SetupResultPayload {
+            setup_id: payload.setup_id,
+            ref_id: payload.ref_id,
+            target: payload.target,
+            status,
+        },
+    );
 }
 
 /// Handle an inbound `CTRL_DEMONITOR`: a remote node retracted its
@@ -1920,7 +2022,7 @@ fn handle_demonitor_frame(
     // SAFETY: the authenticated identity helper verified the manager.
     let mgr_ref = unsafe { &*mgr };
     if !location_matches_node_session(payload.watcher, peer_identity)
-        || !location_matches_local(mgr_ref, payload.target)
+        || !location_matches_local_session(mgr_ref, payload.target)
     {
         set_last_error("connection reader demonitor Location mismatch");
         return;
@@ -1930,6 +2032,46 @@ fn handle_demonitor_frame(
     };
     rt.monitors
         .remove_remote_watcher(payload.target.slot(), payload.watcher, payload.ref_id);
+}
+
+fn handle_setup_result_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+    kind: crate::hew_node::RemoteSetupKind,
+) {
+    let payload = match decode_setup_result_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader setup result payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    let Some((_, peer_identity)) =
+        authenticated_peer_identity(mgr, conn_id, claim_token, "setup result")
+    else {
+        return;
+    };
+    if payload.setup_id == 0
+        || payload.ref_id == 0
+        || !location_matches_node_session(payload.target, peer_identity)
+    {
+        set_last_error("connection reader setup result Location mismatch");
+        return;
+    }
+    if !crate::hew_node::complete_remote_setup_reply(
+        mgr,
+        conn_id,
+        claim_token,
+        payload.setup_id,
+        kind,
+        &control.payload,
+    ) {
+        set_last_error("connection reader setup result did not match a pending setup");
+    }
 }
 
 /// Handle an inbound `CTRL_MONITOR_DOWN`: the node owning an actor we
@@ -2019,13 +2161,40 @@ fn handle_link_req_frame(
     };
     // SAFETY: the authenticated identity helper verified the manager.
     let mgr_ref = unsafe { &*mgr };
-    if !location_matches_node_session(payload.linker, peer_identity)
-        || !location_matches_local(mgr_ref, payload.target)
+    if payload.setup_id == 0
+        || !location_matches_node_session(payload.linker, peer_identity)
+        || !location_matches_local_session(mgr_ref, payload.target)
     {
         set_last_error("connection reader link req Location mismatch");
         return;
     }
-    crate::hew_node::handle_inbound_link_req(&payload);
+    let target_actor_id = crate::pid::hew_pid_make(mgr_ref.local_node_id, payload.target.slot());
+    if payload.reciprocate == 1 {
+        crate::hew_node::remote_setup_race_probe_wait(
+            crate::hew_node::RemoteSetupKind::Link,
+            target_actor_id,
+        );
+    }
+    if let Some(status) = crate::hew_node::handle_inbound_link_req(
+        &payload,
+        target_actor_id,
+        mgr,
+        conn_id,
+        claim_token,
+    ) {
+        send_setup_result_frame(
+            mgr,
+            conn_id,
+            claim_token,
+            CTRL_LINK_SETUP_RESULT,
+            &SetupResultPayload {
+                setup_id: payload.setup_id,
+                ref_id: payload.ref_id,
+                target: payload.target,
+                status,
+            },
+        );
+    }
 }
 
 /// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
@@ -2052,7 +2221,7 @@ fn handle_unlink_frame(
     // SAFETY: the authenticated identity helper verified the manager.
     let mgr_ref = unsafe { &*mgr };
     if !location_matches_node_session(payload.linker, peer_identity)
-        || !location_matches_local(mgr_ref, payload.target)
+        || !location_matches_local_session(mgr_ref, payload.target)
     {
         set_last_error("connection reader unlink Location mismatch");
         return;
@@ -2177,7 +2346,9 @@ fn send_registry_flush_frames(
     let mut sent = 0;
     while let Some(bytes) = frames.get(sent) {
         // SAFETY: mgr is live and `bytes` is a complete encoded control frame.
-        if unsafe { send_preencoded_on_manager(mgr, conn_id, bytes.as_ptr(), bytes.len()) } != 0 {
+        if unsafe { send_preencoded_on_manager(mgr, conn_id, None, bytes.as_ptr(), bytes.len()) }
+            != 0
+        {
             set_last_error(format!(
                 "registry gossip flush send failed for conn {conn_id}; \
                  parking {} frame(s) for retry",
@@ -2657,7 +2828,9 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
         return -1;
     };
     // SAFETY: manager is live, bytes is a complete encoded control frame.
-    if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, bytes.as_ptr(), bytes.len()) } == 0 {
+    if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, None, bytes.as_ptr(), bytes.len()) }
+        == 0
+    {
         0
     } else {
         -1
@@ -3244,6 +3417,7 @@ pub(crate) unsafe fn connmgr_new(
         inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         reconnect_workers: PoisonSafe::new(Vec::new()),
+        reverse_link_workers: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         local_node_id,
@@ -3292,35 +3466,41 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         mgr.reconnect_shutdown.store(true, Ordering::Release);
         let transport = mgr.transport;
 
-        // Drain the connection list and close each transport connection.
-        // The closure scope releases the lock before the actors are dropped,
-        // so Drop does not race the explicit close below.
-        let drained: Vec<ConnectionActor> = mgr.connections.access(std::mem::take);
-
-        for conn in drained {
-            // Signal expected stop BEFORE closing the transport so the reader
-            // that unblocks from the socket shutdown observes stop_flag == 1
-            // (expected-stop path) and does not call hew_connmgr_remove.
-            // The Release ordering pairs with the Acquire in reader_cleanup.
-            conn.reader_stop.store(1, Ordering::Release);
-            // Mark closed before the explicit close so Drop does not
-            // double-close when the actor is subsequently dropped.
-            conn.transport_closed.store(true, Ordering::Release);
-            // Close transport so a reader blocked in recv() unblocks.
+        // Keep actors published while closing so a transport slot cannot be
+        // reused by a new admission until every claimed deferred send has
+        // observed the close and returned.
+        let closing = mgr.connections.access(|connections| {
+            connections
+                .iter()
+                .map(|connection| {
+                    connection
+                        .publication_removed
+                        .store(true, Ordering::Release);
+                    connection.reader_stop.store(1, Ordering::Release);
+                    connection.transport_closed.store(true, Ordering::Release);
+                    (
+                        connection.conn_id,
+                        Arc::clone(&connection.claimed_send_lifecycle),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        for (conn_id, _) in &closing {
             // SAFETY: transport is valid per manager contract.
-            unsafe {
-                let t = &*transport;
-                if let Some(ops) = t.ops.as_ref() {
-                    if let Some(close_fn) = ops.close_conn {
-                        close_fn(t.r#impl, conn.conn_id);
-                    }
-                }
-            }
-            // ConnectionActor::drop joins the reader thread (idempotently
-            // sets reader_stop again and guards against double-close via
-            // transport_closed, which was already set above).
+            unsafe { close_transport_conn(transport, *conn_id) };
         }
+        for (_, lifecycle) in &closing {
+            lifecycle.wait_for_idle();
+        }
+        // The slots are now closed with no claimed sender in flight; draining
+        // permits actor Drop to join each reader without any slot-reuse race.
+        let drained: Vec<ConnectionActor> = mgr.connections.access(std::mem::take);
+        drop(drained);
         mgr.reader_lifecycle.wait_for_idle();
+        let workers: Vec<JoinHandle<()>> = mgr.reverse_link_workers.access(std::mem::take);
+        for worker in workers {
+            let _ = worker.join();
+        }
         let workers: Vec<JoinHandle<()>> = mgr.reconnect_workers.access(std::mem::take);
         for worker in workers {
             let _ = worker.join();
@@ -3372,8 +3552,7 @@ pub(crate) unsafe fn hew_connmgr_close_inbound_spawn(mgr: *mut HewConnMgr) {
     mgr_ref.inbound_spawn_closed.store(true, Ordering::SeqCst);
 }
 
-/// Return a clone of the inbound-ask spawn-gate flag for `node_inbound_router`
-/// to consult before spawning a worker.
+/// Return a clone of the inbound-worker spawn gate.
 ///
 /// # Safety
 ///
@@ -3389,10 +3568,11 @@ pub(crate) unsafe fn hew_connmgr_inbound_spawn_closed_flag(
     Some(Arc::clone(&mgr_ref.inbound_spawn_closed))
 }
 
-/// Return a clone of the per-manager inbound-ask active counter.
+/// Return a clone of the per-manager inbound-worker active counter.
 ///
-/// Used by `node_inbound_router` to track workers for this specific manager
-/// and by `hew_node_stop` to drain them before freeing node resources.
+/// Used by inbound ask and reverse-link setup paths to track workers for this
+/// specific manager, and by `hew_node_stop` to drain them before freeing node
+/// resources.
 ///
 /// # Safety
 ///
@@ -3406,6 +3586,67 @@ pub(crate) unsafe fn hew_connmgr_inbound_ask_active(
     // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
     let mgr_ref = unsafe { &*mgr };
     Some(Arc::clone(&mgr_ref.inbound_ask_active))
+}
+
+/// Resolve the active publication token only when `conn_id` is still bound to
+/// the exact peer node/session owning `target`.
+///
+/// # Safety
+///
+/// `mgr` must remain valid for this call.
+pub(crate) unsafe fn hew_connmgr_publication_token_for_target(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    target: Location,
+) -> Option<u64> {
+    if mgr.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for this call.
+    unsafe { &*mgr }.connections.access(|connections| {
+        connections
+            .iter()
+            .find(|connection| {
+                connection.conn_id == conn_id
+                    && connection.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && connection.peer_identity == Some(target.node())
+                    && connection.peer_session_incarnation == target.incarnation()
+            })
+            .map(|connection| connection.publication_token)
+    })
+}
+
+/// Track a deferred reverse-link worker so manager teardown joins it.
+///
+/// # Safety
+///
+/// `mgr` must remain valid for this call.
+pub(crate) unsafe fn hew_connmgr_track_reverse_link_worker(
+    mgr: *mut HewConnMgr,
+    worker: JoinHandle<()>,
+) {
+    if mgr.is_null() {
+        let _ = worker.join();
+        return;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for this call.
+    let mgr_ref = unsafe { &*mgr };
+    let finished = mgr_ref.reverse_link_workers.access(|workers| {
+        let mut finished = Vec::new();
+        let mut index = 0;
+        while index < workers.len() {
+            if workers[index].is_finished() {
+                finished.push(workers.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        workers.push(worker);
+        finished
+    });
+    for worker in finished {
+        let _ = worker.join();
+    }
 }
 
 /// Configure manager-wide reconnect policy.
@@ -4072,6 +4313,7 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
             conn.publication_token,
             Arc::clone(&conn.publication_sync),
             Arc::clone(&conn.publication_removed),
+            Arc::clone(&conn.claimed_send_lifecycle),
         ))
     });
     let Some((
@@ -4080,6 +4322,7 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         publication_token,
         publication_sync,
         publication_removed,
+        claimed_send_lifecycle,
     )) = publication_data
     else {
         return -1;
@@ -4112,13 +4355,32 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         }
     }
 
-    // Step 2b: remove the connection from the list. The connections lock is
-    // released before waking the reader — the reader-cleanup path can re-enter
-    // hew_connmgr_remove on an unexpected drop; releasing here prevents deadlock.
-    // A second concurrent call (reader re-entry) will find conn_id gone and
-    // return 0 harmlessly.
+    // Step 2b: close the transport while the actor remains in the list. That
+    // keeps a new admission from reusing this numeric slot until every claimed
+    // deferred send has observed the close and released its lifecycle guard.
+    let marked = mgr.connections.access(|connections| {
+        let Some(connection) = connections.iter().find(|connection| {
+            connection.conn_id == conn_id && connection.publication_token == publication_token
+        }) else {
+            return false;
+        };
+        connection.reader_stop.store(1, Ordering::Release);
+        connection.transport_closed.store(true, Ordering::Release);
+        true
+    });
+    if !marked {
+        return 0;
+    }
+    // SAFETY: transport is valid per manager contract.
+    unsafe { close_transport_conn(mgr.transport, conn_id) };
+    claimed_send_lifecycle.wait_for_idle();
+
+    // Remove only the exact closed publication. A second concurrent removal
+    // finds it gone and returns harmlessly.
     let conn = mgr.connections.access(|conns| {
-        let idx = conns.iter().position(|c| c.conn_id == conn_id)?;
+        let idx = conns.iter().position(|connection| {
+            connection.conn_id == conn_id && connection.publication_token == publication_token
+        })?;
         let conn = conns.swap_remove(idx);
         conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
         Some(conn)
@@ -4128,14 +4390,6 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         return 0;
     };
 
-    // Mark the reader as explicitly stopped before closing the transport so an
-    // awakened reader does not treat this teardown as an unexpected drop.
-    conn.reader_stop.store(1, Ordering::Release);
-    // Mark closed before the explicit close so Drop does not double-close.
-    conn.transport_closed.store(true, Ordering::Release);
-    // Close the transport connection so a blocking recv unblocks.
-    // SAFETY: transport is valid per manager contract.
-    unsafe { close_transport_conn(mgr.transport, conn_id) };
     // Resolve a still-pending admission BEFORE joining the reader. When removal
     // wins the race against `publish_connection_established`, the publication
     // early-returns on `publication_removed` without publishing or aborting,
@@ -4366,12 +4620,76 @@ pub unsafe extern "C" fn hew_connmgr_send(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps claimed-slot validation atomic with encrypted/plaintext transport sends"
+)]
 unsafe fn send_preencoded_on_manager(
     mgr_ref: &HewConnMgr,
     conn_id: c_int,
+    expected_publication_token: Option<u64>,
     data: *const u8,
     len: usize,
 ) -> c_int {
+    if let Some(publication_token) = expected_publication_token {
+        let lease = mgr_ref.connections.access(|connections| {
+            let active = connections.iter().find(|connection| {
+                connection.conn_id == conn_id
+                    && connection.publication_token == publication_token
+                    && connection.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+            })?;
+            Some(ClaimedSendLease {
+                _guard: active.claimed_send_lifecycle.register(),
+                publication_removed: Arc::clone(&active.publication_removed),
+                #[cfg(feature = "encryption")]
+                noise_transport: Arc::clone(&active.noise_transport),
+            })
+        });
+        let Some(lease) = lease else {
+            return -1;
+        };
+        if lease.publication_removed.load(Ordering::Acquire) {
+            return -1;
+        }
+
+        #[cfg(feature = "encryption")]
+        {
+            // SAFETY: data is valid for `len` bytes per caller contract.
+            let slice = unsafe { std::slice::from_raw_parts(data, len) };
+            let mut ciphertext = vec![0u8; len + 16];
+            let mut guard = lease.noise_transport.lock_or_recover();
+            if let Some(noise) = guard.as_mut() {
+                let Ok(n) = noise.write_message(slice, &mut ciphertext) else {
+                    return -1;
+                };
+                ciphertext.truncate(n);
+                // SAFETY: teardown closes the connection before waiting for this
+                // lease, so a blocked send is interrupted without slot reuse.
+                return if unsafe { send_frame(mgr_ref.transport, conn_id, &ciphertext) } {
+                    0
+                } else {
+                    -1
+                };
+            }
+        }
+
+        // SAFETY: transport remains valid while the manager-owned worker is
+        // joined; the claimed lease prevents slot removal/reuse until return.
+        let transport = unsafe { &*mgr_ref.transport };
+        // SAFETY: `transport` remains valid for the manager lifetime.
+        let rc = if let Some(ops) = unsafe { transport.ops.as_ref() } {
+            if let Some(send_fn) = ops.send {
+                // SAFETY: data is valid for `len` bytes per caller contract.
+                unsafe { send_fn(transport.r#impl, conn_id, data.cast_mut().cast(), len) }
+            } else {
+                -1
+            }
+        } else {
+            -1
+        };
+        return if rc > 0 { 0 } else { -1 };
+    }
+
     #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
@@ -4379,7 +4697,9 @@ unsafe fn send_preencoded_on_manager(
         let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
         let ok = mgr_ref.connections.access(|conns| {
             let active = conns.iter().find(|c| {
-                c.conn_id == conn_id && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                c.conn_id == conn_id
+                    && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && expected_publication_token.is_none_or(|token| c.publication_token == token)
             });
             #[cfg(feature = "encryption")]
             if let Some(c) = active {
@@ -4463,7 +4783,27 @@ pub(crate) unsafe fn hew_connmgr_send_preencoded(
     // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
     let mgr_ref = unsafe { &*mgr };
     // SAFETY: forwarded caller contract.
-    unsafe { send_preencoded_on_manager(mgr_ref, conn_id, data, len) }
+    unsafe { send_preencoded_on_manager(mgr_ref, conn_id, None, data, len) }
+}
+
+/// Send a pre-encoded frame only if `conn_id` still names the exact published
+/// connection incarnation identified by `publication_token`.
+///
+/// # Safety
+///
+/// `mgr` must be valid and `data` readable for `len` bytes.
+pub(crate) unsafe fn hew_connmgr_send_preencoded_claimed(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    data: *const u8,
+    len: usize,
+) -> c_int {
+    if mgr.is_null() || conn_id == HEW_CONN_INVALID || (data.is_null() && len > 0) {
+        return -1;
+    }
+    // SAFETY: caller guarantees `mgr` and `data` validity.
+    unsafe { send_preencoded_on_manager(&*mgr, conn_id, Some(publication_token), data, len) }
 }
 
 /// Broadcast a registry-gossip control frame to active gossip-capable peers.
@@ -4520,7 +4860,9 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
             continue;
         }
         // SAFETY: manager is live and bytes is a complete encoded control frame.
-        if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, bytes.as_ptr(), bytes.len()) } == 0
+        if unsafe {
+            send_preencoded_on_manager(mgr_ref, conn_id, None, bytes.as_ptr(), bytes.len())
+        } == 0
         {
             success_count += 1;
         } else {
@@ -4795,6 +5137,7 @@ mod tests {
             inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
             inbound_ask_active: Arc::new(AtomicUsize::new(0)),
             reconnect_workers: PoisonSafe::new(Vec::new()),
+            reverse_link_workers: PoisonSafe::new(Vec::new()),
             reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 0,
@@ -4875,6 +5218,7 @@ mod tests {
             inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
             inbound_ask_active: Arc::new(AtomicUsize::new(0)),
             reconnect_workers: PoisonSafe::new(Vec::new()),
+            reverse_link_workers: PoisonSafe::new(Vec::new()),
             reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 1,
@@ -5094,6 +5438,7 @@ mod tests {
             inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
             inbound_ask_active: Arc::new(AtomicUsize::new(0)),
             reconnect_workers: PoisonSafe::new(Vec::new()),
+            reverse_link_workers: PoisonSafe::new(Vec::new()),
             reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 1,
@@ -5116,6 +5461,7 @@ mod tests {
             target: test_location(1, 77),
             policy_tag: 1,
             reciprocate: 0,
+            setup_id: 456,
         };
 
         let link_req = ControlFrame {
@@ -5135,7 +5481,7 @@ mod tests {
 
         crate::runtime::rt_current()
             .monitors
-            .register_remote_link_watcher(
+            .register_remote_link_watcher_for_test(
                 payload.target.slot(),
                 test_location(2, payload.linker.slot()),
                 payload.ref_id,
@@ -8836,7 +9182,7 @@ mod tests {
     }
 
     #[test]
-    fn local_schema_hash_is_not_placeholder() {
-        assert_ne!(local_schema_hash(), FNV1A32_OFFSET_BASIS);
+    fn local_schema_hash_covers_acknowledged_setup_controls() {
+        assert_eq!(local_schema_hash(), 0x774b_20fa);
     }
 }

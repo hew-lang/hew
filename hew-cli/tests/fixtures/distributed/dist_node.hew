@@ -41,6 +41,7 @@ extern "C" {
     fn hew_actor_self_stop();
     fn hew_actor_self_id() -> i64;
     fn hew_node_api_unregister(name: string) -> i32;
+    fn hew_dist_setup_race_kind() -> i64;
 }
 
 // `record` is Serializable — required for RemotePid messaging across the wire.
@@ -310,8 +311,9 @@ actor MonitorProbe {
     // drive: 0 = clean stop, 1 = crash, 2 = leave target alive.
     receive fn arm(peer: RemotePid<KeyValue>, drive: i64) -> i64 {
         active_monitor = monitor(peer);
-        expected_monitor_id = unsafe {
-            hew_dist_monitor_current_actor_ref_id()
+        expected_monitor_id = match active_monitor {
+            Result::Ok(monitor_ref) => monitor_ref.id().value,
+            Result::Err(_) => 0,
         };
         if expected_monitor_id == 0 {
             return 1;
@@ -665,6 +667,90 @@ actor MonitorProbe {
     }
 }
 
+actor SetupRaceStopper {
+    let monitor_target: LocalPid<KeyValue>;
+    let link_target: LocalPid<KeyValue>;
+
+    receive fn run() {
+        var monitor_stopped = false;
+        var link_stopped = false;
+        loop {
+            let kind = unsafe {
+                hew_dist_setup_race_kind()
+            };
+            if kind == 1 && !monitor_stopped {
+                let _ = await monitor_target.handle(KvReq::StopSelf);
+                monitor_stopped = true;
+            }
+            if kind == 2 && !link_stopped {
+                let _ = await link_target.handle(KvReq::StopSelf);
+                link_stopped = true;
+            }
+            if monitor_stopped && link_stopped {
+                return;
+            }
+            sleep(1ms);
+        }
+    }
+}
+
+actor LinkSetupRaceProbe {
+    var active_monitor: Result<MonitorRef, MonitorError>;
+    var expected_monitor_id: u64 = 0;
+    var down_count: i64 = 0;
+    var down_reason: i64 = 100;
+
+    receive fn arm(peer: RemotePid<KeyValue>) -> i64 {
+        let linker = spawn Linker(policy_sel: 0);
+        active_monitor = monitor(linker);
+        expected_monitor_id = match active_monitor {
+            Result::Ok(monitor_ref) => monitor_ref.id().value,
+            Result::Err(_) => 0,
+        };
+        if expected_monitor_id == 0 {
+            return 0;
+        }
+        match await linker.link_go(peer) {
+            Result::Ok(linker_id) => linker_id,
+            Result::Err(_) => 0,
+        }
+    }
+
+    receive fn status() -> i64 {
+        if down_count == 0 {
+            100
+        } else {
+            if down_count == 1 {
+                down_reason
+            } else {
+                -99
+            }
+        }
+    }
+
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        down_count = down_count + 1;
+        if note.monitor.value != expected_monitor_id {
+            down_reason = -98;
+            return;
+        }
+        match note.target {
+            DownTarget::Local(_) => {},
+            DownTarget::Remote(_) => {
+                down_reason = -97;
+                return;
+            },
+        }
+        down_reason = match note.reason {
+            DownReason::Crashed(_) => 5,
+            DownReason::Exited => 6,
+            DownReason::MonitorLost => -1,
+            DownReason::LocalShutdown => -3,
+        };
+    }
+}
+
 actor MonitorSetupProbe {
     receive fn wait_for_partition(peer: RemotePid<KeyValue>) -> i64 {
         var attempts: i64 = 0;
@@ -862,6 +948,19 @@ fn run_server(port: string, scenario: string) {
     Node::register("wire", wp);
     let identity = spawn IdentityProbe;
     Node::register("identity", identity);
+    if scenario == "remote_setup_exit_race" {
+        let monitor_store: HashMap<string, string> = HashMap::new();
+        let monitor_target = spawn KeyValue(store: monitor_store);
+        Node::register("monitor-race", monitor_target);
+        let link_store: HashMap<string, string> = HashMap::new();
+        let link_target = spawn KeyValue(store: link_store);
+        Node::register("link-race", link_target);
+        let stopper = spawn SetupRaceStopper(
+            monitor_target: monitor_target,
+            link_target: link_target
+        );
+        stopper.run();
+    }
     signal_server_listening(kx);
     if os.env("HEW_DIST_RESTARTED") == "1" {
         publish_atomic(kx, "server.restarted", "1");
@@ -1171,6 +1270,81 @@ fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
+fn scenario_remote_setup_exit_race(
+    monitor_target: RemotePid<KeyValue>,
+    link_target: RemotePid<KeyValue>
+) -> i64 {
+    let monitor_status = monitor_hook_scenario(
+        monitor_target,
+        "remote_setup_exit_race_monitor",
+        2,
+        -1,
+        false
+    );
+    if monitor_status != 0 {
+        return monitor_status;
+    }
+
+    let probe = spawn LinkSetupRaceProbe(
+        active_monitor: Err(MonitorError::InvalidTarget),
+        expected_monitor_id: 0,
+        down_count: 0,
+        down_reason: 100
+    );
+    let armed = await probe.arm(link_target);
+    let linker_id = match armed {
+        Result::Ok(value) => value,
+        Result::Err(_) => {
+            println("FAIL remote_setup_exit_race link-arm-error");
+            return 20;
+        },
+    };
+    if linker_id == 0 {
+        println("FAIL remote_setup_exit_race link-register-failed");
+        return 21;
+    }
+    var attempts: i64 = 0;
+    loop {
+        let status = await probe.status();
+        let observed = match status {
+            Result::Ok(value) => value,
+            Result::Err(_) => {
+                println("FAIL remote_setup_exit_race link-status-error");
+                return 22;
+            },
+        };
+        if observed != 100 {
+            if observed != 5 {
+                println(f"FAIL remote_setup_exit_race link-down={observed}");
+                return 23;
+            }
+            break;
+        }
+        attempts = attempts + 1;
+        if attempts >= 300 {
+            println("FAIL remote_setup_exit_race link-down-timeout");
+            return 24;
+        }
+        sleep(100ms);
+    }
+    println("PASS remote_setup_exit_race link-down=5");
+    sleep(1200ms);
+    match await probe.status() {
+        Result::Ok(value) => {
+            if value != 5 {
+                println(f"FAIL remote_setup_exit_race link-duplicate={value}");
+                return 25;
+            }
+        },
+        Result::Err(_) => {
+            println("FAIL remote_setup_exit_race link-duplicate-check-error");
+            return 26;
+        },
+    }
+    println("PASS remote_setup_exit_race link-no-dup");
+    0
+}
+
 fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     println("READY_DROP partition_ask");
     let injector = spawn PartitionInjector;
@@ -1376,6 +1550,19 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
     if lid == 0 {
         println(f"FAIL {scenario} link-register-failed");
         return 3;
+    }
+    let live = await linker.ping();
+    match live {
+        Result::Ok(value) => {
+            if value != 7 {
+                println(f"FAIL {scenario} linker-pre-cascade-wrong value={value}");
+                return 7;
+            }
+        },
+        Result::Err(_) => {
+            println(f"FAIL {scenario} linker-died-during-setup");
+            return 7;
+        },
     }
     if drive == "stop" {
         let t = kv.send(KvReq::StopSelf);
@@ -1771,6 +1958,26 @@ fn run_client(port: string, scenario: string) -> i64 {
             },
             Result::Ok(wp) => {
                 scenario_wire_cbor(wp)
+            },
+        }
+    } else if scenario == "remote_setup_exit_race" {
+        let monitor_found = lookup_with_retry("monitor-race");
+        match monitor_found {
+            Result::Err(_) => {
+                println("FAIL remote_setup_exit_race monitor-lookup-unresolved");
+                1
+            },
+            Result::Ok(monitor_target) => {
+                let link_found = lookup_with_retry("link-race");
+                match link_found {
+                    Result::Err(_) => {
+                        println("FAIL remote_setup_exit_race link-lookup-unresolved");
+                        1
+                    },
+                    Result::Ok(link_target) => {
+                        scenario_remote_setup_exit_race(monitor_target, link_target)
+                    },
+                }
             },
         }
     } else {

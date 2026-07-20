@@ -1,0 +1,11 @@
+type Pair { tag: i64, a: string, b: string }
+
+fn main() -> i64 {
+    let value = Pair { tag: 0, a: "a" + "x", b: "b" + "y" };
+    let _result = match value {
+        Pair { tag: 0, a, b: _ } => a.len(),
+        Pair { tag: _, a: _, b: _ } => 2,
+    };
+    println(value.b);
+    0
+}

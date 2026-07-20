@@ -2171,6 +2171,8 @@ impl Builder {
 
         let scrutinee_is_non_bitcopy = !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty);
         let ownership_mode = project_match_ownership_mode(arms);
+        let consume_owned = scrutinee_is_non_bitcopy
+            && matches!(ownership_mode, ProjectMatchOwnershipMode::Consume);
         if scrutinee_is_non_bitcopy {
             if let Some((construct, note)) = self.match_project_scrutinee_reject(scrutinee) {
                 self.diagnostics.push(MirDiagnostic {
@@ -2182,25 +2184,51 @@ impl Builder {
                 });
                 return None;
             }
-            if !matches!(ownership_mode, ProjectMatchOwnershipMode::Borrow) {
+            if matches!(ownership_mode, ProjectMatchOwnershipMode::NotApplicable) {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "literal predicates on owned record/tuple match destructure"
-                            .to_string(),
+                        construct: "non-project arm in owned literal-predicate match".to_string(),
                         site: scrutinee.site,
                     },
-                    note: "runtime-selected owned project arms that extract fields require \
-                           uniform source consumption and skipped-field discharge on every \
-                           selected path"
+                    note: "owned literal-predicate lowering requires one uniform record/tuple \
+                           project chain"
                         .to_string(),
                 });
                 return None;
+            }
+            if consume_owned {
+                if let HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(id),
+                    ..
+                } = &scrutinee.kind
+                {
+                    if self
+                        .binding_locals
+                        .get(id)
+                        .and_then(|place| base_local(*place))
+                        .is_some_and(|local| self.local_storage_is_interior_alias(local))
+                    {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct:
+                                    "owned literal-predicate match on interior alias binding"
+                                        .to_string(),
+                                site: scrutinee.site,
+                            },
+                            note: "the direct binding aliases another aggregate's interior \
+                                   storage, so selected-arm field discharge cannot transfer \
+                                   ownership safely; bind or clone a fresh complete value first"
+                                .to_string(),
+                        });
+                        return None;
+                    }
+                }
             }
         }
 
         let arm_discharges = arms
             .iter()
-            .map(|arm| self.preflight_selected_project_arm(scrutinee, arm, false))
+            .map(|arm| self.preflight_selected_project_arm(scrutinee, arm, consume_owned))
             .collect::<Option<Vec<_>>>()?;
         let result_place = self.alloc_local(result_ty.clone());
         let Place::Local(scrutinee_local) = self.lower_value(scrutinee)? else {
@@ -2298,7 +2326,7 @@ impl Builder {
                 scrutinee_local,
                 arm,
                 discharges,
-                false,
+                consume_owned,
                 result_place,
             );
             self.finish_current_block(Terminator::Goto { target: join_bb });

@@ -1,0 +1,12 @@
+type Pair { tag: i64, a: string, b: string }
+
+fn make() -> Pair {
+    Pair { tag: 0, a: "a" + "x", b: "b" + "y" }
+}
+
+fn main() -> i64 {
+    match make() {
+        Pair { tag: 0, a, b: _ } => a.len(),
+        Pair { tag: _, a: _, b: _ } => 2,
+    }
+}

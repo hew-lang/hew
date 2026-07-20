@@ -1,0 +1,13 @@
+type Pair { tag: i64, a: string, b: string }
+type Holder { pair: Pair }
+
+fn main() -> i64 {
+    let holder = Holder {
+        pair: Pair { tag: 0, a: "a" + "x", b: "b" + "y" },
+    };
+    let _result = match holder.pair {
+        Pair { tag: 0, a, b: _ } => a.len(),
+        Pair { tag: _, a: _, b: _ } => 2,
+    };
+    0
+}

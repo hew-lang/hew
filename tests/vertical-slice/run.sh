@@ -1652,6 +1652,8 @@ run_accept_expect_stdout "match_record_literal_predicate"
 run_accept_expect_stdout "match_owned_record_literal_predicate"
 run_accept_expect_stdout "match_owned_tuple_literal_predicate"
 run_accept_expect_stdout "match_owned_string_literal_predicate"
+run_accept_expect_stdout "match_owned_record_literal_predicate_extract"
+run_accept_expect_stdout "match_owned_tuple_literal_predicate_extract"
 
 run_accept_expect_stdout "owned_nested_tuple_return_drop"
 run_accept_expect_stdout "owned_nested_tuple_clone"
@@ -4323,6 +4325,56 @@ if "${HEW}" check \
   exit 1
 fi
 grep -q 'guarded record/tuple match destructure' "${reject_output}"
+
+# Literal-predicate project chains retain the same fail-closed boundaries as
+# ordinary owned destructures. Guards cannot roll back selected-arm transfers.
+for fixture in match_predicate_guarded_record match_predicate_guarded_tuple; do
+  if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/${fixture}.hew" \
+      >"${reject_output}" 2>&1; then
+    echo "expected ${fixture} fixture to fail" >&2
+    exit 1
+  fi
+  grep -q 'guarded record/tuple match destructure' "${reject_output}"
+done
+
+# Projection and captured-binding scrutinees have no safe consume anchor.
+for fixture in match_predicate_projection_scrutinee match_predicate_captured_scrutinee; do
+  if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/${fixture}.hew" \
+      >"${reject_output}" 2>&1; then
+    echo "expected ${fixture} fixture to fail" >&2
+    exit 1
+  fi
+  grep -q 'non-BitCopy match destructure on projection scrutinee' "${reject_output}"
+done
+
+# A temporary owned aggregate likewise has no binding to consume-mark.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_predicate_temporary_scrutinee.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_predicate_temporary_scrutinee fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-BitCopy match destructure on temporary scrutinee' "${reject_output}"
+
+# Every selected arm must discharge all unbound owned fields before an owned
+# extraction chain is admitted; closure fields have no safe discharge route.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_predicate_wildcard_closure_field.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_predicate_wildcard_closure_field fixture to fail" >&2
+  exit 1
+fi
+grep -q 'match-destructure wildcard on owned aggregate field' "${reject_output}"
+
+# Uniformly consuming predicate chains make the original binding unavailable
+# after the match, just like ordinary owned extraction.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/match_predicate_use_after_consume.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected match_predicate_use_after_consume fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UseAfterConsume' "${reject_output}"
 
 # Regression: file-imported trait impl methods emit as definitions, not
 # external declarations. The fourth-pass (module-graph walk) previously

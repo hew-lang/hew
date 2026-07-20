@@ -787,6 +787,7 @@ pub(super) fn elaborate(
         &builder.binding_scope,
         &builder.loop_back_edge_blocks,
         &builder.locals,
+        &builder.match_project_consumed_binder_locals,
     );
 
     for (exit, plan) in &mut drop_plans {
@@ -3676,6 +3677,7 @@ pub(super) fn enumerate_exits(
     binding_scope: &HashMap<BindingId, ScopeId>,
     loop_back_edge_blocks: &HashMap<u32, ScopeId>,
     locals: &[ResolvedTy],
+    match_project_consumed_binder_locals: &HashSet<u32>,
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
     // Track the highest block id observed so cleanup-block ids can
     // start past it. Slice 2 onwards may emit multiple non-trivial
@@ -3855,8 +3857,12 @@ pub(super) fn enumerate_exits(
     // edge. Tainting it (empty `locals` disables the exemption) would strand its
     // release at a join → `Uninit` → no `Return` recovery → leak. Enum/tuple
     // payload destructures stay tainted via the `Move`-from-interior arm
-    // regardless of `locals`, so the double-free fix is unaffected.
-    let scope_close_alias_tainted = compute_projection_alias_taint(blocks, &HashSet::new(), locals);
+    // regardless of `locals`, so the double-free fix is unaffected. The exact
+    // consumed-project binder set exempts only field-load destinations whose
+    // parent composite is consume-marked on the selected arm; those destinations
+    // are sole owners and must close on this edge before the join loses them.
+    let scope_close_alias_tainted =
+        compute_projection_alias_taint(blocks, match_project_consumed_binder_locals, locals);
     let drops_for_scope_close_goto = |block_id: u32, target: u32| -> Vec<ElabDrop> {
         drops_for_exit(block_id)
             .into_iter()

@@ -1,0 +1,11 @@
+type Holder { tag: i64, label: string, op: fn(i64) -> i64 }
+
+fn main() -> i64 {
+    let k = 3;
+    let value = Holder { tag: 0, label: "l" + "abel", op: |x| x * k };
+    let _result = match value {
+        Holder { tag: 0, label, op: _ } => label.len(),
+        Holder { tag: _, label: _, op: _ } => 2,
+    };
+    0
+}

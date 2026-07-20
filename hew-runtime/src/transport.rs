@@ -1567,6 +1567,13 @@ pub unsafe extern "C" fn hew_tcp_connect_timed(addr: *const c_char, deadline_ms:
             );
             return -1;
         }
+        Err(BlockingPoolError::WorkerPanicked) => {
+            hew_cabi::sink::set_last_error_with_errno(
+                String::from("hew_tcp_connect: DNS resolution worker panicked"),
+                0,
+            );
+            return -1;
+        }
         Err(BlockingPoolError::NoRuntime) => {
             // Fail closed: no runtime installed, so no blocking pool to offload
             // DNS onto. Clean -1 with EINVAL rather than a SIGABRT across the ABI.
@@ -1762,6 +1769,13 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
             return -1;
         }
         Err(BlockingPoolError::PoolStopped) => {
+            return -1;
+        }
+        Err(BlockingPoolError::WorkerPanicked) => {
+            hew_cabi::sink::set_last_error_with_errno(
+                String::from("hew_tcp_connect: DNS resolution worker panicked"),
+                0,
+            );
             return -1;
         }
         Err(BlockingPoolError::NoRuntime) => {

@@ -122,11 +122,20 @@ pub enum BlockingPoolError {
     /// runtime test guard (tests). The task was never enqueued; the entrypoint
     /// returns a clean error to the C caller instead of aborting.
     NoRuntime,
+    /// The worker caught a panic from the submitted closure and reported it to
+    /// the waiting caller.
+    WorkerPanicked,
+}
+
+enum SlotOutcome<T> {
+    Pending,
+    Ready(T),
+    Panicked(String),
 }
 
 /// Result slot shared between the caller (waits) and the worker (writes).
 struct Slot<T> {
-    value: Mutex<Option<T>>,
+    outcome: Mutex<SlotOutcome<T>>,
     ready: Condvar,
 }
 
@@ -158,11 +167,17 @@ where
     let TaskCtx { slot, mut f } = *ctx;
     // Take the FnOnce out of the Option so we can call it by value.
     let f = f.take().expect("FnOnce only invoked once");
-    let value = f();
-    // Publish the result. If the caller has already given up (timed out),
-    // the value is simply stored and dropped when the last Arc drops.
-    let mut guard = slot.value.lock_or_recover();
-    *guard = Some(value);
+    let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(value) => SlotOutcome::Ready(value),
+        Err(payload) => {
+            let message = crate::util::panic_payload_message(payload.as_ref());
+            SlotOutcome::Panicked(message)
+        }
+    };
+    // Publish the outcome. If the caller has already given up (timed out), it
+    // is stored and dropped when the last Arc drops.
+    let mut guard = slot.outcome.lock_or_recover();
+    *guard = outcome;
     slot.ready.notify_one();
 }
 
@@ -199,7 +214,8 @@ where
 /// Returns `Err(BlockingPoolError::PoolStopped)` if `pool` is null or the
 /// pool has been stopped (so the task could not be enqueued). Returns
 /// `Err(BlockingPoolError::TimedOut)` if `deadline` is `Some(d)` and `d`
-/// elapses before the worker publishes a result.
+/// elapses before the worker publishes a result. Returns
+/// `Err(BlockingPoolError::WorkerPanicked)` if the submitted closure panics.
 ///
 /// # Panics
 ///
@@ -227,7 +243,7 @@ where
     }
 
     let slot: Arc<Slot<T>> = Arc::new(Slot {
-        value: Mutex::new(None),
+        outcome: Mutex::new(SlotOutcome::Pending),
         ready: Condvar::new(),
     });
 
@@ -260,17 +276,16 @@ where
     // expires. cleanup-all-exits invariant: on the timeout path we explicitly
     // drop the guard and the Arc — the worker still holds a reference and
     // will drop the slot's storage after publishing.
-    let mut guard = slot.value.lock_or_recover();
+    let mut guard = slot.outcome.lock_or_recover();
     match deadline {
         None => {
-            while guard.is_none() {
+            while matches!(*guard, SlotOutcome::Pending) {
                 guard = slot.ready.wait_or_recover(guard);
             }
-            Ok(guard.take().expect("value was just observed Some"))
         }
         Some(d) => {
             let start = std::time::Instant::now();
-            while guard.is_none() {
+            while matches!(*guard, SlotOutcome::Pending) {
                 let elapsed = start.elapsed();
                 let Some(remaining) = d.checked_sub(elapsed) else {
                     return Err(BlockingPoolError::TimedOut);
@@ -278,15 +293,23 @@ where
                 let (next_guard, wait_result) =
                     slot.ready.wait_timeout_or_recover(guard, remaining);
                 guard = next_guard;
-                if wait_result.timed_out() && guard.is_none() {
+                if wait_result.timed_out() && matches!(*guard, SlotOutcome::Pending) {
                     // cleanup-all-exits: dropping `guard` releases the lock
                     // before we return; `slot` (Arc) stays alive on the worker
                     // side and is freed when the worker publishes and drops.
                     return Err(BlockingPoolError::TimedOut);
                 }
             }
-            Ok(guard.take().expect("value was just observed Some"))
         }
+    }
+
+    match std::mem::replace(&mut *guard, SlotOutcome::Pending) {
+        SlotOutcome::Ready(value) => Ok(value),
+        SlotOutcome::Panicked(message) => {
+            crate::set_last_error(format!("blocking pool worker panicked: {message}"));
+            Err(BlockingPoolError::WorkerPanicked)
+        }
+        SlotOutcome::Pending => unreachable!("worker outcome was observed ready"),
     }
 }
 
@@ -401,7 +424,14 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
 
     // Join all worker threads.
     for handle in p.workers.drain(..) {
-        let _ = handle.join();
+        if let Err(panic_payload) = handle.join() {
+            let message = format!(
+                "blocking pool worker panicked during teardown: {}",
+                crate::util::panic_payload_message(panic_payload.as_ref())
+            );
+            crate::set_last_error(message.clone());
+            eprintln!("hew: {message}");
+        }
     }
 }
 
@@ -438,6 +468,7 @@ fn worker_loop(inner: &PoolInner) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CStr;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A count paired with a Mutex+Condvar "done" latch so the submitting
@@ -622,6 +653,46 @@ mod tests {
             // shared state was wedged.
             let result2 = spawn_blocking_result(pool, || "hello".to_string(), None);
             assert_eq!(result2.as_deref(), Ok("hello"));
+
+            hew_blocking_pool_stop(pool);
+        }
+    }
+
+    #[test]
+    fn worker_panic_reports_and_pool_survives() {
+        crate::hew_clear_error();
+
+        // SAFETY: test owns pool lifetime.
+        unsafe {
+            let pool = hew_blocking_pool_new();
+
+            let result = spawn_blocking_result::<(), _>(
+                pool,
+                || panic!("blocking worker intentional panic"),
+                None,
+            );
+            assert_eq!(result, Err(BlockingPoolError::WorkerPanicked));
+
+            let error_ptr = crate::hew_last_error();
+            assert!(
+                !error_ptr.is_null(),
+                "a panicking blocking worker must record a diagnostic"
+            );
+            // SAFETY: spawn_blocking_result populated this thread's last-error slot.
+            let error = CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8");
+            assert!(
+                error.contains("blocking pool worker panicked"),
+                "unexpected last error: {error}"
+            );
+            assert!(
+                error.contains("blocking worker intentional panic"),
+                "panic payload must be included in the diagnostic: {error}"
+            );
+
+            let following = spawn_blocking_result(pool, || 41_i32 + 1, None);
+            assert_eq!(following, Ok(42), "the pool queue must remain serviceable");
 
             hew_blocking_pool_stop(pool);
         }

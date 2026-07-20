@@ -1,7 +1,7 @@
 type Labels {
-    first: string,
-    code: i64,
-    last: string,
+    first: string;
+    code: i64;
+    last: string;
 }
 
 fn classify_record(value: Labels) -> i64 {
@@ -21,11 +21,7 @@ fn classify_tuple(value: (string, u8, string)) -> i64 {
 }
 
 fn main() -> i64 {
-    let labels = Labels {
-        first: "he" + "ad",
-        code: -1,
-        last: "" + "",
-    };
+    let labels = Labels { first: "he" + "ad", code: -1, last: "" + "" };
     let tuple: (string, u8, string) = ("" + "", 0, "ta" + "il");
     classify_record(labels) + classify_tuple(tuple)
 }

@@ -1,11 +1,17 @@
 #[resource]
-type Token { id: i64 }
+type Token {
+    id: i64;
+}
 
 impl Token {
     fn close(self) {}
 }
 
-type Packet { tag: i64, token: Token, text: string }
+type Packet {
+    tag: i64;
+    token: Token;
+    text: string;
+}
 
 fn record_join(p: Packet) -> i64 {
     match p {

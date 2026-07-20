@@ -291,10 +291,6 @@ declare i64 @hew_actor_pid(ptr)
 
 declare i32 @hew_node_api_register_by_pid(ptr, i64)
 
-declare i64 @hew_remote_pid_from_raw(i64, i64)
-
-declare i64 @hew_node_api_lookup(ptr)
-
 declare ptr @hew_stream_channel(i64)
 
 declare ptr @hew_stream_pair_sink(ptr)
@@ -1209,8 +1205,8 @@ unknown_msg_type:                                 ; preds = %payload_src
   call void @llvm.trap()
   unreachable
 
-dispatch_done:                                    ; preds = %msg_sys_exit_unhandled, %msg_311929158, %msg_1995638644
-  %dispatch_suspend_handle = phi ptr [ null, %msg_1995638644 ], [ null, %msg_311929158 ], [ null, %msg_sys_exit_unhandled ]
+dispatch_done:                                    ; preds = %msg_sys_exit_unhandled, %msg_sys_down_ignored, %msg_311929158, %msg_1995638644
+  %dispatch_suspend_handle = phi ptr [ null, %msg_1995638644 ], [ null, %msg_311929158 ], [ null, %msg_sys_down_ignored ], [ null, %msg_sys_exit_unhandled ]
   ret ptr %dispatch_suspend_handle
 
 borrow_src:                                       ; preds = %entry
@@ -1227,6 +1223,7 @@ payload_src:                                      ; preds = %copy_src, %borrow_p
     i32 1995638644, label %msg_1995638644
     i32 311929158, label %msg_311929158
     i32 103, label %msg_sys_exit_unhandled
+    i32 104, label %msg_sys_down_ignored
   ]
 
 borrow_payload_null:                              ; preds = %borrow_src
@@ -1254,6 +1251,9 @@ msg_sys_exit_unhandled:                           ; preds = %payload_src
   %exit_reason_ptr = getelementptr inbounds nuw { i64, i32, i32 }, ptr %payload_src_ptr, i32 0, i32 1
   %exit_reason = load i32, ptr %exit_reason_ptr, align 4
   call void @hew_actor_exit_unhandled(i32 %exit_reason)
+  br label %dispatch_done
+
+msg_sys_down_ignored:                             ; preds = %payload_src
   br label %dispatch_done
 }
 

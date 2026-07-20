@@ -292,7 +292,7 @@ ci-preflight-smoke:
 # Assert that target/debug/libhew.a is not stale relative to hew-lib and hew-runtime sources.
 # Run after `make stdlib` as a fast gate; exits non-zero if the .a predates any source input.
 check-libhew-fresh:
-	scripts/check-libhew-fresh.sh
+	scripts/check-libhew-fresh.sh --debug-dir $(DEBUG_DIR)
 
 # Opt-in merge-queue parity preflight.
 ci-preflight-strict:

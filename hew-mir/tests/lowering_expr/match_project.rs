@@ -430,3 +430,153 @@ fn caller() -> i64 {
     assert_eq!(record_places.len(), 1);
     assert_eq!(tuple_places.len(), 1);
 }
+
+#[test]
+fn predicate_project_arms_share_exact_selected_arm_shape() {
+    let pipeline = pipeline_with_tc(
+        r"
+type R {
+    b: i64,
+    a: i64,
+}
+
+fn record_case(r: R) -> i64 {
+    match r {
+        R { a: 0, b } => 10,
+        R { a, b } => 20,
+    }
+}
+
+fn tuple(t: (i64, i64, i64)) -> i64 {
+    match t {
+        (0, y, z) => 30,
+        (x, y, z) => 40,
+    }
+}
+",
+    );
+
+    let record = find_fn(&pipeline, "record_case");
+    let record_offsets = record
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::RecordFieldLoad { field_offset, .. } => Some(*field_offset),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        record_offsets,
+        vec![
+            FieldOffset(1),
+            FieldOffset(1),
+            FieldOffset(0),
+            FieldOffset(0)
+        ]
+    );
+    assert_eq!(
+        record
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::Move { .. }))
+            .count(),
+        3
+    );
+
+    let tuple = find_fn(&pipeline, "tuple");
+    let tuple_indexes = tuple
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::TupleFieldLoad { field_index, .. } => Some(*field_index),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(tuple_indexes, vec![0, 0, 1, 2, 1, 2]);
+    assert_eq!(
+        tuple
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::Move { .. }))
+            .count(),
+        3
+    );
+
+    let bind_counts = |name: &str| {
+        pipeline
+            .thir
+            .iter()
+            .find(|function| function.name == name)
+            .unwrap_or_else(|| panic!("function `{name}` not found in THIR"))
+            .statements
+            .iter()
+            .filter(|statement| matches!(statement, MirStatement::Bind { .. }))
+            .count()
+    };
+    assert_eq!(bind_counts("record_case"), 3);
+    assert_eq!(bind_counts("tuple"), 5);
+    assert_eq!(source_consume_count(&pipeline, "record_case", "r"), 0);
+    assert_eq!(source_consume_count(&pipeline, "tuple", "t"), 0);
+    assert_eq!(
+        drop_kind_counts(&all_drops(&pipeline, "record_case")),
+        (0, 0, 0)
+    );
+    assert_eq!(drop_kind_counts(&all_drops(&pipeline, "tuple")), (0, 0, 0));
+}
+
+#[test]
+fn skipped_owned_field_preflight_emits_no_partial_arm() {
+    let pipeline = pipeline_with_tc_allow_diags(
+        r#"
+type Holder {
+    label: string,
+    op: fn(i64) -> i64,
+}
+
+fn make() -> Holder {
+    let k = 3;
+    Holder { label: "l-" + "x", op: |x| x * k }
+}
+
+fn main() -> i64 {
+    let h = make();
+    let _s = match h {
+        Holder { label: l, op: _ } => l,
+    };
+    0
+}
+"#,
+    );
+
+    assert_eq!(pipeline.diagnostics.len(), 1);
+    assert!(matches!(
+        &pipeline.diagnostics[0].kind,
+        MirDiagnosticKind::NotYetImplemented { construct, .. }
+            if construct == "match-destructure wildcard on owned aggregate field"
+    ));
+    let main = find_fn(&pipeline, "main");
+    assert_eq!(
+        main.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::RecordFieldLoad { .. }))
+            .count(),
+        0
+    );
+    assert_eq!(
+        pipeline
+            .thir
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main THIR")
+            .statements
+            .iter()
+            .filter(|statement| matches!(statement, MirStatement::Bind { name, .. } if name == "l"))
+            .count(),
+        0
+    );
+}

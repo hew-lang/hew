@@ -25,6 +25,27 @@ pub(super) enum ProjectMatchOwnershipMode {
     NotApplicable,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ProjectAggregateKind {
+    Record,
+    Tuple,
+}
+
+#[derive(Clone, Debug)]
+enum ProjectFieldDischarge {
+    Leaf {
+        kind: ProjectAggregateKind,
+        field_idx: u32,
+        field_ty: ResolvedTy,
+        symbol: &'static str,
+    },
+    InPlace {
+        kind: ProjectAggregateKind,
+        field_idx: u32,
+        field_ty: ResolvedTy,
+    },
+}
+
 /// Classify a complete match chain before either parameter-consumption facts
 /// or project lowering make an ownership decision.
 pub(super) fn project_match_ownership_mode(
@@ -1698,8 +1719,346 @@ impl Builder {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "record/tuple project lowering keeps binding setup, field loads, and arm body CFG in one fail-closed block"
+        reason = "complete project-arm preflight keeps all fail-closed checks ahead of CFG emission"
     )]
+    fn preflight_selected_project_arm(
+        &mut self,
+        scrutinee: &HirExpr,
+        arm: &hew_hir::HirMatchArm,
+        consume_owned: bool,
+    ) -> Option<Vec<ProjectFieldDischarge>> {
+        let project_kind = match &arm.predicate {
+            hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                Some(ProjectAggregateKind::Record)
+            }
+            hew_hir::HirMatchArmPredicate::TupleProject { arity } => {
+                for field_idx in arm.bindings.iter().map(|binding| binding.field_idx).chain(
+                    arm.payload_predicates
+                        .iter()
+                        .map(|predicate| predicate.field_idx),
+                ) {
+                    if field_idx >= *arity {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "tuple project field index out of range".to_string(),
+                                site: arm.body.site,
+                            },
+                            note: format!(
+                                "project field {field_idx} is outside arity {arity}; \
+                                 the checker/HIR verifier should have rejected this"
+                            ),
+                        });
+                        return None;
+                    }
+                }
+                Some(ProjectAggregateKind::Tuple)
+            }
+            hew_hir::HirMatchArmPredicate::Wildcard
+            | hew_hir::HirMatchArmPredicate::Binding { .. } => {
+                if !arm.bindings.is_empty() {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "wildcard/binding match arm with project bindings"
+                                .to_string(),
+                            site: arm.body.site,
+                        },
+                        note: "wildcard/binding match arms must not carry project bindings; \
+                               this is a checker/HIR bug"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                None
+            }
+            hew_hir::HirMatchArmPredicate::EnumVariant { .. }
+            | hew_hir::HirMatchArmPredicate::Literal { .. }
+            | hew_hir::HirMatchArmPredicate::Regex { .. } => {
+                panic!("checker invariant violated: refutable arm in project match lowering");
+            }
+        };
+
+        if !consume_owned || matches!(arm.predicate, hew_hir::HirMatchArmPredicate::Binding { .. })
+        {
+            return Some(Vec::new());
+        }
+
+        let aggregate_kind = project_kind.unwrap_or_else(|| {
+            if matches!(self.subst_ty(&scrutinee.ty), ResolvedTy::Tuple(_)) {
+                ProjectAggregateKind::Tuple
+            } else {
+                ProjectAggregateKind::Record
+            }
+        });
+        let extracted: HashSet<u32> = arm
+            .bindings
+            .iter()
+            .map(|binding| binding.field_idx)
+            .collect();
+        let owned_fields = match aggregate_kind {
+            ProjectAggregateKind::Record => self.project_record_owned_field_list(&scrutinee.ty),
+            ProjectAggregateKind::Tuple => self.project_tuple_owned_field_list(&scrutinee.ty),
+        };
+        let mut discharges = Vec::new();
+        for (field_idx, field_ty) in owned_fields {
+            if extracted.contains(&field_idx) {
+                continue;
+            }
+            if matches!(field_ty, ResolvedTy::String)
+                || self.field_drop_in_place_admissible(&field_ty)
+            {
+                discharges.push(ProjectFieldDischarge::InPlace {
+                    kind: aggregate_kind,
+                    field_idx,
+                    field_ty,
+                });
+                continue;
+            }
+            if let ReleaseSymbolVerdict::Wired(symbol) =
+                self.project_field_inline_drop_symbol(&field_ty)
+            {
+                discharges.push(ProjectFieldDischarge::Leaf {
+                    kind: aggregate_kind,
+                    field_idx,
+                    field_ty,
+                    symbol,
+                });
+                continue;
+            }
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "match-destructure wildcard on owned aggregate field".to_string(),
+                    site: scrutinee.site,
+                },
+                note: format!(
+                    "field {field_idx} of `{}` has type `{}`, which neither the inline leaf \
+                     release nor the field-addressed in-place drop can discharge \
+                     (slices, `dyn Trait` fields, closures, affine handles, and \
+                     unregistered layouts are refused). Bind the field explicitly so \
+                     its drop is elaborated through `owned_locals`, or extract every \
+                     sibling instead of using `_` on this field — refusing to lower \
+                     fail-closed rather than emit a leak / wrong-ABI drop",
+                    scrutinee.ty.user_facing(),
+                    field_ty.user_facing(),
+                ),
+            });
+            return None;
+        }
+        Some(discharges)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "the ownership-complete selected-arm emitter keeps transfer and discharge ordering explicit"
+    )]
+    fn emit_selected_project_arm(
+        &mut self,
+        scrutinee: &HirExpr,
+        scrutinee_local: u32,
+        arm: &hew_hir::HirMatchArm,
+        discharges: &[ProjectFieldDischarge],
+        consume_owned: bool,
+        result_place: Place,
+    ) -> bool {
+        let consume_scrutinee = if consume_owned {
+            match &scrutinee.kind {
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(id),
+                    name,
+                } if !self.capture_env_sources.contains_key(id) => Some((*id, name.clone())),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let scrutinee_is_interior_alias =
+            consume_owned && self.local_storage_is_interior_alias(scrutinee_local);
+        let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len() + 1);
+
+        for binding in &arm.bindings {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: arm.body.site,
+                ty: binding_ty.clone(),
+            });
+            self.record_binding_scope(binding.binding);
+            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            let binding_is_string = matches!(binding_ty, ResolvedTy::String);
+            if keep_for_drop_elab {
+                self.register_owned_local(
+                    binding.binding,
+                    binding.name.clone(),
+                    binding_ty.clone(),
+                );
+                if ty_is_generator_handle(&binding_ty) {
+                    if let Some(scope) = self.active_scopes.last().copied() {
+                        self.scope_generator_bindings.push((
+                            scope,
+                            binding.binding,
+                            binding_ty.clone(),
+                        ));
+                    }
+                }
+            }
+            let dest = self.alloc_local(binding_ty);
+            if consume_scrutinee.is_some() && keep_for_drop_elab {
+                if let Some(local_idx) = base_local(dest) {
+                    self.match_project_consumed_binder_locals.insert(local_idx);
+                }
+            }
+            match &arm.predicate {
+                hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                    self.push_instr(Instr::RecordFieldLoad {
+                        record: Place::Local(scrutinee_local),
+                        field_offset: FieldOffset(binding.field_idx),
+                        dest,
+                    });
+                }
+                hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                    self.push_instr(Instr::TupleFieldLoad {
+                        tuple: Place::Local(scrutinee_local),
+                        field_index: binding.field_idx,
+                        dest,
+                    });
+                }
+                _ => unreachable!("project bindings passed selected-arm preflight"),
+            }
+            if consume_scrutinee.is_some() && !scrutinee_is_interior_alias && binding_is_string {
+                let field = match &arm.predicate {
+                    hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
+                        crate::model::FieldAddr::Record(FieldOffset(binding.field_idx))
+                    }
+                    hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
+                        crate::model::FieldAddr::Tuple(binding.field_idx)
+                    }
+                    _ => unreachable!("string project binding passed selected-arm preflight"),
+                };
+                self.push_instr(Instr::FieldDropInPlace {
+                    base: Place::Local(scrutinee_local),
+                    field,
+                    ty: ResolvedTy::String,
+                });
+            }
+            let previous = self.binding_locals.insert(binding.binding, dest);
+            overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
+        }
+
+        if let hew_hir::HirMatchArmPredicate::Binding {
+            binding_id,
+            name,
+            ty,
+        } = &arm.predicate
+        {
+            let binding_ty = self.subst_ty(ty);
+            self.statements.push(MirStatement::Bind {
+                binding: *binding_id,
+                name: name.clone(),
+                site: arm.body.site,
+                ty: binding_ty.clone(),
+            });
+            self.record_binding_scope(*binding_id);
+            let keep_for_drop_elab =
+                consume_owned && self.binding_seeds_drop_elaboration(&binding_ty);
+            if keep_for_drop_elab {
+                self.register_owned_local(*binding_id, name.clone(), binding_ty.clone());
+            }
+            let dest = self.alloc_local(binding_ty);
+            self.push_instr(Instr::Move {
+                dest,
+                src: Place::Local(scrutinee_local),
+            });
+            let previous = self.binding_locals.insert(*binding_id, dest);
+            overwritten_bindings.push((*binding_id, previous, keep_for_drop_elab));
+        }
+
+        if consume_owned && !scrutinee_is_interior_alias {
+            for discharge in discharges {
+                match discharge {
+                    ProjectFieldDischarge::Leaf {
+                        kind,
+                        field_idx,
+                        field_ty,
+                        symbol,
+                    } => {
+                        let temp = self.alloc_local(field_ty.clone());
+                        match kind {
+                            ProjectAggregateKind::Record => {
+                                self.push_instr(Instr::RecordFieldLoad {
+                                    record: Place::Local(scrutinee_local),
+                                    field_offset: FieldOffset(*field_idx),
+                                    dest: temp,
+                                });
+                            }
+                            ProjectAggregateKind::Tuple => {
+                                self.push_instr(Instr::TupleFieldLoad {
+                                    tuple: Place::Local(scrutinee_local),
+                                    field_index: *field_idx,
+                                    dest: temp,
+                                });
+                            }
+                        }
+                        self.push_instr(Instr::Drop {
+                            place: temp,
+                            ty: field_ty.clone(),
+                            drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                        });
+                    }
+                    ProjectFieldDischarge::InPlace {
+                        kind,
+                        field_idx,
+                        field_ty,
+                    } => {
+                        let field = match kind {
+                            ProjectAggregateKind::Record => {
+                                crate::model::FieldAddr::Record(FieldOffset(*field_idx))
+                            }
+                            ProjectAggregateKind::Tuple => {
+                                crate::model::FieldAddr::Tuple(*field_idx)
+                            }
+                        };
+                        self.push_instr(Instr::FieldDropInPlace {
+                            base: Place::Local(scrutinee_local),
+                            field,
+                            ty: field_ty.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some((scrutinee_id, scrutinee_name)) = consume_scrutinee {
+            self.statements.push(MirStatement::Use {
+                binding: scrutinee_id,
+                name: scrutinee_name,
+                site: scrutinee.site,
+                ty: self.subst_ty(&scrutinee.ty),
+                intent: IntentKind::Consume,
+            });
+            self.mark_binding_moved(scrutinee_id);
+        }
+
+        let value = self.lower_value(&arm.body);
+        for (binding, previous, keep_for_drop_elab) in overwritten_bindings.into_iter().rev() {
+            if keep_for_drop_elab {
+                continue;
+            }
+            if let Some(previous) = previous {
+                self.binding_locals.insert(binding, previous);
+            } else {
+                self.binding_locals.remove(&binding);
+            }
+        }
+        if let Some(src) = value {
+            self.push_instr(Instr::Move {
+                dest: result_place,
+                src,
+            });
+        }
+        !self.cursor_unreachable
+    }
+
     fn lower_match_project(
         &mut self,
         scrutinee: &HirExpr,
@@ -1719,20 +2078,6 @@ impl Builder {
             )
         })?;
 
-        // Guard gate. A record/tuple project pattern is irrefutable, so the
-        // first arm is taken unconditionally and this function lowers exactly
-        // that one body — it does not build an ordered arm chain. An arm guard
-        // (`Pattern if <cond>`) would therefore be silently dropped: a `false`
-        // guard has no fallthrough target here, so the guarded arm would still
-        // run (wrong result) and its destructure would consume the scrutinee
-        // out from under the arm the user intended. Honoring guards needs the
-        // deferred-bind / fallthrough lowering that `lower_match_binding_chain`
-        // and `lower_match_enum_tag` provide for their irrefutable-or-tagged
-        // arms; that is not wired for owned-field projection, where a failed
-        // guard would have to roll back partial moves. Reject fail-closed for
-        // every project match (BitCopy and non-BitCopy alike) rather than
-        // miscompile. Unguarded arms are unaffected: with no guard the single
-        // taken arm is exactly correct and any trailing arms are unreachable.
         if let Some(guard) = arms.iter().find_map(|arm| arm.guard.as_ref()) {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -1750,39 +2095,7 @@ impl Builder {
             return None;
         }
 
-        let result_place = self.alloc_local(result_ty.clone());
-        let scrutinee_place = self.lower_value(scrutinee)?;
-        let scrutinee_local = match scrutinee_place {
-            Place::Local(local) => local,
-            other => {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "project match scrutinee place shape".to_string(),
-                        site: scrutinee.site,
-                    },
-                    note: format!(
-                        "record/tuple match destructure requires a local scrutinee; got {other:?}"
-                    ),
-                });
-                return None;
-            }
-        };
-
         let scrutinee_is_non_bitcopy = !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty);
-
-        // Scrutinee-shape gate. A non-BitCopy record/tuple destructure
-        // either moves owned fields out of the scrutinee storage (with bindings)
-        // or discards the whole aggregate (all-wildcard). The only scrutinee
-        // shape we can lower leak- AND use-after-free-free is a non-captured
-        // `BindingRef`: it carries a composite drop (so an all-wildcard discard
-        // frees every owned field) and the dataflow checker can mark it
-        // `Consumed` (so a post-match read of a moved-out binding fires
-        // `UseAfterConsume`). This gate runs for EVERY non-BitCopy match-project
-        // — the earlier `!selected.bindings.is_empty()` guard let an all-wildcard
-        // owned aggregate bypass the check, and a temporary all-wildcard
-        // scrutinee (no composite drop) then leaked every owned field. Every
-        // other shape — projections, captures, and temporaries — fails closed.
-        // See `match_project_scrutinee_reject`.
         if scrutinee_is_non_bitcopy {
             if let Some((construct, note)) = self.match_project_scrutinee_reject(scrutinee) {
                 self.diagnostics.push(MirDiagnostic {
@@ -1795,509 +2108,32 @@ impl Builder {
                 return None;
             }
         }
+        let consume_owned = scrutinee_is_non_bitcopy && !selected.bindings.is_empty();
+        let discharges = self.preflight_selected_project_arm(scrutinee, selected, consume_owned)?;
 
-        // Skipped-field drop pre-flight (partial extraction only). When at
-        // least one owned field is bound, `derive_owned_record_drop_allowed` /
-        // `derive_tuple_composite_drop_allowed` suppress the scrutinee's
-        // composite drop (the field-binder release-owner rule and the direct
-        // `FieldDropInPlace` exclusion rule), so every UNSELECTED owned field
-        // must be discharged by the safety-drop loop below. Admission is the
-        // OR of the two discharge paths that loop can emit:
-        //   - a single-`ptr` leaf release symbol
-        //     (`project_field_inline_drop_symbol` — the load+`Instr::Drop`
-        //     path), or
-        //   - the field-addressed in-place drop
-        //     (`field_drop_in_place_admissible` — the `FieldDropInPlace`
-        //     path for record / tuple / fixed-array / inline-enum /
-        //     indirect-enum fields over registered layouts).
-        // Anything neither path can place — slices, `dyn Trait` fat fields,
-        // closures, affine handles (`Channel` / `Task` /
-        // `CancellationToken`), unregistered layouts — keeps this fail-closed
-        // refusal. Determine the unselected-owned set BEFORE emitting any code
-        // so the diagnostic surfaces cleanly without a half-lowered block.
-        // All-wildcard patterns skip this loop: with no binding to suppress
-        // it, the scrutinee's own composite drop frees every field (the gate
-        // above proved the scrutinee is a droppable `BindingRef`).
-        if !selected.bindings.is_empty() && scrutinee_is_non_bitcopy {
-            let extracted: HashSet<u32> = selected.bindings.iter().map(|b| b.field_idx).collect();
-            let owned_fields: Vec<(u32, ResolvedTy)> = match &selected.predicate {
-                hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                    self.project_record_owned_field_list(&scrutinee.ty)
-                }
-                hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
-                    self.project_tuple_owned_field_list(&scrutinee.ty)
-                }
-                _ => Vec::new(),
-            };
-            for (idx, field_ty) in &owned_fields {
-                if extracted.contains(idx) {
-                    continue;
-                }
-                // Admission requires a Wired leaf verdict or classifier
-                // admission. An Unwired `Vec` field (element release
-                // unwired) is refused here: it carries no emittable symbol
-                // and the in-place classifier does not admit leaf `Vec`s.
-                if !matches!(
-                    self.project_field_inline_drop_symbol(field_ty),
-                    ReleaseSymbolVerdict::Wired(_)
-                ) && !self.field_drop_in_place_admissible(field_ty)
-                {
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: "match-destructure wildcard on owned aggregate field"
-                                .to_string(),
-                            site: scrutinee.site,
-                        },
-                        note: format!(
-                            "field {idx} of `{}` has type `{}`, which neither the inline leaf \
-                             release nor the field-addressed in-place drop can discharge \
-                             (slices, `dyn Trait` fields, closures, affine handles, and \
-                             unregistered layouts are refused). Bind the field explicitly so \
-                             its drop is elaborated through `owned_locals`, or extract every \
-                             sibling instead of using `_` on this field — refusing to lower \
-                             fail-closed rather than emit a leak / wrong-ABI drop",
-                            scrutinee.ty.user_facing(),
-                            field_ty.user_facing(),
-                        ),
-                    });
-                    return None;
-                }
-            }
-        }
-
+        let result_place = self.alloc_local(result_ty.clone());
+        let Place::Local(scrutinee_local) = self.lower_value(scrutinee)? else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "project match scrutinee place shape".to_string(),
+                    site: scrutinee.site,
+                },
+                note: "record/tuple match destructure requires a local scrutinee".to_string(),
+            });
+            return None;
+        };
         let join_bb = self.alloc_block();
         let body_bb = self.alloc_block();
         self.finish_current_block(Terminator::Goto { target: body_bb });
         self.start_block(body_bb);
-
-        // Decide once whether the scrutinee gets the follow-up `Use {
-        // intent: Consume }` mark. This drives BOTH the post-destructure
-        // consume emission AND each non-BitCopy binder's taint-suppression.
-        // Hoisted out of the per-binding loop so the two paths cannot diverge
-        // — a binder admitted to the sole-owner allow-set without a
-        // corresponding scrutinee consume would double-free the shared buffer.
-        //
-        // Projections, captures, AND temporaries were already rejected by the
-        // `match_project_scrutinee_reject` gate above, so the only scrutinee
-        // that reaches here for a non-BitCopy match is a non-captured
-        // `BindingRef`. It earns the consume mark + the binder untaint when the
-        // arm binds at least one owned field; an all-wildcard arm moves nothing
-        // out, so the binding stays live and its composite drop frees every
-        // field (no consume mark — a post-match read of an all-wildcard
-        // scrutinee is legitimate).
-        let consume_scrutinee: Option<(BindingId, String)> = match &scrutinee.kind {
-            HirExprKind::BindingRef {
-                resolved: ResolvedRef::Binding(id),
-                name,
-            } if !selected.bindings.is_empty()
-                && !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty)
-                && !self.capture_env_sources.contains_key(id) =>
-            {
-                Some((*id, name.clone()))
-            }
-            _ => None,
-        };
-
-        // Classify the scrutinee's storage once, above the bind loop, so both
-        // the bound-string discharge inside it and the skipped-field discharge
-        // below read the same verdict. `local_storage_is_interior_alias` is a
-        // pure classifier over the already-emitted loads that define
-        // `scrutinee_local` (an interior alias is minted by a `let inner =
-        // outer.field` byte copy BEFORE this match lowers); the bind loop only
-        // adds loads whose dest is a binder, never `scrutinee_local`, so the
-        // verdict is invariant to where it is read.
-        let scrutinee_is_interior_alias =
-            scrutinee_is_non_bitcopy && self.local_storage_is_interior_alias(scrutinee_local);
-
-        let mut overwritten_bindings = Vec::with_capacity(selected.bindings.len());
-        for binding in &selected.bindings {
-            let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: selected.body.site,
-                ty: binding_ty.clone(),
-            });
-            self.record_binding_scope(binding.binding);
-            // Non-BitCopy bindings (owned `string` / `bytes` / `Vec<T>` /
-            // owned record/tuple/enum) MUST enter `owned_locals` so the
-            // function-scope LIFO drop pass releases them exactly once, AND so
-            // their presence in `release_owner_bases` excludes the source
-            // aggregate's composite drop in `derive_owned_record_drop_allowed`
-            // / `derive_tuple_composite_drop_allowed` (the field-binder rule).
-            // Skipping this for an owned binding produces a leak (no drop
-            // elaborated) OR a double-free (composite drop still fires plus
-            // the binding's escape consume) — both fail-closed-unsafe.
-            // BitCopy bindings stay out: their copy is free of heap ownership
-            // and the surrounding scrutinee's composite drop covers them.
-            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
-            let binding_is_string = matches!(binding_ty, ResolvedTy::String);
-            if keep_for_drop_elab {
-                self.register_owned_local(
-                    binding.binding,
-                    binding.name.clone(),
-                    binding_ty.clone(),
-                );
-                // A generator/AsyncGenerator handle bound via match destructure
-                // gets the same per-scope-exit `hew_gen_coro_destroy` registration the
-                // `Let` path uses, so the per-iteration release fires for a
-                // match inside a loop (see `scope_generator_bindings`).
-                if ty_is_generator_handle(&binding_ty) {
-                    if let Some(scope) = self.active_scopes.last().copied() {
-                        self.scope_generator_bindings.push((
-                            scope,
-                            binding.binding,
-                            binding_ty.clone(),
-                        ));
-                    }
-                }
-                // NB: unlike generators, `Stream<T>` / `Receiver<T>` handles are
-                // NOT registered for a per-scope-exit close when bound via match
-                // destructure. The deadlock fixed here is caused by the
-                // `for await` desugar's synthetic `__hew_for_iter_*` CURSOR
-                // (always a `Let` binding) staying open; a plain source binding
-                // (`let (a, s) = …`) that is later consumed into that cursor
-                // must NOT get its own scope-exit close, or it double-closes the
-                // handle the cursor owns (the source binding's slot is not
-                // null-stored on the consume in every destructure shape). The
-                // `Let`-path registration + the function-exit LIFO (which
-                // respects the consume) cover every real case; there is no valid
-                // shape where a for-await cursor is bound via match destructure.
-                // Mirrors the vec-iter cursor registration, which is likewise
-                // `Let`-path-only.
-            }
-            let dest = self.alloc_local(binding_ty);
-            // Pair the binder with the scrutinee's consume mark: register the
-            // binder's base local so `derive_cow_sole_owner` skips the
-            // projection-alias taint seed for it. Once the parent is
-            // `Consumed` at this site, the binder owns its loaded payload
-            // exclusively and must be admitted to the leaf CoW drop allow-set,
-            // otherwise `build_lifo_drops`'s leaf-CoW arm silently emits no
-            // drop and the payload leaks. The dataflow exit-state post-filter
-            // at the `derive_cow_sole_owner` call site still removes any
-            // binder consumed by the arm body (`=> y`), so this never
-            // double-frees a moved-out payload.
-            //
-            // Gated: only when the scrutinee earns a consume mark (a non-
-            // captured `BindingRef` non-BitCopy scrutinee with bindings)
-            // AND the binder itself is non-BitCopy. BitCopy binders carry
-            // no heap to drop; non-consume-marked scrutinees keep the
-            // parent's composite drop alive, so binder taint must stand.
-            if consume_scrutinee.is_some() && keep_for_drop_elab {
-                if let Some(local_idx) = base_local(dest) {
-                    self.match_project_consumed_binder_locals.insert(local_idx);
-                }
-            }
-            match &selected.predicate {
-                hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                    self.push_instr(Instr::RecordFieldLoad {
-                        record: Place::Local(scrutinee_local),
-                        field_offset: FieldOffset(binding.field_idx),
-                        dest,
-                    });
-                }
-                hew_hir::HirMatchArmPredicate::TupleProject { arity } => {
-                    if binding.field_idx >= *arity {
-                        self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::NotYetImplemented {
-                                construct: "tuple project binding index out of range".to_string(),
-                                site: selected.body.site,
-                            },
-                            note: format!(
-                                "binding `{}` projects field {} from arity {} tuple; \
-                                 the checker/HIR verifier should have rejected this",
-                                binding.name, binding.field_idx, arity
-                            ),
-                        });
-                        return None;
-                    }
-                    self.push_instr(Instr::TupleFieldLoad {
-                        tuple: Place::Local(scrutinee_local),
-                        field_index: binding.field_idx,
-                        dest,
-                    });
-                }
-                hew_hir::HirMatchArmPredicate::Wildcard
-                | hew_hir::HirMatchArmPredicate::Binding { .. } => {
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: "wildcard/binding match arm with project bindings"
-                                .to_string(),
-                            site: selected.body.site,
-                        },
-                        note: "wildcard/binding match arms must not carry project bindings; \
-                               this is a checker/HIR bug"
-                            .to_string(),
-                    });
-                    return None;
-                }
-                hew_hir::HirMatchArmPredicate::EnumVariant { .. }
-                | hew_hir::HirMatchArmPredicate::Literal { .. }
-                | hew_hir::HirMatchArmPredicate::Regex { .. } => {
-                    panic!("checker invariant violated: refutable arm in project match lowering");
-                }
-            }
-            // Bound-string original discharge. A `string`-typed field bound on
-            // a consumed, non-alias root strands its original. Codegen retains
-            // the string on the field load (`retain_string_field_load` →
-            // `hew_string_clone`, rc 2): the binder owns the clone, but the
-            // ORIGINAL handle still sits in the root slot with a `+1` nothing
-            // releases — the root's composite drop is suppressed (the binder
-            // seeds `release_owner_bases`) and the consume mark below retracts
-            // the root from `owned_locals`. Discharge the original IN PLACE
-            // right after the load: `FieldDropInPlace` raw-loads the root's
-            // field handle, releases it (rc 1), and null-stores the slot; the
-            // binder is then the sole owner — safe even when the arm returns
-            // the binder (its own drop balances the retained clone).
-            //
-            // Gated exactly like the skipped-field discharge below:
-            //   - consume-marked scrutinee: a non-consumed root keeps its
-            //     composite drop, which frees the original — discharging here
-            //     would double-free.
-            //   - non-alias root: on an interior alias the original belongs to
-            //     the OUTER composite, which frees it; `FieldDropInPlace`
-            //     null-stores the alias slot, not the owner's (the alias gate
-            //     below is the authority) — discharging would double-free.
-            //   - `string`-typed field only: the retaining-load class. Non-
-            //     string bound fields (`Vec` / `bytes` / handles / aggregates)
-            //     load without a retain, so the binder takes the one handle and
-            //     the root slot is dead — they do not strand and MUST NOT be
-            //     discharged here.
-            if consume_scrutinee.is_some() && !scrutinee_is_interior_alias && binding_is_string {
-                let field = match &selected.predicate {
-                    hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                        crate::model::FieldAddr::Record(FieldOffset(binding.field_idx))
-                    }
-                    hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
-                        crate::model::FieldAddr::Tuple(binding.field_idx)
-                    }
-                    _ => unreachable!("bound-string discharge only reached for project predicates"),
-                };
-                self.push_instr(Instr::FieldDropInPlace {
-                    base: Place::Local(scrutinee_local),
-                    field,
-                    ty: ResolvedTy::String,
-                });
-            }
-            let previous = self.binding_locals.insert(binding.binding, dest);
-            overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
-        }
-
-        // Partial-extraction safety drops. After the per-binding extraction
-        // loop, every owned field of the scrutinee that is NOT in
-        // `selected.bindings` is a wildcard discard. If the scrutinee carries
-        // any owned content, the composite drop on the source aggregate is
-        // already suppressed by `derive_owned_record_drop_allowed` /
-        // `derive_tuple_composite_drop_allowed` once an extracted binding, an
-        // inline drop emitted here, or a `FieldDropInPlace` emitted here seeds
-        // the exclusion. Without explicit drops for the wildcarded owned
-        // fields, those fields would leak (the composite is suppressed, the
-        // extracted bindings do not cover them). Two discharge paths, decided
-        // per field:
-        //
-        //   - `string` fields and classifier-admitted aggregates (record /
-        //     tuple / fixed array / inline enum / indirect enum —
-        //     `field_drop_in_place_admissible`) emit `Instr::FieldDropInPlace`:
-        //     the release runs IN PLACE at the field address, type-directed by
-        //     codegen's `emit_heap_slot_drop` dispatcher. Strings MUST take
-        //     this path even though a leaf release symbol exists: codegen's
-        //     `RecordFieldLoad` / `TupleFieldLoad` retain string-typed dests
-        //     via `hew_string_clone` (`retain_string_field_load`), so a
-        //     load+`Drop` pair retain-cancels — the temp's release frees the
-        //     clone while the ORIGINAL slot value leaks. The in-place drop
-        //     raw-loads the original handle, releases it, and null-stores the
-        //     pointer word.
-        //   - Every other leaf with a release symbol
-        //     (`project_field_inline_drop_symbol`: `bytes`, `Vec`, `HashMap`,
-        //     `HashSet`, generator handles — loads that do NOT retain) keeps
-        //     the load-into-temp + inline `Instr::Drop` path.
-        //
-        // The pre-flight above guarantees every unselected owned field is
-        // dischargeable by one of the two paths — if any was not, we have
-        // already returned a fail-closed diagnostic and never enter this loop.
-        //
-        // Emit drops AFTER the extraction binds but BEFORE the body: the body
-        // refers only to the bound names (not the wildcarded fields), so the
-        // drops free the discarded heap content immediately and leave the body
-        // to run with the bound owners live. The straight-line pre-body
-        // position is load-bearing for `FieldDropInPlace`: the op executes
-        // exactly once per arm entry (no join or back-edge can re-run it),
-        // which — together with the provers' direct exclusion of the base
-        // root — is the whole idempotence story for inline-composite fields
-        // (they have no null-store; see the `Instr::FieldDropInPlace` model
-        // contract).
-        //
-        // Alias-scrutinee gate. When the scrutinee's storage is an interior
-        // ALIAS of aggregate storage another binding still owns (`let inner =
-        // outer.field; match inner { … }` — the field load byte-copies the
-        // member with no retain; or an enum payload binder `match opt {
-        // Some(row) => match row { … } }`), the originals the wildcarded
-        // fields point at belong to the OUTER aggregate, whose composite drop
-        // frees every one of them exactly once at scope exit (the destructure
-        // consume retracts the alias binding from `owned_locals`, so nothing
-        // seeds the outer root's exclusion). Discharging a skipped field
-        // through the alias frees heap that composite walk re-frees:
-        // `FieldDropInPlace` null-stores the ALIAS slot, never the owner's,
-        // and the non-retaining leaf load+`Drop` path frees the original
-        // outright — both double-free. An alias scrutinee therefore emits NO
-        // skipped-field discharge; bound `string` binders keep their retained
-        // `+1` with its own balancing drop. If the owner's composite is
-        // separately excluded (an unrelated escape), the skipped originals
-        // leak — fail-closed — and the provers' direct `FieldDropInPlace`
-        // binder rules remain the net for any emitter that does discharge
-        // through an alias.
-        if !selected.bindings.is_empty() && scrutinee_is_non_bitcopy && !scrutinee_is_interior_alias
-        {
-            let extracted: HashSet<u32> = selected.bindings.iter().map(|b| b.field_idx).collect();
-            let owned_fields: Vec<(u32, ResolvedTy)> = match &selected.predicate {
-                hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                    self.project_record_owned_field_list(&scrutinee.ty)
-                }
-                hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
-                    self.project_tuple_owned_field_list(&scrutinee.ty)
-                }
-                _ => Vec::new(),
-            };
-            for (idx, field_ty) in owned_fields {
-                if extracted.contains(&idx) {
-                    continue;
-                }
-                let field_is_string = matches!(field_ty, ResolvedTy::String);
-                if !field_is_string {
-                    if let ReleaseSymbolVerdict::Wired(drop_symbol) =
-                        self.project_field_inline_drop_symbol(&field_ty)
-                    {
-                        let temp = self.alloc_local(field_ty.clone());
-                        match &selected.predicate {
-                            hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                                self.push_instr(Instr::RecordFieldLoad {
-                                    record: Place::Local(scrutinee_local),
-                                    field_offset: FieldOffset(idx),
-                                    dest: temp,
-                                });
-                            }
-                            hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
-                                self.push_instr(Instr::TupleFieldLoad {
-                                    tuple: Place::Local(scrutinee_local),
-                                    field_index: idx,
-                                    dest: temp,
-                                });
-                            }
-                            _ => unreachable!(
-                                "owned-field enumeration only populated for project predicates"
-                            ),
-                        }
-                        self.push_instr(Instr::Drop {
-                            place: temp,
-                            ty: field_ty,
-                            drop_fn: Some(crate::model::DropFnSpec::Release(drop_symbol)),
-                        });
-                        continue;
-                    }
-                }
-                if field_is_string || self.field_drop_in_place_admissible(&field_ty) {
-                    let field = match &selected.predicate {
-                        hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                            crate::model::FieldAddr::Record(FieldOffset(idx))
-                        }
-                        hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
-                            crate::model::FieldAddr::Tuple(idx)
-                        }
-                        _ => unreachable!(
-                            "owned-field enumeration only populated for project predicates"
-                        ),
-                    };
-                    self.push_instr(Instr::FieldDropInPlace {
-                        base: Place::Local(scrutinee_local),
-                        field,
-                        ty: field_ty,
-                    });
-                    continue;
-                }
-                // Unreachable — the pre-flight at the head of the function
-                // returned fail-closed on the same admission OR. Defense-in-
-                // depth: surface the invariant rather than silently leak.
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "match-destructure wildcard on owned aggregate field"
-                            .to_string(),
-                        site: scrutinee.site,
-                    },
-                    note: format!(
-                        "field {idx} of `{}` slipped past the pre-flight skipped-field \
-                         admission check; refusing to emit a leak / wrong-ABI free",
-                        scrutinee.ty.user_facing(),
-                    ),
-                });
-                return None;
-            }
-        }
-
-        // The destructure consumed the scrutinee's storage: bindings own the
-        // loaded fields and any inline drops above released wildcarded owned
-        // fields IN PLACE. If the scrutinee was a `BindingRef`, any post-match
-        // read of that binding (`p.b` after `match p { Pair { a: x, b: _ } =>
-        // x }`, or even a later full-field read once the binders drop their
-        // payloads) would be a use-after-free. Emit a follow-up
-        // `MirStatement::Use { intent: Consume }` for the scrutinee binding so
-        // the dataflow checker transitions it to `Consumed(site)` — any later
-        // `BindingRef` use then fires `UseAfterConsume`.
-        //
-        // The `consume_scrutinee` decision was hoisted above the per-binding
-        // loop so this emission and the per-binder taint-suppression (at
-        // `match_project_consumed_binder_locals`) stay in lock-step: a binder
-        // admitted to the leaf CoW sole-owner allow-set without a
-        // corresponding parent consume would double-free.
-        if let Some((scrutinee_id, scrutinee_name)) = consume_scrutinee.as_ref() {
-            let scrutinee_ty = self.subst_ty(&scrutinee.ty);
-            self.statements.push(MirStatement::Use {
-                binding: *scrutinee_id,
-                name: scrutinee_name.clone(),
-                site: scrutinee.site,
-                ty: scrutinee_ty,
-                intent: IntentKind::Consume,
-            });
-            self.mark_binding_moved(*scrutinee_id);
-        }
-
-        let value = self.lower_value(&selected.body);
-
-        // For owned (non-BitCopy) pattern bindings, KEEP the `binding_locals`
-        // entry alive past the arm body so `build_lifo_drops` can resolve the
-        // binding's Place at function-exit (and loop back-edge) drop
-        // elaboration time. Removing it here would leak the bound owned field:
-        // for the leaf
-        // `string`/`Vec`/etc. arm in `build_lifo_drops`, an `owned_locals`
-        // entry without a `binding_locals` Place silently emits no drop
-        // (the `if let Some(place) = binding_locals.get(...)` arm short-
-        // circuits). The `keep_for_drop_elab` flag was set above iff the
-        // binding's type is non-BitCopy — exactly the bindings that need
-        // their drop elaborated. Lexical liveness is still narrowed by the
-        // dataflow exit-state filter inside `drops_for_exit` (a binding
-        // `Consumed` mid-body is excluded), mirroring the discipline the
-        // enum-variant arm uses at `lower_match_enum_tag` (~L11860).
-        // BitCopy bindings have no drop to elaborate, so restoring their
-        // previous slot is correct and shadowing-safe.
-        for (binding, previous, keep_for_drop_elab) in overwritten_bindings.into_iter().rev() {
-            if keep_for_drop_elab {
-                continue;
-            }
-            if let Some(previous) = previous {
-                self.binding_locals.insert(binding, previous);
-            } else {
-                self.binding_locals.remove(&binding);
-            }
-        }
-
-        if let Some(src) = value {
-            self.push_instr(Instr::Move {
-                dest: result_place,
-                src,
-            });
-        }
-        // The single irrefutable arm: if its body diverges the join is
-        // unreachable (see `lower_match_enum_tag` for the rationale — #1907).
-        let join_reachable = !self.cursor_unreachable;
+        let join_reachable = self.emit_selected_project_arm(
+            scrutinee,
+            scrutinee_local,
+            selected,
+            &discharges,
+            consume_owned,
+            result_place,
+        );
         self.finish_current_block(Terminator::Goto { target: join_bb });
         self.start_block(join_bb);
         if !join_reachable {
@@ -2309,15 +2145,9 @@ impl Builder {
     /// Lower record/tuple match arms carrying literal element predicates as an
     /// ordered chain. Predicate checks happen before any field binding, so a
     /// mismatch can safely fall through without partially moving the scrutinee.
-    ///
-    /// The first slice is intentionally limited to `BitCopy` aggregate
-    /// scrutinees. Owned aggregate projects use the path-sensitive extraction
-    /// and skipped-field drop protocol in `lower_match_project`; duplicating
-    /// those moves across runtime-selected arms needs a separate ownership
-    /// proof and remains fail-closed here.
     #[allow(
         clippy::too_many_lines,
-        reason = "ordered project-predicate CFG keeps field comparisons, bindings, and fallthrough topology together"
+        reason = "ordered project-predicate lowering keeps comparison and fallthrough topology together"
     )]
     fn lower_match_project_predicate_chain(
         &mut self,
@@ -2353,22 +2183,20 @@ impl Builder {
             return None;
         }
 
+        let arm_discharges = arms
+            .iter()
+            .map(|arm| self.preflight_selected_project_arm(scrutinee, arm, false))
+            .collect::<Option<Vec<_>>>()?;
         let result_place = self.alloc_local(result_ty.clone());
-        let scrutinee_place = self.lower_value(scrutinee)?;
-        let scrutinee_local = match scrutinee_place {
-            Place::Local(local) => local,
-            other => {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "project predicate match scrutinee place shape".to_string(),
-                        site: scrutinee.site,
-                    },
-                    note: format!(
-                        "record/tuple literal-predicate match requires a local scrutinee; got {other:?}"
-                    ),
-                });
-                return None;
-            }
+        let Place::Local(scrutinee_local) = self.lower_value(scrutinee)? else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "project predicate match scrutinee place shape".to_string(),
+                    site: scrutinee.site,
+                },
+                note: "record/tuple literal-predicate match requires a local scrutinee".to_string(),
+            });
+            return None;
         };
 
         let join_bb = self.alloc_block();
@@ -2378,10 +2206,9 @@ impl Builder {
         self.finish_current_block(Terminator::Goto { target: first_bb });
         let mut join_reachable = false;
 
-        for (arm_idx, arm) in arms.iter().enumerate() {
+        for (arm_idx, (arm, discharges)) in arms.iter().zip(arm_discharges.iter()).enumerate() {
             self.start_block(arm_bbs[arm_idx]);
             let fallthrough_bb = arm_bbs.get(arm_idx + 1).copied().unwrap_or(trap_bb);
-
             match &arm.predicate {
                 hew_hir::HirMatchArmPredicate::RecordProject { .. }
                 | hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
@@ -2395,29 +2222,14 @@ impl Builder {
                                     dest: field,
                                 });
                             }
-                            hew_hir::HirMatchArmPredicate::TupleProject { arity } => {
-                                if predicate.field_idx >= *arity {
-                                    self.diagnostics.push(MirDiagnostic {
-                                        kind: MirDiagnosticKind::NotYetImplemented {
-                                            construct:
-                                                "tuple project predicate index out of range"
-                                                    .to_string(),
-                                            site: arm.body.site,
-                                        },
-                                        note: format!(
-                                            "literal predicate projects field {} from arity {} tuple",
-                                            predicate.field_idx, arity
-                                        ),
-                                    });
-                                    return None;
-                                }
+                            hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
                                 self.push_instr(Instr::TupleFieldLoad {
                                     tuple: Place::Local(scrutinee_local),
                                     field_index: predicate.field_idx,
                                     dest: field,
                                 });
                             }
-                            _ => unreachable!("project arm classification changed during lowering"),
+                            _ => unreachable!("project predicate passed arm preflight"),
                         }
                         let expected = self.lower_match_literal_constant(
                             &predicate.literal,
@@ -2459,84 +2271,14 @@ impl Builder {
                 }
             }
 
-            let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
-            for binding in &arm.bindings {
-                let binding_ty = self.subst_ty(&binding.ty);
-                self.statements.push(MirStatement::Bind {
-                    binding: binding.binding,
-                    name: binding.name.clone(),
-                    site: arm.body.site,
-                    ty: binding_ty.clone(),
-                });
-                self.record_binding_scope(binding.binding);
-                let dest = self.alloc_local(binding_ty);
-                match &arm.predicate {
-                    hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                        self.push_instr(Instr::RecordFieldLoad {
-                            record: Place::Local(scrutinee_local),
-                            field_offset: FieldOffset(binding.field_idx),
-                            dest,
-                        });
-                    }
-                    hew_hir::HirMatchArmPredicate::TupleProject { arity } => {
-                        if binding.field_idx >= *arity {
-                            self.diagnostics.push(MirDiagnostic {
-                                kind: MirDiagnosticKind::NotYetImplemented {
-                                    construct: "tuple project binding index out of range"
-                                        .to_string(),
-                                    site: arm.body.site,
-                                },
-                                note: format!(
-                                    "binding `{}` projects field {} from arity {} tuple",
-                                    binding.name, binding.field_idx, arity
-                                ),
-                            });
-                            return None;
-                        }
-                        self.push_instr(Instr::TupleFieldLoad {
-                            tuple: Place::Local(scrutinee_local),
-                            field_index: binding.field_idx,
-                            dest,
-                        });
-                    }
-                    _ => {
-                        self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::NotYetImplemented {
-                                construct: "wildcard/binding project arm carrying field bindings"
-                                    .to_string(),
-                                site: arm.body.site,
-                            },
-                            note: "only record/tuple project arms may carry project bindings"
-                                .to_string(),
-                        });
-                        return None;
-                    }
-                }
-                let previous = self.binding_locals.insert(binding.binding, dest);
-                overwritten_bindings.push((binding.binding, previous));
-            }
-
-            if matches!(arm.predicate, hew_hir::HirMatchArmPredicate::Binding { .. }) {
-                self.emit_match_arm_binding(arm, Place::Local(scrutinee_local), None);
-            }
-
-            let value = self.lower_value(&arm.body);
-            for (binding, previous) in overwritten_bindings.into_iter().rev() {
-                if let Some(previous) = previous {
-                    self.binding_locals.insert(binding, previous);
-                } else {
-                    self.binding_locals.remove(&binding);
-                }
-            }
-            if let Some(src) = value {
-                self.push_instr(Instr::Move {
-                    dest: result_place,
-                    src,
-                });
-            }
-            if !self.cursor_unreachable {
-                join_reachable = true;
-            }
+            join_reachable |= self.emit_selected_project_arm(
+                scrutinee,
+                scrutinee_local,
+                arm,
+                discharges,
+                false,
+                result_place,
+            );
             self.finish_current_block(Terminator::Goto { target: join_bb });
         }
 

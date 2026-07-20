@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::LazyLock;
 #[cfg(test)]
@@ -65,6 +65,7 @@ pub(crate) struct MonitorState {
     /// Target-side remote registrations used only to fan terminal frames to peers.
     remote_targets: Mutex<HashMap<u64, Vec<RemoteWatcher>>>,
     ref_counter: AtomicU64,
+    ref_exhausted: AtomicBool,
 }
 
 /// Reason sentinel used when a remote target becomes unreachable.
@@ -135,17 +136,32 @@ impl MonitorState {
             observations: Mutex::new(HashMap::new()),
             remote_targets: Mutex::new(HashMap::new()),
             ref_counter: AtomicU64::new(1),
+            ref_exhausted: AtomicBool::new(false),
         }
     }
 
     /// Allocate one non-zero observation id without wrap or reuse.
     pub(crate) fn next_observation_id(&self) -> Option<u64> {
-        self.ref_counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1).filter(|next| *next != 0)
-            })
-            .ok()
-            .filter(|id| *id != 0)
+        loop {
+            if self.ref_exhausted.load(Ordering::Acquire) {
+                return None;
+            }
+            let current = self.ref_counter.load(Ordering::Relaxed);
+            if current == u64::MAX {
+                return self
+                    .ref_exhausted
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .ok()
+                    .map(|_| current);
+            }
+            if self
+                .ref_counter
+                .compare_exchange_weak(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Some(current);
+            }
+        }
     }
 
     pub(crate) fn register_remote_monitor(
@@ -1171,7 +1187,7 @@ pub(crate) fn has_monitors_for_actor(actor_id: u64, _actor_addr: *mut HewActor) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr};
+    use std::sync::atomic::{AtomicI32, AtomicPtr};
 
     unsafe extern "C-unwind" fn noop_dispatch(
         _ctx: *mut crate::execution_context::HewExecutionContext,
@@ -1799,15 +1815,28 @@ mod tests {
     }
 
     #[test]
-    fn observation_id_allocator_exhausts_without_wrapping_or_reusing_zero() {
+    fn observation_id_allocator_issues_max_then_exhausts_without_table_mutation() {
         let state = MonitorState::new();
-        state.ref_counter.store(u64::MAX, Ordering::Release);
+        state.ref_counter.store(u64::MAX - 1, Ordering::Release);
+        let first = state
+            .register_remote_monitor(remote_location(1, 10, 1), 20)
+            .expect("u64::MAX - 1 remains a valid nonzero id");
+        let second = state
+            .register_link_watcher(remote_location(1, 11, 1), 21, 3)
+            .expect("u64::MAX remains a valid nonzero id");
+        assert_eq!(first, u64::MAX - 1);
+        assert_eq!(second, u64::MAX);
+        assert_ne!(first, 0);
+        assert_ne!(second, 0);
+        assert_eq!(state.pending_observation_count(), 2);
+
         assert_eq!(
-            state.register_remote_monitor(remote_location(1, 10, 1), 20),
+            state.register_remote_monitor(remote_location(1, 12, 1), 22),
             None
         );
         assert_eq!(state.ref_counter.load(Ordering::Acquire), u64::MAX);
-        assert_eq!(state.pending_observation_count(), 0);
+        assert!(state.ref_exhausted.load(Ordering::Acquire));
+        assert_eq!(state.pending_observation_count(), 2);
     }
 
     #[test]

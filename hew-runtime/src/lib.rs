@@ -695,6 +695,8 @@ pub mod mailbox_header;
 pub mod mailbox_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mpsc;
+/// Key-derived distributed node identity and carried actor-location values.
+pub mod node_identity;
 /// Runtime-instance state — the de-globalized home for process-wide
 /// authorities (native-only; the WASM cooperative scheduler keeps its own state
 /// model).

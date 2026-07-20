@@ -1897,25 +1897,30 @@ pub(crate) fn lower_call_runtime_abi(
             // void return; dest is always None (the close body is a void call).
             let _ = (i32_ty, ptr_ty, dest);
         }
-        // hew_node_monitor(target_pid: i64) -> i64. Positive returns are ref ids;
+        // hew_node_monitor_location(target: *const HewRemotePid) -> i64.
         // negative returns encode MonitorError as `-(variant + 1)`. Value
         // position constructs Result<MonitorRef, MonitorError>; statement
         // position discards the setup result.
         F::NodeMonitor => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_node_monitor): expected 1 arg \
-                     (target_pid: i64), got {}",
+                    "Instr::CallRuntimeAbi(hew_node_monitor_location): expected 1 arg \
+                     (target: *const HewRemotePid), got {}",
                     args.len()
                 )));
             }
-            let target_pid = load_int_arg(fn_ctx, args[0], i64_ty, "node_monitor_target")?;
-            let llvm_args: [BasicMetadataValueEnum; 1] = [target_pid.into()];
+            let (target, target_ty) = place_pointer(fn_ctx, args[0])?;
+            if !matches!(target_ty, BasicTypeEnum::StructType(t) if t.count_fields() == 5) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_node_monitor_location target must be the five-field Location aggregate, got {target_ty:?}"
+                )));
+            }
+            let llvm_args: [BasicMetadataValueEnum; 1] = [target.into()];
             let setup_result = fn_ctx.call_runtime_int(
                 symbol,
                 &llvm_args,
-                "hew_node_monitor_call",
-                "hew_node_monitor call",
+                "hew_node_monitor_location_call",
+                "hew_node_monitor_location call",
             )?;
             if let Some(d) = dest {
                 // MonitorError::NodeNotRunning is variant 0 and is the defensive
@@ -1926,7 +1931,7 @@ pub(crate) fn lower_call_runtime_abi(
                     d,
                     true,
                     0,
-                    "hew_node_monitor_result",
+                    "hew_node_monitor_location_result",
                 )?;
             }
             let _ = (i32_ty, ptr_ty);
@@ -1961,26 +1966,32 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        // hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64.
+        // hew_node_link_remote_location(target: *const HewRemotePid,
+        //                               policy_tag: i64) -> i64.
         // Positive returns are internal link ref ids; negative returns encode
         // LinkError as `-(variant + 1)`. The immediate Hew-visible result is
         // Result<(), LinkError>; EXIT arrives asynchronously when the remote dies.
         F::LinkRemote => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_node_link_remote): expected 2 args \
-                     (target_pid: i64, policy_tag: i64), got {}",
+                    "Instr::CallRuntimeAbi(hew_node_link_remote_location): expected 2 args \
+                     (target: *const HewRemotePid, policy_tag: i64), got {}",
                     args.len()
                 )));
             }
-            let target_pid = load_int_arg(fn_ctx, args[0], i64_ty, "node_link_target")?;
+            let (target, target_ty) = place_pointer(fn_ctx, args[0])?;
+            if !matches!(target_ty, BasicTypeEnum::StructType(t) if t.count_fields() == 5) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_node_link_remote_location target must be the five-field Location aggregate, got {target_ty:?}"
+                )));
+            }
             let policy_tag = load_int_arg(fn_ctx, args[1], i64_ty, "node_link_policy")?;
-            let llvm_args: [BasicMetadataValueEnum; 2] = [target_pid.into(), policy_tag.into()];
+            let llvm_args: [BasicMetadataValueEnum; 2] = [target.into(), policy_tag.into()];
             let setup_result = fn_ctx.call_runtime_int(
                 symbol,
                 &llvm_args,
-                "hew_node_link_remote_call",
-                "hew_node_link_remote call",
+                "hew_node_link_remote_location_call",
+                "hew_node_link_remote_location call",
             )?;
             if let Some(d) = dest {
                 // LinkError::NodeNotRunning is variant 2 and is the defensive
@@ -1991,7 +2002,7 @@ pub(crate) fn lower_call_runtime_abi(
                     d,
                     false,
                     2,
-                    "hew_node_link_remote_result",
+                    "hew_node_link_remote_location_result",
                 )?;
             }
             let _ = (i32_ty, ptr_ty);
@@ -3749,6 +3760,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::MetricVecWith
         | F::NodeAllowPeer
         | F::NodeConnect
+        | F::NodeId
         | F::NodeIdentityKey
         | F::NodeLoadKeys
         | F::NodeLookup
@@ -4350,27 +4362,46 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // Native-only: link/monitor/demonitor are OS-thread-dependent and not
         // supported on wasm32 (basic actors — spawn/send/receive/ask — are).
         "hew_actor_demonitor" => ctx.void_type().fn_type(&[i64_ty.into()], false),
-        // hew_node_monitor(target_pid: i64) -> i64
+        // hew_node_monitor_location(target: *const Location) -> i64
         // (`hew-runtime/src/hew_node.rs`). Positive returns are ref ids; negative
         // returns encode MonitorError as `-(variant + 1)`.
         // codegen-offset-mirror-drift: must match the runtime signature.
-        "hew_node_monitor" => i64_ty.fn_type(&[i64_ty.into()], false),
+        "hew_node_monitor_location" => i64_ty.fn_type(&[ptr_ty.into()], false),
         // hew_node_monitor_recv(ref_id: i64, timeout_ms: i64) -> i64
         // (`hew-runtime/src/dist_monitor.rs`). Blocks until the monitor's terminal
         // signal arrives (or timeout_ms elapses) and returns the carried
         // down-reason. codegen-offset-mirror-drift: must match the runtime
         // `#[no_mangle]` signature.
         "hew_node_monitor_recv" => i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
-        // hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64
+        // hew_node_link_remote_location(target: *const Location, policy_tag: i64) -> i64
         // (`hew-runtime/src/hew_node.rs`). Establishes a cross-node link: the
-        // calling actor links the remote actor `target_pid` with the
+        // calling actor links the exact remote actor `target` with the
         // `PartitionPolicy` discriminant `policy_tag`. Positive returns are
         // internal link ref ids; negative returns encode LinkError as
         // `-(variant + 1)`. The local actor is resolved internally (like
-        // hew_node_monitor / hew_actor_self), so no node/self argument.
+        // hew_node_monitor_location / hew_actor_self), so no node/self argument.
         // codegen-offset-mirror-drift: must match the runtime `#[no_mangle]`
         // signature.
-        "hew_node_link_remote" => i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
+        "hew_node_link_remote_location" => {
+            i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false)
+        }
+        "hew_node_api_send_location" => i32_ty.fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                size_ty.into(),
+            ],
+            false,
+        ),
+        "hew_node_api_lookup_location" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)
+        }
+        "hew_node_api_id" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_node_id_format" | "hew_location_format" => {
+            ptr_ty.fn_type(&[ptr_ty.into()], false)
+        }
         // hew_actor_send_by_id(actor_id: u64, msg_type: i32, data: *mut c_void,
         //                      size: usize) -> c_int (`hew-runtime/src/actor.rs:2489`).
         // `size` is `usize`/`size_t` → target-correct width (i32 on wasm32).
@@ -4409,9 +4440,9 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // dispatch global — the `(dispatch, msg_type)` codec key for both the
         // request encode and the reply decode (codegen-offset-mirror-drift: must
         // match the runtime `#[no_mangle]` signature).
-        "hew_node_api_ask" => ptr_ty.fn_type(
+        "hew_node_api_ask_location" => ptr_ty.fn_type(
             &[
-                i64_ty.into(),
+                ptr_ty.into(),
                 ptr_ty.into(),
                 i32_ty.into(),
                 ptr_ty.into(),
@@ -4429,9 +4460,9 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // handle (null on setup failure). `caller_actor` is the `hew_actor_self`
         // pointer the wire reply resumes through `enqueue_resume`. `dispatch`
         // keys the request encode.
-        "hew_node_api_ask_async" => ptr_ty.fn_type(
+        "hew_node_api_ask_async_location" => ptr_ty.fn_type(
             &[
-                i64_ty.into(),
+                ptr_ty.into(),
                 ptr_ty.into(),
                 i32_ty.into(),
                 ptr_ty.into(),

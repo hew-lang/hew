@@ -82,7 +82,7 @@ pub extern "C" fn hew_pid_serial(pid: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
     let pid_node = hew_pid_node(pid);
-    let local = crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_node_id());
+    let local = crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_route_slot());
     c_int::from(pid_node == local || pid_node == 0)
 }
 
@@ -92,7 +92,9 @@ pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
 /// Node ID 0 means "local/standalone" (the default).
 #[no_mangle]
 pub extern "C" fn hew_pid_set_local_node(node_id: u16) {
-    crate::runtime::rt_current().node.set_local_node_id(node_id);
+    crate::runtime::rt_current()
+        .node
+        .set_local_route_slot(node_id);
 }
 
 /// Get this process's node ID.
@@ -104,14 +106,14 @@ pub extern "C" fn hew_pid_set_local_node(node_id: u16) {
 /// The mutate path (`hew_pid_set_local_node`) stays fail-closed.
 #[no_mangle]
 pub extern "C" fn hew_pid_local_node() -> u16 {
-    crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_node_id())
+    crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_route_slot())
 }
 
 /// Allocate the next actor ID for the local node.
 ///
 /// Combines the local node ID with a monotonically-increasing serial.
 pub(crate) fn next_actor_id(serial: u64) -> u64 {
-    let node = crate::runtime::rt_current().node.local_node_id();
+    let node = crate::runtime::rt_current().node.local_route_slot();
     hew_pid_make(node, serial)
 }
 

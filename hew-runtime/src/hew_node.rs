@@ -24,7 +24,7 @@ use std::thread::{self, JoinHandle};
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
 use crate::envelope::encode_envelope_frame_from_raw_parts;
-use crate::node_identity::{HewLocation, HewRemotePid, Location};
+use crate::node_identity::{HewLocation, HewNodeId, HewRemotePid, Location};
 use crate::peer_binding::{
     ConfigState, PeerAuthSnapshot, PeerCredential, TransportSelection as PeerTransport,
     PEER_AUTH_STATE,
@@ -221,9 +221,9 @@ pub(crate) struct NodeSlot {
     /// runtime, isolated like `reply_table`; written from the SWIM-DEAD verdict and
     /// the readmission dispatch, read on the send/ask path.
     quarantine: PoisonSafe<HashMap<u16, u64>>,
-    /// Transitional v1 route slot used by packed PID encoding until the carried
-    /// Location cutover. Route slot zero remains the local-dispatch sentinel.
-    legacy_local_route_slot: AtomicU16,
+    /// Process-local route slot embedded in local actor IDs. Route slot zero
+    /// remains the local-dispatch sentinel.
+    local_route_slot: AtomicU16,
 }
 
 impl NodeSlot {
@@ -235,7 +235,7 @@ impl NodeSlot {
             known_nodes: PoisonSafe::new(Vec::new()),
             reply_table: ReplyRoutingTable::new(),
             quarantine: PoisonSafe::new(HashMap::new()),
-            legacy_local_route_slot: AtomicU16::new(0),
+            local_route_slot: AtomicU16::new(0),
         }
     }
 
@@ -285,30 +285,17 @@ impl NodeSlot {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *map = pending;
         }
-        let local_route_slot = other.legacy_local_route_slot.swap(0, Ordering::AcqRel);
-        self.legacy_local_route_slot
+        let local_route_slot = other.local_route_slot.swap(0, Ordering::AcqRel);
+        self.local_route_slot
             .store(local_route_slot, Ordering::Release);
     }
 
     pub(crate) fn local_route_slot(&self) -> u16 {
-        self.legacy_local_route_slot.load(Ordering::Acquire)
+        self.local_route_slot.load(Ordering::Acquire)
     }
 
     pub(crate) fn set_local_route_slot(&self, route_slot: u16) {
-        self.legacy_local_route_slot
-            .store(route_slot, Ordering::Release);
-    }
-
-    /// Transitional compatibility accessor for packed-PID code outside this
-    /// Stage-1 surface.
-    pub(crate) fn local_node_id(&self) -> u16 {
-        self.local_route_slot()
-    }
-
-    /// Transitional compatibility setter for packed-PID code outside this
-    /// Stage-1 surface.
-    pub(crate) fn set_local_node_id(&self, node_id: u16) {
-        self.set_local_route_slot(node_id);
+        self.local_route_slot.store(route_slot, Ordering::Release);
     }
 }
 
@@ -1125,36 +1112,6 @@ fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void
         ptr::copy_nonoverlapping(reply_data.as_ptr(), result.cast::<u8>(), reply_data.len());
     }
     result
-}
-
-/// Route a message to a remote actor via the current node.
-///
-/// # Safety
-/// `data` must be valid for `size` bytes (or null when size is 0).
-pub(crate) unsafe fn try_remote_send(
-    target_pid: u64,
-    dispatch: *const c_void,
-    msg_type: c_int,
-    data: *mut c_void,
-    size: usize,
-) -> c_int {
-    with_current_node_read(|guard| {
-        if *guard == 0 {
-            return -1;
-        }
-        let node = *guard as *mut HewNode;
-        // SAFETY: read lock pins CURRENT_NODE pointer for this send.
-        unsafe {
-            hew_node_send(
-                node,
-                target_pid,
-                dispatch,
-                msg_type,
-                data.cast::<u8>(),
-                size,
-            )
-        }
-    })
 }
 
 /// Node-local distributed registry state.
@@ -2754,29 +2711,6 @@ pub unsafe extern "C" fn hew_node_lookup_location(
     0
 }
 
-/// Temporary scalar compiler adapter, retained until Stage 3b migrates PID
-/// aggregates. Runtime registry and routing remain exact-`Location`.
-///
-/// # Safety
-///
-/// `node` must be valid and `name` must point to a NUL-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char) -> u64 {
-    cabi_guard!(node.is_null() || name.is_null(), 0);
-    let mut remote_pid = HewRemotePid::default();
-    // SAFETY: arguments satisfy the exact lookup contract.
-    if unsafe { hew_node_lookup_location(node, name, &raw mut remote_pid) } != 0 {
-        return 0;
-    }
-    let Ok(location) = Location::try_from(remote_pid) else {
-        return 0;
-    };
-    // SAFETY: caller guarantees node pointer validity.
-    let node = unsafe { &*node };
-    // SAFETY: routing table is owned by the live node.
-    unsafe { routing::packed_pid_for_location(node.routing_table, location) }.unwrap_or(0)
-}
-
 /// Send a message to an exact target location.
 ///
 /// `dispatch` is the TARGET actor TYPE's dispatch function pointer, keying the
@@ -2805,6 +2739,7 @@ pub unsafe extern "C" fn hew_node_send_location(
     if node.is_null() || target.is_null() || (payload.is_null() && payload_len > 0) {
         return -1;
     }
+
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &*node };
     if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING {
@@ -2946,46 +2881,28 @@ pub unsafe extern "C" fn hew_node_send_location(
     rc
 }
 
-/// Temporary scalar compiler adapter, retained until Stage 3b migrates PID
-/// aggregates. Runtime dispatch resolves the current scalar alias once and then
-/// routes only by the resulting exact `Location`.
+/// Send to an exact location through the singleton public node.
 ///
 /// # Safety
 ///
-/// - `node` must be valid.
-/// - `payload` must be valid for `payload_len` bytes, or null when len is 0.
-/// - `dispatch` is an opaque codec key, never dereferenced.
+/// `target` and `payload` must satisfy [`hew_node_send_location`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_send(
-    node: *mut HewNode,
-    target_pid: u64,
+pub unsafe extern "C" fn hew_node_api_send_location(
+    target: *const HewRemotePid,
     dispatch: *const c_void,
     msg_type: i32,
     payload: *const u8,
     payload_len: usize,
 ) -> c_int {
-    cabi_guard!(node.is_null(), -1);
-    // SAFETY: caller guarantees node pointer validity.
-    let node_ref = unsafe { &*node };
-    // SAFETY: routing table belongs to the live node.
-    let Some(location) =
-        (unsafe { routing::location_from_packed_pid(node_ref.routing_table, target_pid) })
-    else {
-        set_last_error("hew_node_send: packed compiler PID has no current Location");
-        return HEW_ERR_STALE_REF;
-    };
-    let target = HewRemotePid::from(location);
-    // SAFETY: forwarded arguments satisfy the exact send contract.
-    unsafe {
-        hew_node_send_location(
-            node,
-            &raw const target,
-            dispatch,
-            msg_type,
-            payload,
-            payload_len,
-        )
-    }
+    with_current_node_read(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            return -1;
+        }
+        // SAFETY: the current-node read lock pins `node`; remaining arguments
+        // carry the caller contract documented above.
+        unsafe { hew_node_send_location(node, target, dispatch, msg_type, payload, payload_len) }
+    })
 }
 
 // ── Cross-node monitor ───────────────────────────────────────────────────────
@@ -3075,6 +2992,18 @@ fn local_actor_location(node: &HewNode, actor_id: u64) -> Option<crate::node_ide
     .ok()
 }
 
+fn local_monitor_endpoint(node: &HewNode) -> Option<crate::node_identity::Location> {
+    // Distributed monitors are node-owned until DOWN delivery moves into actor
+    // mailboxes. The peer routes control frames by node/session and never treats
+    // this synthetic non-zero slot as an actor target.
+    Location::new(
+        node.auth.node_identity()?,
+        1,
+        node.auth.session_incarnation()?,
+    )
+    .ok()
+}
+
 /// `monitor(RemotePid<T>)` → register a cross-node monitor and return its
 /// `ref_id`.
 ///
@@ -3102,7 +3031,7 @@ pub unsafe extern "C" fn hew_node_monitor_location(target: *const HewRemotePid) 
         return MONITOR_ERR_STALE_REF;
     };
     let Some(rt) = crate::runtime::rt_current_opt() else {
-        set_last_error("hew_node_monitor: no runtime installed");
+        set_last_error("hew_node_monitor_location: no runtime installed");
         return MONITOR_ERR_NODE_NOT_RUNNING;
     };
     let Some(target_route) = with_current_node_read(|guard| {
@@ -3113,30 +3042,23 @@ pub unsafe extern "C" fn hew_node_monitor_location(target: *const HewRemotePid) 
         // SAFETY: current-node read lock pins the node.
         Some(unsafe { routing::hew_routing_lookup_location((*node).routing_table, target) })
     }) else {
-        set_last_error("hew_node_monitor: no active node");
+        set_last_error("hew_node_monitor_location: no active node");
         return MONITOR_ERR_NODE_NOT_RUNNING;
     };
     if matches!(target_route, routing::LocationRoute::Local { .. }) {
         // Not a remote target — the cross-node route does not apply. The checker
         // routes only RemotePid receivers here, but guard fail-closed anyway.
-        set_last_error("hew_node_monitor: target is not on a remote node");
+        set_last_error("hew_node_monitor_location: target is not on a remote node");
         return MONITOR_ERR_INVALID_TARGET;
     }
     if matches!(target_route, routing::LocationRoute::StaleRef) {
-        set_last_error("hew_node_monitor: target Location is stale");
+        set_last_error("hew_node_monitor_location: target Location is stale");
         return MONITOR_ERR_STALE_REF;
     }
     if matches!(target_route, routing::LocationRoute::Partition) {
-        set_last_error("hew_node_monitor: target identity is partitioned");
+        set_last_error("hew_node_monitor_location: target identity is partitioned");
         return MONITOR_ERR_PARTITION;
     }
-    let watcher_actor = crate::actor::hew_actor_self();
-    if watcher_actor.is_null() {
-        set_last_error("hew_node_monitor: no current actor (monitor watcher)");
-        return MONITOR_ERR_INVALID_TARGET;
-    }
-    // SAFETY: `hew_actor_self` returned a live actor pointer.
-    let watcher_actor_id = unsafe { (*watcher_actor).id };
     let Some(watcher) = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
         if node.is_null() {
@@ -3144,9 +3066,9 @@ pub unsafe extern "C" fn hew_node_monitor_location(target: *const HewRemotePid) 
         }
         // SAFETY: the current-node read lock pins the node.
         let node = unsafe { &*node };
-        local_actor_location(node, watcher_actor_id)
+        local_monitor_endpoint(node)
     }) else {
-        set_last_error("hew_node_monitor: exact watcher/target Location is unavailable");
+        set_last_error("hew_node_monitor_location: exact watcher/target Location is unavailable");
         return MONITOR_ERR_STALE_REF;
     };
 
@@ -3163,7 +3085,7 @@ pub unsafe extern "C" fn hew_node_monitor_location(target: *const HewRemotePid) 
             Ok(payload) => payload,
             Err(err) => {
                 set_last_error(format!(
-                    "hew_node_monitor: req payload encode failure: {err}"
+                    "hew_node_monitor_location: req payload encode failure: {err}"
                 ));
                 rt.dist_monitors.remove_watcher(ref_id);
                 return MONITOR_ERR_ENCODE_FAILURE;
@@ -3172,7 +3094,7 @@ pub unsafe extern "C" fn hew_node_monitor_location(target: *const HewRemotePid) 
 
     let send_result = with_current_node_read(|guard| {
         if *guard == 0 {
-            set_last_error("hew_node_monitor: no current node");
+            set_last_error("hew_node_monitor_location: no current node");
             return None;
         }
         let node = *guard as *const HewNode;
@@ -3198,24 +3120,6 @@ pub unsafe extern "C" fn hew_node_monitor_location(target: *const HewRemotePid) 
             MONITOR_ERR_LOCAL_SHUTDOWN
         }
     }
-}
-
-/// Temporary scalar compiler adapter for Stage 3b.
-#[no_mangle]
-pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
-    let Some(location) = with_current_node_read(|guard| {
-        let node = *guard as *const HewNode;
-        if node.is_null() {
-            return None;
-        }
-        // SAFETY: read lock pins the current node.
-        unsafe { routing::location_from_packed_pid((*node).routing_table, target_pid) }
-    }) else {
-        return MONITOR_ERR_STALE_REF;
-    };
-    let target = HewRemotePid::from(location);
-    // SAFETY: target is a valid stack value.
-    unsafe { hew_node_monitor_location(&raw const target) }
 }
 
 /// `link_remote(RemotePid<T>, PartitionPolicy)` → establish a cross-node link
@@ -3253,14 +3157,14 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         return LINK_ERR_STALE_REF;
     };
     let Some(rt) = crate::runtime::rt_current_opt() else {
-        set_last_error("hew_node_link_remote: no runtime installed");
+        set_last_error("hew_node_link_remote_location: no runtime installed");
         return LINK_ERR_NODE_NOT_RUNNING;
     };
     // The linking subject is the calling actor; a cross-node link with no local
     // actor has nothing to crash, so fail closed.
     let self_actor = crate::actor::hew_actor_self();
     if self_actor.is_null() {
-        set_last_error("hew_node_link_remote: no current actor (link subject)");
+        set_last_error("hew_node_link_remote_location: no current actor (link subject)");
         return LINK_ERR_NO_CURRENT_ACTOR;
     }
     // SAFETY: hew_actor_self returned a non-null live actor pointer.
@@ -3276,19 +3180,19 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         // SAFETY: current-node read lock pins the node.
         Some(unsafe { routing::hew_routing_lookup_location((*node).routing_table, target) })
     }) else {
-        set_last_error("hew_node_link_remote: no active node");
+        set_last_error("hew_node_link_remote_location: no active node");
         return LINK_ERR_NODE_NOT_RUNNING;
     };
     if matches!(target_route, routing::LocationRoute::Local { .. }) {
-        set_last_error("hew_node_link_remote: target is not on a remote node");
+        set_last_error("hew_node_link_remote_location: target is not on a remote node");
         return LINK_ERR_INVALID_TARGET;
     }
     if matches!(target_route, routing::LocationRoute::StaleRef) {
-        set_last_error("hew_node_link_remote: target Location is stale");
+        set_last_error("hew_node_link_remote_location: target Location is stale");
         return LINK_ERR_STALE_REF;
     }
     if matches!(target_route, routing::LocationRoute::Partition) {
-        set_last_error("hew_node_link_remote: target identity is partitioned");
+        set_last_error("hew_node_link_remote_location: target identity is partitioned");
         return LINK_ERR_PARTITION;
     }
     #[expect(
@@ -3313,7 +3217,9 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         let node = unsafe { &*node };
         local_actor_location(node, local_actor_id)
     }) else {
-        set_last_error("hew_node_link_remote: exact linker/target Location is unavailable");
+        set_last_error(
+            "hew_node_link_remote_location: exact linker/target Location is unavailable",
+        );
         rt.dist_monitors.remove_watcher(ref_id);
         return LINK_ERR_STALE_REF;
     };
@@ -3330,7 +3236,7 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         Ok(payload) => payload,
         Err(err) => {
             set_last_error(format!(
-                "hew_node_link_remote: req payload encode failure: {err}"
+                "hew_node_link_remote_location: req payload encode failure: {err}"
             ));
             rt.dist_monitors.remove_watcher(ref_id);
             return LINK_ERR_ENCODE_FAILURE;
@@ -3339,7 +3245,7 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
 
     let send_result = with_current_node_read(|guard| {
         if *guard == 0 {
-            set_last_error("hew_node_link_remote: no current node");
+            set_last_error("hew_node_link_remote_location: no current node");
             return None;
         }
         let node = *guard as *const HewNode;
@@ -3365,29 +3271,6 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
             LINK_ERR_LOCAL_SHUTDOWN
         }
     }
-}
-
-/// Temporary scalar compiler adapter for Stage 3b.
-#[no_mangle]
-pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 {
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "temporary compiler PID adapter preserves all packed bits"
-    )]
-    let target_pid = target_pid as u64;
-    let Some(location) = with_current_node_read(|guard| {
-        let node = *guard as *const HewNode;
-        if node.is_null() {
-            return None;
-        }
-        // SAFETY: read lock pins the current node.
-        unsafe { routing::location_from_packed_pid((*node).routing_table, target_pid) }
-    }) else {
-        return LINK_ERR_STALE_REF;
-    };
-    let target = HewRemotePid::from(location);
-    // SAFETY: target is a valid stack value.
-    unsafe { hew_node_link_remote_location(&raw const target, policy_tag) }
 }
 
 /// `hew_node_monitor_recv(ref_id, timeout_ms)` → block for the cross-node
@@ -3434,13 +3317,6 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
     let Some(target) = rt.dist_monitors.remove_watcher(ref_id) else {
         return;
     };
-    let watcher_actor = crate::actor::hew_actor_self();
-    if watcher_actor.is_null() {
-        set_last_error("hew_node_demonitor: no current actor (monitor watcher)");
-        return;
-    }
-    // SAFETY: `hew_actor_self` returned a live actor pointer.
-    let watcher_actor_id = unsafe { (*watcher_actor).id };
     let Some(watcher) = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
         if node.is_null() {
@@ -3448,7 +3324,7 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
         }
         // SAFETY: the current-node read lock pins the node.
         let node = unsafe { &*node };
-        local_actor_location(node, watcher_actor_id)
+        local_monitor_endpoint(node)
     }) else {
         set_last_error("hew_node_demonitor: exact watcher/target Location is unavailable");
         return;
@@ -4362,6 +4238,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
     if rc == 0 {
         // Success: compute the standalone identity export clone and go Running.
         let identity_export = cfg.identity_export_string();
+        let node_identity = cfg.node_identity;
         if matches!(&guard.state, ConfigState::Starting { generation: g, owner, .. }
             if *g == generation && *owner == node as usize)
         {
@@ -4369,6 +4246,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
                 generation,
                 owner: node as usize,
                 identity_export,
+                node_identity,
             };
         }
         0
@@ -4594,61 +4472,6 @@ pub unsafe extern "C" fn hew_node_api_lookup_location(
         // SAFETY: node is pinned by the read lock; caller guarantees name/output.
         unsafe { hew_node_lookup_location(node, name, out) }
     })
-}
-
-/// Temporary scalar `Node::lookup(name)` compiler adapter for Stage 3b.
-///
-/// # Safety
-///
-/// `name` must be a valid null-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_api_lookup(name: *const c_char) -> u64 {
-    if name.is_null() {
-        return 0;
-    }
-    with_current_node_read(|guard| {
-        let node = *guard as *mut HewNode;
-        if node.is_null() {
-            return 0;
-        }
-        // SAFETY: node and name are non-null and validated above.
-        unsafe { hew_node_lookup(node, name) }
-    })
-}
-
-/// `RemotePid::from_raw(node_id, serial) -> u64`
-///
-/// Constructs a `RemotePid<T>` PID value from a raw `(node_id, serial)` pair.
-/// `RemotePid<T>` is encoded identically to `LocalPid<T>`: a packed `u64`
-/// produced by `hew_pid_make(node_id as u16, serial)`.
-///
-/// Returns `0` (the null-PID sentinel) and sets the last error string when
-/// either validation constraint fails:
-/// - `node_id` must be non-zero (a zero `node_id` would alias the local node,
-///   which is always node 0 in the current encoding scheme).
-/// - `node_id` must not exceed `u16::MAX` (the packed encoding constraint).
-#[no_mangle]
-pub extern "C" fn hew_remote_pid_from_raw(node_id: u64, serial: u64) -> u64 {
-    if node_id == 0 {
-        set_last_error(
-            "RemotePid::from_raw: node_id must be non-zero \
-             (use LocalPid for local actors)",
-        );
-        return 0;
-    }
-    if node_id > u64::from(u16::MAX) {
-        set_last_error(format!(
-            "RemotePid::from_raw: node_id {node_id} exceeds u16::MAX ({})",
-            u16::MAX
-        ));
-        return 0;
-    }
-    // SAFETY: node_id <= u16::MAX is verified above; truncation cannot occur.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "node_id <= u16::MAX is verified by the guard above"
-    )]
-    crate::pid::hew_pid_make(node_id as u16, serial)
 }
 
 /// `Node::set_transport(name)` — Set the transport type before starting.
@@ -5064,6 +4887,79 @@ pub extern "C" fn hew_node_api_identity_key() -> *mut c_char {
     unsafe { crate::cabi::malloc_cstring(export.as_ptr(), export.len()) }
 }
 
+/// `Node::id()` — write the stable key-derived node identity when configured.
+///
+/// Returns `0` and writes `out` on success; returns `-1` without writing when
+/// no stable identity has been loaded.
+///
+/// # Safety
+///
+/// `out` must be writable when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_id(out: *mut HewNodeId) -> c_int {
+    if out.is_null() {
+        return -1;
+    }
+    let identity = {
+        let guard = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &guard.state {
+            ConfigState::Building(cfg) => cfg.node_identity,
+            ConfigState::Starting { config, .. } => config.node_identity,
+            ConfigState::Running { node_identity, .. } => *node_identity,
+        }
+    };
+    let Some(identity) = identity else {
+        return -1;
+    };
+    // SAFETY: caller guarantees `out` is writable.
+    unsafe { out.write(HewNodeId::from(identity)) };
+    0
+}
+
+unsafe fn owned_identity_string(value: &str) -> *mut c_char {
+    // SAFETY: `value` is valid UTF-8 and malloc_cstring copies the bytes.
+    unsafe { crate::cabi::malloc_cstring(value.as_ptr(), value.len()) }
+}
+
+/// Format a `NodeId` as 32 lowercase hexadecimal digits.
+///
+/// # Safety
+///
+/// `node` must point to a readable `HewNodeId`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_id_format(node: *const HewNodeId) -> *mut c_char {
+    if node.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: caller guarantees `node` is readable.
+    let node = unsafe { *node };
+    // SAFETY: the formatted string is copied into Hew-owned storage.
+    unsafe { owned_identity_string(&format!("{:016x}{:016x}", node.hi, node.lo)) }
+}
+
+/// Format a full location as `<node-hex>/<slot>@<session>`.
+///
+/// # Safety
+///
+/// `location` must point to a readable `HewRemotePid`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_location_format(location: *const HewRemotePid) -> *mut c_char {
+    if location.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: caller guarantees `location` is readable.
+    let location = unsafe { *location };
+    // SAFETY: the formatted string is copied into Hew-owned storage.
+    unsafe {
+        owned_identity_string(&format!(
+            "{:016x}{:016x}/{}@{}",
+            location.node.hi, location.node.lo, location.slot, location.incarnation
+        ))
+    }
+}
+
 /// (4 KiB). The mesh allowlist re-enforces this, but `decode_hex` checks it
 /// *before* allocating so an oversize hex argument can't force a large up-front
 /// `Vec`. A well-formed RSA-4096 SPKI is under 1 KiB; anything larger is junk.
@@ -5461,49 +5357,6 @@ pub unsafe extern "C" fn hew_node_api_ask_location(
     finish_remote_ask_outcome(dispatch, msg_type, reply_size, &reply)
 }
 
-/// Temporary scalar compiler adapter for Stage 3b.
-///
-/// # Safety
-///
-/// `data` must point to at least `size` readable bytes, or be null when `size`
-/// is zero.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_api_ask(
-    pid: u64,
-    dispatch: *const c_void,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    timeout_ms: u64,
-    reply_size: usize,
-) -> *mut c_void {
-    let location = with_current_node_read(|guard| {
-        let node = *guard as *const HewNode;
-        if node.is_null() {
-            return Err(AskError::NodeNotRunning);
-        }
-        // SAFETY: current-node read lock pins the node.
-        unsafe { routing::location_from_packed_pid((*node).routing_table, pid) }
-            .ok_or(AskError::StaleRef)
-    });
-    let Ok(location) = location else {
-        return ask_null(location.unwrap_err());
-    };
-    let target = HewRemotePid::from(location);
-    // SAFETY: forwarded arguments satisfy the exact ask contract.
-    unsafe {
-        hew_node_api_ask_location(
-            &raw const target,
-            dispatch,
-            msg_type,
-            data,
-            size,
-            timeout_ms,
-            reply_size,
-        )
-    }
-}
-
 /// Start a non-blocking remote ask for a SUSPENDABLE caller (NEW-5).
 ///
 /// Serializes + submits the ask exactly as the blocking path, registers the
@@ -5562,59 +5415,15 @@ pub unsafe extern "C" fn hew_node_api_ask_async_location(
     Arc::into_raw(pending).cast::<c_void>().cast_mut()
 }
 
-/// Temporary scalar compiler adapter for Stage 3b.
-///
-/// # Safety
-///
-/// - `data` must point to at least `size` readable bytes, or be null when
-///   `size` is zero.
-/// - `caller_actor` must be the live actor whose continuation is about to park.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_api_ask_async(
-    pid: u64,
-    dispatch: *const c_void,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    timeout_ms: u64,
-    caller_actor: *mut crate::actor::HewActor,
-) -> *mut c_void {
-    let location = with_current_node_read(|guard| {
-        let node = *guard as *const HewNode;
-        if node.is_null() {
-            return Err(AskError::NodeNotRunning);
-        }
-        // SAFETY: current-node read lock pins the node.
-        unsafe { routing::location_from_packed_pid((*node).routing_table, pid) }
-            .ok_or(AskError::StaleRef)
-    });
-    let Ok(location) = location else {
-        return ask_null(location.unwrap_err());
-    };
-    let target = HewRemotePid::from(location);
-    // SAFETY: forwarded arguments satisfy the exact async ask contract.
-    unsafe {
-        hew_node_api_ask_async_location(
-            &raw const target,
-            dispatch,
-            msg_type,
-            data,
-            size,
-            timeout_ms,
-            caller_actor,
-        )
-    }
-}
-
 /// Drain the reply deposited for a SUSPENDED remote ask after the coroutine
-/// resumes. Consumes the handle returned by [`hew_node_api_ask_async`] and
+/// resumes. Consumes the handle returned by [`hew_node_api_ask_async_location`] and
 /// materialises the outcome exactly as the blocking finish path. A handle whose
 /// outcome is still empty (no reply, no failure) fails closed with
 /// [`AskError::ConnectionDropped`] rather than fabricating a value.
 ///
 /// # Safety
 ///
-/// `pending_handle` must be a handle returned by [`hew_node_api_ask_async`]
+/// `pending_handle` must be a handle returned by [`hew_node_api_ask_async_location`]
 /// that has not already been finished or cancelled.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_ask_finish(
@@ -5682,6 +5491,23 @@ mod tests {
 
     fn test_location(route_slot: u16, actor_slot: u64) -> Location {
         Location::new(test_node_id(route_slot), actor_slot, 1).unwrap()
+    }
+
+    fn test_remote_pid(actor_id: u64) -> HewRemotePid {
+        HewRemotePid::from(test_location(
+            crate::pid::hew_pid_node(actor_id),
+            crate::pid::hew_pid_serial(actor_id),
+        ))
+    }
+
+    unsafe fn lookup_exact(node: *mut HewNode, name: *const c_char) -> Option<Location> {
+        let mut found = HewRemotePid::default();
+        // SAFETY: caller guarantees node/name validity and `found` is writable.
+        if unsafe { hew_node_lookup_location(node, name, &raw mut found) } == 0 {
+            Location::try_from(found).ok()
+        } else {
+            None
+        }
     }
 
     unsafe fn install_test_auth(node: *mut HewNode, route_slot: u16) {
@@ -6545,13 +6371,15 @@ mod tests {
         name: *const c_char,
         expected_node_id: u16,
         timeout: Duration,
-    ) -> Option<u64> {
+    ) -> Option<HewRemotePid> {
         let deadline = Instant::now() + timeout;
         loop {
             // SAFETY: node/name are valid for this bounded wait.
-            let pid = unsafe { hew_node_lookup(node, name) };
-            if pid != 0 && crate::pid::hew_pid_node(pid) == expected_node_id {
-                return Some(pid);
+            let location = unsafe { lookup_exact(node, name) };
+            if let Some(location) = location {
+                if location.node() == test_node_id(expected_node_id) {
+                    return Some(HewRemotePid::from(location));
+                }
             }
             if Instant::now() >= deadline {
                 return None;
@@ -6737,9 +6565,9 @@ mod tests {
         // SAFETY: remote_pid was resolved from registry gossip; null payload is
         // valid for this signal message.
         let rc = unsafe {
-            hew_node_send(
+            hew_node_send_location(
                 node.as_ptr(),
-                remote_pid,
+                &raw const remote_pid,
                 ptr::null(),
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
                 ptr::null(),
@@ -6814,7 +6642,7 @@ mod tests {
     #[cfg(feature = "encryption")]
     struct TwoProcessAskClient {
         node: TestNode,
-        remote_pid: u64,
+        remote_pid: HewRemotePid,
         _real_sched: RealSchedulerGuard,
     }
 
@@ -6830,8 +6658,8 @@ mod tests {
         let send_value: u32 = 21;
         // SAFETY: remote_pid was resolved from a separate helper process over TCP.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                remote_pid,
+            hew_node_api_ask_location(
+                &raw const remote_pid,
                 test_dispatch(),
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
@@ -6875,8 +6703,8 @@ mod tests {
         let send_value: u32 = 21;
         // SAFETY: remote_pid was resolved from a separate helper process over TCP.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                remote_pid,
+            hew_node_api_ask_location(
+                &raw const remote_pid,
                 test_dispatch(),
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
@@ -6941,8 +6769,8 @@ mod tests {
         )
         .expect("ask client lookup did not resolve remote registry gossip");
         assert_ne!(
-            crate::pid::hew_pid_node(remote_pid),
-            client_node_id,
+            Location::try_from(remote_pid).unwrap().node(),
+            test_node_id(client_node_id),
             "ask test must not resolve to a local pid"
         );
         TwoProcessAskClient {
@@ -7786,6 +7614,7 @@ mod tests {
             generation: 7,
             owner: 0xDEAD_BEEF,
             identity_export: "cafe".to_string(),
+            node_identity: Some(test_node_id(7)),
         });
         assert_eq!(
             read(),
@@ -8091,10 +7920,10 @@ mod tests {
                 0
             );
             assert_eq!(
-                hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
-                actor_id
+                lookup_exact(node.as_ptr(), actor_name.as_ptr()),
+                local_actor_location(&*node.as_ptr(), actor_id)
             );
-            assert_eq!(hew_node_lookup(node.as_ptr(), missing_name.as_ptr()), 0);
+            assert_eq!(lookup_exact(node.as_ptr(), missing_name.as_ptr()), None);
             assert_eq!(
                 crate::registry::hew_registry_unregister(actor_name.as_ptr()),
                 0
@@ -8132,8 +7961,8 @@ mod tests {
                 0
             );
             assert_eq!(
-                hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
-                actor_id
+                lookup_exact(node.as_ptr(), actor_name.as_ptr()),
+                local_actor_location(&*node.as_ptr(), actor_id)
             );
 
             let n = &*node.as_ptr();
@@ -8142,7 +7971,7 @@ mod tests {
             let _ = cluster.take_registry_gossip(10);
 
             assert_eq!(crate::actor::hew_actor_free(actor), 0);
-            assert_eq!(hew_node_lookup(node.as_ptr(), actor_name.as_ptr()), 0);
+            assert_eq!(lookup_exact(node.as_ptr(), actor_name.as_ptr()), None);
             assert!(crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
             let events = cluster.take_registry_gossip(10);
@@ -8183,13 +8012,13 @@ mod tests {
                 0
             );
             assert_eq!(
-                hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
-                actor_id
+                lookup_exact(node.as_ptr(), actor_name.as_ptr()),
+                local_actor_location(&*node.as_ptr(), actor_id)
             );
             assert!(!crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
-            assert_eq!(hew_node_lookup(node.as_ptr(), actor_name.as_ptr()), 0);
+            assert_eq!(lookup_exact(node.as_ptr(), actor_name.as_ptr()), None);
             assert!(crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
             assert_eq!(crate::actor::hew_actor_free(actor), 0);
@@ -8221,8 +8050,8 @@ mod tests {
                 0
             );
             assert_eq!(
-                hew_node_lookup(node2.as_ptr(), actor_name.as_ptr()),
-                actor_id
+                lookup_exact(node2.as_ptr(), actor_name.as_ptr()),
+                local_actor_location(&*node2.as_ptr(), actor_id)
             );
         }
 
@@ -8293,7 +8122,7 @@ mod tests {
         // SAFETY: node is a valid pointer; name is a valid C string literal.
         unsafe {
             assert_eq!(hew_node_unregister(node, name.as_ptr()), 0);
-            assert_eq!(hew_node_lookup(node, name.as_ptr()), 0);
+            assert_eq!(lookup_exact(node, name.as_ptr()), None);
         }
 
         // Idempotent
@@ -8480,12 +8309,12 @@ mod tests {
         assert_ne!(remote_node_id, 0);
         assert_ne!(remote_node_id, local_node_id);
 
-        let remote_pid = crate::pid::hew_pid_make(remote_node_id, 1);
+        let remote_pid = HewRemotePid::from(test_location(remote_node_id, 1));
         // SAFETY: null data with size 0 is valid; the remote path should fail
         // immediately because no active node is installed.
         let reply = unsafe {
-            hew_node_api_ask(
-                remote_pid,
+            hew_node_api_ask_location(
+                &raw const remote_pid,
                 test_dispatch(),
                 7,
                 ptr::null_mut(),
@@ -9310,7 +9139,7 @@ mod tests {
                 false,
                 n.registry.cast::<c_void>(),
             );
-            assert_eq!(hew_node_lookup(node.as_ptr(), remote_name.as_ptr()), 0);
+            assert_eq!(lookup_exact(node.as_ptr(), remote_name.as_ptr()), None);
 
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
         }
@@ -9517,11 +9346,12 @@ mod tests {
 
         // Fire-and-forget from node1 to the actor on node2.
         let msg_type_sent: i32 = 77;
+        let target = test_remote_pid(actor_id);
         // SAFETY: null payload / size 0 is valid for a bare signal message.
         let rc = unsafe {
-            hew_node_send(
+            hew_node_send_location(
                 node1.as_ptr(),
-                actor_id,
+                &raw const target,
                 ptr::null(),
                 msg_type_sent,
                 ptr::null(),
@@ -9651,11 +9481,12 @@ mod tests {
         // This exercises a real CBOR-framed round-trip across the mTLS-pinned
         // mesh transport — not just process startup.
         let msg_type_sent: i32 = 91;
+        let target = test_remote_pid(actor_id);
         // SAFETY: null payload / size 0 is valid for a bare signal message.
         let rc = unsafe {
-            hew_node_send(
+            hew_node_send_location(
                 node1.as_ptr(),
-                actor_id,
+                &raw const target,
                 ptr::null(),
                 msg_type_sent,
                 ptr::null(),
@@ -9953,10 +9784,11 @@ mod tests {
         // SAFETY: both node pointers remain valid until the end of the test.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
+        let target = test_remote_pid(actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10029,10 +9861,11 @@ mod tests {
         // send_reply_envelope uses hew_connmgr_conn_id_for_node to find the accepted
         // connection whose peer_node_id == 311, enabling the reply to flow back to node1.
         let send_value: u32 = 21;
+        let target = test_remote_pid(actor_id);
         // SAFETY: send_value is a valid u32 on the stack; reply is malloc'd, freed below.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
@@ -10110,10 +9943,11 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         let send_value: u32 = 21;
+        let target = test_remote_pid(actor_id);
         // SAFETY: send_value is a valid u32 on the stack; caller is a live actor.
         let handle = unsafe {
-            hew_node_api_ask_async(
-                actor_id,
+            hew_node_api_ask_async_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
@@ -10209,10 +10043,11 @@ mod tests {
         // SAFETY: both node pointers remain valid until teardown.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
+        let target = test_remote_pid(actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10273,10 +10108,11 @@ mod tests {
         // SAFETY: actor was spawned above and remains valid while stopped here.
         unsafe { crate::actor::hew_actor_stop(actor) };
 
+        let target = test_remote_pid(actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10355,10 +10191,11 @@ mod tests {
         // SAFETY: both node pointers remain valid until teardown.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
+        let target = test_remote_pid(actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10417,10 +10254,11 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
+        let target = test_remote_pid(actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10509,10 +10347,11 @@ mod tests {
 
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         let ask_start = std::time::Instant::now();
+        let target = test_remote_pid(actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10576,10 +10415,11 @@ mod tests {
         // SAFETY: both node pointers remain valid until the end of the test.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
+        let target = test_remote_pid(actor_id);
         // SAFETY: non-void remote ask expects a u32-sized reply; an empty success must fail closed.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10639,10 +10479,11 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         let ask_start = std::time::Instant::now();
+        let target = test_remote_pid(actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10765,10 +10606,11 @@ mod tests {
         // SAFETY: both node pointers remain valid until the end of the test.
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
+        let target = test_remote_pid(actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr = hew_node_api_ask(
-                actor_id,
+            let ptr = hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10876,10 +10718,11 @@ mod tests {
             outbound_conn_id,
         );
 
+        let target = test_remote_pid(actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr = hew_node_api_ask(
-                actor_id,
+            let ptr = hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -10994,10 +10837,11 @@ mod tests {
             outbound_conn_id,
         );
 
+        let target = test_remote_pid(actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr = hew_node_api_ask(
-                actor_id,
+            let ptr = hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -11319,10 +11163,11 @@ mod tests {
         let baseline = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
 
         let payload: u32 = 0xDEAD_BEEF;
+        let target = test_remote_pid(actor_id);
         // SAFETY: payload is a valid u32 on the stack; its address is valid for this call.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
@@ -11417,10 +11262,11 @@ mod tests {
         // Void ask: reply_size == 0. Before the fix this would have returned
         // the void-success sentinel because the rejection sent an empty payload
         // which remote_reply_data_to_ptr mistook for a void success.
+        let target = test_remote_pid(actor_id);
         // SAFETY: null payload / size-0 are valid; this is a void ask.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 ptr::null_mut(),
@@ -11489,10 +11335,11 @@ mod tests {
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
 
         let payload: u32 = 42;
+        let target = test_remote_pid(actor_id);
         // SAFETY: payload is a valid u32; its address is valid for this call.
         let reply_ptr = unsafe {
-            hew_node_api_ask(
-                actor_id,
+            hew_node_api_ask_location(
+                &raw const target,
                 test_dispatch(),
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),

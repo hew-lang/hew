@@ -3099,7 +3099,7 @@ pub unsafe extern "C" fn hew_actor_send_wire(
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send_by_id(
     actor_id: u64,
-    dispatch: *const c_void,
+    _dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
@@ -3136,10 +3136,10 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     // through the distributed node infrastructure (which serializes the
     // payload under the `(dispatch, msg_type)` codec key).
     if crate::pid::hew_pid_is_local(actor_id) == 0 {
-        // SAFETY: data validity is guaranteed by caller contract.
-        return unsafe {
-            crate::hew_node::try_remote_send(actor_id, dispatch, msg_type, data, size)
-        };
+        crate::set_last_error(
+            "hew_actor_send_by_id accepts local actor ids only; remote sends require an exact Location",
+        );
+        return -1;
     }
     // A local PID with no live actor behind it is gone — already stopped,
     // freed, or never existed — a genuine, caller-visible failure. Report

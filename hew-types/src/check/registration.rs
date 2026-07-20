@@ -731,6 +731,11 @@ impl Checker {
         // credential for the pinned transport as lowercase hex (issue #2652);
         // `""` when no stable identity has been loaded.
         self.register_builtin_fn("Node::identity_key", vec![], Ty::String);
+        self.register_builtin_fn(
+            "Node::id",
+            vec![],
+            Ty::option(Ty::builtin_named(BuiltinType::NodeId, vec![])),
+        );
         // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
         // The second argument is tightened to `LocalPid<T>` so that passing a
         // `RemotePid<T>` or bare `u64` is caught at the checker rather than
@@ -9549,6 +9554,7 @@ mod node_builtin_catalog_tests {
             [
                 "Node::allow_peer",
                 "Node::connect",
+                "Node::id",
                 "Node::identity_key",
                 "Node::load_keys",
                 "Node::lookup",

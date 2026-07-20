@@ -40,6 +40,8 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
+            | BuiltinType::NodeId
+            | BuiltinType::Location
             | BuiltinType::HewActor
             | BuiltinType::HewDuplex
             | BuiltinType::HewSendHalf

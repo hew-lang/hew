@@ -502,7 +502,6 @@ pub(super) fn lint_receive_fn_definition(
 fn shadowed_actor_handle_builtin(name: &str) -> Option<&'static str> {
     match name {
         "send" => Some("`LocalPid<T>::send` / `RemotePid<T>::send`"),
-        "to_remote_via" => Some("`LocalPid<T>::to_remote_via`"),
         "ask" => Some("`RemotePid<T>::ask`"),
         _ => None,
     }

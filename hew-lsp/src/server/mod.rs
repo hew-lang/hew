@@ -1235,8 +1235,8 @@ mod tests {
             "expected `send` in actor-handle completions, got: {labels:?}"
         );
         assert!(
-            labels.contains(&"to_remote_via"),
-            "expected `to_remote_via` in actor-handle completions, got: {labels:?}"
+            !labels.contains(&"to_remote_via"),
+            "removed `to_remote_via` must not appear in actor-handle completions, got: {labels:?}"
         );
         assert!(
             labels.contains(&"increment"),

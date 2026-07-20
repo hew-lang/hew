@@ -791,9 +791,10 @@ pub mod connection;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deterministic;
 /// Distributed (cross-node) actor monitor table: the node-keyed
-/// analogue of the process-local `monitor` table, plus the `hew_node_monitor` /
-/// `hew_node_monitor_recv` ABI that registers a remote monitor and blocks for
-/// its terminal signal. Native-only (cross-node messaging is not on wasm32).
+/// analogue of the process-local `monitor` table, plus the
+/// `hew_node_monitor_location` / `hew_node_monitor_recv` ABI that registers a
+/// remote monitor and blocks for its terminal signal. Native-only (cross-node
+/// messaging is not on wasm32).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dist_monitor;
 #[cfg(not(target_arch = "wasm32"))]

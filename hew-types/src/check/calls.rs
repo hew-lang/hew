@@ -1216,7 +1216,8 @@ impl Checker {
             // a registration exists, so it must not manufacture a zero-valued
             // handle. The MIR lowering branches on the argument's resolved type
             // to route a remote receiver to the node monitor ABI
-            // (`hew_node_monitor`) instead of the in-process `hew_actor_monitor`.
+            // (`hew_node_monitor_location`) instead of the in-process
+            // `hew_actor_monitor`.
             // The cross-node LINK form is `link_remote(RemotePid<T>,
             // PartitionPolicy)` — its own builtin, routed via the generic
             // `fn_sigs` path; a bare `link(RemotePid)` is rejected above with a

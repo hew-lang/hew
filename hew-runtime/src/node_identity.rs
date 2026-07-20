@@ -909,6 +909,13 @@ mod tests {
         assert_eq!(std::mem::size_of::<NodeId>(), 16);
         assert_eq!(std::mem::size_of::<HewLocation>(), 32);
         assert_eq!(std::mem::align_of::<HewLocation>(), 8);
+        assert_eq!(std::mem::size_of::<HewRemotePid>(), 32);
         assert_eq!(std::mem::size_of::<Location>(), 32);
+        assert_eq!(std::mem::offset_of!(HewLocation, node), 0);
+        assert_eq!(std::mem::offset_of!(HewNodeId, hi), 0);
+        assert_eq!(std::mem::offset_of!(HewNodeId, lo), 8);
+        assert_eq!(std::mem::offset_of!(HewLocation, slot), 16);
+        assert_eq!(std::mem::offset_of!(HewLocation, incarnation), 24);
+        assert_eq!(std::mem::offset_of!(HewLocation, reserved), 28);
     }
 }

@@ -224,61 +224,6 @@ pub(crate) unsafe fn hew_routing_lookup_location(
     }
 }
 
-/// Resolve a live receiver-local route slot to its current identity/session.
-///
-/// This is the only scalar adapter retained for the Stage 3b compiler boundary.
-///
-/// # Safety
-///
-/// `table` must point to a live routing table.
-pub(crate) unsafe fn location_from_packed_pid(
-    table: *const HewRoutingTable,
-    packed_pid: u64,
-) -> Option<Location> {
-    if table.is_null() {
-        return None;
-    }
-    // SAFETY: caller guarantees `table` validity.
-    let table = unsafe { &*table };
-    let route_slot = crate::pid::hew_pid_node(packed_pid);
-    let actor_slot = crate::pid::hew_pid_serial(packed_pid);
-    if actor_slot == 0 {
-        return None;
-    }
-    if route_slot == 0 || route_slot == table.local_route_slot {
-        return Location::new(
-            table.local_node?,
-            actor_slot,
-            table.local_session_incarnation?,
-        )
-        .ok();
-    }
-    let state = table.state.read_or_recover();
-    let node_id = state.by_slot.get(&route_slot)?;
-    let route = state.by_node.get(node_id)?;
-    Location::new(*node_id, actor_slot, route.session_incarnation).ok()
-}
-
-/// Resolve an exact location to the current packed internal actor id.
-///
-/// Used only by the temporary scalar compiler adapter.
-///
-/// # Safety
-///
-/// `table` must point to a live routing table.
-pub(crate) unsafe fn packed_pid_for_location(
-    table: *const HewRoutingTable,
-    location: Location,
-) -> Option<u64> {
-    // SAFETY: caller guarantees `table` validity.
-    match unsafe { hew_routing_lookup_location(table, location) } {
-        LocationRoute::Local { actor_id } | LocationRoute::Remote { actor_id, .. } => {
-            Some(actor_id)
-        }
-        LocationRoute::Partition | LocationRoute::StaleRef => None,
-    }
-}
-
 /// Resolve a live route slot directly to its connection handle.
 ///
 /// This remains an internal SWIM/reply-table convenience; route slots do not
@@ -448,35 +393,6 @@ mod tests {
                     route_slot: 9,
                     conn: 41
                 }
-            );
-            hew_routing_table_free(table);
-        }
-    }
-
-    #[test]
-    fn scalar_adapter_uses_only_current_live_bindings() {
-        let local = node(1);
-        let remote = node(2);
-        let table = hew_routing_table_new(7, Some(local), Some(11), &[(9, remote)]);
-
-        // SAFETY: table is live for the test.
-        unsafe {
-            assert_eq!(
-                location_from_packed_pid(table, crate::pid::hew_pid_make(7, 42)),
-                Some(location(local, 42, 11))
-            );
-            assert_eq!(
-                location_from_packed_pid(table, crate::pid::hew_pid_make(9, 42)),
-                None
-            );
-            assert!(hew_routing_add_route(table, remote, 9, 5, 55));
-            assert_eq!(
-                location_from_packed_pid(table, crate::pid::hew_pid_make(9, 42)),
-                Some(location(remote, 42, 5))
-            );
-            assert_eq!(
-                packed_pid_for_location(table, location(remote, 42, 5)),
-                Some(crate::pid::hew_pid_make(9, 42))
             );
             hew_routing_table_free(table);
         }

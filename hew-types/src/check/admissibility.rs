@@ -12,6 +12,22 @@ pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
 
 // ── Layout computation helpers (C-2c) ─────────────────────────────────────────
 
+/// Return the compiler-owned fixed layout for a node identity aggregate.
+#[must_use]
+pub(crate) fn identity_aggregate_layout(ty: &Ty) -> Option<(usize, usize)> {
+    match ty {
+        Ty::Named {
+            builtin: Some(BuiltinType::NodeId),
+            ..
+        } => Some((16, 8)),
+        Ty::Named {
+            builtin: Some(BuiltinType::Location | BuiltinType::RemotePid),
+            ..
+        } => Some((32, 8)),
+        _ => None,
+    }
+}
+
 /// Round `offset` up to the next multiple of `align`.
 ///
 /// `align` must be a power of two or 1.  Wrapping arithmetic is used so
@@ -34,6 +50,9 @@ pub(crate) fn primitive_copy_layout(
     ty: &Ty,
     type_defs: &HashMap<String, TypeDef>,
 ) -> Option<(usize, usize)> {
+    if let Some(layout) = identity_aggregate_layout(ty) {
+        return Some(layout);
+    }
     match ty {
         Ty::Bool | Ty::I8 | Ty::U8 => Some((1, 1)),
         Ty::I16 | Ty::U16 => Some((2, 2)),
@@ -3073,6 +3092,21 @@ mod tests {
         assert_eq!(
             primitive_copy_layout(&Ty::Duration, &HashMap::new()),
             Some((8, 8))
+        );
+    }
+
+    #[test]
+    fn identity_aggregate_layouts_are_fixed() {
+        let node_id = Ty::builtin_named(BuiltinType::NodeId, vec![]);
+        let location = Ty::builtin_named(BuiltinType::Location, vec![]);
+        let remote_pid = Ty::remote_pid(Ty::I64);
+        let type_defs = HashMap::new();
+
+        assert_eq!(primitive_copy_layout(&node_id, &type_defs), Some((16, 8)));
+        assert_eq!(primitive_copy_layout(&location, &type_defs), Some((32, 8)));
+        assert_eq!(
+            primitive_copy_layout(&remote_pid, &type_defs),
+            Some((32, 8))
         );
     }
 

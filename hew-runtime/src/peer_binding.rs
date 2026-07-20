@@ -882,8 +882,8 @@ impl std::fmt::Debug for PeerAuthSnapshot {
 /// Governs *only* the singleton public `Node::*` API. `owner` is the owning
 /// `HewNode*` as a `usize` (mirroring `CURRENT_NODE`'s representation) — used
 /// only for lifecycle matching (who may transition/reset), **never**
-/// dereferenced. `identity_export` in `Running` is a cloned identity string so
-/// the public `identity_key` never reads a raw node pointer.
+/// dereferenced. `identity_export` and `node_identity` in `Running` are cloned
+/// values so public identity access never reads a raw node pointer.
 #[derive(Debug)]
 pub enum ConfigState {
     /// Pre-start public staging; `allow_peer` / `load_keys` / `set_transport`
@@ -907,6 +907,8 @@ pub enum ConfigState {
         owner: usize,
         /// The cloned identity string `identity_key` returns while running.
         identity_export: String,
+        /// The stable key-derived node identity, when configured.
+        node_identity: Option<NodeId>,
     },
 }
 

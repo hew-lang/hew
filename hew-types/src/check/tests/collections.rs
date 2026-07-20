@@ -1220,10 +1220,7 @@ fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
 }
 
 #[test]
-fn turbofish_on_remote_pid_from_raw_resolves_concrete_type() {
-    // A7 S3: `RemotePid::<T>::from_raw(...)` must propagate the explicit
-    // turbofish type-arg through the impl-block-introduced type parameter
-    // so the result is typed `RemotePid<Counter>`, not `RemotePid<T>`.
+fn remote_pid_from_raw_is_not_public() {
     let output = check_source(
         r"
         actor Counter {
@@ -1237,34 +1234,12 @@ fn turbofish_on_remote_pid_from_raw_resolves_concrete_type() {
     );
 
     assert!(
-        output.errors.is_empty(),
-        "turbofish on RemotePid::from_raw should type-check; got: {:?}",
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedFunction),
+        "provenance-free RemotePid::from_raw must be undefined; got: {:?}",
         output.errors
-    );
-}
-
-#[test]
-fn turbofish_on_remote_pid_from_raw_rejects_mismatched_assignment() {
-    // Fail-closed: explicit turbofish T must not silently coerce to a
-    // different annotated `RemotePid<U>` at the assignment site.
-    let output = check_source(
-        r"
-        actor Counter {
-            receive fn inc() {}
-        }
-        actor Worker {
-            receive fn ping() {}
-        }
-
-        fn main() {
-            let p: RemotePid<Counter> = RemotePid::<Worker>::from_raw(1, 42);
-        }
-        ",
-    );
-
-    assert!(
-        !output.errors.is_empty(),
-        "RemotePid<Worker> must not satisfy RemotePid<Counter> binding",
     );
 }
 

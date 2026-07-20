@@ -58,6 +58,8 @@
 //! identity, also not a checker derivative). The probe's audit
 //! (LESSONS `audit-completeness-via-multiple-greps`) carries forward.
 
+mod identity;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -1241,6 +1243,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::MetricVecWith
         | F::NodeAllowPeer
         | F::NodeConnect
+        | F::NodeId
         | F::NodeIdentityKey
         | F::NodeLoadKeys
         | F::NodeLookup
@@ -3192,14 +3195,6 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             // emits an opaque `ptr` alloca, same as other runtime handles.
             // LESSONS: exhaustive-traversal-and-lowering.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named { name, .. } if name == "RemotePid" => {
-            // `RemotePid<T>` lowers to a bare u64 PID (same encoding as
-            // `LocalPid<T>` at the wire level, but `LocalPid<T>` uses a ptr
-            // alloca because it holds a `*mut HewActor`).  `RemotePid<T>` is
-            // always a packed (node_id: u16, serial: u64) PID — a numeric
-            // value, not a heap pointer.
-            Ok(ctx.i64_type().into())
         }
         ResolvedTy::Named {
             builtin:
@@ -22928,10 +22923,10 @@ pub(crate) fn remote_ask_dispatch_ptr<'ctx>(
 /// direct call to `hew_remote_pid_send` (see hew-types::check::methods); the
 /// HIR catalog entry satisfies fn_registry. This function
 /// is the codegen interception that replaces the direct call with a
-/// hew_actor_send_by_id call sequence plus user-visible Result construction.
+/// `hew_node_api_send_location` call plus user-visible Result construction.
 ///
 /// Lowering:
-///   * Load `args[0]` (the `RemotePid<T>` place) as a `u64` packed pid.
+///   * Pass `args[0]` (the `RemotePid<T>` place) by pointer as a full Location.
 ///   * Derive the msg_type i32: resolve T from `args[0]`'s `ResolvedTy`, look
 ///     up the matching `ActorLayout` in `fn_ctx.actor_layouts`, and find the
 ///     handler whose `param_tys[0]` equals `args[1]`'s resolved type. This
@@ -22939,7 +22934,7 @@ pub(crate) fn remote_ask_dispatch_ptr<'ctx>(
 ///     `checker-authority` and `codegen-abi-authority`.
 ///   * Extract `(payload_ptr, payload_size)` from `args[1]` via
 ///     `actor_payload_ptr_size`.
-///   * Call `hew_actor_send_by_id(pid, msg_type, ptr, size) -> i32`.
+///   * Call `hew_node_api_send_location(pid, dispatch, msg_type, ptr, size) -> i32`.
 ///   * `rc == 0` → tag=0 (Ok), payload = `()` (no field store).
 ///   * `rc == HEW_ERR_STALE_REF` (-16) → tag=1 (Err), payload =
 ///     `SendError::StaleRef` (variant 4) — the captured `RemotePid<T>` names a
@@ -23064,19 +23059,14 @@ fn emit_remote_pid_send_call<'ctx>(
         .i32_type()
         .const_int(handler.msg_type as u64, true);
 
-    // Load the packed u64 pid out of the RemotePid<T> alloca (which is an i64
-    // slot per the `Named { name: "RemotePid" }` arm of `resolve_ty`).
+    // The aggregate place is ABI-compatible with `HewRemotePid`; pass its
+    // address directly so the C boundary never passes the 32-byte value by value.
     let (pid_slot, pid_slot_ty) = place_pointer(fn_ctx, *pid_arg)?;
-    if !matches!(pid_slot_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
+    if !matches!(pid_slot_ty, BasicTypeEnum::StructType(t) if t.count_fields() == 5) {
         return Err(CodegenError::FailClosed(format!(
-            "hew_remote_pid_send: RemotePid<T> slot must be i64, got {pid_slot_ty:?}"
+            "hew_remote_pid_send: RemotePid<T> slot must be the five-field Location aggregate, got {pid_slot_ty:?}"
         )));
     }
-    let pid_val = fn_ctx
-        .builder
-        .build_load(pid_slot_ty, pid_slot, "remote_send_pid")
-        .llvm_ctx("load RemotePid u64")?
-        .into_int_value();
 
     // Extract the msg payload pointer and byte size from the msg arg's place.
     let (payload_ptr, payload_size) =
@@ -23090,12 +23080,12 @@ fn emit_remote_pid_send_call<'ctx>(
     // (`emit_spawn_actor`); fail closed if the trampoline is missing.
     let dispatch_ptr = remote_actor_dispatch_ptr(fn_ctx, &actor_name)?;
 
-    // Call `hew_actor_send_by_id(pid, dispatch, msg_type, data, size) -> i32`.
+    // Call the current-node exact-location send ABI.
     let send_fn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_send_by_id",
+        "hew_node_api_send_location",
     )?;
     // `payload_size` is built as i64; the `size` param is `usize`/`size_t`
     // (i32 on wasm32). Reconcile to the target-correct width.
@@ -23111,7 +23101,7 @@ fn emit_remote_pid_send_call<'ctx>(
         .build_call(
             send_fn,
             &[
-                pid_val.into(),
+                pid_slot.into(),
                 dispatch_ptr.into(),
                 msg_type_const.into(),
                 payload_ptr.into(),
@@ -23119,11 +23109,13 @@ fn emit_remote_pid_send_call<'ctx>(
             ],
             "remote_send_rc",
         )
-        .llvm_ctx("hew_actor_send_by_id call")?
+        .llvm_ctx("hew_node_api_send_location call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| {
-            CodegenError::FailClosed("hew_actor_send_by_id returned void — expected i32 rc".into())
+            CodegenError::FailClosed(
+                "hew_node_api_send_location returned void — expected i32 rc".into(),
+            )
         })?;
     let rc = rc_basic.into_int_value();
     let i32_ty = fn_ctx.ctx.i32_type();
@@ -23884,36 +23876,24 @@ pub(crate) fn store_invalid_connection<'ctx>(
 
 /// Emit the call sequence for `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`.
 ///
-/// The runtime extern `hew_node_api_lookup(name: *const c_char) -> u64` returns a
-/// packed pid (0 == not found); user-visible code sees a Result. Codegen
-/// constructs the Result in-place from the raw u64:
-///   * `rc != 0` → tag=0 (Ok), variant 0 field 0 = rc as `RemotePid<T>` (u64).
-///   * `rc == 0` → tag=1 (Err), variant 1 field 0 = `LookupError::NotFound`
+/// The runtime extern
+/// `hew_node_api_lookup_location(name, out: *mut RemotePid<T>) -> i32` writes
+/// the exact location on success; user-visible code sees a Result. Codegen
+/// constructs the Result in-place around the out-parameter:
+///   * `rc == 0` → tag=0 (Ok), with variant 0 field 0 already populated.
+///   * `rc != 0` → tag=1 (Err), variant 1 field 0 = `LookupError::NotFound`
 ///     (a zero-initialised `LookupError` outer struct).
 ///
 /// This bypasses the generic `FnSymbol::Real` `dest_ty == return_ty` check,
-/// which would otherwise reject the Result-typed dest against the catalog's
-/// `u64` return shape. The catalog deliberately advertises the C-ABI shape so
-/// `predeclare_stdlib_catalog` declares the extern with the right LLVM type;
-/// the Result construction lives here, not in a new `FnSymbol` variant
-/// (mirrors `RemotePid::from_raw`'s precedent of catalog-return-as-u64 +
-/// user-visible-type-via-codegen).
+/// which would otherwise reject the Result-typed destination against the
+/// compiler-dispatch catalog entry. The Result construction lives here rather
+/// than in a new `FnSymbol` variant.
 pub(crate) fn emit_node_lookup_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
-    fn_symbols: &FnSymbolMap<'ctx>,
     args: &[Place],
     dest: Option<&Place>,
     next: u32,
 ) -> CodegenResult<()> {
-    let symbol_entry = *fn_symbols.get("Node::lookup").ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Node::lookup has no declared FFI symbol — predeclare_stdlib_catalog must \
-             register it before Terminator::Call lowering"
-                .into(),
-        )
-    })?;
-    let (lookup_fn, _ret_ty, _returns_unit) =
-        symbol_entry.real("Node::lookup", "Terminator::Call(Node::lookup)")?;
     let [name_arg] = args else {
         return Err(CodegenError::FailClosed(format!(
             "Node::lookup expects exactly 1 argument (name), got {}",
@@ -23941,26 +23921,54 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
         .build_load(name_slot_ty, name_ptr_slot, "lookup_name")
         .llvm_ctx("load lookup name")?;
 
-    // Call the runtime extern.
+    let (ok_field_ptr, ok_field_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    let BasicTypeEnum::StructType(remote_pid_ty) = ok_field_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "Node::lookup Ok payload must be the RemotePid<T> aggregate, got {ok_field_ty:?}"
+        )));
+    };
+    if remote_pid_ty.count_fields() != 5 {
+        return Err(CodegenError::FailClosed(format!(
+            "Node::lookup Ok payload must have five Location fields, got {}",
+            remote_pid_ty.count_fields()
+        )));
+    }
+    fn_ctx
+        .builder
+        .build_store(ok_field_ptr, remote_pid_ty.const_zero())
+        .llvm_ctx("zero Node::lookup RemotePid out-param")?;
+
+    let lookup_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_node_api_lookup_location",
+    )?;
     let call_site = fn_ctx
         .builder
         .build_call(
             lookup_fn,
-            &[metadata_value_from_basic(name_val)],
+            &[metadata_value_from_basic(name_val), ok_field_ptr.into()],
             "lookup_rc",
         )
-        .llvm_ctx("hew_node_api_lookup call")?;
+        .llvm_ctx("hew_node_api_lookup_location call")?;
     let rc_basic = call_site.try_as_basic_value().basic().ok_or_else(|| {
         CodegenError::FailClosed(
-            "hew_node_api_lookup returned void — expected u64 packed pid".into(),
+            "hew_node_api_lookup_location returned void — expected i32 status".into(),
         )
     })?;
     let rc = rc_basic.into_int_value();
-    let i64_ty = fn_ctx.ctx.i64_type();
-    let zero64 = i64_ty.const_zero();
-    let is_zero = fn_ctx
+    let zero = rc.get_type().const_zero();
+    let is_success = fn_ctx
         .builder
-        .build_int_compare(IntPredicate::EQ, rc, zero64, "lookup_is_zero")
+        .build_int_compare(IntPredicate::EQ, rc, zero, "lookup_is_success")
         .llvm_ctx("lookup icmp")?;
 
     // Build target basic blocks for the Ok/Err arms; both join at `next`.
@@ -23975,7 +23983,7 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
     let ok_bb = fn_ctx.ctx.append_basic_block(parent, "lookup_ok_bb");
     fn_ctx
         .builder
-        .build_conditional_branch(is_zero, err_bb, ok_bb)
+        .build_conditional_branch(is_success, ok_bb, err_bb)
         .llvm_ctx("lookup condbr")?;
 
     let next_bb = *fn_ctx
@@ -24019,7 +24027,7 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
         .build_unconditional_branch(next_bb)
         .llvm_ctx("lookup err br next")?;
 
-    // --- Ok branch: tag=0, payload = RemotePid<T>(rc as u64) --------------
+    // --- Ok branch: tag=0, payload already written through the out-param ---
     fn_ctx.builder.position_at_end(ok_bb);
     let (tag_ptr_ok, tag_ty_ok) = place_pointer(fn_ctx, Place::MachineTag(dest_local))?;
     let tag_int_ty_ok = match tag_ty_ok {
@@ -24035,23 +24043,6 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
         .builder
         .build_store(tag_ptr_ok, tag_zero)
         .llvm_ctx("store Ok tag")?;
-    let (ok_field_ptr, ok_field_ty) = place_pointer(
-        fn_ctx,
-        Place::MachineVariant {
-            local: dest_local,
-            variant_idx: 0,
-            field_idx: 0,
-        },
-    )?;
-    if !matches!(ok_field_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
-        return Err(CodegenError::FailClosed(format!(
-            "Node::lookup Ok payload (RemotePid<T>) must be i64, got {ok_field_ty:?}"
-        )));
-    }
-    fn_ctx
-        .builder
-        .build_store(ok_field_ptr, rc)
-        .llvm_ctx("store RemotePid<T> u64")?;
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
@@ -25184,13 +25175,12 @@ fn lower_terminator<'ctx>(
             next,
         } => {
             use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
-            // `Node::lookup` constructs `Result<RemotePid<T>, LookupError>` in-place
-            // from the runtime extern's raw `u64` packed-pid return. The generic
-            // FnSymbol::Real arm's `dest_ty == return_ty` check rejects this shape
-            // (Result outer struct vs. i64), so we handle it before the symbol
-            // lookup. See `emit_node_lookup_call`.
+            // `Node::lookup` constructs `Result<RemotePid<T>, LookupError>`
+            // in-place around the runtime's aggregate out-parameter. The generic
+            // FnSymbol::Real arm cannot synthesize that Result shape, so handle it
+            // before symbol lookup. See `emit_node_lookup_call`.
             if *builtin == Some(RtFamily::NodeLookup) {
-                emit_node_lookup_call(fn_ctx, fn_symbols, args, dest.as_ref(), *next)?;
+                emit_node_lookup_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             // `hew_remote_pid_send` is the checker's MethodCallRewrite target
@@ -25203,12 +25193,29 @@ fn lower_terminator<'ctx>(
             // `CompilerIntrinsic { .. }`.  Codegen intercepts on the carried
             // `RuntimeCallFamily::RemotePidSend` here (in the
             // `Terminator::Call` lowering arm) and emits the real
-            // `hew_actor_send_by_id` sequence plus the user-visible
+            // `hew_node_api_send_location` sequence plus the user-visible
             // `Result<(), SendError>` construction in-place.
             // Dispatch is family-keyed (no new `FnSymbol::*Pid*` variant),
             // matching the R82-era Node::lookup precedent.
             if *builtin == Some(RtFamily::RemotePidSend) {
                 emit_remote_pid_send_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if matches!(
+                callee.as_str(),
+                "Node::id"
+                    | "hew_node_id_display"
+                    | "hew_location_node_id"
+                    | "hew_location_slot"
+                    | "hew_location_incarnation"
+                    | "hew_location_display"
+                    | "hew_remote_pid_location"
+                    | "hew_remote_pid_node_id"
+                    | "hew_remote_pid_slot"
+                    | "hew_remote_pid_incarnation"
+                    | "hew_remote_pid_display"
+            ) {
+                identity::emit_identity_aggregate_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             // `hew_tcp_attach_local` is the checker's MethodCallRewrite target
@@ -31911,14 +31918,12 @@ fn emit_actor_codec_module_init<'ctx>(
             let [msg_ty] = h.param_tys.as_slice() else {
                 continue;
             };
-            // Channel handles (`Sender<T>`/`Receiver<T>`) and actor-identity
-            // handles (`LocalPid`/`RemotePid`) are
-            // process-local runtime resources: the local mailbox transfers the
-            // retained handle pointer or packed pid by value (ownership moves;
-            // the checker consumes the caller binding for resources), and the
-            // checker's Serializable enforcement already refuses every one of
-            // them at every RemotePid boundary with a named diagnostic. None
-            // has a cross-node wire layout, so emitting a codec here would fail
+            // Channel handles (`Sender<T>`/`Receiver<T>`) and actor identities
+            // (`LocalPid`/`RemotePid`) have no message-payload wire layout. The
+            // local mailbox transfers a handle pointer or inline identity
+            // snapshot, while the checker's Serializable enforcement refuses
+            // every one of them at a RemotePid boundary with a named diagnostic.
+            // Emitting a codec here would fail
             // the WHOLE compile for a purely local program. Skip the msg_type
             // instead — the cross-node receive direction stays on the runtime's
             // no-codec fail-closed drop path, exactly like the packed-args skip

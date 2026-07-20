@@ -4,7 +4,9 @@
 )]
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
-use crate::check::admissibility::{compute_copy_record_layout, hash_key_record_layout};
+use crate::check::admissibility::{
+    compute_copy_record_layout, hash_key_record_layout, identity_aggregate_layout,
+};
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
 use crate::check::types::BareActorResolution;
@@ -398,38 +400,35 @@ impl Checker {
                         let type_defs_snapshot = self.type_defs.clone();
                         match ty_is_hash_eligible(&resolved_ty, &type_defs_snapshot) {
                             HashEligibility::Eligible => {
-                                if let Some(ref td) = self.lookup_type_def(name) {
-                                    // hash-key sizer: admits string-bearing
-                                    // records (string field => pointer blob),
-                                    // unlike the Copy sizer.
-                                    if let Some((elem_size, elem_align)) =
-                                        hash_key_record_layout(td, &type_defs_snapshot)
-                                    {
-                                        let fact = hashset_layout_fact(
-                                            name.clone(),
-                                            elem_size,
-                                            elem_align,
-                                        );
-                                        self.hashset_layout_facts.insert(span_key, fact);
-                                        // Fact inserted into hashset_layout_facts;
-                                        // NOT inserted into lowering_facts result.
-                                    } else {
-                                        let span = span_key.start..span_key.end;
-                                        let mut err = crate::error::TypeError::new(
-                                            TypeErrorKind::InvalidOperation,
-                                            span,
-                                            format!(
-                                                "`HashSet` element type `{name}` has zero size \
-                                                 or contains a type whose layout cannot be \
-                                                 determined; layout element types must have \
-                                                 non-zero size",
-                                            ),
-                                        );
-                                        if let Some(module) = &pending_fact.source_module {
-                                            err = err.with_source_module(module.clone());
-                                        }
-                                        new_errors.push(err);
+                                let type_def = self.lookup_type_def(name);
+                                let layout =
+                                    identity_aggregate_layout(&resolved_ty).or_else(|| {
+                                        type_def.as_ref().and_then(|td| {
+                                            hash_key_record_layout(td, &type_defs_snapshot)
+                                        })
+                                    });
+                                if let Some((elem_size, elem_align)) = layout {
+                                    let fact =
+                                        hashset_layout_fact(name.clone(), elem_size, elem_align);
+                                    self.hashset_layout_facts.insert(span_key, fact);
+                                    // Fact inserted into hashset_layout_facts;
+                                    // NOT inserted into lowering_facts result.
+                                } else if type_def.is_some() {
+                                    let span = span_key.start..span_key.end;
+                                    let mut err = crate::error::TypeError::new(
+                                        TypeErrorKind::InvalidOperation,
+                                        span,
+                                        format!(
+                                            "`HashSet` element type `{name}` has zero size \
+                                             or contains a type whose layout cannot be \
+                                             determined; layout element types must have \
+                                             non-zero size",
+                                        ),
+                                    );
+                                    if let Some(module) = &pending_fact.source_module {
+                                        err = err.with_source_module(module.clone());
                                     }
+                                    new_errors.push(err);
                                 }
                                 // TypeDef not found — silently drop; lookup failure
                                 // is a pre-existing error from the type-resolution pass.
@@ -616,32 +615,28 @@ impl Checker {
 
                 match ty_is_hash_eligible(&resolved_key, &type_defs_snapshot) {
                     HashEligibility::Eligible => {
-                        // Key is eligible. Look up the TypeDef for layout computation.
                         let key_type_def = self.lookup_type_def(key_name);
-                        match key_type_def {
-                            Some(ref td) => {
-                                // hash-key sizer: admits a string-bearing record
-                                // key (string field => pointer-width slot blob),
-                                // unlike the Copy sizer used for values.
-                                match hash_key_record_layout(td, &type_defs_snapshot) {
-                                    Some((key_size, key_align)) => {
-                                        // Determine value type routing.
-                                        match HashMapValueType::from_ty(&resolved_val) {
-                                            Ok(HashMapValueType::Layout) => {
-                                                // Value is also a Named record.
-                                                if let Ty::Named { name: val_name, .. } =
-                                                    &resolved_val
-                                                {
-                                                    let val_type_def =
-                                                        self.lookup_type_def(val_name);
-                                                    match val_type_def {
-                                                        Some(ref vtd) => {
-                                                            match compute_copy_record_layout(
-                                                                vtd,
-                                                                &type_defs_snapshot,
-                                                            ) {
-                                                                Some((val_size, val_align)) => {
-                                                                    let fact =
+                        let key_layout = identity_aggregate_layout(&resolved_key).or_else(|| {
+                            key_type_def
+                                .as_ref()
+                                .and_then(|td| hash_key_record_layout(td, &type_defs_snapshot))
+                        });
+                        match key_layout {
+                            Some((key_size, key_align)) => {
+                                // Determine value type routing.
+                                match HashMapValueType::from_ty(&resolved_val) {
+                                    Ok(HashMapValueType::Layout) => {
+                                        // Value is also a Named record.
+                                        if let Ty::Named { name: val_name, .. } = &resolved_val {
+                                            let val_type_def = self.lookup_type_def(val_name);
+                                            match val_type_def {
+                                                Some(ref vtd) => {
+                                                    match compute_copy_record_layout(
+                                                        vtd,
+                                                        &type_defs_snapshot,
+                                                    ) {
+                                                        Some((val_size, val_align)) => {
+                                                            let fact =
                                                                         hashmap_layout_key_layout_value_fact(
                                                                             key_name.clone(),
                                                                             key_size,
@@ -650,37 +645,16 @@ impl Checker {
                                                                             val_size,
                                                                             val_align,
                                                                         );
-                                                                    new_layout_facts
-                                                                        .push((span_key, fact));
-                                                                }
-                                                                None => {
-                                                                    let mut err = crate::error::TypeError::new(
+                                                            new_layout_facts.push((span_key, fact));
+                                                        }
+                                                        None => {
+                                                            let mut err = crate::error::TypeError::new(
                                                                         TypeErrorKind::InvalidOperation,
                                                                         check.span.clone(),
                                                                         format!(
                                                                             "`HashMap` value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
                                                                         ),
                                                                     );
-                                                                    if let Some(module) =
-                                                                        check.source_module
-                                                                    {
-                                                                        err = err
-                                                                            .with_source_module(
-                                                                                module,
-                                                                            );
-                                                                    }
-                                                                    new_errors.push(err);
-                                                                }
-                                                            }
-                                                        }
-                                                        None => {
-                                                            let mut err = crate::error::TypeError::new(
-                                                                TypeErrorKind::InvalidOperation,
-                                                                check.span.clone(),
-                                                                format!(
-                                                                    "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
-                                                                ),
-                                                            );
                                                             if let Some(module) =
                                                                 check.source_module
                                                             {
@@ -690,25 +664,40 @@ impl Checker {
                                                             new_errors.push(err);
                                                         }
                                                     }
-                                                } else {
-                                                    // Should not happen: HashMapValueType::Layout implies Named.
-                                                    unreachable!(
-                                                        "HashMapValueType::Layout produced for non-Named value type"
-                                                    );
+                                                }
+                                                None => {
+                                                    let mut err = crate::error::TypeError::new(
+                                                                TypeErrorKind::InvalidOperation,
+                                                                check.span.clone(),
+                                                                format!(
+                                                                    "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
+                                                                ),
+                                                            );
+                                                    if let Some(module) = check.source_module {
+                                                        err = err.with_source_module(module);
+                                                    }
+                                                    new_errors.push(err);
                                                 }
                                             }
-                                            Ok(val_type) => {
-                                                // Scalar value path.
-                                                let fact = hashmap_layout_key_fact(
-                                                    key_name.clone(),
-                                                    key_size,
-                                                    key_align,
-                                                    val_type,
-                                                );
-                                                new_layout_facts.push((span_key, fact));
-                                            }
-                                            Err(e) => {
-                                                let mut err = crate::error::TypeError::new(
+                                        } else {
+                                            // Should not happen: HashMapValueType::Layout implies Named.
+                                            unreachable!(
+                                                        "HashMapValueType::Layout produced for non-Named value type"
+                                                    );
+                                        }
+                                    }
+                                    Ok(val_type) => {
+                                        // Scalar value path.
+                                        let fact = hashmap_layout_key_fact(
+                                            key_name.clone(),
+                                            key_size,
+                                            key_align,
+                                            val_type,
+                                        );
+                                        new_layout_facts.push((span_key, fact));
+                                    }
+                                    Err(e) => {
+                                        let mut err = crate::error::TypeError::new(
                                                     TypeErrorKind::InvalidOperation,
                                                     check.span.clone(),
                                                     format!(
@@ -717,23 +706,6 @@ impl Checker {
                                                         e,
                                                     ),
                                                 );
-                                                if let Some(module) = check.source_module {
-                                                    err = err.with_source_module(module);
-                                                }
-                                                new_errors.push(err);
-                                            }
-                                        }
-                                    }
-                                    None => {
-                                        // Zero-size record or layout cannot be computed.
-                                        let mut err = crate::error::TypeError::new(
-                                            TypeErrorKind::InvalidOperation,
-                                            check.span.clone(),
-                                            format!(
-                                                "HashMap key type `{key_name}` has zero size or contains a type \
-                                                 whose layout cannot be determined; layout keys must have non-zero size",
-                                            ),
-                                        );
                                         if let Some(module) = check.source_module {
                                             err = err.with_source_module(module);
                                         }
@@ -742,14 +714,21 @@ impl Checker {
                                 }
                             }
                             None => {
-                                // TypeDef not found — the Named type is not a user-defined record in scope.
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    check.span.clone(),
+                                let message = if key_type_def.is_some() {
+                                    format!(
+                                        "HashMap key type `{key_name}` has zero size or contains a type \
+                                         whose layout cannot be determined; layout keys must have non-zero size",
+                                    )
+                                } else {
                                     format!(
                                         "HashMap key type `{key_name}` is not defined; \
                                          cannot verify hash eligibility for layout-key HashMap",
-                                    ),
+                                    )
+                                };
+                                let mut err = crate::error::TypeError::new(
+                                    TypeErrorKind::InvalidOperation,
+                                    check.span.clone(),
+                                    message,
                                 );
                                 if let Some(module) = check.source_module {
                                     err = err.with_source_module(module);
@@ -3702,11 +3681,7 @@ impl Checker {
                 },
             },
             TyPattern::App { ctor, args } => Ty::Named {
-                builtin: match ctor.as_str() {
-                    "HashMap" => Some(BuiltinType::HashMap),
-                    "HashSet" => Some(BuiltinType::HashSet),
-                    _ => None,
-                },
+                builtin: crate::lookup_builtin_type(ctor),
                 name: ctor.clone(),
                 args: args.iter().map(Self::dispatch_pattern_to_ty).collect(),
             },
@@ -6838,7 +6813,7 @@ impl Checker {
             // LocalPid<T> methods — first check LocalPid's own impl methods,
             // then fall through to actor receive-fn dispatch on the inner type T.
             //
-            // Own methods (e.g. `send`, `to_remote_via`) are declared in
+            // Own methods (e.g. `send`) are declared in
             // `impl LocalPid<T>` in std/builtins.hew and registered in type_defs /
             // fn_sigs as `"LocalPid::{method}"`.  Actor receive-fn dispatch
             // (e.g. `pid.greet(arg)`) remains the local actor-dispatch path.
@@ -7119,6 +7094,19 @@ impl Checker {
                                     // handle, does not release it.
                                     consumes_receiver: false,
                                 },
+                            );
+                        }
+                        if let Some(c_symbol) = match method {
+                            "location" => Some("hew_remote_pid_location"),
+                            "node_id" => Some("hew_remote_pid_node_id"),
+                            "slot" => Some("hew_remote_pid_slot"),
+                            "incarnation" => Some("hew_remote_pid_incarnation"),
+                            "display" => Some("hew_remote_pid_display"),
+                            _ => None,
+                        } {
+                            self.record_extern_symbol_method_call_rewrite(
+                                span,
+                                c_symbol.to_string(),
                             );
                         }
                         return return_type;

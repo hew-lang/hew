@@ -1924,10 +1924,10 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
 ) -> CodegenResult<PointerValue<'ctx>> {
     // Stage C3 (DI-017): for primitive K, route to the runtime-defined
     // `hew_layout_key_<prim>` extern static. The codegen-synthesised
-    // hash/eq thunks below only work for record-shaped K (where field walks
-    // are well-defined); primitives like `string` (LLVM repr = `i8*`) cannot
-    // be hashed by the generic thunk emitter and need the runtime's
-    // canonical hash function. See `primitive_key_layout_extern_name`.
+    // hash/eq thunks below work for struct-shaped K (source records and
+    // compiler-owned identity aggregates, where field walks are well-defined);
+    // primitives like `string` (LLVM repr = `i8*`) need the runtime's canonical
+    // hash function. See `primitive_key_layout_extern_name`.
     if let Some(rty) = resolved_ty {
         if let Some(name) = crate::layout::primitive_key_layout_extern_name(rty) {
             return Ok(declare_extern_layout_global(fn_ctx, name));

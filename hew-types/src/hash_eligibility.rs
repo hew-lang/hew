@@ -35,6 +35,7 @@
 use crate::check::{TypeDef, TypeDefKind};
 use crate::eligibility_walker::walk_fields_for_eligibility;
 use crate::ty::Ty;
+use crate::BuiltinType;
 use std::collections::HashMap;
 
 /// The hash eligibility verdict for a type.
@@ -94,14 +95,20 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
         | Ty::Duration
         | Ty::F32
         | Ty::F64
-        | Ty::String => None,
+        | Ty::String
+        // Compiler-owned identity aggregates have fixed all-integer layouts and
+        // exact structural equality, so they use the source-record layout-key ABI.
+        | Ty::Named {
+            builtin: Some(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid),
+            ..
+        } => None,
 
         // Tuples: tracked but not admitted as layout hash keys in this slice.
         Ty::Tuple(_) => Some(HashEligibility::IneligibleTuple(ty.clone())),
 
-        // Named types: eligible iff Record kind, not indirect, and every field is
-        // hash-eligible. Only `record`-keyword types (`TypeDefKind::Record`) are
-        // Copy value-semantic in Hew; Struct/Enum/Actor/Machine are not layout keys.
+        // Other named types are eligible iff Record kind, not indirect, and every
+        // field is hash-eligible. Only `record`-keyword source types are Copy
+        // value-semantic; Struct/Enum/Actor/Machine are not layout keys.
         Ty::Named { name, .. } => match type_defs.get(name).or_else(|| {
             name.split_once('.')
                 .and_then(|(_, local)| type_defs.get(local))
@@ -250,6 +257,22 @@ mod tests {
             ty_is_hash_eligible(&Ty::Duration, &tds),
             HashEligibility::Eligible
         );
+    }
+
+    #[test]
+    fn hash_eligible_identity_aggregates() {
+        let tds = empty_type_defs();
+        for ty in [
+            Ty::builtin_named(BuiltinType::NodeId, vec![]),
+            Ty::builtin_named(BuiltinType::Location, vec![]),
+            Ty::remote_pid(Ty::I64),
+        ] {
+            assert_eq!(
+                ty_is_hash_eligible(&ty, &tds),
+                HashEligibility::Eligible,
+                "{ty:?} should be hash-eligible"
+            );
+        }
     }
 
     #[test]

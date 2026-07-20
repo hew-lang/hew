@@ -1101,6 +1101,16 @@ impl Checker {
                 builtin: Some(crate::BuiltinType::Instant),
                 ..
             } => self.type_satisfies_trait_bound(&Ty::I64, trait_name),
+            Ty::Named {
+                builtin:
+                    Some(
+                        crate::BuiltinType::NodeId
+                        | crate::BuiltinType::Location
+                        | crate::BuiltinType::RemotePid,
+                    ),
+                ..
+            } => MarkerTrait::from_name(trait_name)
+                .is_some_and(|marker| self.registry.implements_marker(ty, marker)),
             Ty::Named { name, .. } => {
                 let name = name.clone();
                 if self.type_implements_trait(&name, trait_name)

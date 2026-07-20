@@ -11,18 +11,20 @@
 ///
 /// `LocalPid<T>` is accepted by all built-in actor functions (`close`, `link`,
 /// `monitor`, etc.) and by any function that takes `dyn Pid<Msg = M>`.
-///
-/// Coercion to a remote pid is explicit:
-///
-/// ```
-/// let remote = pid.to_remote_via(node_handle);
-/// ```
 pub type LocalPid<T> {
 }
 
-/// An actor pid on a remote node.
+/// Stable key-derived node identity.
+pub type NodeId {
+}
+
+/// Complete remote actor location.
+pub type Location {
+}
+
+/// An actor pid on a remote node carrying its complete actor location.
 ///
-/// Produced by peer-discovery or explicit construction via `RemotePid::from_raw`.
+/// Produced by authenticated peer discovery.
 /// Does NOT coerce implicitly to `LocalPid<T>` — remote actors are a distinct class.
 ///
 /// On the native target `.send` and `.ask` are real cross-node operations:
@@ -214,33 +216,65 @@ impl<T: ActorMsg> LocalPid<T> {
     }
 }
 
-impl<T> LocalPid<T> {
-    // WASM-TODO(#1451): RemotePid cross-node routing is native-only until
-    // a wasm peer transport is decided.
-    /// Obtain a remote pid that routes to the same actor via `node_handle`.
-    ///
-    /// Cross-node routing itself is wired: once a `RemotePid<T>` is held, its
-    /// `.send`/`.ask` reach the peer over the mesh. This explicit conversion
-    /// helper is not the proven acquisition path — `Node::lookup` resolves a
-    /// `RemotePid<T>` from registry gossip — and its `node_handle` argument is
-    /// not yet consumed; it remains scaffolding pending a peer-handle API.
-    fn to_remote_via(pid: LocalPid<T>, node_handle: dyn Display) -> RemotePid<T> {}
+impl<T> RemotePid<T> {
+    /// Return the complete carried actor location.
+    #[extern_symbol(hew_remote_pid_location)]
+    fn location(pid: RemotePid<T>) -> Location {}
+
+    /// Return the stable node identity.
+    #[extern_symbol(hew_remote_pid_node_id)]
+    fn node_id(pid: RemotePid<T>) -> NodeId {}
+
+    /// Return the actor's node-local slot.
+    #[extern_symbol(hew_remote_pid_slot)]
+    fn slot(pid: RemotePid<T>) -> u64 {}
+
+    /// Return the node-session incarnation.
+    #[extern_symbol(hew_remote_pid_incarnation)]
+    fn incarnation(pid: RemotePid<T>) -> u32 {}
+
+    #[extern_symbol(hew_remote_pid_display)]
+    fn display(pid: RemotePid<T>) -> string {}
 }
 
-impl<T> RemotePid<T> {
-    // WASM-TODO(#1451): RemotePid construction is native-only until a wasm
-    // peer transport is decided.
-    /// Construct a remote pid from raw node/serial components.
-    ///
-    /// Test-only raw constructor. The production path to a `RemotePid<T>` is
-    /// `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`, which
-    /// snapshots the registration the StaleRef boundary this pid tracks; a
-    /// `from_raw` pid carries no registration provenance and so is not subject
-    /// to the supersession check. It exists for fixtures that need to fabricate
-    /// a `(node_id, serial)` pid directly (e.g. the multi-arg-remote reject
-    /// cases). Codegen lowers it via `hew_remote_pid_from_raw`
-    /// (`hew_pid_make`), so it is functional, not a stub.
-    fn from_raw(node_id: u64, serial: u64) -> RemotePid<T> {}
+impl Location {
+    /// Return the stable node identity.
+    #[extern_symbol(hew_location_node_id)]
+    fn node_id(location: Location) -> NodeId {}
+
+    /// Return the actor's node-local slot.
+    #[extern_symbol(hew_location_slot)]
+    fn slot(location: Location) -> u64 {}
+
+    /// Return the node-session incarnation.
+    #[extern_symbol(hew_location_incarnation)]
+    fn incarnation(location: Location) -> u32 {}
+
+    #[extern_symbol(hew_location_display)]
+    fn display(location: Location) -> string {}
+}
+
+impl NodeId {
+    #[extern_symbol(hew_node_id_display)]
+    fn display(id: NodeId) -> string {}
+}
+
+impl Display for NodeId {
+    fn fmt(val: NodeId) -> string {
+        val.display()
+    }
+}
+
+impl Display for Location {
+    fn fmt(val: Location) -> string {
+        val.display()
+    }
+}
+
+impl<T> Display for RemotePid<T> {
+    fn fmt(val: RemotePid<T>) -> string {
+        val.display()
+    }
 }
 
 impl<T: ActorMsg> RemotePid<T> {
@@ -249,7 +283,8 @@ impl<T: ActorMsg> RemotePid<T> {
     /// Lowered by codegen: the checker rewrites every `pid.send(msg)` site
     /// on a `RemotePid<T>` receiver to a direct call to
     /// `hew_remote_pid_send`, and the LLVM backend intercepts that call
-    /// and emits the `hew_actor_send_by_id(pid, msg_type, ptr, size)`
+    /// and emits the
+    /// `hew_node_api_send_location(location, dispatch, msg_type, ptr, size)`
     /// runtime ABI plus an in-place `Result<(), SendError>` construction.
     /// The body below is unreachable on the native path and is retained
     /// only for type-check seeding (so the trait surface matches `LocalPid`)

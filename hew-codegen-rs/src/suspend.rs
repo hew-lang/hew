@@ -6156,16 +6156,11 @@ pub(crate) fn emit_suspending_remote_actor_ask_terminator<'ctx>(
     }
 
     let (pid_slot, pid_slot_ty) = place_pointer(fn_ctx, term.actor)?;
-    if !matches!(pid_slot_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
+    if !matches!(pid_slot_ty, BasicTypeEnum::StructType(t) if t.count_fields() == 5) {
         return Err(CodegenError::FailClosed(format!(
-            "SuspendingRemoteAsk actor place must be the packed i64 RemotePid<T>, got {pid_slot_ty:?}"
+            "SuspendingRemoteAsk actor place must be the five-field Location aggregate, got {pid_slot_ty:?}"
         )));
     }
-    let pid_val = fn_ctx
-        .builder
-        .build_load(pid_slot_ty, pid_slot, "remote_ask_pid")
-        .llvm_ctx("load SuspendingRemoteAsk pid")?
-        .into_int_value();
     let (payload_ptr, payload_size) =
         actor_payload_ptr_size(fn_ctx, term.value, "remote_ask_payload")?;
     let (timeout_ptr, timeout_ty) = place_pointer(fn_ctx, term.timeout_ms)?;
@@ -6210,7 +6205,7 @@ pub(crate) fn emit_suspending_remote_actor_ask_terminator<'ctx>(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_node_api_ask_async",
+        "hew_node_api_ask_async_location",
     )?;
     let msg_type = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
     let pending_handle = fn_ctx
@@ -6218,7 +6213,7 @@ pub(crate) fn emit_suspending_remote_actor_ask_terminator<'ctx>(
         .build_call(
             ask_async_fn,
             &[
-                pid_val.into(),
+                pid_slot.into(),
                 dispatch_ptr.into(),
                 msg_type.into(),
                 payload_ptr.into(),
@@ -6382,16 +6377,11 @@ pub(crate) fn emit_remote_actor_ask_terminator<'ctx>(
     term: RemoteAskEmit<'_>,
 ) -> CodegenResult<()> {
     let (pid_slot, pid_slot_ty) = place_pointer(fn_ctx, term.actor)?;
-    if !matches!(pid_slot_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
+    if !matches!(pid_slot_ty, BasicTypeEnum::StructType(t) if t.count_fields() == 5) {
         return Err(CodegenError::FailClosed(format!(
-            "RemoteAsk actor place must be the packed i64 RemotePid<T>, got {pid_slot_ty:?}"
+            "RemoteAsk actor place must be the five-field Location aggregate, got {pid_slot_ty:?}"
         )));
     }
-    let pid_val = fn_ctx
-        .builder
-        .build_load(pid_slot_ty, pid_slot, "remote_ask_pid")
-        .llvm_ctx("load RemoteAsk pid")?
-        .into_int_value();
     let (payload_ptr, payload_size) =
         actor_payload_ptr_size(fn_ctx, term.value, "remote_ask_payload")?;
     let (timeout_ptr, timeout_ty) = place_pointer(fn_ctx, term.timeout_ms)?;
@@ -6414,7 +6404,7 @@ pub(crate) fn emit_remote_actor_ask_terminator<'ctx>(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_node_api_ask",
+        "hew_node_api_ask_location",
     )?;
     let msg_type = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
     let reply_ptr = fn_ctx
@@ -6422,7 +6412,7 @@ pub(crate) fn emit_remote_actor_ask_terminator<'ctx>(
         .build_call(
             ask_fn,
             &[
-                pid_val.into(),
+                pid_slot.into(),
                 dispatch_ptr.into(),
                 msg_type.into(),
                 payload_ptr.into(),

@@ -27,6 +27,7 @@ pub enum BuiltinTypeRole {
 pub enum BuiltinFieldTy {
     I64,
     U64,
+    U32,
     /// An owned heap `string` field (`*mut c_char`). A builtin record carrying
     /// one (e.g. `CrashInfo.message`) is heap-owning, so it is no longer a
     /// `BitCopy` aggregate — it routes through the owned-aggregate record
@@ -40,6 +41,7 @@ impl BuiltinFieldTy {
         match self {
             Self::I64 => ResolvedTy::I64,
             Self::U64 => ResolvedTy::U64,
+            Self::U32 => ResolvedTy::U32,
             Self::String => ResolvedTy::String,
         }
     }
@@ -100,6 +102,40 @@ const MONITOR_REF_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
     ty: BuiltinFieldTy::I64,
 }];
 
+const NODE_ID_FIELDS: &[BuiltinTypeField] = &[
+    BuiltinTypeField {
+        name: "hi",
+        ty: BuiltinFieldTy::U64,
+    },
+    BuiltinTypeField {
+        name: "lo",
+        ty: BuiltinFieldTy::U64,
+    },
+];
+
+const LOCATION_FIELDS: &[BuiltinTypeField] = &[
+    BuiltinTypeField {
+        name: "node_hi",
+        ty: BuiltinFieldTy::U64,
+    },
+    BuiltinTypeField {
+        name: "node_lo",
+        ty: BuiltinFieldTy::U64,
+    },
+    BuiltinTypeField {
+        name: "slot",
+        ty: BuiltinFieldTy::U64,
+    },
+    BuiltinTypeField {
+        name: "incarnation",
+        ty: BuiltinFieldTy::U32,
+    },
+    BuiltinTypeField {
+        name: "reserved",
+        ty: BuiltinFieldTy::U32,
+    },
+];
+
 const CRASH_ACTION_VARIANTS: &[&str] = &["Restart", "Escalate", "Kill"];
 
 const fn marker(marker: BuiltinTypeMarker) -> ResourceMarker {
@@ -143,7 +179,9 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(HashSet, BuiltinTypeShape::Opaque),
     registration!(CancellationToken, BuiltinTypeShape::Opaque),
     registration!(LocalPid, BuiltinTypeShape::Opaque),
-    registration!(RemotePid, BuiltinTypeShape::Opaque),
+    registration!(NodeId, BuiltinTypeShape::Struct(NODE_ID_FIELDS)),
+    registration!(Location, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
+    registration!(RemotePid, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
     registration!(HewActor, BuiltinTypeShape::Opaque),
     registration!(HewDuplex, BuiltinTypeShape::Opaque),
     registration!(HewSendHalf, BuiltinTypeShape::Opaque),
@@ -421,9 +459,9 @@ mod tests {
             ),
             (
                 BuiltinType::RemotePid,
-                ResourceMarker::Resource,
+                ResourceMarker::BitCopy,
                 None,
-                BuiltinTypeShape::Opaque,
+                BuiltinTypeShape::Struct(LOCATION_FIELDS),
                 Some(BuiltinHandleFamily::ActorPid),
                 1,
                 &[BuiltinRegistrationRole::ActorDispatchRemote][..],

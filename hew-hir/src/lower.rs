@@ -437,7 +437,7 @@ const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
 /// The checker (`registration.rs`) registers `link_remote` as a 2-arg
 /// `(RemotePid<T>, PartitionPolicy) → Result<(), LinkError>` builtin with no AST
 /// `fn` item; it resolves to `ResolvedRef::Builtin(LinkRemote)` via
-/// `builtin_family` and MIR reads the C symbol `hew_node_link_remote` off the
+/// `builtin_family` and MIR reads the C symbol `hew_node_link_remote_location` off the
 /// catalog bijection.
 const SYNTHETIC_LINK_REMOTE_ITEM: ItemId = ItemId(u32::MAX / 2 - 20);
 
@@ -7423,20 +7423,21 @@ impl LowerCtx {
             // so MIR threads the typed family onto the call and codegen
             // dispatches on it, never on the callee string. Deliberately
             // narrow: only the families whose intercepts are family-keyed
-            // today (math intrinsics, `Node::lookup`, and the `HashMap::new` /
-            // `HashSet::new` constructor surface forms — `pid.send` /
+            // today (math intrinsics, `Node::id`, `Node::lookup`, and the
+            // `HashMap::new` / `HashSet::new` constructor surface forms — `pid.send` /
             // `conn.attach` and the channel/stream layout entries arrive typed
             // through the checker's method-call rewrites instead).
             //
             // The lift must NOT apply to the `runtime_symbol()` alias
             // insert below: the alias callee name (e.g.
-            // `hew_node_api_lookup`) is a different callee identity than
+            // `hew_node_api_lookup_location`) is a different callee identity than
             // the family's `c_symbol()`, and carrying the family there
             // would break the `Terminator::Call` builtin↔callee invariant.
             let primary_family =
                 match hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(builtin.name) {
                     Some(
                         family @ (hew_types::runtime_call::RuntimeCallFamily::MathIntrinsic(_)
+                        | hew_types::runtime_call::RuntimeCallFamily::NodeId
                         | hew_types::runtime_call::RuntimeCallFamily::NodeLookup
                         | hew_types::runtime_call::RuntimeCallFamily::HashMapNew
                         | hew_types::runtime_call::RuntimeCallFamily::HashSetNew),
@@ -7464,7 +7465,7 @@ impl LowerCtx {
     /// target and the `PartitionPolicy`. The linking subject (self) is resolved
     /// inside the runtime. The checker records the call-result type at the call
     /// site, so `return_ty` is a placeholder; the params carry arity. Resolves to
-    /// `ResolvedRef::Builtin(LinkRemote)` → C symbol `hew_node_link_remote`.
+    /// `ResolvedRef::Builtin(LinkRemote)` → C symbol `hew_node_link_remote_location`.
     fn seed_link_remote_fn_registry(&mut self) {
         use hew_types::runtime_call::RuntimeCallFamily;
         self.fn_registry.insert(
@@ -8814,32 +8815,7 @@ impl LowerCtx {
                 let builtin = scalar_display_builtin(&ty);
                 self.build_catalog_call(builtin, vec![value], span)
             }
-            ResolvedTy::F32 => {
-                // `to_string_f64` (`hew_float_to_string`) is the only float
-                // formatter symbol and takes an `f64`; the value here is a raw
-                // `f32`. The builtin `impl Display for f32` renders through
-                // `to_string(val as f64)`, so this shared shell must apply the
-                // same widening. Without the explicit `f32 -> f64` cast, codegen
-                // emits `hew_float_to_string(float)` against a `double`
-                // signature and the module fails LLVM verification — the exact
-                // failure a direct `to_string(f32)` / `println(f32)` and a
-                // concrete-`f32` f-string (`f"{x}"`) both hit before this arm
-                // was split out.
-                let widened = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    value_class: ValueClass::of_ty(&ResolvedTy::F64, &self.type_classes),
-                    ty: ResolvedTy::F64,
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::NumericCast {
-                        value: Box::new(value),
-                        from_ty: ResolvedTy::F32,
-                        to_ty: ResolvedTy::F64,
-                    },
-                    span: span.clone(),
-                };
-                self.build_catalog_call("to_string_f64", vec![widened], span)
-            }
+            ResolvedTy::F32 => self.lower_f32_display(value, span),
             // `duration` has a pure-Hew `impl Display for duration` (rendered
             // through `is_builtin_display_impl`), so dispatch to its fmt symbol
             // exactly like a user named-type Display impl. The `_` fail-closed
@@ -8863,6 +8839,18 @@ impl LowerCtx {
                 let builtin = scalar_display_builtin(&ResolvedTy::I64);
                 self.build_catalog_call(builtin, vec![value], span)
             }
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::NodeId),
+                ..
+            } => self.build_catalog_call("hew_node_id_display", vec![value], span),
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Location),
+                ..
+            } => self.build_catalog_call("hew_location_display", vec![value], span),
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::RemotePid),
+                ..
+            } => self.build_catalog_call("hew_remote_pid_display", vec![value], span),
             ResolvedTy::Named { name, .. } => {
                 // An abstract type parameter `T: Display` (the checker lowers
                 // `T` to a bare `Named`) defers to per-monomorphisation static
@@ -8904,6 +8892,24 @@ impl LowerCtx {
                 self.unsupported_expr(span, "f-string display dispatch: unsupported type shape")
             }
         }
+    }
+
+    fn lower_f32_display(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        // `hew_float_to_string` takes an f64, matching the stdlib Display impl.
+        let widened = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&ResolvedTy::F64, &self.type_classes),
+            ty: ResolvedTy::F64,
+            intent: IntentKind::Read,
+            kind: HirExprKind::NumericCast {
+                value: Box::new(value),
+                from_ty: ResolvedTy::F32,
+                to_ty: ResolvedTy::F64,
+            },
+            span: span.clone(),
+        };
+        self.build_catalog_call("to_string_f64", vec![widened], span)
     }
 
     /// Dispatch a `Display::fmt` call to a concrete named/builtin type's impl
@@ -8975,13 +8981,13 @@ impl LowerCtx {
         // only condition worth testing: `lower_display_dispatch` already has a
         // working arm for every shape a `Display` value can take — `string`,
         // every scalar (incl. `char` and the narrow ints via
-        // `scalar_display_builtin`), `duration`, named-`instant`, concrete named
-        // `impl Display` types, and abstract type parameters `T: Display` — and
-        // fails closed on anything else. Enumerating a subset of those shapes
-        // here only re-hid the rest behind `UnresolvedBuiltinOverload` (#2351:
-        // `char`/`i8`/`f32`; #2492: named types with a real `impl Display`),
-        // even though f-string interpolation of the identical value already
-        // renders it fine through this shell.
+        // `scalar_display_builtin`), `duration`, named-`instant`, identity
+        // aggregates, concrete named `impl Display` types, and abstract type
+        // parameters `T: Display` — and fails closed on anything else.
+        // Enumerating a subset of those shapes here only re-hid the rest behind
+        // `UnresolvedBuiltinOverload` (#2351: `char`/`i8`/`f32`; #2492: named
+        // types with a real `impl Display`), even though f-string interpolation
+        // of the identical value already renders it fine through this shell.
         let single_dispatchable = args.len() == 1;
         if !is_display_surface || !single_dispatchable || self.lang_items.display_method().is_none()
         {

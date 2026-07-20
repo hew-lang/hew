@@ -4,6 +4,8 @@
 // generic insert/remove form of the same seam. ASan/LSan catches leaks,
 // refcount underflow, double-free, and caller-after-store use-after-free.
 type Wrap { f: Option<string> }
+type Holder { items: Vec<string> }
+type MixedWrap { s: string, items: Vec<string> }
 type Key<T> { index: i64 }
 type Slot<T> { value: Option<T> }
 type Arena<T> { slots: Vec<Slot<T>> }
@@ -18,6 +20,12 @@ fn setParam(p: string) -> i64 {
     let v: Vec<Wrap> = [];
     v.push(Wrap { f: None });
     v.set(0, Wrap { f: Some(p) });
+    v.len()
+}
+
+fn pushMixed(p: string, h: Holder) -> i64 {
+    let v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { s: p, items: h.items });
     v.len()
 }
 
@@ -50,6 +58,11 @@ fn main() -> i64 {
         if p.len() < 6 { return 62; }
         if setParam(p) != 1 { return 63; }
         if p.len() < 6 { return 64; }
+
+        let h = Holder { items: [f"deep-{i}"] };
+        if pushMixed(p, h) != 1 { return 65; }
+        if p.len() < 6 { return 70; }
+        if h.items.len() != 1 { return 71; }
 
         let key = arena.insert(f"arena-{i}");
         let got = arena.remove(key);

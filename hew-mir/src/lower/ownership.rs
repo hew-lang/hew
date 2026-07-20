@@ -316,9 +316,13 @@ impl Builder {
         ) {
             return None;
         }
-        let class = Self::classify_whole_param_embeds(arg, &self.funcupdate_param_ids, &|ty| {
-            self.subst_ty(ty)
-        });
+        let class = Self::classify_whole_param_embeds(
+            arg,
+            &self.funcupdate_param_ids,
+            &|ty| self.subst_ty(ty),
+            true,
+            &|ty| crate::model::ty_owns_heap_mir(ty, &self.record_field_orders, &self.enum_layouts),
+        );
         if class != WholeParamEmbedClass::RetainBackedStringOnly {
             return None;
         }
@@ -2440,12 +2444,14 @@ impl Builder {
             // the destructive/MOVE-owner route. Reject both embed classes here.
             // A nested `..base` is checked too.
             HirExprKind::StructInit { .. } => {
-                Self::classify_whole_param_embeds(expr, params, &ResolvedTy::clone)
-                    == WholeParamEmbedClass::None
+                Self::classify_whole_param_embeds(expr, params, &ResolvedTy::clone, false, &|_| {
+                    false
+                }) == WholeParamEmbedClass::None
             }
             HirExprKind::TupleLiteral { .. } | HirExprKind::MachineVariantCtor { .. } => {
-                Self::classify_whole_param_embeds(expr, params, &ResolvedTy::clone)
-                    == WholeParamEmbedClass::None
+                Self::classify_whole_param_embeds(expr, params, &ResolvedTy::clone, false, &|_| {
+                    false
+                }) == WholeParamEmbedClass::None
             }
             // A projection is materialised iff its object chain is.
             HirExprKind::FieldAccess { object, .. } => {
@@ -2463,18 +2469,18 @@ impl Builder {
     /// Classify WHOLE by-value parameter embeds through constructors.
     ///
     /// Recurses only through constructions (struct / tuple / machine-variant
-    /// literals), which embed operands by value. A PROJECTION (`p.inner`), a
-    /// CALL, a `.clone()`, a `Vec` element, and a literal are NOT embeds of a
-    /// whole parameter — a field read bumps, a call/clone materialises a fresh
-    /// value — so they stop the recursion (return `false`). A bare parameter
-    /// binding is the borrow this catches; a bare LOCAL is move-consumed into the
-    /// construction and stays an owner. String parameters are distinguished from
-    /// every unsupported parameter type so only the proven retained-share class
-    /// can feed the Vec COPY-IN temp mint.
+    /// literals), which embed operands by value. For the existing materialised-
+    /// owner route, other leaves stop the recursion. The Vec COPY-IN mint uses
+    /// the stricter mode: every non-constructor heap-owning leaf fails closed,
+    /// because a projection or unproven call result can carry an unretained alias
+    /// derived from another parameter. This admits only construction trees whose
+    /// owned leaves are the whole retained string parameters being discharged.
     fn classify_whole_param_embeds(
         expr: &HirExpr,
         params: &HashSet<BindingId>,
         resolve_ty: &impl Fn(&ResolvedTy) -> ResolvedTy,
+        reject_unproven_owned_leaves: bool,
+        owns_heap: &impl Fn(&ResolvedTy) -> bool,
     ) -> WholeParamEmbedClass {
         match &expr.kind {
             HirExprKind::BindingRef {
@@ -2489,21 +2495,53 @@ impl Builder {
             }
             HirExprKind::StructInit { fields, base, .. } => fields
                 .iter()
-                .map(|(_, value)| Self::classify_whole_param_embeds(value, params, resolve_ty))
-                .chain(
-                    base.iter()
-                        .map(|value| Self::classify_whole_param_embeds(value, params, resolve_ty)),
-                )
+                .map(|(_, value)| {
+                    Self::classify_whole_param_embeds(
+                        value,
+                        params,
+                        resolve_ty,
+                        reject_unproven_owned_leaves,
+                        owns_heap,
+                    )
+                })
+                .chain(base.iter().map(|value| {
+                    Self::classify_whole_param_embeds(
+                        value,
+                        params,
+                        resolve_ty,
+                        reject_unproven_owned_leaves,
+                        owns_heap,
+                    )
+                }))
                 .fold(WholeParamEmbedClass::None, WholeParamEmbedClass::merge),
             HirExprKind::TupleLiteral { elements } => elements
                 .iter()
-                .map(|value| Self::classify_whole_param_embeds(value, params, resolve_ty))
+                .map(|value| {
+                    Self::classify_whole_param_embeds(
+                        value,
+                        params,
+                        resolve_ty,
+                        reject_unproven_owned_leaves,
+                        owns_heap,
+                    )
+                })
                 .fold(WholeParamEmbedClass::None, WholeParamEmbedClass::merge),
             HirExprKind::MachineVariantCtor { payload, .. } => payload
                 .iter()
                 .flatten()
-                .map(|(_, value)| Self::classify_whole_param_embeds(value, params, resolve_ty))
+                .map(|(_, value)| {
+                    Self::classify_whole_param_embeds(
+                        value,
+                        params,
+                        resolve_ty,
+                        reject_unproven_owned_leaves,
+                        owns_heap,
+                    )
+                })
                 .fold(WholeParamEmbedClass::None, WholeParamEmbedClass::merge),
+            _ if reject_unproven_owned_leaves && owns_heap(&resolve_ty(&expr.ty)) => {
+                WholeParamEmbedClass::UnsupportedBorrowAlias
+            }
             _ => WholeParamEmbedClass::None,
         }
     }

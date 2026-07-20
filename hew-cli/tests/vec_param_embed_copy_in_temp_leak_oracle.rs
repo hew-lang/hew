@@ -89,6 +89,23 @@ fn main() -> i64 {
 }
 "#;
 
+const TUPLE_TEMPLATE: &str = r#"
+fn pushParam(p: string) -> i64 {
+    let v: Vec<(string, i64)> = [];
+    v.push((p, 1));
+    v.len()
+}
+
+fn main() -> i64 {
+    for i in 0..$FRAMES {
+        let p = f"item-{i}";
+        if pushParam(p) != 1 { return 45; }
+        if p.len() < 6 { return 46; }
+    }
+    0
+}
+"#;
+
 const ARENA_TEMPLATE: &str = r#"
 type Key<T> { index: i64 }
 type Slot<T> { value: Option<T> }
@@ -163,13 +180,44 @@ fn main() -> i64 {
 }
 "#;
 
+const MIXED_PARAM_NOT_DOUBLE_FREED_SOURCE: &str = r#"
+type Holder { items: Vec<string> }
+type MixedWrap { s: string, items: Vec<string> }
+
+fn pushMixed(p: string, h: Holder) -> i64 {
+    let v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { s: p, items: h.items });
+    v.len()
+}
+
+fn main() -> i64 {
+    let p = "param-pin".to_upper();
+    let h = Holder { items: ["deep-pin".to_upper()] };
+    print(p.len());
+    print("|");
+    print(pushMixed(p, h));
+    print("|");
+    print(p);
+    print("|");
+    print(h.items.len());
+    print("|OK");
+    0
+}
+"#;
+
 const NON_STRING_PARAM_SOURCE: &str = r"
 type Holder { items: Vec<string> }
 type Wrap { f: Option<Holder> }
+type MixedWrap { s: string, items: Vec<string> }
 
 fn pushParam(p: Holder) {
     let v: Vec<Wrap> = [];
     v.push(Wrap { f: Some(p) });
+}
+
+fn pushMixed(p: string, h: Holder) {
+    let v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { s: p, items: h.items });
 }
 ";
 
@@ -193,8 +241,32 @@ fn move_source(frames: usize) -> String {
     with_frames(MOVE_TEMPLATE, frames)
 }
 
+fn tuple_source(frames: usize) -> String {
+    with_frames(TUPLE_TEMPLATE, frames)
+}
+
 fn arena_source(frames: usize) -> String {
     with_frames(ARENA_TEMPLATE, frames)
+}
+
+fn assert_source_succeeds_under_scribble(shape_name: &str, source_fn: fn(usize) -> String) {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("vec-param-embed-run-{shape_name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(&source_fn(3), dir.path(), shape_name);
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "{shape_name} must complete its semantic checks before its leak slope is trusted:\n{}",
+        describe_output(&output)
+    );
+}
+
+fn assert_clean_slope(shape_name: &str, source_fn: fn(usize) -> String) {
+    assert_source_succeeds_under_scribble(shape_name, source_fn);
+    assert_frame_slope_below_tolerance(shape_name, source_fn);
 }
 
 fn dump_checked_mir(source: &str, name: &str) -> String {
@@ -220,29 +292,34 @@ fn dump_checked_mir(source: &str, name: &str) -> String {
 
 #[test]
 fn direct_push_param_embed_has_flat_leak_slope() {
-    assert_frame_slope_below_tolerance("vec_param_embed_push", push_source);
+    assert_clean_slope("vec_param_embed_push", push_source);
 }
 
 #[test]
 fn direct_set_param_embed_has_flat_leak_slope() {
-    assert_frame_slope_below_tolerance("vec_param_embed_set", set_source);
+    assert_clean_slope("vec_param_embed_set", set_source);
 }
 
 #[test]
 fn bound_first_copy_in_control_has_flat_leak_slope() {
-    assert_frame_slope_below_tolerance("vec_param_embed_bound_first", bound_first_source);
+    assert_clean_slope("vec_param_embed_bound_first", bound_first_source);
 }
 
 #[test]
 fn no_param_embed_move_control_has_flat_leak_slope() {
-    assert_frame_slope_below_tolerance("vec_param_embed_move", move_source);
+    assert_clean_slope("vec_param_embed_move", move_source);
+}
+
+#[test]
+fn tuple_param_embed_has_flat_leak_slope() {
+    assert_clean_slope("vec_param_embed_tuple", tuple_source);
 }
 
 #[test]
 fn arena_insert_remove_param_embed_has_flat_leak_slope() {
     // `arena_source(100)` is the explicit diagnostic form that reproduces the
     // historical 100-node/3200-byte signature with the mint removed.
-    assert_frame_slope_below_tolerance("vec_param_embed_arena", arena_source);
+    assert_clean_slope("vec_param_embed_arena", arena_source);
 }
 
 #[test]
@@ -272,12 +349,38 @@ fn caller_parameter_survives_push_set_and_natural_drop() {
 }
 
 #[test]
+fn mixed_parameter_projection_survives_store_and_natural_drop() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("vec-param-embed-mixed-caller-pin-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        MIXED_PARAM_NOT_DOUBLE_FREED_SOURCE,
+        dir.path(),
+        "mixed_param_not_double_freed",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "a mixed temp must not drop the caller-owned projected Vec:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "9|1|PARAM-PIN|1|OK",
+        "both caller-owned parameters must remain live after the store:\n{}",
+        describe_output(&output)
+    );
+}
+
+#[test]
 fn non_string_param_embed_never_mints_a_temp_owner() {
     let mir = dump_checked_mir(NON_STRING_PARAM_SOURCE, "non_string_param_embed");
     assert!(mir.contains("call hew_vec_push_owned("));
     assert!(!mir.contains("hew_vec_push_owned_move"));
     assert!(
         !mir.contains("__hew_copy_in_param_temp"),
-        "an unretained Holder parameter is a borrowed alias and must never gain a temp owner:\n{mir}"
+        "an unretained Holder parameter or projection is a borrowed alias and must never gain a temp owner:\n{mir}"
     );
 }

@@ -1,0 +1,14 @@
+fn classify(value: (string, u8, i8, string)) -> i64 {
+    match value {
+        ("", 0, -1, "tail") => 10,
+        ("head", 255, -1, "") => 20,
+        (_, _, _, _) => 30,
+    }
+}
+
+fn main() -> i64 {
+    println(classify(("" + "", 0, -1, "ta" + "il")));
+    println(classify(("he" + "ad", 255, -1, "" + "")));
+    println(classify(("miss" + "ing", 7, -1, "fallback" + "")));
+    0
+}

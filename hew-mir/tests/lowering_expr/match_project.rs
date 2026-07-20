@@ -580,3 +580,170 @@ fn main() -> i64 {
         0
     );
 }
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the test checks the complete record and tuple predicate-temp proof symmetrically"
+)]
+fn owned_predicate_only_chain_borrows_and_drops_string_temps_before_branch() {
+    let pipeline = pipeline_with_tc(
+        r#"
+type Labels {
+    first: string,
+    code: i64,
+    last: string,
+}
+
+fn record_case() -> i64 {
+    let value = Labels { first: "a" + "b", code: 9, last: "y" + "z" };
+    match value {
+        Labels { first: "", code: 0, last: "z" } => 1,
+        Labels { first: "a", code: -1, last: "" } => 2,
+        Labels { first: _, code: _, last: _ } => 3,
+    }
+}
+
+fn tuple_case() -> i64 {
+    let value: (string, u8, string) = ("a" + "b", 9, "y" + "z");
+    match value {
+        ("", 0, "z") => 4,
+        ("a", 255, "") => 5,
+        (_, _, _) => 6,
+    }
+}
+"#,
+    );
+
+    for (name, source_name, expected_loads) in [
+        ("record_case", "value", 6usize),
+        ("tuple_case", "value", 6usize),
+    ] {
+        let function = find_fn(&pipeline, name);
+        assert_eq!(source_consume_count(&pipeline, name, source_name), 0);
+        assert_eq!(
+            function
+                .blocks
+                .iter()
+                .flat_map(|block| block.instructions.iter())
+                .filter(|instr| matches!(
+                    instr,
+                    Instr::RecordFieldLoad { .. } | Instr::TupleFieldLoad { .. }
+                ))
+                .count(),
+            expected_loads
+        );
+        assert_eq!(
+            function
+                .blocks
+                .iter()
+                .flat_map(|block| block.instructions.iter())
+                .filter(|instr| matches!(
+                    instr,
+                    Instr::Drop {
+                        ty: hew_types::ResolvedTy::String,
+                        drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
+                        ..
+                    }
+                ))
+                .count(),
+            4
+        );
+        assert_eq!(
+            function
+                .blocks
+                .iter()
+                .flat_map(|block| block.instructions.iter())
+                .filter(|instr| matches!(instr, Instr::FieldDropInPlace { .. }))
+                .count(),
+            0
+        );
+
+        let mut ordered_string_temps = 0;
+        for block in &function.blocks {
+            for (load_idx, load) in block.instructions.iter().enumerate() {
+                let loaded = match load {
+                    Instr::RecordFieldLoad { dest, .. } | Instr::TupleFieldLoad { dest, .. }
+                        if matches!(
+                            dest,
+                            hew_mir::Place::Local(local)
+                                if matches!(
+                                    function.locals.get(*local as usize),
+                                    Some(hew_types::ResolvedTy::String)
+                                )
+                        ) =>
+                    {
+                        *dest
+                    }
+                    _ => continue,
+                };
+                let cmp_idx = block
+                    .instructions
+                    .iter()
+                    .position(|instr| matches!(instr, Instr::IntCmp { lhs, .. } if *lhs == loaded))
+                    .expect("string predicate comparison in load block");
+                let drop_idx = block
+                    .instructions
+                    .iter()
+                    .position(
+                        |instr| matches!(instr, Instr::Drop { place, .. } if *place == loaded),
+                    )
+                    .expect("string predicate temporary drop in load block");
+                assert!(load_idx < cmp_idx);
+                assert!(cmp_idx < drop_idx);
+                assert!(matches!(
+                    block.terminator,
+                    hew_mir::Terminator::Branch { .. }
+                ));
+                ordered_string_temps += 1;
+            }
+        }
+        assert_eq!(ordered_string_temps, 4);
+    }
+
+    assert_eq!(
+        drop_kind_counts(&return_drops(&pipeline, "record_case")),
+        (0, 1, 0)
+    );
+    assert_eq!(
+        drop_kind_counts(&return_drops(&pipeline, "tuple_case")),
+        (0, 0, 1)
+    );
+}
+
+#[test]
+fn owned_predicate_parameter_tail_is_a_borrow() {
+    let pipeline = pipeline_with_tc(
+        r#"
+type Packet { tag: string, body: string }
+
+fn classify_record(p: Packet) -> i64 {
+    match p {
+        Packet { tag: "ok", body: _ } => 1,
+        Packet { tag: _, body: _ } => 2,
+    }
+}
+
+fn classify_tuple(p: (string, string)) -> i64 {
+    match p {
+        ("ok", _) => 3,
+        (_, _) => 4,
+    }
+}
+
+fn caller() -> i64 {
+    let packet = Packet { tag: "o" + "k", body: "a" + "b" };
+    let a = classify_record(packet) + packet.body.len();
+    let tuple = ("o" + "k", "c" + "d");
+    a + classify_tuple(tuple) + tuple.1.len()
+}
+"#,
+    );
+
+    assert_eq!(source_consume_count(&pipeline, "classify_record", "p"), 0);
+    assert_eq!(source_consume_count(&pipeline, "classify_tuple", "p"), 0);
+    assert_eq!(
+        drop_kind_counts(&return_drops(&pipeline, "caller")),
+        (0, 1, 1)
+    );
+}

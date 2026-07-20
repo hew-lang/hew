@@ -1,0 +1,36 @@
+type Labels {
+    last: string,
+    signed: i8,
+    boundary: u8,
+    first: string,
+}
+
+fn classify(value: Labels) -> i64 {
+    match value {
+        Labels { first: "", boundary: 0, signed: -1, last: "last" } => 40,
+        Labels { first: "first", boundary: 255, signed: -1, last: "" } => 50,
+        Labels { first: _, boundary: _, signed: _, last: _ } => 60,
+    }
+}
+
+fn main() -> i64 {
+    println(classify(Labels {
+        last: "la" + "st",
+        signed: -1,
+        boundary: 0,
+        first: "" + "",
+    }));
+    println(classify(Labels {
+        last: "" + "",
+        signed: -1,
+        boundary: 255,
+        first: "fir" + "st",
+    }));
+    println(classify(Labels {
+        last: "mismatch" + "",
+        signed: -1,
+        boundary: 9,
+        first: "fallback" + "",
+    }));
+    0
+}

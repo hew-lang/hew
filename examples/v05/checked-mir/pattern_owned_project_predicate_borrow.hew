@@ -1,0 +1,31 @@
+type Labels {
+    first: string,
+    code: i64,
+    last: string,
+}
+
+fn classify_record(value: Labels) -> i64 {
+    match value {
+        Labels { first: "", code: 0, last: "tail" } => 1,
+        Labels { first: "head", code: -1, last: "" } => 2,
+        Labels { first: _, code: _, last: _ } => 3,
+    }
+}
+
+fn classify_tuple(value: (string, u8, string)) -> i64 {
+    match value {
+        ("", 0, "tail") => 4,
+        ("head", 255, "") => 5,
+        (_, _, _) => 6,
+    }
+}
+
+fn main() -> i64 {
+    let labels = Labels {
+        first: "he" + "ad",
+        code: -1,
+        last: "" + "",
+    };
+    let tuple: (string, u8, string) = ("" + "", 0, "ta" + "il");
+    classify_record(labels) + classify_tuple(tuple)
+}

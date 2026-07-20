@@ -2155,20 +2155,6 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
-        if !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty) {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "literal predicates on owned record/tuple match destructure"
-                        .to_string(),
-                    site: scrutinee.site,
-                },
-                note: "runtime-selected project arms over an owned aggregate require \
-                       path-sensitive partial-move and skipped-field drop elaboration; \
-                       refusing to duplicate ownership across fallthrough edges"
-                    .to_string(),
-            });
-            return None;
-        }
         if let Some(guard) = arms.iter().find_map(|arm| arm.guard.as_ref()) {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -2181,6 +2167,35 @@ impl Builder {
                     .to_string(),
             });
             return None;
+        }
+
+        let scrutinee_is_non_bitcopy = !self.project_match_scrutinee_is_bitcopy(&scrutinee.ty);
+        let ownership_mode = project_match_ownership_mode(arms);
+        if scrutinee_is_non_bitcopy {
+            if let Some((construct, note)) = self.match_project_scrutinee_reject(scrutinee) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: construct.to_string(),
+                        site: scrutinee.site,
+                    },
+                    note,
+                });
+                return None;
+            }
+            if !matches!(ownership_mode, ProjectMatchOwnershipMode::Borrow) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "literal predicates on owned record/tuple match destructure"
+                            .to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: "runtime-selected owned project arms that extract fields require \
+                           uniform source consumption and skipped-field discharge on every \
+                           selected path"
+                        .to_string(),
+                });
+                return None;
+            }
         }
 
         let arm_discharges = arms
@@ -2251,6 +2266,13 @@ impl Builder {
                                 lhs: field,
                                 rhs: expected,
                                 dest: cond,
+                            });
+                        }
+                        if matches!(predicate.ty, ResolvedTy::String) {
+                            self.push_instr(Instr::Drop {
+                                place: field,
+                                ty: ResolvedTy::String,
+                                drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
                             });
                         }
                         let pass_bb = self.alloc_block();

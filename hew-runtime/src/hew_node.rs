@@ -6106,7 +6106,10 @@ mod tests {
     /// genuine authorized connection — there is no test-only posture promotion:
     /// a peer presenting an unbound Noise key fails the pre-gate and admission.
     #[cfg(feature = "encryption")]
-    fn start_authorized_tcp_node(node_id: u16, peer_node: u16) -> (TestNode, u16) {
+    fn start_authorized_tcp_node(
+        node_id: u16,
+        peer_node: u16,
+    ) -> (TestNode, u16, crate::node_identity::NodeId) {
         use crate::peer_binding::{PeerAuthConfig, NOISE_KEY_LEN};
 
         let keyfile = std::env::var(TWO_PROCESS_KEYFILE_ENV).expect("2p keyfile env");
@@ -6123,6 +6126,7 @@ mod tests {
         );
         let mut peer_pub = [0u8; NOISE_KEY_LEN];
         peer_pub.copy_from_slice(&peer_pub_bytes);
+        let peer_identity = crate::node_identity::NodeId::from_noise_static_key(&peer_pub);
 
         let mut config = PeerAuthConfig::default();
         config.legacy_wire_route_slot = std::num::NonZeroU16::new(node_id);
@@ -6156,7 +6160,7 @@ mod tests {
         let port =
             unsafe { crate::transport::hew_transport_tcp_bound_port((*node.as_ptr()).transport) }
                 .expect("authorized tcp node must expose its bound listener port");
-        (node, port)
+        (node, port, peer_identity)
     }
 
     /// Start two mutually-authenticated in-process nodes on the native TCP
@@ -6379,7 +6383,7 @@ mod tests {
     fn wait_for_remote_lookup(
         node: *mut HewNode,
         name: *const c_char,
-        expected_node_id: u16,
+        expected_node_id: crate::node_identity::NodeId,
         timeout: Duration,
     ) -> Option<HewRemotePid> {
         let deadline = Instant::now() + timeout;
@@ -6387,7 +6391,7 @@ mod tests {
             // SAFETY: node/name are valid for this bounded wait.
             let location = unsafe { lookup_exact(node, name) };
             if let Some(location) = location {
-                if location.node() == test_node_id(expected_node_id) {
+                if location.node() == expected_node_id {
                     return Some(HewRemotePid::from(location));
                 }
             }
@@ -6498,7 +6502,7 @@ mod tests {
         let _real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
-        let (node, port) = start_authorized_tcp_node(
+        let (node, port, _client_identity) = start_authorized_tcp_node(
             TWO_PROCESS_REGISTRY_SERVER_NODE,
             TWO_PROCESS_REGISTRY_CLIENT_NODE,
         );
@@ -6547,7 +6551,7 @@ mod tests {
             .expect("server port env")
             .parse::<u16>()
             .expect("server port");
-        let (node, _client_port) = start_authorized_tcp_node(
+        let (node, _client_port, server_identity) = start_authorized_tcp_node(
             TWO_PROCESS_REGISTRY_CLIENT_NODE,
             TWO_PROCESS_REGISTRY_SERVER_NODE,
         );
@@ -6567,7 +6571,7 @@ mod tests {
         let remote_pid = wait_for_remote_lookup(
             node.as_ptr(),
             name.as_ptr(),
-            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            server_identity,
             Duration::from_secs(30),
         )
         .expect("client lookup did not resolve remote registry gossip");
@@ -6618,7 +6622,8 @@ mod tests {
         let _real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
-        let (node, port) = start_authorized_tcp_node(node_id, TWO_PROCESS_REGISTRY_CLIENT_NODE);
+        let (node, port, _client_identity) =
+            start_authorized_tcp_node(node_id, TWO_PROCESS_REGISTRY_CLIENT_NODE);
         crate::pid::hew_pid_set_local_node(node_id);
         // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
         let worker = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(dispatch)) };
@@ -6759,7 +6764,8 @@ mod tests {
             .expect("server port env")
             .parse::<u16>()
             .expect("server port");
-        let (node, _client_port) = start_authorized_tcp_node(client_node_id, server_node_id);
+        let (node, _client_port, server_identity) =
+            start_authorized_tcp_node(client_node_id, server_node_id);
 
         let connect_addr = CString::new(format!("{server_node_id}@127.0.0.1:{server_port}"))
             .expect("valid connect addr");
@@ -6774,14 +6780,14 @@ mod tests {
         let remote_pid = wait_for_remote_lookup(
             node.as_ptr(),
             name.as_ptr(),
-            server_node_id,
+            server_identity,
             Duration::from_secs(30),
         )
         .expect("ask client lookup did not resolve remote registry gossip");
-        assert_ne!(
+        assert_eq!(
             Location::try_from(remote_pid).unwrap().node(),
-            test_node_id(client_node_id),
-            "ask test must not resolve to a local pid"
+            server_identity,
+            "ask test must resolve to the authenticated server identity"
         );
         TwoProcessAskClient {
             node,

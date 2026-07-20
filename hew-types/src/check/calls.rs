@@ -1232,8 +1232,8 @@ impl Checker {
                     return result_ty;
                 }
                 // Not a RemotePid — fall through to the generic `fn_sigs` path,
-                // which applies the `monitor(LocalPid<T>) -> MonitorRef` builtin
-                // signature (and reports the precise mismatch for a bad arg).
+                // which applies the local typed-result builtin signature (and
+                // reports the precise mismatch for a bad argument).
             }
             "supervisor_child" if args.len() == 2 => {
                 // supervisor_child(sup, index) → typed LocalPid based on supervisor decl

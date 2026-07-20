@@ -47,10 +47,7 @@ use rand::rng;
 use rand::RngExt;
 
 use crate::cluster::HewCluster;
-// `encode_envelope_frame_from_raw_parts` is used only by the encryption-gated
-// `encode_envelope`; import it conditionally so non-encryption builds don't
-// carry an unused import.
-#[cfg(feature = "encryption")]
+// Used by both plain and encryption-enabled envelope send paths.
 use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::envelope::{
     decode_link_down_payload, decode_link_req_payload, decode_monitor_down_payload,
@@ -1623,8 +1620,7 @@ fn install_connection_actor(
     install
 }
 
-// Sole caller is the encryption-gated send path in `hew_connmgr_send`.
-#[cfg(feature = "encryption")]
+// Used by both plain and encryption-enabled send paths in `hew_connmgr_send`.
 unsafe fn encode_envelope(
     target: Location,
     msg_type: i32,

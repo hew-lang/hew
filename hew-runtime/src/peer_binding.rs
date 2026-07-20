@@ -485,9 +485,7 @@ impl PeerAuthConfig {
         }
         let has_transport_identity = match self.transport.unwrap_or(TransportSelection::Tcp) {
             TransportSelection::Tcp => self.noise_identity.is_some(),
-            #[cfg(feature = "quic")]
             TransportSelection::QuicMesh => self.mesh_identity.is_some(),
-            #[cfg(feature = "quic")]
             TransportSelection::Quic => false,
         };
         if !has_transport_identity {

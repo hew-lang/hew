@@ -350,9 +350,8 @@ pub fn hex_lower(bytes: &[u8]) -> String {
 /// Frozen into a [`PeerAuthSnapshot`] via [`PeerAuthConfig::snapshot`] at start.
 #[derive(Clone, Debug, Default)]
 pub struct PeerAuthConfig {
-    /// Transitional v1 numeric slot advertised until Stage 2 replaces the
-    /// handshake. It is generated internally, never configured as identity.
-    pub legacy_wire_route_slot: Option<NonZeroU16>,
+    /// Receiver-local route slot advertised by this node.
+    pub local_route_slot: Option<NonZeroU16>,
     /// Low-level diagnostic-only unverified posture. The public start path does
     /// not populate this from an environment bypass.
     pub unverified_optout: bool,
@@ -553,7 +552,7 @@ impl PeerAuthConfig {
         }
         PeerAuthSnapshot {
             inner: Arc::new(SnapshotInner {
-                legacy_wire_route_slot: self.legacy_wire_route_slot,
+                local_route_slot: self.local_route_slot,
                 unverified: self.unverified_optout,
                 transport: self.transport.unwrap_or(TransportSelection::Tcp),
                 bindings: self.bindings.clone(),
@@ -578,7 +577,7 @@ pub struct PeerAuthSnapshot {
 }
 
 struct SnapshotInner {
-    legacy_wire_route_slot: Option<NonZeroU16>,
+    local_route_slot: Option<NonZeroU16>,
     unverified: bool,
     transport: TransportSelection,
     bindings: PeerBindings,
@@ -609,7 +608,7 @@ impl PeerAuthSnapshot {
         let _ = std::fs::remove_file(&lease_path);
         Self {
             inner: Arc::new(SnapshotInner {
-                legacy_wire_route_slot: None,
+                local_route_slot: None,
                 unverified: false,
                 transport: TransportSelection::Tcp,
                 bindings: peer_bindings.into_iter().collect(),
@@ -634,7 +633,7 @@ impl PeerAuthSnapshot {
     pub fn unconfigured() -> Self {
         Self {
             inner: Arc::new(SnapshotInner {
-                legacy_wire_route_slot: None,
+                local_route_slot: None,
                 unverified: false,
                 transport: TransportSelection::Tcp,
                 bindings: PeerBindings::new(),
@@ -648,10 +647,10 @@ impl PeerAuthSnapshot {
         }
     }
 
-    /// Transitional route slot advertised by the v1 handshake.
+    /// Receiver-local route slot advertised by the handshake.
     #[must_use]
-    pub fn legacy_wire_route_slot(&self) -> Option<NonZeroU16> {
-        self.inner.legacy_wire_route_slot
+    pub fn local_route_slot(&self) -> Option<NonZeroU16> {
+        self.inner.local_route_slot
     }
 
     /// Whether this snapshot is the explicit documented unverified opt-out.
@@ -764,7 +763,7 @@ impl PeerAuthSnapshot {
     /// Validate the snapshot is self-consistent (defence-in-depth at the shared
     /// `hew_node_start`, applies to low-level callers too).
     ///
-    /// * strict (`bindings` non-empty) requires a legacy v1 route slot;
+    /// * strict (`bindings` non-empty) requires a local route slot;
     /// * explicit opt-out (`unverified == true`) requires empty `bindings`;
     /// * `unconfigured` (`unverified == false`, empty bindings) is legal.
     ///
@@ -779,9 +778,9 @@ impl PeerAuthSnapshot {
                     .to_string(),
             );
         }
-        if !self.inner.bindings.is_empty() && self.inner.legacy_wire_route_slot.is_none() {
+        if !self.inner.bindings.is_empty() && self.inner.local_route_slot.is_none() {
             return Err(
-                "hew_node_start: strict binding snapshot requires a nonzero v1 route slot \
+                "hew_node_start: strict binding snapshot requires a nonzero local route slot \
                  (fail-closed)"
                     .to_string(),
             );
@@ -860,7 +859,7 @@ impl PeerAuthSnapshot {
 impl std::fmt::Debug for PeerAuthSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerAuthSnapshot")
-            .field("legacy_wire_route_slot", &self.inner.legacy_wire_route_slot)
+            .field("local_route_slot", &self.inner.local_route_slot)
             .field("unverified", &self.inner.unverified)
             .field("transport", &self.inner.transport)
             .field("binding_node_count", &self.inner.bindings.len())
@@ -957,7 +956,7 @@ mod tests {
 
     fn bound_config(bindings: &[(RouteSlot, PeerCredential)]) -> PeerAuthConfig {
         let mut cfg = PeerAuthConfig {
-            legacy_wire_route_slot: nz(7),
+            local_route_slot: nz(7),
             ..PeerAuthConfig::default()
         };
         for (route_slot, credential) in bindings {

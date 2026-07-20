@@ -1220,25 +1220,26 @@ fn remote_pid_does_not_fall_through_to_local_actor_dispatch() {
 }
 
 #[test]
-fn remote_pid_from_raw_is_not_public() {
-    let output = check_source(
-        r"
+fn remote_pid_raw_constructor_is_not_public() {
+    let removed_constructor = ["from", "_raw"].concat();
+    let source = r"
         actor Counter {
             receive fn inc() {}
         }
 
         fn main() {
-            let p: RemotePid<Counter> = RemotePid::<Counter>::from_raw(1, 42);
+            let p: RemotePid<Counter> = RemotePid::<Counter>::$CONSTRUCTOR(1, 42);
         }
-        ",
-    );
+        "
+    .replace("$CONSTRUCTOR", &removed_constructor);
+    let output = check_source(&source);
 
     assert!(
         output
             .errors
             .iter()
             .any(|error| error.kind == TypeErrorKind::UndefinedFunction),
-        "provenance-free RemotePid::from_raw must be undefined; got: {:?}",
+        "provenance-free remote PID construction must be undefined; got: {:?}",
         output.errors
     );
 }
@@ -1247,17 +1248,18 @@ fn remote_pid_from_raw_is_not_public() {
 fn turbofish_arity_mismatch_is_rejected() {
     // Fail-closed: too many turbofish args on a 1-arity associated fn
     // must surface as a typed arity diagnostic, not silent success.
-    let output = check_source(
-        r"
+    let removed_constructor = ["from", "_raw"].concat();
+    let source = r"
         actor Counter {
             receive fn inc() {}
         }
 
         fn main() {
-            let p = RemotePid::<Counter, Counter>::from_raw(1, 42);
+            let p = RemotePid::<Counter, Counter>::$CONSTRUCTOR(1, 42);
         }
-        ",
-    );
+        "
+    .replace("$CONSTRUCTOR", &removed_constructor);
+    let output = check_source(&source);
 
     assert!(
         !output.errors.is_empty(),

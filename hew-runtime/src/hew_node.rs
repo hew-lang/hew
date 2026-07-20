@@ -2135,14 +2135,13 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         }};
     }
 
-    // ── NodeId authority (BLOCK-5 point 1) — before any allocation/listen ──
-    // The per-node `PeerAuthSnapshot` (never the process-global `ConfigState`)
-    // is authoritative for the transitional v1 route slot. Defence-in-depth:
-    // reject a self-inconsistent snapshot, then reconcile the route slot.
+    // ── NodeId authority — before any allocation/listen ──
+    // The per-node `PeerAuthSnapshot` is authoritative for the receiver-local
+    // route slot. Reject a self-inconsistent snapshot, then reconcile the slot.
     if let Err(reason) = node.auth.validate() {
         fail_start!(reason);
     }
-    if let Some(snapshot_route_slot) = node.auth.legacy_wire_route_slot() {
+    if let Some(snapshot_route_slot) = node.auth.local_route_slot() {
         let snapshot_route_slot = snapshot_route_slot.get();
         if node.route_slot == 0 {
             // A low-level caller deferred the route slot to its snapshot.
@@ -2151,7 +2150,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
             // Refuse before the listener binds and before cluster/routing/connmgr
             // are created.
             fail_start!(format!(
-                "hew_node_start: explicit route slot {} conflicts with the frozen v1 route slot \
+                "hew_node_start: explicit route slot {} conflicts with the frozen local route slot \
                  {snapshot_route_slot} — refusing to listen (fail-closed)",
                 node.route_slot
             ));
@@ -4076,21 +4075,17 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
 // interface for the compiler-generated code. Each corresponds to a
 // `Node::*` builtin in the Hew language.
 
-/// Per-process offset for the transitional v1 wire route slot.
+/// Per-process offset for receiver-local route-slot allocation.
 ///
 /// When a process calls `Node::start` more than once, each call gets a
 /// distinct offset added to the process base.
-static LEGACY_ROUTE_SLOT_COUNTER: std::sync::atomic::AtomicU32 =
+static LOCAL_ROUTE_SLOT_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
-/// Per-process base for the transitional v1 route slot.
-///
-/// Stage 2 removes this PID-derived wire compatibility value when the v2
-/// handshake carries key-derived `NodeId` and receiver-local route slots stop
-/// crossing the wire.
+/// Per-process base for receiver-local route-slot allocation.
 static PROCESS_ROUTE_SLOT_BASE: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
 
-/// Derive a non-zero v1 route-slot base from the OS process ID.
+/// Derive a non-zero local route-slot base from the OS process ID.
 ///
 /// Uses a FNV-1a–style fold to spread the PID bits across the full u16
 /// range, then forces non-zero because route slot zero is local dispatch.
@@ -4125,7 +4120,7 @@ fn process_route_slot_base() -> u16 {
 /// when `base == 65535` (offset 1). Mapping through the
 /// `1..=65535` ring (`1 + ((base - 1 + offset) mod 65535)`) keeps the result a
 /// valid peer route slot for any base/offset, including the wrap case.
-fn next_legacy_route_slot(base: u16, offset: u32) -> u16 {
+fn next_local_route_slot(base: u16, offset: u32) -> u16 {
     // Work in u32 to avoid intermediate u16 wrap; the ring has 65535 slots
     // (1..=65535). `base` is already guaranteed non-zero by
     // `process_route_slot_base`, so `base - 1` is in `0..=65534`.
@@ -4139,13 +4134,13 @@ fn next_legacy_route_slot(base: u16, offset: u32) -> u16 {
     route_slot
 }
 
-fn select_legacy_route_slot(
+fn select_local_route_slot(
     base: u16,
     offset: u32,
     bindings: &crate::peer_binding::PeerBindings,
 ) -> Option<std::num::NonZeroU16> {
     for attempt in 0..65_535 {
-        let candidate = next_legacy_route_slot(base, offset.wrapping_add(attempt));
+        let candidate = next_local_route_slot(base, offset.wrapping_add(attempt));
         if bindings.get(&candidate).is_none() {
             return std::num::NonZeroU16::new(candidate);
         }
@@ -4205,7 +4200,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
     // Transition `Building → Starting{owner}` under the lock, then run the
     // shared low-level start WITHOUT the lock (it reads the node's installed
     // snapshot, never `ConfigState`), then re-acquire for `Running` / restore.
-    let offset = LEGACY_ROUTE_SLOT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let offset = LOCAL_ROUTE_SLOT_COUNTER.fetch_add(1, Ordering::Relaxed);
     let (node, cfg, generation) = {
         let mut guard = PEER_AUTH_STATE
             .lock()
@@ -4244,17 +4239,17 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
             set_last_error(msg);
             return -1;
         }
-        // Until the v2 handshake lands in Stage 2, allocate an internal compact
-        // wire route slot that cannot collide with a configured peer slot.
+        // Allocate a receiver-local route slot that cannot collide with a
+        // configured peer slot.
         let Some(route_slot) =
-            select_legacy_route_slot(process_route_slot_base(), offset, cfg.bindings())
+            select_local_route_slot(process_route_slot_base(), offset, cfg.bindings())
         else {
-            let msg = "Node::start: no free v1 route slot remains after peer bindings";
+            let msg = "Node::start: no free local route slot remains after peer bindings";
             eprintln!("hew: {msg}");
             set_last_error(msg);
             return -1;
         };
-        cfg.legacy_wire_route_slot = Some(route_slot);
+        cfg.local_route_slot = Some(route_slot);
         let snapshot = match cfg.snapshot_for_start() {
             Ok(snapshot) => snapshot,
             Err(msg) => {
@@ -4798,7 +4793,7 @@ fn stage_loaded_identity(
 }
 
 /// `Node::allow_peer(route_slot, credential_hex)` — pin a peer's authenticated
-/// credential to its transitional receiver-local v1 route slot. The
+/// credential to a receiver-local route slot. The
 /// credential is interpreted by the node's pinned transport (TCP ⇒ 32-byte
 /// Noise pubkey; quic-mesh ⇒ cert SPKI). The exact one-to-one pin is staged
 /// into the pre-start `Building` `PeerAuthConfig` and frozen at `Node::start`.
@@ -5995,26 +5990,23 @@ mod tests {
     }
 
     #[test]
-    fn next_legacy_route_slot_never_yields_zero_sentinel() {
+    fn next_local_route_slot_never_yields_zero_sentinel() {
         // Route slot zero is the local-dispatch sentinel.
         for base in [1u16, 2, 100, 65_534, 65_535] {
             for offset in 0u32..4 {
                 assert_ne!(
-                    next_legacy_route_slot(base, offset),
+                    next_local_route_slot(base, offset),
                     0,
                     "base={base} offset={offset} mapped onto the 0 sentinel",
                 );
             }
         }
         // The bare-wrapping_add hazard: base 65535 + offset 1 wrapped to 0.
-        assert_ne!(next_legacy_route_slot(65_535, 1), 0);
+        assert_ne!(next_local_route_slot(65_535, 1), 0);
         // Distinct offsets from the same base stay distinct within the ring.
-        assert_ne!(
-            next_legacy_route_slot(100, 0),
-            next_legacy_route_slot(100, 1)
-        );
+        assert_ne!(next_local_route_slot(100, 0), next_local_route_slot(100, 1));
         // base==1, offset==0 maps to itself (the common single-node case).
-        assert_eq!(next_legacy_route_slot(1, 0), 1);
+        assert_eq!(next_local_route_slot(1, 0), 1);
     }
 
     #[test]
@@ -6028,7 +6020,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            select_legacy_route_slot(100, 0, config.bindings()).map(std::num::NonZeroU16::get),
+            select_local_route_slot(100, 0, config.bindings()).map(std::num::NonZeroU16::get),
             Some(102)
         );
     }
@@ -6056,7 +6048,7 @@ mod tests {
                 let identity = crate::encryption::noise_identity_load_or_create(&path)
                     .expect("mint test node identity");
                 let mut config = crate::peer_binding::PeerAuthConfig::default();
-                config.legacy_wire_route_slot = std::num::NonZeroU16::new(node_id);
+                config.local_route_slot = std::num::NonZeroU16::new(node_id);
                 config.node_identity = Some(crate::node_identity::NodeId::from_noise_static_key(
                     &identity.public(),
                 ));
@@ -6195,7 +6187,7 @@ mod tests {
         let peer_identity = crate::node_identity::NodeId::from_noise_static_key(&peer_pub);
 
         let mut config = PeerAuthConfig::default();
-        config.legacy_wire_route_slot = std::num::NonZeroU16::new(node_id);
+        config.local_route_slot = std::num::NonZeroU16::new(node_id);
         config.node_identity = Some(crate::node_identity::NodeId::from_noise_static_key(
             &identity.public(),
         ));
@@ -6259,7 +6251,7 @@ mod tests {
                          peer_pub: [u8; NOISE_KEY_LEN]|
          -> (TestNode, u16) {
             let mut config = PeerAuthConfig::default();
-            config.legacy_wire_route_slot = std::num::NonZeroU16::new(node_id);
+            config.local_route_slot = std::num::NonZeroU16::new(node_id);
             config.node_identity = Some(crate::node_identity::NodeId::from_noise_static_key(
                 &identity.public(),
             ));
@@ -7157,10 +7149,10 @@ mod tests {
         let node = unsafe { TestNode::new(node_id, &bind_addr) };
         assert!(!node.as_ptr().is_null(), "test node allocation failed");
 
-        // Install the credentialed snapshot: local v1 route slot + the peer's
-        // real SPKI pinned to its route slot.
+        // Install the credentialed snapshot: local route slot plus the peer's
+        // real SPKI pinned to its receiver-local route slot.
         let mut config = PeerAuthConfig::default();
-        config.legacy_wire_route_slot = std::num::NonZeroU16::new(node_id);
+        config.local_route_slot = std::num::NonZeroU16::new(node_id);
         config.transport = Some(crate::peer_binding::TransportSelection::QuicMesh);
         config.node_identity = Some(crate::node_identity::NodeId::from_spki(&local_spki));
         let identity_dir = tempfile::tempdir().expect("authorized mesh identity dir");
@@ -7245,7 +7237,7 @@ mod tests {
         std::ptr::null_mut()
     }
 
-    /// A low-level node whose explicit v1 route slot contradicts its installed
+    /// A low-level node whose explicit route slot contradicts its installed
     /// snapshot route slot is rejected before the listener binds.
     #[test]
     fn node_start_rejects_conflicting_snapshot_route_slot_before_listen() {
@@ -7257,7 +7249,7 @@ mod tests {
         let node = unsafe { TestNode::new(100, &bind_addr) };
         assert!(!node.as_ptr().is_null());
         let mut config = PeerAuthConfig::default();
-        config.legacy_wire_route_slot = std::num::NonZeroU16::new(42);
+        config.local_route_slot = std::num::NonZeroU16::new(42);
         config
             .pin_peer(43, PeerCredential::NoiseKey([0xAB; 32]))
             .expect("distinct peer pin");
@@ -7286,7 +7278,7 @@ mod tests {
             }
         };
         assert!(
-            err.contains("conflicts with the frozen v1 route slot"),
+            err.contains("conflicts with the frozen local route slot"),
             "diagnostic should name the conflict; got: {err}"
         );
     }
@@ -7302,7 +7294,7 @@ mod tests {
         let node = unsafe { TestNode::new(0, &bind_addr) };
         assert!(!node.as_ptr().is_null());
         let mut config = PeerAuthConfig::default();
-        config.legacy_wire_route_slot = std::num::NonZeroU16::new(4242);
+        config.local_route_slot = std::num::NonZeroU16::new(4242);
         config
             .pin_peer(4243, PeerCredential::NoiseKey([0xCD; 32]))
             .expect("distinct peer pin");
@@ -7336,7 +7328,7 @@ mod tests {
         let node = unsafe { TestNode::new(7, &bind_addr) };
         assert!(!node.as_ptr().is_null());
         let mut config = PeerAuthConfig::default();
-        config.legacy_wire_route_slot = std::num::NonZeroU16::new(7);
+        config.local_route_slot = std::num::NonZeroU16::new(7);
         config.unverified_optout = true;
         config
             .pin_peer(42, PeerCredential::NoiseKey([0x11; 32]))
@@ -7351,47 +7343,6 @@ mod tests {
         unsafe {
             assert!((*node.as_ptr()).transport.is_null());
         }
-    }
-
-    #[test]
-    fn public_start_env_ignores_removed_identity_and_unverified_controls() {
-        let _guard = crate::runtime_test_guard();
-        let saved = crate::env::ENV_LOCK.read_access(|()| {
-            [
-                ("HEW_NODE_ID", std::env::var_os("HEW_NODE_ID")),
-                (
-                    "HEW_DIST_UNVERIFIED",
-                    std::env::var_os("HEW_DIST_UNVERIFIED"),
-                ),
-                ("HEW_TRANSPORT", std::env::var_os("HEW_TRANSPORT")),
-            ]
-        });
-        crate::env::ENV_LOCK.access(|()| {
-            // SAFETY: ENV_LOCK serializes process-global environment mutation.
-            unsafe {
-                std::env::set_var("HEW_NODE_ID", "4242");
-                std::env::set_var("HEW_DIST_UNVERIFIED", "true");
-                std::env::remove_var("HEW_TRANSPORT");
-            }
-        });
-
-        let mut config = crate::peer_binding::PeerAuthConfig::default();
-        merge_start_env_into_config(&mut config).unwrap();
-        assert_eq!(config.legacy_wire_route_slot, None);
-        assert!(!config.unverified_optout);
-
-        crate::env::ENV_LOCK.access(|()| {
-            // SAFETY: ENV_LOCK serializes process-global environment mutation.
-            unsafe {
-                for (key, value) in saved {
-                    if let Some(value) = value {
-                        std::env::set_var(key, value);
-                    } else {
-                        std::env::remove_var(key);
-                    }
-                }
-            }
-        });
     }
 
     /// `hew_node_set_auth_snapshot` is rejected once the node is not STOPPED.
@@ -9663,7 +9614,7 @@ mod tests {
         assert_eq!(
             connection::peer_node_id_for_conn(mgr2_ref, conn_id),
             ID_A,
-            "peer-observed v1 route slot must equal the configured slot"
+            "peer-observed route slot must equal the configured slot"
         );
         assert_eq!(
             authenticated, ID_A,

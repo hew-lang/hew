@@ -3,10 +3,7 @@ mod support;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use support::{
-    hew_binary, repo_root, require_codegen, run_bounded_hew_run, run_bounded_hew_run_with_env,
-    strip_ansi,
-};
+use support::{hew_binary, repo_root, require_codegen, run_bounded_hew_run, strip_ansi};
 
 /// Verify that `hew run --timeout` kills the entire process tree spawned by
 /// the compiled Hew program, not just the root binary.
@@ -499,9 +496,7 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
     )
     .expect("write peer-auth fixture");
 
-    // Strict binding: configuring a peer binding requires this node's own
-    // stable id (HEW_NODE_ID), distinct from the bound peer id (2).
-    let output = run_bounded_hew_run_with_env(&path, dir.path(), &[("HEW_NODE_ID", "1")]);
+    let output = run_bounded_hew_run(&path, dir.path());
     assert!(
         output.status.success(),
         "hew run should complete the peer-auth surface; stdout: {}\nstderr: {}",
@@ -532,7 +527,7 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
     );
 
     // Stable identity: a second run loads the existing key, never overwrites.
-    let output2 = run_bounded_hew_run_with_env(&path, dir.path(), &[("HEW_NODE_ID", "1")]);
+    let output2 = run_bounded_hew_run(&path, dir.path());
     assert!(
         output2.status.success(),
         "second run should reuse the persisted key"

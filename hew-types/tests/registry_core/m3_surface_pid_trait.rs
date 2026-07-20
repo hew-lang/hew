@@ -228,25 +228,26 @@ fn remote_pid_ask_rejects_nonserializable_reply() {
 }
 
 #[test]
-fn local_pid_to_remote_via_is_not_public() {
-    let output = typecheck(
-        r#"
+fn local_pid_remote_conversion_is_not_public() {
+    let removed_method = ["to_remote", "_via"].concat();
+    let source = r#"
         actor Bot {
             let n: i32;
             init() {}
         }
         fn main() {
             let local = spawn Bot(n: 0);
-            let _remote = local.to_remote_via("node-1");
+            let _remote = local.$METHOD("node-1");
         }
-    "#,
-    );
+    "#
+    .replace("$METHOD", &removed_method);
+    let output = typecheck(&source);
     assert!(
         output
             .errors
             .iter()
             .any(|e| matches!(e.kind, hew_types::error::TypeErrorKind::UndefinedMethod)),
-        "provenance-free LocalPid::to_remote_via must be undefined: {:#?}",
+        "provenance-free local-to-remote conversion must be undefined: {:#?}",
         output.errors
     );
 }

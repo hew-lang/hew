@@ -2293,15 +2293,13 @@ fn retry_pending_registry_flush(mgr: &HewConnMgr, conn_id: c_int, claim_token: u
 
 // ── SWIM failure-detection transport ────────────────────────────────────
 
-/// The *posture-agnostic* delivery `NodeId` a connection self-declared at
-/// handshake — i.e. `Conn::peer_node_id` for the ACTIVE connection `conn_id`,
-/// or `0` if none. This is the raw wire-declared id and carries NO control-plane
-/// authority: an `Unverified` (delivery-only) or superseded connection still
-/// returns its self-declared id here. Security-relevant callers MUST use
+/// The posture-agnostic receiver-local route slot assigned to an ACTIVE
+/// connection, or `0` if none. It carries no control-plane authority: an
+/// unverified or superseded connection can still retain its delivery slot.
+/// Security-relevant callers must use
 /// [`authenticated_peer_node_id_for_conn`] instead. Retained as a test-only
-/// accessor so wire-identity tests can assert the self-declared delivery id
-/// equals the operator-pinned `HEW_NODE_ID`; production inbound delivery routes
-/// via the routing table populated at admission, not this lookup.
+/// accessor for route-publication tests; production inbound delivery routes via
+/// the routing table populated at admission, not this lookup.
 #[cfg(test)]
 pub(crate) fn peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
     mgr.connections.access(|conns| {
@@ -3657,7 +3655,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     // `Unverified` connection (demonstrated-loopback dev, or the explicit
     // opt-out) is delivery-only. Credential-free posture rejects fire here,
     // before the credential is resolved:
-    //   * an unconfigured node (no bindings, no HEW_NODE_ID, not opt-out) on a
+    //   * an unconfigured node (no peer bindings or stable credential) on a
     //     non-loopback/Unknown endpoint has no way to authenticate the peer, so
     //     the strict connection is rejected rather than silently admitted;
     //   * a strict connection over a transport with no peer-credential channel

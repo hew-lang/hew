@@ -412,21 +412,6 @@ pub fn run_bounded_hew_run(source: &Path, current_dir: &Path) -> Output {
     run_bounded_command(command, format!("hew run {}", source.display()))
 }
 
-/// As [`run_bounded_hew_run`], but with additional environment variables set on
-/// the child (e.g. `HEW_NODE_ID` for strict peer-binding fixtures).
-pub fn run_bounded_hew_run_with_env(
-    source: &Path,
-    current_dir: &Path,
-    env: &[(&str, &str)],
-) -> Output {
-    let mut command = hew_command();
-    command.arg("run").arg(source).current_dir(current_dir);
-    for (key, value) in env {
-        command.env(key, value);
-    }
-    run_bounded_command(command, format!("hew run {}", source.display()))
-}
-
 pub fn bounded_hew_command<I, S>(args: I, current_dir: &Path, label: impl Into<String>) -> Output
 where
     I: IntoIterator<Item = S>,

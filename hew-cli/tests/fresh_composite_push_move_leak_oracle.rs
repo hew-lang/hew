@@ -69,6 +69,31 @@ fn push_letbound_composite_source(frames: usize) -> String {
     )
 }
 
+/// A producer that moves a fresh, deep-owned Holder through two immutable
+/// bindings before returning it. The move from `a` to `b` is the only use of
+/// `a`; proving the chain fresh routes `v.push(mkHolder(i))` to move-in so the
+/// nested `Vec<string>` is released with the outer container.
+fn push_nested_single_move_composite_source(frames: usize) -> String {
+    format!(
+        "type Holder {{ items: Vec<string> }}\n\
+         fn mkHolder(i: i64) -> Holder {{\n\
+         \x20   let a = Holder {{ items: [f\"x{{i % 10}}\", f\"y{{i % 10}}\"] }};\n\
+         \x20   let b = a;\n\
+         \x20   b\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..{frames} {{\n\
+         \x20       var v: Vec<Holder> = [];\n\
+         \x20       v.push(mkHolder(i));\n\
+         \x20       total = total + v.len();\n\
+         \x20   }}\n\
+         \x20   if total != {frames} {{ return 75; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 /// Poisoned-allocator exactly-once pin: a leak is caught by the slope test; a
 /// double-free aborts under the scribbled allocator; a mis-read fails the
 /// program's content assertion (non-zero exit). Clean success == read-correct
@@ -103,6 +128,14 @@ fn push_letbound_composite_call_leak_slope_below_tolerance() {
 }
 
 #[test]
+fn push_nested_single_move_composite_has_no_per_cycle_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "fresh_composite_push_nested_single_move",
+        push_nested_single_move_composite_source,
+    );
+}
+
+#[test]
 fn push_fresh_composite_call_does_not_double_free() {
     assert_no_double_free(
         "fresh_composite_push_array_df",
@@ -115,5 +148,13 @@ fn push_letbound_composite_call_does_not_double_free() {
     assert_no_double_free(
         "fresh_composite_push_letbound_df",
         &push_letbound_composite_source(50),
+    );
+}
+
+#[test]
+fn push_nested_single_move_composite_does_not_double_free() {
+    assert_no_double_free(
+        "fresh_composite_push_nested_single_move_df",
+        &push_nested_single_move_composite_source(50),
     );
 }

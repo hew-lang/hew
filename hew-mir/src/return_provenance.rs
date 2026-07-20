@@ -345,7 +345,7 @@ fn return_alias_bits_scoped<P: LeafPolicy>(
             ..
         } => scope
             .and_then(|s| s.resolve(*id))
-            .and_then(|block| see_through_let_binding_bits(block, *id, policy, scope))
+            .and_then(|block| see_through_let_binding_bits(block, *id, policy, scope, None))
             .unwrap_or_else(|| policy.leaf_bits(expr)),
         // Every other form (a `Binary`, a method call, a deref, any unmodelled
         // shape) is not provably fresh → the policy's leaf.
@@ -361,7 +361,9 @@ fn return_alias_bits_scoped<P: LeafPolicy>(
 /// unless `id` is a single-assignment `let` local (never a `var`, never a param,
 /// never reassigned) whose value is provably the union of its `let` initializer
 /// and a set of interior container appends (`id.push(e)` — the array-literal
-/// desugar). The returned bits are that union.
+/// desugar). A direct consuming initializer may recursively see through one
+/// earlier immutable binding (`let next = id`) when that move is the earlier
+/// binding's only use. The returned bits are that union.
 ///
 /// # Soundness (the double-free crux)
 ///
@@ -379,6 +381,9 @@ fn return_alias_bits_scoped<P: LeafPolicy>(
 /// - refuses on ANY other use of `id` — a call argument, an aggregate operand, a
 ///   field object that escapes — because such a use is a channel through which a
 ///   param alias could enter the value unmeasured.
+/// - permits exactly one direct `Consume` move into the next immutable `let` in
+///   a return chain; the complete statement scan rejects a second use, mutation,
+///   reassignment, wrapper, projection, or escape of the moved source.
 ///
 /// A param root is structurally excluded: a parameter has no `Let` in the block,
 /// so `init_bits` stays `None` and the reference falls to the leaf. This is the
@@ -389,9 +394,12 @@ fn see_through_let_binding_bits<P: LeafPolicy>(
     id: BindingId,
     policy: &P,
     scope: Option<&SeeThroughScope>,
+    forwarded_to: Option<BindingId>,
 ) -> Option<AliasBits> {
     let mut init_bits: Option<AliasBits> = None;
+    let mut init_is_move = false;
     let mut content = AliasBits::EMPTY;
+    let mut saw_forward = false;
     for stmt in &block.statements {
         match &stmt.kind {
             // The defining `let`. A `var` (mutable) binding is never seen through
@@ -404,13 +412,47 @@ fn see_through_let_binding_bits<P: LeafPolicy>(
                     return None;
                 }
                 let init = init.as_ref()?;
-                init_bits = Some(return_alias_bits_scoped(init, policy, scope));
+                let move_source = moved_binding_ref(init);
+                init_is_move = move_source.is_some();
+                init_bits = Some(if let Some(source_id) = move_source {
+                    scope
+                        .and_then(|s| s.resolve(source_id))
+                        .and_then(|source_block| {
+                            see_through_let_binding_bits(
+                                source_block,
+                                source_id,
+                                policy,
+                                scope,
+                                Some(id),
+                            )
+                        })
+                        .unwrap_or_else(|| return_alias_bits_scoped(init, policy, scope))
+                } else {
+                    return_alias_bits_scoped(init, policy, scope)
+                });
             }
             // A whole-binding reassignment of `id` clobbers the proven-fresh init.
             HirStmtKind::Assign { target, .. } if place_root_binding(target) == Some(id) => {
                 return None;
             }
             _ => {
+                // A direct immutable move into the binding currently being
+                // resolved is the source's one permitted forwarding use:
+                // `let source = <fresh>; let destination = source; destination`.
+                // The Consume intent distinguishes the move from a borrow, and
+                // every other mention of `source` still fails closed below.
+                if let HirStmtKind::Let(binding, Some(init)) = &stmt.kind {
+                    if Some(binding.id) == forwarded_to
+                        && !binding.mutable
+                        && moved_binding_ref(init) == Some(id)
+                    {
+                        if init_bits.is_none() || saw_forward {
+                            return None;
+                        }
+                        saw_forward = true;
+                        continue;
+                    }
+                }
                 // An interior container append rooted at `id` (`id.push(e)` — the
                 // array-literal desugar's push statements): its arguments become
                 // the container's content, so union their bits. A self-referential
@@ -418,6 +460,9 @@ fn see_through_let_binding_bits<P: LeafPolicy>(
                 if let HirStmtKind::Expr(e) = &stmt.kind {
                     if let Some((receiver, args)) = method_receiver_and_args(e) {
                         if place_root_binding(receiver) == Some(id) {
+                            if forwarded_to.is_some() || init_is_move {
+                                return None;
+                            }
                             for arg in &args {
                                 if expr_mentions_binding(arg, id) {
                                     return None;
@@ -436,7 +481,26 @@ fn see_through_let_binding_bits<P: LeafPolicy>(
             }
         }
     }
+    if forwarded_to.is_some() && !saw_forward {
+        return None;
+    }
     init_bits.map(|base| base | content)
+}
+
+/// The source binding of a direct consuming move (`let destination = source`).
+/// Wrappers, projections, aggregate embedding, and non-consuming references are
+/// deliberately excluded: only the exact immutable single-move chain is audited.
+pub(crate) fn moved_binding_ref(expr: &HirExpr) -> Option<BindingId> {
+    if expr.intent != hew_hir::IntentKind::Consume {
+        return None;
+    }
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => Some(*id),
+        _ => None,
+    }
 }
 
 /// The receiver and argument expressions of an audited append method, or `None`
@@ -3067,6 +3131,66 @@ mod tests {
             coarse,
             compute_fn_returns_fresh_owner_ref(&origin_fns),
             "the shared walk and frozen reference must apply the same audited append identity"
+        );
+    }
+
+    #[test]
+    fn see_through_chained_immutable_single_moves_only() {
+        let module = lower_source(
+            r#"
+            type Holder { items: Vec<string> }
+            fn observe(h: Holder) -> i64 { h.items.len() }
+            fn nestedFresh() -> Holder {
+                let a = Holder { items: ["fresh"] };
+                let b = a;
+                b
+            }
+            fn nestedParam(h: Holder) -> Holder {
+                let a = h;
+                let b = a;
+                b
+            }
+            fn nestedReassigned(h: Holder) -> Holder {
+                var a = Holder { items: ["fresh"] };
+                a = h;
+                let b = a;
+                b
+            }
+            fn nestedOtherUse() -> Holder {
+                let a = Holder { items: ["fresh"] };
+                observe(a);
+                let b = a;
+                b
+            }
+            fn nestedMutated() -> Holder {
+                let a = Holder { items: ["fresh"] };
+                a.items.push("other");
+                let b = a;
+                b
+            }
+            "#,
+        );
+        let origin_fns = origin_fns_of(&module);
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        assert!(
+            coarse[&fn_id(&module, "nestedFresh")],
+            "a direct immutable single-move chain preserves the fresh source"
+        );
+        for name in [
+            "nestedParam",
+            "nestedReassigned",
+            "nestedOtherUse",
+            "nestedMutated",
+        ] {
+            assert!(
+                !coarse[&fn_id(&module, name)],
+                "`{name}` is not an immutable single-use move chain and must fail closed"
+            );
+        }
+        assert_eq!(
+            coarse,
+            compute_fn_returns_fresh_owner_ref(&origin_fns),
+            "the shared walk and frozen reference must agree on chained moves and every guard"
         );
     }
 

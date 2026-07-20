@@ -1,5 +1,5 @@
-//! Owned-Vec INDEX-ASSIGNMENT (`v[i] = ..`) TEMP leak oracle: a fresh, unbound
-//! aggregate rvalue used as an index-assignment RHS must not leak its heap.
+//! Owned-Vec INDEX-ASSIGNMENT (`v[i] = ..`) leak oracles: neither a fresh
+//! aggregate RHS nor a consumed bound-local RHS may leak its heap.
 //!
 //! ## The bug this pins
 //!
@@ -22,18 +22,15 @@
 //! Vec<string> }`, whose `clone_fn` deep-copies into a DISTINCT buffer) exposes
 //! the leak. A `Vec<record{string}>` fixture would pass even with the bug.
 //!
-//! ## The copy-shape pin
+//! ## The consumed bound-local hole
 //!
-//! A bare-binding RHS (`v[i] = h`) must STAY `hew_vec_set_owned` (COPY-IN):
-//! `expr_is_materialized_owner` returns false for a `BindingRef`, so the router
-//! must not widen it to the move sibling. Unlike the `.set()` method path, the
-//! index-assignment lowering CONSUMES the binding in checked MIR (`v[i] = h; use
-//! h` is a use-after-consume error), so a wrongful move would not double-free a
-//! live reader at runtime — a run-clean check alone is toothless here. The pin
-//! therefore asserts the EMITTED SYMBOL directly: the bound-local shape's object
-//! must reference `hew_vec_set_owned` and must NOT reference
-//! `hew_vec_set_owned_move`. That is the routing decision the fix must leave
-//! intact for non-materialised sources.
+//! A bare-binding RHS (`v[i] = h`) is `Use { intent=Consume }` in checked MIR:
+//! `v[i] = h; use h` is rejected. COPY-IN cloned `h` into the slot while the
+//! consume suppressed `h`'s scope-exit drop, orphaning the original deep-owned
+//! heap (~4 nodes/store). The fix routes exactly a consumed non-parameter,
+//! non-capture `BindingRef` to `hew_vec_set_owned_move`. A borrowed/read binding,
+//! such as a local borrowed through a closure capture, remains COPY-IN because
+//! the capture environment still owns it.
 //!
 //! ## Skip behaviour
 //!
@@ -99,12 +96,30 @@ fn index_assign_temp_source(frames: usize) -> String {
     )
 }
 
-/// Copy-shape pin source: a bare-binding index-assign (`v[0] = h`). The RHS is a
-/// `BindingRef`, not a materialised rvalue, so the router must keep COPY-IN. The
-/// binding is consumed by the assignment, so the stored element is read back
-/// through the vec (`v[0].items.len()` == 2) to prove the store landed. Expected
-/// stdout: `2OK`.
-const COPY_SHAPE_SOURCE: &str = "\
+/// A consumed bound local per iteration. Checked MIR suppresses the local's
+/// scope-exit drop, so MOVE-IN must transfer its heap into the Vec slot. Pre-fix,
+/// COPY-IN leaks the local's original nested Vec and strings (~4 nodes/frame).
+fn index_assign_consumed_bound_source(frames: usize) -> String {
+    format!(
+        "{PRELUDE}\
+         fn main() -> i64 {{\n\
+         \x20   var v: Vec<Holder> = Vec::new();\n\
+         \x20   v.push(Holder {{ items: mkItems(0) }});\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let h = Holder {{ items: mkItems(i) }};\n\
+         \x20       v[0] = h;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   v.len()\n\
+         }}\n"
+    )
+}
+
+/// Symbol/run pin source for the consumed bound-local route. The stored element
+/// is read back through the Vec (`v[0].items.len()` == 2). Expected stdout:
+/// `2OK`.
+const CONSUMED_BOUND_SOURCE: &str = "\
 record Holder { items: Vec<string> }\n\
 fn mkItems(i: i64) -> Vec<string> {\n\
 \x20   var xs: Vec<string> = Vec::new();\n\
@@ -121,6 +136,30 @@ fn indexAssignBound() -> i64 {\n\
 }\n\
 fn main() {\n\
 \x20   print(indexAssignBound());\n\
+\x20   print(\"OK\");\n\
+}\n";
+
+/// Borrowed negative control: `h` is a bound local owned by the closure capture
+/// environment. Each invocation may read it into the Vec, so index-assignment
+/// must remain COPY-IN. Expected stdout: `22OK`.
+const BORROWED_CAPTURE_SOURCE: &str = "\
+record Holder { items: Vec<string> }\n\
+fn mkItems() -> Vec<string> {\n\
+\x20   let xs: Vec<string> = Vec::new();\n\
+\x20   xs.push(\"deep-elem-a\");\n\
+\x20   xs.push(\"deep-elem-b\");\n\
+\x20   return xs;\n\
+}\n\
+fn main() {\n\
+\x20   let h = Holder { items: mkItems() };\n\
+\x20   let assign = || {\n\
+\x20       var v: Vec<Holder> = Vec::new();\n\
+\x20       v.push(Holder { items: mkItems() });\n\
+\x20       v[0] = h;\n\
+\x20       v[0].items.len()\n\
+\x20   };\n\
+\x20   print(assign());\n\
+\x20   print(assign());\n\
 \x20   print(\"OK\");\n\
 }\n";
 
@@ -291,23 +330,32 @@ fn vec_index_assign_owned_temp_no_per_frame_leak_slope() {
     );
 }
 
-/// Copy-shape pin: a bare-binding index-assign (`v[0] = h`) must STAY COPY-IN.
-/// The router must not widen a `BindingRef` RHS to `hew_vec_set_owned_move`, so
-/// the emitted object must reference `hew_vec_set_owned` and NOT the move
-/// sibling. The binary also runs clean under the poisoned-allocator triple and
-/// prints `2OK` (the stored element read back through the vec).
+/// A consumed bound-local index-assignment must have zero per-frame leak slope.
+/// Reverting the consumed-`BindingRef` route leaks ~4 nodes/frame.
 #[test]
-fn vec_index_assign_bound_local_stays_copy_in() {
+fn vec_index_assign_consumed_bound_local_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "index_assign_consumed_bound",
+        index_assign_consumed_bound_source,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+    );
+}
+
+/// The consumed bound-local route must emit MOVE-IN rather than COPY-IN. The
+/// binary also runs clean under the poisoned allocator and prints `2OK`.
+#[test]
+fn vec_index_assign_consumed_bound_local_moves_in() {
     require_codegen();
 
     let dir = tempfile::Builder::new()
-        .prefix("vec-index-assign-copy-shape-")
+        .prefix("vec-index-assign-consumed-bound-")
         .tempdir()
         .expect("tempdir");
-    let bin = compile_to_native(COPY_SHAPE_SOURCE, dir.path(), "copy_shape");
+    let bin = compile_to_native(CONSUMED_BOUND_SOURCE, dir.path(), "consumed_bound");
 
     // The relocatable object sits alongside the binary in the emit dir.
-    let obj = dir.path().join("copy_shape.o");
+    let obj = dir.path().join("consumed_bound.o");
     let nm = Command::new("nm")
         .arg(&obj)
         .output()
@@ -321,14 +369,12 @@ fn vec_index_assign_bound_local_stays_copy_in() {
     let symbols = String::from_utf8_lossy(&nm.stdout);
     // Symbol names are `_`-prefixed on Mach-O and bare on ELF; match the stem.
     assert!(
-        symbols.contains("hew_vec_set_owned")
-            && !symbols
-                .lines()
-                .any(|l| l.contains("hew_vec_set_owned_move")),
-        "bound-local index-assign (`v[i] = h`) must emit the COPY-IN symbol \
-         `hew_vec_set_owned`, never the MOVE sibling `hew_vec_set_owned_move` — a \
-         `BindingRef` RHS is not a materialised owner and `expr_is_materialized_owner` \
-         must return false for it. Emitted symbols were:\n{symbols}"
+        symbols
+            .lines()
+            .any(|line| line.contains("hew_vec_set_owned_move")),
+        "consumed bound-local index-assign (`v[i] = h`) must emit the MOVE-IN symbol \
+         `hew_vec_set_owned_move`; checked MIR consumes `h`, so COPY-IN would orphan \
+         `h`'s original heap. Emitted symbols were:\n{symbols}"
     );
 
     let output = Command::new(&bin)
@@ -336,17 +382,69 @@ fn vec_index_assign_bound_local_stays_copy_in() {
         .env("MallocPreScribble", "1")
         .env("MallocGuardEdges", "1")
         .output()
-        .expect("run copy-shape binary");
+        .expect("run consumed-bound binary");
     assert!(
         output.status.success(),
-        "copy-shape index-assign must run clean under the poisoned allocator;\n{}",
+        "consumed bound-local index-assign must run clean under the poisoned allocator;\n{}",
         describe_output(&output)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(
         stdout,
         "2OK",
-        "copy-shape index-assign must print the stored element's len (2) then OK;\n{}",
+        "consumed bound-local index-assign must print the stored element's len (2) then OK;\n{}",
+        describe_output(&output)
+    );
+}
+
+/// Borrowed bound-local negative control: a closure capture remains COPY-IN and
+/// can be used by two invocations without transferring the capture's heap.
+#[test]
+fn vec_index_assign_borrowed_capture_stays_copy_in() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("vec-index-assign-borrowed-capture-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(BORROWED_CAPTURE_SOURCE, dir.path(), "borrowed_capture");
+
+    let obj = dir.path().join("borrowed_capture.o");
+    let nm = Command::new("nm")
+        .arg(&obj)
+        .output()
+        .expect("invoke nm on emitted object");
+    assert!(
+        nm.status.success(),
+        "nm failed on {}:\n{}",
+        obj.display(),
+        describe_output(&nm)
+    );
+    let symbols = String::from_utf8_lossy(&nm.stdout);
+    assert!(
+        symbols.contains("hew_vec_set_owned")
+            && !symbols
+                .lines()
+                .any(|line| line.contains("hew_vec_set_owned_move")),
+        "borrowed closure-captured bound local must emit COPY-IN \
+         `hew_vec_set_owned`, never `hew_vec_set_owned_move`. Emitted symbols were:\n{symbols}"
+    );
+
+    let output = Command::new(&bin)
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1")
+        .output()
+        .expect("run borrowed-capture binary");
+    assert!(
+        output.status.success(),
+        "borrowed-capture index-assign must run clean under the poisoned allocator;\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "22OK",
+        "borrowed capture must survive both index assignments;\n{}",
         describe_output(&output)
     );
 }

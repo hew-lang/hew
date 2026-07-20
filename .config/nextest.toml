@@ -103,6 +103,15 @@ slow-timeout = { period = "120s", terminate-after = 4 }
 retries = 1
 
 [[profile.ci.overrides]]
+# The FFI borrow-boundary leak-slope test compiles and links two native Hew
+# programs, runs a poisoned-allocator probe, and invokes macOS leaks(1) twice.
+# Give that subprocess-heavy path the same hosted-runner headroom as exec tests;
+# the strict leak-slope assertion still fails a genuine ownership regression.
+filter = "test(ffi_borrow_boundary_has_no_drop_or_leak_slope)"
+test-group = "subprocess-intensive"
+slow-timeout = { period = "120s", terminate-after = 4 }
+
+[[profile.ci.overrides]]
 # await_e2e tests each call `hew run` at least twice (the
 # multiple_awaits_in_one_handler_resume_correctly_under_both_pools test runs
 # the fixture with the default pool and then HEW_WORKERS=1). On a 4-core

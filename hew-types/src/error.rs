@@ -619,6 +619,9 @@ pub enum TypeErrorKind {
     /// `DuplicateDefinition` (two defs in one module): the name resolves to
     /// several valid defs across modules.
     AmbiguousType,
+    /// Two owner-qualified generic types collapse to the same bare
+    /// monomorphisation key but require incompatible concrete layouts.
+    GenericLayoutCollision,
     /// Value cannot be sent to another actor
     InvalidSend,
     /// Operation not supported for this type
@@ -1307,6 +1310,7 @@ impl TypeErrorKind {
             Self::UndefinedMethod => "UndefinedMethod",
             Self::AmbiguousTraitMethod => "AmbiguousTraitMethod",
             Self::AmbiguousType => "AmbiguousType",
+            Self::GenericLayoutCollision => "GenericLayoutCollision",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
             Self::SupervisorError { subkind } => subkind.as_kind_str(),

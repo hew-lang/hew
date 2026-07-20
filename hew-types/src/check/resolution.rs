@@ -2100,6 +2100,7 @@ impl Checker {
                     }
                     return Ty::Error;
                 }
+                self.check_cross_module_generic_layout_use(&resolved_name, &args, &te.1);
                 if builtin.is_some() && !local_source_type_def {
                     Ty::normalize_named(resolved_name, args)
                 } else {
@@ -2195,6 +2196,191 @@ impl Checker {
             }
         }
     }
+
+    /// Record an owner-qualified concrete generic use and reject a second owner
+    /// when both definitions collapse to the same rc1 monomorphisation symbol
+    /// but require incompatible record layouts.
+    pub(super) fn check_cross_module_generic_layout_use(
+        &mut self,
+        qualified_name: &str,
+        args: &[Ty],
+        span: &Span,
+    ) {
+        let Some((_, bare_name)) = qualified_name.rsplit_once('.') else {
+            return;
+        };
+        if args.is_empty()
+            || !self.cross_module_colliding_record_names.contains(bare_name)
+            || !args
+                .iter()
+                .all(|arg| self.generic_layout_arg_is_concrete(arg))
+        {
+            return;
+        }
+        let Some(current_def) = self.type_defs.get(qualified_name) else {
+            return;
+        };
+        if current_def.type_params.is_empty()
+            || current_def.type_params.len() != args.len()
+            || !matches!(current_def.kind, TypeDefKind::Struct | TypeDefKind::Record)
+        {
+            return;
+        }
+
+        let key = (bare_name.to_string(), args.to_vec());
+        let Some(first_owner) = self.generic_layout_instantiations.get(&key).cloned() else {
+            self.generic_layout_instantiations
+                .insert(key, qualified_name.to_string());
+            return;
+        };
+        if first_owner == qualified_name || self.reported_generic_layout_collisions.contains(&key) {
+            return;
+        }
+        let Some(first_def) = self.type_defs.get(&first_owner) else {
+            return;
+        };
+        if instantiated_record_layout(first_def, args)
+            == instantiated_record_layout(current_def, args)
+        {
+            return;
+        }
+
+        self.reported_generic_layout_collisions.insert(key);
+        let mut modules = [
+            first_owner
+                .rsplit_once('.')
+                .map_or(first_owner.as_str(), |(module, _)| module),
+            qualified_name
+                .rsplit_once('.')
+                .map_or(qualified_name, |(module, _)| module),
+        ];
+        modules.sort_unstable();
+        let instantiated = generic_instantiation_display(bare_name, args);
+        self.report_error(
+            TypeErrorKind::GenericLayoutCollision,
+            span,
+            format!(
+                "generic type layout collision for `{instantiated}`: modules `{}` and `{}` \
+                 export incompatible layouts for `{bare_name}`; rename one type, or use a \
+                 qualified/aliased import to select one definition",
+                modules[0], modules[1]
+            ),
+        );
+    }
+
+    fn generic_layout_arg_is_concrete(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Var(_) | Ty::IntLiteral | Ty::FloatLiteral | Ty::Error => false,
+            Ty::Tuple(elements) => elements
+                .iter()
+                .all(|element| self.generic_layout_arg_is_concrete(element)),
+            Ty::Array(element, _) | Ty::Slice(element) | Ty::Task(element) => {
+                self.generic_layout_arg_is_concrete(element)
+            }
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                let is_abstract_param = builtin.is_none()
+                    && args.is_empty()
+                    && !name.contains('.')
+                    && self.declared_type_param_names.contains(name)
+                    && !self.type_defs.contains_key(name);
+                !is_abstract_param
+                    && args
+                        .iter()
+                        .all(|arg| self.generic_layout_arg_is_concrete(arg))
+            }
+            Ty::Function { params, ret } => {
+                params
+                    .iter()
+                    .all(|param| self.generic_layout_arg_is_concrete(param))
+                    && self.generic_layout_arg_is_concrete(ret)
+            }
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                params
+                    .iter()
+                    .all(|param| self.generic_layout_arg_is_concrete(param))
+                    && self.generic_layout_arg_is_concrete(ret)
+                    && captures
+                        .iter()
+                        .all(|capture| self.generic_layout_arg_is_concrete(capture))
+            }
+            Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => {
+                self.generic_layout_arg_is_concrete(pointee)
+            }
+            Ty::TraitObject { traits } => traits.iter().all(|bound| {
+                bound
+                    .args
+                    .iter()
+                    .all(|arg| self.generic_layout_arg_is_concrete(arg))
+                    && bound
+                        .assoc_bindings
+                        .iter()
+                        .all(|(_, ty)| self.generic_layout_arg_is_concrete(ty))
+            }),
+            Ty::AssocType { base, .. } => self.generic_layout_arg_is_concrete(base),
+            Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::Bool
+            | Ty::Char
+            | Ty::String
+            | Ty::Bytes
+            | Ty::CancellationToken
+            | Ty::Duration
+            | Ty::Unit
+            | Ty::Never => true,
+        }
+    }
+}
+
+fn instantiated_record_layout(
+    type_def: &TypeDef,
+    args: &[Ty],
+) -> Option<(TypeDefKind, bool, Vec<Ty>)> {
+    if type_def.type_params.len() != args.len()
+        || !matches!(type_def.kind, TypeDefKind::Struct | TypeDefKind::Record)
+    {
+        return None;
+    }
+    let substitutions: HashMap<String, Ty> = type_def
+        .type_params
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect();
+    let mut field_names = type_def.field_order.clone();
+    if field_names.is_empty() {
+        field_names.extend(type_def.fields.keys().cloned());
+        field_names.sort();
+    }
+    let fields = field_names
+        .iter()
+        .filter_map(|name| type_def.fields.get(name))
+        .map(|field| field.substitute_named_params_parallel(&substitutions))
+        .collect();
+    Some((type_def.kind, type_def.is_indirect, fields))
+}
+
+fn generic_instantiation_display(name: &str, args: &[Ty]) -> String {
+    Ty::named(name.to_string(), args.to_vec())
+        .user_facing()
+        .to_string()
 }
 
 fn builtin_generic_type_params(name: &str) -> Option<&'static [&'static str]> {

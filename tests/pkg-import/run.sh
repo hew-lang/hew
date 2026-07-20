@@ -14,7 +14,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${ROOT}/target/debug/hew"
+HEW="${HEW_BIN:-${ROOT}/target/debug/hew}"
 DIR="${ROOT}/tests/pkg-import"
 PKGS="${DIR}/pkgs"
 
@@ -902,20 +902,25 @@ echo "PASS ${imported_trait_ok}"
 # module-qualified definition identity), a cross-layer reshape out of scope for
 # #2744.
 #
-# This pin asserts the collision fails CLOSED: `hew check` REJECTS the program
-# at the codegen-front slot-type gate (`E_CODEGEN_FRONT_FAIL_CLOSED`), proving
-# the collision is memory-safe (no silent miscompile / type confusion), never
-# that the rejection is desirable. When #2653 lands, this program becomes VALID
-# (each `Key<T>` resolves to its own module's instantiation) and this pin flips
-# to a compile+run oracle — update it then, do not delete it.
+# This pin asserts the collision fails CLOSED with a checker-level diagnostic
+# that names both modules, the concrete type, and the available resolution.
+# When #2653 lands, this program becomes VALID (each `Key<T>` resolves to its
+# own module's instantiation) and this pin flips to a compile+run oracle —
+# update it then, do not delete it.
 two_module_generic_reject="two_module_same_generic_valueclass_reject"
 two_module_generic_reject_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${two_module_generic_reject}.hew" 2>&1)" && {
   echo "FAIL ${two_module_generic_reject}: hew check unexpectedly succeeded — the #2653 two-module same-name generic collision must fail closed until #2653 lands" >&2
   echo "${two_module_generic_reject_out}" >&2
   exit 1
 }
-if ! grep -q "E_CODEGEN_FRONT_FAIL_CLOSED" <<<"${two_module_generic_reject_out}"; then
-  echo "FAIL ${two_module_generic_reject}: expected the codegen-front slot-type fail-closed diagnostic (#2653 known gap)" >&2
+two_module_generic_diagnostic="generic type layout collision for \`Key<i32>\`: modules \`keyleft\` and \`keyright\` export incompatible layouts for \`Key\`; rename one type, or use a qualified/aliased import to select one definition"
+if ! grep -Fq "${two_module_generic_diagnostic}" <<<"${two_module_generic_reject_out}"; then
+  echo "FAIL ${two_module_generic_reject}: expected the clear checker-level same-name generic collision diagnostic (#2653 known gap)" >&2
+  echo "${two_module_generic_reject_out}" >&2
+  exit 1
+fi
+if grep -q "E_CODEGEN_FRONT_FAIL_CLOSED" <<<"${two_module_generic_reject_out}"; then
+  echo "FAIL ${two_module_generic_reject}: collision leaked past the checker into codegen-front" >&2
   echo "${two_module_generic_reject_out}" >&2
   exit 1
 fi

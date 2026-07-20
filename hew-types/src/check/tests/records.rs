@@ -41,6 +41,70 @@ mod cross_module_same_name {
         }
     }
 
+    fn generic_record_def(field_ty: Ty) -> TypeDef {
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Key".to_string(),
+            type_params: vec!["T".to_string()],
+            bounds: HashMap::new(),
+            fields: HashMap::from([("v".to_string(), field_ty)]),
+            field_order: vec!["v".to_string()],
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        }
+    }
+
+    #[test]
+    fn incompatible_same_name_generic_layouts_fail_at_resolution() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker
+            .cross_module_colliding_record_names
+            .insert("Key".to_string());
+        checker
+            .type_defs
+            .insert("keyleft.Key".to_string(), generic_record_def(Ty::I64));
+        checker
+            .type_defs
+            .insert("keyright.Key".to_string(), generic_record_def(Ty::String));
+
+        checker.check_cross_module_generic_layout_use("keyleft.Key", &[Ty::I32], &(10..20));
+        checker.check_cross_module_generic_layout_use("keyright.Key", &[Ty::I32], &(30..40));
+
+        assert_eq!(checker.errors.len(), 1);
+        assert_eq!(
+            checker.errors[0].kind,
+            TypeErrorKind::GenericLayoutCollision
+        );
+        assert_eq!(
+            checker.errors[0].message,
+            "generic type layout collision for `Key<i32>`: modules `keyleft` and \
+             `keyright` export incompatible layouts for `Key`; rename one type, or use a \
+             qualified/aliased import to select one definition"
+        );
+        assert_eq!(checker.errors[0].span, 30..40);
+    }
+
+    #[test]
+    fn compatible_same_name_generic_layouts_remain_accepted() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker
+            .cross_module_colliding_record_names
+            .insert("Key".to_string());
+        checker
+            .type_defs
+            .insert("keyleft.Key".to_string(), generic_record_def(Ty::I64));
+        checker
+            .type_defs
+            .insert("keyright.Key".to_string(), generic_record_def(Ty::I64));
+
+        checker.check_cross_module_generic_layout_use("keyleft.Key", &[Ty::I32], &(10..20));
+        checker.check_cross_module_generic_layout_use("keyright.Key", &[Ty::I32], &(30..40));
+
+        assert!(checker.errors.is_empty());
+    }
+
     fn make_constructor_body(record_name: &str, field_name: &str) -> FnDecl {
         FnDecl {
             attributes: vec![],

@@ -11,10 +11,11 @@
 // #2744 and is FIXED: an imported generic value record with no same-named twin
 // resolves its BitCopy value class correctly and runs.
 //
-// This pin asserts the two-module collision fails CLOSED — the compiler REJECTS
-// the program at the codegen-front slot-type gate (`E_CODEGEN_FRONT_FAIL_CLOSED`,
-// the RecordInit/RecordFieldLoad slot-type mismatch), never a silent miscompile.
-// It proves the collision is memory-safe, not that the rejection is desirable.
+// This pin asserts the two-module collision fails CLOSED — the checker REJECTS
+// the program with a diagnostic naming both modules, `Key<i32>`, and the
+// available resolution, never a codegen-front verifier dump or silent
+// miscompile. It proves the collision is memory-safe, not that the rejection is
+// desirable.
 // When #2653 lands the qualified-identity reshape (layout mangling + MIR keying
 // + codegen symbols), this program becomes VALID and both `Key<T>`s resolve to
 // their own module's instantiation — at which point this reject pin flips to a

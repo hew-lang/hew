@@ -280,6 +280,518 @@ impl fmt::Display for InvalidLocation {
 
 impl std::error::Error for InvalidLocation {}
 
+#[cfg(not(target_arch = "wasm32"))]
+mod session_journal {
+    use std::fmt;
+    use std::fs::{File, OpenOptions};
+    use std::io::{self, Read, Seek, SeekFrom, Write};
+    use std::mem::ManuallyDrop;
+    use std::path::{Path, PathBuf};
+    use std::ptr::NonNull;
+
+    use fd_lock::{RwLock, RwLockWriteGuard};
+    use sha2::{Digest, Sha256};
+
+    use super::NodeId;
+
+    const JOURNAL_MAGIC: [u8; 8] = *b"HEWID\x02\0\0";
+    const JOURNAL_CHECKSUM_DOMAIN: &[u8] = b"hew-node-state-v1\0";
+    const RECORD_SIZE: usize = 64;
+    const JOURNAL_SIZE: usize = RECORD_SIZE * 2;
+
+    /// Exclusive lease on one identity path's durable session journal.
+    ///
+    /// Dropping the final owner unlocks the journal, so the lease must live in
+    /// the same frozen node snapshot that owns the session incarnation.
+    pub struct NodeSessionLease {
+        incarnation: u32,
+        journal_path: PathBuf,
+        _file_lock: SessionFileLock,
+    }
+
+    impl NodeSessionLease {
+        /// Lock `identity_path.hew-state`, durably advance its session, and keep
+        /// the lock until this lease is dropped.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error for I/O failure, concurrent use, invalid records,
+        /// identity mismatch, or counter exhaustion.
+        pub fn acquire(identity_path: &Path, node_id: NodeId) -> Result<Self, SessionJournalError> {
+            let journal_path = journal_path(identity_path);
+            let file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(&journal_path)
+                .map_err(|source| SessionJournalError::Io {
+                    operation: "open",
+                    path: journal_path.clone(),
+                    source,
+                })?;
+            let mut file_lock = SessionFileLock::try_acquire(file, &journal_path)?;
+            let incarnation = advance_journal(file_lock.file_mut(), &journal_path, node_id)?;
+            Ok(Self {
+                incarnation,
+                journal_path,
+                _file_lock: file_lock,
+            })
+        }
+
+        /// Durable session incarnation reserved by this lease.
+        #[must_use]
+        pub const fn incarnation(&self) -> u32 {
+            self.incarnation
+        }
+
+        /// Journal path held by this lease.
+        #[must_use]
+        pub fn journal_path(&self) -> &Path {
+            &self.journal_path
+        }
+    }
+
+    impl fmt::Debug for NodeSessionLease {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("NodeSessionLease")
+                .field("incarnation", &self.incarnation)
+                .field("journal_path", &self.journal_path)
+                .finish_non_exhaustive()
+        }
+    }
+
+    struct SessionFileLock {
+        guard: ManuallyDrop<RwLockWriteGuard<'static, File>>,
+        owner: NonNull<RwLock<File>>,
+    }
+
+    // SAFETY: `owner` is an exclusively owned heap allocation, `guard` is its
+    // only live mutable borrow, and no file access occurs after construction.
+    // The final owner may release the OS lock and allocation on any thread.
+    unsafe impl Send for SessionFileLock {}
+    // SAFETY: shared access exposes no mutable operation; mutation is confined
+    // to acquisition before the lock is published and to final drop.
+    unsafe impl Sync for SessionFileLock {}
+
+    impl SessionFileLock {
+        fn try_acquire(file: File, path: &Path) -> Result<Self, SessionJournalError> {
+            let owner = Box::new(RwLock::new(file));
+            let owner_ptr = NonNull::from(Box::leak(owner));
+            let guard = loop {
+                // SAFETY: `owner_ptr` is the leaked exclusive allocation above;
+                // no other reference is created while the guard lives.
+                match unsafe { owner_ptr.as_ptr().as_mut().unwrap().try_write() } {
+                    Ok(guard) => break guard,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        // SAFETY: no guard was created, so reclaim the leaked box.
+                        drop(unsafe { Box::from_raw(owner_ptr.as_ptr()) });
+                        return Err(SessionJournalError::InUse(path.to_path_buf()));
+                    }
+                    Err(source) => {
+                        // SAFETY: no guard was created, so reclaim the leaked box.
+                        drop(unsafe { Box::from_raw(owner_ptr.as_ptr()) });
+                        return Err(SessionJournalError::Io {
+                            operation: "lock",
+                            path: path.to_path_buf(),
+                            source,
+                        });
+                    }
+                }
+            };
+            // SAFETY: the pinned owner and manual drop order above guarantee the
+            // referenced lock outlives this guard.
+            let guard = unsafe {
+                std::mem::transmute::<RwLockWriteGuard<'_, File>, RwLockWriteGuard<'static, File>>(
+                    guard,
+                )
+            };
+            Ok(Self {
+                guard: ManuallyDrop::new(guard),
+                owner: owner_ptr,
+            })
+        }
+
+        fn file_mut(&mut self) -> &mut File {
+            &mut self.guard
+        }
+    }
+
+    impl Drop for SessionFileLock {
+        fn drop(&mut self) {
+            // SAFETY: the guard was initialized exactly once and must release
+            // the OS lock before its exclusively owned allocation is reclaimed.
+            unsafe {
+                ManuallyDrop::drop(&mut self.guard);
+                drop(Box::from_raw(self.owner.as_ptr()));
+            }
+        }
+    }
+
+    /// Durable journal failure.
+    #[derive(Debug)]
+    pub enum SessionJournalError {
+        /// A filesystem operation failed.
+        Io {
+            /// Operation being attempted.
+            operation: &'static str,
+            /// Journal path.
+            path: PathBuf,
+            /// Underlying error.
+            source: io::Error,
+        },
+        /// Another process or node already holds this identity path.
+        InUse(PathBuf),
+        /// Neither journal slot contains a valid record.
+        InvalidRecords(PathBuf),
+        /// A valid journal record belongs to a different node identity.
+        NodeIdMismatch {
+            /// Journal path.
+            path: PathBuf,
+            /// Identity requested by the caller.
+            expected: NodeId,
+            /// Identity stored in the journal.
+            found: NodeId,
+        },
+        /// Equal record sequences disagree on the session value.
+        ConflictingRecords(PathBuf),
+        /// The durable session counter reached `u32::MAX`.
+        SessionExhausted(PathBuf),
+        /// The journal sequence counter reached `u64::MAX`.
+        SequenceExhausted(PathBuf),
+        /// The journal file exceeds the fixed two-record layout.
+        Oversize(PathBuf),
+    }
+
+    impl fmt::Display for SessionJournalError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Self::Io {
+                    operation,
+                    path,
+                    source,
+                } => write!(
+                    formatter,
+                    "failed to {operation} node session journal {}: {source}",
+                    path.display()
+                ),
+                Self::InUse(path) => write!(
+                    formatter,
+                    "node identity path is already in use: {}",
+                    path.display()
+                ),
+                Self::InvalidRecords(path) => write!(
+                    formatter,
+                    "node session journal has no valid record: {}",
+                    path.display()
+                ),
+                Self::NodeIdMismatch {
+                    path,
+                    expected,
+                    found,
+                } => write!(
+                    formatter,
+                    "node session journal identity mismatch at {}: expected {expected}, found {found}",
+                    path.display()
+                ),
+                Self::ConflictingRecords(path) => write!(
+                    formatter,
+                    "node session journal has conflicting equal-sequence records: {}",
+                    path.display()
+                ),
+                Self::SessionExhausted(path) => write!(
+                    formatter,
+                    "node session incarnation exhausted at {}",
+                    path.display()
+                ),
+                Self::SequenceExhausted(path) => write!(
+                    formatter,
+                    "node session journal sequence exhausted at {}",
+                    path.display()
+                ),
+                Self::Oversize(path) => write!(
+                    formatter,
+                    "node session journal exceeds {JOURNAL_SIZE} bytes: {}",
+                    path.display()
+                ),
+            }
+        }
+    }
+
+    impl std::error::Error for SessionJournalError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Io { source, .. } => Some(source),
+                _ => None,
+            }
+        }
+    }
+
+    /// Return the journal path paired with an identity/key path.
+    #[must_use]
+    pub fn journal_path(identity_path: &Path) -> PathBuf {
+        let mut path = identity_path.as_os_str().to_os_string();
+        path.push(".hew-state");
+        PathBuf::from(path)
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct JournalRecord {
+        node_id: NodeId,
+        incarnation: u32,
+        sequence: u64,
+    }
+
+    fn advance_journal(
+        file: &mut File,
+        path: &Path,
+        expected_node_id: NodeId,
+    ) -> Result<u32, SessionJournalError> {
+        let file_length = file
+            .metadata()
+            .map_err(|source| SessionJournalError::Io {
+                operation: "stat",
+                path: path.to_path_buf(),
+                source,
+            })?
+            .len();
+        if file_length > JOURNAL_SIZE as u64 {
+            return Err(SessionJournalError::Oversize(path.to_path_buf()));
+        }
+        let length = usize::try_from(file_length)
+            .map_err(|_| SessionJournalError::Oversize(path.to_path_buf()))?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| SessionJournalError::Io {
+                operation: "seek",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let mut bytes = vec![0_u8; length];
+        file.read_exact(&mut bytes)
+            .map_err(|source| SessionJournalError::Io {
+                operation: "read",
+                path: path.to_path_buf(),
+                source,
+            })?;
+
+        let records = [
+            decode_record(bytes.get(..RECORD_SIZE)),
+            decode_record(bytes.get(RECORD_SIZE..JOURNAL_SIZE)),
+        ];
+        for record in records.iter().flatten() {
+            if record.node_id != expected_node_id {
+                return Err(SessionJournalError::NodeIdMismatch {
+                    path: path.to_path_buf(),
+                    expected: expected_node_id,
+                    found: record.node_id,
+                });
+            }
+        }
+
+        let current = match records {
+            [None, None] if length == 0 => None,
+            [None, None] => return Err(SessionJournalError::InvalidRecords(path.to_path_buf())),
+            [Some(record), None] => Some((0_usize, record)),
+            [None, Some(record)] => Some((1_usize, record)),
+            [Some(left), Some(right)] if left.sequence > right.sequence => Some((0, left)),
+            [Some(left), Some(right)] if right.sequence > left.sequence => Some((1, right)),
+            [Some(left), Some(right)] if left.incarnation == right.incarnation => Some((1, right)),
+            [Some(_), Some(_)] => {
+                return Err(SessionJournalError::ConflictingRecords(path.to_path_buf()));
+            }
+        };
+
+        let (slot, incarnation, sequence) = if let Some((current_slot, record)) = current {
+            let incarnation = record
+                .incarnation
+                .checked_add(1)
+                .ok_or_else(|| SessionJournalError::SessionExhausted(path.to_path_buf()))?;
+            let sequence = record
+                .sequence
+                .checked_add(1)
+                .ok_or_else(|| SessionJournalError::SequenceExhausted(path.to_path_buf()))?;
+            (1 - current_slot, incarnation, sequence)
+        } else {
+            (0, 1, 1)
+        };
+        let encoded = encode_record(JournalRecord {
+            node_id: expected_node_id,
+            incarnation,
+            sequence,
+        });
+        file.seek(SeekFrom::Start((slot * RECORD_SIZE) as u64))
+            .map_err(|source| SessionJournalError::Io {
+                operation: "seek",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        file.write_all(&encoded)
+            .map_err(|source| SessionJournalError::Io {
+                operation: "write",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        file.sync_all().map_err(|source| SessionJournalError::Io {
+            operation: "sync",
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Ok(incarnation)
+    }
+
+    fn encode_record(record: JournalRecord) -> [u8; RECORD_SIZE] {
+        let mut bytes = [0_u8; RECORD_SIZE];
+        bytes[..8].copy_from_slice(&JOURNAL_MAGIC);
+        bytes[8..24].copy_from_slice(&record.node_id.to_bytes());
+        bytes[24..28].copy_from_slice(&record.incarnation.to_be_bytes());
+        bytes[32..40].copy_from_slice(&record.sequence.to_be_bytes());
+        let checksum = journal_checksum(&bytes[..40]);
+        bytes[40..56].copy_from_slice(&checksum);
+        bytes
+    }
+
+    fn decode_record(bytes: Option<&[u8]>) -> Option<JournalRecord> {
+        let bytes: &[u8; RECORD_SIZE] = bytes?.try_into().ok()?;
+        if bytes[..8] != JOURNAL_MAGIC
+            || bytes[28..32] != [0_u8; 4]
+            || bytes[56..64] != [0_u8; 8]
+            || bytes[40..56] != journal_checksum(&bytes[..40])
+        {
+            return None;
+        }
+        let node_id = NodeId::from_bytes(bytes[8..24].try_into().ok()?);
+        let incarnation = u32::from_be_bytes(bytes[24..28].try_into().ok()?);
+        let sequence = u64::from_be_bytes(bytes[32..40].try_into().ok()?);
+        if incarnation == 0 || sequence == 0 {
+            return None;
+        }
+        Some(JournalRecord {
+            node_id,
+            incarnation,
+            sequence,
+        })
+    }
+
+    fn journal_checksum(prefix: &[u8]) -> [u8; 16] {
+        let mut hasher = Sha256::new();
+        hasher.update(JOURNAL_CHECKSUM_DOMAIN);
+        hasher.update(prefix);
+        let digest = hasher.finalize();
+        digest[..16]
+            .try_into()
+            .expect("SHA-256 digest always contains 16 checksum bytes")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::fs;
+
+        use tempfile::tempdir;
+
+        use super::*;
+
+        fn identity(byte: u8) -> NodeId {
+            NodeId::from_bytes([byte; 16])
+        }
+
+        #[test]
+        fn missing_journal_starts_at_one_and_advances() {
+            let temp = tempdir().unwrap();
+            let key_path = temp.path().join("node.key");
+            let first = NodeSessionLease::acquire(&key_path, identity(1)).unwrap();
+            assert_eq!(first.incarnation(), 1);
+            assert_eq!(first.journal_path(), journal_path(&key_path));
+            drop(first);
+
+            let second = NodeSessionLease::acquire(&key_path, identity(1)).unwrap();
+            assert_eq!(second.incarnation(), 2);
+        }
+
+        #[test]
+        fn torn_newer_slot_recovers_from_other_valid_record() {
+            let temp = tempdir().unwrap();
+            let key_path = temp.path().join("node.key");
+            drop(NodeSessionLease::acquire(&key_path, identity(2)).unwrap());
+
+            let path = journal_path(&key_path);
+            let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+            file.seek(SeekFrom::Start(RECORD_SIZE as u64)).unwrap();
+            file.write_all(&[0xAA; 20]).unwrap();
+            file.sync_all().unwrap();
+
+            let recovered = NodeSessionLease::acquire(&key_path, identity(2)).unwrap();
+            assert_eq!(recovered.incarnation(), 2);
+        }
+
+        #[test]
+        fn mismatched_node_identity_is_rejected() {
+            let temp = tempdir().unwrap();
+            let key_path = temp.path().join("node.key");
+            drop(NodeSessionLease::acquire(&key_path, identity(3)).unwrap());
+
+            let error = NodeSessionLease::acquire(&key_path, identity(4)).unwrap_err();
+            assert!(matches!(error, SessionJournalError::NodeIdMismatch { .. }));
+        }
+
+        #[test]
+        fn one_identity_path_cannot_be_used_concurrently() {
+            let temp = tempdir().unwrap();
+            let key_path = temp.path().join("node.key");
+            let first = NodeSessionLease::acquire(&key_path, identity(5)).unwrap();
+            let error = NodeSessionLease::acquire(&key_path, identity(5)).unwrap_err();
+            assert!(matches!(error, SessionJournalError::InUse(_)));
+            drop(first);
+            assert!(NodeSessionLease::acquire(&key_path, identity(5)).is_ok());
+        }
+
+        #[test]
+        fn failed_start_burns_reserved_incarnation() {
+            let temp = tempdir().unwrap();
+            let key_path = temp.path().join("node.key");
+            let failed_start = NodeSessionLease::acquire(&key_path, identity(6)).unwrap();
+            assert_eq!(failed_start.incarnation(), 1);
+            drop(failed_start);
+
+            let retry = NodeSessionLease::acquire(&key_path, identity(6)).unwrap();
+            assert_eq!(retry.incarnation(), 2);
+        }
+
+        #[test]
+        fn exhausted_session_counter_is_rejected() {
+            let temp = tempdir().unwrap();
+            let key_path = temp.path().join("node.key");
+            let path = journal_path(&key_path);
+            fs::write(
+                &path,
+                encode_record(JournalRecord {
+                    node_id: identity(7),
+                    incarnation: u32::MAX,
+                    sequence: 9,
+                }),
+            )
+            .unwrap();
+
+            let error = NodeSessionLease::acquire(&key_path, identity(7)).unwrap_err();
+            assert!(matches!(error, SessionJournalError::SessionExhausted(_)));
+        }
+
+        #[test]
+        fn two_invalid_records_are_rejected() {
+            let temp = tempdir().unwrap();
+            let key_path = temp.path().join("node.key");
+            fs::write(journal_path(&key_path), [0xAA; JOURNAL_SIZE]).unwrap();
+
+            let error = NodeSessionLease::acquire(&key_path, identity(8)).unwrap_err();
+            assert!(matches!(error, SessionJournalError::InvalidRecords(_)));
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use session_journal::{journal_path, NodeSessionLease, SessionJournalError};
+
 #[cfg(test)]
 mod tests {
     use super::*;

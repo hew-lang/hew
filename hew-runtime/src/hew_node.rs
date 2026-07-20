@@ -4291,6 +4291,14 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
             Some(id) => id.get(),
             None => next_local_node_id(process_node_id_base(), offset),
         };
+        let snapshot = match cfg.snapshot_for_start() {
+            Ok(snapshot) => snapshot,
+            Err(msg) => {
+                eprintln!("hew: {msg}");
+                set_last_error(msg);
+                return -1;
+            }
+        };
         // SAFETY: addr was null-checked above and is a valid C string.
         let node = unsafe { hew_node_new(node_id, addr) };
         if node.is_null() {
@@ -4299,7 +4307,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         }
         // Install the frozen per-node snapshot before the low-level start.
         // SAFETY: node was just created and is STOPPED.
-        if unsafe { hew_node_set_auth_snapshot(node, cfg.snapshot()) } != 0 {
+        if unsafe { hew_node_set_auth_snapshot(node, snapshot) } != 0 {
             // SAFETY: node is valid, not started; free it.
             unsafe { hew_node_free(node) };
             return -1;
@@ -4743,10 +4751,16 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
             #[cfg(feature = "encryption")]
             {
                 match crate::encryption::noise_identity_load_or_create(std::path::Path::new(p)) {
-                    Ok(identity) => stage_loaded_identity(
-                        |cfg| cfg.noise_identity = Some(identity),
-                        PeerTransport::Tcp,
-                    ),
+                    Ok(identity) => {
+                        let node_id =
+                            crate::node_identity::NodeId::from_noise_static_key(&identity.public());
+                        stage_loaded_identity(
+                            std::path::Path::new(p),
+                            node_id,
+                            |cfg| cfg.noise_identity = Some(identity),
+                            PeerTransport::Tcp,
+                        )
+                    }
                     Err(err) => {
                         node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
                         -1
@@ -4766,10 +4780,15 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
         #[cfg(feature = "quic")]
         TransportSelection::QuicMesh => {
             match crate::quic_mesh::mesh_identity_load_or_create(std::path::Path::new(p)) {
-                Ok(material) => stage_loaded_identity(
-                    |cfg| cfg.mesh_identity = Some(material),
-                    PeerTransport::QuicMesh,
-                ),
+                Ok(material) => {
+                    let node_id = crate::node_identity::NodeId::from_spki(material.spki());
+                    stage_loaded_identity(
+                        std::path::Path::new(p),
+                        node_id,
+                        |cfg| cfg.mesh_identity = Some(material),
+                        PeerTransport::QuicMesh,
+                    )
+                }
                 Err(err) => {
                     node_peer_auth_setup_failed(format!("Node::load_keys: {err}"));
                     -1
@@ -4797,6 +4816,8 @@ pub unsafe extern "C" fn hew_node_api_load_keys(path: *const c_char) -> c_int {
 /// peer-auth setup failed when the config is locked.
 #[cfg(any(feature = "quic", feature = "encryption"))]
 fn stage_loaded_identity(
+    identity_path: &std::path::Path,
+    node_identity: crate::node_identity::NodeId,
     apply: impl FnOnce(&mut crate::peer_binding::PeerAuthConfig),
     selection: PeerTransport,
 ) -> c_int {
@@ -4830,6 +4851,8 @@ fn stage_loaded_identity(
         }
     }
     apply(cfg);
+    cfg.node_identity = Some(node_identity);
+    cfg.identity_path = Some(identity_path.to_path_buf());
     // Early transport pin: loading a stable identity commits this node to the
     // operator's selected transport, so `identity_key()` can export the pinned
     // credential before `Node::start` freezes the snapshot. Idempotent with the

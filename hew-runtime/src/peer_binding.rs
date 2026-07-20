@@ -34,9 +34,12 @@
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU16;
 use std::os::raw::c_int;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use zeroize::Zeroizing;
+
+use crate::node_identity::{NodeId, NodeSessionLease};
 
 /// Length in bytes of a Noise static public/private key (X25519).
 pub const NOISE_KEY_LEN: usize = 32;
@@ -275,6 +278,10 @@ pub struct PeerAuthConfig {
     pub noise_identity: Option<StableNoiseIdentity>,
     /// Stable mesh identity (quic-mesh), populated by `load_keys`.
     pub mesh_identity: Option<MeshIdentityMaterial>,
+    /// Key-derived identity for the staged stable credential.
+    pub node_identity: Option<NodeId>,
+    /// Stable identity path whose sibling journal owns the session counter.
+    pub identity_path: Option<PathBuf>,
     /// Sticky fail-closed setup poison (a failed `load_keys` / `allow_peer`).
     pub setup_error: Option<String>,
 }
@@ -344,6 +351,38 @@ impl PeerAuthConfig {
     /// `transport_selection_from_env`'s default).
     #[must_use]
     pub fn snapshot(&self) -> PeerAuthSnapshot {
+        self.snapshot_with_session(None)
+    }
+
+    /// Freeze this staging config for one public node start.
+    ///
+    /// When a stable credential has been loaded, this acquires and advances its
+    /// exclusive session journal before any listener or claim can be published.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for inconsistent identity staging or journal failure.
+    pub fn snapshot_for_start(&self) -> Result<PeerAuthSnapshot, String> {
+        let session = match (self.node_identity, self.identity_path.as_deref()) {
+            (None, None) => None,
+            (Some(node_id), Some(path)) => Some(Arc::new(
+                NodeSessionLease::acquire(path, node_id)
+                    .map_err(|error| format!("Node::start: {error}"))?,
+            )),
+            _ => {
+                return Err(
+                    "Node::start: loaded identity is missing its identity path (fail-closed)"
+                        .to_string(),
+                );
+            }
+        };
+        Ok(self.snapshot_with_session(session))
+    }
+
+    fn snapshot_with_session(
+        &self,
+        session_lease: Option<Arc<NodeSessionLease>>,
+    ) -> PeerAuthSnapshot {
         let mut mesh_spki_allowlist: HashSet<Vec<u8>> = HashSet::new();
         for creds in self.bindings.values() {
             for cred in creds {
@@ -360,6 +399,8 @@ impl PeerAuthConfig {
                 bindings: self.bindings.clone(),
                 noise_identity: self.noise_identity.clone(),
                 mesh_identity: self.mesh_identity.clone(),
+                node_identity: self.node_identity,
+                session_lease,
                 mesh_spki_allowlist,
                 setup_error: self.setup_error.clone(),
             }),
@@ -383,6 +424,8 @@ struct SnapshotInner {
     bindings: PeerBindings,
     noise_identity: Option<StableNoiseIdentity>,
     mesh_identity: Option<MeshIdentityMaterial>,
+    node_identity: Option<NodeId>,
+    session_lease: Option<Arc<NodeSessionLease>>,
     mesh_spki_allowlist: HashSet<Vec<u8>>,
     setup_error: Option<String>,
 }
@@ -405,6 +448,8 @@ impl PeerAuthSnapshot {
                 bindings: PeerBindings::new(),
                 noise_identity: None,
                 mesh_identity: None,
+                node_identity: None,
+                session_lease: None,
                 mesh_spki_allowlist: HashSet::new(),
                 setup_error: None,
             }),
@@ -439,6 +484,21 @@ impl PeerAuthSnapshot {
     #[must_use]
     pub fn mesh_identity(&self) -> Option<&MeshIdentityMaterial> {
         self.inner.mesh_identity.as_ref()
+    }
+
+    /// Key-derived identity for this frozen node snapshot.
+    #[must_use]
+    pub fn node_identity(&self) -> Option<NodeId> {
+        self.inner.node_identity
+    }
+
+    /// Durable session incarnation held by this frozen node snapshot.
+    #[must_use]
+    pub fn session_incarnation(&self) -> Option<u32> {
+        self.inner
+            .session_lease
+            .as_ref()
+            .map(|lease| lease.incarnation())
     }
 
     /// The per-node mesh SPKI allowlist (the transport pre-gate for quic-mesh).
@@ -585,6 +645,8 @@ impl std::fmt::Debug for PeerAuthSnapshot {
             )
             .field("has_noise_identity", &self.inner.noise_identity.is_some())
             .field("has_mesh_identity", &self.inner.mesh_identity.is_some())
+            .field("node_identity", &self.inner.node_identity)
+            .field("session_incarnation", &self.session_incarnation())
             .field("setup_error", &self.inner.setup_error)
             .finish()
     }
@@ -912,5 +974,25 @@ mod tests {
             ..PeerAuthConfig::default()
         };
         assert_eq!(cfg.identity_export_string(), "ab".repeat(NOISE_KEY_LEN));
+    }
+
+    #[test]
+    fn start_snapshot_holds_and_advances_session_lease() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity_path = temp.path().join("node.key");
+        let cfg = PeerAuthConfig {
+            node_identity: Some(NodeId::from_bytes([0x44; 16])),
+            identity_path: Some(identity_path),
+            ..PeerAuthConfig::default()
+        };
+
+        let first = cfg.snapshot_for_start().unwrap();
+        assert_eq!(first.node_identity(), cfg.node_identity);
+        assert_eq!(first.session_incarnation(), Some(1));
+        assert!(cfg.snapshot_for_start().is_err());
+        drop(first);
+
+        let second = cfg.snapshot_for_start().unwrap();
+        assert_eq!(second.session_incarnation(), Some(2));
     }
 }

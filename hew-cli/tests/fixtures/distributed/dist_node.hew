@@ -273,10 +273,9 @@ actor Linker {
 
     // Establish the cross-node link from inside this actor's own handler so the
     // implicit `self` subject of `link_remote` is THIS actor. The remote peer is
-    // passed as a message argument (a RemotePid is an opaque i64 pid; storing it
-    // in actor state is not a supported clone-layout shape, so it rides the
-    // message instead). Returns its own actor id (or -1 on a registration
-    // failure) so `main` can poll its terminal state.
+    // passed as a message argument rather than retained in actor state. Returns
+    // its own process-local actor id (or 0 on registration failure) so `main`
+    // can poll its terminal state.
     receive fn link_go(peer: RemotePid<KeyValue>) -> i64 {
         let status = if policy_sel == 0 {
             link_remote(peer, PartitionPolicy::CrashLinked)
@@ -287,10 +286,7 @@ actor Linker {
             Result::Ok(_) => true,
             Result::Err(_) => false,
         };
-        // Return this actor's id on success, 0 on failure. The id is a packed pid
-        // (node<<48 | serial) and can be NEGATIVE as an i64 when the node id is
-        // large, so the caller must test `== 0`, never `< 0`. The probe casts to
-        // u64, so a negative-as-i64 id round-trips correctly.
+        // Return this actor's process-local runtime id on success, 0 on failure.
         if ok {
             unsafe {
                 hew_actor_self_id()
@@ -307,12 +303,19 @@ actor Linker {
 
 actor MonitorProbe {
     var active_monitor: Result<MonitorRef, MonitorError>;
+    var expected_monitor_id: u64 = 0;
     var down_count: i64 = 0;
     var down_reason: i64 = 100;
 
     // drive: 0 = clean stop, 1 = crash, 2 = leave target alive.
     receive fn arm(peer: RemotePid<KeyValue>, drive: i64) -> i64 {
         active_monitor = monitor(peer);
+        expected_monitor_id = unsafe {
+            hew_dist_monitor_current_actor_ref_id()
+        };
+        if expected_monitor_id == 0 {
+            return 1;
+        }
         if drive == 0 {
             match peer.send(KvReq::StopSelf) {
                 Result::Ok(_) => 0,
@@ -340,6 +343,9 @@ actor MonitorProbe {
             }
         }
     }
+    receive fn monitor_id() -> u64 {
+        expected_monitor_id
+    }
 
     // ── Strict TCP-Noise credential staging (issue #2652) ───────────────────────
     //
@@ -348,7 +354,7 @@ actor MonitorProbe {
     // stable Noise identity, publishes its public credential to a shared key-
     // exchange directory, waits for the peer's, and binds it with allow_peer BEFORE
     // the handshake — a real mutual authenticated pin, never an injected posture.
-    // Node ids are fixed by the harness: server = 1, client = 2 (HEW_NODE_ID).
+    // The allow_peer integer is a receiver-local route slot, not distributed identity.
 
     // Atomically publish `content` at `<dir>/<name>` via temp-then-rename, so a
     // reader polling for the file never observes a partial write.
@@ -358,8 +364,8 @@ actor MonitorProbe {
     // closed if the peer never publishes.
 
     // Mint this node's stable Noise identity, publish its identity_key() for the
-    // peer to pin, wait for the peer's published credential, and bind it to the
-    // NodeId the peer will claim. Runs before Node::start so the listener and the
+    // peer to pin, wait for the peer's published credential, and bind it to a
+    // receiver-local route slot. Runs before Node::start so the listener and the
     // handshake adopt the staged allowlist (config locks once Starting/Running).
 
     // Server → client listener-liveness signal. The client waits on this before it
@@ -372,10 +378,9 @@ actor MonitorProbe {
 
     // Same bounded poll, typed for the WireProbe actor (the #[wire] scenario).
 
-    // Strict TCP-Noise (issue #2652): mint this node's stable Noise identity,
-    // publish its public credential for the peer to pin, and bind the client's
-    // BEFORE the listener adopts the allowlist. Server is node 1, client is
-    // node 2 (HEW_NODE_ID pins each side; see the harness).
+    // Strict TCP-Noise: mint this node's stable Noise identity, publish its
+    // public credential for the peer to pin, and bind the client credential to
+    // receiver-local route slot 2 before the listener adopts the allowlist.
 
     // Also register the #[wire] probe actor so the wire_cbor scenario has a
     // remote target. Registering both keeps run_server scenario-independent.
@@ -621,14 +626,14 @@ actor MonitorProbe {
     // Positive half: a strictly-higher-incarnation rejoin (6 > 5) IS admitted;
     // the peer returns ALIVE and the quarantine entry is evicted.
 
-    // Strict TCP-Noise (issue #2652): client is node 2; bind the server
-    // (node 1) credential before connecting.
+    // Strict TCP-Noise: bind the server credential to receiver-local route slot
+    // 1 before connecting.
 
     // Wait for the server's listener to be live: a failed one-shot connect is
     // not retried, so connecting before the server binds would fail closed.
 
-    // Connect using the server's pinned NodeId so admission binds the claimed
-    // id to the authenticated Noise key (fail-closed on identity mismatch).
+    // Connect using the server's configured route slot; admission derives and
+    // verifies the peer NodeId from the authenticated Noise key.
 
     // Scenario dispatch. New scenarios add a branch here plus a scenario_*
     // function above; the harness selects via HEW_DIST_SCENARIO. The #[wire]
@@ -640,6 +645,10 @@ actor MonitorProbe {
     #[on(down)]
     fn on_down(note: DownNotification) {
         down_count = down_count + 1;
+        if note.monitor.value != expected_monitor_id {
+            down_reason = -98;
+            return;
+        }
         match note.target {
             DownTarget::Remote(_) => {},
             DownTarget::Local(_) => {
@@ -693,6 +702,46 @@ actor MonitorCloseProbe {
     }
 }
 
+actor MonitorLeakProbe {
+    var down_count: i64 = 0;
+
+    receive fn run(peer: RemotePid<KeyValue>, iterations: i64) -> i64 {
+        var completed: i64 = 0;
+        var previous_id: u64 = 0;
+        while completed < iterations {
+            let setup: Result<MonitorRef, MonitorError> = monitor(peer);
+            match setup {
+                Result::Err(_) => return -1,
+                Result::Ok(monitor_ref) => {
+                    let monitor_id = monitor_ref.id().value;
+                    if monitor_id == 0 || monitor_id <= previous_id {
+                        return -2;
+                    }
+                    previous_id = monitor_id;
+                    sleep(10ms);
+                    monitor_ref.close();
+                },
+            }
+            if unsafe {
+                hew_dist_monitor_pending_observation_count()
+            } != 0 {
+                return -3;
+            }
+            completed = completed + 1;
+        }
+        sleep(100ms);
+        if down_count != 0 {
+            return -4;
+        }
+        completed
+    }
+
+    #[on(down)]
+    fn on_down(_note: DownNotification) {
+        down_count = down_count + 1;
+    }
+}
+
 fn publish_atomic(dir: string, name: string, content: string) {
     let tmp = f"{dir}/{name}.tmp";
     let _ = fs.write(tmp, content);
@@ -716,12 +765,17 @@ fn wait_for_file(path: string) -> string {
     }
 }
 
-fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_node_id: u16) {
+fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_route_slot: u16) {
     Node::load_keys(f"{kx}/{my_role}.key");
     let me = Node::identity_key();
     publish_atomic(kx, f"{my_role}.pub", me);
     let peer_key = wait_for_file(f"{kx}/{peer_role}.pub");
-    Node::allow_peer(peer_node_id, peer_key);
+    let configured_peer_key = if os.env("HEW_DIST_BAD_PEER_PIN") == "1" {
+        "0000000000000000000000000000000000000000000000000000000000000000"
+    } else {
+        peer_key
+    };
+    Node::allow_peer(peer_route_slot, configured_peer_key);
 }
 
 fn signal_server_listening(kx: string) {
@@ -733,6 +787,12 @@ fn wait_for_server_listening(kx: string) {
 }
 
 fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
+    let selected_scenario = os.env("HEW_DIST_SCENARIO");
+    let max_attempts: i64 = if selected_scenario == "monitor_leak_low" || selected_scenario == "monitor_leak_high" {
+        300
+    } else {
+        50
+    };
     var attempts: i64 = 0;
     loop {
         let found: Result<RemotePid<KeyValue>, LookupError> = Node::lookup(name);
@@ -742,7 +802,7 @@ fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
             },
             Result::Err(e) => {
                 attempts = attempts + 1;
-                if attempts >= 50 {
+                if attempts >= max_attempts {
                     return Err(e);
                 }
                 sleep(100ms);
@@ -803,12 +863,19 @@ fn run_server(port: string, scenario: string) {
     let identity = spawn IdentityProbe;
     Node::register("identity", identity);
     signal_server_listening(kx);
+    if os.env("HEW_DIST_RESTARTED") == "1" {
+        publish_atomic(kx, "server.restarted", "1");
+    }
     println(f"READY {port}");
     if scenario == "monitor_watcher_node_death" {
         scenario_server_watcher_node_death(0);
     } else {
         if scenario == "cross_node_monitor_close_reclaim" {
             scenario_server_monitor_close_reclaim();
+        } else if scenario == "monitor_leak_low" {
+            scenario_server_monitor_leak(kx, "monitor_leak_low", 3);
+        } else if scenario == "monitor_leak_high" {
+            scenario_server_monitor_leak(kx, "monitor_leak_high", 50);
         } else {
             if scenario == "repoint_preserves_ref" {
                 sleep(1s);
@@ -990,8 +1057,12 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
 }
 
 fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, expected: i64, ready_drop: bool) -> i64 {
-    let seed_setup: Result<MonitorRef, MonitorError> = monitor(kv);
-    let probe = spawn MonitorProbe(active_monitor: seed_setup, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe(
+        active_monitor: Err(MonitorError::InvalidTarget),
+        expected_monitor_id: 0,
+        down_count: 0,
+        down_reason: 100
+    );
     let armed = await probe.arm(kv, drive);
     let arm_status = match armed {
         Result::Ok(status) => status,
@@ -1003,6 +1074,18 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
     if arm_status != 0 {
         println(f"FAIL {scenario} arm-status={arm_status}");
         return 3;
+    }
+    let id_result = await probe.monitor_id();
+    let monitor_id = match id_result {
+        Result::Ok(value) => value,
+        Result::Err(_) => {
+            println(f"FAIL {scenario} monitor-id-ask-error");
+            return 9;
+        },
+    };
+    if monitor_id == 0 {
+        println(f"FAIL {scenario} monitor-id-zero");
+        return 10;
     }
     if ready_drop {
         println(f"READY_DROP {scenario}");
@@ -1047,6 +1130,7 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
         },
     }
     println(f"PASS {scenario} no-dup");
+    println(f"PASS {scenario} monitor-id-match={monitor_id}");
     0
 }
 
@@ -1210,6 +1294,8 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
 
 extern "C" {
     fn hew_dist_monitor_remote_watcher_count() -> i64;
+    fn hew_dist_monitor_current_actor_ref_id() -> u64;
+    fn hew_dist_monitor_pending_observation_count() -> u64;
 }
 
 fn scenario_server_watcher_node_death(_kv_serial: i64) {
@@ -1219,10 +1305,14 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
         let c = unsafe {
             hew_dist_monitor_remote_watcher_count()
         };
-        if c > 0 {
+        if c == 1 {
             registered = c;
             println(f"READY_SERVER_WATCHER_REGISTERED monitor_watcher_node_death count={registered}");
             break;
+        }
+        if c > 1 {
+            println(f"FAIL monitor_watcher_node_death unexpected-watcher-count={c}");
+            return;
         }
         wait_attempts = wait_attempts + 1;
         if wait_attempts >= 200 {
@@ -1250,8 +1340,12 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
 }
 
 fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
-    let seed_setup: Result<MonitorRef, MonitorError> = monitor(kv);
-    let probe = spawn MonitorProbe(active_monitor: seed_setup, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe(
+        active_monitor: Err(MonitorError::InvalidTarget),
+        expected_monitor_id: 0,
+        down_count: 0,
+        down_reason: 100
+    );
     match await probe.arm(kv, 2) {
         Result::Err(_) => {
             println("FAIL monitor_watcher_node_death arm-ask-error");
@@ -1391,10 +1485,14 @@ fn scenario_server_monitor_close_reclaim() {
         let c = unsafe {
             hew_dist_monitor_remote_watcher_count()
         };
-        if c > 0 {
+        if c == 1 {
             registered = c;
             println(f"READY_SERVER_WATCHER_REGISTERED cross_node_monitor_close_reclaim count={registered}");
             break;
+        }
+        if c > 1 {
+            println(f"FAIL cross_node_monitor_close_reclaim unexpected-watcher-count={c}");
+            return;
         }
         wait_attempts = wait_attempts + 1;
         if wait_attempts >= 200 {
@@ -1433,6 +1531,78 @@ fn scenario_client_monitor_close_reclaim(kv: RemotePid<KeyValue>) -> i64 {
                 println("FAIL cross_node_monitor_close_reclaim setup-error");
                 return 1;
             }
+            0
+        },
+    }
+}
+
+fn scenario_server_monitor_leak(kx: string, scenario: string, expected: i64) {
+    var observed_one: bool = false;
+    var attempts: i64 = 0;
+    loop {
+        let count = unsafe {
+            hew_dist_monitor_remote_watcher_count()
+        };
+        if count == 1 {
+            observed_one = true;
+        } else {
+            if count > 1 {
+                println(f"FAIL {scenario} target-count={count}");
+                return;
+            }
+        }
+        if fs.exists(f"{kx}/leak.done") {
+            break;
+        }
+        attempts = attempts + 1;
+        if attempts >= 20000 {
+            println(f"FAIL {scenario} client-timeout");
+            return;
+        }
+        sleep(2ms);
+    }
+    var cleanup_attempts: i64 = 0;
+    loop {
+        let count = unsafe {
+            hew_dist_monitor_remote_watcher_count()
+        };
+        if count == 0 {
+            if !observed_one {
+                println(f"FAIL {scenario} target-never-observed-registration");
+                return;
+            }
+            publish_atomic(kx, "leak.verdict", "target=0");
+            println(f"PASS {scenario} iterations={expected} target=0 max=1");
+            return;
+        }
+        cleanup_attempts = cleanup_attempts + 1;
+        if cleanup_attempts >= 5000 {
+            println(f"FAIL {scenario} target-cleanup={count}");
+            return;
+        }
+        sleep(2ms);
+    }
+}
+
+fn scenario_client_monitor_leak(kv: RemotePid<KeyValue>, kx: string, scenario: string, iterations: i64) -> i64 {
+    let probe = spawn MonitorLeakProbe(down_count: 0);
+    match await probe.run(kv, iterations) {
+        Result::Err(_) => {
+            println(f"FAIL {scenario} probe-ask-error");
+            2
+        },
+        Result::Ok(completed) => {
+            if completed != iterations {
+                println(f"FAIL {scenario} completed={completed}");
+                return 3;
+            }
+            publish_atomic(kx, "leak.done", to_string(iterations));
+            let verdict = wait_for_file(f"{kx}/leak.verdict");
+            if verdict != "target=0" {
+                println(f"FAIL {scenario} target-verdict={verdict}");
+                return 4;
+            }
+            println(f"PASS {scenario} iterations={iterations} closed={completed} down=0 local=0 target=0 ids=distinct");
             0
         },
     }
@@ -1504,6 +1674,71 @@ fn scenario_quarantine_rejoin() -> i64 {
     0
 }
 
+fn scenario_handshake_reject() -> i64 {
+    match lookup_with_retry("kv") {
+        Result::Err(_) => {
+            println("PASS handshake_reject unroutable");
+            0
+        },
+        Result::Ok(_) => {
+            println("FAIL handshake_reject unauthorized-peer-routable");
+            2
+        },
+    }
+}
+
+fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port: string) -> i64 {
+    let old_node = old.node_id();
+    let old_incarnation = old.incarnation();
+    println(f"READY_STALE_CAPTURED node={old_node} incarnation={old_incarnation}");
+    let _ = wait_for_file(f"{kx}/server.restarted");
+    Node::connect(f"1@127.0.0.1:{port}");
+
+    var attempts: i64 = 0;
+    loop {
+        let candidate: Result<RemotePid<KeyValue>, LookupError> = Node::lookup("kv");
+        match candidate {
+            Result::Ok(fresh) => {
+                let fresh_incarnation = fresh.incarnation();
+                if fresh.node_id() == old_node && fresh_incarnation > old_incarnation {
+                    match fresh.ask(KvReq::GetKey("restart-proof"), 5000) {
+                        Result::Err(_) => {
+                            println("FAIL stale_incarnation_restart fresh-pid-unusable");
+                            return 4;
+                        },
+                        Result::Ok(KvResp::Ack) => {
+                            println("FAIL stale_incarnation_restart fresh-pid-wrong-reply");
+                            return 5;
+                        },
+                        Result::Ok(KvResp::Value(_)) => {},
+                    }
+                    match old.ask(KvReq::GetKey("restart-proof"), 5000) {
+                        Result::Err(AskError::StaleRef) => {
+                            println(f"PASS stale_incarnation_restart old={old_incarnation} new={fresh_incarnation} error=StaleRef");
+                            return 0;
+                        },
+                        Result::Err(_) => {
+                            println("FAIL stale_incarnation_restart old-pid-wrong-error");
+                            return 6;
+                        },
+                        Result::Ok(_) => {
+                            println("FAIL stale_incarnation_restart old-pid-succeeded");
+                            return 7;
+                        },
+                    }
+                }
+            },
+            Result::Err(_) => {},
+        }
+        attempts = attempts + 1;
+        if attempts >= 200 {
+            println("FAIL stale_incarnation_restart replacement-not-observed");
+            return 3;
+        }
+        sleep(100ms);
+    }
+}
+
 fn run_client(port: string, scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR");
     Node::set_transport("tcp");
@@ -1512,7 +1747,9 @@ fn run_client(port: string, scenario: string) -> i64 {
     wait_for_server_listening(kx);
     let remote_addr = f"1@127.0.0.1:{port}";
     Node::connect(remote_addr);
-    let status = if scenario == "quarantine_rejoin" {
+    let status = if scenario == "handshake_reject" {
+        scenario_handshake_reject()
+    } else if scenario == "quarantine_rejoin" {
         scenario_quarantine_rejoin()
     } else if scenario == "identity_location" {
         let found_identity = lookup_identity_with_retry("identity");
@@ -1544,7 +1781,9 @@ fn run_client(port: string, scenario: string) -> i64 {
                 1
             },
             Result::Ok(kv) => {
-                if scenario == "remote_ask" {
+                if scenario == "stale_incarnation_restart" {
+                    scenario_stale_incarnation_restart(kv, kx, port)
+                } else if scenario == "remote_ask" {
                     scenario_remote_ask(kv)
                 } else {
                     if scenario == "remote_monitor_clean_exit" {
@@ -1583,8 +1822,16 @@ fn run_client(port: string, scenario: string) -> i64 {
                                                                 if scenario == "cross_node_monitor_close_reclaim" {
                                                                     scenario_client_monitor_close_reclaim(kv)
                                                                 } else {
-                                                                    println(f"FAIL {scenario} unknown-scenario");
-                                                                    90
+                                                                    if scenario == "monitor_leak_low" {
+                                                                        scenario_client_monitor_leak(kv, kx, scenario, 3)
+                                                                    } else {
+                                                                        if scenario == "monitor_leak_high" {
+                                                                            scenario_client_monitor_leak(kv, kx, scenario, 50)
+                                                                        } else {
+                                                                            println(f"FAIL {scenario} unknown-scenario");
+                                                                            90
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                         }

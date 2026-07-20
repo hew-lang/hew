@@ -1023,6 +1023,8 @@ internal = [
   # target-side monitor table. Used by two-process fixtures to assert bounded
   # table growth after a watcher node dies. Not user-callable; not JIT-reachable.
   "hew_dist_monitor_remote_watcher_count",
+  "hew_dist_monitor_current_actor_ref_id",
+  "hew_dist_monitor_pending_observation_count",
   # Test-introspection probe: returns the current actor's id (-1 outside a
   # dispatch). A linker actor reports its id so a two-process link fixture can
   # poll its terminal state. Not user-callable; not JIT-reachable.

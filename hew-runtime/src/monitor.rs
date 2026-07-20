@@ -216,6 +216,24 @@ impl MonitorState {
         Some(target)
     }
 
+    pub(crate) fn sole_remote_monitor_for_watcher(&self, watcher_actor_id: u64) -> Option<u64> {
+        let observations = self
+            .observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut matches = observations.iter().filter_map(|(monitor_id, entry)| {
+            matches!(
+                entry.action,
+                WatcherAction::Monitor {
+                    watcher_actor_id: entry_watcher
+                } if entry_watcher == watcher_actor_id
+            )
+            .then_some(*monitor_id)
+        });
+        let monitor_id = matches.next()?;
+        matches.next().is_none().then_some(monitor_id)
+    }
+
     pub(crate) fn deliver_monitor_to_ref(
         &self,
         monitor_id: u64,
@@ -508,7 +526,6 @@ impl MonitorState {
             .sum()
     }
 
-    #[cfg(test)]
     pub(crate) fn pending_observation_count(&self) -> usize {
         self.observations
             .lock()

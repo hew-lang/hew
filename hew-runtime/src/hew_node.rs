@@ -3783,6 +3783,36 @@ pub extern "C" fn hew_dist_monitor_remote_watcher_count() -> i64 {
     }
 }
 
+/// Return the sole remote monitor id owned by the current actor, or zero when
+/// the actor has none or more than one.
+///
+/// Test-introspection probe for compiled lifecycle fixtures. The value is the
+/// same authoritative id stored in `MonitorRef` and delivered in
+/// `DownNotification.monitor`; the compiler does not emit calls to this symbol.
+#[no_mangle]
+pub extern "C" fn hew_dist_monitor_current_actor_ref_id() -> u64 {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return 0;
+    };
+    let self_actor = crate::actor::hew_actor_self();
+    if self_actor.is_null() {
+        return 0;
+    }
+    // SAFETY: `hew_actor_self` returned the live current actor.
+    let watcher_actor_id = unsafe { (*self_actor).id };
+    rt.monitors
+        .sole_remote_monitor_for_watcher(watcher_actor_id)
+        .unwrap_or(0)
+}
+
+/// Return the watcher-side observation table size for lifecycle leak fixtures.
+///
+/// Test-introspection only; the compiler does not emit calls to this symbol.
+#[no_mangle]
+pub extern "C" fn hew_dist_monitor_pending_observation_count() -> u64 {
+    crate::runtime::rt_current_opt().map_or(0, |rt| rt.monitors.pending_observation_count() as u64)
+}
+
 /// Drive a single piggybacked SWIM gossip entry into the current node's cluster,
 /// exactly as a received gossip frame would.
 ///

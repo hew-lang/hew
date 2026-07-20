@@ -1256,7 +1256,18 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::ObserveScrape
         | F::ObserveSeries
         | F::ObserveBarrier
+        | F::RcClone
+        | F::RcDowngrade
+        | F::RcDrop
+        | F::RcGet
+        | F::RcIsUnique
         | F::RcNew
+        | F::RcSet
+        | F::RcStrongCount
+        | F::RcWeakCount
+        | F::WeakCloneRc
+        | F::WeakDropRc
+        | F::WeakUpgradeRc
         | F::RecvHalfRecv
         | F::RecvHalfTryRecv
         | F::RegexCapture
@@ -2937,6 +2948,15 @@ pub(crate) fn resolve_ty<'ctx>(
     ty: &ResolvedTy,
     record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
+    if matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+            ..
+        }
+    ) {
+        return Ok(ctx.ptr_type(AddressSpace::default()).into());
+    }
     if let ResolvedTy::Named { name, args, .. } = ty {
         if matches!(
             ty,
@@ -3217,6 +3237,10 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             // boundary-fail-closed, checker-authority.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+            ..
+        } => Ok(ctx.ptr_type(AddressSpace::default()).into()),
         // `instant` is a monotonic i64-nanos timestamp. The field-type producer
         // surfaces it as `Named { builtin: Instant }` (not the canonical I64), so
         // a record/actor field typed `instant` reaches the emitter as a Named
@@ -12646,11 +12670,14 @@ fn lower_instruction(
             }
             emit_cooperate_check(fn_ctx, block_id, drop_plans)?;
         }
-        Instr::RcIntrinsic { op, .. } => {
-            return Err(CodegenError::FailClosed(format!(
-                "Rc/Weak intrinsic {op:?} reached codegen before ABI lowering"
-            )));
-        }
+        Instr::RcIntrinsic {
+            dest,
+            op,
+            payload_ty,
+            receiver,
+            value,
+            result_ty,
+        } => lower_rc_intrinsic(fn_ctx, *dest, *op, payload_ty, *receiver, *value, result_ty)?,
         Instr::CancellationTokenIsCancelled { dest, token } => {
             // DI-019: the HIR/MIR variant is checker-authoritative proof that
             // `token` is a live CancellationToken and that `dest` is bool.
@@ -15492,6 +15519,426 @@ fn lower_instruction(
         }
     }
     Ok(())
+}
+
+fn load_rc_handle<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    context: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let (slot, storage) = place_pointer(fn_ctx, place)?;
+    let BasicTypeEnum::PointerType(ptr_ty) = storage else {
+        return Err(CodegenError::FailClosed(format!(
+            "{context} requires a pointer-shaped handle, got {storage:?} at {place:?}"
+        )));
+    };
+    Ok(fn_ctx
+        .builder
+        .build_load(ptr_ty, slot, &format!("{context}_handle"))
+        .llvm_ctx_with(|| format!("{context} handle load"))?
+        .into_pointer_value())
+}
+
+fn store_rc_pointer_result(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    value: PointerValue<'_>,
+    context: &str,
+) -> CodegenResult<()> {
+    let (slot, storage) = place_pointer(fn_ctx, dest)?;
+    if !matches!(storage, BasicTypeEnum::PointerType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "{context} result requires pointer storage, got {storage:?} at {dest:?}"
+        )));
+    }
+    fn_ctx
+        .builder
+        .build_store(slot, value)
+        .llvm_ctx_with(|| format!("{context} result store"))?;
+    Ok(())
+}
+
+fn rc_payload_drop_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    payload_ty: &ResolvedTy,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    if matches!(
+        payload_ty,
+        ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::F32
+            | ResolvedTy::F64
+            | ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::Duration
+            | ResolvedTy::Unit
+            | ResolvedTy::Never
+    ) {
+        return Ok(ptr_ty.const_null());
+    }
+    if !matches!(
+        payload_ty,
+        ResolvedTy::String
+            | ResolvedTy::Bytes
+            | ResolvedTy::Named {
+                builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                ..
+            }
+    ) {
+        return Err(CodegenError::FailClosed(format!(
+            "Rc payload type {} has no emitted payload drop thunk",
+            payload_ty.user_facing()
+        )));
+    }
+
+    let symbol = format!(
+        "__hew_rc_payload_drop_{}",
+        sanitize_symbol(&hew_hir::mangle_resolved_ty(payload_ty))
+    );
+    if let Some(function) = fn_ctx.llvm_mod.get_function(&symbol) {
+        return Ok(function.as_global_value().as_pointer_value());
+    }
+    let function = fn_ctx.llvm_mod.add_function(
+        &symbol,
+        fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    );
+    let entry = fn_ctx.ctx.append_basic_block(function, "entry");
+    let restore = fn_ctx.builder.get_insert_block().ok_or_else(|| {
+        CodegenError::FailClosed("Rc payload thunk emission has no caller insertion block".into())
+    })?;
+    fn_ctx.builder.position_at_end(entry);
+    let payload = function
+        .get_first_param()
+        .ok_or_else(|| CodegenError::FailClosed("Rc payload drop thunk has no parameter".into()))?
+        .into_pointer_value();
+    let emitted =
+        emit_heap_slot_drop(fn_ctx, payload, payload_ty, 0, "rc_payload_drop").and_then(|()| {
+            fn_ctx
+                .builder
+                .build_return(None)
+                .llvm_ctx("Rc payload drop thunk return")?;
+            Ok(())
+        });
+    fn_ctx.builder.position_at_end(restore);
+    emitted?;
+    Ok(function.as_global_value().as_pointer_value())
+}
+
+fn write_weak_upgrade_option<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    upgraded: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let slot = option_slot_for_payload(fn_ctx, dest, ptr_ty.into(), "Weak.upgrade")?;
+    let is_none = fn_ctx
+        .builder
+        .build_is_null(upgraded, "weak_upgrade_is_none")
+        .llvm_ctx("Weak.upgrade null comparison")?;
+    let current = fn_ctx
+        .builder
+        .get_insert_block()
+        .ok_or_else(|| CodegenError::FailClosed("Weak.upgrade has no insertion block".into()))?;
+    let parent = current
+        .get_parent()
+        .ok_or_else(|| CodegenError::FailClosed("Weak.upgrade block has no function".into()))?;
+    let some_bb = fn_ctx.ctx.append_basic_block(parent, "weak_upgrade_some");
+    let none_bb = fn_ctx.ctx.append_basic_block(parent, "weak_upgrade_none");
+    let cont_bb = fn_ctx.ctx.append_basic_block(parent, "weak_upgrade_cont");
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_none, none_bb, some_bb)
+        .llvm_ctx("Weak.upgrade option branch")?;
+
+    fn_ctx.builder.position_at_end(some_bb);
+    fn_ctx
+        .builder
+        .build_store(slot.tag_ptr, slot.tag_int.const_zero())
+        .llvm_ctx("Weak.upgrade Some tag store")?;
+    fn_ctx
+        .builder
+        .build_store(slot.payload_ptr, upgraded)
+        .llvm_ctx("Weak.upgrade Some payload store")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx("Weak.upgrade Some continuation")?;
+
+    fn_ctx.builder.position_at_end(none_bb);
+    fn_ctx
+        .builder
+        .build_store(slot.tag_ptr, slot.tag_int.const_int(1, false))
+        .llvm_ctx("Weak.upgrade None tag store")?;
+    fn_ctx
+        .builder
+        .build_store(slot.payload_ptr, ptr_ty.const_null())
+        .llvm_ctx("Weak.upgrade None payload store")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx("Weak.upgrade None continuation")?;
+    fn_ctx.builder.position_at_end(cont_bb);
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the MIR carrier fields stay explicit at the codegen boundary"
+)]
+fn lower_rc_intrinsic(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    op: hew_types::RcIntrinsicOp,
+    payload_ty: &ResolvedTy,
+    receiver: Option<Place>,
+    value: Option<Place>,
+    result_ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    use hew_types::RcIntrinsicOp as Op;
+
+    let expected_result = resolve_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        result_ty,
+        fn_ctx.record_layouts,
+    )?;
+    let (_, actual_result) = place_pointer(fn_ctx, dest)?;
+    if actual_result != expected_result {
+        return Err(CodegenError::FailClosed(format!(
+            "Rc intrinsic {op:?} result storage {actual_result:?} disagrees with {}",
+            result_ty.user_facing()
+        )));
+    }
+
+    let require_receiver = || {
+        receiver.ok_or_else(|| {
+            CodegenError::FailClosed(format!("Rc intrinsic {op:?} requires a receiver"))
+        })
+    };
+    let require_value = || {
+        value.ok_or_else(|| {
+            CodegenError::FailClosed(format!("Rc intrinsic {op:?} requires a value"))
+        })
+    };
+    match op {
+        Op::New => {
+            if receiver.is_some() {
+                return Err(CodegenError::FailClosed(
+                    "Rc::new cannot carry a receiver".into(),
+                ));
+            }
+            let value = require_value()?;
+            let (value_slot, value_storage) = place_pointer(fn_ctx, value)?;
+            let expected_payload = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                payload_ty,
+                fn_ctx.record_layouts,
+            )?;
+            if value_storage != expected_payload {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc::new payload storage {value_storage:?} disagrees with {}",
+                    payload_ty.user_facing()
+                )));
+            }
+            let (size, align) = abi_size_align(expected_payload, Some(fn_ctx.target_data))?;
+            let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+            let drop_fn = rc_payload_drop_thunk(fn_ctx, payload_ty)?;
+            let handle = fn_ctx.call_runtime_ptr(
+                "hew_rc_new",
+                &[
+                    value_slot.into(),
+                    size_ty.const_int(size, false).into(),
+                    size_ty.const_int(u64::from(align), false).into(),
+                    drop_fn.into(),
+                ],
+                "rc_new",
+                "hew_rc_new call",
+            )?;
+            store_rc_pointer_result(fn_ctx, dest, handle, "Rc::new")
+        }
+        Op::Clone | Op::Downgrade | Op::WeakClone => {
+            if value.is_some() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc intrinsic {op:?} cannot carry a value operand"
+                )));
+            }
+            let handle = load_rc_handle(fn_ctx, require_receiver()?, "rc_borrow")?;
+            let symbol = match op {
+                Op::Clone => "hew_rc_clone",
+                Op::Downgrade => "hew_rc_downgrade",
+                Op::WeakClone => "hew_weak_clone_rc",
+                _ => unreachable!("outer match selects clone-like operations"),
+            };
+            let result = fn_ctx.call_runtime_ptr(
+                symbol,
+                &[handle.into()],
+                "rc_handle_result",
+                "Rc/Weak handle operation call",
+            )?;
+            store_rc_pointer_result(fn_ctx, dest, result, "Rc/Weak handle operation")
+        }
+        Op::GetCopy => {
+            if value.is_some() {
+                return Err(CodegenError::FailClosed(
+                    "Rc.get cannot carry a value operand".into(),
+                ));
+            }
+            let handle = load_rc_handle(fn_ctx, require_receiver()?, "rc_get")?;
+            let data = fn_ctx.call_runtime_ptr(
+                "hew_rc_get",
+                &[handle.into()],
+                "rc_get_data",
+                "hew_rc_get call",
+            )?;
+            let payload_storage = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                payload_ty,
+                fn_ctx.record_layouts,
+            )?;
+            if payload_storage != actual_result {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc.get result storage {actual_result:?} disagrees with payload {payload_storage:?}"
+                )));
+            }
+            let loaded = fn_ctx
+                .builder
+                .build_load(payload_storage, data, "rc_get_value")
+                .llvm_ctx("Rc.get payload load")?;
+            let (dest_slot, _) = place_pointer(fn_ctx, dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_slot, loaded)
+                .llvm_ctx("Rc.get result store")?;
+            Ok(())
+        }
+        Op::Set => {
+            let handle = load_rc_handle(fn_ctx, require_receiver()?, "rc_set")?;
+            let replacement = require_value()?;
+            let (replacement_slot, replacement_storage) = place_pointer(fn_ctx, replacement)?;
+            let expected_payload = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                payload_ty,
+                fn_ctx.record_layouts,
+            )?;
+            if replacement_storage != expected_payload {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc.set replacement storage {replacement_storage:?} disagrees with {}",
+                    payload_ty.user_facing()
+                )));
+            }
+            fn_ctx.call_runtime_void(
+                "hew_rc_set",
+                &[handle.into(), replacement_slot.into()],
+                "rc_set",
+                "hew_rc_set call",
+            )?;
+            let (dest_slot, dest_storage) = place_pointer(fn_ctx, dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_slot, dest_storage.const_zero())
+                .llvm_ctx("Rc.set unit result store")?;
+            Ok(())
+        }
+        Op::StrongCount | Op::WeakCount => {
+            if value.is_some() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc intrinsic {op:?} cannot carry a value operand"
+                )));
+            }
+            let handle = load_rc_handle(fn_ctx, require_receiver()?, "rc_count")?;
+            let symbol = if op == Op::StrongCount {
+                "hew_rc_strong_count"
+            } else {
+                "hew_rc_weak_count"
+            };
+            let count =
+                fn_ctx.call_runtime_int(symbol, &[handle.into()], "rc_count", "Rc count call")?;
+            let BasicTypeEnum::IntType(dest_int) = actual_result else {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc count result must be integer storage, got {actual_result:?}"
+                )));
+            };
+            let widened = reconcile_int_width(
+                fn_ctx,
+                count.into(),
+                dest_int.into(),
+                false,
+                "Rc count result",
+            )?;
+            let (dest_slot, _) = place_pointer(fn_ctx, dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_slot, widened)
+                .llvm_ctx("Rc count result store")?;
+            Ok(())
+        }
+        Op::IsUnique => {
+            if value.is_some() {
+                return Err(CodegenError::FailClosed(
+                    "Rc.is_unique cannot carry a value operand".into(),
+                ));
+            }
+            let handle = load_rc_handle(fn_ctx, require_receiver()?, "rc_is_unique")?;
+            let unique = fn_ctx.call_runtime_int(
+                "hew_rc_is_unique",
+                &[handle.into()],
+                "rc_is_unique",
+                "hew_rc_is_unique call",
+            )?;
+            let BasicTypeEnum::IntType(dest_int) = actual_result else {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc.is_unique result must be integer storage, got {actual_result:?}"
+                )));
+            };
+            let bit = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    unique,
+                    unique.get_type().const_zero(),
+                    "rc_unique_bit",
+                )
+                .llvm_ctx("Rc.is_unique comparison")?;
+            let bool_value = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(bit, dest_int, "rc_unique_bool")
+                .llvm_ctx("Rc.is_unique bool widening")?;
+            let (dest_slot, _) = place_pointer(fn_ctx, dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_slot, bool_value)
+                .llvm_ctx("Rc.is_unique result store")?;
+            Ok(())
+        }
+        Op::WeakUpgrade => {
+            if value.is_some() {
+                return Err(CodegenError::FailClosed(
+                    "Weak.upgrade cannot carry a value operand".into(),
+                ));
+            }
+            let weak = load_rc_handle(fn_ctx, require_receiver()?, "weak_upgrade")?;
+            let upgraded = fn_ctx.call_runtime_ptr(
+                "hew_weak_upgrade_rc",
+                &[weak.into()],
+                "weak_upgrade",
+                "hew_weak_upgrade_rc call",
+            )?;
+            write_weak_upgrade_option(fn_ctx, dest, upgraded)
+        }
+    }
 }
 
 /// Resolve the LLVM `StructType` for a record-typed place by inspecting the
@@ -20564,10 +21011,53 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
     // never `.ok()?` / `unwrap_or_default()`.
     match drop.kind {
         hew_mir::DropKind::RcRelease | hew_mir::DropKind::WeakRelease => {
-            Err(CodegenError::FailClosed(format!(
-                "Rc/Weak drop {:?} reached codegen before ABI lowering",
-                drop.kind
-            )))
+            if drop.drop_fn.is_some() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc/Weak drop {:?} cannot carry a separate drop function",
+                    drop.kind
+                )));
+            }
+            let expected_builtin = match drop.kind {
+                hew_mir::DropKind::RcRelease => BuiltinType::Rc,
+                hew_mir::DropKind::WeakRelease => BuiltinType::Weak,
+                _ => unreachable!("outer match admits only Rc/Weak release kinds"),
+            };
+            if !matches!(
+                &drop.ty,
+                ResolvedTy::Named {
+                    builtin: Some(builtin),
+                    ..
+                } if *builtin == expected_builtin
+            ) {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc/Weak drop kind {:?} disagrees with type {}",
+                    drop.kind,
+                    drop.ty.user_facing()
+                )));
+            }
+            let (slot, storage) = place_pointer(fn_ctx, drop.place)?;
+            let BasicTypeEnum::PointerType(ptr_ty) = storage else {
+                return Err(CodegenError::FailClosed(format!(
+                    "Rc/Weak drop {:?} requires pointer storage, got {storage:?}",
+                    drop.kind
+                )));
+            };
+            let handle = fn_ctx
+                .builder
+                .build_load(ptr_ty, slot, "ref_drop_handle")
+                .llvm_ctx("Rc/Weak drop handle load")?
+                .into_pointer_value();
+            let symbol = match drop.kind {
+                hew_mir::DropKind::RcRelease => "hew_rc_drop",
+                hew_mir::DropKind::WeakRelease => "hew_weak_drop_rc",
+                _ => unreachable!("outer match admits only Rc/Weak release kinds"),
+            };
+            fn_ctx.call_runtime_void(symbol, &[handle.into()], "ref_drop", "Rc/Weak drop call")?;
+            fn_ctx
+                .builder
+                .build_store(slot, ptr_ty.const_null())
+                .llvm_ctx("Rc/Weak drop null store")?;
+            Ok(())
         }
         // W5.011 function-scope heap-owning value drops. These carry
         // their release symbol (or recursion intent) in `kind`, not in
@@ -21452,6 +21942,34 @@ fn emit_heap_slot_drop<'ctx>(
 ) -> CodegenResult<()> {
     if matches!(ty, ResolvedTy::Bytes) {
         return emit_bytes_slot_drop(fn_ctx, slot_ptr, label);
+    }
+    if let ResolvedTy::Named {
+        builtin: Some(builtin @ (BuiltinType::Rc | BuiltinType::Weak)),
+        ..
+    } = ty
+    {
+        let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+        let handle = fn_ctx
+            .builder
+            .build_load(ptr_ty, slot_ptr, &format!("{label}_ref_handle"))
+            .llvm_ctx_with(|| format!("{label} Rc/Weak handle load"))?
+            .into_pointer_value();
+        let symbol = match builtin {
+            BuiltinType::Rc => "hew_rc_drop",
+            BuiltinType::Weak => "hew_weak_drop_rc",
+            _ => unreachable!("pattern admits only Rc and Weak"),
+        };
+        fn_ctx.call_runtime_void(
+            symbol,
+            &[handle.into()],
+            "ref_handle_drop",
+            "Rc/Weak field drop call",
+        )?;
+        fn_ctx
+            .builder
+            .build_store(slot_ptr, ptr_ty.const_null())
+            .llvm_ctx_with(|| format!("{label} Rc/Weak null store"))?;
+        return Ok(());
     }
     if let Some(release) = resolved_ty_cow_heap_release(fn_ctx, ty) {
         let symbol = release.release_symbol();
@@ -32382,6 +32900,63 @@ mod tests {
         let llvm_mod = ctx.create_module("runtime_size_ty_wasm32");
         llvm_mod.set_triple(&TargetTriple::create("wasm32-unknown-unknown"));
         assert_eq!(runtime_size_ty(&ctx, &llvm_mod), ctx.i32_type());
+    }
+
+    #[test]
+    fn rc_runtime_declarations_preserve_pointer_roles_and_target_size_width() {
+        for (triple, size_bits) in [
+            ("wasm32-unknown-unknown", 32),
+            ("aarch64-unknown-linux-gnu", 64),
+        ] {
+            let ctx = Context::create();
+            let llvm_mod = ctx.create_module("rc_runtime_declarations");
+            llvm_mod.set_triple(&TargetTriple::create(triple));
+            let mut declarations = RuntimeDeclMap::new();
+            for symbol in [
+                "hew_rc_clone",
+                "hew_rc_downgrade",
+                "hew_rc_drop",
+                "hew_rc_get",
+                "hew_rc_is_unique",
+                "hew_rc_new",
+                "hew_rc_set",
+                "hew_rc_strong_count",
+                "hew_rc_weak_count",
+                "hew_weak_clone_rc",
+                "hew_weak_drop_rc",
+                "hew_weak_upgrade_rc",
+            ] {
+                intern_runtime_decl(&ctx, &llvm_mod, &mut declarations, symbol)
+                    .unwrap_or_else(|error| panic!("{symbol} declaration failed: {error}"));
+            }
+
+            let rc_new = declarations["hew_rc_new"].get_type();
+            let params = rc_new.get_param_types();
+            assert!(matches!(params[0], BasicMetadataTypeEnum::PointerType(_)));
+            assert!(matches!(params[3], BasicMetadataTypeEnum::PointerType(_)));
+            for index in [1, 2] {
+                assert!(
+                    matches!(params[index], BasicMetadataTypeEnum::IntType(ty) if ty.get_bit_width() == size_bits),
+                    "hew_rc_new parameter {index} must be target size width on {triple}: {:?}",
+                    params[index]
+                );
+            }
+            for symbol in ["hew_rc_strong_count", "hew_rc_weak_count"] {
+                assert!(
+                    matches!(
+                        declarations[symbol].get_type().get_return_type(),
+                        Some(BasicTypeEnum::IntType(ty)) if ty.get_bit_width() == size_bits
+                    ),
+                    "{symbol} return must be target size width on {triple}"
+                );
+            }
+            for symbol in ["hew_rc_downgrade", "hew_weak_upgrade_rc"] {
+                assert!(matches!(
+                    declarations[symbol].get_type().get_return_type(),
+                    Some(BasicTypeEnum::PointerType(_))
+                ));
+            }
+        }
     }
 
     #[test]

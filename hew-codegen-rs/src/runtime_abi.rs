@@ -3715,7 +3715,18 @@ pub(crate) fn lower_call_runtime_abi(
         | F::NodeSetTransport
         | F::NodeShutdown
         | F::NodeStart
+        | F::RcClone
+        | F::RcDowngrade
+        | F::RcDrop
+        | F::RcGet
+        | F::RcIsUnique
         | F::RcNew
+        | F::RcSet
+        | F::RcStrongCount
+        | F::RcWeakCount
+        | F::WeakCloneRc
+        | F::WeakDropRc
+        | F::WeakUpgradeRc
         | F::RegexCompile
         | F::RemotePidSend
         | F::ReplyChannelCancel
@@ -4834,11 +4845,32 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_string_slice_codepoints" => {
             ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
         }
-        // hew_rc_new(data: *const u8, size: i64, align: i64, drop_fn: *const fn) -> *mut u8.
-        // `align` is the payload's ABI alignment so the runtime can over-align
-        // the allocation rather than guessing from the source address.
+        // Rc strong handles are payload pointers; Weak handles are header
+        // pointers. Both are opaque LLVM pointers, so their distinct symbols
+        // are the ABI discriminator at this boundary.
+        "hew_rc_clone" | "hew_rc_downgrade" | "hew_rc_get" | "hew_weak_clone_rc"
+        | "hew_weak_upgrade_rc" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_rc_drop" | "hew_weak_drop_rc" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
+        "hew_rc_strong_count" | "hew_rc_weak_count" => {
+            size_ty.fn_type(&[ptr_ty.into()], false)
+        }
+        "hew_rc_is_unique" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_rc_set" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // `size` and `align` are Rust `usize` values in the runtime ABI.
         "hew_rc_new" => {
-            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into(), ptr_ty.into()], false)
+            ptr_ty.fn_type(
+                &[
+                    ptr_ty.into(),
+                    size_ty.into(),
+                    size_ty.into(),
+                    ptr_ty.into(),
+                ],
+                false,
+            )
         }
         // hew_supervisor_new(strategy: c_int, max_restarts: c_int, window_secs: c_int)
         //                    -> *mut HewSupervisor

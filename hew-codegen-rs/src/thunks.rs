@@ -38,7 +38,7 @@ use hew_types::{BuiltinType, ResolvedTy};
 use crate::layout::mix_into_hash_acc;
 #[allow(unused_imports)]
 use crate::llvm::*;
-use crate::runtime_abi::intern_runtime_decl;
+use crate::runtime_abi::{intern_runtime_decl, reconcile_int_width_signed};
 
 fn task_wrapper_name(callee_symbol: &str) -> String {
     format!("__hew_task_wrapper_{}", sanitize_symbol(callee_symbol))
@@ -594,10 +594,17 @@ pub(crate) fn emit_spawn_task_closure(
     // allocation. The runtime over-aligns the payload to this value instead of
     // guessing from the source pointer's trailing zeros, which would
     // under-align an over-aligned closure capture.
-    let env_align = fn_ctx.ctx.i64_type().const_int(
+    let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+    let env_align = size_ty.const_int(
         u64::from(fn_ctx.target_data.get_abi_alignment(&env_struct)),
         false,
     );
+    let env_size = reconcile_int_width_signed(
+        fn_ctx,
+        env_size.into(),
+        size_ty.into(),
+        "closure environment Rc size",
+    )?;
     let rc_new = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,

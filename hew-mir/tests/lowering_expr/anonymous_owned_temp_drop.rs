@@ -1,6 +1,6 @@
 //! Anonymous caller-owned result and while-let scrutinee drop regressions.
 
-use hew_mir::{DropKind, ElabDrop, ExitPath, IrPipeline, MirStatement};
+use hew_mir::{DropKind, ElabDrop, ExitPath, Instr, IrPipeline, MirStatement, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -46,6 +46,131 @@ fn enum_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -
         .filter(|drop| matches!(drop.kind, DropKind::EnumInPlace))
         .cloned()
         .collect()
+}
+
+fn record_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -> Vec<ElabDrop> {
+    p.elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| pred(exit))
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|drop| matches!(drop.kind, DropKind::RecordInPlace))
+        .cloned()
+        .collect()
+}
+
+fn call_count(p: &IrPipeline, fn_name: &str, symbol: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(&block.terminator, Terminator::Call { callee, .. } if callee == symbol)
+        })
+        .count()
+}
+
+fn string_retain_count(p: &IrPipeline, fn_name: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| matches!(instr, Instr::StringRetain { .. }))
+        .count()
+}
+
+#[test]
+fn vec_copy_in_string_param_temps_own_only_their_retained_share() {
+    let p = pipeline_with_tc(
+        r#"
+type Holder { items: Vec<string> }
+type Wrap { f: Option<string> }
+type HolderWrap { f: Option<Holder> }
+
+fn pushParam(p: string) {
+    let v: Vec<Wrap> = [];
+    v.push(Wrap { f: Some(p) });
+}
+
+fn setParam(p: string) {
+    let v: Vec<Wrap> = [];
+    v.set(0, Wrap { f: Some(p) });
+}
+
+fn boundFirst(p: string) {
+    let v: Vec<Wrap> = [];
+    let w = Wrap { f: Some(p) };
+    v.push(w);
+}
+
+fn freshMove() {
+    let v: Vec<Wrap> = [];
+    v.push(Wrap { f: Some("item".to_upper()) });
+}
+
+fn unsupported(p: Holder) {
+    let v: Vec<HolderWrap> = [];
+    v.push(HolderWrap { f: Some(p) });
+}
+"#,
+    );
+
+    for (fn_name, copy_symbol, move_symbol) in [
+        ("pushParam", "hew_vec_push_owned", "hew_vec_push_owned_move"),
+        ("setParam", "hew_vec_set_owned", "hew_vec_set_owned_move"),
+    ] {
+        assert_eq!(
+            string_retain_count(&p, fn_name),
+            1,
+            "{fn_name} must retain exactly the string share owned by the source temp"
+        );
+        assert_eq!(call_count(&p, fn_name, copy_symbol), 1);
+        assert_eq!(
+            call_count(&p, fn_name, move_symbol),
+            0,
+            "a parameter embed must remain COPY-IN"
+        );
+        assert_eq!(
+            synthetic_binds(&p, fn_name, "__hew_copy_in_param_temp"),
+            1,
+            "{fn_name} must mint exactly one source-temp owner"
+        );
+        assert_eq!(
+            record_drops(&p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
+            1,
+            "{fn_name} must drop the retained source-temp share exactly once on return"
+        );
+    }
+
+    assert_eq!(
+        synthetic_binds(&p, "boundFirst", "__hew_copy_in_param_temp"),
+        0,
+        "a named source already has its ordinary owner"
+    );
+    assert_eq!(call_count(&p, "freshMove", "hew_vec_push_owned_move"), 1);
+    assert_eq!(
+        synthetic_binds(&p, "freshMove", "__hew_copy_in_param_temp"),
+        0,
+        "a no-parameter fresh owner must stay on MOVE-IN"
+    );
+    assert_eq!(call_count(&p, "unsupported", "hew_vec_push_owned"), 1);
+    assert_eq!(
+        synthetic_binds(&p, "unsupported", "__hew_copy_in_param_temp"),
+        0,
+        "an unretained non-string parameter alias must never gain an owner"
+    );
+    assert!(
+        record_drops(&p, "unsupported", |_| true).is_empty(),
+        "the borrowed Holder alias must never be dropped through the source temp"
+    );
 }
 
 #[test]

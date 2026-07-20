@@ -34,7 +34,7 @@ use hew_runtime::actor::{
 use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::hew_actor_link;
-use hew_runtime::monitor::{hew_actor_demonitor, hew_actor_monitor};
+use hew_runtime::monitor::{hew_actor_demonitor, register_actor_monitor, HewDownMessage};
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_dynamic, hew_supervisor_add_child_spec, hew_supervisor_child_count,
     hew_supervisor_get_child_circuit_state, hew_supervisor_get_child_wait,
@@ -133,18 +133,10 @@ unsafe extern "C-unwind" fn counting_dispatch(
     std::ptr::null_mut()
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-struct DownMessageView {
-    monitored_actor_id: u64,
-    ref_id: u64,
-    reason: i32,
-}
-
 #[derive(Clone, Debug, Default)]
 struct MonitorDispatchState {
     total_dispatches: usize,
-    down_messages: Vec<DownMessageView>,
+    down_messages: Vec<HewDownMessage>,
 }
 
 struct MonitorDispatchSignal {
@@ -172,10 +164,10 @@ impl MonitorDispatchSignal {
         state.total_dispatches += 1;
         if msg_type == SYS_MSG_DOWN
             && !data.is_null()
-            && data_size == std::mem::size_of::<DownMessageView>()
+            && data_size == std::mem::size_of::<HewDownMessage>()
         {
-            // SAFETY: SYS_MSG_DOWN payload size matches DownMessageView.
-            let down = unsafe { (data.cast::<DownMessageView>().cast_const()).read_unaligned() };
+            // SAFETY: SYS_MSG_DOWN payload size matches HewDownMessage.
+            let down = unsafe { (data.cast::<HewDownMessage>().cast_const()).read_unaligned() };
             state.down_messages.push(down);
         }
         self.cond.notify_all();
@@ -206,7 +198,7 @@ impl MonitorDispatchSignal {
         &self,
         expected: usize,
         timeout: Duration,
-    ) -> Option<Vec<DownMessageView>> {
+    ) -> Option<Vec<HewDownMessage>> {
         let mut state = self.state.lock().unwrap();
         let deadline = Instant::now() + timeout;
         while state.down_messages.len() < expected {
@@ -588,7 +580,8 @@ fn circuit_breaker_trips_on_repeated_crashes() {
                 !child.is_null(),
                 "child should be available before crash iteration {crash_num}"
             );
-            let ref_id = hew_actor_monitor(watcher.as_ptr(), child);
+            let ref_id =
+                register_actor_monitor(watcher.as_ptr(), child).expect("monitor registration");
             assert_ne!(ref_id, 0, "monitor ref_id should be non-zero");
 
             let child_id = (*child).id;
@@ -895,7 +888,8 @@ fn monitor_detects_crash() {
 
     // SAFETY: actors are live; monitor/fault-inject/send use runtime contract.
     let (target_id, ref_id) = unsafe {
-        let ref_id = hew_actor_monitor(watcher.as_ptr(), target.as_ptr());
+        let ref_id = register_actor_monitor(watcher.as_ptr(), target.as_ptr())
+            .expect("monitor registration");
         assert_ne!(ref_id, 0, "monitor ref_id should be non-zero");
 
         let target_id = (*target.as_ptr()).id;
@@ -916,15 +910,10 @@ fn monitor_detects_crash() {
         .last()
         .copied()
         .expect("DOWN notification should be recorded");
-    assert_eq!(
-        down,
-        DownMessageView {
-            monitored_actor_id: target_id,
-            ref_id,
-            reason: HewActorState::Crashed as i32,
-        },
-        "DOWN payload should identify the crashed actor and monitor ref"
-    );
+    assert_eq!(down.monitor_id, ref_id);
+    assert_eq!(down.target_kind, 0);
+    assert_eq!(down.reason_kind, 1);
+    assert_eq!(down.slot, hew_runtime::pid::hew_pid_serial(target_id));
 
     hew_deterministic_reset();
 }
@@ -944,7 +933,8 @@ fn demonitor_before_crash_suppresses_down() {
 
     // SAFETY: actors are live; monitor/demonitor/fault-inject use runtime contract.
     let target_id = unsafe {
-        let ref_id = hew_actor_monitor(watcher.as_ptr(), target.as_ptr());
+        let ref_id = register_actor_monitor(watcher.as_ptr(), target.as_ptr())
+            .expect("monitor registration");
         assert_ne!(ref_id, 0, "monitor ref_id should be non-zero");
         hew_actor_demonitor(ref_id);
 
@@ -1000,7 +990,9 @@ fn late_monitor_after_crash_delivers_immediate_down() {
     );
 
     // SAFETY: late monitor on a live watcher+target.
-    let ref_id = unsafe { hew_actor_monitor(watcher.as_ptr(), target.as_ptr()) };
+    let ref_id = unsafe {
+        register_actor_monitor(watcher.as_ptr(), target.as_ptr()).expect("monitor registration")
+    };
     assert_ne!(ref_id, 0, "late monitor should still return a ref_id");
 
     let down_messages = MONITOR_DISPATCH_SIGNAL
@@ -1010,15 +1002,10 @@ fn late_monitor_after_crash_delivers_immediate_down() {
         .last()
         .copied()
         .expect("DOWN notification should be recorded");
-    assert_eq!(
-        down,
-        DownMessageView {
-            monitored_actor_id: target_id,
-            ref_id,
-            reason: HewActorState::Crashed as i32,
-        },
-        "late monitor should reuse the existing DOWN payload shape"
-    );
+    assert_eq!(down.monitor_id, ref_id);
+    assert_eq!(down.target_kind, 0);
+    assert_eq!(down.reason_kind, 1);
+    assert_eq!(down.slot, hew_runtime::pid::hew_pid_serial(target_id));
 
     hew_actor_demonitor(ref_id);
     watcher.send_empty(77);

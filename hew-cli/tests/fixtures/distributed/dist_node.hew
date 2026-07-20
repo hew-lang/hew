@@ -25,9 +25,10 @@
 //   - "PASS <scenario> <detail>"  on success
 //   - "FAIL <scenario> <detail>"  on any mismatch; main returns non-zero
 import std::os;
+
 import std::fs;
 
-import std::link_monitor::{ MonitorError };
+import std::link_monitor::{DownNotification, DownReason, DownTarget, MonitorError};
 
 // Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
 // the Stopped terminal state from within its own handler. `stop(self)` is not a
@@ -157,7 +158,7 @@ impl ActorMsg for WireProbe {
 record DistIdentity {
     node_id: string,
     slot: u64,
-    incarnation: u32,
+    incarnation: u32
 }
 
 enum IdentityReq {
@@ -172,16 +173,8 @@ actor IdentityProbe {
     receive fn handle(_req: IdentityReq) -> IdentityResp {
         let self_pid: Result<RemotePid<IdentityProbe>, LookupError> = Node::lookup("identity");
         let identity = match self_pid {
-            Result::Ok(pid) => DistIdentity {
-                node_id: to_string(pid.node_id()),
-                slot: pid.slot(),
-                incarnation: pid.incarnation(),
-            },
-            Result::Err(_) => DistIdentity {
-                node_id: "",
-                slot: 0,
-                incarnation: 0,
-            },
+            Result::Ok(pid) => DistIdentity { node_id: to_string(pid.node_id()), slot: pid.slot(), incarnation: pid.incarnation() },
+            Result::Err(_) => DistIdentity { node_id: "", slot: 0, incarnation: 0 },
         };
         IdentityResp::Value(identity)
     }
@@ -312,26 +305,400 @@ actor Linker {
     }
 }
 
-// ── Strict TCP-Noise credential staging (issue #2652) ───────────────────────
-//
-// Both processes run under strict peer binding: plain TCP is Unverified
-// (delivery-only) and cannot lookup / ask / gossip / SWIM. Each node mints a
-// stable Noise identity, publishes its public credential to a shared key-
-// exchange directory, waits for the peer's, and binds it with allow_peer BEFORE
-// the handshake — a real mutual authenticated pin, never an injected posture.
-// Node ids are fixed by the harness: server = 1, client = 2 (HEW_NODE_ID).
+actor MonitorProbe {
+    var active_monitor: Result<MonitorRef, MonitorError>;
+    var down_count: i64 = 0;
+    var down_reason: i64 = 100;
 
-// Atomically publish `content` at `<dir>/<name>` via temp-then-rename, so a
-// reader polling for the file never observes a partial write.
+    // drive: 0 = clean stop, 1 = crash, 2 = leave target alive.
+    receive fn arm(peer: RemotePid<KeyValue>, drive: i64) -> i64 {
+        active_monitor = monitor(peer);
+        if drive == 0 {
+            match peer.send(KvReq::StopSelf) {
+                Result::Ok(_) => 0,
+                Result::Err(_) => 2,
+            }
+        } else {
+            if drive == 1 {
+                match peer.send(KvReq::CrashSelf) {
+                    Result::Ok(_) => 0,
+                    Result::Err(_) => 3,
+                }
+            } else {
+                0
+            }
+        }
+    }
+    receive fn status() -> i64 {
+        if down_count == 0 {
+            100
+        } else {
+            if down_count == 1 {
+                down_reason
+            } else {
+                -99
+            }
+        }
+    }
+
+    // ── Strict TCP-Noise credential staging (issue #2652) ───────────────────────
+    //
+    // Both processes run under strict peer binding: plain TCP is Unverified
+    // (delivery-only) and cannot lookup / ask / gossip / SWIM. Each node mints a
+    // stable Noise identity, publishes its public credential to a shared key-
+    // exchange directory, waits for the peer's, and binds it with allow_peer BEFORE
+    // the handshake — a real mutual authenticated pin, never an injected posture.
+    // Node ids are fixed by the harness: server = 1, client = 2 (HEW_NODE_ID).
+
+    // Atomically publish `content` at `<dir>/<name>` via temp-then-rename, so a
+    // reader polling for the file never observes a partial write.
+
+    // Bounded poll for a published file, returning its contents (or "" on timeout).
+    // ~30 s ceiling (600 * 50 ms) — generous for a warm host while still failing
+    // closed if the peer never publishes.
+
+    // Mint this node's stable Noise identity, publish its identity_key() for the
+    // peer to pin, wait for the peer's published credential, and bind it to the
+    // NodeId the peer will claim. Runs before Node::start so the listener and the
+    // handshake adopt the staged allowlist (config locks once Starting/Running).
+
+    // Server → client listener-liveness signal. The client waits on this before it
+    // connects, because it cannot observe the harness READY line.
+
+    // Bounded poll for the remote actor: retry Node::lookup until registry gossip
+    // resolves it, instead of a single fixed-interval sleep. ~50 attempts at 100 ms
+    // = 5 s deadline, generous for loopback gossip while still failing closed if the
+    // peer never registers.
+
+    // Same bounded poll, typed for the WireProbe actor (the #[wire] scenario).
+
+    // Strict TCP-Noise (issue #2652): mint this node's stable Noise identity,
+    // publish its public credential for the peer to pin, and bind the client's
+    // BEFORE the listener adopts the allowlist. Server is node 1, client is
+    // node 2 (HEW_NODE_ID pins each side; see the harness).
+
+    // Also register the #[wire] probe actor so the wire_cbor scenario has a
+    // remote target. Registering both keeps run_server scenario-independent.
+
+    // Listener-liveness signal: emitted ONLY after the actors are registered.
+    // The client waits on this file before it connects, because it cannot
+    // observe the harness READY line and a failed one-shot connect is not
+    // retried.
+
+    // Readiness signal: emitted ONLY after the actors are registered, so the
+    // harness never launches the client against a half-started node.
+
+    // For this scenario the server drives the assertion: poll the watcher
+    // count until it drops to 0 (prune fired) and print the result.
+    // The harness reads this PASS line from the server's stdout.
+
+    // The server watches its target-side count rise then fall after
+    // the client closes its cross-node monitor (CTRL_DEMONITOR received).
+
+    // After the client captures the original actor's pid, re-point
+    // "kv" to a DIFFERENT live actor. Future lookups must observe the
+    // replacement while the already-issued Location remains valid.
+
+    // All other scenarios: stay alive until the harness kills us.
+
+    // Scenario: remote_ask
+    //
+    // The client connects, puts two entries via fire-and-forget send, then issues
+    // two blocking remote asks and checks the exact returned values. This is the
+    // first assertion: a real cross-process ask round-trip with exact-value teeth.
+
+    // Brief settle so the fire-and-forget sends are applied before the ask.
+    // (send is async; the ask below is the synchronization point we assert on.)
+
+    // Scenario: wire_cbor
+    //
+    // Sends a #[wire] enum (WireCmd) with EXPLICIT @N variant tags via two remote
+    // asks — a payload variant (Move, the map-of-one body) and a unit variant (Ping,
+    // the bare-tag body) — and checks the #[wire] struct reply (WireResult, an
+    // @N-keyed map) field-by-field. This is the distinct thing this scenario proves: an
+    // explicit-@N tagged CBOR body crossing two OS processes in both directions,
+    // which the plain-record/enum remote_ask scenario does not exercise.
+
+    // Payload variant: Move(WirePoint { x: 3, y: 4 }) → server replies
+    // WireResult { tag: 1, sum: 7 }.
+
+    // Unit variant: Ping → server replies WireResult { tag: 0, sum: 0 }.
+
+    // Scenario: identity_location
+    //
+    // Proves the runtime identity tuple across two OS processes. Registry gossip
+    // yields an exact remote Location whose node key and slot match the actor's
+    // self-reported identity and whose node key is distinct from this client.
+
+    // Scenario: remote_monitor_clean_exit
+    //
+    // The client monitors the remote KeyValue actor, then tells it to stop. The
+    // monitor must deliver exactly one DOWN carrying the clean-exit reason (6).
+
+    // Scenario: remote_monitor_crash
+    //
+    // The client monitors the remote KeyValue actor, then tells it to crash. The
+    // monitor must deliver exactly one DOWN carrying the crash reason (5).
+
+    // Scenario: remote_monitor_conn_drop
+    //
+    // The client monitors the remote actor, then the harness kills the server
+    // process. The monitor must deliver exactly one DOWN carrying the MonitorLost
+    // sentinel (-1) for the connection-drop / partition cause — distinct from the
+    // clean-exit and crash reasons.
+
+    // Scenario: remote_monitor_setup_after_drop
+    //
+    // The harness kills the server after READY_DROP. Once route teardown reaches the
+    // client, monitor(RemotePid) must return Err(MonitorError::Partition) rather than
+    // a zero-valued or inert MonitorRef.
+
+    // Scenario: partition_ask
+    //
+    // The partition gate. The client looks up the remote actor, signals
+    // READY_DROP so the harness can kill the server (dropping the route to the
+    // peer), then issues a remote ask to the now-unreachable actor. The invariant
+    // under test is: the ask FAILS CLOSED — it resolves to a typed AskError WITHOUT
+    // hanging — rather than blocking to the client ceiling or fabricating a value.
+    //
+    // The EXACT fail-closed cause is timing-dependent: a two-process SIGKILL races
+    // three independent fail paths, any of which is a correct fail-closed verdict
+    // for a peer that is gone:
+    //   * RoutingFailed   — the reader thread tore down the route before the ask was
+    //                       set up, so the ask is refused before it leaves the node.
+    //   * ConnectionDropped — the socket-drop path failed the pending ask.
+    //   * Partition       — the SWIM failure detector declared the peer dead and
+    //                       fanned out to the pending ask (the deterministic
+    //                       socket-open-but-peer-dead path).
+    //   * NodeNotRunning / SendFailed / StaleRef — narrower fail-closed races on the
+    //                       same teardown.
+    // Which one wins shifts with host load (under CI load RoutingFailed dominates;
+    // on a quiet host the ask is more often still pending and surfaces as
+    // ConnectionDropped). The gate therefore accepts ANY fail-closed cause EXCEPT
+    // Timeout: a Timeout means the ask waited its WHOLE deadline because none of the
+    // proactive fail-closed paths fired — that is the hang-to-deadline this gate
+    // exists to catch, so it is retried (in case the verdict is mid-propagation)
+    // and then fails.
+    //
+    // Teeth that remain: (a) a Result::Ok after READY_DROP is rejected (the route is
+    // still live — never-partitioned), so a wrong success cannot pass; (b) every ask
+    // carries a 1 s timeout, so an unresolved ask cannot hang past that, and the
+    // whole scenario is bounded far under the 40 s client ceiling; (c) the resolving
+    // fast-fail must return BEFORE its own 1 s deadline (no-hang bound, asserted
+    // explicitly), so a fail-closed-by-timeout cannot masquerade as a proactive one.
+    //
+    // The deterministic SWIM-DEAD-while-socket-open Partition path is proven exactly
+    // in-process by the runtime unit test
+    // `swim_dead_wakes_pending_remote_ask_with_partition`; this two-process fixture
+    // pins the broader no-hang + typed-fail-closed invariant across the wire.
+
+    // Signal the harness to kill the server now that the route is established.
+
+    // Arm the deterministic partition seam: a concurrent injector fails the
+    // in-flight remote ask closed with Partition through the production
+    // reply-table fan-out the instant it registers, so the typed fail-closed
+    // verdict no longer races the socket-teardown / SWIM detector latency (the
+    // historical source of this test's flake). The harness kill above is the real
+    // teardown; the injector only bounds WHEN the pending ask is failed closed,
+    // never WHETHER. The reply table holds only application asks (the lookup that
+    // resolved `kv` already completed), so the sole pending entry is this scenario's
+    // `kv.ask` — draining it cannot disturb any healthy in-flight request.
+
+    // Per-ask timeout: an unresolved ask cannot block longer than this, so even a
+    // pure Timeout is bounded far under the client ceiling — the no-hang floor.
+
+    // No-hang bound: a PROACTIVE fail-closed verdict resolves the ask well before
+    // its own deadline. If an Err comes back only at (or past) the full timeout,
+    // the proactive path did not fire — treat it as a Timeout, not a fast-fail.
+
+    // The route is still live (kill in flight) — a success here is
+    // NOT a partition. Retry briefly; never accept it as a pass.
+
+    // A Timeout — or any Err that only surfaced at the full deadline —
+    // means no proactive fail-closed path fired (a hang-to-deadline).
+    // Retry a bounded number of times in case the verdict is still
+    // propagating, then fail.
+
+    // A proactive, fast typed fail-closed verdict — the invariant
+    // holds. Name the cause for diagnostics; any of these is a
+    // correct outcome for a peer that is gone.
+
+    // Scenario: repoint_preserves_ref
+    //
+    // The client seeds the ORIGINAL actor, then waits until a future lookup returns a
+    // DIFFERENT exact Location. The captured ref must still address the original
+    // live actor, while the replacement starts with independent state.
+
+    // Scenario: monitor_watcher_node_death
+    //
+    // Two-process fixture: the watcher node dies and the target-side
+    // RemoteWatcher entries it registered are pruned, keeping the table bounded.
+    //
+    // Server role: registers the target actor, prints READY, then polls
+    // hew_dist_monitor_remote_watcher_count() until it drops to 0 (the prune
+    // fired) and prints the exact count that was registered before the death.
+    // Target actor stays alive and re-monitorable afterward.
+    //
+    // Client role: connects, registers a monitor on the server's "kv" actor,
+    // prints READY_CLIENT_WATCHER so the harness knows the watch is live, then
+    // sleeps until the harness kills it. The kill simulates a watcher-node crash.
+
+    // Phase 1: wait until at least one RemoteWatcher entry appears (the client
+    // connected and registered its monitor via CTRL_MONITOR_REQ).
+
+    // Signal that the monitor registration has been received and processed.
+    // The harness reads this line before killing the client, ensuring the
+    // kill arrives after — not before — the target-side entry is recorded.
+
+    // Emit diagnostic count to distinguish no-runtime (-1) from table-empty (0).
+
+    // Phase 2: poll until the count drops back to 0 (prune fired on connection-drop).
+
+    // Table is empty: the prune fired correctly.
+
+    // ── Cross-node link scenarios ────────────────────────────────────────────────
+
+    // Spawn a Linker, send it to establish the cross-node link (capturing its actor
+    // id from the reply), drive the remote actor to a terminal state, then poll the
+    // linker's terminal state. With CrashLinked the linker must reach Crashed (5):
+    // the cross-node link-down landed in its mailbox as a SYS_MSG_EXIT and crashed
+    // it. `policy_sel` 0 = CrashLinked. `drive` selects how the remote dies.
+
+    // Establish the link from inside the linker's own handler; the reply is its
+    // actor id (or -1 on a registration failure).
+
+    // Drive the remote actor to its terminal state per the scenario.
+
+    // drive == "partition": the harness kills the server; nothing to send.
+
+    // Signal readiness so the harness kills the server now that the link is
+    // established. The remote actor stays alive; only the connection drops.
+
+    // Poll the linker's terminal state until the cascade crashes it (or a bound
+    // elapses). The probe returns the recorded terminal reason or -999 while live.
+
+    // Reached a terminal state other than Crashed — unexpected for a
+    // CrashLinked cascade (a clean Stopped would be a fail-open bug).
+
+    // Negative case: a non-CrashLinked link policy (MonitorLost) must NOT crash the
+    // linker when the remote dies. After driving the remote to a clean exit, the
+    // linker must STILL answer a liveness ask — proving the policy discriminator has
+    // teeth and a non-CrashLinked link does not synthesize a fatal EXIT.
+
+    // Give the cross-node link-down ample time to (wrongly) crash the linker.
+
+    // The probe must NOT report a terminal state — the linker survived.
+
+    // Liveness confirmation: a surviving linker still answers an ask.
+
+    // Cross-node demonitor reclamation (server-driven, mirrors the watcher-node-death
+    // proof). The client monitors the remote actor, then explicitly
+    // closes the MonitorRef. The close must route to the cross-node teardown (not
+    // the local-table no-op), sending a CTRL_DEMONITOR to the peer. The SERVER
+    // observes its target-side entry appear (count>0) then disappear (count==0)
+    // after the demonitor — proving the close reached the peer (the watcher-side
+    // entry was reclaimed locally AND the peer was told). The server prints the
+    // PASS; this client just registers, signals ready, closes, and exits cleanly.
+
+    // Scenario: quarantine_rejoin
+    //
+    // Proves the fail-closed rejoin-admission boundary through the full compiled
+    // stack. A buried peer (DEAD) is quarantined; a stale (<=-incarnation) ALIVE
+    // gossip replay must NOT resurrect it, while a strictly-higher-incarnation rejoin
+    // IS admitted and evicts the quarantine entry. The membership gossip frames are
+    // driven deterministically through the runtime so there is no failure-detector
+    // race; the resurrection-guard negative half is the assertion with teeth.
+    //
+    // MEMBER_* states: ALIVE = 0, DEAD = 2.
+
+    // Establish the peer ALIVE at incarnation 5, then bury it (DEAD at 5). The
+    // DEAD verdict quarantines it at incarnation 5.
+
+    // Negative half (the resurrection guard): a stale ALIVE replay at an
+    // incarnation <= the buried one must NOT resurrect the peer. Try equal (5) and
+    // lower (4); after each the peer must stay DEAD and quarantined.
+
+    // Positive half: a strictly-higher-incarnation rejoin (6 > 5) IS admitted;
+    // the peer returns ALIVE and the quarantine entry is evicted.
+
+    // Strict TCP-Noise (issue #2652): client is node 2; bind the server
+    // (node 1) credential before connecting.
+
+    // Wait for the server's listener to be live: a failed one-shot connect is
+    // not retried, so connecting before the server binds would fail closed.
+
+    // Connect using the server's pinned NodeId so admission binds the claimed
+    // id to the authenticated Noise key (fail-closed on identity mismatch).
+
+    // Scenario dispatch. New scenarios add a branch here plus a scenario_*
+    // function above; the harness selects via HEW_DIST_SCENARIO. The #[wire]
+    // scenario targets the WireProbe actor ("wire"); the rest target KeyValue
+    // ("kv").
+
+    // Membership-gate scenario: driven entirely through injected gossip on the
+    // local cluster, so it needs no remote actor lookup.
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        down_count = down_count + 1;
+        match note.target {
+            DownTarget::Remote(_) => {},
+            DownTarget::Local(_) => {
+                down_reason = -97;
+                return;
+            },
+        }
+        down_reason = match note.reason {
+            DownReason::Exited => 6,
+            DownReason::Crashed(_) => 5,
+            DownReason::MonitorLost => -1,
+            DownReason::LocalShutdown => -3,
+        };
+    }
+}
+
+actor MonitorSetupProbe {
+    receive fn wait_for_partition(peer: RemotePid<KeyValue>) -> i64 {
+        var attempts: i64 = 0;
+        loop {
+            let setup: Result<MonitorRef, MonitorError> = monitor(peer);
+            match setup {
+                Result::Err(MonitorError::Partition) => return 0,
+                Result::Err(_) => return 2,
+                Result::Ok(monitor_ref) => {
+                    monitor_ref.close();
+                    attempts = attempts + 1;
+                    if attempts >= 100 {
+                        return 3;
+                    }
+                    sleep(100ms);
+                },
+            }
+        }
+    }
+}
+
+actor MonitorCloseProbe {
+    receive fn register_and_close(peer: RemotePid<KeyValue>) -> i64 {
+        let setup: Result<MonitorRef, MonitorError> = monitor(peer);
+        match setup {
+            Result::Err(_) => 1,
+            Result::Ok(monitor_ref) => {
+                println("READY_CLIENT_WATCHER cross_node_monitor_close_reclaim");
+                sleep(800ms);
+                monitor_ref.close();
+                sleep(800ms);
+                0
+            },
+        }
+    }
+}
+
 fn publish_atomic(dir: string, name: string, content: string) {
     let tmp = f"{dir}/{name}.tmp";
     let _ = fs.write(tmp, content);
     let _ = fs.rename(tmp, f"{dir}/{name}");
 }
 
-// Bounded poll for a published file, returning its contents (or "" on timeout).
-// ~30 s ceiling (600 * 50 ms) — generous for a warm host while still failing
-// closed if the peer never publishes.
 fn wait_for_file(path: string) -> string {
     var attempts: i64 = 0;
     loop {
@@ -349,10 +716,6 @@ fn wait_for_file(path: string) -> string {
     }
 }
 
-// Mint this node's stable Noise identity, publish its identity_key() for the
-// peer to pin, wait for the peer's published credential, and bind it to the
-// NodeId the peer will claim. Runs before Node::start so the listener and the
-// handshake adopt the staged allowlist (config locks once Starting/Running).
 fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_node_id: u16) {
     Node::load_keys(f"{kx}/{my_role}.key");
     let me = Node::identity_key();
@@ -361,8 +724,6 @@ fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_n
     Node::allow_peer(peer_node_id, peer_key);
 }
 
-// Server → client listener-liveness signal. The client waits on this before it
-// connects, because it cannot observe the harness READY line.
 fn signal_server_listening(kx: string) {
     publish_atomic(kx, "server.ready", "1");
 }
@@ -371,10 +732,6 @@ fn wait_for_server_listening(kx: string) {
     let _ = wait_for_file(f"{kx}/server.ready");
 }
 
-// Bounded poll for the remote actor: retry Node::lookup until registry gossip
-// resolves it, instead of a single fixed-interval sleep. ~50 attempts at 100 ms
-// = 5 s deadline, generous for loopback gossip while still failing closed if the
-// peer never registers.
 fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
     var attempts: i64 = 0;
     loop {
@@ -394,7 +751,6 @@ fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
     }
 }
 
-// Same bounded poll, typed for the WireProbe actor (the #[wire] scenario).
 fn lookup_wire_with_retry(name: string) -> Result<RemotePid<WireProbe>, LookupError> {
     var attempts: i64 = 0;
     loop {
@@ -437,45 +793,24 @@ fn run_server(port: string, scenario: string) {
     let addr = f"127.0.0.1:{port}";
     let kx = os.env("HEW_DIST_KX_DIR");
     Node::set_transport("tcp");
-    // Strict TCP-Noise (issue #2652): mint this node's stable Noise identity,
-    // publish its public credential for the peer to pin, and bind the client's
-    // BEFORE the listener adopts the allowlist. Server is node 1, client is
-    // node 2 (HEW_NODE_ID pins each side; see the harness).
     stage_peer_credentials(kx, "server", "client", 2);
     Node::start(addr);
     let s: HashMap<string, string> = HashMap::new();
     let kv = spawn KeyValue(store: s);
     Node::register("kv", kv);
-    // Also register the #[wire] probe actor so the wire_cbor scenario has a
-    // remote target. Registering both keeps run_server scenario-independent.
     let wp = spawn WireProbe(calls: 0);
     Node::register("wire", wp);
     let identity = spawn IdentityProbe;
     Node::register("identity", identity);
-
-    // Listener-liveness signal: emitted ONLY after the actors are registered.
-    // The client waits on this file before it connects, because it cannot
-    // observe the harness READY line and a failed one-shot connect is not
-    // retried.
     signal_server_listening(kx);
-    // Readiness signal: emitted ONLY after the actors are registered, so the
-    // harness never launches the client against a half-started node.
     println(f"READY {port}");
     if scenario == "monitor_watcher_node_death" {
-        // For this scenario the server drives the assertion: poll the watcher
-        // count until it drops to 0 (prune fired) and print the result.
-        // The harness reads this PASS line from the server's stdout.
         scenario_server_watcher_node_death(0);
     } else {
         if scenario == "cross_node_monitor_close_reclaim" {
-            // The server watches its target-side count rise then fall after
-            // the client closes its cross-node monitor (CTRL_DEMONITOR received).
             scenario_server_monitor_close_reclaim();
         } else {
             if scenario == "repoint_preserves_ref" {
-                // After the client captures the original actor's pid, re-point
-                // "kv" to a DIFFERENT live actor. Future lookups must observe the
-                // replacement while the already-issued Location remains valid.
                 sleep(1s);
                 let _ = unsafe {
                     hew_node_api_unregister("kv")
@@ -486,7 +821,6 @@ fn run_server(port: string, scenario: string) {
                 println("SERVER_REPOINTED repoint_preserves_ref");
                 sleep(2m);
             } else {
-                // All other scenarios: stay alive until the harness kills us.
                 sleep(2m);
             }
         }
@@ -494,11 +828,6 @@ fn run_server(port: string, scenario: string) {
     Node::shutdown();
 }
 
-// Scenario: remote_ask
-//
-// The client connects, puts two entries via fire-and-forget send, then issues
-// two blocking remote asks and checks the exact returned values. This is the
-// first assertion: a real cross-process ask round-trip with exact-value teeth.
 fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
     let send1 = kv.send(KvReq::Put(KvPut { key: "hello", val: "world" }));
     match send1 {
@@ -516,8 +845,6 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result::Ok(_) => {},
     }
-    // Brief settle so the fire-and-forget sends are applied before the ask.
-    // (send is async; the ask below is the synchronization point we assert on.)
     sleep(200ms);
     let ask1 = kv.ask(KvReq::GetKey("hello"), 5000);
     match ask1 {
@@ -568,17 +895,7 @@ fn scenario_remote_ask(kv: RemotePid<KeyValue>) -> i64 {
     0
 }
 
-// Scenario: wire_cbor
-//
-// Sends a #[wire] enum (WireCmd) with EXPLICIT @N variant tags via two remote
-// asks — a payload variant (Move, the map-of-one body) and a unit variant (Ping,
-// the bare-tag body) — and checks the #[wire] struct reply (WireResult, an
-// @N-keyed map) field-by-field. This is the distinct thing this scenario proves: an
-// explicit-@N tagged CBOR body crossing two OS processes in both directions,
-// which the plain-record/enum remote_ask scenario does not exercise.
 fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
-    // Payload variant: Move(WirePoint { x: 3, y: 4 }) → server replies
-    // WireResult { tag: 1, sum: 7 }.
     let ask_move = wp.ask(WireCmd::Move(WirePoint { x: 3, y: 4 }), 5000);
     match ask_move {
         Result::Err(_) => {
@@ -600,7 +917,6 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
             }
         },
     }
-    // Unit variant: Ping → server replies WireResult { tag: 0, sum: 0 }.
     let ask_ping = wp.ask(WireCmd::Ping, 5000);
     match ask_ping {
         Result::Err(_) => {
@@ -625,11 +941,6 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
     0
 }
 
-// Scenario: identity_location
-//
-// Proves the runtime identity tuple across two OS processes. Registry gossip
-// yields an exact remote Location whose node key and slot match the actor's
-// self-reported identity and whose node key is distinct from this client.
 fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
     let local_node = match Node::id() {
         Some(id) => id,
@@ -678,213 +989,109 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
     0
 }
 
-// Scenario: remote_monitor_clean_exit
-//
-// The client monitors the remote KeyValue actor, then tells it to stop. The
-// monitor must deliver exactly one DOWN carrying the clean-exit reason (6).
-fn scenario_remote_monitor_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
-    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
-    match setup {
+fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, expected: i64, ready_drop: bool) -> i64 {
+    let seed_setup: Result<MonitorRef, MonitorError> = monitor(kv);
+    let probe = spawn MonitorProbe(active_monitor: seed_setup, down_count: 0, down_reason: 100);
+    let armed = await probe.arm(kv, drive);
+    let arm_status = match armed {
+        Result::Ok(status) => status,
         Result::Err(_) => {
-            println("FAIL remote_monitor_clean_exit setup-error");
-            1
+            println(f"FAIL {scenario} arm-ask-error");
+            return 2;
         },
-        Result::Ok(m) => {
-            let send_stop = kv.send(KvReq::StopSelf);
-            match send_stop {
-                Result::Err(_) => {
-                    println("FAIL remote_monitor_clean_exit stop-send-error");
-                    return 2;
-                },
-                Result::Ok(_) => {},
-            }
-            let reason = m.recv_down(10000);
-            if reason == 6 {
-                println(f"PASS remote_monitor_clean_exit reason={reason}");
-            } else {
-                println(f"FAIL remote_monitor_clean_exit reason={reason}");
-                return 3;
-            }
-            // Negative guard for exactly-once: a second recv must time out (-2),
-            // proving no duplicate DOWN was delivered for the same registration.
-            let dup = m.recv_down(1000);
-            if dup == -2 {
-                println("PASS remote_monitor_clean_exit no-dup");
-            } else {
-                println(f"FAIL remote_monitor_clean_exit dup-reason={dup}");
-                return 4;
-            }
-            0
-        },
+    };
+    if arm_status != 0 {
+        println(f"FAIL {scenario} arm-status={arm_status}");
+        return 3;
     }
-}
-
-// Scenario: remote_monitor_crash
-//
-// The client monitors the remote KeyValue actor, then tells it to crash. The
-// monitor must deliver exactly one DOWN carrying the crash reason (5).
-fn scenario_remote_monitor_crash(kv: RemotePid<KeyValue>) -> i64 {
-    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
-    match setup {
-        Result::Err(_) => {
-            println("FAIL remote_monitor_crash setup-error");
-            1
-        },
-        Result::Ok(m) => {
-            let send_crash = kv.send(KvReq::CrashSelf);
-            match send_crash {
-                Result::Err(_) => {
-                    println("FAIL remote_monitor_crash crash-send-error");
-                    return 2;
-                },
-                Result::Ok(_) => {},
-            }
-            let reason = m.recv_down(10000);
-            if reason == 5 {
-                println(f"PASS remote_monitor_crash reason={reason}");
-            } else {
-                println(f"FAIL remote_monitor_crash reason={reason}");
-                return 3;
-            }
-            let dup = m.recv_down(1000);
-            if dup == -2 {
-                println("PASS remote_monitor_crash no-dup");
-            } else {
-                println(f"FAIL remote_monitor_crash dup-reason={dup}");
-                return 4;
-            }
-            0
-        },
+    if ready_drop {
+        println(f"READY_DROP {scenario}");
     }
-}
-
-// Scenario: remote_monitor_conn_drop
-//
-// The client monitors the remote actor, then the harness kills the server
-// process. The monitor must deliver exactly one DOWN carrying the MonitorLost
-// sentinel (-1) for the connection-drop / partition cause — distinct from the
-// clean-exit and crash reasons.
-fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
-    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
-    match setup {
-        Result::Err(_) => {
-            println("FAIL remote_monitor_conn_drop setup-error");
-            1
-        },
-        Result::Ok(m) => {
-            // Signal readiness so the harness knows the monitor is registered
-            // before it kills the server. The actor stays alive; only the
-            // connection drops.
-            println("READY_DROP remote_monitor_conn_drop");
-            let reason = m.recv_down(30000);
-            if reason == -1 {
-                println(f"PASS remote_monitor_conn_drop reason={reason}");
-            } else {
-                println(f"FAIL remote_monitor_conn_drop reason={reason}");
-                return 3;
-            }
-            let dup = m.recv_down(1000);
-            if dup == -2 {
-                println("PASS remote_monitor_conn_drop no-dup");
-            } else {
-                println(f"FAIL remote_monitor_conn_drop dup-reason={dup}");
-                return 4;
-            }
-            0
-        },
-    }
-}
-
-// Scenario: remote_monitor_setup_after_drop
-//
-// The harness kills the server after READY_DROP. Once route teardown reaches the
-// client, monitor(RemotePid) must return Err(MonitorError::Partition) rather than
-// a zero-valued or inert MonitorRef.
-fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
-    println("READY_DROP remote_monitor_setup_after_drop");
     var attempts: i64 = 0;
     loop {
-        let setup: Result<MonitorRef, MonitorError> = monitor(kv);
-        match setup {
-            Result::Err(MonitorError::Partition) => {
-                println("PASS remote_monitor_setup_after_drop error=Partition");
-                return 0;
-            },
+        let status = await probe.status();
+        let observed = match status {
+            Result::Ok(value) => value,
             Result::Err(_) => {
-                println("FAIL remote_monitor_setup_after_drop wrong-error");
-                return 2;
+                println(f"FAIL {scenario} status-ask-error");
+                return 4;
             },
-            Result::Ok(monitor_ref) => {
-                monitor_ref.close();
-                attempts = attempts + 1;
-                if attempts >= 100 {
-                    println("FAIL remote_monitor_setup_after_drop never-failed");
-                    return 3;
-                }
-                sleep(100ms);
-            },
+        };
+        if observed != 100 {
+            if observed != expected {
+                println(f"FAIL {scenario} reason={observed}");
+                return 5;
+            }
+            break;
         }
+        attempts = attempts + 1;
+        if attempts >= 300 {
+            println(f"FAIL {scenario} down-timeout");
+            return 6;
+        }
+        sleep(100ms);
+    }
+    println(f"PASS {scenario} reason={expected}");
+    sleep(1200ms);
+    let duplicate_check = await probe.status();
+    match duplicate_check {
+        Result::Ok(value) => {
+            if value != expected {
+                println(f"FAIL {scenario} duplicate-status={value}");
+                return 7;
+            }
+        },
+        Result::Err(_) => {
+            println(f"FAIL {scenario} duplicate-check-error");
+            return 8;
+        },
+    }
+    println(f"PASS {scenario} no-dup");
+    0
+}
+
+fn scenario_remote_monitor_clean_exit(kv: RemotePid<KeyValue>) -> i64 {
+    monitor_hook_scenario(kv, "remote_monitor_clean_exit", 0, 6, false)
+}
+
+fn scenario_remote_monitor_crash(kv: RemotePid<KeyValue>) -> i64 {
+    monitor_hook_scenario(kv, "remote_monitor_crash", 1, 5, false)
+}
+
+fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
+    monitor_hook_scenario(kv, "remote_monitor_conn_drop", 2, -1, true)
+}
+
+fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
+    let probe = spawn MonitorSetupProbe;
+    println("READY_DROP remote_monitor_setup_after_drop");
+    match await probe.wait_for_partition(kv) {
+        Result::Ok(status) => {
+            if status == 0 {
+                println("PASS remote_monitor_setup_after_drop error=Partition");
+                0
+            } else {
+                if status == 3 {
+                    println("FAIL remote_monitor_setup_after_drop never-failed");
+                    3
+                } else {
+                    println("FAIL remote_monitor_setup_after_drop wrong-error");
+                    2
+                }
+            }
+        },
+        Result::Err(_) => {
+            println("FAIL remote_monitor_setup_after_drop probe-error");
+            4
+        },
     }
 }
 
-// Scenario: partition_ask
-//
-// The partition gate. The client looks up the remote actor, signals
-// READY_DROP so the harness can kill the server (dropping the route to the
-// peer), then issues a remote ask to the now-unreachable actor. The invariant
-// under test is: the ask FAILS CLOSED — it resolves to a typed AskError WITHOUT
-// hanging — rather than blocking to the client ceiling or fabricating a value.
-//
-// The EXACT fail-closed cause is timing-dependent: a two-process SIGKILL races
-// three independent fail paths, any of which is a correct fail-closed verdict
-// for a peer that is gone:
-//   * RoutingFailed   — the reader thread tore down the route before the ask was
-//                       set up, so the ask is refused before it leaves the node.
-//   * ConnectionDropped — the socket-drop path failed the pending ask.
-//   * Partition       — the SWIM failure detector declared the peer dead and
-//                       fanned out to the pending ask (the deterministic
-//                       socket-open-but-peer-dead path).
-//   * NodeNotRunning / SendFailed / StaleRef — narrower fail-closed races on the
-//                       same teardown.
-// Which one wins shifts with host load (under CI load RoutingFailed dominates;
-// on a quiet host the ask is more often still pending and surfaces as
-// ConnectionDropped). The gate therefore accepts ANY fail-closed cause EXCEPT
-// Timeout: a Timeout means the ask waited its WHOLE deadline because none of the
-// proactive fail-closed paths fired — that is the hang-to-deadline this gate
-// exists to catch, so it is retried (in case the verdict is mid-propagation)
-// and then fails.
-//
-// Teeth that remain: (a) a Result::Ok after READY_DROP is rejected (the route is
-// still live — never-partitioned), so a wrong success cannot pass; (b) every ask
-// carries a 1 s timeout, so an unresolved ask cannot hang past that, and the
-// whole scenario is bounded far under the 40 s client ceiling; (c) the resolving
-// fast-fail must return BEFORE its own 1 s deadline (no-hang bound, asserted
-// explicitly), so a fail-closed-by-timeout cannot masquerade as a proactive one.
-//
-// The deterministic SWIM-DEAD-while-socket-open Partition path is proven exactly
-// in-process by the runtime unit test
-// `swim_dead_wakes_pending_remote_ask_with_partition`; this two-process fixture
-// pins the broader no-hang + typed-fail-closed invariant across the wire.
 fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
-    // Signal the harness to kill the server now that the route is established.
     println("READY_DROP partition_ask");
-    // Arm the deterministic partition seam: a concurrent injector fails the
-    // in-flight remote ask closed with Partition through the production
-    // reply-table fan-out the instant it registers, so the typed fail-closed
-    // verdict no longer races the socket-teardown / SWIM detector latency (the
-    // historical source of this test's flake). The harness kill above is the real
-    // teardown; the injector only bounds WHEN the pending ask is failed closed,
-    // never WHETHER. The reply table holds only application asks (the lookup that
-    // resolved `kv` already completed), so the sole pending entry is this scenario's
-    // `kv.ask` — draining it cannot disturb any healthy in-flight request.
     let injector = spawn PartitionInjector;
     injector.arm();
-    // Per-ask timeout: an unresolved ask cannot block longer than this, so even a
-    // pure Timeout is bounded far under the client ceiling — the no-hang floor.
     let ask_timeout_ms: u64 = 1000;
-    // No-hang bound: a PROACTIVE fail-closed verdict resolves the ask well before
-    // its own deadline. If an Err comes back only at (or past) the full timeout,
-    // the proactive path did not fire — treat it as a Timeout, not a fast-fail.
     let fast_fail_ceiling_ms: i64 = 900;
     var attempts: i64 = 0;
     loop {
@@ -893,8 +1100,6 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
         let elapsed_ms = started.elapsed().millis();
         match probe {
             Result::Ok(_) => {
-                // The route is still live (kill in flight) — a success here is
-                // NOT a partition. Retry briefly; never accept it as a pass.
                 attempts = attempts + 1;
                 if attempts >= 20 {
                     println("FAIL partition_ask never-partitioned");
@@ -903,10 +1108,6 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
                 sleep(200ms);
             },
             Result::Err(e) => {
-                // A Timeout — or any Err that only surfaced at the full deadline —
-                // means no proactive fail-closed path fired (a hang-to-deadline).
-                // Retry a bounded number of times in case the verdict is still
-                // propagating, then fail.
                 let timed_out = match e {
                     AskError::Timeout => true,
                     _ => elapsed_ms >= fast_fail_ceiling_ms,
@@ -919,9 +1120,6 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
                     }
                     sleep(200ms);
                 } else {
-                    // A proactive, fast typed fail-closed verdict — the invariant
-                    // holds. Name the cause for diagnostics; any of these is a
-                    // correct outcome for a peer that is gone.
                     match e {
                         AskError::Partition => println(f"PASS partition_ask reason=partition ms={elapsed_ms}"),
                         AskError::ConnectionDropped => println(f"PASS partition_ask reason=conn-dropped ms={elapsed_ms}"),
@@ -938,11 +1136,6 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
-// Scenario: repoint_preserves_ref
-//
-// The client seeds the ORIGINAL actor, then waits until a future lookup returns a
-// DIFFERENT exact Location. The captured ref must still address the original
-// live actor, while the replacement starts with independent state.
 fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
     let seeded = kv.ask(KvReq::Put(KvPut { key: "owner", val: "original" }), 5000);
     match seeded {
@@ -952,7 +1145,6 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result::Ok(_) => {},
     }
-
     var attempts: i64 = 0;
     loop {
         let current: Result<RemotePid<KeyValue>, LookupError> = Node::lookup("kv");
@@ -989,7 +1181,7 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
                                 println("FAIL repoint_preserves_ref captured-ref-wrong-actor");
                                 return 7;
                             }
-                        }
+                        },
                     }
                     let new_value = replacement.ask(KvReq::GetKey("owner"), 5000);
                     match new_value {
@@ -1006,7 +1198,7 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
                                 println("FAIL repoint_preserves_ref replacement-not-fresh");
                                 return 10;
                             }
-                        }
+                        },
                     }
                     println("PASS repoint_preserves_ref captured=live future=replacement");
                     return 0;
@@ -1016,26 +1208,11 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
-// Scenario: monitor_watcher_node_death
-//
-// Two-process fixture: the watcher node dies and the target-side
-// RemoteWatcher entries it registered are pruned, keeping the table bounded.
-//
-// Server role: registers the target actor, prints READY, then polls
-// hew_dist_monitor_remote_watcher_count() until it drops to 0 (the prune
-// fired) and prints the exact count that was registered before the death.
-// Target actor stays alive and re-monitorable afterward.
-//
-// Client role: connects, registers a monitor on the server's "kv" actor,
-// prints READY_CLIENT_WATCHER so the harness knows the watch is live, then
-// sleeps until the harness kills it. The kill simulates a watcher-node crash.
 extern "C" {
     fn hew_dist_monitor_remote_watcher_count() -> i64;
 }
 
 fn scenario_server_watcher_node_death(_kv_serial: i64) {
-    // Phase 1: wait until at least one RemoteWatcher entry appears (the client
-    // connected and registered its monitor via CTRL_MONITOR_REQ).
     var registered: i64 = 0;
     var wait_attempts: i64 = 0;
     loop {
@@ -1044,28 +1221,22 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
         };
         if c > 0 {
             registered = c;
-            // Signal that the monitor registration has been received and processed.
-            // The harness reads this line before killing the client, ensuring the
-            // kill arrives after — not before — the target-side entry is recorded.
             println(f"READY_SERVER_WATCHER_REGISTERED monitor_watcher_node_death count={registered}");
             break;
         }
         wait_attempts = wait_attempts + 1;
         if wait_attempts >= 200 {
-            // Emit diagnostic count to distinguish no-runtime (-1) from table-empty (0).
             println(f"FAIL monitor_watcher_node_death server-no-watcher-registered last-count={c}");
             return;
         }
         sleep(100ms);
     }
-    // Phase 2: poll until the count drops back to 0 (prune fired on connection-drop).
     var prune_attempts: i64 = 0;
     loop {
         let c = unsafe {
             hew_dist_monitor_remote_watcher_count()
         };
         if c == 0 {
-            // Table is empty: the prune fired correctly.
             println(f"PASS monitor_watcher_node_death pruned={registered}");
             return;
         }
@@ -1079,37 +1250,27 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
 }
 
 fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
-    // Register a monitor on the server's long-lived actor.
-    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
-    match setup {
+    let seed_setup: Result<MonitorRef, MonitorError> = monitor(kv);
+    let probe = spawn MonitorProbe(active_monitor: seed_setup, down_count: 0, down_reason: 100);
+    match await probe.arm(kv, 2) {
         Result::Err(_) => {
-            println("FAIL monitor_watcher_node_death setup-error");
-            1
+            println("FAIL monitor_watcher_node_death arm-ask-error");
+            2
         },
-        Result::Ok(m) => {
-            // Signal readiness so the harness knows CTRL_MONITOR_REQ has been sent.
-            // The server then confirms receipt (READY_SERVER_WATCHER_REGISTERED)
-            // before the harness kills this process, closing the registration race.
+        Result::Ok(status) => {
+            if status != 0 {
+                println(f"FAIL monitor_watcher_node_death arm-status={status}");
+                return 3;
+            }
             println("READY_CLIENT_WATCHER monitor_watcher_node_death");
-            // Block until this process is killed (SIGKILL from harness). The
-            // generous timeout keeps the Result owner alive and in scope so its
-            // MonitorRef payload does not demonitor before the harness kill arrives.
-            m.recv_down(120000)
+            sleep(2m);
+            0
         },
     }
 }
 
-// ── Cross-node link scenarios ────────────────────────────────────────────────
-
-// Spawn a Linker, send it to establish the cross-node link (capturing its actor
-// id from the reply), drive the remote actor to a terminal state, then poll the
-// linker's terminal state. With CrashLinked the linker must reach Crashed (5):
-// the cross-node link-down landed in its mailbox as a SYS_MSG_EXIT and crashed
-// it. `policy_sel` 0 = CrashLinked. `drive` selects how the remote dies.
 fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string) -> i64 {
     let linker = spawn Linker(policy_sel: 0);
-    // Establish the link from inside the linker's own handler; the reply is its
-    // actor id (or -1 on a registration failure).
     let linker_id = await linker.link_go(kv);
     let lid = match linker_id {
         Result::Ok(id) => id,
@@ -1122,7 +1283,6 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
         println(f"FAIL {scenario} link-register-failed");
         return 3;
     }
-    // Drive the remote actor to its terminal state per the scenario.
     if drive == "stop" {
         let t = kv.send(KvReq::StopSelf);
         match t {
@@ -1143,15 +1303,10 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
                 Result::Ok(_) => {},
             }
         }
-        // drive == "partition": the harness kills the server; nothing to send.
     }
     if drive == "partition" {
-        // Signal readiness so the harness kills the server now that the link is
-        // established. The remote actor stays alive; only the connection drops.
         println(f"READY_DROP {scenario}");
     }
-    // Poll the linker's terminal state until the cascade crashes it (or a bound
-    // elapses). The probe returns the recorded terminal reason or -999 while live.
     var attempts: i64 = 0;
     loop {
         let st = unsafe {
@@ -1162,8 +1317,6 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
             return 0;
         }
         if st >= 0 {
-            // Reached a terminal state other than Crashed — unexpected for a
-            // CrashLinked cascade (a clean Stopped would be a fail-open bug).
             println(f"FAIL {scenario} linker-terminal-wrong reason={st}");
             return 5;
         }
@@ -1188,10 +1341,6 @@ fn scenario_link_remote_partition(kv: RemotePid<KeyValue>) -> i64 {
     link_cascade_common(kv, "link_remote_partition", "partition")
 }
 
-// Negative case: a non-CrashLinked link policy (MonitorLost) must NOT crash the
-// linker when the remote dies. After driving the remote to a clean exit, the
-// linker must STILL answer a liveness ask — proving the policy discriminator has
-// teeth and a non-CrashLinked link does not synthesize a fatal EXIT.
 fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     let linker = spawn Linker(policy_sel: 1);
     let linker_id = await linker.link_go(kv);
@@ -1214,9 +1363,7 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result::Ok(_) => {},
     }
-    // Give the cross-node link-down ample time to (wrongly) crash the linker.
     sleep(1500ms);
-    // The probe must NOT report a terminal state — the linker survived.
     let st = unsafe {
         hew_link_probe_terminal_state(lid)
     };
@@ -1224,7 +1371,6 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
         println(f"FAIL link_remote_non_crashlinked linker-crashed reason={st}");
         return 5;
     }
-    // Liveness confirmation: a surviving linker still answers an ask.
     let ping = await linker.ping();
     match ping {
         Result::Ok(_) => {
@@ -1238,14 +1384,6 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
-// Cross-node demonitor reclamation (server-driven, mirrors the watcher-node-death
-// proof). The client monitors the remote actor, then explicitly
-// closes the MonitorRef. The close must route to the cross-node teardown (not
-// the local-table no-op), sending a CTRL_DEMONITOR to the peer. The SERVER
-// observes its target-side entry appear (count>0) then disappear (count==0)
-// after the demonitor — proving the close reached the peer (the watcher-side
-// entry was reclaimed locally AND the peer was told). The server prints the
-// PASS; this client just registers, signals ready, closes, and exits cleanly.
 fn scenario_server_monitor_close_reclaim() {
     var registered: i64 = 0;
     var wait_attempts: i64 = 0;
@@ -1284,42 +1422,26 @@ fn scenario_server_monitor_close_reclaim() {
 }
 
 fn scenario_client_monitor_close_reclaim(kv: RemotePid<KeyValue>) -> i64 {
-    let setup: Result<MonitorRef, MonitorError> = monitor(kv);
-    match setup {
+    let probe = spawn MonitorCloseProbe;
+    match await probe.register_and_close(kv) {
         Result::Err(_) => {
-            println("FAIL cross_node_monitor_close_reclaim setup-error");
-            1
+            println("FAIL cross_node_monitor_close_reclaim probe-error");
+            2
         },
-        Result::Ok(m) => {
-            // Signal the watch is live so the server records the target-side
-            // entry and confirms before the explicit close sends CTRL_DEMONITOR.
-            println("READY_CLIENT_WATCHER cross_node_monitor_close_reclaim");
-            sleep(800ms);
-            m.close();
-            // Keep the node alive after the close so the control frame is
-            // delivered before Node::shutdown tears down the connection.
-            sleep(800ms);
+        Result::Ok(status) => {
+            if status != 0 {
+                println("FAIL cross_node_monitor_close_reclaim setup-error");
+                return 1;
+            }
             0
         },
     }
 }
 
-// Scenario: quarantine_rejoin
-//
-// Proves the fail-closed rejoin-admission boundary through the full compiled
-// stack. A buried peer (DEAD) is quarantined; a stale (<=-incarnation) ALIVE
-// gossip replay must NOT resurrect it, while a strictly-higher-incarnation rejoin
-// IS admitted and evicts the quarantine entry. The membership gossip frames are
-// driven deterministically through the runtime so there is no failure-detector
-// race; the resurrection-guard negative half is the assertion with teeth.
-//
-// MEMBER_* states: ALIVE = 0, DEAD = 2.
 fn scenario_quarantine_rejoin() -> i64 {
     let peer: u16 = 4242;
     let alive: i32 = 0;
     let dead: i32 = 2;
-    // Establish the peer ALIVE at incarnation 5, then bury it (DEAD at 5). The
-    // DEAD verdict quarantines it at incarnation 5.
     unsafe {
         hew_dist_inject_swim_gossip(peer, alive, 5)
     };
@@ -1340,9 +1462,6 @@ fn scenario_quarantine_rejoin() -> i64 {
         println("FAIL quarantine_rejoin not-quarantined-after-verdict");
         return 3;
     }
-    // Negative half (the resurrection guard): a stale ALIVE replay at an
-    // incarnation <= the buried one must NOT resurrect the peer. Try equal (5) and
-    // lower (4); after each the peer must stay DEAD and quarantined.
     unsafe {
         hew_dist_inject_swim_gossip(peer, alive, 5)
     };
@@ -1364,9 +1483,6 @@ fn scenario_quarantine_rejoin() -> i64 {
         return 5;
     }
     println("PASS quarantine_rejoin stale-rejected");
-
-    // Positive half: a strictly-higher-incarnation rejoin (6 > 5) IS admitted;
-    // the peer returns ALIVE and the quarantine entry is evicted.
     unsafe {
         hew_dist_inject_swim_gossip(peer, alive, 6)
     };
@@ -1391,24 +1507,12 @@ fn scenario_quarantine_rejoin() -> i64 {
 fn run_client(port: string, scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR");
     Node::set_transport("tcp");
-    // Strict TCP-Noise (issue #2652): client is node 2; bind the server
-    // (node 1) credential before connecting.
     stage_peer_credentials(kx, "client", "server", 1);
     Node::start("127.0.0.1:0");
-    // Wait for the server's listener to be live: a failed one-shot connect is
-    // not retried, so connecting before the server binds would fail closed.
     wait_for_server_listening(kx);
-    // Connect using the server's pinned NodeId so admission binds the claimed
-    // id to the authenticated Noise key (fail-closed on identity mismatch).
     let remote_addr = f"1@127.0.0.1:{port}";
     Node::connect(remote_addr);
-    // Scenario dispatch. New scenarios add a branch here plus a scenario_*
-    // function above; the harness selects via HEW_DIST_SCENARIO. The #[wire]
-    // scenario targets the WireProbe actor ("wire"); the rest target KeyValue
-    // ("kv").
     let status = if scenario == "quarantine_rejoin" {
-        // Membership-gate scenario: driven entirely through injected gossip on the
-        // local cluster, so it needs no remote actor lookup.
         scenario_quarantine_rejoin()
     } else if scenario == "identity_location" {
         let found_identity = lookup_identity_with_retry("identity");

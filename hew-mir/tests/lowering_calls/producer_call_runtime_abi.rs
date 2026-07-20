@@ -446,10 +446,10 @@ fn value_needed_link_emits_call_runtime_abi_with_result_dest() {
 }
 
 #[test]
-fn value_needed_monitor_emits_call_runtime_abi_with_i64_dest_and_record_init() {
+fn value_needed_monitor_emits_call_runtime_abi_with_result_dest() {
     // monitor() in value position: the MIR producer must emit hew_actor_monitor
-    // with dest=Some(Place::Local(N: i64)) for the raw ref_id, then a RecordInit
-    // that assembles MonitorRef{ref_id} from that local. No NYI diagnostic.
+    // with dest=Some(Place::Local(N)) for Result<MonitorRef, MonitorError>.
+    // Codegen decodes the explicit status/out-id ABI directly into that result.
     //
     // The MonitorRef is consumed with `let _ = m;` (move-to-wildcard), which
     // routes through the real auto-drop path (RuntimeDropDescriptor::MonitorRefClose
@@ -467,10 +467,17 @@ fn value_needed_monitor_emits_call_runtime_abi_with_i64_dest_and_record_init() {
     let pipeline = pipeline_with_tc(&source);
     let raw = main_raw(&pipeline);
 
-    // No NYI diagnostics.
+    // This isolated MIR harness does not load the stdlib enum layout graph, so
+    // MonitorError is the only allowed readiness diagnostic. Full compilation
+    // loads that layout and is covered by the distributed fixture gate.
     assert!(
-        pipeline.diagnostics.is_empty(),
-        "value-needed monitor() must produce no diagnostics; got: {:?}",
+        pipeline
+            .diagnostics
+            .iter()
+            .all(|diagnostic| format!("{:?}", diagnostic.kind)
+                == "UnknownType { name: \"MonitorError\" }"),
+        "value-needed monitor() must produce only the isolated-harness \
+         MonitorError readiness diagnostic; got: {:?}",
         pipeline.diagnostics
     );
 
@@ -486,22 +493,23 @@ fn value_needed_monitor_emits_call_runtime_abi_with_i64_dest_and_record_init() {
         2,
         "hew_actor_monitor must carry two handles"
     );
-    // Value-needed: dest must be Some(Place::Local(_)) for the raw i64 ref_id.
+    // Value-needed: dest is the checker-authoritative Result local.
     assert!(
         matches!(call.dest(), Some(Place::Local(_))),
         "value-needed hew_actor_monitor must use dest=Some(Place::Local(_)); got {:?}",
         call.dest()
     );
 
-    // A RecordInit must follow to assemble MonitorRef{ref_id} from the raw i64.
+    // The old producer-side MonitorRef assembly is gone. Codegen owns the
+    // status/out-id decode and writes the complete Result in place.
     let has_record_init = raw
         .blocks
         .iter()
         .flat_map(|b| b.instructions.iter())
         .any(|i| matches!(i, Instr::RecordInit { .. }));
     assert!(
-        has_record_init,
-        "value-needed monitor() must produce a RecordInit to assemble MonitorRef{{ref_id}}"
+        !has_record_init,
+        "value-needed monitor() must not assemble MonitorRef with RecordInit"
     );
 }
 

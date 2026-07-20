@@ -191,14 +191,12 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    (network actor attach requires a live net surface fixture).
     "hew_tcp_attach_local",
     // -- Cross-node monitor surface. `monitor(RemotePid<T>)` lowers to
-    //    `hew_node_monitor_location` and `MonitorRef::recv_down` to
-    //    `hew_node_monitor_recv`,
-    //    but both require a two-process distributed program to exercise; they are
+    //    `hew_node_monitor_location`, but requires a two-process distributed
+    //    program to exercise; it is
     //    proven by the compiled two-process e2e fixture
     //    (hew-cli/tests/distributed_two_process_e2e.rs), not the single-program
     //    golden checked-mir corpus, so they pin as uncovered here.
     "hew_node_monitor_location",
-    "hew_node_monitor_recv",
     // -- Native-only `Node::*` catalog identities not exercised by the
     //    single-program golden corpus. Node start/register/shutdown are covered
     //    by existing fixtures; peer setup and connection lifecycle are proven

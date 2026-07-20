@@ -255,11 +255,11 @@ fn actor_link_and_monitor_runtime_calls_are_codegen_reachable_without_dest() {
 }
 
 #[test]
-fn actor_monitor_runtime_call_with_i64_dest_succeeds() {
-    // hew_actor_monitor with dest=Some(Place::Local(i64)) now succeeds:
-    // the handler calls hew_actor_monitor → i64 ref_id and stores it into
-    // the dest. The SHIM fail-closed guard is removed; the MIR producer
-    // supplies an i64 dest and a subsequent RecordInit builds MonitorRef.
+fn actor_monitor_runtime_call_with_legacy_i64_dest_fails_closed() {
+    // Stage 3c is a clean ABI cutover: the monitor call now writes a complete
+    // Result<MonitorRef, MonitorError> through its MIR destination while the C
+    // ABI uses an explicit status plus out-id. The old raw-i64 destination must
+    // fail closed rather than silently reviving the removed sentinel contract.
     let pipeline = pipeline_with_call_runtime_abi_parts(
         "hew_actor_monitor",
         vec![Place::ActorHandle(0), Place::ActorHandle(1)],
@@ -279,7 +279,8 @@ fn actor_monitor_runtime_call_with_i64_dest_succeeds() {
     };
     let result = emit_module(&pipeline, &options);
     assert!(
-        result.is_ok(),
-        "hew_actor_monitor CallRuntimeAbi with i64 dest must succeed (SHIM removed); got {result:?}"
+        matches!(result, Err(CodegenError::FailClosed(_))),
+        "hew_actor_monitor CallRuntimeAbi with the removed i64 destination must fail closed; \
+         got {result:?}"
     );
 }

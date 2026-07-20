@@ -1297,6 +1297,7 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
         ref_id: 4242,
         target: location(51, 99, 191),
         reason: 5,
+        crash_kind: 1,
     };
     let bytes = encode_monitor_down_payload(&original).expect("down should encode");
     let decoded = decode_monitor_down_payload(&bytes).expect("down should decode");
@@ -1304,8 +1305,8 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
 
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 3);
-    assert_integer_keys_and_order(entries, &[1, 2, 3]);
+    assert_eq!(entries.len(), 4);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4]);
     assert_integer_value(find_field(entries, 1), 4242);
     assert_location_value(find_field(entries, 2), original.target);
     let reason = map_entries(find_field(entries, 3));
@@ -1313,6 +1314,7 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
     assert_integer_keys_and_order(reason, &[1, 2]);
     assert_integer_value(find_field(reason, 1), 1);
     assert_integer_value(find_field(reason, 2), 5);
+    assert_integer_value(find_field(entries, 4), 1);
 }
 
 #[test]
@@ -1324,6 +1326,7 @@ fn monitor_down_payload_carries_negative_sentinel_reason() {
         ref_id: 1,
         target: location(52, 101, 193),
         reason: -1,
+        crash_kind: 0,
     };
     let bytes = encode_monitor_down_payload(&original).expect("down should encode");
     let decoded = decode_monitor_down_payload(&bytes).expect("down should decode");
@@ -1337,6 +1340,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
         (int(1u64), int(1u64)),
         (int(2u64), Value::Null),
         (int(3u64), down_reason_value(5)),
+        (int(4u64), int(0i32)),
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&malformed_target)),
@@ -1347,6 +1351,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
         (int(1u64), int(1u64)),
         (int(2u64), location_value(location(52, 101, 193))),
         (int(3u64), int(5i32)),
+        (int(4u64), int(0i32)),
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&untyped_reason)),
@@ -1360,6 +1365,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
             int(3u64),
             Value::Map(vec![(int(1u64), int(99u8)), (int(2u64), int(5i32))]),
         ),
+        (int(4u64), int(0i32)),
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&unknown_reason_tag)),
@@ -1470,6 +1476,7 @@ fn monitor_payload_truncated_cbor_returns_error() {
         ref_id: 7,
         target: req.target,
         reason: 6,
+        crash_kind: 0,
     };
     let down_bytes = encode_monitor_down_payload(&down).expect("down should encode");
     for cut in 1..down_bytes.len() {
@@ -1530,6 +1537,7 @@ fn link_down_payload_reuses_monitor_down_shape() {
         ref_id: 4242,
         target: location(59, 99, 229),
         reason: 5,
+        crash_kind: 0,
     };
     let bytes = encode_link_down_payload(&original).expect("link down should encode");
     let decoded = decode_link_down_payload(&bytes).expect("link down should decode");
@@ -1539,6 +1547,7 @@ fn link_down_payload_reuses_monitor_down_shape() {
         ref_id: 1,
         target: location(59, 99, 229),
         reason: -1,
+        crash_kind: 0,
     };
     let pbytes = encode_link_down_payload(&partition).expect("link down should encode");
     assert_eq!(decode_link_down_payload(&pbytes).unwrap().reason, -1);

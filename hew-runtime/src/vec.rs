@@ -2212,12 +2212,12 @@ pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let new_len = new_len as usize;
-        let vec = &mut *v;
-        if new_len >= vec.len {
+        let old_len = (*v).len;
+        if new_len >= old_len {
             return;
         }
-        drop_element_range(v, new_len, vec.len);
-        vec.len = new_len;
+        drop_element_range(v, new_len, old_len);
+        (*v).len = new_len;
     }
 }
 

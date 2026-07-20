@@ -3088,8 +3088,9 @@ mod rc_arc_tests {
         hew_arc_clone, hew_arc_count, hew_arc_drop, hew_arc_get, hew_arc_new, hew_arc_strong_count,
     };
     use hew_runtime::rc::{
-        hew_rc_clone, hew_rc_count, hew_rc_drop, hew_rc_get, hew_rc_is_unique, hew_rc_new,
-        hew_rc_strong_count,
+        hew_rc_clone, hew_rc_downgrade, hew_rc_drop, hew_rc_get, hew_rc_is_unique, hew_rc_new,
+        hew_rc_set, hew_rc_strong_count, hew_rc_weak_count, hew_weak_clone_rc, hew_weak_drop_rc,
+        hew_weak_upgrade_rc,
     };
 
     #[test]
@@ -3103,12 +3104,12 @@ mod rc_arc_tests {
                 None,
             );
             assert!(!rc.is_null());
-            assert_eq!(hew_rc_count(rc), 1);
+            assert_eq!(hew_rc_strong_count(rc), 1);
 
             // Clone twice → count = 3
             let rc2 = hew_rc_clone(rc);
             let rc3 = hew_rc_clone(rc);
-            assert_eq!(hew_rc_count(rc), 3);
+            assert_eq!(hew_rc_strong_count(rc), 3);
             assert_eq!(hew_rc_strong_count(rc), 3);
 
             // Read data through hew_rc_get
@@ -3117,11 +3118,52 @@ mod rc_arc_tests {
 
             // Drop all
             hew_rc_drop(rc3);
-            assert_eq!(hew_rc_count(rc), 2);
+            assert_eq!(hew_rc_strong_count(rc), 2);
             hew_rc_drop(rc2);
-            assert_eq!(hew_rc_count(rc), 1);
+            assert_eq!(hew_rc_strong_count(rc), 1);
             hew_rc_drop(rc);
             // rc is now freed — no further access
+        }
+    }
+
+    #[test]
+    fn rc_weak_public_abi_count_ladder_and_set() {
+        unsafe {
+            let value = 11_i64;
+            let rc = hew_rc_new(
+                (&raw const value).cast(),
+                size_of::<i64>(),
+                align_of::<i64>(),
+                None,
+            );
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (1, 0));
+
+            let rc2 = hew_rc_clone(rc);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (2, 0));
+            let weak = hew_rc_downgrade(rc);
+            assert_ne!(weak, rc);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (2, 1));
+            let weak2 = hew_weak_clone_rc(weak);
+            assert_eq!(weak2, weak);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (2, 2));
+
+            let upgraded = hew_weak_upgrade_rc(weak);
+            assert_eq!(upgraded, rc);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (3, 2));
+            hew_rc_drop(upgraded);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (2, 2));
+
+            let mut replacement = 29_i64;
+            hew_rc_set(rc, (&raw mut replacement).cast());
+            assert_eq!(rc.cast::<i64>().read(), 29);
+            assert_eq!(replacement, 11);
+
+            hew_rc_drop(rc2);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (1, 2));
+            hew_rc_drop(rc);
+            assert!(hew_weak_upgrade_rc(weak).is_null());
+            hew_weak_drop_rc(weak2);
+            hew_weak_drop_rc(weak);
         }
     }
 

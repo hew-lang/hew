@@ -1185,6 +1185,7 @@ impl Checker {
     /// across the loop.
     fn check_actor_methods(&mut self, ad: &ActorDecl, identity: &str) {
         let mut on_start_seen: Option<Span> = None;
+        let mut on_down_seen: Option<Span> = None;
         for method in &ad.methods {
             let hook_attrs: Vec<_> = method
                 .attributes
@@ -1234,6 +1235,21 @@ impl Checker {
                     on_start_seen = Some(hook_attr.span.clone());
                 }
             }
+            if hook_kind_str == "down" {
+                if let Some(prev) = &on_down_seen {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        hook_attr.span.clone(),
+                        format!(
+                            "actor `{}` declares more than one `#[on(down)]` hook; \
+                             only one is allowed (see prior at {}..{})",
+                            ad.name, prev.start, prev.end
+                        ),
+                    ));
+                } else {
+                    on_down_seen = Some(hook_attr.span.clone());
+                }
+            }
 
             // `#[on(crash)]` diverges from start/stop signature-wise:
             // crash takes a `CrashInfo` parameter and returns `CrashAction`.
@@ -1244,6 +1260,10 @@ impl Checker {
                 }
                 "exit" => {
                     self.check_exit_hook(&ad.name, method, &ad.fields);
+                    continue;
+                }
+                "down" => {
+                    self.check_down_hook(&ad.name, method, &ad.fields);
                     continue;
                 }
                 "upgrade" => {
@@ -1277,19 +1297,19 @@ impl Checker {
                     hook_attr.span.clone(),
                     format!(
                         "`#[on]` on `{actor_name}::{method_name}` requires a hook kind argument; \
-                         valid hook kinds are: start, stop, crash, exit, upgrade"
+                         valid hook kinds are: start, stop, crash, exit, down, upgrade"
                     ),
                 ));
                 return None;
             }
-            Some("start" | "stop" | "crash" | "exit" | "upgrade") => {}
+            Some("start" | "stop" | "crash" | "exit" | "down" | "upgrade") => {}
             Some(unknown) => {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     hook_attr.span.clone(),
                     format!(
                         "`#[on({unknown})]` on `{actor_name}::{method_name}` is not a recognised \
-                         lifecycle hook; valid hook kinds are: start, stop, crash, exit, upgrade"
+                         lifecycle hook; valid hook kinds are: start, stop, crash, exit, down, upgrade"
                     ),
                 ));
                 return None;
@@ -1297,11 +1317,11 @@ impl Checker {
         }
         let hook_kind_str = hook_kind.unwrap();
 
-        // Reject `#[on(crash, …)]` / `#[on(exit, …)]` with extra arguments.
+        // Reject typed hooks with extra arguments.
         // start/stop already reject extra args via `check_lifecycle_hook`'s
-        // signature checks; for crash/exit we validate the attribute shape here
+        // signature checks; for typed hooks we validate the attribute shape here
         // because their signature/body checking is event-specific.
-        if (hook_kind_str == "crash" || hook_kind_str == "exit") && hook_attr.args.len() > 1 {
+        if matches!(hook_kind_str, "crash" | "exit" | "down") && hook_attr.args.len() > 1 {
             self.errors.push(TypeError::new(
                 TypeErrorKind::InvalidOperation,
                 hook_attr.span.clone(),
@@ -1776,6 +1796,87 @@ impl Checker {
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
 
+        self.current_function = prev_function;
+        self.env.pop_scope();
+    }
+
+    /// Validate a typed monitor DOWN hook.
+    pub(super) fn check_down_hook(
+        &mut self,
+        actor_name: &str,
+        hook: &FnDecl,
+        fields: &[FieldDecl],
+    ) {
+        let hook_kind = "on(down)";
+        self.reject_hook_modifier_set(actor_name, hook, hook_kind);
+
+        match hook.params.as_slice() {
+            [p] => {
+                let pty = self.resolve_type_expr(&p.ty);
+                let is_down_notification = matches!(
+                    &pty,
+                    Ty::Named {
+                        builtin: Some(crate::BuiltinType::DownNotification),
+                        args,
+                        ..
+                    } if args.is_empty()
+                );
+                if !is_down_notification {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        p.ty.1.clone(),
+                        format!(
+                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` parameter \
+                             must have type `DownNotification` (from `std::link_monitor`)",
+                            hook.name
+                        ),
+                    ));
+                }
+            }
+            other => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    hook.decl_span.clone(),
+                    format!(
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
+                         exactly one parameter `note: DownNotification`; got {} parameter(s)",
+                        hook.name,
+                        other.len()
+                    ),
+                ));
+            }
+        }
+
+        if let Some(rt) = &hook.return_type {
+            let ty = self.resolve_type_expr(rt);
+            if !matches!(ty, Ty::Unit) {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    rt.1.clone(),
+                    format!(
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must return `()`",
+                        hook.name
+                    ),
+                ));
+            }
+        }
+
+        let prev_actor_handler_context = self.in_actor_handler_context;
+        self.in_actor_handler_context = true;
+        self.env.push_scope();
+        let qualified_name = format!("{actor_name}::{}", hook.name);
+        let prev_function = self.current_function.take();
+        self.current_function = Some(qualified_name);
+        self.bind_actor_fields(fields);
+        if let Some(p) = hook.params.first() {
+            let pty = self.resolve_type_expr(&p.ty);
+            self.env
+                .define_param_with_span(p.name.clone(), pty, p.is_mutable, p.ty.1.clone());
+        }
+        self.current_return_type = Some(Ty::Unit);
+        let _body_ty = self.check_block(&hook.body, None);
+        self.current_return_type = None;
+        self.in_actor_handler_context = prev_actor_handler_context;
         self.current_function = prev_function;
         self.env.pop_scope();
     }

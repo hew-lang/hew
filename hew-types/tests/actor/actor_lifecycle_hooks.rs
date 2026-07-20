@@ -92,6 +92,123 @@ fn accept_multiple_on_stop_in_declared_order() {
     );
 }
 
+#[test]
+fn accept_typed_on_down_hook() {
+    let output = typecheck(
+        r"
+        actor Watcher {
+            #[on(down)]
+            fn on_down(note: DownNotification) {
+                let _id = note.monitor.value;
+                let _target = note.target;
+                let _reason = note.reason;
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "canonical `#[on(down)]` should type-check: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reject_invalid_on_down_shapes() {
+    let output = typecheck(
+        r"
+        actor Watcher {
+            #[on(down, extra)]
+            fn extra(note: DownNotification) {}
+
+            #[on(down)]
+            fn wrong_type(note: i64) {}
+
+            #[on(down)]
+            fn wrong_arity() {}
+
+            #[on(down)]
+            fn generic<T>(note: DownNotification) where T: Copy {}
+
+            #[on(down)]
+            fn wrong_return(note: DownNotification) -> i64 { 0 }
+        }
+
+        fn main() {}
+        ",
+    );
+    let messages: Vec<_> = output
+        .errors
+        .iter()
+        .map(|error| error.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("does not accept extra arguments")),
+        "extra hook arguments must be rejected: {:?}",
+        output.errors
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("must have type `DownNotification`")),
+        "wrong DOWN payload type must be rejected: {:?}",
+        output.errors
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("exactly one parameter")),
+        "wrong DOWN hook arity must be rejected: {:?}",
+        output.errors
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("cannot have type parameters"))
+            && messages
+                .iter()
+                .any(|message| message.contains("cannot have a `where` clause")),
+        "generic DOWN hooks must be rejected: {:?}",
+        output.errors
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("must return `()`")),
+        "non-unit DOWN hooks must be rejected: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reject_duplicate_on_down_hook() {
+    let output = typecheck(
+        r"
+        actor Watcher {
+            #[on(down)]
+            fn first(note: DownNotification) {}
+
+            #[on(down)]
+            fn second(note: DownNotification) {}
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("more than one `#[on(down)]`")),
+        "duplicate DOWN hooks must be rejected: {:?}",
+        output.errors
+    );
+}
+
 // ── Reject fixtures ──────────────────────────────────────────────────
 
 #[test]

@@ -1,12 +1,15 @@
 use super::{
-    dataflow, is_unsupported_user_record_value_class_ty, BasicBlock, Builder, CmpPred,
+    dataflow, is_unsupported_user_record_value_class_ty, BasicBlock, BindingId, Builder, CmpPred,
     ExecutionContextReader, FloatWidth, HashMap, HashSet, HirBinding, HirBlock, HirConstValue,
     HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt, HirStmtKind, Instr,
     IntArithOp, IntSignedness, IntentKind, MirCheck, MirConst, MirConstValue, MirDiagnostic,
     MirDiagnosticKind, NumericMethodOp, NumericSignedness, PointerWidth, ResolvedRef, ResolvedTy,
     ResourceMarker, Strategy, UnaryOp, ValueClass, CRASH_KIND_VARIANTS, HEW_CTX_OFFSET_ACTOR_ID,
     HEW_CTX_OFFSET_PARENT_SUPERVISOR, HEW_CTX_OFFSET_TRACE_SPAN, SENTINEL_CRASH_CODE_NODE,
-    SENTINEL_CRASH_CODE_SITE, SENTINEL_EXIT_ACTOR_ID_BINDING, SENTINEL_EXIT_KIND_TAG_BINDING,
+    SENTINEL_CRASH_CODE_SITE, SENTINEL_DOWN_CRASH_KIND_BINDING, SENTINEL_DOWN_LOCAL_SLOT_BINDING,
+    SENTINEL_DOWN_LOCATION_BINDING, SENTINEL_DOWN_MONITOR_ID_BINDING,
+    SENTINEL_DOWN_REASON_KIND_BINDING, SENTINEL_DOWN_TARGET_KIND_BINDING,
+    SENTINEL_EXIT_ACTOR_ID_BINDING, SENTINEL_EXIT_KIND_TAG_BINDING,
 };
 
 /// The synthetic `#[on(crash)]` handler's logical return type — `CrashAction`.
@@ -180,6 +183,253 @@ pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> H
         statements: stmts,
         ..body
     }
+}
+
+/// Rebuild the canonical `DownNotification` from the fixed mailbox ABI fields.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the synthetic typed payload rebuild is one coherent HIR construction"
+)]
+pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
+    let span = note_param.span.clone();
+    let monitor_id_ty =
+        ResolvedTy::named_builtin("MonitorId", hew_types::BuiltinType::MonitorId, Vec::new());
+    let down_target_ty =
+        ResolvedTy::named_builtin("DownTarget", hew_types::BuiltinType::DownTarget, Vec::new());
+    let down_reason_ty =
+        ResolvedTy::named_builtin("DownReason", hew_types::BuiltinType::DownReason, Vec::new());
+    let crash_kind_ty =
+        ResolvedTy::named_builtin("CrashKind", hew_types::BuiltinType::CrashKind, Vec::new());
+    let location_ty =
+        ResolvedTy::named_builtin("Location", hew_types::BuiltinType::Location, Vec::new());
+
+    let binding_ref = |name: &str, id: BindingId, ty: ResolvedTy| HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::BindingRef {
+            name: name.to_string(),
+            resolved: ResolvedRef::Binding(id),
+        },
+        span: span.clone(),
+        ty,
+    };
+    let unit_variant = |machine_name: &str, state_idx: usize, ty: ResolvedTy| HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::MachineVariantCtor {
+            machine_name: machine_name.to_string(),
+            state_idx,
+            payload: None,
+        },
+        span: span.clone(),
+        ty,
+    };
+    let match_arm = |tag: Option<i64>, body: HirExpr| hew_hir::HirMatchArm {
+        predicate: tag.map_or(hew_hir::HirMatchArmPredicate::Wildcard, |value| {
+            hew_hir::HirMatchArmPredicate::Literal {
+                lit: HirLiteral::Integer(value),
+                ty: ResolvedTy::I32,
+            }
+        }),
+        bindings: Vec::new(),
+        payload_predicates: Vec::new(),
+        payload_variant_predicates: Vec::new(),
+        guard: None,
+        body,
+        span: span.clone(),
+    };
+
+    let monitor = HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: monitor_id_ty,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Unknown,
+        kind: HirExprKind::StructInit {
+            name: "MonitorId".to_string(),
+            type_args: Vec::new(),
+            fields: vec![(
+                "value".to_string(),
+                binding_ref(
+                    "__down_monitor_id",
+                    SENTINEL_DOWN_MONITOR_ID_BINDING,
+                    ResolvedTy::U64,
+                ),
+            )],
+            base: None,
+        },
+        span: span.clone(),
+    };
+
+    let target = HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: down_target_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Unknown,
+        kind: HirExprKind::Match {
+            scrutinee: Box::new(binding_ref(
+                "__down_target_kind",
+                SENTINEL_DOWN_TARGET_KIND_BINDING,
+                ResolvedTy::I32,
+            )),
+            arms: vec![
+                match_arm(
+                    Some(0),
+                    HirExpr {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        site: SENTINEL_CRASH_CODE_SITE,
+                        ty: down_target_ty.clone(),
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::MachineVariantCtor {
+                            machine_name: "DownTarget".to_string(),
+                            state_idx: 0,
+                            payload: Some(vec![(
+                                "0".to_string(),
+                                binding_ref(
+                                    "__down_local_slot",
+                                    SENTINEL_DOWN_LOCAL_SLOT_BINDING,
+                                    ResolvedTy::U64,
+                                ),
+                            )]),
+                        },
+                        span: span.clone(),
+                    },
+                ),
+                match_arm(
+                    None,
+                    HirExpr {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        site: SENTINEL_CRASH_CODE_SITE,
+                        ty: down_target_ty.clone(),
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::MachineVariantCtor {
+                            machine_name: "DownTarget".to_string(),
+                            state_idx: 1,
+                            payload: Some(vec![(
+                                "0".to_string(),
+                                binding_ref(
+                                    "__down_location",
+                                    SENTINEL_DOWN_LOCATION_BINDING,
+                                    location_ty,
+                                ),
+                            )]),
+                        },
+                        span: span.clone(),
+                    },
+                ),
+            ],
+        },
+        span: span.clone(),
+    };
+
+    let crash_kind = HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: crash_kind_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Unknown,
+        kind: HirExprKind::Match {
+            scrutinee: Box::new(binding_ref(
+                "__down_crash_kind",
+                SENTINEL_DOWN_CRASH_KIND_BINDING,
+                ResolvedTy::I32,
+            )),
+            arms: vec![
+                match_arm(Some(0), unit_variant("CrashKind", 0, crash_kind_ty.clone())),
+                match_arm(Some(1), unit_variant("CrashKind", 1, crash_kind_ty.clone())),
+                match_arm(None, unit_variant("CrashKind", 2, crash_kind_ty.clone())),
+            ],
+        },
+        span: span.clone(),
+    };
+    let reason = HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: down_reason_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Unknown,
+        kind: HirExprKind::Match {
+            scrutinee: Box::new(binding_ref(
+                "__down_reason_kind",
+                SENTINEL_DOWN_REASON_KIND_BINDING,
+                ResolvedTy::I32,
+            )),
+            arms: vec![
+                match_arm(
+                    Some(0),
+                    unit_variant("DownReason", 0, down_reason_ty.clone()),
+                ),
+                match_arm(
+                    Some(1),
+                    HirExpr {
+                        node: SENTINEL_CRASH_CODE_NODE,
+                        site: SENTINEL_CRASH_CODE_SITE,
+                        ty: down_reason_ty.clone(),
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::MachineVariantCtor {
+                            machine_name: "DownReason".to_string(),
+                            state_idx: 1,
+                            payload: Some(vec![("0".to_string(), crash_kind)]),
+                        },
+                        span: span.clone(),
+                    },
+                ),
+                match_arm(
+                    Some(2),
+                    unit_variant("DownReason", 2, down_reason_ty.clone()),
+                ),
+                match_arm(None, unit_variant("DownReason", 3, down_reason_ty.clone())),
+            ],
+        },
+        span: span.clone(),
+    };
+
+    let note = HirExpr {
+        node: SENTINEL_CRASH_CODE_NODE,
+        site: SENTINEL_CRASH_CODE_SITE,
+        ty: note_param.ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Unknown,
+        kind: HirExprKind::StructInit {
+            name: "DownNotification".to_string(),
+            type_args: Vec::new(),
+            fields: vec![
+                ("monitor".to_string(), monitor),
+                ("target".to_string(), target),
+                ("reason".to_string(), reason),
+            ],
+            base: None,
+        },
+        span: span.clone(),
+    };
+    let let_note = HirStmt {
+        node: SENTINEL_CRASH_CODE_NODE,
+        kind: HirStmtKind::Let(
+            HirBinding {
+                id: note_param.id,
+                name: note_param.name.clone(),
+                ty: note_param.ty.clone(),
+                mutable: false,
+                span: span.clone(),
+                is_consume: false,
+            },
+            Some(note),
+        ),
+        span,
+    };
+
+    let mut statements = Vec::with_capacity(body.statements.len() + 1);
+    statements.push(let_note);
+    statements.extend(body.statements.iter().cloned());
+    HirBlock { statements, ..body }
 }
 pub(super) fn context_reader_offset(reader: ExecutionContextReader) -> usize {
     match reader {

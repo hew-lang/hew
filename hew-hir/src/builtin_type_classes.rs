@@ -96,10 +96,10 @@ const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[
     },
 ];
 
-/// `MonitorRef { ref_id: i64 }` — single-field resource handle returned by `monitor()`.
+/// `MonitorRef { ref_id: u64 }` — single-field resource handle returned by `monitor()`.
 const MONITOR_REF_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
     name: "ref_id",
-    ty: BuiltinFieldTy::I64,
+    ty: BuiltinFieldTy::U64,
 }];
 
 const NODE_ID_FIELDS: &[BuiltinTypeField] = &[

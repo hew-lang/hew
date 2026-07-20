@@ -394,6 +394,10 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::CrashAction
             | BuiltinType::CrashNotification
             | BuiltinType::CrashKind
+            | BuiltinType::MonitorId
+            | BuiltinType::DownTarget
+            | BuiltinType::DownReason
+            | BuiltinType::DownNotification
             | BuiltinType::SendError
             | BuiltinType::AskError
             | BuiltinType::RecvError

@@ -1559,6 +1559,10 @@ run_accept_expect_status "on_crash_escalate_root" 0
 # trampoline; the supervisor boots; main exits 42.
 run_accept_expect_status "on_exit_hook" 42
 
+# Typed monitor terminal hook: checker/HIR/MIR/codegen reconstruct the canonical
+# DownNotification payload and route SYS_MSG_DOWN through actor dispatch.
+run_accept_expect_status "on_down_hook" 42
+
 # `#[max_heap(N)]` wire-through — direct spawn path:
 #   1. MIR dump confirms SpawnActor carries max_heap=65536,
 #      proving the annotation propagated from HIR through MIR.

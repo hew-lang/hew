@@ -194,7 +194,7 @@ pub(crate) fn unquote_str(s: &str) -> &str {
 ///
 /// The parameterized form `#[on(<event>)]` uses a single attribute name
 /// `on` with the hook kind as a positional argument. Recognised events
-/// in v0.5 are `start`, `stop`, `crash`, and `upgrade`. Validation of
+/// are `start`, `stop`, `crash`, `exit`, `down`, and `upgrade`. Validation of
 /// the event identifier and per-event signature shape lives in the
 /// type-checker (`hew-types::check::items`).
 pub(crate) fn is_lifecycle_hook_attr(name: &str) -> bool {

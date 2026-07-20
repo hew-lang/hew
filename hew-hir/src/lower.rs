@@ -11486,7 +11486,7 @@ impl LowerCtx {
     }
 
     /// Partition an actor's `methods` vec into plain methods and lifecycle
-    /// hooks (`#[on(start|stop|crash|upgrade)]`). The checker has already
+    /// hooks (`#[on(start|stop|crash|exit|down|upgrade)]`). The checker has already
     /// validated hook-kind spellings and uniqueness; HIR consumes the
     /// post-validation shape and silently ignores methods whose `#[on(...)]`
     /// attribute is malformed (the checker has emitted a diagnostic and the
@@ -11514,6 +11514,7 @@ impl LowerCtx {
                     "stop" => Some(HirLifecycleHookKind::Stop),
                     "crash" => Some(HirLifecycleHookKind::Crash),
                     "exit" => Some(HirLifecycleHookKind::Exit),
+                    "down" => Some(HirLifecycleHookKind::Down),
                     "upgrade" => Some(HirLifecycleHookKind::Upgrade),
                     _ => None,
                 });

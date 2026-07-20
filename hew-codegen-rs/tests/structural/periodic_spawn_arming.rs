@@ -119,6 +119,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         on_stop_symbols: vec![],
         on_crash_symbol: None,
         on_exit_symbol: None,
+        on_down_symbol: None,
         max_heap_bytes: None,
         cycle_capable: false,
         mailbox_capacity: None,

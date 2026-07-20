@@ -883,8 +883,8 @@ impl Checker {
         self.register_builtins_hew_impls();
         if !self.module_registry.has_search_paths() {
             self.register_builtin_closable_surface();
-            self.register_builtin_monitor_ref_surface();
             self.register_builtin_failure_surface();
+            self.register_builtin_monitor_ref_surface();
             self.register_builtin_lookup_error_surface();
         }
     }

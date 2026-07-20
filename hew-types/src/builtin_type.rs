@@ -58,6 +58,14 @@ pub enum BuiltinType {
     /// `std/failure.hew::CrashKind { Crashed; HeapExceeded; PartitionDetected }`
     /// — the crash-class enum delivered in a `CrashNotification` (M-7-R).
     CrashKind,
+    /// `std/link_monitor.hew::MonitorId { value: u64 }`.
+    MonitorId,
+    /// `std/link_monitor.hew::DownTarget`.
+    DownTarget,
+    /// `std/link_monitor.hew::DownReason`.
+    DownReason,
+    /// Canonical payload accepted by `#[on(down)]`.
+    DownNotification,
     SendError,
     AskError,
     RecvError,
@@ -186,6 +194,10 @@ builtin_types! {
     CrashAction => "CrashAction",
     CrashNotification => "CrashNotification",
     CrashKind => "CrashKind",
+    MonitorId => "MonitorId",
+    DownTarget => "DownTarget",
+    DownReason => "DownReason",
+    DownNotification => "DownNotification",
     SendError => "SendError",
     AskError => "AskError",
     RecvError => "RecvError",
@@ -222,9 +234,14 @@ impl BuiltinType {
             | Self::LambdaPid
             | Self::CancellationToken
             | Self::MonitorRef => BuiltinTypeMarker::Resource,
-            Self::SupervisorPool | Self::NodeId | Self::Location | Self::RemotePid => {
-                BuiltinTypeMarker::BitCopy
-            }
+            Self::SupervisorPool
+            | Self::NodeId
+            | Self::Location
+            | Self::RemotePid
+            | Self::MonitorId
+            | Self::DownTarget
+            | Self::DownReason
+            | Self::DownNotification => BuiltinTypeMarker::BitCopy,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             // `CrashInfo` carries an owned `message: string` (M-5), so it is no
             // longer a `BitCopy` aggregate. `None` lets the owned-aggregate
@@ -316,6 +333,10 @@ impl BuiltinType {
             | Self::CrashAction
             | Self::CrashNotification
             | Self::CrashKind
+            | Self::MonitorId
+            | Self::DownTarget
+            | Self::DownReason
+            | Self::DownNotification
             | Self::SendError
             | Self::AskError
             | Self::RecvError

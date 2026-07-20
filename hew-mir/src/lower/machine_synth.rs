@@ -1,14 +1,18 @@
 use super::{
-    build_exit_hook_body, crash_action_return_ty, is_crash_info_payload_ty, lower_function,
-    resource_drop_fn, ActorHandlerLayout, ActorLayout, BindingId, BlockKind, Builder,
-    CheckedMirFunction, ChildSlot, CmpPred, ElabBlock, ElaboratedMirFunction, HashMap, HashSet,
-    HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirLifecycleHookKind,
+    build_down_hook_body, build_exit_hook_body, crash_action_return_ty, is_crash_info_payload_ty,
+    lower_function, resource_drop_fn, ActorHandlerLayout, ActorLayout, BindingId, BlockKind,
+    Builder, CheckedMirFunction, ChildSlot, CmpPred, ElabBlock, ElaboratedMirFunction, HashMap,
+    HashSet, HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirLifecycleHookKind,
     HirMachineDecl, HirMachineTransition, HirNodeId, HirStmt, HirStmtKind, HirSupervisorChild,
     HirSupervisorDecl, Instr, IntentKind, LoweredFunction, MirDiagnostic, MirDiagnosticKind,
     ParamOwnershipFacts, Place, PointerWidth, RawMirFunction, Rc, ResolvedRef, ResolvedTy, ScopeId,
     SiteId, SourceOrigin, TaskEntryAdapterSymbols, Terminator, ThirFunction, TrapKind, ValueClass,
     SENTINEL_CRASH_CODE_BINDING, SENTINEL_CRASH_CODE_NODE, SENTINEL_CRASH_CODE_SITE,
-    SENTINEL_CRASH_MESSAGE_BINDING, SENTINEL_EXIT_ACTOR_ID_BINDING, SENTINEL_EXIT_KIND_TAG_BINDING,
+    SENTINEL_CRASH_MESSAGE_BINDING, SENTINEL_DOWN_CRASH_KIND_BINDING,
+    SENTINEL_DOWN_LOCAL_SLOT_BINDING, SENTINEL_DOWN_LOCATION_BINDING,
+    SENTINEL_DOWN_MONITOR_ID_BINDING, SENTINEL_DOWN_REASON_KIND_BINDING,
+    SENTINEL_DOWN_TARGET_KIND_BINDING, SENTINEL_EXIT_ACTOR_ID_BINDING,
+    SENTINEL_EXIT_KIND_TAG_BINDING,
 };
 use crate::model::ActorHandlerKind;
 
@@ -910,6 +914,122 @@ fn lower_actor_lifecycle_handlers(
                     task_entry_adapter_symbols.clone(),
                 ));
             }
+            HirLifecycleHookKind::Down => {
+                let emit_name = mangle_actor_down_handler(&actor_symbol_base(actor));
+                let duplicate_label =
+                    format!("actor `{}` #[on(down)] hook `{}`", actor.name, hook.name);
+                if let Some(existing) = emitted_symbols.get(&emit_name) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::ActorHandlerSymbolCollision {
+                            symbol: emit_name,
+                            existing: existing.clone(),
+                            duplicate: duplicate_label,
+                        },
+                        note: "actor #[on(down)] handler symbol mangling must be one-to-one before MIR emission"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                emitted_symbols.insert(emit_name.clone(), duplicate_label);
+
+                let Some(note_param) = hook.params.first() else {
+                    continue;
+                };
+                let span = note_param.span.clone();
+                let abi_params = vec![
+                    HirBinding {
+                        id: SENTINEL_DOWN_MONITOR_ID_BINDING,
+                        name: "__down_monitor_id".to_string(),
+                        ty: ResolvedTy::U64,
+                        mutable: false,
+                        span: span.clone(),
+                        is_consume: false,
+                    },
+                    HirBinding {
+                        id: SENTINEL_DOWN_TARGET_KIND_BINDING,
+                        name: "__down_target_kind".to_string(),
+                        ty: ResolvedTy::I32,
+                        mutable: false,
+                        span: span.clone(),
+                        is_consume: false,
+                    },
+                    HirBinding {
+                        id: SENTINEL_DOWN_REASON_KIND_BINDING,
+                        name: "__down_reason_kind".to_string(),
+                        ty: ResolvedTy::I32,
+                        mutable: false,
+                        span: span.clone(),
+                        is_consume: false,
+                    },
+                    HirBinding {
+                        id: SENTINEL_DOWN_LOCATION_BINDING,
+                        name: "__down_location".to_string(),
+                        ty: ResolvedTy::named_builtin(
+                            "Location",
+                            hew_types::BuiltinType::Location,
+                            Vec::new(),
+                        ),
+                        mutable: false,
+                        span: span.clone(),
+                        is_consume: false,
+                    },
+                    HirBinding {
+                        id: SENTINEL_DOWN_LOCAL_SLOT_BINDING,
+                        name: "__down_local_slot".to_string(),
+                        ty: ResolvedTy::U64,
+                        mutable: false,
+                        span: span.clone(),
+                        is_consume: false,
+                    },
+                    HirBinding {
+                        id: SENTINEL_DOWN_CRASH_KIND_BINDING,
+                        name: "__down_crash_kind".to_string(),
+                        ty: ResolvedTy::I32,
+                        mutable: false,
+                        span,
+                        is_consume: false,
+                    },
+                ];
+                let synthetic_fn = HirFn {
+                    id: actor.id,
+                    node: actor.node,
+                    name: format!("{}::{}", actor.name, hook.name),
+                    type_params: Vec::new(),
+                    params: abi_params,
+                    return_ty: ResolvedTy::Unit,
+                    body: build_down_hook_body(hook.body.clone(), note_param),
+                    span: hook.span.clone(),
+                    is_generator: false,
+                    intrinsic_id: None,
+                };
+                lowered.push(lower_function(
+                    &synthetic_fn,
+                    emit_name,
+                    HashMap::new(),
+                    type_classes,
+                    record_field_orders,
+                    actor_layouts,
+                    &HashMap::new(),
+                    machine_layout_names,
+                    enum_layouts,
+                    opaque_handle_names,
+                    Some(actor.qualified_name().as_str()),
+                    module_fn_names,
+                    module_generic_fn_names,
+                    funcupdate_fn_returns_fresh,
+                    call_scrutinee_provenance,
+                    param_ownership,
+                    &HashMap::new(),
+                    call_site_type_args,
+                    None,
+                    supervisor_child_slots,
+                    pool_accessor_sites,
+                    actor_send_aliasing,
+                    pointer_width,
+                    crate::model::FunctionCallConv::ActorHandler,
+                    task_entry_adapter_symbols.clone(),
+                ));
+            }
             HirLifecycleHookKind::Upgrade => push_lifecycle_not_wired_diagnostic(
                 diagnostics,
                 &actor.name,
@@ -979,6 +1099,9 @@ pub(super) fn mangle_actor_crash_handler(actor_name: &str) -> String {
 }
 pub(super) fn mangle_actor_exit_handler(actor_name: &str) -> String {
     format!("{actor_name}__on_exit")
+}
+pub(super) fn mangle_actor_down_handler(actor_name: &str) -> String {
+    format!("{actor_name}__on_down")
 }
 /// Per-actor lifecycle-wrapper symbol: `__hew_lifecycle_<mangled-actor>`.
 ///

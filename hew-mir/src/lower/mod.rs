@@ -87,14 +87,14 @@ use self::composite_own::{
 pub use self::consts::build_const_descriptors;
 #[cfg(not(test))]
 use self::consts::{
-    actor_name_from_handle_ty, actor_name_from_remote_pid_ty, build_exit_hook_body, check_function,
-    cmp_select_by_signedness, context_reader_offset, crash_action_return_ty, float_width,
-    integer_bit_width, integer_signedness, is_crash_info_payload_ty, is_self_expr,
-    is_string_const_ty, is_unit_close_error_result, is_unit_send_error_result,
-    literal_match_scrutinee_ty, method_name_from_id, named_type_marker, numeric_method_op,
-    numeric_method_signedness, recv_result_payload_ty, register_builtin_monomorphic_enum_layouts,
-    register_builtin_record_layouts, runtime_symbol_for_call_expr, signed_min_value,
-    unary_op_label, unresolved_fn_sig_reason,
+    actor_name_from_handle_ty, actor_name_from_remote_pid_ty, build_down_hook_body,
+    build_exit_hook_body, check_function, cmp_select_by_signedness, context_reader_offset,
+    crash_action_return_ty, float_width, integer_bit_width, integer_signedness,
+    is_crash_info_payload_ty, is_self_expr, is_string_const_ty, is_unit_close_error_result,
+    is_unit_send_error_result, literal_match_scrutinee_ty, method_name_from_id, named_type_marker,
+    numeric_method_op, numeric_method_signedness, recv_result_payload_ty,
+    register_builtin_monomorphic_enum_layouts, register_builtin_record_layouts,
+    runtime_symbol_for_call_expr, signed_min_value, unary_op_label, unresolved_fn_sig_reason,
 };
 pub use self::drop_plan::drop_kind_for_test_only;
 #[cfg(not(test))]
@@ -116,9 +116,10 @@ pub(crate) use self::facts::*;
 use self::machine_synth::{
     actor_symbol_base, build_machine_layout, build_supervisor_layout, lower_actor_body_handlers,
     lower_actor_handler_layouts, lower_supervisor_bootstrap, machine_emit_type_id,
-    mangle_actor_crash_handler, mangle_actor_exit_handler, mangle_actor_init_handler,
-    mangle_actor_lifecycle_wrapper, mangle_actor_start_handler, mangle_actor_stop_handler_indexed,
-    mangle_machine_step, mangle_supervisor_bootstrap, synthesize_machine_step_fn,
+    mangle_actor_crash_handler, mangle_actor_down_handler, mangle_actor_exit_handler,
+    mangle_actor_init_handler, mangle_actor_lifecycle_wrapper, mangle_actor_start_handler,
+    mangle_actor_stop_handler_indexed, mangle_machine_step, mangle_supervisor_bootstrap,
+    synthesize_machine_step_fn,
 };
 #[cfg(not(test))]
 use self::split_consume::{
@@ -247,6 +248,14 @@ const SENTINEL_EXIT_KIND_TAG_BINDING: BindingId = BindingId(u32::MAX - 3);
 /// sentinels above (those are local to their own synthetic functions, but a
 /// dedicated value keeps the pump self-contained and future-proof).
 const SENTINEL_RECV_GEN_COMPANION_BINDING: BindingId = BindingId(u32::MAX - 4);
+
+/// Sentinel HIR binding IDs for the synthetic `#[on(down)]` ABI params.
+const SENTINEL_DOWN_MONITOR_ID_BINDING: BindingId = BindingId(u32::MAX - 5);
+const SENTINEL_DOWN_TARGET_KIND_BINDING: BindingId = BindingId(u32::MAX - 6);
+const SENTINEL_DOWN_REASON_KIND_BINDING: BindingId = BindingId(u32::MAX - 7);
+const SENTINEL_DOWN_LOCATION_BINDING: BindingId = BindingId(u32::MAX - 8);
+const SENTINEL_DOWN_LOCAL_SLOT_BINDING: BindingId = BindingId(u32::MAX - 9);
+const SENTINEL_DOWN_CRASH_KIND_BINDING: BindingId = BindingId(u32::MAX - 10);
 
 /// Base of the per-function synthetic binding-id range for anonymous
 /// caller-owned temps. From-call match/while-let scrutinees and discarded
@@ -2232,6 +2241,11 @@ pub fn lower_hir_module_with_facts(
                 .iter()
                 .find(|hook| hook.kind == HirLifecycleHookKind::Exit)
                 .map(|_| mangle_actor_exit_handler(&actor_symbol_base(actor))),
+            on_down_symbol: actor
+                .lifecycle_hooks
+                .iter()
+                .find(|hook| hook.kind == HirLifecycleHookKind::Down)
+                .map(|_| mangle_actor_down_handler(&actor_symbol_base(actor))),
             max_heap_bytes: actor.max_heap_bytes,
             cycle_capable: actor.cycle_capable,
             mailbox_capacity: actor.mailbox_capacity,

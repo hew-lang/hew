@@ -57,6 +57,10 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::CrashAction
             | BuiltinType::CrashNotification
             | BuiltinType::CrashKind
+            | BuiltinType::MonitorId
+            | BuiltinType::DownTarget
+            | BuiltinType::DownReason
+            | BuiltinType::DownNotification
             | BuiltinType::SendError
             | BuiltinType::AskError
             | BuiltinType::RecvError

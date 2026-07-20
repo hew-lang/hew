@@ -19,7 +19,9 @@ use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetData;
 use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType, StructType};
-use inkwell::values::{BasicMetadataValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+};
 use inkwell::{AddressSpace, IntPredicate};
 
 use hew_hir::mangle_dotted_name;
@@ -2835,7 +2837,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     payload_src.add_incoming(&[(&borrowed_payload, borrow_ok_bb), (&data_ptr, copy_src_bb)]);
     let payload_src = payload_src.as_basic_value().into_pointer_value();
 
-    let mut cases = Vec::with_capacity(layout.handlers.len() + 1);
+    let mut cases = Vec::with_capacity(layout.handlers.len() + 2);
     for handler in &layout.handlers {
         let bb = ctx.append_basic_block(dispatch_fn, &format!("msg_{}", handler.msg_type));
         cases.push((i32_ty.const_int(handler.msg_type as u64, false), bb));
@@ -2863,6 +2865,23 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     let unhandled_exit_bb = if layout.on_exit_symbol.is_none() {
         let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_exit_unhandled");
         cases.push((i32_ty.const_int(SYS_MSG_EXIT, false), bb));
+        Some(bb)
+    } else {
+        None
+    };
+    // DOWN is always consumed by actor dispatch. Actors with a typed hook receive
+    // the reconstructed notification; actors without one explicitly ignore it.
+    const SYS_MSG_DOWN: u64 = 100;
+    let on_down_bb = if layout.on_down_symbol.is_some() {
+        let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_down");
+        cases.push((i32_ty.const_int(SYS_MSG_DOWN, false), bb));
+        Some(bb)
+    } else {
+        None
+    };
+    let ignored_down_bb = if layout.on_down_symbol.is_none() {
+        let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_down_ignored");
+        cases.push((i32_ty.const_int(SYS_MSG_DOWN, false), bb));
         Some(bb)
     } else {
         None
@@ -3284,6 +3303,92 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
             .build_unconditional_branch(after_bb)
             .llvm_ctx("actor dispatch on_exit branch")?;
         return_incomings.push((ptr_ty.const_null(), on_exit_bb));
+    }
+
+    if let (Some(on_down_bb), Some(on_down_symbol)) = (on_down_bb, &layout.on_down_symbol) {
+        builder.position_at_end(on_down_bb);
+        let on_down_sym = fn_symbols.get(on_down_symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor dispatch `{dispatch_name}` references undeclared on_down handler \
+                 `{on_down_symbol}`"
+            ))
+        })?;
+        let (on_down_fn, _on_down_ret, _on_down_unit) =
+            on_down_sym.real(on_down_symbol, "actor dispatch on_down handler")?;
+
+        // `HewDownMessage` is a fixed 48-byte record. Its tail starting at
+        // `node_hi` is layout-compatible with the canonical 32-byte Location.
+        let u64_ty = ctx.i64_type();
+        let down_msg_st = ctx.struct_type(
+            &[
+                u64_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+                u64_ty.into(),
+                u64_ty.into(),
+                u64_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+            ],
+            false,
+        );
+        let load_down_field =
+            |index: u32, name: &str| -> Result<BasicValueEnum<'ctx>, CodegenError> {
+                let ptr = builder
+                    .build_struct_gep(down_msg_st, payload_src, index, &format!("{name}_ptr"))
+                    .llvm_ctx("on_down payload gep")?;
+                let ty = down_msg_st
+                    .get_field_type_at_index(index)
+                    .ok_or_else(|| CodegenError::FailClosed("invalid DOWN field index".into()))?;
+                builder
+                    .build_load(ty, ptr, name)
+                    .llvm_ctx("on_down payload load")
+            };
+        let monitor_id = load_down_field(0, "down_monitor_id")?;
+        let target_kind = load_down_field(1, "down_target_kind")?;
+        let reason_kind = load_down_field(2, "down_reason_kind")?;
+        let slot = load_down_field(5, "down_slot")?;
+        let crash_kind = load_down_field(7, "down_crash_kind")?;
+        let location_ty = resolve_ty(
+            ctx,
+            target_data,
+            &ResolvedTy::named_builtin("Location", hew_types::BuiltinType::Location, Vec::new()),
+            record_layouts,
+        )?;
+        let location_ptr = builder
+            .build_struct_gep(down_msg_st, payload_src, 3, "down_location_ptr")
+            .llvm_ctx("on_down location gep")?;
+        let location = builder
+            .build_load(location_ty, location_ptr, "down_location")
+            .llvm_ctx("on_down location load")?;
+
+        let ctx_arg = dispatch_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("dispatch missing ctx param".into()))?;
+        let on_down_args: Vec<BasicMetadataValueEnum> = vec![
+            ctx_arg.into(),
+            metadata_value_from_basic(monitor_id),
+            metadata_value_from_basic(target_kind),
+            metadata_value_from_basic(reason_kind),
+            metadata_value_from_basic(location),
+            metadata_value_from_basic(slot),
+            metadata_value_from_basic(crash_kind),
+        ];
+        builder
+            .build_call(on_down_fn, &on_down_args, "call_on_down")
+            .llvm_ctx("actor dispatch on_down call")?;
+        builder
+            .build_unconditional_branch(after_bb)
+            .llvm_ctx("actor dispatch on_down branch")?;
+        return_incomings.push((ptr_ty.const_null(), on_down_bb));
+    }
+
+    if let Some(ignored_down_bb) = ignored_down_bb {
+        builder.position_at_end(ignored_down_bb);
+        builder
+            .build_unconditional_branch(after_bb)
+            .llvm_ctx("actor dispatch ignored DOWN branch")?;
+        return_incomings.push((ptr_ty.const_null(), ignored_down_bb));
     }
 
     // Emit the unhandled-`SYS_MSG_EXIT` case body — a non-trapping actor

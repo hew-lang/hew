@@ -181,7 +181,13 @@ pub fn derive_monitor_ref_projection(
                     if source.module == "link_monitor"
                         && matches!(
                             decl.name.as_str(),
-                            "MonitorError" | "PartitionPolicy" | "MonitorRef"
+                            "MonitorError"
+                                | "PartitionPolicy"
+                                | "MonitorId"
+                                | "DownTarget"
+                                | "DownReason"
+                                | "DownNotification"
+                                | "MonitorRef"
                         ) =>
                 {
                     Some(Item::TypeDecl(decl))
@@ -190,7 +196,8 @@ pub fn derive_monitor_ref_projection(
                     if source.module == "link_monitor"
                         && impl_target_name(&decl) == Some("MonitorRef") =>
                 {
-                    decl.methods.retain(|method| method.name == "close");
+                    decl.methods
+                        .retain(|method| method.name == "close" || method.name == "id");
                     (!decl.methods.is_empty()).then_some(Item::Impl(decl))
                 }
                 Item::ExternBlock(mut block) if source.module == "link_monitor" => {
@@ -220,7 +227,16 @@ pub fn derive_monitor_ref_projection(
 }
 
 fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
-    for expected in ["LinkError", "MonitorError", "PartitionPolicy", "MonitorRef"] {
+    for expected in [
+        "LinkError",
+        "MonitorError",
+        "PartitionPolicy",
+        "MonitorId",
+        "DownTarget",
+        "DownReason",
+        "DownNotification",
+        "MonitorRef",
+    ] {
         if !items
             .iter()
             .any(|item| matches!(item, Item::TypeDecl(decl) if decl.name == expected))

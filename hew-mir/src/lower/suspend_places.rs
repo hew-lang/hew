@@ -979,13 +979,8 @@ pub(super) fn terminator_escape_places(
             args,
             ..
         } => {
-            // `MonitorRef::recv_down` is an ordinary stdlib method (not a
-            // BuiltinNamedType rewrite), but its ABI is a proven borrow: the
-            // body reads `ref_id`, calls `hew_node_monitor_recv`, and has no
-            // parameter drop plan. Treating the Result-pattern payload binder
-            // as escaping here would reject the safe
-            // `match monitor(remote) { Ok(m) => m.recv_down(..), .. }` shape.
-            let borrows_owned_handle = callee == "MonitorRef::recv_down";
+            // `MonitorRef::id` reads the handle without consuming it.
+            let borrows_owned_handle = callee == "MonitorRef::id";
             args.iter()
                 .copied()
                 .filter(|place| {

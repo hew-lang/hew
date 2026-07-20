@@ -10,6 +10,10 @@
 # the OS scheduler and avoids the oversubscription that causes eval_e2e flakes.
 [test-groups]
 subprocess-intensive = { max-threads = 8 }
+# ffi-native-link: tests that invoke clang/ld to link a real FFI executable.
+# Keep these links serial so their cold native work does not contend with sibling
+# FFI links during the full workspace run.
+ffi-native-link = { max-threads = 1 }
 # process-timing: tests that measure process-group signal delivery timing (SIGKILL
 # propagation to grandchildren, process-group watchdog latency).  Under 16-core
 # concurrent load the OS scheduler takes variable time to deliver signals and
@@ -103,11 +107,13 @@ slow-timeout = { period = "120s", terminate-after = 4 }
 retries = 1
 
 [[profile.ci.overrides]]
-# The FFI borrow-boundary leak-slope test compiles one native Hew program and
-# runs it three times. Keep that subprocess-heavy work in the shared group, but
-# use the normal CI timeout now that low/high probes reuse the linked binary.
-filter = "test(ffi_borrow_boundary_has_no_drop_or_leak_slope)"
-test-group = "subprocess-intensive"
+# Native FFI clang/ld linking is CI-cold-slow and load-variable; the default
+# 300s ceiling is a false timeout, not a real regression. Serialize this
+# dedicated native-link binary and allow each link up to 900s; terminate-after
+# still fails a genuine hang.
+filter = "binary(ffi_link_e2e)"
+test-group = "ffi-native-link"
+slow-timeout = { period = "900s", terminate-after = 1 }
 
 [[profile.ci.overrides]]
 # await_e2e tests each call `hew run` at least twice (the

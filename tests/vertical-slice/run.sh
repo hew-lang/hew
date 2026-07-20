@@ -3377,6 +3377,10 @@ run_accept_expect_status "tuple_heap_return" 42
 # send-by-id path.
 run_accept_expect_status "node_lookup_send" 0
 
+# Accept: compiler-owned identity aggregates project, compare, hash, display,
+# and round-trip through Node::lookup without scalar reinterpretation.
+run_accept_expect_status "identity_aggregates" 0
+
 # A640/S3: compile-time Serializable floor for RemotePid<T>::send.
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/positive_record_remote_send.hew" \
     >"${accept_output}" 2>&1

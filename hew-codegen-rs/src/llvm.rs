@@ -4940,6 +4940,12 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
         StateFieldCloneKind::Bytes => Ok(Some(CloneHelper::RefcountBump {
             name: "hew_bytes_clone_ref",
         })),
+        StateFieldCloneKind::Rc => Ok(Some(CloneHelper::Allocating {
+            name: "hew_rc_clone",
+        })),
+        StateFieldCloneKind::Weak => Ok(Some(CloneHelper::Allocating {
+            name: "hew_weak_clone_rc",
+        })),
         StateFieldCloneKind::Tuple { .. } => Err(CodegenError::FailClosed(
             "Tuple arm requires a synthesised in-place tuple clone helper; caller must dispatch separately"
                 .into(),
@@ -5040,6 +5046,12 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         })),
         StateFieldCloneKind::Bytes => Ok(Some(DropHelper {
             name: "hew_bytes_drop",
+        })),
+        StateFieldCloneKind::Rc => Ok(Some(DropHelper {
+            name: "hew_rc_drop",
+        })),
+        StateFieldCloneKind::Weak => Ok(Some(DropHelper {
+            name: "hew_weak_drop_rc",
         })),
         StateFieldCloneKind::Tuple { .. } => Err(CodegenError::FailClosed(
             "Tuple arm requires a synthesised in-place tuple drop helper; caller must dispatch separately"
@@ -5985,11 +5997,79 @@ fn emit_field_clone_step<'ctx>(
                 .llvm_ctx_with(|| format!("tuple clone next branch f{field_idx}"))?;
             return Ok(());
         }
-        StateFieldCloneKind::Array { .. } => {
-            return Err(CodegenError::FailClosed(format!(
-                "field_clone_step reached nested array at f{field_idx}; array clone/drop \
-                 thunk construction remains fail-closed until array value construction is wired"
-            )));
+        StateFieldCloneKind::Array { elem, len } => {
+            if *len == 0 || matches!(elem.as_ref(), StateFieldCloneKind::BitCopy { .. }) {
+                builder
+                    .build_unconditional_branch(store_bb)
+                    .llvm_ctx_with(|| format!("array clone trivial branch f{field_idx}"))?;
+                builder.position_at_end(store_bb);
+                builder
+                    .build_unconditional_branch(next_bb)
+                    .llvm_ctx_with(|| format!("array clone trivial next f{field_idx}"))?;
+                return Ok(());
+            }
+            let parent_field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "array field clone: parent struct {st_ty:?} has no field at index {field_idx}"
+                ))
+            })?;
+            let BasicTypeEnum::ArrayType(array_ty) = parent_field_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "array field clone: parent struct field {field_idx} is \
+                     {parent_field_ty:?}, not an array"
+                )));
+            };
+            let key = state_kind_key_fragment(kind);
+            emit_array_kind_inplace_thunk_bodies(ctx, llvm_mod, &key, array_ty, elem, *len, w)?;
+            let helper = get_or_declare_array_clone_inplace(ctx, llvm_mod, &key);
+            let src_field = builder
+                .build_struct_gep(
+                    st_ty,
+                    src,
+                    field_idx,
+                    &format!("src_f{field_idx}_array_ptr"),
+                )
+                .llvm_ctx_with(|| format!("clone src gep array f{field_idx}"))?;
+            let dst_field = builder
+                .build_struct_gep(
+                    st_ty,
+                    dst,
+                    field_idx,
+                    &format!("dst_f{field_idx}_array_ptr"),
+                )
+                .llvm_ctx_with(|| format!("clone dst gep array f{field_idx}"))?;
+            let call_site = builder
+                .build_call(
+                    helper,
+                    &[src_field.into(), dst_field.into()],
+                    &format!("array_clone_inplace_f{field_idx}"),
+                )
+                .llvm_ctx_with(|| format!("clone array helper call f{field_idx}"))?;
+            let rc = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "array clone helper returned void at f{field_idx}"
+                    ))
+                })?
+                .into_int_value();
+            let failed = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    rc,
+                    i32_ty.const_zero(),
+                    &format!("array_clone_failed_f{field_idx}"),
+                )
+                .llvm_ctx_with(|| format!("array clone cmp f{field_idx}"))?;
+            builder
+                .build_conditional_branch(failed, rollback_bb, store_bb)
+                .llvm_ctx_with(|| format!("array clone branch f{field_idx}"))?;
+            builder.position_at_end(store_bb);
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("array clone next branch f{field_idx}"))?;
+            return Ok(());
         }
         StateFieldCloneKind::UserRecord { name } => {
             // In-place clone: helper writes into dst.<field_idx> directly.
@@ -6293,6 +6373,49 @@ pub(crate) fn emit_field_drop_step<'ctx>(
         // owns the call to `.free()`. Actor state drop does not auto-free opaque
         // handles — consistent with `drop_helper_for_kind` returning `Ok(None)`.
         StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),
+        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+            let field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "refcounted field drop: parent struct {st_ty:?} has no field at \
+                     index {field_idx}"
+                ))
+            })?;
+            if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "refcounted field drop: parent struct field {field_idx} is \
+                     {field_ty:?}, not a pointer handle"
+                )));
+            }
+            let field_ptr = builder
+                .build_struct_gep(
+                    st_ty,
+                    state,
+                    field_idx,
+                    &format!("drop_rc_f{field_idx}_ptr"),
+                )
+                .llvm_ctx_with(|| format!("drop refcounted handle gep f{field_idx}"))?;
+            let handle = builder
+                .build_load(ptr_ty, field_ptr, &format!("drop_rc_f{field_idx}"))
+                .llvm_ctx_with(|| format!("drop refcounted handle load f{field_idx}"))?
+                .into_pointer_value();
+            let helper = drop_helper_for_kind(kind)?.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "refcounted field drop: kind {kind:?} has no drop helper"
+                ))
+            })?;
+            let helper_fn = get_or_declare_drop_helper(ctx, llvm_mod, &helper);
+            builder
+                .build_call(
+                    helper_fn,
+                    &[handle.into()],
+                    &format!("drop_rc_f{field_idx}_call"),
+                )
+                .llvm_ctx_with(|| format!("drop refcounted handle call f{field_idx}"))?;
+            builder
+                .build_store(field_ptr, ptr_ty.const_null())
+                .llvm_ctx_with(|| format!("drop refcounted handle null store f{field_idx}"))?;
+            Ok(())
+        }
         StateFieldCloneKind::Tuple { elems } => {
             let parent_field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
@@ -6328,10 +6451,41 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                 .llvm_ctx_with(|| format!("drop tuple call f{field_idx}"))?;
             Ok(())
         }
-        StateFieldCloneKind::Array { .. } => Err(CodegenError::FailClosed(format!(
-            "field_drop_step reached nested array at f{field_idx}; array field drop remains \
-             fail-closed until array value construction is wired"
-        ))),
+        StateFieldCloneKind::Array { elem, len } => {
+            if *len == 0 || matches!(elem.as_ref(), StateFieldCloneKind::BitCopy { .. }) {
+                return Ok(());
+            }
+            let parent_field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "array field drop: parent struct {st_ty:?} has no field at index {field_idx}"
+                ))
+            })?;
+            let BasicTypeEnum::ArrayType(array_ty) = parent_field_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "array field drop: parent struct field {field_idx} is \
+                     {parent_field_ty:?}, not an array"
+                )));
+            };
+            let key = state_kind_key_fragment(kind);
+            emit_array_kind_drop_inplace_body(ctx, llvm_mod, &key, array_ty, elem, *len, w)?;
+            let helper = get_or_declare_array_drop_inplace(ctx, llvm_mod, &key);
+            let field_ptr = builder
+                .build_struct_gep(
+                    st_ty,
+                    state,
+                    field_idx,
+                    &format!("drop_f{field_idx}_array_ptr"),
+                )
+                .llvm_ctx_with(|| format!("drop array gep f{field_idx}"))?;
+            builder
+                .build_call(
+                    helper,
+                    &[field_ptr.into()],
+                    &format!("drop_array_f{field_idx}"),
+                )
+                .llvm_ctx_with(|| format!("drop array call f{field_idx}"))?;
+            Ok(())
+        }
         StateFieldCloneKind::UserRecord { name } => {
             // Synthesise the record's in-place drop body on demand (idempotent).
             // A record reachable ONLY through a container (an indirect-enum node,
@@ -8629,6 +8783,8 @@ fn collect_clone_target_names(
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::String
         | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
         | StateFieldCloneKind::IoHandle { .. }
         // OpaqueHandle has no synthesised clone/drop helper — it is a
         // pointer-width BitCopy-class handle. Nothing to enqueue.
@@ -9787,6 +9943,8 @@ fn overwrite_heap_leaf_capacity(
         total += match kind {
             StateFieldCloneKind::String
             | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::Rc
+            | StateFieldCloneKind::Weak
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. } => 1,
@@ -9913,6 +10071,8 @@ fn emit_overwrite_collect_leaves<'ctx>(
         let label = format!("ow_new_d{depth}_f{idx}");
         let leaf_slot = match kind {
             StateFieldCloneKind::String
+            | StateFieldCloneKind::Rc
+            | StateFieldCloneKind::Weak
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. } => Some(
@@ -9978,11 +10138,47 @@ fn emit_overwrite_collect_leaves<'ctx>(
                 )?;
                 None
             }
-            StateFieldCloneKind::Array { .. } => {
-                return Err(CodegenError::FailClosed(
-                    "overwrite-release collect reached array field; array state reassignment is not wired"
-                        .into(),
-                ));
+            StateFieldCloneKind::Array { elem, len } => {
+                let parent_field_ty = st_ty.get_field_type_at_index(idx_u).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "overwrite-release collect: parent struct {st_ty:?} has no \
+                         array field at index {idx_u}"
+                    ))
+                })?;
+                let BasicTypeEnum::ArrayType(array_ty) = parent_field_ty else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "overwrite-release collect: field {idx_u} is \
+                         {parent_field_ty:?}, not an array"
+                    )));
+                };
+                if u64::from(array_ty.len()) != *len {
+                    return Err(CodegenError::FailClosed(
+                        "overwrite-release collect: array kind/layout length mismatch".into(),
+                    ));
+                }
+                let field_count = usize::try_from(*len).map_err(|_| {
+                    CodegenError::FailClosed(
+                        "overwrite-release collect: array length exceeds host usize".into(),
+                    )
+                })?;
+                let wrapper = cx
+                    .ctx
+                    .struct_type(&vec![array_ty.get_element_type(); field_count], false);
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_array_ptr"))
+                    .llvm_ctx_with(|| format!("{label} nested array gep"))?;
+                emit_overwrite_collect_leaves(
+                    cx,
+                    builder,
+                    f,
+                    wrapper,
+                    field_ptr,
+                    &vec![elem.as_ref().clone(); field_count],
+                    slots,
+                    next_slot,
+                    depth + 1,
+                )?;
+                None
             }
             StateFieldCloneKind::Enum { name } => {
                 // An `indirect enum` field's owned heap leaf is the node pointer
@@ -10279,6 +10475,8 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
         let label = format!("ow_old_d{depth}_f{idx}");
         match kind {
             StateFieldCloneKind::String
+            | StateFieldCloneKind::Rc
+            | StateFieldCloneKind::Weak
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. } => {
@@ -10342,11 +10540,45 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                     depth + 1,
                 )?;
             }
-            StateFieldCloneKind::Array { .. } => {
-                return Err(CodegenError::FailClosed(
-                    "overwrite-release neutralize reached array field; array state reassignment is not wired"
-                        .into(),
-                ));
+            StateFieldCloneKind::Array { elem, len } => {
+                let parent_field_ty = st_ty.get_field_type_at_index(idx_u).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "overwrite-release neutralize: parent struct {st_ty:?} has no \
+                         array field at index {idx_u}"
+                    ))
+                })?;
+                let BasicTypeEnum::ArrayType(array_ty) = parent_field_ty else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "overwrite-release neutralize: field {idx_u} is \
+                         {parent_field_ty:?}, not an array"
+                    )));
+                };
+                if u64::from(array_ty.len()) != *len {
+                    return Err(CodegenError::FailClosed(
+                        "overwrite-release neutralize: array kind/layout length mismatch".into(),
+                    ));
+                }
+                let field_count = usize::try_from(*len).map_err(|_| {
+                    CodegenError::FailClosed(
+                        "overwrite-release neutralize: array length exceeds host usize".into(),
+                    )
+                })?;
+                let wrapper = cx
+                    .ctx
+                    .struct_type(&vec![array_ty.get_element_type(); field_count], false);
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_array_ptr"))
+                    .llvm_ctx_with(|| format!("{label} nested array gep"))?;
+                emit_overwrite_neutralize_leaves(
+                    cx,
+                    builder,
+                    f,
+                    wrapper,
+                    field_ptr,
+                    &vec![elem.as_ref().clone(); field_count],
+                    slots,
+                    depth + 1,
+                )?;
             }
             StateFieldCloneKind::Enum { name } => {
                 // An `indirect enum` field's owned heap leaf is the node pointer:
@@ -15563,41 +15795,8 @@ fn rc_payload_drop_thunk<'ctx>(
     payload_ty: &ResolvedTy,
 ) -> CodegenResult<PointerValue<'ctx>> {
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    if matches!(
-        payload_ty,
-        ResolvedTy::I8
-            | ResolvedTy::I16
-            | ResolvedTy::I32
-            | ResolvedTy::I64
-            | ResolvedTy::U8
-            | ResolvedTy::U16
-            | ResolvedTy::U32
-            | ResolvedTy::U64
-            | ResolvedTy::Isize
-            | ResolvedTy::Usize
-            | ResolvedTy::F32
-            | ResolvedTy::F64
-            | ResolvedTy::Bool
-            | ResolvedTy::Char
-            | ResolvedTy::Duration
-            | ResolvedTy::Unit
-            | ResolvedTy::Never
-    ) {
+    if !resolved_ty_contains_heap_leaf(fn_ctx, payload_ty, &mut HashSet::new()) {
         return Ok(ptr_ty.const_null());
-    }
-    if !matches!(
-        payload_ty,
-        ResolvedTy::String
-            | ResolvedTy::Bytes
-            | ResolvedTy::Named {
-                builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
-                ..
-            }
-    ) {
-        return Err(CodegenError::FailClosed(format!(
-            "Rc payload type {} has no emitted payload drop thunk",
-            payload_ty.user_facing()
-        )));
     }
 
     let symbol = format!(
@@ -16767,6 +16966,37 @@ fn lower_actor_state_field_load(
                         .llvm_ctx("ActorStateFieldLoad store")?;
                     return Ok(());
                 }
+                StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+                    if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                        return Err(CodegenError::FailClosed(format!(
+                            "ActorStateFieldLoad field {idx}: refcounted handle kind \
+                             {kind:?} requires a pointer-typed slot, got {field_ty:?}"
+                        )));
+                    }
+                    let helper = clone_helper_for_kind(kind)?.ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "ActorStateFieldLoad field {idx}: refcounted handle kind \
+                             {kind:?} has no clone helper"
+                        ))
+                    })?;
+                    let clone_fn =
+                        get_or_declare_clone_helper(fn_ctx.ctx, fn_ctx.llvm_mod, &helper);
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            clone_fn,
+                            &[field_val.into_pointer_value().into()],
+                            &format!("actor_state_field_{idx}_rc_retain"),
+                        )
+                        .llvm_ctx_with(|| {
+                            format!("refcounted retain for actor state field {idx} load")
+                        })?;
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, field_val)
+                        .llvm_ctx("ActorStateFieldLoad store")?;
+                    return Ok(());
+                }
                 StateFieldCloneKind::Vec { .. }
                 | StateFieldCloneKind::HashMap { .. }
                 | StateFieldCloneKind::HashSet { .. } => {
@@ -17121,6 +17351,36 @@ fn lower_actor_state_field_store(
                     new_ptr,
                     "hew_string_drop",
                     &format!("state_f{idx}_str"),
+                )?;
+            }
+            StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+                if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "ActorStateFieldStore field {idx}: refcounted handle kind \
+                         {kind:?} requires a pointer-typed slot, got {field_ty:?}"
+                    )));
+                }
+                let old_ptr = fn_ctx
+                    .builder
+                    .build_load(
+                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                        field_ptr,
+                        &format!("actor_state_field_{idx}_old_rc"),
+                    )
+                    .llvm_ctx("ActorStateFieldStore old refcounted handle load")?
+                    .into_pointer_value();
+                let helper = drop_helper_for_kind(kind)?.ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "ActorStateFieldStore field {idx}: refcounted handle kind \
+                         {kind:?} has no drop helper"
+                    ))
+                })?;
+                emit_state_field_old_value_release(
+                    fn_ctx,
+                    old_ptr,
+                    src_val.into_pointer_value(),
+                    helper.name,
+                    &format!("state_f{idx}_rc"),
                 )?;
             }
             StateFieldCloneKind::Vec { .. }
@@ -19141,14 +19401,11 @@ pub(crate) enum OwnedElemThunkKind {
     /// on demand (reusing the record-field clone/drop machinery over the
     /// tuple's struct fields) and the key is a structural fingerprint.
     Tuple,
-    /// Nested collection handle — `Vec<E>` / `HashMap<K,V>` / `HashSet<T>` as a
-    /// Vec element (#1722). Like `Tuple`, there is no registry entry: the
-    /// element slot holds a single owned collection handle, so the body is a
-    /// small wrapper thunk synthesized on demand (`load handle / call the
-    /// collection's canonical clone-or-free primitive / store`). The key is a
-    /// structural fingerprint (`mangle_resolved_ty`) so `Vec<string>` and
-    /// `Vec<i64>` never share a thunk.
-    Collection,
+    /// Single-pointer counted or collection handle. There is no registry entry:
+    /// the body is a small wrapper thunk synthesized on demand (`load handle /
+    /// call the canonical clone-or-free primitive / store`). The key is a
+    /// structural fingerprint so distinct handle types never share a thunk.
+    PointerHandle,
 }
 
 fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
@@ -19156,6 +19413,8 @@ fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
         StateFieldCloneKind::BitCopy { size_bytes } => format!("bit{size_bytes}"),
         StateFieldCloneKind::String => "string".to_string(),
         StateFieldCloneKind::Bytes => "bytes".to_string(),
+        StateFieldCloneKind::Rc => "rc".to_string(),
+        StateFieldCloneKind::Weak => "weak".to_string(),
         StateFieldCloneKind::Tuple { elems } => state_kind_tuple_key(elems),
         StateFieldCloneKind::Array { elem, len } => {
             format!("array_{}_{}", len, state_kind_key_fragment(elem))
@@ -19210,6 +19469,87 @@ pub(crate) fn get_or_declare_tuple_drop_inplace<'ctx>(
     tuple_key: &str,
 ) -> FunctionValue<'ctx> {
     get_or_declare_inplace_thunk(ctx, llvm_mod, "tuple", tuple_key, ThunkShape::DropInplace)
+}
+
+fn get_or_declare_array_clone_inplace<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    array_key: &str,
+) -> FunctionValue<'ctx> {
+    get_or_declare_inplace_thunk(ctx, llvm_mod, "array", array_key, ThunkShape::CloneInplace)
+}
+
+fn get_or_declare_array_drop_inplace<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    array_key: &str,
+) -> FunctionValue<'ctx> {
+    get_or_declare_inplace_thunk(ctx, llvm_mod, "array", array_key, ThunkShape::DropInplace)
+}
+
+fn array_kind_wrapper<'ctx>(
+    ctx: &'ctx Context,
+    array_ty: inkwell::types::ArrayType<'ctx>,
+    elem: &StateFieldCloneKind,
+    len: u64,
+    target_data: &TargetData,
+) -> CodegenResult<(StructType<'ctx>, Vec<StateFieldCloneKind>)> {
+    let llvm_len = u64::from(array_ty.len());
+    if llvm_len != len {
+        return Err(CodegenError::FailClosed(format!(
+            "array clone/drop kind length {len} does not match LLVM array length {llvm_len}"
+        )));
+    }
+    let len_usize = usize::try_from(len)
+        .map_err(|_| CodegenError::FailClosed("array length exceeds host usize".into()))?;
+    let fields = vec![array_ty.get_element_type(); len_usize];
+    let wrapper = ctx.struct_type(&fields, false);
+    if target_data.get_abi_size(&array_ty) != target_data.get_abi_size(&wrapper)
+        || target_data.get_abi_alignment(&array_ty) != target_data.get_abi_alignment(&wrapper)
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "array clone/drop wrapper layout differs from LLVM array layout for {array_ty:?}"
+        )));
+    }
+    Ok((wrapper, vec![elem.clone(); len_usize]))
+}
+
+fn emit_array_kind_inplace_thunk_bodies<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    array_key: &str,
+    array_ty: inkwell::types::ArrayType<'ctx>,
+    elem: &StateFieldCloneKind,
+    len: u64,
+    w: &DropSynthWitnesses<'_, 'ctx>,
+) -> CodegenResult<()> {
+    let (wrapper, kinds) = array_kind_wrapper(ctx, array_ty, elem, len, w.target_data)?;
+    let clone_fn = get_or_declare_array_clone_inplace(ctx, llvm_mod, array_key);
+    if clone_fn.count_basic_blocks() == 0 {
+        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, wrapper, &kinds, false, w)?;
+    }
+    let drop_fn = get_or_declare_array_drop_inplace(ctx, llvm_mod, array_key);
+    if drop_fn.count_basic_blocks() == 0 {
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, wrapper, &kinds, w)?;
+    }
+    Ok(())
+}
+
+fn emit_array_kind_drop_inplace_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    array_key: &str,
+    array_ty: inkwell::types::ArrayType<'ctx>,
+    elem: &StateFieldCloneKind,
+    len: u64,
+    w: &DropSynthWitnesses<'_, 'ctx>,
+) -> CodegenResult<()> {
+    let (wrapper, kinds) = array_kind_wrapper(ctx, array_ty, elem, len, w.target_data)?;
+    let drop_fn = get_or_declare_array_drop_inplace(ctx, llvm_mod, array_key);
+    if drop_fn.count_basic_blocks() == 0 {
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, wrapper, &kinds, w)?;
+    }
+    Ok(())
 }
 
 fn emit_tuple_kind_inplace_thunk_bodies<'ctx>(
@@ -19289,6 +19629,14 @@ pub(crate) fn collection_elem_clone_drop_syms(
             builtin: Some(hew_types::BuiltinType::HashSet),
             ..
         } => Some((HASHSET_CLONE_LAYOUT_SYMBOL, HASHSET_FREE_LAYOUT_SYMBOL)),
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Rc),
+            ..
+        } => Some(("hew_rc_clone", "hew_rc_drop")),
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Weak),
+            ..
+        } => Some(("hew_weak_clone_rc", "hew_weak_drop_rc")),
         _ => None,
     }
 }
@@ -21444,6 +21792,10 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
             ..
         } => true,
         ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Rc | hew_types::BuiltinType::Weak),
+            ..
+        } => true,
+        ResolvedTy::Named {
             builtin: Some(hew_types::BuiltinType::Vec),
             args,
             ..
@@ -21999,7 +22351,7 @@ fn emit_heap_slot_drop<'ctx>(
     if matches!(ty, ResolvedTy::Tuple(_) | ResolvedTy::Array(_, _)) {
         return emit_aggregate_recursive_drop(fn_ctx, slot_ptr, ty, depth, label);
     }
-    if matches!(ty, ResolvedTy::Named { builtin: None, .. }) {
+    if matches!(ty, ResolvedTy::Named { .. }) {
         let record_layouts = codegen_record_layouts(fn_ctx);
         let mut visited = HashSet::new();
         let kind = hew_mir::classify_state_field_with_enum_layouts(

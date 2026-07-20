@@ -97,6 +97,16 @@ pub enum StateFieldCloneKind {
     /// (`hew-runtime/src/bytes.rs:238,254`.)
     Bytes,
 
+    /// `Rc<T>` — one pointer-sized strong handle. Cloning bumps the strong
+    /// count and dropping releases the strong handle; `T` does not participate
+    /// in the handle's physical layout.
+    Rc,
+
+    /// `Weak<T>` — one pointer-sized weak handle. Cloning bumps the weak count
+    /// and dropping releases the weak handle; `T` does not participate in the
+    /// handle's physical layout.
+    Weak,
+
     /// Anonymous tuple value embedded inside another aggregate. Each element
     /// carries its own clone/drop kind so codegen can recurse structurally
     /// without re-deriving the shape from LLVM layout alone.
@@ -281,6 +291,8 @@ impl StateFieldCloneKind {
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::String
             | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::Rc
+            | StateFieldCloneKind::Weak
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -318,6 +330,8 @@ impl StateFieldCloneKind {
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::String
             | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::Rc
+            | StateFieldCloneKind::Weak
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -364,6 +378,8 @@ impl StateFieldCloneKind {
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::String
             | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::Rc
+            | StateFieldCloneKind::Weak
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -463,6 +479,8 @@ impl StateFieldCloneKind {
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::String
             | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::Rc
+            | StateFieldCloneKind::Weak
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -794,6 +812,8 @@ pub fn classify_owned_string_record_fields(
             StateFieldCloneKind::BitCopy { .. } => {}
             StateFieldCloneKind::String => has_string = true,
             StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::Rc
+            | StateFieldCloneKind::Weak
             | StateFieldCloneKind::Tuple { .. }
             | StateFieldCloneKind::Array { .. }
             | StateFieldCloneKind::Vec { .. }
@@ -1170,6 +1190,13 @@ fn classify_named(
     resource_close: &[(String, String)],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
+    if matches!(builtin, Some(hew_types::BuiltinType::Rc)) {
+        return Ok(StateFieldCloneKind::Rc);
+    }
+    if matches!(builtin, Some(hew_types::BuiltinType::Weak)) {
+        return Ok(StateFieldCloneKind::Weak);
+    }
+
     // Non-opaque user records/enums still shadow builtin names. Keep that
     // boundary before the `Connection` resource-handle exception below so a
     // user `type Connection { ... }` does not become a socket handle.
@@ -1854,6 +1881,40 @@ mod tests {
             classify_state_field(&ResolvedTy::Bytes, &no_records(), &mut v).unwrap(),
             StateFieldCloneKind::Bytes,
         );
+    }
+
+    #[test]
+    fn rc_and_weak_are_indirect_owned_handle_leaves() {
+        let mut visited = HashSet::new();
+        let payload = ResolvedTy::Named {
+            name: "Node".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        let rc = ResolvedTy::Named {
+            name: "Rc".to_string(),
+            args: vec![payload.clone()],
+            builtin: Some(hew_types::BuiltinType::Rc),
+            is_opaque: false,
+        };
+        let weak = ResolvedTy::Named {
+            name: "Weak".to_string(),
+            args: vec![payload],
+            builtin: Some(hew_types::BuiltinType::Weak),
+            is_opaque: false,
+        };
+
+        assert_eq!(
+            classify_state_field(&rc, &no_records(), &mut visited).unwrap(),
+            StateFieldCloneKind::Rc,
+        );
+        assert_eq!(
+            classify_state_field(&weak, &no_records(), &mut visited).unwrap(),
+            StateFieldCloneKind::Weak,
+        );
+        assert!(StateFieldCloneKind::Rc.supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::Weak.supports_value_class_drop_spine());
     }
 
     #[test]

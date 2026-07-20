@@ -429,12 +429,6 @@ impl Checker {
         member_types
     }
 
-    fn register_rcfree_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
-        let member_types = Self::structural_member_types_for_type(type_def);
-        self.registry
-            .register_rcfree_members(type_name.to_string(), member_types);
-    }
-
     fn register_serializable_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
         let member_types = Self::structural_member_types_for_type(type_def);
         self.registry
@@ -1419,9 +1413,7 @@ impl Checker {
         // import path's `register_type_namespace_name` succeeds) and skips
         // trait-registry / wire-method side effects (those are handled by
         // the import path's full `register_type_decl` for pub types, and
-        // are not needed for internal non-pub types). `RcFree` is the
-        // bounded exception because collection admissibility during non-root
-        // body checking depends on that structural marker.
+        // are not needed for internal non-pub types).
         if let Some(ref mg) = program.module_graph {
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
@@ -1617,7 +1609,7 @@ impl Checker {
     /// `type_defs` (bare + module-qualified keys) and the member-derived facts
     /// are re-run over the canonical types: the structural marker set
     /// (`register_type` — Send/Copy/Frozen/Clone/Encode), the
-    /// `Serializable`/`RcFree` member sets, the per-module qualified marker
+    /// `Serializable` member set, the per-module qualified marker
     /// mirror (the ask-reply Send-gate anti-clobber), the variant-constructor
     /// `fn_sigs`, the wire codec layout, and the `Encode`-driven JSON/YAML/TOML
     /// methods. Members that did not change are left untouched, so the common
@@ -1850,7 +1842,6 @@ impl Checker {
         if td.wire.is_some() || kind == TypeDefKind::Enum {
             self.register_serializable_members_for_type(&td.name, &type_def);
         }
-        self.register_rcfree_members_for_type(&td.name, &type_def);
         self.seed_qualified_type_markers_for_current_module(&td.name);
         self.commit_reresolved_type_def(&td.name, type_def);
 
@@ -1914,7 +1905,6 @@ impl Checker {
                     .register_type(rd.name.clone(), field_types.clone());
                 self.registry
                     .register_serializable_type(rd.name.clone(), field_types);
-                self.register_rcfree_members_for_type(&rd.name, &type_def);
                 self.commit_reresolved_type_def(&rd.name, type_def);
             }
             RecordKind::Tuple(positional_types) => {
@@ -2000,7 +1990,6 @@ impl Checker {
                 }
                 self.registry
                     .register_type(md.name.clone(), all_field_types);
-                self.register_rcfree_members_for_type(&md.name, &type_def);
                 self.commit_reresolved_type_def(&md.name, type_def);
             }
         }
@@ -2041,7 +2030,6 @@ impl Checker {
                     doc_comment: stored.doc_comment.clone(),
                     is_indirect: stored.is_indirect,
                 };
-                self.register_rcfree_members_for_type(&event_type_name, &event_type_def);
                 self.commit_reresolved_type_def(&event_type_name, event_type_def);
             }
         }
@@ -2210,7 +2198,6 @@ impl Checker {
             doc_comment: td.doc_comment.clone(),
             is_indirect: td.is_indirect,
         };
-        self.register_rcfree_members_for_type(&td.name, &type_def);
 
         // Seed the trait-registry structural member set for imported module
         // types, mirroring `register_type_decl`. An imported actor whose `ask`
@@ -2520,7 +2507,6 @@ impl Checker {
         if td.wire.is_some() || kind == TypeDefKind::Enum {
             self.register_serializable_members_for_type(&td.name, &type_def);
         }
-        self.register_rcfree_members_for_type(&td.name, &type_def);
         // Mirror the markers under the module-qualified key (when this type is
         // declared in a non-root module) so a same-bare-name reply from another
         // package cannot clobber this type's Send derivation at the ask-reply
@@ -2655,7 +2641,6 @@ impl Checker {
         self.registry.register_record_type(rd.name.clone());
         self.registry
             .register_serializable_type(rd.name.clone(), field_types);
-        self.register_rcfree_members_for_type(&rd.name, &type_def);
 
         self.type_defs.insert(rd.name.clone(), type_def);
         self.record_type_def_inference_holes(&rd.name, hole_vars);
@@ -3162,7 +3147,6 @@ impl Checker {
             .register_type(md.name.clone(), all_field_types);
         self.registry
             .register_type_params(md.name.clone(), type_param_names.clone());
-        self.register_rcfree_members_for_type(&md.name, &type_def);
 
         self.type_defs.insert(md.name.clone(), type_def);
         self.record_type_def_inference_holes(&md.name, machine_hole_vars);
@@ -3200,7 +3184,6 @@ impl Checker {
             doc_comment: None,
             is_indirect: false,
         };
-        self.register_rcfree_members_for_type(&event_type_name, &event_type_def);
         self.type_defs
             .insert(event_type_name.clone(), event_type_def);
         self.record_type_def_inference_holes(&event_type_name, event_hole_vars);
@@ -4158,7 +4141,6 @@ impl Checker {
 
         // Actors are always Send
         self.registry.register_actor(identity.to_string());
-        self.register_rcfree_members_for_type(identity, &type_def);
 
         self.type_defs.insert(identity.to_string(), type_def);
         // A new handle-bearing candidate entered `type_defs`; invalidate the

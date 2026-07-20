@@ -338,7 +338,13 @@ impl Builder {
             // drop_fn the elaborator emits matches what codegen constructs —
             // `dedup-semantic-boundary`).
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::HashMap | hew_types::BuiltinType::HashSet),
+                builtin:
+                    Some(
+                        hew_types::BuiltinType::HashMap
+                        | hew_types::BuiltinType::HashSet
+                        | hew_types::BuiltinType::Rc
+                        | hew_types::BuiltinType::Weak,
+                    ),
                 ..
             } => true,
             ResolvedTy::Named {

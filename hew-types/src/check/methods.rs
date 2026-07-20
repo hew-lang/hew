@@ -19,7 +19,6 @@ use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
-use crate::traits::RcFreeStatus;
 use crate::BuiltinType;
 
 /// Peel the `Ok` payload type out of a `Result<T, E>` `Ty`. Returns `None` for a
@@ -4710,10 +4709,8 @@ impl Checker {
     /// Decide whether a non-Copy `Vec<T>` element type may route through the
     /// W5.016 owned-element ABI (`hew_vec_*_owned`).
     ///
-    /// Admissible when the element is a user record or enum (the shapes whose
-    /// per-type `__hew_record/enum_{clone,drop}_inplace` thunks codegen
-    /// synthesizes) AND it is `RcFree` (so the runtime drop pass terminates
-    /// deterministically — `Rc` ownership is not tracked per element). Tuple
+    /// Admissible when the element is a user record or enum whose concrete
+    /// fields have clone/drop thunks. Tuple
     /// elements are NOT yet admitted here: their `__hew_tuple_*_inplace` thunk
     /// synthesis lands in a later slice; until then they stay fail-closed.
     ///
@@ -4734,11 +4731,6 @@ impl Checker {
     /// owned enum.
     pub(super) fn vec_element_rejection_reason(&self, elem_ty: &Ty) -> String {
         if matches!(elem_ty, Ty::Tuple(_)) {
-            if !matches!(self.registry.rc_free_status(elem_ty), RcFreeStatus::RcFree) {
-                return "it transitively holds an `Rc`, whose per-element drop is not \
-                        deterministically tracked by the owned-element Vec runtime"
-                    .to_string();
-            }
             if self.vec_element_contains_function(elem_ty, &mut HashSet::new()) {
                 return "it contains a function value, whose closure environment cannot be \
                         cloned by the owned-element Vec runtime"
@@ -4784,12 +4776,6 @@ impl Checker {
                         TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
                     );
                     if is_record_or_enum {
-                        if !matches!(self.registry.rc_free_status(elem_ty), RcFreeStatus::RcFree) {
-                            return "it transitively holds an `Rc`, whose per-element \
-                                    drop is not deterministically tracked by the \
-                                    owned-element Vec runtime"
-                                .to_string();
-                        }
                         let roots = element_self_roots(name);
                         if !self.record_enum_collection_fields_clonable(
                             elem_ty,
@@ -4864,8 +4850,8 @@ impl Checker {
     ///   and the witness can never disagree about one element type);
     /// - monomorphic machine values — machines are tagged-union value types
     ///   whose state-variant layout is registered in `type_defs.variants`,
-    ///   so the owned-element queue witness can describe them (same `RcFree` +
-    ///   no-unowned-container requirements as for enum channel elements).
+    ///   so the owned-element queue witness can describe them (with the same
+    ///   no-unowned-container requirement as enum channel elements).
     ///   Generic machine instantiations are excluded (the substrate
     ///   canonicalizes to one bare-named layout; per-instantiation witnesses
     ///   do not exist). Machine admission lives HERE, not in
@@ -4902,12 +4888,9 @@ impl Checker {
                         if !args.is_empty() {
                             return false;
                         }
-                        // Monomorphic: apply the same RcFree + no-unowned-container
-                        // requirements as for enum channel elements.
-                        return matches!(
-                            self.registry.rc_free_status(elem_ty),
-                            RcFreeStatus::RcFree
-                        ) && !self.vec_element_contains_unowned_container(
+                        // Monomorphic: apply the same no-unowned-container
+                        // requirement as for enum channel elements.
+                        return !self.vec_element_contains_unowned_container(
                             elem_ty,
                             &HashSet::new(),
                             &mut HashSet::new(),
@@ -4987,13 +4970,11 @@ impl Checker {
             // through the same authority; container and closure leaves still
             // fail closed.
             Ty::Tuple(elems) => {
-                // RcFree + no unowned-container field. A tuple has no
-                // self-recursion root, so the `roots` set is empty: any
-                // container field is unowned.
-                matches!(self.registry.rc_free_status(elem_ty), RcFreeStatus::RcFree)
-                    && elems
-                        .iter()
-                        .all(|e| self.vec_tuple_owned_field_admissible(e))
+                // A tuple has no self-recursion root, so the `roots` set is
+                // empty: any container field is unowned.
+                elems
+                    .iter()
+                    .all(|e| self.vec_tuple_owned_field_admissible(e))
                     && !self.vec_element_contains_unowned_container(
                         elem_ty,
                         &HashSet::new(),
@@ -5009,8 +4990,7 @@ impl Checker {
                 // through the owned descriptor with COPY-IN, exactly like an
                 // owned record: each pushed collection is deep-cloned so the
                 // outer Vec is its sole owner, and released via the per-element
-                // drop_fn. Admit on the same RcFree gate the record arm uses
-                // (deterministic per-element drop). A closure-pair `Vec<fn>` /
+                // drop_fn. A closure-pair `Vec<fn>` /
                 // `Vec<closure>` element keeps its existing pointer/closure-
                 // pairs ABI (separate lane, #1722 out-of-scope) — never copy-in.
                 // The owned-vs-managed clone selection is congruent by
@@ -5019,12 +4999,7 @@ impl Checker {
                 // `resolved_ty_element_owns_heap_for_owned_vec`, so the clone
                 // primitive can never disagree with the inner Vec's ABI.
                 match builtin {
-                    Some(BuiltinType::HashMap | BuiltinType::HashSet) => {
-                        return matches!(
-                            self.registry.rc_free_status(elem_ty),
-                            RcFreeStatus::RcFree
-                        );
-                    }
+                    Some(BuiltinType::HashMap | BuiltinType::HashSet) => return true,
                     Some(BuiltinType::Vec) => {
                         if args
                             .first()
@@ -5032,13 +5007,11 @@ impl Checker {
                         {
                             return false;
                         }
-                        return matches!(
-                            self.registry.rc_free_status(elem_ty),
-                            RcFreeStatus::RcFree
-                        );
+                        return true;
                     }
-                    // Other builtin nominals (Rc/Option/Result/handles) are not
-                    // user records/enums and have no owned-Vec thunk path.
+                    Some(BuiltinType::Rc | BuiltinType::Weak) => return args.len() == 1,
+                    // Other builtin nominals are not user records/enums and
+                    // have no owned-Vec thunk path.
                     Some(_) => return false,
                     // User-defined record/enum: fall through to the logic below.
                     None => {}
@@ -5059,11 +5032,6 @@ impl Checker {
                     type_def.kind,
                     TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
                 ) {
-                    return false;
-                }
-                // RcFree is required so the per-element runtime drop is
-                // deterministic.
-                if !matches!(self.registry.rc_free_status(elem_ty), RcFreeStatus::RcFree) {
                     return false;
                 }
                 // A record/enum transitively holding a `Vec`/`HashMap`/`HashSet`
@@ -5192,13 +5160,15 @@ impl Checker {
 
     fn vec_tuple_owned_field_admissible(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Tuple(elems) => {
-                matches!(self.registry.rc_free_status(ty), RcFreeStatus::RcFree)
-                    && elems
-                        .iter()
-                        .all(|elem| self.vec_tuple_owned_field_admissible(elem))
-            }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.vec_tuple_owned_field_admissible(elem)),
             Ty::String | Ty::Bytes => true,
+            Ty::Named {
+                builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                args,
+                ..
+            } => args.len() == 1,
             Ty::Named { builtin: None, .. } => {
                 crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some()
                     || self.vec_owned_element_admissible(ty)
@@ -5267,8 +5237,8 @@ impl Checker {
     /// member has no `__hew_*_inplace` thunk path, so an owned-Vec element that
     /// transitively reaches one must stay fail-closed. The recursive enum's
     /// own self-edge through a `Vec` (`Array(Vec<RedisReply>)`) is the one
-    /// admitted exception (gated by the later `RcFree` refinement) — here we
-    /// only reject UNOWNED-container fields, not the self-recursive edge.
+    /// admitted exception — here we only reject unowned-container fields, not
+    /// the self-recursive edge.
     pub(super) fn vec_element_contains_unowned_container(
         &self,
         ty: &Ty,
@@ -5366,9 +5336,6 @@ impl Checker {
         let elem_ty = type_args
             .first()
             .map_or_else(|| Ty::Var(TypeVar::fresh()), |ty| self.subst.resolve(ty));
-        if matches!(method, "push" | "pop" | "remove" | "set" | "append") {
-            self.reject_rc_collection_element("Vec", &elem_ty, span);
-        }
         self.record_resolved_vec_call(method, &elem_ty, span);
         Some(sig.return_type)
     }
@@ -5493,11 +5460,6 @@ impl Checker {
                     }
                 }
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                // Rc elements are not tracked by the collection runtime; reject
-                // them with the same `UnsafeCollectionElement` diagnostic the
-                // collection-driver admission hook fired for the legacy get
-                // (fire-and-continue, matching history).
-                self.reject_rc_collection_element("Vec", &resolved_elem, span);
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::PrimitiveTraitImpl {
@@ -5592,7 +5554,6 @@ impl Checker {
             }
             "map" => {
                 self.check_arity(args, 1, "`Vec::map`", span);
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let ret_ty = Ty::Var(TypeVar::fresh());
                 let expected_fn = Ty::Function {
                     params: vec![elem_ty.clone()],
@@ -5603,7 +5564,6 @@ impl Checker {
                     self.check_against(expr, sp, &expected_fn);
                 }
                 let resolved_ret = self.subst.resolve(&ret_ty);
-                self.reject_rc_collection_element("Vec", &resolved_ret, span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 if !self.reject_vec_pipeline_fn_element("map", &resolved_elem, span) {
                     self.record_vec_higher_order_rewrite(
@@ -5617,7 +5577,6 @@ impl Checker {
             }
             "filter" => {
                 self.check_arity(args, 1, "`Vec::filter`", span);
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let expected_fn = Ty::Function {
                     params: vec![elem_ty.clone()],
                     ret: Box::new(Ty::Bool),
@@ -5645,7 +5604,6 @@ impl Checker {
                 // is deliberately not provided: it would need an
                 // empty-vector answer, and we refuse to invent one.
                 self.check_arity(args, 2, "`Vec::reduce`", span);
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let acc_ty = if let Some(arg) = args.get(1) {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp)
@@ -5674,7 +5632,6 @@ impl Checker {
             }
             "fold" => {
                 self.check_arity(args, 2, "`Vec::fold`", span);
-                self.reject_rc_collection_element("Vec", &elem_ty, span);
                 let acc_ty = if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp)

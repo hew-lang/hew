@@ -1,0 +1,19 @@
+type Node {
+    label: string,
+    parent: Option<Weak<Node>>,
+}
+
+fn build() -> Weak<Node> {
+    let root = Rc::new(Node { label: "root", parent: None });
+    let weak = root.downgrade();
+    root.set(Node { label: "replacement", parent: Some(weak.clone()) });
+    weak
+}
+
+fn main() -> i64 {
+    let weak = build();
+    match weak.upgrade() {
+        Some(_) => 9000,
+        None => 1,
+    }
+}

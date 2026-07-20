@@ -1078,8 +1078,8 @@ pub(crate) fn owned_elem_thunk_key(
     if let ResolvedTy::Tuple(elems) = elem_ty {
         return Some((OwnedElemThunkKind::Tuple, tuple_thunk_key(elems)));
     }
-    // Nested collection element (#1722): `Vec<E>` / `HashMap` / `HashSet`. Like
-    // the tuple shape there is no registry entry — synthesize a structural
+    // Single-pointer collection or counted handle. Like the tuple shape there
+    // is no registry entry — synthesize a structural
     // thunk key (`mangle_resolved_ty` distinguishes `Vec<string>` from
     // `Vec<i64>`). Gated on a resolvable clone/free primitive so a closure-pair
     // `Vec<fn>` element resolves to `None` here (fail closed at descriptor
@@ -1091,13 +1091,15 @@ pub(crate) fn owned_elem_thunk_key(
                 hew_types::BuiltinType::Vec
                     | hew_types::BuiltinType::HashMap
                     | hew_types::BuiltinType::HashSet
+                    | hew_types::BuiltinType::Rc
+                    | hew_types::BuiltinType::Weak
             ),
             ..
         }
     ) && collection_elem_clone_drop_syms(elem_ty).is_some()
     {
         return Some((
-            OwnedElemThunkKind::Collection,
+            OwnedElemThunkKind::PointerHandle,
             hew_hir::mangle_resolved_ty(elem_ty),
         ));
     }

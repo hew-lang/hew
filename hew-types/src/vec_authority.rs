@@ -432,8 +432,8 @@ pub fn resolve_runtime_symbol(
     // handle, a closure/function value, ...) never selects the owned Vec
     // family, even when an upstream owned-admissibility check reports it as
     // owned. A recursive `indirect enum` element satisfies every shape
-    // `vec_owned_element_admissible` requires (registered record/enum kind,
-    // `RcFree`, no unowned-container field) because that admissibility check
+    // `vec_owned_element_admissible` requires (registered record/enum kind and
+    // no unowned-container field) because that admissibility check
     // is blind to indirection — but its runtime representation is a bare
     // pointer slot built by `hew_vec_new_ptr`, not the owned family's
     // `HewVecElemLayout`-descriptor buffer. Honouring `is_owned` here would

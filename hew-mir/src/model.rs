@@ -1876,6 +1876,7 @@ fn ty_heap_ownership_inner(
         //   `hew_gen_coro_destroy` — heap-owning regardless of its generic
         //   arguments (`Generator<i64, ()>` owns its coro frame even though
         //   `i64` is bit-copy).
+        // - `Rc<T>` / `Weak<T>` owns a counted reference to an allocation.
         // - `Vec<T>` / `HashMap<K, V>` / `HashSet<T>` owns a heap buffer for
         //   ANY element type — `Vec<i64>` owns its `hew_vec_free`-released
         //   backing buffer. A record/enum/tuple field of such a type therefore
@@ -1896,7 +1897,9 @@ fn ty_heap_ownership_inner(
                     | hew_types::BuiltinType::AsyncGenerator
                     | hew_types::BuiltinType::Vec
                     | hew_types::BuiltinType::HashMap
-                    | hew_types::BuiltinType::HashSet,
+                    | hew_types::BuiltinType::HashSet
+                    | hew_types::BuiltinType::Rc
+                    | hew_types::BuiltinType::Weak,
                 ),
             ..
         } => HeapOwnership::HEAP,

@@ -929,9 +929,9 @@ impl Checker {
         // path and no longer materialises an aliasing temp). Gate on the single
         // authority: `string`/`bytes` always admit (push_str / push_bytes copy
         // independently); an owned record/enum admits exactly when it is
-        // RcFree-clonable via `vec_owned_element_admissible` — which admits a
-        // record/enum transitively holding a `Vec`/`HashMap`/`HashSet` field and
-        // keeps an `Rc`/closure-field element rejected. Anything else fails closed
+        // cloneable via `vec_owned_element_admissible` — which admits a
+        // record/enum transitively holding collections or Rc/Weak handles and
+        // keeps a closure-field element rejected. Anything else fails closed
         // with a clear diagnostic rather than a silent double-free.
         if !self.vec_element_has_copy_layout(&elem_ty) {
             let resolved_elem = self.subst.resolve(&elem_ty);

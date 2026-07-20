@@ -980,6 +980,8 @@ pub(crate) fn collection_layout_witness(
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::String
         | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
         | StateFieldCloneKind::Tuple { .. }
         | StateFieldCloneKind::Array { .. }
         | StateFieldCloneKind::IoHandle { .. }
@@ -1162,7 +1164,7 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
         OwnedElemThunkKind::Record => "rec",
         OwnedElemThunkKind::Enum => "enum",
         OwnedElemThunkKind::Tuple => "tup",
-        OwnedElemThunkKind::Collection => "coll",
+        OwnedElemThunkKind::PointerHandle => "handle",
     };
     let global_name = format!("__hew_vec_elem_layout_{kind_tag}_{key}_{size}_{align}");
     if let Some(g) = llvm_mod.get_global(&global_name) {
@@ -1206,7 +1208,7 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
                 get_or_declare_tuple_drop_inplace(ctx, llvm_mod, &key),
             )
         }
-        OwnedElemThunkKind::Collection => {
+        OwnedElemThunkKind::PointerHandle => {
             // The collection-handle wrapper thunk BODY is synthesized eagerly
             // here (like the tuple thunk — no registry-driven seeding): a
             // collection element is referenced only through this descriptor.
@@ -2114,7 +2116,7 @@ fn hashmap_owned_value_layout_descriptor_ptr<'ctx>(
         OwnedElemThunkKind::Record => "rec",
         OwnedElemThunkKind::Enum => "enum",
         OwnedElemThunkKind::Tuple => "tup",
-        OwnedElemThunkKind::Collection => "coll",
+        OwnedElemThunkKind::PointerHandle => "handle",
     };
     let global_name = format!("__hew_map_value_layout_{kind_tag}_{key}_{size}_{align}_owned");
     if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
@@ -2154,7 +2156,7 @@ fn hashmap_owned_value_layout_descriptor_ptr<'ctx>(
                 get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
             )
         }
-        OwnedElemThunkKind::Collection => {
+        OwnedElemThunkKind::PointerHandle => {
             let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(val_resolved_ty)
                 .ok_or_else(|| {
                     CodegenError::FailClosed(format!(

@@ -28,8 +28,17 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Duration;
 
-use super::{describe_output, hew_binary, repo_root, require_codegen};
+use super::{describe_output, hew_binary, repo_root, require_codegen, try_run_bounded_command};
+
+/// Hard wall-clock deadline for each macOS `leaks(1)` inspection.
+///
+/// Restricted CI processes are not debuggable, and `leaks --atExit` can hang
+/// indefinitely instead of reporting that restriction. Keep every inspection
+/// bounded; timing out skips only the node-count oracle, while the separate
+/// poisoned-allocator crash check continues to run.
+const LEAKS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Low iteration count: exercises the per-iteration path enough times to leave
 /// the constant-overhead floor while staying cheap to compile and scan.
@@ -92,15 +101,28 @@ pub fn measure_leaks(bin: &Path) -> Option<usize> {
 /// probe. This lets a slope test compile one binary and exercise it at multiple
 /// iteration counts without rebuilding the same program shape.
 pub fn measure_leaks_with_args(bin: &Path, args: &[&str]) -> Option<usize> {
-    let output = Command::new("leaks")
+    let mut command = Command::new("leaks");
+    command
         .args(["--atExit", "--"])
         .arg(bin)
         .args(args)
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
+        .env("MallocGuardEdges", "1");
+    let output = match try_run_bounded_command(
+        command,
+        format!("inspect {} with leaks(1)", bin.display()),
+        LEAKS_TIMEOUT,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!(
+                "skip: leaks could not inspect {} within {LEAKS_TIMEOUT:?}: {error}",
+                bin.display()
+            );
+            return None;
+        }
+    };
     if !output.status.success() && output.stdout.is_empty() {
         eprintln!(
             "skip: leaks declined to attach to {}: {}",

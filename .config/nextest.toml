@@ -107,13 +107,12 @@ slow-timeout = { period = "120s", terminate-after = 4 }
 retries = 1
 
 [[profile.ci.overrides]]
-# Native FFI clang/ld linking is CI-cold-slow and load-variable; the default
-# 300s ceiling is a false timeout, not a real regression. Serialize this
-# dedicated native-link binary and allow each link up to 900s; terminate-after
-# still fails a genuine hang.
+# Native FFI clang/ld linking is CI-cold-slow and load-variable, so serialize
+# this dedicated native-link binary. The `leaks(1)` probe has its own five-second
+# process-tree deadline; this modest outer budget now remains a final backstop.
 filter = "binary(ffi_link_e2e)"
 test-group = "ffi-native-link"
-slow-timeout = { period = "900s", terminate-after = 1 }
+slow-timeout = { period = "60s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # await_e2e tests each call `hew run` at least twice (the

@@ -427,8 +427,11 @@ bb1:                                              ; preds = %bb0
   br i1 %weak_upgrade_is_none, label %weak_upgrade_none, label %weak_upgrade_some
 
 bb2:                                              ; preds = %after_cooperate17, %after_cooperate7
+  call void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %local_4)
+  store %"Option$$Rc$lNode$g" zeroinitializer, ptr %local_4, align 4
   %move_load2 = load i64, ptr %local_3, align 8
   store i64 %move_load2, ptr %return_slot, align 8
+  call void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %local_4)
   %resource_drop_flag = load i64, ptr %local_2, align 8
   %resource_drop_not_consumed = icmp eq i64 %resource_drop_flag, 0
   br i1 %resource_drop_not_consumed, label %resource_drop_live_only, label %resource_drop_merge
@@ -450,6 +453,7 @@ bb4:                                              ; preds = %bb6
   br i1 %hew_cooperate_is_cancel15, label %cancel_exit16, label %after_cooperate17
 
 bb5:                                              ; preds = %bb6
+  call void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %local_4)
   %resource_drop_flag23 = load i64, ptr %local_2, align 8
   %resource_drop_not_consumed24 = icmp eq i64 %resource_drop_flag23, 0
   br i1 %resource_drop_not_consumed24, label %resource_drop_live_only25, label %resource_drop_merge26
@@ -507,6 +511,7 @@ resource_drop_merge:                              ; preds = %resource_drop_live_
   ret i64 %ret_val
 
 cancel_exit6:                                     ; preds = %bb3
+  call void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %local_4)
   %resource_drop_flag8 = load i64, ptr %local_2, align 8
   %resource_drop_not_consumed9 = icmp eq i64 %resource_drop_flag8, 0
   br i1 %resource_drop_not_consumed9, label %resource_drop_live_only10, label %resource_drop_merge11
@@ -524,6 +529,7 @@ resource_drop_merge11:                            ; preds = %resource_drop_live_
   ret i64 0
 
 cancel_exit16:                                    ; preds = %bb4
+  call void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %local_4)
   %resource_drop_flag18 = load i64, ptr %local_2, align 8
   %resource_drop_not_consumed19 = icmp eq i64 %resource_drop_flag18, 0
   br i1 %resource_drop_not_consumed19, label %resource_drop_live_only20, label %resource_drop_merge21
@@ -1233,6 +1239,90 @@ done:                                             ; preds = %do_drop, %entry
 
 declare void @hew_string_drop(ptr)
 
+define internal i32 @"__hew_enum_clone_inplace_Option$$Rc$lNode$g"(ptr %0, ptr %1) {
+entry:
+  %enum_clone_tag_ptr = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %0, i32 0, i32 0
+  %enum_clone_tag = load i8, ptr %enum_clone_tag_ptr, align 1
+  switch i8 %enum_clone_tag, label %tag_oob_trap [
+    i8 0, label %enum_clone_variant_0
+    i8 1, label %enum_clone_variant_1
+  ]
+
+success:                                          ; preds = %enum_clone_variant_1, %enum_clone_v0_store_0
+  ret i32 0
+
+fail:                                             ; preds = %enum_clone_v0_rb_0
+  ret i32 1
+
+tag_oob_trap:                                     ; preds = %entry
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+enum_clone_variant_0:                             ; preds = %entry
+  %enum_clone_src_payload_0 = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %0, i32 0, i32 1
+  %enum_clone_dst_payload_0 = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %1, i32 0, i32 1
+  br label %enum_clone_v0_step_0
+
+enum_clone_variant_1:                             ; preds = %entry
+  br label %success
+
+enum_clone_v0_step_0:                             ; preds = %enum_clone_variant_0
+  %src_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %enum_clone_src_payload_0, i32 0, i32 0
+  %src_f0 = load ptr, ptr %src_f0_ptr, align 4
+  %clone_helper_f0 = call ptr @hew_rc_clone(ptr %src_f0)
+  %cloned_f0_int = ptrtoint ptr %clone_helper_f0 to i64
+  %cloned_f0_null = icmp eq i64 %cloned_f0_int, 0
+  br i1 %cloned_f0_null, label %enum_clone_v0_rb_0, label %enum_clone_v0_store_0
+
+enum_clone_v0_store_0:                            ; preds = %enum_clone_v0_step_0
+  %dst_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %enum_clone_dst_payload_0, i32 0, i32 0
+  store ptr %clone_helper_f0, ptr %dst_f0_ptr, align 4
+  br label %success
+
+enum_clone_v0_rb_0:                               ; preds = %enum_clone_v0_step_0
+  br label %fail
+}
+
+declare void @hew_trap_with_code(i32)
+
+; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
+declare void @llvm.trap() #0
+
+declare ptr @hew_rc_clone(ptr)
+
+define internal void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %0) {
+entry:
+  %enum_drop_tag_ptr = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %0, i32 0, i32 0
+  %enum_drop_tag = load i8, ptr %enum_drop_tag_ptr, align 1
+  switch i8 %enum_drop_tag, label %tag_oob_trap [
+    i8 0, label %enum_drop_variant_0
+    i8 1, label %enum_drop_variant_1
+  ]
+
+done:                                             ; preds = %enum_drop_variant_1, %enum_drop_variant_0
+  ret void
+
+tag_oob_trap:                                     ; preds = %entry
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+enum_drop_variant_0:                              ; preds = %entry
+  %enum_drop_payload_0 = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %0, i32 0, i32 1
+  %drop_rc_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %enum_drop_payload_0, i32 0, i32 0
+  %drop_rc_f0 = load ptr, ptr %drop_rc_f0_ptr, align 4
+  call void @hew_rc_drop(ptr %drop_rc_f0)
+  store ptr null, ptr %drop_rc_f0_ptr, align 4
+  br label %done
+
+enum_drop_variant_1:                              ; preds = %entry
+  %enum_drop_payload_1 = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %0, i32 0, i32 1
+  br label %done
+}
+
+declare void @hew_rc_drop(ptr)
+
 define internal void @__hew_record_overwrite_release_CrashInfo(ptr %0, ptr %1) {
 entry:
   %ow_slot_0 = alloca ptr, align 4
@@ -1251,6 +1341,68 @@ entry:
   store ptr %ow_old_d0_f1_neutralized, ptr %ow_old_d0_f1_ptr, align 4
   call void @__hew_record_drop_inplace_CrashInfo(ptr %0)
   ret void
+}
+
+define internal void @"__hew_enum_overwrite_release_Option$$Rc$lNode$g"(ptr %0, ptr %1) {
+entry:
+  %ow_slot_0 = alloca ptr, align 4
+  store ptr null, ptr %ow_slot_0, align 4
+  %"ow_new_d0_Option$$Rc$lNode$g_tag_ptr" = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %1, i32 0, i32 0
+  %"ow_new_d0_Option$$Rc$lNode$g_tag" = load i8, ptr %"ow_new_d0_Option$$Rc$lNode$g_tag_ptr", align 1
+  switch i8 %"ow_new_d0_Option$$Rc$lNode$g_tag", label %"ow_new_d0_Option$$Rc$lNode$g_tag_oob" [
+    i8 0, label %"ow_new_d0_Option$$Rc$lNode$g_v0"
+    i8 1, label %"ow_new_d0_Option$$Rc$lNode$g_v1"
+  ]
+
+"ow_new_d0_Option$$Rc$lNode$g_merge":             ; preds = %"ow_new_d0_Option$$Rc$lNode$g_v1", %"ow_new_d0_Option$$Rc$lNode$g_v0"
+  %"ow_old_d0_Option$$Rc$lNode$g_tag_ptr" = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %0, i32 0, i32 0
+  %"ow_old_d0_Option$$Rc$lNode$g_tag" = load i8, ptr %"ow_old_d0_Option$$Rc$lNode$g_tag_ptr", align 1
+  switch i8 %"ow_old_d0_Option$$Rc$lNode$g_tag", label %"ow_old_d0_Option$$Rc$lNode$g_tag_oob" [
+    i8 0, label %"ow_old_d0_Option$$Rc$lNode$g_v0"
+    i8 1, label %"ow_old_d0_Option$$Rc$lNode$g_v1"
+  ]
+
+"ow_new_d0_Option$$Rc$lNode$g_tag_oob":           ; preds = %entry
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+"ow_new_d0_Option$$Rc$lNode$g_v0":                ; preds = %entry
+  %"ow_new_d0_Option$$Rc$lNode$g_v0_payload" = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %1, i32 0, i32 1
+  %ow_new_d0_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %"ow_new_d0_Option$$Rc$lNode$g_v0_payload", i32 0, i32 0
+  %ow_new_d0_f0_leaf = load ptr, ptr %ow_new_d0_f0_ptr, align 4
+  store ptr %ow_new_d0_f0_leaf, ptr %ow_slot_0, align 4
+  br label %"ow_new_d0_Option$$Rc$lNode$g_merge"
+
+"ow_new_d0_Option$$Rc$lNode$g_v1":                ; preds = %entry
+  %"ow_new_d0_Option$$Rc$lNode$g_v1_payload" = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %1, i32 0, i32 1
+  br label %"ow_new_d0_Option$$Rc$lNode$g_merge"
+
+"ow_old_d0_Option$$Rc$lNode$g_merge":             ; preds = %"ow_old_d0_Option$$Rc$lNode$g_v1", %"ow_old_d0_Option$$Rc$lNode$g_v0"
+  call void @"__hew_enum_drop_inplace_Option$$Rc$lNode$g"(ptr %0)
+  ret void
+
+"ow_old_d0_Option$$Rc$lNode$g_tag_oob":           ; preds = %"ow_new_d0_Option$$Rc$lNode$g_merge"
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+"ow_old_d0_Option$$Rc$lNode$g_v0":                ; preds = %"ow_new_d0_Option$$Rc$lNode$g_merge"
+  %"ow_old_d0_Option$$Rc$lNode$g_v0_payload" = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %0, i32 0, i32 1
+  %ow_old_d0_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %"ow_old_d0_Option$$Rc$lNode$g_v0_payload", i32 0, i32 0
+  %ow_old_d0_f0_val = load ptr, ptr %ow_old_d0_f0_ptr, align 4
+  %ow_old_d0_f0_int = ptrtoint ptr %ow_old_d0_f0_val to i64
+  %ow_old_d0_f0_cmp0_leaf = load ptr, ptr %ow_slot_0, align 4
+  %ow_old_d0_f0_cmp0_int = ptrtoint ptr %ow_old_d0_f0_cmp0_leaf to i64
+  %ow_old_d0_f0_cmp0_eq = icmp eq i64 %ow_old_d0_f0_int, %ow_old_d0_f0_cmp0_int
+  %ow_old_d0_f0_matched0 = or i1 false, %ow_old_d0_f0_cmp0_eq
+  %ow_old_d0_f0_neutralized = select i1 %ow_old_d0_f0_matched0, ptr null, ptr %ow_old_d0_f0_val
+  store ptr %ow_old_d0_f0_neutralized, ptr %ow_old_d0_f0_ptr, align 4
+  br label %"ow_old_d0_Option$$Rc$lNode$g_merge"
+
+"ow_old_d0_Option$$Rc$lNode$g_v1":                ; preds = %"ow_new_d0_Option$$Rc$lNode$g_merge"
+  %"ow_old_d0_Option$$Rc$lNode$g_v1_payload" = getelementptr inbounds nuw %"Option$$Rc$lNode$g", ptr %0, i32 0, i32 1
+  br label %"ow_old_d0_Option$$Rc$lNode$g_merge"
 }
 
 define internal void @__hew_rc_payload_drop_Node(ptr %0) {
@@ -1307,11 +1459,6 @@ enum_drop_variant_1:                              ; preds = %entry
   br label %done
 }
 
-declare void @hew_trap_with_code(i32)
-
-; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
-declare void @llvm.trap() #0
-
 declare void @hew_weak_drop_rc(ptr)
 
 declare ptr @hew_rc_new(ptr, i32, i32, ptr)
@@ -1321,8 +1468,6 @@ declare ptr @hew_rc_downgrade(ptr)
 declare ptr @hew_weak_clone_rc(ptr)
 
 declare void @hew_rc_set(ptr, ptr)
-
-declare void @hew_rc_drop(ptr)
 
 declare i32 @hew_actor_cooperate()
 

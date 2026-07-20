@@ -17,7 +17,9 @@ fn main -> i64
   statements:
     bind BindingId(2) weak site=SiteId(14) ty=Weak<Node>
     use BindingId(2) weak site=SiteId(18) ty=Weak<Node> intent=Read
+    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(17) ty=Option<Rc<Node>>
     return site=Some(SiteId(16)) ty=i64
+    drop BindingId(4294967231) __hew_call_scrutinee ty=Option<Rc<Node>>
     drop BindingId(2) weak ty=Weak<Node>
   drop_plans:
     call[bb0 build -> bb1] ->
@@ -27,16 +29,20 @@ fn main -> i64
     branch[bb1: bb3/bb6] ->
       (none)
     return[bb2] ->
+      drop _4 ty=Option<Rc<Node>> kind=enum_in_place
       drop _1 ty=Weak<Node> kind=weak_release guard=_2
     goto[bb3->bb2] ->
       (none)
     cancel[bb3] ->
+      drop _4 ty=Option<Rc<Node>> kind=enum_in_place
       drop _1 ty=Weak<Node> kind=weak_release guard=_2
     goto[bb4->bb2] ->
       (none)
     cancel[bb4] ->
+      drop _4 ty=Option<Rc<Node>> kind=enum_in_place
       drop _1 ty=Weak<Node> kind=weak_release guard=_2
     panic[bb5] ->
+      drop _4 ty=Option<Rc<Node>> kind=enum_in_place
       drop _1 ty=Weak<Node> kind=weak_release guard=_2
     branch[bb6: bb4/bb5] ->
       (none)
@@ -52,6 +58,7 @@ fn i8::fmt -> string
       (none)
     return[bb1] ->
       (none)
+
 fn i16::fmt -> string
   statements:
     use BindingId(12) val site=SiteId(95) ty=i16 intent=Read
@@ -275,3 +282,4 @@ fn duration::fmt -> string
       (none)
     return[bb1] ->
       (none)
+

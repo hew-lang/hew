@@ -466,9 +466,12 @@ bb7:                                              ; preds = %bb6, %bb5
   %weak_upgrade_is_none = icmp eq ptr %weak_upgrade, null
   br i1 %weak_upgrade_is_none, label %weak_upgrade_none, label %weak_upgrade_some
 
-bb8:                                              ; preds = %after_cooperate262, %after_cooperate102
+bb8:                                              ; preds = %after_cooperate258, %after_cooperate102
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_29)
+  store %"Option$$Rc$li64$g" zeroinitializer, ptr %local_29, align 8
   %move_load64 = load i64, ptr %local_28, align 8
   store i64 %move_load64, ptr %return_slot, align 8
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_29)
   %resource_drop_flag65 = load i64, ptr %local_12, align 8
   %resource_drop_not_consumed66 = icmp eq i64 %resource_drop_flag65, 0
   br i1 %resource_drop_not_consumed66, label %resource_drop_live_only67, label %resource_drop_merge68
@@ -507,6 +510,7 @@ bb10:                                             ; preds = %bb12
   br i1 %hew_cooperate_is_cancel100, label %cancel_exit101, label %after_cooperate102
 
 bb11:                                             ; preds = %bb12
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_29)
   %resource_drop_flag123 = load i64, ptr %local_12, align 8
   %resource_drop_not_consumed124 = icmp eq i64 %resource_drop_flag123, 0
   br i1 %resource_drop_not_consumed124, label %resource_drop_live_only125, label %resource_drop_merge126
@@ -523,88 +527,80 @@ bb12:                                             ; preds = %weak_upgrade_cont
   br i1 %cond_nz148, label %bb10, label %bb11
 
 bb13:                                             ; preds = %bb9
-  %ref_drop_handle149 = load ptr, ptr %local_35, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle149)
-  store ptr null, ptr %local_35, align 8
-  %resource_drop_flag150 = load i64, ptr %local_12, align 8
-  %resource_drop_not_consumed151 = icmp eq i64 %resource_drop_flag150, 0
-  br i1 %resource_drop_not_consumed151, label %resource_drop_live_only152, label %resource_drop_merge153
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_29)
+  %resource_drop_flag149 = load i64, ptr %local_12, align 8
+  %resource_drop_not_consumed150 = icmp eq i64 %resource_drop_flag149, 0
+  br i1 %resource_drop_not_consumed150, label %resource_drop_live_only151, label %resource_drop_merge152
 
 bb14:                                             ; preds = %bb9
-  %checked_lhs170 = load i64, ptr %local_20, align 8
-  %checked_rhs171 = load i64, ptr %local_40, align 8
-  %with_overflow172 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs170, i64 %checked_rhs171)
-  %checked_result173 = extractvalue { i64, i1 } %with_overflow172, 0
-  %checked_overflow174 = extractvalue { i64, i1 } %with_overflow172, 1
-  %checked_overflow_widen175 = zext i1 %checked_overflow174 to i8
-  store i64 %checked_result173, ptr %local_42, align 8
-  store i8 %checked_overflow_widen175, ptr %local_43, align 1
-  %cond_load176 = load i8, ptr %local_43, align 1
-  %cond_nz177 = icmp ne i8 %cond_load176, 0
-  br i1 %cond_nz177, label %bb15, label %bb16
+  %checked_lhs169 = load i64, ptr %local_20, align 8
+  %checked_rhs170 = load i64, ptr %local_40, align 8
+  %with_overflow171 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs169, i64 %checked_rhs170)
+  %checked_result172 = extractvalue { i64, i1 } %with_overflow171, 0
+  %checked_overflow173 = extractvalue { i64, i1 } %with_overflow171, 1
+  %checked_overflow_widen174 = zext i1 %checked_overflow173 to i8
+  store i64 %checked_result172, ptr %local_42, align 8
+  store i8 %checked_overflow_widen174, ptr %local_43, align 1
+  %cond_load175 = load i8, ptr %local_43, align 1
+  %cond_nz176 = icmp ne i8 %cond_load175, 0
+  br i1 %cond_nz176, label %bb15, label %bb16
 
 bb15:                                             ; preds = %bb14
-  %ref_drop_handle178 = load ptr, ptr %local_35, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle178)
-  store ptr null, ptr %local_35, align 8
-  %resource_drop_flag179 = load i64, ptr %local_12, align 8
-  %resource_drop_not_consumed180 = icmp eq i64 %resource_drop_flag179, 0
-  br i1 %resource_drop_not_consumed180, label %resource_drop_live_only181, label %resource_drop_merge182
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_29)
+  %resource_drop_flag177 = load i64, ptr %local_12, align 8
+  %resource_drop_not_consumed178 = icmp eq i64 %resource_drop_flag177, 0
+  br i1 %resource_drop_not_consumed178, label %resource_drop_live_only179, label %resource_drop_merge180
 
 bb16:                                             ; preds = %bb14
   %rc_get_handle = load ptr, ptr %local_5, align 8
   %rc_get_data = call ptr @hew_rc_get(ptr %rc_get_handle)
   %rc_get_value = load i64, ptr %rc_get_data, align 8
   store i64 %rc_get_value, ptr %local_44, align 8
-  %checked_lhs199 = load i64, ptr %local_42, align 8
-  %checked_rhs200 = load i64, ptr %local_44, align 8
-  %with_overflow201 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs199, i64 %checked_rhs200)
-  %checked_result202 = extractvalue { i64, i1 } %with_overflow201, 0
-  %checked_overflow203 = extractvalue { i64, i1 } %with_overflow201, 1
-  %checked_overflow_widen204 = zext i1 %checked_overflow203 to i8
-  store i64 %checked_result202, ptr %local_45, align 8
-  store i8 %checked_overflow_widen204, ptr %local_46, align 1
-  %cond_load205 = load i8, ptr %local_46, align 1
-  %cond_nz206 = icmp ne i8 %cond_load205, 0
-  br i1 %cond_nz206, label %bb17, label %bb18
+  %checked_lhs197 = load i64, ptr %local_42, align 8
+  %checked_rhs198 = load i64, ptr %local_44, align 8
+  %with_overflow199 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs197, i64 %checked_rhs198)
+  %checked_result200 = extractvalue { i64, i1 } %with_overflow199, 0
+  %checked_overflow201 = extractvalue { i64, i1 } %with_overflow199, 1
+  %checked_overflow_widen202 = zext i1 %checked_overflow201 to i8
+  store i64 %checked_result200, ptr %local_45, align 8
+  store i8 %checked_overflow_widen202, ptr %local_46, align 1
+  %cond_load203 = load i8, ptr %local_46, align 1
+  %cond_nz204 = icmp ne i8 %cond_load203, 0
+  br i1 %cond_nz204, label %bb17, label %bb18
 
 bb17:                                             ; preds = %bb16
-  %ref_drop_handle207 = load ptr, ptr %local_35, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle207)
-  store ptr null, ptr %local_35, align 8
-  %resource_drop_flag208 = load i64, ptr %local_12, align 8
-  %resource_drop_not_consumed209 = icmp eq i64 %resource_drop_flag208, 0
-  br i1 %resource_drop_not_consumed209, label %resource_drop_live_only210, label %resource_drop_merge211
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_29)
+  %resource_drop_flag205 = load i64, ptr %local_12, align 8
+  %resource_drop_not_consumed206 = icmp eq i64 %resource_drop_flag205, 0
+  br i1 %resource_drop_not_consumed206, label %resource_drop_live_only207, label %resource_drop_merge208
 
 bb18:                                             ; preds = %bb16
-  %checked_lhs228 = load i64, ptr %local_45, align 8
-  %checked_rhs229 = load i64, ptr %local_27, align 8
-  %with_overflow230 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs228, i64 %checked_rhs229)
-  %checked_result231 = extractvalue { i64, i1 } %with_overflow230, 0
-  %checked_overflow232 = extractvalue { i64, i1 } %with_overflow230, 1
-  %checked_overflow_widen233 = zext i1 %checked_overflow232 to i8
-  store i64 %checked_result231, ptr %local_47, align 8
-  store i8 %checked_overflow_widen233, ptr %local_48, align 1
-  %cond_load234 = load i8, ptr %local_48, align 1
-  %cond_nz235 = icmp ne i8 %cond_load234, 0
-  br i1 %cond_nz235, label %bb19, label %bb20
+  %checked_lhs225 = load i64, ptr %local_45, align 8
+  %checked_rhs226 = load i64, ptr %local_27, align 8
+  %with_overflow227 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs225, i64 %checked_rhs226)
+  %checked_result228 = extractvalue { i64, i1 } %with_overflow227, 0
+  %checked_overflow229 = extractvalue { i64, i1 } %with_overflow227, 1
+  %checked_overflow_widen230 = zext i1 %checked_overflow229 to i8
+  store i64 %checked_result228, ptr %local_47, align 8
+  store i8 %checked_overflow_widen230, ptr %local_48, align 1
+  %cond_load231 = load i8, ptr %local_48, align 1
+  %cond_nz232 = icmp ne i8 %cond_load231, 0
+  br i1 %cond_nz232, label %bb19, label %bb20
 
 bb19:                                             ; preds = %bb18
-  %ref_drop_handle236 = load ptr, ptr %local_35, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle236)
-  store ptr null, ptr %local_35, align 8
-  %resource_drop_flag237 = load i64, ptr %local_12, align 8
-  %resource_drop_not_consumed238 = icmp eq i64 %resource_drop_flag237, 0
-  br i1 %resource_drop_not_consumed238, label %resource_drop_live_only239, label %resource_drop_merge240
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_29)
+  %resource_drop_flag233 = load i64, ptr %local_12, align 8
+  %resource_drop_not_consumed234 = icmp eq i64 %resource_drop_flag233, 0
+  br i1 %resource_drop_not_consumed234, label %resource_drop_live_only235, label %resource_drop_merge236
 
 bb20:                                             ; preds = %bb18
-  %move_load257 = load i64, ptr %local_47, align 8
-  store i64 %move_load257, ptr %local_49, align 8
-  %move_load258 = load i64, ptr %local_49, align 8
-  store i64 %move_load258, ptr %local_28, align 8
-  %hew_actor_cooperate259 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel260 = icmp eq i32 %hew_actor_cooperate259, 2
-  br i1 %hew_cooperate_is_cancel260, label %cancel_exit261, label %after_cooperate262
+  %move_load253 = load i64, ptr %local_47, align 8
+  store i64 %move_load253, ptr %local_49, align 8
+  %move_load254 = load i64, ptr %local_49, align 8
+  store i64 %move_load254, ptr %local_28, align 8
+  %hew_actor_cooperate255 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel256 = icmp eq i32 %hew_actor_cooperate255, 2
+  br i1 %hew_cooperate_is_cancel256, label %cancel_exit257, label %after_cooperate258
 
 cancel_exit:                                      ; preds = %entry
   ret i64 0
@@ -769,6 +765,7 @@ resource_drop_merge83:                            ; preds = %resource_drop_live_
   ret i64 %ret_val
 
 cancel_exit101:                                   ; preds = %bb10
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_29)
   %resource_drop_flag103 = load i64, ptr %local_12, align 8
   %resource_drop_not_consumed104 = icmp eq i64 %resource_drop_flag103, 0
   br i1 %resource_drop_not_consumed104, label %resource_drop_live_only105, label %resource_drop_merge106
@@ -862,233 +859,231 @@ resource_drop_merge141:                           ; preds = %resource_drop_live_
   call void @llvm.trap()
   unreachable
 
-resource_drop_live_only152:                       ; preds = %bb13
-  %ref_drop_handle154 = load ptr, ptr %local_11, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle154)
+resource_drop_live_only151:                       ; preds = %bb13
+  %ref_drop_handle153 = load ptr, ptr %local_11, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle153)
   store ptr null, ptr %local_11, align 8
-  br label %resource_drop_merge153
+  br label %resource_drop_merge152
 
-resource_drop_merge153:                           ; preds = %resource_drop_live_only152, %bb13
-  %resource_drop_flag155 = load i64, ptr %local_9, align 8
-  %resource_drop_not_consumed156 = icmp eq i64 %resource_drop_flag155, 0
-  br i1 %resource_drop_not_consumed156, label %resource_drop_live_only157, label %resource_drop_merge158
+resource_drop_merge152:                           ; preds = %resource_drop_live_only151, %bb13
+  %resource_drop_flag154 = load i64, ptr %local_9, align 8
+  %resource_drop_not_consumed155 = icmp eq i64 %resource_drop_flag154, 0
+  br i1 %resource_drop_not_consumed155, label %resource_drop_live_only156, label %resource_drop_merge157
 
-resource_drop_live_only157:                       ; preds = %resource_drop_merge153
-  %ref_drop_handle159 = load ptr, ptr %local_8, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle159)
+resource_drop_live_only156:                       ; preds = %resource_drop_merge152
+  %ref_drop_handle158 = load ptr, ptr %local_8, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle158)
   store ptr null, ptr %local_8, align 8
-  br label %resource_drop_merge158
+  br label %resource_drop_merge157
 
-resource_drop_merge158:                           ; preds = %resource_drop_live_only157, %resource_drop_merge153
-  %resource_drop_flag160 = load i64, ptr %local_6, align 8
-  %resource_drop_not_consumed161 = icmp eq i64 %resource_drop_flag160, 0
-  br i1 %resource_drop_not_consumed161, label %resource_drop_live_only162, label %resource_drop_merge163
+resource_drop_merge157:                           ; preds = %resource_drop_live_only156, %resource_drop_merge152
+  %resource_drop_flag159 = load i64, ptr %local_6, align 8
+  %resource_drop_not_consumed160 = icmp eq i64 %resource_drop_flag159, 0
+  br i1 %resource_drop_not_consumed160, label %resource_drop_live_only161, label %resource_drop_merge162
 
-resource_drop_live_only162:                       ; preds = %resource_drop_merge158
-  %ref_drop_handle164 = load ptr, ptr %local_5, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle164)
+resource_drop_live_only161:                       ; preds = %resource_drop_merge157
+  %ref_drop_handle163 = load ptr, ptr %local_5, align 8
+  call void @hew_rc_drop(ptr %ref_drop_handle163)
   store ptr null, ptr %local_5, align 8
-  br label %resource_drop_merge163
+  br label %resource_drop_merge162
 
-resource_drop_merge163:                           ; preds = %resource_drop_live_only162, %resource_drop_merge158
-  %resource_drop_flag165 = load i64, ptr %local_3, align 8
-  %resource_drop_not_consumed166 = icmp eq i64 %resource_drop_flag165, 0
-  br i1 %resource_drop_not_consumed166, label %resource_drop_live_only167, label %resource_drop_merge168
+resource_drop_merge162:                           ; preds = %resource_drop_live_only161, %resource_drop_merge157
+  %resource_drop_flag164 = load i64, ptr %local_3, align 8
+  %resource_drop_not_consumed165 = icmp eq i64 %resource_drop_flag164, 0
+  br i1 %resource_drop_not_consumed165, label %resource_drop_live_only166, label %resource_drop_merge167
 
-resource_drop_live_only167:                       ; preds = %resource_drop_merge163
-  %ref_drop_handle169 = load ptr, ptr %local_2, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle169)
+resource_drop_live_only166:                       ; preds = %resource_drop_merge162
+  %ref_drop_handle168 = load ptr, ptr %local_2, align 8
+  call void @hew_rc_drop(ptr %ref_drop_handle168)
   store ptr null, ptr %local_2, align 8
-  br label %resource_drop_merge168
+  br label %resource_drop_merge167
 
-resource_drop_merge168:                           ; preds = %resource_drop_live_only167, %resource_drop_merge163
+resource_drop_merge167:                           ; preds = %resource_drop_live_only166, %resource_drop_merge162
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
-resource_drop_live_only181:                       ; preds = %bb15
-  %ref_drop_handle183 = load ptr, ptr %local_11, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle183)
+resource_drop_live_only179:                       ; preds = %bb15
+  %ref_drop_handle181 = load ptr, ptr %local_11, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle181)
   store ptr null, ptr %local_11, align 8
-  br label %resource_drop_merge182
+  br label %resource_drop_merge180
 
-resource_drop_merge182:                           ; preds = %resource_drop_live_only181, %bb15
-  %resource_drop_flag184 = load i64, ptr %local_9, align 8
-  %resource_drop_not_consumed185 = icmp eq i64 %resource_drop_flag184, 0
-  br i1 %resource_drop_not_consumed185, label %resource_drop_live_only186, label %resource_drop_merge187
+resource_drop_merge180:                           ; preds = %resource_drop_live_only179, %bb15
+  %resource_drop_flag182 = load i64, ptr %local_9, align 8
+  %resource_drop_not_consumed183 = icmp eq i64 %resource_drop_flag182, 0
+  br i1 %resource_drop_not_consumed183, label %resource_drop_live_only184, label %resource_drop_merge185
 
-resource_drop_live_only186:                       ; preds = %resource_drop_merge182
-  %ref_drop_handle188 = load ptr, ptr %local_8, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle188)
+resource_drop_live_only184:                       ; preds = %resource_drop_merge180
+  %ref_drop_handle186 = load ptr, ptr %local_8, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle186)
   store ptr null, ptr %local_8, align 8
-  br label %resource_drop_merge187
+  br label %resource_drop_merge185
 
-resource_drop_merge187:                           ; preds = %resource_drop_live_only186, %resource_drop_merge182
-  %resource_drop_flag189 = load i64, ptr %local_6, align 8
-  %resource_drop_not_consumed190 = icmp eq i64 %resource_drop_flag189, 0
-  br i1 %resource_drop_not_consumed190, label %resource_drop_live_only191, label %resource_drop_merge192
+resource_drop_merge185:                           ; preds = %resource_drop_live_only184, %resource_drop_merge180
+  %resource_drop_flag187 = load i64, ptr %local_6, align 8
+  %resource_drop_not_consumed188 = icmp eq i64 %resource_drop_flag187, 0
+  br i1 %resource_drop_not_consumed188, label %resource_drop_live_only189, label %resource_drop_merge190
 
-resource_drop_live_only191:                       ; preds = %resource_drop_merge187
-  %ref_drop_handle193 = load ptr, ptr %local_5, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle193)
+resource_drop_live_only189:                       ; preds = %resource_drop_merge185
+  %ref_drop_handle191 = load ptr, ptr %local_5, align 8
+  call void @hew_rc_drop(ptr %ref_drop_handle191)
   store ptr null, ptr %local_5, align 8
-  br label %resource_drop_merge192
+  br label %resource_drop_merge190
 
-resource_drop_merge192:                           ; preds = %resource_drop_live_only191, %resource_drop_merge187
-  %resource_drop_flag194 = load i64, ptr %local_3, align 8
-  %resource_drop_not_consumed195 = icmp eq i64 %resource_drop_flag194, 0
-  br i1 %resource_drop_not_consumed195, label %resource_drop_live_only196, label %resource_drop_merge197
+resource_drop_merge190:                           ; preds = %resource_drop_live_only189, %resource_drop_merge185
+  %resource_drop_flag192 = load i64, ptr %local_3, align 8
+  %resource_drop_not_consumed193 = icmp eq i64 %resource_drop_flag192, 0
+  br i1 %resource_drop_not_consumed193, label %resource_drop_live_only194, label %resource_drop_merge195
 
-resource_drop_live_only196:                       ; preds = %resource_drop_merge192
-  %ref_drop_handle198 = load ptr, ptr %local_2, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle198)
+resource_drop_live_only194:                       ; preds = %resource_drop_merge190
+  %ref_drop_handle196 = load ptr, ptr %local_2, align 8
+  call void @hew_rc_drop(ptr %ref_drop_handle196)
   store ptr null, ptr %local_2, align 8
-  br label %resource_drop_merge197
+  br label %resource_drop_merge195
 
-resource_drop_merge197:                           ; preds = %resource_drop_live_only196, %resource_drop_merge192
+resource_drop_merge195:                           ; preds = %resource_drop_live_only194, %resource_drop_merge190
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
-resource_drop_live_only210:                       ; preds = %bb17
-  %ref_drop_handle212 = load ptr, ptr %local_11, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle212)
+resource_drop_live_only207:                       ; preds = %bb17
+  %ref_drop_handle209 = load ptr, ptr %local_11, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle209)
   store ptr null, ptr %local_11, align 8
-  br label %resource_drop_merge211
+  br label %resource_drop_merge208
 
-resource_drop_merge211:                           ; preds = %resource_drop_live_only210, %bb17
-  %resource_drop_flag213 = load i64, ptr %local_9, align 8
-  %resource_drop_not_consumed214 = icmp eq i64 %resource_drop_flag213, 0
-  br i1 %resource_drop_not_consumed214, label %resource_drop_live_only215, label %resource_drop_merge216
+resource_drop_merge208:                           ; preds = %resource_drop_live_only207, %bb17
+  %resource_drop_flag210 = load i64, ptr %local_9, align 8
+  %resource_drop_not_consumed211 = icmp eq i64 %resource_drop_flag210, 0
+  br i1 %resource_drop_not_consumed211, label %resource_drop_live_only212, label %resource_drop_merge213
 
-resource_drop_live_only215:                       ; preds = %resource_drop_merge211
-  %ref_drop_handle217 = load ptr, ptr %local_8, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle217)
+resource_drop_live_only212:                       ; preds = %resource_drop_merge208
+  %ref_drop_handle214 = load ptr, ptr %local_8, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle214)
   store ptr null, ptr %local_8, align 8
-  br label %resource_drop_merge216
+  br label %resource_drop_merge213
 
-resource_drop_merge216:                           ; preds = %resource_drop_live_only215, %resource_drop_merge211
-  %resource_drop_flag218 = load i64, ptr %local_6, align 8
-  %resource_drop_not_consumed219 = icmp eq i64 %resource_drop_flag218, 0
-  br i1 %resource_drop_not_consumed219, label %resource_drop_live_only220, label %resource_drop_merge221
+resource_drop_merge213:                           ; preds = %resource_drop_live_only212, %resource_drop_merge208
+  %resource_drop_flag215 = load i64, ptr %local_6, align 8
+  %resource_drop_not_consumed216 = icmp eq i64 %resource_drop_flag215, 0
+  br i1 %resource_drop_not_consumed216, label %resource_drop_live_only217, label %resource_drop_merge218
 
-resource_drop_live_only220:                       ; preds = %resource_drop_merge216
-  %ref_drop_handle222 = load ptr, ptr %local_5, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle222)
+resource_drop_live_only217:                       ; preds = %resource_drop_merge213
+  %ref_drop_handle219 = load ptr, ptr %local_5, align 8
+  call void @hew_rc_drop(ptr %ref_drop_handle219)
   store ptr null, ptr %local_5, align 8
-  br label %resource_drop_merge221
+  br label %resource_drop_merge218
 
-resource_drop_merge221:                           ; preds = %resource_drop_live_only220, %resource_drop_merge216
-  %resource_drop_flag223 = load i64, ptr %local_3, align 8
-  %resource_drop_not_consumed224 = icmp eq i64 %resource_drop_flag223, 0
-  br i1 %resource_drop_not_consumed224, label %resource_drop_live_only225, label %resource_drop_merge226
+resource_drop_merge218:                           ; preds = %resource_drop_live_only217, %resource_drop_merge213
+  %resource_drop_flag220 = load i64, ptr %local_3, align 8
+  %resource_drop_not_consumed221 = icmp eq i64 %resource_drop_flag220, 0
+  br i1 %resource_drop_not_consumed221, label %resource_drop_live_only222, label %resource_drop_merge223
 
-resource_drop_live_only225:                       ; preds = %resource_drop_merge221
-  %ref_drop_handle227 = load ptr, ptr %local_2, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle227)
+resource_drop_live_only222:                       ; preds = %resource_drop_merge218
+  %ref_drop_handle224 = load ptr, ptr %local_2, align 8
+  call void @hew_rc_drop(ptr %ref_drop_handle224)
   store ptr null, ptr %local_2, align 8
-  br label %resource_drop_merge226
+  br label %resource_drop_merge223
 
-resource_drop_merge226:                           ; preds = %resource_drop_live_only225, %resource_drop_merge221
+resource_drop_merge223:                           ; preds = %resource_drop_live_only222, %resource_drop_merge218
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
-resource_drop_live_only239:                       ; preds = %bb19
-  %ref_drop_handle241 = load ptr, ptr %local_11, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle241)
+resource_drop_live_only235:                       ; preds = %bb19
+  %ref_drop_handle237 = load ptr, ptr %local_11, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle237)
   store ptr null, ptr %local_11, align 8
-  br label %resource_drop_merge240
+  br label %resource_drop_merge236
 
-resource_drop_merge240:                           ; preds = %resource_drop_live_only239, %bb19
-  %resource_drop_flag242 = load i64, ptr %local_9, align 8
-  %resource_drop_not_consumed243 = icmp eq i64 %resource_drop_flag242, 0
-  br i1 %resource_drop_not_consumed243, label %resource_drop_live_only244, label %resource_drop_merge245
+resource_drop_merge236:                           ; preds = %resource_drop_live_only235, %bb19
+  %resource_drop_flag238 = load i64, ptr %local_9, align 8
+  %resource_drop_not_consumed239 = icmp eq i64 %resource_drop_flag238, 0
+  br i1 %resource_drop_not_consumed239, label %resource_drop_live_only240, label %resource_drop_merge241
 
-resource_drop_live_only244:                       ; preds = %resource_drop_merge240
-  %ref_drop_handle246 = load ptr, ptr %local_8, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle246)
+resource_drop_live_only240:                       ; preds = %resource_drop_merge236
+  %ref_drop_handle242 = load ptr, ptr %local_8, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle242)
   store ptr null, ptr %local_8, align 8
-  br label %resource_drop_merge245
+  br label %resource_drop_merge241
 
-resource_drop_merge245:                           ; preds = %resource_drop_live_only244, %resource_drop_merge240
-  %resource_drop_flag247 = load i64, ptr %local_6, align 8
-  %resource_drop_not_consumed248 = icmp eq i64 %resource_drop_flag247, 0
-  br i1 %resource_drop_not_consumed248, label %resource_drop_live_only249, label %resource_drop_merge250
+resource_drop_merge241:                           ; preds = %resource_drop_live_only240, %resource_drop_merge236
+  %resource_drop_flag243 = load i64, ptr %local_6, align 8
+  %resource_drop_not_consumed244 = icmp eq i64 %resource_drop_flag243, 0
+  br i1 %resource_drop_not_consumed244, label %resource_drop_live_only245, label %resource_drop_merge246
 
-resource_drop_live_only249:                       ; preds = %resource_drop_merge245
-  %ref_drop_handle251 = load ptr, ptr %local_5, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle251)
+resource_drop_live_only245:                       ; preds = %resource_drop_merge241
+  %ref_drop_handle247 = load ptr, ptr %local_5, align 8
+  call void @hew_rc_drop(ptr %ref_drop_handle247)
   store ptr null, ptr %local_5, align 8
-  br label %resource_drop_merge250
+  br label %resource_drop_merge246
 
-resource_drop_merge250:                           ; preds = %resource_drop_live_only249, %resource_drop_merge245
-  %resource_drop_flag252 = load i64, ptr %local_3, align 8
-  %resource_drop_not_consumed253 = icmp eq i64 %resource_drop_flag252, 0
-  br i1 %resource_drop_not_consumed253, label %resource_drop_live_only254, label %resource_drop_merge255
+resource_drop_merge246:                           ; preds = %resource_drop_live_only245, %resource_drop_merge241
+  %resource_drop_flag248 = load i64, ptr %local_3, align 8
+  %resource_drop_not_consumed249 = icmp eq i64 %resource_drop_flag248, 0
+  br i1 %resource_drop_not_consumed249, label %resource_drop_live_only250, label %resource_drop_merge251
 
-resource_drop_live_only254:                       ; preds = %resource_drop_merge250
-  %ref_drop_handle256 = load ptr, ptr %local_2, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle256)
+resource_drop_live_only250:                       ; preds = %resource_drop_merge246
+  %ref_drop_handle252 = load ptr, ptr %local_2, align 8
+  call void @hew_rc_drop(ptr %ref_drop_handle252)
   store ptr null, ptr %local_2, align 8
-  br label %resource_drop_merge255
+  br label %resource_drop_merge251
 
-resource_drop_merge255:                           ; preds = %resource_drop_live_only254, %resource_drop_merge250
+resource_drop_merge251:                           ; preds = %resource_drop_live_only250, %resource_drop_merge246
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
-cancel_exit261:                                   ; preds = %bb20
-  %ref_drop_handle263 = load ptr, ptr %local_35, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle263)
-  store ptr null, ptr %local_35, align 8
-  %resource_drop_flag264 = load i64, ptr %local_12, align 8
+cancel_exit257:                                   ; preds = %bb20
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_29)
+  %resource_drop_flag259 = load i64, ptr %local_12, align 8
+  %resource_drop_not_consumed260 = icmp eq i64 %resource_drop_flag259, 0
+  br i1 %resource_drop_not_consumed260, label %resource_drop_live_only261, label %resource_drop_merge262
+
+after_cooperate258:                               ; preds = %bb20
+  br label %bb8
+
+resource_drop_live_only261:                       ; preds = %cancel_exit257
+  %ref_drop_handle263 = load ptr, ptr %local_11, align 8
+  call void @hew_weak_drop_rc(ptr %ref_drop_handle263)
+  store ptr null, ptr %local_11, align 8
+  br label %resource_drop_merge262
+
+resource_drop_merge262:                           ; preds = %resource_drop_live_only261, %cancel_exit257
+  %resource_drop_flag264 = load i64, ptr %local_9, align 8
   %resource_drop_not_consumed265 = icmp eq i64 %resource_drop_flag264, 0
   br i1 %resource_drop_not_consumed265, label %resource_drop_live_only266, label %resource_drop_merge267
 
-after_cooperate262:                               ; preds = %bb20
-  br label %bb8
-
-resource_drop_live_only266:                       ; preds = %cancel_exit261
-  %ref_drop_handle268 = load ptr, ptr %local_11, align 8
+resource_drop_live_only266:                       ; preds = %resource_drop_merge262
+  %ref_drop_handle268 = load ptr, ptr %local_8, align 8
   call void @hew_weak_drop_rc(ptr %ref_drop_handle268)
-  store ptr null, ptr %local_11, align 8
+  store ptr null, ptr %local_8, align 8
   br label %resource_drop_merge267
 
-resource_drop_merge267:                           ; preds = %resource_drop_live_only266, %cancel_exit261
-  %resource_drop_flag269 = load i64, ptr %local_9, align 8
+resource_drop_merge267:                           ; preds = %resource_drop_live_only266, %resource_drop_merge262
+  %resource_drop_flag269 = load i64, ptr %local_6, align 8
   %resource_drop_not_consumed270 = icmp eq i64 %resource_drop_flag269, 0
   br i1 %resource_drop_not_consumed270, label %resource_drop_live_only271, label %resource_drop_merge272
 
 resource_drop_live_only271:                       ; preds = %resource_drop_merge267
-  %ref_drop_handle273 = load ptr, ptr %local_8, align 8
-  call void @hew_weak_drop_rc(ptr %ref_drop_handle273)
-  store ptr null, ptr %local_8, align 8
+  %ref_drop_handle273 = load ptr, ptr %local_5, align 8
+  call void @hew_rc_drop(ptr %ref_drop_handle273)
+  store ptr null, ptr %local_5, align 8
   br label %resource_drop_merge272
 
 resource_drop_merge272:                           ; preds = %resource_drop_live_only271, %resource_drop_merge267
-  %resource_drop_flag274 = load i64, ptr %local_6, align 8
+  %resource_drop_flag274 = load i64, ptr %local_3, align 8
   %resource_drop_not_consumed275 = icmp eq i64 %resource_drop_flag274, 0
   br i1 %resource_drop_not_consumed275, label %resource_drop_live_only276, label %resource_drop_merge277
 
 resource_drop_live_only276:                       ; preds = %resource_drop_merge272
-  %ref_drop_handle278 = load ptr, ptr %local_5, align 8
+  %ref_drop_handle278 = load ptr, ptr %local_2, align 8
   call void @hew_rc_drop(ptr %ref_drop_handle278)
-  store ptr null, ptr %local_5, align 8
+  store ptr null, ptr %local_2, align 8
   br label %resource_drop_merge277
 
 resource_drop_merge277:                           ; preds = %resource_drop_live_only276, %resource_drop_merge272
-  %resource_drop_flag279 = load i64, ptr %local_3, align 8
-  %resource_drop_not_consumed280 = icmp eq i64 %resource_drop_flag279, 0
-  br i1 %resource_drop_not_consumed280, label %resource_drop_live_only281, label %resource_drop_merge282
-
-resource_drop_live_only281:                       ; preds = %resource_drop_merge277
-  %ref_drop_handle283 = load ptr, ptr %local_2, align 8
-  call void @hew_rc_drop(ptr %ref_drop_handle283)
-  store ptr null, ptr %local_2, align 8
-  br label %resource_drop_merge282
-
-resource_drop_merge282:                           ; preds = %resource_drop_live_only281, %resource_drop_merge277
   ret i64 0
 }
 
@@ -1170,6 +1165,8 @@ bb1:                                              ; preds = %bb0
   br i1 %weak_upgrade_is_none, label %weak_upgrade_none, label %weak_upgrade_some
 
 bb2:                                              ; preds = %after_cooperate13, %after_cooperate8
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_4)
+  store %"Option$$Rc$li64$g" zeroinitializer, ptr %local_4, align 8
   %move_load2 = load i64, ptr %local_3, align 8
   store i64 %move_load2, ptr %local_12, align 8
   %call_result3 = call i64 @live()
@@ -1193,6 +1190,7 @@ bb4:                                              ; preds = %bb6
   br i1 %hew_cooperate_is_cancel11, label %cancel_exit12, label %after_cooperate13
 
 bb5:                                              ; preds = %bb6
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_4)
   %resource_drop_flag19 = load i64, ptr %local_2, align 8
   %resource_drop_not_consumed20 = icmp eq i64 %resource_drop_flag19, 0
   br i1 %resource_drop_not_consumed20, label %resource_drop_live_only21, label %resource_drop_merge22
@@ -1222,6 +1220,7 @@ bb7:                                              ; preds = %bb2
   br i1 %cond_nz31, label %bb8, label %bb9
 
 bb8:                                              ; preds = %bb7
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_4)
   %resource_drop_flag32 = load i64, ptr %local_2, align 8
   %resource_drop_not_consumed33 = icmp eq i64 %resource_drop_flag32, 0
   br i1 %resource_drop_not_consumed33, label %resource_drop_live_only34, label %resource_drop_merge35
@@ -1229,6 +1228,7 @@ bb8:                                              ; preds = %bb7
 bb9:                                              ; preds = %bb7
   %move_load37 = load i64, ptr %local_14, align 8
   store i64 %move_load37, ptr %return_slot, align 8
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_4)
   %resource_drop_flag38 = load i64, ptr %local_2, align 8
   %resource_drop_not_consumed39 = icmp eq i64 %resource_drop_flag38, 0
   br i1 %resource_drop_not_consumed39, label %resource_drop_live_only40, label %resource_drop_merge41
@@ -1265,6 +1265,7 @@ weak_upgrade_cont:                                ; preds = %weak_upgrade_none, 
   br i1 %cond_nz, label %bb3, label %bb6
 
 cancel_exit7:                                     ; preds = %bb3
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_4)
   %resource_drop_flag = load i64, ptr %local_2, align 8
   %resource_drop_not_consumed = icmp eq i64 %resource_drop_flag, 0
   br i1 %resource_drop_not_consumed, label %resource_drop_live_only, label %resource_drop_merge
@@ -1282,6 +1283,7 @@ resource_drop_merge:                              ; preds = %resource_drop_live_
   ret i64 0
 
 cancel_exit12:                                    ; preds = %bb4
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %local_4)
   %resource_drop_flag14 = load i64, ptr %local_2, align 8
   %resource_drop_not_consumed15 = icmp eq i64 %resource_drop_flag14, 0
   br i1 %resource_drop_not_consumed15, label %resource_drop_live_only16, label %resource_drop_merge17
@@ -2005,6 +2007,90 @@ done:                                             ; preds = %do_drop, %entry
 
 declare void @hew_string_drop(ptr)
 
+define internal i32 @"__hew_enum_clone_inplace_Option$$Rc$li64$g"(ptr %0, ptr %1) {
+entry:
+  %enum_clone_tag_ptr = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %0, i32 0, i32 0
+  %enum_clone_tag = load i8, ptr %enum_clone_tag_ptr, align 1
+  switch i8 %enum_clone_tag, label %tag_oob_trap [
+    i8 0, label %enum_clone_variant_0
+    i8 1, label %enum_clone_variant_1
+  ]
+
+success:                                          ; preds = %enum_clone_variant_1, %enum_clone_v0_store_0
+  ret i32 0
+
+fail:                                             ; preds = %enum_clone_v0_rb_0
+  ret i32 1
+
+tag_oob_trap:                                     ; preds = %entry
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+enum_clone_variant_0:                             ; preds = %entry
+  %enum_clone_src_payload_0 = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %0, i32 0, i32 1
+  %enum_clone_dst_payload_0 = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %1, i32 0, i32 1
+  br label %enum_clone_v0_step_0
+
+enum_clone_variant_1:                             ; preds = %entry
+  br label %success
+
+enum_clone_v0_step_0:                             ; preds = %enum_clone_variant_0
+  %src_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %enum_clone_src_payload_0, i32 0, i32 0
+  %src_f0 = load ptr, ptr %src_f0_ptr, align 8
+  %clone_helper_f0 = call ptr @hew_rc_clone(ptr %src_f0)
+  %cloned_f0_int = ptrtoint ptr %clone_helper_f0 to i64
+  %cloned_f0_null = icmp eq i64 %cloned_f0_int, 0
+  br i1 %cloned_f0_null, label %enum_clone_v0_rb_0, label %enum_clone_v0_store_0
+
+enum_clone_v0_store_0:                            ; preds = %enum_clone_v0_step_0
+  %dst_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %enum_clone_dst_payload_0, i32 0, i32 0
+  store ptr %clone_helper_f0, ptr %dst_f0_ptr, align 8
+  br label %success
+
+enum_clone_v0_rb_0:                               ; preds = %enum_clone_v0_step_0
+  br label %fail
+}
+
+declare void @hew_trap_with_code(i32)
+
+; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
+declare void @llvm.trap() #0
+
+declare ptr @hew_rc_clone(ptr)
+
+define internal void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %0) {
+entry:
+  %enum_drop_tag_ptr = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %0, i32 0, i32 0
+  %enum_drop_tag = load i8, ptr %enum_drop_tag_ptr, align 1
+  switch i8 %enum_drop_tag, label %tag_oob_trap [
+    i8 0, label %enum_drop_variant_0
+    i8 1, label %enum_drop_variant_1
+  ]
+
+done:                                             ; preds = %enum_drop_variant_1, %enum_drop_variant_0
+  ret void
+
+tag_oob_trap:                                     ; preds = %entry
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+enum_drop_variant_0:                              ; preds = %entry
+  %enum_drop_payload_0 = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %0, i32 0, i32 1
+  %drop_rc_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %enum_drop_payload_0, i32 0, i32 0
+  %drop_rc_f0 = load ptr, ptr %drop_rc_f0_ptr, align 8
+  call void @hew_rc_drop(ptr %drop_rc_f0)
+  store ptr null, ptr %drop_rc_f0_ptr, align 8
+  br label %done
+
+enum_drop_variant_1:                              ; preds = %entry
+  %enum_drop_payload_1 = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %0, i32 0, i32 1
+  br label %done
+}
+
+declare void @hew_rc_drop(ptr)
+
 define internal void @__hew_record_overwrite_release_CrashInfo(ptr %0, ptr %1) {
 entry:
   %ow_slot_0 = alloca ptr, align 8
@@ -2025,11 +2111,71 @@ entry:
   ret void
 }
 
+define internal void @"__hew_enum_overwrite_release_Option$$Rc$li64$g"(ptr %0, ptr %1) {
+entry:
+  %ow_slot_0 = alloca ptr, align 8
+  store ptr null, ptr %ow_slot_0, align 8
+  %"ow_new_d0_Option$$Rc$li64$g_tag_ptr" = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %1, i32 0, i32 0
+  %"ow_new_d0_Option$$Rc$li64$g_tag" = load i8, ptr %"ow_new_d0_Option$$Rc$li64$g_tag_ptr", align 1
+  switch i8 %"ow_new_d0_Option$$Rc$li64$g_tag", label %"ow_new_d0_Option$$Rc$li64$g_tag_oob" [
+    i8 0, label %"ow_new_d0_Option$$Rc$li64$g_v0"
+    i8 1, label %"ow_new_d0_Option$$Rc$li64$g_v1"
+  ]
+
+"ow_new_d0_Option$$Rc$li64$g_merge":              ; preds = %"ow_new_d0_Option$$Rc$li64$g_v1", %"ow_new_d0_Option$$Rc$li64$g_v0"
+  %"ow_old_d0_Option$$Rc$li64$g_tag_ptr" = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %0, i32 0, i32 0
+  %"ow_old_d0_Option$$Rc$li64$g_tag" = load i8, ptr %"ow_old_d0_Option$$Rc$li64$g_tag_ptr", align 1
+  switch i8 %"ow_old_d0_Option$$Rc$li64$g_tag", label %"ow_old_d0_Option$$Rc$li64$g_tag_oob" [
+    i8 0, label %"ow_old_d0_Option$$Rc$li64$g_v0"
+    i8 1, label %"ow_old_d0_Option$$Rc$li64$g_v1"
+  ]
+
+"ow_new_d0_Option$$Rc$li64$g_tag_oob":            ; preds = %entry
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+"ow_new_d0_Option$$Rc$li64$g_v0":                 ; preds = %entry
+  %"ow_new_d0_Option$$Rc$li64$g_v0_payload" = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %1, i32 0, i32 1
+  %ow_new_d0_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %"ow_new_d0_Option$$Rc$li64$g_v0_payload", i32 0, i32 0
+  %ow_new_d0_f0_leaf = load ptr, ptr %ow_new_d0_f0_ptr, align 8
+  store ptr %ow_new_d0_f0_leaf, ptr %ow_slot_0, align 8
+  br label %"ow_new_d0_Option$$Rc$li64$g_merge"
+
+"ow_new_d0_Option$$Rc$li64$g_v1":                 ; preds = %entry
+  %"ow_new_d0_Option$$Rc$li64$g_v1_payload" = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %1, i32 0, i32 1
+  br label %"ow_new_d0_Option$$Rc$li64$g_merge"
+
+"ow_old_d0_Option$$Rc$li64$g_merge":              ; preds = %"ow_old_d0_Option$$Rc$li64$g_v1", %"ow_old_d0_Option$$Rc$li64$g_v0"
+  call void @"__hew_enum_drop_inplace_Option$$Rc$li64$g"(ptr %0)
+  ret void
+
+"ow_old_d0_Option$$Rc$li64$g_tag_oob":            ; preds = %"ow_new_d0_Option$$Rc$li64$g_merge"
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+"ow_old_d0_Option$$Rc$li64$g_v0":                 ; preds = %"ow_new_d0_Option$$Rc$li64$g_merge"
+  %"ow_old_d0_Option$$Rc$li64$g_v0_payload" = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %0, i32 0, i32 1
+  %ow_old_d0_f0_ptr = getelementptr inbounds nuw { ptr }, ptr %"ow_old_d0_Option$$Rc$li64$g_v0_payload", i32 0, i32 0
+  %ow_old_d0_f0_val = load ptr, ptr %ow_old_d0_f0_ptr, align 8
+  %ow_old_d0_f0_int = ptrtoint ptr %ow_old_d0_f0_val to i64
+  %ow_old_d0_f0_cmp0_leaf = load ptr, ptr %ow_slot_0, align 8
+  %ow_old_d0_f0_cmp0_int = ptrtoint ptr %ow_old_d0_f0_cmp0_leaf to i64
+  %ow_old_d0_f0_cmp0_eq = icmp eq i64 %ow_old_d0_f0_int, %ow_old_d0_f0_cmp0_int
+  %ow_old_d0_f0_matched0 = or i1 false, %ow_old_d0_f0_cmp0_eq
+  %ow_old_d0_f0_neutralized = select i1 %ow_old_d0_f0_matched0, ptr null, ptr %ow_old_d0_f0_val
+  store ptr %ow_old_d0_f0_neutralized, ptr %ow_old_d0_f0_ptr, align 8
+  br label %"ow_old_d0_Option$$Rc$li64$g_merge"
+
+"ow_old_d0_Option$$Rc$li64$g_v1":                 ; preds = %"ow_new_d0_Option$$Rc$li64$g_merge"
+  %"ow_old_d0_Option$$Rc$li64$g_v1_payload" = getelementptr inbounds nuw %"Option$$Rc$li64$g", ptr %0, i32 0, i32 1
+  br label %"ow_old_d0_Option$$Rc$li64$g_merge"
+}
+
 declare i32 @hew_actor_cooperate()
 
 declare ptr @hew_rc_new(ptr, i64, i64, ptr)
-
-declare ptr @hew_rc_clone(ptr)
 
 declare ptr @hew_rc_downgrade(ptr)
 
@@ -2038,21 +2184,14 @@ declare ptr @hew_weak_clone_rc(ptr)
 declare i64 @hew_rc_strong_count(ptr)
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
-declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #0
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #1
 
 declare void @hew_weak_drop_rc(ptr)
-
-declare void @hew_rc_drop(ptr)
-
-declare void @hew_trap_with_code(i32)
-
-; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
-declare void @llvm.trap() #1
 
 declare i64 @hew_rc_weak_count(ptr)
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
-declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64) #0
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64) #1
 
 declare i32 @hew_rc_is_unique(ptr)
 
@@ -2064,5 +2203,5 @@ declare ptr @hew_rc_get(ptr)
 
 declare i32 @hew_lambda_drain_all(i64)
 
-attributes #0 = { nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none) }
-attributes #1 = { cold noreturn nounwind memory(inaccessiblemem: write) }
+attributes #0 = { cold noreturn nounwind memory(inaccessiblemem: write) }
+attributes #1 = { nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none) }

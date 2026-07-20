@@ -261,7 +261,6 @@ tests/pkg-import/pkgs/reexchaina/reexchaina.hew
 tests/pkg-import/pkgs/reexmid/reexmid.hew
 tests/pkg-import/pkgs/reexsub/reexsub.hew
 tests/pkg-import/pkgs/reexsubalias/reexsubalias.hew
-tests/pkg-import/pkgs/replynonsend/replynonsend.hew
 
 # requires-package-resolver: self-qualified package source. selfqualtype.hew
 # references its own type both bare (`Meter`) and through its own module

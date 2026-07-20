@@ -1,0 +1,6 @@
+fn main() {
+    let rc = Rc::new(1);
+    let moved = rc;
+    print(rc.strong_count());
+    let _ = moved;
+}

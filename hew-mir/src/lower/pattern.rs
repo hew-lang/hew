@@ -3583,7 +3583,20 @@ impl Builder {
         // (#2429). No-op for binding-ref scrutinees, runtime-symbol
         // producers, and the recv/iter-next shapes that carry their own
         // release discipline.
-        self.register_from_call_scrutinee_owner(scrutinee_admission, scrutinee, scrutinee_local);
+        let call_scrutinee_owner = self.register_from_call_scrutinee_owner(
+            scrutinee_admission,
+            scrutinee,
+            scrutinee_local,
+        );
+        let weak_upgrade_owner_ty = matches!(
+            &scrutinee.kind,
+            HirExprKind::RcIntrinsic {
+                op: hew_types::RcIntrinsicOp::WeakUpgrade,
+                ..
+            }
+        )
+        .then(|| call_scrutinee_owner.as_ref().map(|(_, ty)| ty.clone()))
+        .flatten();
 
         // Load the tag into a fresh i64 local. `Place::EnumTag(local)`
         // is the substrate primitive; codegen GEPs to outer-struct
@@ -3820,6 +3833,13 @@ impl Builder {
                         binding.name.clone(),
                         binding_ty.clone(),
                     );
+                    // A Weak.upgrade match binder aliases the payload slot in
+                    // the fresh Option owner. The Option remains the sole owner
+                    // unless the binder is consumed, which neutralizes that
+                    // slot and changes this disposition to ConsumedAt.
+                    if weak_upgrade_owner_ty.is_some() {
+                        self.set_owned_local_disposition(binding.binding, Disposition::AliasOf);
+                    }
                 }
                 let dest = self.alloc_local(binding.ty.clone());
                 self.push_instr(Instr::Move {
@@ -4168,7 +4188,23 @@ impl Builder {
         // reading the never-written `result_place`. `start_block` resets the
         // flag, so set it AFTER opening the join.
         self.start_block(join_bb);
-        if !join_reachable {
+        if join_reachable {
+            // Weak.upgrade produces a fresh Option<Rc<T>>. Release that owner
+            // as soon as the match closes so a statement-valued match does not
+            // retain an upgraded strong reference until function exit. The
+            // in-place drop zeroes the Option slot; the existing exit plan is
+            // still responsible for early return, panic, and cancellation and
+            // becomes a no-op after this normal-path release.
+            if let Some(owner_ty) = weak_upgrade_owner_ty {
+                self.push_instr(Instr::Drop {
+                    place: Place::Local(scrutinee_local),
+                    ty: owner_ty,
+                    drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::Enum,
+                    )),
+                });
+            }
+        } else {
             self.cursor_unreachable = true;
         }
         Some(result_place)

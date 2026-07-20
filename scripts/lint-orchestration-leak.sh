@@ -262,7 +262,7 @@ if [[ "${1-}" == "--self-test" ]]; then
         '// F1 (registry consulted) — f-string lowering'
     # F<n> in LESSONS.md is NOT flagged (evidence-cell sub-finding refs)
     assert_clean "T10 NEG F4 in LESSONS.md"          "LESSONS.md" \
-        'W5.016 F4 (2026-06-02): implements_rc_free'
+        'W5.016 F4 (2026-06-02): structural gate'
 
     # ── Negative controls (must NOT fire) ────────────────────────────────────
 

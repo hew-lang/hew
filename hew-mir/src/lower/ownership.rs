@@ -159,12 +159,17 @@ impl Builder {
     /// today's leak-not-double-free posture because
     /// `derive_enum_composite_drop_allowed` still excludes the composite.
     pub(crate) fn call_scrutinee_owned_ty(&self, scrutinee: &HirExpr) -> Option<ResolvedTy> {
-        // Only the direct-call rvalue shape. A `BindingRef` scrutinee already
-        // owns its slot through its own `let`/param registration — a second
-        // owner over the same local would double-free — and every non-call
-        // rvalue keeps its pre-fix posture (fail-closed).
-        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
-            return None;
+        // Direct Hew calls and `Weak.upgrade` are the audited fresh enum
+        // producers. A `BindingRef` scrutinee already owns its slot through its
+        // own binding registration, so minting another owner would double-drop.
+        // Other rvalues keep the fail-closed posture.
+        let callee = match &scrutinee.kind {
+            HirExprKind::Call { callee, .. } => Some(callee.as_ref()),
+            HirExprKind::RcIntrinsic {
+                op: hew_types::RcIntrinsicOp::WeakUpgrade,
+                ..
+            } => None,
+            _ => return None,
         };
         // Recv-next / vec-string-iter-next scrutinees already carry their own
         // per-iteration release discipline (`Disposition::BodyEndReleased` on
@@ -173,8 +178,9 @@ impl Builder {
         // here would double-release the payload. (A generator `.next()`
         // scrutinee is `HirExprKind::GeneratorNext`, not `Call`, so the shape
         // gate above already excludes it.)
-        if Self::is_recv_next_scrutinee(scrutinee)
-            || self.is_vec_string_iter_next_scrutinee(scrutinee)
+        if callee.is_some()
+            && (Self::is_recv_next_scrutinee(scrutinee)
+                || self.is_vec_string_iter_next_scrutinee(scrutinee))
         {
             return None;
         }
@@ -186,11 +192,13 @@ impl Builder {
         // every member handed out through the return —
         // `derive_returned_aggregate_member_bindings`), so this caller holds
         // the single release obligation.
-        if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
-            if matches!(resolved, ResolvedRef::Builtin(_))
-                || crate::runtime_symbols::is_known_runtime_symbol(name)
-            {
-                return None;
+        if let Some(callee) = callee {
+            if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
+                if matches!(resolved, ResolvedRef::Builtin(_))
+                    || crate::runtime_symbols::is_known_runtime_symbol(name)
+                {
+                    return None;
+                }
             }
         }
         // Exactly the value class the `EnumInPlace` scope-exit machinery
@@ -406,8 +414,32 @@ impl Builder {
         scrutinee: &HirExpr,
     ) -> Result<crate::return_provenance::CallScrutineeAdmission, Box<MirDiagnostic>> {
         use crate::return_provenance::{is_typed_recv_callee, AliasBits, CallScrutineeAdmission};
-        // Structural Call-gate FIRST: only a direct `Call` rvalue can mint the
-        // from-call owner. A non-`Call` scrutinee (a `Block`/`If` synthetic
+        // `Weak.upgrade` always returns a fresh `Option<Rc<T>>` owner. Admit it
+        // before the general Call gate so a matched `Some` payload is released
+        // when the arm closes.
+        if matches!(
+            &scrutinee.kind,
+            HirExprKind::RcIntrinsic {
+                op: hew_types::RcIntrinsicOp::WeakUpgrade,
+                ..
+            }
+        ) {
+            let ty = self.subst_ty(&scrutinee.ty);
+            return Ok(
+                if ty_is_heap_owning_enum_composite(
+                    &ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                ) {
+                    CallScrutineeAdmission::Admit
+                } else {
+                    CallScrutineeAdmission::NotApplicable
+                },
+            );
+        }
+
+        // Structural Call-gate: only a direct `Call` rvalue can otherwise mint
+        // the from-call owner. A non-`Call` scrutinee (a `Block`/`If` synthetic
         // `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place, an
         // aggregate) is `NotApplicable` ON KIND — exactly `call_scrutinee_owned_ty`'s
         // early `None`, before any runtime-identity resolution can be consulted.

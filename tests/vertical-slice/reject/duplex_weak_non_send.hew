@@ -1,0 +1,5 @@
+fn main() {
+    let _worker = actor |msg: Weak<i64>| {
+        let _ = msg.clone();
+    };
+}

@@ -739,6 +739,11 @@ pub(super) fn elaborate(
         }
     }
 
+    let projection_alias_tainted = compute_projection_alias_taint(
+        &checked.blocks,
+        &builder.match_project_consumed_binder_locals,
+        &builder.locals,
+    );
     let lifo_drops = build_lifo_drops(
         &owned_locals_snapshot,
         &builder.binding_locals,
@@ -762,6 +767,7 @@ pub(super) fn elaborate(
         &indirect_enum_drop_allowed,
         &builder.affine_release_flags,
         &builder.collection_drop_flags,
+        &projection_alias_tainted,
     );
     let ordinary_lifo_drops: Vec<ElabDrop> = lifo_drops
         .iter()
@@ -2749,6 +2755,7 @@ fn build_lifo_drops(
     indirect_enum_drop_allowed: &HashSet<BindingId>,
     affine_release_flags: &HashMap<BindingId, Place>,
     collection_drop_flags: &HashMap<BindingId, Place>,
+    projection_alias_tainted: &HashSet<u32>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
@@ -3161,6 +3168,29 @@ fn build_lifo_drops(
         }
         match ValueClass::of_ty(ty, type_classes) {
             ValueClass::AffineResource => {
+                let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                    panic!(
+                        "build_lifo_drops invariant: binding {binding:?} is in owned_locals \
+                         but missing from binding_locals; lowering must wire a Place before \
+                         the drop-elaboration pass observes the binding"
+                    )
+                });
+                // A match payload binder is an interior alias of its owning
+                // enum shell unless the scrutinee itself was consumed and
+                // neutralized. The shell's recursive drop releases Rc/Weak
+                // payloads; a second affine release on the binder would
+                // underflow the reference count on cleanup edges.
+                if matches!(
+                    ty,
+                    ResolvedTy::Named {
+                        builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                        ..
+                    }
+                ) && base_local(place)
+                    .is_some_and(|local| projection_alias_tainted.contains(&local))
+                {
+                    continue;
+                }
                 // Registry-driven drop_fn dispatch. The HIR-lowering pass
                 // populates `type_classes` with `(marker, Some(close_method))`
                 // for every `#[resource]` type; reaching this arm without
@@ -3180,13 +3210,6 @@ fn build_lifo_drops(
                 // `owned_locals` ahead of `binding_locals` must wire
                 // a real `Place` before reaching here. LESSONS:
                 // boundary-fail-closed.
-                let place = *binding_locals.get(binding).unwrap_or_else(|| {
-                    panic!(
-                        "build_lifo_drops invariant: binding {binding:?} is in owned_locals \
-                         but missing from binding_locals; lowering must wire a Place before \
-                         the drop-elaboration pass observes the binding"
-                    )
-                });
                 // Place-aware override of the type-derived drop_fn. A
                 // `Place::LambdaActorHandle` carries a `Named{"Duplex"}` ty
                 // (the surface type of an `actor |..|{..}` expression), but

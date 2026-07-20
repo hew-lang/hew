@@ -4,8 +4,11 @@ fn live() -> i64 {
     let weak = rc.downgrade();
     let _weak_alias = weak.clone();
     let before = rc.strong_count() * 100 + rc.weak_count();
-    let uniqueness = if rc.is_unique() { 90 } else { 1 };
-
+    let uniqueness = if rc.is_unique() {
+        90
+    } else {
+        1
+    };
     match weak.upgrade() {
         Some(upgraded) => {
             rc.set(9);

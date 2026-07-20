@@ -1559,3 +1559,12 @@ result = "none"
 params = ["borrow", "borrow", "consume"]
 release-symbol = ""
 discharge-depth = "none"
+
+# hew_weak_clone_rc retains the allocation header without retaining its
+# payload. Each returned weak owner requires one matching weak drop.
+[[ownership.contracts]]
+symbol = "hew_weak_clone_rc"
+result = "retained"
+params = ["borrow"]
+release-symbol = "hew_weak_drop_rc"
+discharge-depth = "shallow"

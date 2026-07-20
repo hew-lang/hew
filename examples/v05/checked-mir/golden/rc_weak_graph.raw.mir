@@ -64,6 +64,7 @@ fn main() -> i64 [conv=default]
   bb1:
     stmt: bind BindingId(2) weak site=SiteId(14) ty=Weak<Node>
     stmt: use BindingId(2) weak site=SiteId(18) ty=Weak<Node> intent=Read
+    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(17) ty=Option<Rc<Node>>
     _1 = move _0
     _2 = const.i64 0
     _4 = rc_intrinsic.WeakUpgrade payload_ty=Node receiver=_1 value=none result_ty=Option<Rc<Node>>
@@ -73,6 +74,7 @@ fn main() -> i64 [conv=default]
     branch _7 ? bb3 : bb6
   bb2:
     stmt: return site=Some(SiteId(16)) ty=i64
+    drop _4 ty=Option<Rc<Node>> fn=in_place(Enum)
     ret = move _3
     return
   bb3:
@@ -368,3 +370,4 @@ fn duration::fmt(duration) -> string [conv=default]
     drop _2 ty=string fn=release(hew_string_drop)
     ret = move _4
     return
+

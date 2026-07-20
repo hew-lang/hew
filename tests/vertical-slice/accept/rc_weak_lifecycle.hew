@@ -1,0 +1,55 @@
+type Node {
+    label: string,
+    parent: Option<Weak<Node>>,
+}
+
+fn expired() -> Weak<i64> {
+    let rc = Rc::new(1);
+    rc.downgrade()
+}
+
+fn upgraded_value(weak: Weak<i64>) -> i64 {
+    match weak.upgrade() {
+        Some(rc) => rc.get(),
+        None => 9000,
+    }
+}
+
+fn graph_replacement_counts() -> i64 {
+    let root = Rc::new(Node { label: "root", parent: None });
+    let weak = root.downgrade();
+    root.set(Node { label: "back-edge", parent: Some(weak.clone()) });
+    let before = root.weak_count();
+    root.set(Node { label: "final", parent: None });
+    before * 10 + root.weak_count()
+}
+
+fn main() {
+    let rc = Rc::new(7);
+    print(rc.strong_count());
+    print(rc.weak_count());
+
+    let alias = rc.clone();
+    print(rc.strong_count());
+    let weak = rc.downgrade();
+    let weak_alias = weak.clone();
+    print(rc.weak_count());
+    print(upgraded_value(weak));
+    print(rc.strong_count());
+
+    rc.set(9);
+    print(alias.get());
+    print(if rc.is_unique() { 1 } else { 0 });
+    print(graph_replacement_counts());
+
+    let empty = Rc::new(());
+    print(empty.strong_count());
+
+    let dead = expired();
+    println(match dead.upgrade() {
+        Some(_) => 9,
+        None => 0,
+    });
+
+    let _ = weak_alias;
+}

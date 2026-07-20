@@ -1,0 +1,6 @@
+type Node { label: string }
+
+fn main() {
+    let rc = Rc::new(Node { label: "node" });
+    let _ = rc.get();
+}

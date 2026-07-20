@@ -385,6 +385,9 @@ VEC_ELEM_STORE_TEMP_SRC="${ROOT}/tests/vertical-slice/accept/vec_elem_store_owne
 # insert/remove cycle. An over-eager mint drops the caller's parameter; a missed
 # temp drop leaks once per store. ASan/LSan catches both directions.
 VEC_PARAM_EMBED_TEMP_SRC="${ROOT}/tests/vertical-slice/accept/vec_param_embed_copy_in_temp_no_leak.hew"
+# Rc/Weak graph lifecycle: two record replacements, an embedded Weak back-edge,
+# exact upgrade teardown, and final strong/weak releases must stay LSan-clean.
+RC_WEAK_SRC="${ROOT}/tests/vertical-slice/accept/rc_weak_lifecycle.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -442,6 +445,9 @@ compile_asan_fixture "owned-Vec element-store temp (push/set move-in)" "${VEC_EL
 
 VEC_PARAM_EMBED_TEMP_BIN="${WORK_DIR}/vec_param_embed_copy_in_temp_no_leak"
 compile_asan_fixture "owned-Vec retained param-embed temp (push/set/Arena)" "${VEC_PARAM_EMBED_TEMP_SRC}" "${VEC_PARAM_EMBED_TEMP_BIN}"
+
+RC_WEAK_BIN="${WORK_DIR}/rc_weak_lifecycle"
+compile_asan_fixture "Rc/Weak graph replacement lifecycle" "${RC_WEAK_SRC}" "${RC_WEAK_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -585,6 +591,12 @@ else
 fi
 
 if run_asan_fixture "owned-Vec retained param-embed temp (push/set/Arena)" "${VEC_PARAM_EMBED_TEMP_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "Rc/Weak graph replacement lifecycle" "${RC_WEAK_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

@@ -105,6 +105,7 @@ fn live() -> i64 [conv=default]
   bb7:
     stmt: bind BindingId(5) uniqueness site=SiteId(15) ty=i64
     stmt: use BindingId(2) weak site=SiteId(24) ty=Weak<i64> intent=Read
+    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(23) ty=Option<Rc<i64>>
     _27 = move _21
     _29 = rc_intrinsic.WeakUpgrade payload_ty=i64 receiver=_8 value=none result_ty=Option<Rc<i64>>
     _30 = move etag29
@@ -113,6 +114,7 @@ fn live() -> i64 [conv=default]
     branch _32 ? bb9 : bb12
   bb8:
     stmt: return site=Some(SiteId(22)) ty=i64
+    drop _29 ty=Option<Rc<i64>> fn=in_place(Enum)
     ret = move _28
     return
   bb9:
@@ -205,6 +207,7 @@ fn main() -> i64 [conv=default]
   bb1:
     stmt: bind BindingId(8) weak site=SiteId(45) ty=Weak<i64>
     stmt: use BindingId(8) weak site=SiteId(49) ty=Weak<i64> intent=Read
+    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(48) ty=Option<Rc<i64>>
     _1 = move _0
     _2 = const.i64 0
     _4 = rc_intrinsic.WeakUpgrade payload_ty=i64 receiver=_1 value=none result_ty=Option<Rc<i64>>
@@ -214,6 +217,7 @@ fn main() -> i64 [conv=default]
     branch _7 ? bb3 : bb6
   bb2:
     stmt: bind BindingId(9) dead site=SiteId(47) ty=i64
+    drop _4 ty=Option<Rc<i64>> fn=in_place(Enum)
     _12 = move _3
     _13 = call live() -> bb7
   bb3:

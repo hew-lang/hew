@@ -13,6 +13,7 @@ fn live -> i64
     use BindingId(0) rc site=SiteId(17) ty=Rc<i64> intent=Read
     bind BindingId(5) uniqueness site=SiteId(15) ty=i64
     use BindingId(2) weak site=SiteId(24) ty=Weak<i64> intent=Read
+    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(23) ty=Option<Rc<i64>>
     return site=Some(SiteId(22)) ty=i64
     bind BindingId(6) upgraded site=SiteId(25) ty=Rc<i64>
     use BindingId(0) rc site=SiteId(27) ty=Rc<i64> intent=Read
@@ -21,7 +22,7 @@ fn live -> i64
     use BindingId(6) upgraded site=SiteId(35) ty=Rc<i64> intent=Read
     use BindingId(1) alias site=SiteId(38) ty=Rc<i64> intent=Read
     use BindingId(5) uniqueness site=SiteId(39) ty=i64 intent=Read
-    drop BindingId(6) upgraded ty=Rc<i64>
+    drop BindingId(4294967231) __hew_call_scrutinee ty=Option<Rc<i64>>
     drop BindingId(3) _weak_alias ty=Weak<i64>
     drop BindingId(2) weak ty=Weak<i64>
     drop BindingId(1) alias ty=Rc<i64>
@@ -52,6 +53,7 @@ fn live -> i64
     branch[bb7: bb9/bb12] ->
       (none)
     return[bb8] ->
+      drop _29 ty=Option<Rc<i64>> kind=enum_in_place
       drop _11 ty=Weak<i64> kind=weak_release guard=_12
       drop _8 ty=Weak<i64> kind=weak_release guard=_9
       drop _5 ty=Rc<i64> kind=rc_release guard=_6
@@ -61,11 +63,13 @@ fn live -> i64
     goto[bb10->bb8] ->
       (none)
     cancel[bb10] ->
+      drop _29 ty=Option<Rc<i64>> kind=enum_in_place
       drop _11 ty=Weak<i64> kind=weak_release guard=_12
       drop _8 ty=Weak<i64> kind=weak_release guard=_9
       drop _5 ty=Rc<i64> kind=rc_release guard=_6
       drop _2 ty=Rc<i64> kind=rc_release guard=_3
     panic[bb11] ->
+      drop _29 ty=Option<Rc<i64>> kind=enum_in_place
       drop _11 ty=Weak<i64> kind=weak_release guard=_12
       drop _8 ty=Weak<i64> kind=weak_release guard=_9
       drop _5 ty=Rc<i64> kind=rc_release guard=_6
@@ -73,7 +77,7 @@ fn live -> i64
     branch[bb12: bb10/bb11] ->
       (none)
     panic[bb13] ->
-      drop _35 ty=Rc<i64> kind=rc_release
+      drop _29 ty=Option<Rc<i64>> kind=enum_in_place
       drop _11 ty=Weak<i64> kind=weak_release guard=_12
       drop _8 ty=Weak<i64> kind=weak_release guard=_9
       drop _5 ty=Rc<i64> kind=rc_release guard=_6
@@ -81,7 +85,7 @@ fn live -> i64
     branch[bb14: bb15/bb16] ->
       (none)
     panic[bb15] ->
-      drop _35 ty=Rc<i64> kind=rc_release
+      drop _29 ty=Option<Rc<i64>> kind=enum_in_place
       drop _11 ty=Weak<i64> kind=weak_release guard=_12
       drop _8 ty=Weak<i64> kind=weak_release guard=_9
       drop _5 ty=Rc<i64> kind=rc_release guard=_6
@@ -89,7 +93,7 @@ fn live -> i64
     branch[bb16: bb17/bb18] ->
       (none)
     panic[bb17] ->
-      drop _35 ty=Rc<i64> kind=rc_release
+      drop _29 ty=Option<Rc<i64>> kind=enum_in_place
       drop _11 ty=Weak<i64> kind=weak_release guard=_12
       drop _8 ty=Weak<i64> kind=weak_release guard=_9
       drop _5 ty=Rc<i64> kind=rc_release guard=_6
@@ -97,7 +101,7 @@ fn live -> i64
     branch[bb18: bb19/bb20] ->
       (none)
     panic[bb19] ->
-      drop _35 ty=Rc<i64> kind=rc_release
+      drop _29 ty=Option<Rc<i64>> kind=enum_in_place
       drop _11 ty=Weak<i64> kind=weak_release guard=_12
       drop _8 ty=Weak<i64> kind=weak_release guard=_9
       drop _5 ty=Rc<i64> kind=rc_release guard=_6
@@ -105,7 +109,7 @@ fn live -> i64
     goto[bb20->bb8] ->
       (none)
     cancel[bb20] ->
-      drop _35 ty=Rc<i64> kind=rc_release
+      drop _29 ty=Option<Rc<i64>> kind=enum_in_place
       drop _11 ty=Weak<i64> kind=weak_release guard=_12
       drop _8 ty=Weak<i64> kind=weak_release guard=_9
       drop _5 ty=Rc<i64> kind=rc_release guard=_6
@@ -125,9 +129,11 @@ fn main -> i64
   statements:
     bind BindingId(8) weak site=SiteId(45) ty=Weak<i64>
     use BindingId(8) weak site=SiteId(49) ty=Weak<i64> intent=Read
+    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(48) ty=Option<Rc<i64>>
     bind BindingId(9) dead site=SiteId(47) ty=i64
     use BindingId(9) dead site=SiteId(55) ty=i64 intent=Read
     return site=Some(SiteId(52)) ty=i64
+    drop BindingId(4294967231) __hew_call_scrutinee ty=Option<Rc<i64>>
     drop BindingId(8) weak ty=Weak<i64>
   drop_plans:
     call[bb0 expired -> bb1] ->
@@ -141,20 +147,25 @@ fn main -> i64
     goto[bb3->bb2] ->
       (none)
     cancel[bb3] ->
+      drop _4 ty=Option<Rc<i64>> kind=enum_in_place
       drop _1 ty=Weak<i64> kind=weak_release guard=_2
     goto[bb4->bb2] ->
       (none)
     cancel[bb4] ->
+      drop _4 ty=Option<Rc<i64>> kind=enum_in_place
       drop _1 ty=Weak<i64> kind=weak_release guard=_2
     panic[bb5] ->
+      drop _4 ty=Option<Rc<i64>> kind=enum_in_place
       drop _1 ty=Weak<i64> kind=weak_release guard=_2
     branch[bb6: bb4/bb5] ->
       (none)
     branch[bb7: bb8/bb9] ->
       (none)
     panic[bb8] ->
+      drop _4 ty=Option<Rc<i64>> kind=enum_in_place
       drop _1 ty=Weak<i64> kind=weak_release guard=_2
     return[bb9] ->
+      drop _4 ty=Option<Rc<i64>> kind=enum_in_place
       drop _1 ty=Weak<i64> kind=weak_release guard=_2
 
 fn i8::fmt -> string

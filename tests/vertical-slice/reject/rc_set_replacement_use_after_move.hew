@@ -1,0 +1,6 @@
+fn main() {
+    let rc = Rc::new("o" + "ld");
+    let replacement = "n" + "ew";
+    rc.set(replacement);
+    print(replacement);
+}

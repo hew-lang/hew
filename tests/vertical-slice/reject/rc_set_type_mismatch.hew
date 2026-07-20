@@ -1,0 +1,4 @@
+fn main() {
+    let rc = Rc::new(1);
+    rc.set(true);
+}

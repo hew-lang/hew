@@ -63,6 +63,7 @@ mod facts;
 mod machine_synth;
 mod ownership;
 mod pattern;
+mod rc_intrinsic;
 mod scope;
 mod split_consume;
 mod suspend_places;

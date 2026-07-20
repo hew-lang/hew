@@ -1771,31 +1771,6 @@ impl Builder {
         }
     }
 
-    fn binding_ref_use_intent(&self, expr: &HirExpr) -> IntentKind {
-        if self.param_ownership.borrow_arg_sites.contains(&expr.site)
-            || self.bytes_local_share_sites.contains(&expr.site)
-            || self.string_local_share_sites.contains_key(&expr.site)
-        {
-            IntentKind::Read
-        } else {
-            expr.intent
-        }
-    }
-
-    fn is_consumed_bound_local(&self, expr: &HirExpr) -> bool {
-        let HirExprKind::BindingRef {
-            resolved: ResolvedRef::Binding(binding),
-            ..
-        } = &expr.kind
-        else {
-            return false;
-        };
-        self.binding_locals.contains_key(binding)
-            && !self.capture_env_sources.contains_key(binding)
-            && !self.funcupdate_param_ids.contains(binding)
-            && self.binding_ref_use_intent(expr) == IntentKind::Consume
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "single match over assignable HIR target shapes (binding, record field, \
@@ -2861,25 +2836,13 @@ impl Builder {
                 receiver,
                 value,
                 result_ty,
-            } => {
-                let receiver = receiver
-                    .as_deref()
-                    .and_then(|operand| self.lower_value(operand));
-                let value = value
-                    .as_deref()
-                    .and_then(|operand| self.lower_value(operand));
-                let result_ty = self.subst_ty(result_ty);
-                let dest = self.alloc_local(result_ty.clone());
-                self.push_instr(Instr::RcIntrinsic {
-                    dest,
-                    op: *op,
-                    payload_ty: self.subst_ty(payload_ty),
-                    receiver,
-                    value,
-                    result_ty,
-                });
-                Some(dest)
-            }
+            } => Some(self.lower_rc_intrinsic(
+                *op,
+                payload_ty,
+                receiver.as_deref(),
+                value.as_deref(),
+                result_ty,
+            )),
             HirExprKind::GeneratorNext { receiver, yield_ty } => {
                 let ctx = self.lower_value(receiver)?;
                 // `expr.ty` is the checker-authoritative `Option<yield_ty>`; the

@@ -9,6 +9,33 @@ use super::{
     ScanCtx, Strategy, ValueClass,
 };
 
+impl Builder {
+    pub(super) fn binding_ref_use_intent(&self, expr: &HirExpr) -> IntentKind {
+        if self.param_ownership.borrow_arg_sites.contains(&expr.site)
+            || self.bytes_local_share_sites.contains(&expr.site)
+            || self.string_local_share_sites.contains_key(&expr.site)
+        {
+            IntentKind::Read
+        } else {
+            expr.intent
+        }
+    }
+
+    pub(super) fn is_consumed_bound_local(&self, expr: &HirExpr) -> bool {
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &expr.kind
+        else {
+            return false;
+        };
+        self.binding_locals.contains_key(binding)
+            && !self.capture_env_sources.contains_key(binding)
+            && !self.funcupdate_param_ids.contains(binding)
+            && self.binding_ref_use_intent(expr) == IntentKind::Consume
+    }
+}
+
 /// Flow-insensitive prescan deciding, for every binding in `func`, whether a
 /// destructive `{ ..<binding>, f: new }` is a PROVEN unique owner of its heap
 /// fields — see the `Builder::funcupdate_base_proven` field and

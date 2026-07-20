@@ -27,8 +27,8 @@ use hew_types::ResolvedTy;
 
 use crate::lower::collect_return_values_in_block;
 use crate::return_provenance::{
-    expr_mentions_binding, method_receiver_and_args, place_root_binding, stmt_mentions_binding,
-    SeeThroughScope,
+    expr_mentions_binding, method_receiver_and_args, moved_binding_ref, place_root_binding,
+    stmt_mentions_binding, SeeThroughScope,
 };
 
 /// Verbatim copy of the pre-refactor `compute_fn_returns_fresh_owner`.
@@ -155,7 +155,7 @@ fn return_value_may_alias_borrow_ref(
             ..
         } => scope
             .and_then(|s| s.resolve(*id))
-            .and_then(|block| block_let_may_alias_ref(block, *id, scope, fresh))
+            .and_then(|block| block_let_may_alias_ref(block, *id, scope, fresh, None))
             .unwrap_or(true),
         _ => true,
     }
@@ -163,16 +163,20 @@ fn return_value_may_alias_borrow_ref(
 
 /// Independent bool twin of `see_through_let_binding_bits`: `Some(may_alias)`
 /// for a single-assignment `let`-bound local seen through to its init plus
-/// interior appends; `None` (keep the fail-closed leaf) for a `var`, a
-/// reassignment, or any other use of `id`. `may_alias` mirrors `!bits.is_fresh()`.
+/// interior appends and direct immutable single-move chains; `None` (keep the
+/// fail-closed leaf) for a `var`, a reassignment, or any other use of `id`.
+/// `may_alias` mirrors `!bits.is_fresh()`.
 fn block_let_may_alias_ref(
     block: &HirBlock,
     id: BindingId,
     scope: Option<&SeeThroughScope>,
     fresh: &HashMap<hew_hir::ItemId, bool>,
+    forwarded_to: Option<BindingId>,
 ) -> Option<bool> {
     let mut init_may_alias: Option<bool> = None;
+    let mut init_is_move = false;
     let mut content_may_alias = false;
+    let mut saw_forward = false;
     for stmt in &block.statements {
         match &stmt.kind {
             HirStmtKind::Let(binding, init) if binding.id == id => {
@@ -180,15 +184,41 @@ fn block_let_may_alias_ref(
                     return None;
                 }
                 let init = init.as_ref()?;
-                init_may_alias = Some(return_value_may_alias_borrow_ref(init, scope, fresh));
+                let move_source = moved_binding_ref(init);
+                init_is_move = move_source.is_some();
+                init_may_alias = Some(if let Some(source_id) = move_source {
+                    scope
+                        .and_then(|s| s.resolve(source_id))
+                        .and_then(|source_block| {
+                            block_let_may_alias_ref(source_block, source_id, scope, fresh, Some(id))
+                        })
+                        .unwrap_or_else(|| return_value_may_alias_borrow_ref(init, scope, fresh))
+                } else {
+                    return_value_may_alias_borrow_ref(init, scope, fresh)
+                });
             }
             HirStmtKind::Assign { target, .. } if place_root_binding(target) == Some(id) => {
                 return None;
             }
             _ => {
+                if let HirStmtKind::Let(binding, Some(init)) = &stmt.kind {
+                    if Some(binding.id) == forwarded_to
+                        && !binding.mutable
+                        && moved_binding_ref(init) == Some(id)
+                    {
+                        if init_may_alias.is_none() || saw_forward {
+                            return None;
+                        }
+                        saw_forward = true;
+                        continue;
+                    }
+                }
                 if let HirStmtKind::Expr(e) = &stmt.kind {
                     if let Some((receiver, args)) = method_receiver_and_args(e) {
                         if place_root_binding(receiver) == Some(id) {
+                            if forwarded_to.is_some() || init_is_move {
+                                return None;
+                            }
                             for arg in &args {
                                 if expr_mentions_binding(arg, id) {
                                     return None;
@@ -205,6 +235,9 @@ fn block_let_may_alias_ref(
                 }
             }
         }
+    }
+    if forwarded_to.is_some() && !saw_forward {
+        return None;
     }
     init_may_alias.map(|base| base || content_may_alias)
 }

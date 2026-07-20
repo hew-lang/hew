@@ -63,6 +63,7 @@ use crate::envelope::{
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
+use crate::node_identity::Location;
 use crate::node_identity::NodeId;
 use crate::peer_binding::{ClaimState, LiveClaim, PeerAuthSnapshot, PeerCredential, Posture};
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
@@ -1593,6 +1594,7 @@ fn install_connection_actor(
 // Sole caller is the encryption-gated send path in `hew_connmgr_send`.
 #[cfg(feature = "encryption")]
 unsafe fn encode_envelope(
+    mgr: &HewConnMgr,
     target_actor_id: u64,
     msg_type: i32,
     payload: *mut u8,
@@ -1603,15 +1605,18 @@ unsafe fn encode_envelope(
     // Cross-node send gates (Gate 1 before Gate 2; fail-closed in all build
     // profiles via set_last_error + return None, not debug_assert).
     validate_cross_node_send_params(payload_class, cancel_token_handle)?;
+    let Some(target) = remote_location_for_actor(mgr, target_actor_id) else {
+        set_last_error("hew_connmgr_send: target has no authenticated Location");
+        return None;
+    };
     // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
     match unsafe {
         encode_envelope_frame_from_raw_parts(
-            target_actor_id,
-            0,
+            Some(target),
+            None,
             msg_type,
             payload.cast_const(),
             payload_len,
-            0,
             0,
         )
     } {
@@ -1623,16 +1628,30 @@ unsafe fn encode_envelope(
     }
 }
 
-fn encode_registry_gossip_control(name: &str, actor_id: u64, is_add: bool) -> Option<Vec<u8>> {
+fn encode_registry_gossip_control(
+    mgr: &HewConnMgr,
+    name: &str,
+    actor_id: u64,
+    is_add: bool,
+) -> Option<Vec<u8>> {
     let op = if is_add {
         crate::cluster::GOSSIP_REGISTRY_ADD
     } else {
         crate::cluster::GOSSIP_REGISTRY_REMOVE
     };
+    let location = if crate::pid::hew_pid_node(actor_id) == mgr.local_node_id {
+        local_location_for_actor(mgr, actor_id)
+    } else {
+        remote_location_for_actor(mgr, actor_id)
+    };
+    let Some(location) = location else {
+        set_last_error("registry gossip encode: actor has no authenticated Location");
+        return None;
+    };
     let payload = RegistryGossipPayload {
         op,
         name: name.to_owned(),
-        actor_id,
+        location,
     };
     let payload = match encode_registry_gossip_payload(&payload) {
         Ok(payload) => payload,
@@ -1745,7 +1764,21 @@ fn handle_control_frame(
     // SAFETY: cluster pointer is owned by the live node/manager and remains
     // valid while the reader thread is running.
     unsafe {
-        (&*mgr_ref.cluster).apply_registry_event(&payload.name, payload.actor_id, is_add);
+        let Some(route_slot) = route_slot_for_identity(mgr_ref, payload.location.node()) else {
+            set_last_error("registry gossip rejected unconfigured NodeId");
+            return;
+        };
+        let actor_id = crate::pid::hew_pid_make(route_slot, payload.location.slot());
+        let expected_session = if route_slot == mgr_ref.local_node_id {
+            mgr_ref.local_session_incarnation
+        } else {
+            (&*mgr_ref.cluster).member_session(route_slot)
+        };
+        if expected_session != Some(payload.location.incarnation()) {
+            set_last_error("registry gossip rejected stale Location session");
+            return;
+        }
+        (&*mgr_ref.cluster).apply_registry_event(&payload.name, actor_id, is_add);
     }
 }
 
@@ -1776,6 +1809,51 @@ fn authenticated_peer_node_id(
     Some(authenticated)
 }
 
+fn authenticated_peer_identity(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    context: &str,
+) -> Option<(u16, crate::envelope::NodeSessionIdentity)> {
+    let route_slot = authenticated_peer_node_id(mgr, conn_id, claim_token, context)?;
+    // SAFETY: `authenticated_peer_node_id` verified the live manager.
+    let mgr = unsafe { &*mgr };
+    let identity = mgr.connections.access(|connections| {
+        connections
+            .iter()
+            .find(|connection| {
+                connection.conn_id == conn_id
+                    && connection.publication_token == claim_token
+                    && connection.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+            })
+            .and_then(|connection| {
+                Some(crate::envelope::NodeSessionIdentity {
+                    node_id: connection.peer_identity?,
+                    session_incarnation: connection.peer_session_incarnation,
+                })
+            })
+    });
+    let Some(identity) = identity else {
+        set_last_error(format!(
+            "connection reader {context}: authenticated connection is missing its NodeId/session"
+        ));
+        return None;
+    };
+    Some((route_slot, identity))
+}
+
+fn location_matches_node_session(
+    location: Location,
+    identity: crate::envelope::NodeSessionIdentity,
+) -> bool {
+    location.node() == identity.node_id && location.incarnation() == identity.session_incarnation
+}
+
+fn location_matches_local(mgr: &HewConnMgr, location: Location) -> bool {
+    Some(location.node()) == mgr.local_identity
+        && Some(location.incarnation()) == mgr.local_session_incarnation
+}
+
 /// Handle an inbound `CTRL_MONITOR_REQ`: a remote node is monitoring
 /// one of our local actors. Record a target-side remote-watcher entry so the
 /// terminal sweep can fan out a `CTRL_MONITOR_DOWN` when that actor dies.
@@ -1797,26 +1875,25 @@ fn handle_monitor_req_frame(
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "monitor req")
+    let Some((authenticated, peer_identity)) =
+        authenticated_peer_identity(mgr, conn_id, claim_token, "monitor req")
     else {
         return;
     };
-    if payload.watcher_node_id != authenticated {
-        set_last_error(format!(
-            "connection reader monitor req watcher_node_id {} does not match authenticated peer {authenticated}",
-            payload.watcher_node_id
-        ));
+    // SAFETY: the authenticated identity helper verified the manager.
+    let mgr_ref = unsafe { &*mgr };
+    if !location_matches_node_session(payload.watcher, peer_identity)
+        || !location_matches_local(mgr_ref, payload.target)
+    {
+        set_last_error("connection reader monitor req Location mismatch");
         return;
     }
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("connection reader monitor req: no runtime installed");
         return;
     };
-    rt.dist_monitors.register_remote_watcher(
-        payload.target_serial,
-        payload.watcher_node_id,
-        payload.ref_id,
-    );
+    rt.dist_monitors
+        .register_remote_watcher(payload.target.slot(), authenticated, payload.ref_id);
 }
 
 /// Handle an inbound `CTRL_DEMONITOR`: a remote node retracted its
@@ -1837,25 +1914,24 @@ fn handle_demonitor_frame(
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "demonitor")
+    let Some((authenticated, peer_identity)) =
+        authenticated_peer_identity(mgr, conn_id, claim_token, "demonitor")
     else {
         return;
     };
-    if payload.watcher_node_id != authenticated {
-        set_last_error(format!(
-            "connection reader demonitor watcher_node_id {} does not match authenticated peer {authenticated}",
-            payload.watcher_node_id
-        ));
+    // SAFETY: the authenticated identity helper verified the manager.
+    let mgr_ref = unsafe { &*mgr };
+    if !location_matches_node_session(payload.watcher, peer_identity)
+        || !location_matches_local(mgr_ref, payload.target)
+    {
+        set_last_error("connection reader demonitor Location mismatch");
         return;
     }
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
-    rt.dist_monitors.remove_remote_watcher(
-        payload.target_serial,
-        payload.watcher_node_id,
-        payload.ref_id,
-    );
+    rt.dist_monitors
+        .remove_remote_watcher(payload.target.slot(), authenticated, payload.ref_id);
 }
 
 /// Handle an inbound `CTRL_MONITOR_DOWN`: the node owning an actor we
@@ -1881,10 +1957,15 @@ fn handle_monitor_down_frame(
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "monitor down")
+    let Some((authenticated, peer_identity)) =
+        authenticated_peer_identity(mgr, conn_id, claim_token, "monitor down")
     else {
         return;
     };
+    if !location_matches_node_session(payload.target, peer_identity) {
+        set_last_error("connection reader monitor down target Location mismatch");
+        return;
+    }
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("connection reader monitor down: no runtime installed");
         return;
@@ -1915,15 +1996,17 @@ fn handle_link_req_frame(
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "link req")
+    let Some((authenticated, peer_identity)) =
+        authenticated_peer_identity(mgr, conn_id, claim_token, "link req")
     else {
         return;
     };
-    if payload.linker_node_id != authenticated {
-        set_last_error(format!(
-            "connection reader link req linker_node_id {} does not match authenticated peer {authenticated}",
-            payload.linker_node_id
-        ));
+    // SAFETY: the authenticated identity helper verified the manager.
+    let mgr_ref = unsafe { &*mgr };
+    if !location_matches_node_session(payload.linker, peer_identity)
+        || !location_matches_local(mgr_ref, payload.target)
+    {
+        set_last_error("connection reader link req Location mismatch");
         return;
     }
     crate::hew_node::handle_inbound_link_req(&payload, authenticated);
@@ -1946,15 +2029,17 @@ fn handle_unlink_frame(
             return;
         }
     };
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "unlink")
+    let Some((authenticated, peer_identity)) =
+        authenticated_peer_identity(mgr, conn_id, claim_token, "unlink")
     else {
         return;
     };
-    if payload.linker_node_id != authenticated {
-        set_last_error(format!(
-            "connection reader unlink linker_node_id {} does not match authenticated peer {authenticated}",
-            payload.linker_node_id
-        ));
+    // SAFETY: the authenticated identity helper verified the manager.
+    let mgr_ref = unsafe { &*mgr };
+    if !location_matches_node_session(payload.linker, peer_identity)
+        || !location_matches_local(mgr_ref, payload.target)
+    {
+        set_last_error("connection reader unlink Location mismatch");
         return;
     }
     crate::hew_node::handle_inbound_unlink(&payload, authenticated);
@@ -1997,10 +2082,15 @@ fn handle_link_down_frame(
     // because the delivery id is nonzero). Route through the exact-owner gate so
     // an `Unverified`/superseded connection yields `None` and is dropped with a
     // diagnostic before any cross-node exit cascade.
-    let Some(authenticated) = authenticated_peer_node_id(mgr, conn_id, claim_token, "link down")
+    let Some((authenticated, peer_identity)) =
+        authenticated_peer_identity(mgr, conn_id, claim_token, "link down")
     else {
         return;
     };
+    if !location_matches_node_session(payload.target, peer_identity) {
+        set_last_error("connection reader link down target Location mismatch");
+        return;
+    }
     crate::hew_node::handle_inbound_link_down(payload.ref_id, authenticated, payload.reason);
 }
 
@@ -2051,7 +2141,7 @@ fn flush_registry_gossip_to_connection(
     let frames: Vec<Vec<u8>> = events
         .into_iter()
         .filter_map(|event| {
-            encode_registry_gossip_control(&event.name, event.actor_id, event.is_add)
+            encode_registry_gossip_control(mgr, &event.name, event.actor_id, event.is_add)
         })
         .collect();
     send_registry_flush_frames(mgr, conn_id, publication_token, frames, 0);
@@ -2254,6 +2344,22 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
     }
 }
 
+pub(crate) fn local_location_for_actor(mgr: &HewConnMgr, actor_id: u64) -> Option<Location> {
+    let slot = crate::pid::hew_pid_serial(actor_id);
+    Location::new(mgr.local_identity?, slot, mgr.local_session_incarnation?).ok()
+}
+
+pub(crate) fn remote_location_for_actor(mgr: &HewConnMgr, actor_id: u64) -> Option<Location> {
+    let route_slot = crate::pid::hew_pid_node(actor_id);
+    let actor_slot = crate::pid::hew_pid_serial(actor_id);
+    let (lock, _) = &mgr.claims;
+    let claims = lock.lock_or_recover();
+    let (node_id, claim) = claims.iter().find(|(_, claim)| {
+        claim.route_slot == route_slot && claim.state == ClaimState::Published
+    })?;
+    Location::new(*node_id, actor_slot, claim.session_incarnation).ok()
+}
+
 /// As [`authenticated_peer_node_id_for_conn`], but tolerant of this
 /// connection's own admission window. `hew_connmgr_add` spawns the reader
 /// thread BEFORE `install_connection_actor` pushes the `ConnectionActor` into
@@ -2351,6 +2457,7 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
 /// fire-and-forget delivery (`request_id == 0`) is never denied here: it flows
 /// on the D9 self-declared delivery route, the sole allowed `Unverified`
 /// capability.
+#[cfg(test)]
 fn inbound_ask_denied_unverified(mgr: *mut HewConnMgr, conn_id: c_int, request_id: u64) -> bool {
     if request_id == 0 {
         return false;
@@ -2422,14 +2529,54 @@ fn encode_swim_control(payload: &SwimControlPayload) -> Option<Vec<u8>> {
 
 /// Drain the cluster's pending membership gossip as wire entries for
 /// piggybacking on an outbound SWIM frame (C6).
-fn collect_swim_gossip(cluster: &HewCluster) -> Vec<SwimGossipEntry> {
+fn node_session_for_route(
+    mgr: &HewConnMgr,
+    cluster: &HewCluster,
+    route_slot: u16,
+) -> Option<crate::envelope::NodeSessionIdentity> {
+    if route_slot == mgr.local_node_id {
+        return Some(crate::envelope::NodeSessionIdentity {
+            node_id: mgr.local_identity?,
+            session_incarnation: mgr.local_session_incarnation?,
+        });
+    }
+    Some(crate::envelope::NodeSessionIdentity {
+        node_id: mgr.auth.node_id_for_route_slot(route_slot)?,
+        session_incarnation: cluster.member_session(route_slot)?,
+    })
+}
+
+#[allow(
+    clippy::unnecessary_lazy_evaluations,
+    reason = "cfg(test) block inside closure may return Some; not lazy-evaluable"
+)]
+fn route_slot_for_identity(mgr: &HewConnMgr, node_id: NodeId) -> Option<u16> {
+    if Some(node_id) == mgr.local_identity {
+        Some(mgr.local_node_id)
+    } else {
+        mgr.auth.route_slot_for_node_id(node_id).or_else(|| {
+            #[cfg(test)]
+            {
+                let bytes = node_id.to_bytes();
+                if bytes[..14].iter().all(|byte| *byte == 0) {
+                    return Some(u16::from_be_bytes([bytes[14], bytes[15]]));
+                }
+            }
+            None
+        })
+    }
+}
+
+fn collect_swim_gossip(mgr: &HewConnMgr, cluster: &HewCluster) -> Vec<SwimGossipEntry> {
     cluster
         .take_swim_gossip(cluster.max_gossip_per_msg())
         .into_iter()
-        .map(|(node_id, state, incarnation)| SwimGossipEntry {
-            node_id,
-            state,
-            incarnation,
+        .filter_map(|(route_slot, state, incarnation)| {
+            Some(SwimGossipEntry {
+                member: node_session_for_route(mgr, cluster, route_slot)?,
+                state,
+                incarnation,
+            })
         })
         .collect()
 }
@@ -2444,10 +2591,14 @@ fn build_swim_frame(
 ) -> Option<Vec<u8>> {
     let payload = SwimControlPayload {
         msg_type,
-        from_node: mgr.local_node_id,
+        from: node_session_for_route(mgr, cluster, mgr.local_node_id)?,
         incarnation: cluster.local_incarnation(),
-        target_node,
-        gossip: collect_swim_gossip(cluster),
+        target: if target_node == 0 {
+            None
+        } else {
+            Some(node_session_for_route(mgr, cluster, target_node)?)
+        },
+        gossip: collect_swim_gossip(mgr, cluster),
     };
     encode_swim_control(&payload)
 }
@@ -2595,28 +2746,56 @@ fn handle_swim_control_frame(
     // connection resolves to 0 here and is rejected — it cannot inject SWIM
     // membership state. Waiting variant: the first inbound SWIM frame can race
     // this connection's own Reserved → Published publication.
-    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id, claim_token);
-    if authenticated == 0 || authenticated != payload.from_node {
-        set_last_error(format!(
-            "connection reader SWIM frame from_node {} does not match authenticated peer {authenticated}",
-            payload.from_node
-        ));
+    let Some((authenticated, peer_identity)) =
+        authenticated_peer_identity(mgr, conn_id, claim_token, "SWIM")
+    else {
+        return;
+    };
+    if payload.from != peer_identity {
+        set_last_error("connection reader SWIM sender does not match authenticated peer");
         return;
     }
+    // SAFETY: cluster pointer is owned by the live node/manager.
+    let cluster = unsafe { &*mgr_ref.cluster };
 
-    let gossip: Vec<(u16, i32, u64)> = payload
-        .gossip
-        .iter()
-        .map(|e| (e.node_id, e.state, e.incarnation))
-        .collect();
+    let mut gossip = Vec::with_capacity(payload.gossip.len());
+    for entry in &payload.gossip {
+        let Some(route_slot) = route_slot_for_identity(mgr_ref, entry.member.node_id) else {
+            set_last_error("connection reader SWIM gossip contains unknown NodeId");
+            return;
+        };
+        gossip.push((
+            route_slot,
+            entry.member.session_incarnation,
+            entry.state,
+            entry.incarnation,
+        ));
+    }
+    let target_node = match payload.target {
+        Some(target) => {
+            let Some(route_slot) = route_slot_for_identity(mgr_ref, target.node_id) else {
+                set_last_error("connection reader SWIM target contains unknown NodeId");
+                return;
+            };
+            let expected_session = if route_slot == mgr_ref.local_node_id {
+                mgr_ref.local_session_incarnation
+            } else {
+                cluster.member_session(route_slot)
+            };
+            if expected_session != Some(target.session_incarnation) {
+                set_last_error("connection reader SWIM target session mismatch");
+                return;
+            }
+            route_slot
+        }
+        None => 0,
+    };
 
     // SAFETY: cluster pointer is owned by the live node/manager and remains
     // valid while the reader thread is running. All driven methods
     // (apply_swim_gossip / refute_if_suspected / process_message) take &self
     // and synchronize internally via Mutex/Atomic, so a shared reference is
     // sound even with the SWIM driver thread concurrently calling tick().
-    let cluster = unsafe { &*mgr_ref.cluster };
-
     // C6: fold piggybacked membership gossip into our view.
     cluster.apply_swim_gossip(&gossip);
     // C5: if any gossip suspects us, refute by bumping our incarnation. The
@@ -2628,7 +2807,7 @@ fn handle_swim_control_frame(
     // source-mismatch guard validates the claim.
     cluster.process_message(
         payload.msg_type,
-        payload.from_node,
+        authenticated,
         payload.incarnation,
         authenticated,
     );
@@ -2639,11 +2818,11 @@ fn handle_swim_control_frame(
             // Direct probe: ACK the sender.
             // SAFETY: manager is live for this call.
             let _ = unsafe {
-                hew_connmgr_send_swim(mgr, payload.from_node, crate::cluster::SWIM_MSG_ACK, 0)
+                hew_connmgr_send_swim(mgr, authenticated, crate::cluster::SWIM_MSG_ACK, 0)
             };
         }
         crate::cluster::SWIM_MSG_PING_REQ
-            if payload.target_node != 0 && payload.target_node != mgr_ref.local_node_id =>
+            if target_node != 0 && target_node != mgr_ref.local_node_id =>
         {
             // C4 indirect probing: forward a real PING to the probe target so
             // the relay actually exercises the target's liveness, then the
@@ -2651,7 +2830,7 @@ fn handle_swim_control_frame(
             // we have no active connection to the target.
             // SAFETY: manager is live for this call.
             let _ = unsafe {
-                hew_connmgr_send_swim(mgr, payload.target_node, crate::cluster::SWIM_MSG_PING, 0)
+                hew_connmgr_send_swim(mgr, target_node, crate::cluster::SWIM_MSG_PING, 0)
             };
         }
         _ => {
@@ -2813,6 +2992,10 @@ fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
                   would require unsafe Send impls for the contained raw pointers"
     )
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "reader_loop spans the full connection read path; refactoring would require unsafe Send impls"
+)]
 fn reader_loop(
     mgr: SendConnMgr,
     transport: SendTransport,
@@ -2902,25 +3085,33 @@ fn reader_loop(
                     continue;
                 };
 
-                // Reply envelopes (request_id > 0, source_node_id == 0) are
+                // Reply envelopes (request_id > 0, no target or source) are
                 // deposited directly into the reply routing table, bypassing
                 // the normal inbound router.
-                if envelope.request_id > 0 && envelope.source_node_id == 0 {
+                if envelope.request_id > 0 && envelope.target.is_none() && envelope.source.is_none()
+                {
                     deposit_reply_envelope(mgr, conn_id, peer_feature_flags, &envelope);
                 } else {
-                    // D9/D12 data-plane gate: an inbound *ask* (request_id > 0
-                    // with a declared source_node_id) needs a reply routed back
-                    // to the source, which an `Unverified` (delivery-only)
-                    // connection has no authority to establish. Reject it —
-                    // emit no reply, create no route, run no router side effect.
-                    // Fire-and-forget delivery (request_id == 0) via the
-                    // self-declared delivery route stays allowed (D9's one
-                    // intentional `Unverified` capability).
-                    if inbound_ask_denied_unverified(mgr, conn_id, envelope.request_id) {
-                        set_last_error(format!(
-                            "connection reader dropped inbound ask from unverified peer on conn \
-                             {conn_id} (delivery-only; no reply/route authority)"
-                        ));
+                    let Some((authenticated, peer_identity)) =
+                        authenticated_peer_identity(mgr, conn_id, claim_token, "envelope")
+                    else {
+                        continue;
+                    };
+                    // SAFETY: the authenticated identity helper verified the manager.
+                    let mgr_ref = unsafe { &*mgr };
+                    let Some(target) = envelope.target else {
+                        set_last_error("connection reader envelope missing target Location");
+                        continue;
+                    };
+                    if !location_matches_local(mgr_ref, target) {
+                        set_last_error("connection reader envelope target Location mismatch");
+                        continue;
+                    }
+                    if envelope
+                        .source
+                        .is_some_and(|source| !location_matches_node_session(source, peer_identity))
+                    {
+                        set_last_error("connection reader envelope source Location mismatch");
                         continue;
                     }
                     // I/O recv span: bracket the router call so the
@@ -2939,12 +3130,12 @@ fn reader_loop(
                     // at envelope-owned bytes valid for this call.
                     unsafe {
                         router_fn(
-                            envelope.target_actor_id,
+                            crate::pid::hew_pid_make(mgr_ref.local_node_id, target.slot()),
                             envelope.msg_type,
                             payload_ptr,
                             envelope.payload.len(),
                             envelope.request_id,
-                            envelope.source_node_id,
+                            authenticated,
                             mgr,
                         );
                     }
@@ -4098,21 +4289,23 @@ pub unsafe extern "C" fn hew_connmgr_send(
         }
     }
 
+    // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
+    let Some(encoded) = (unsafe {
+        encode_envelope(
+            mgr_ref,
+            target_actor_id,
+            msg_type,
+            data,
+            size,
+            MailboxPayloadClass::SerializedCrossNode as u8,
+            0,
+        )
+    }) else {
+        return -1;
+    };
+
     #[cfg(feature = "encryption")]
     if let Some(noise_transport) = maybe_noise {
-        // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
-        let Some(encoded) = (unsafe {
-            encode_envelope(
-                target_actor_id,
-                msg_type,
-                data,
-                size,
-                MailboxPayloadClass::SerializedCrossNode as u8,
-                0,
-            )
-        }) else {
-            return -1;
-        };
         let mut maybe_ciphertext = None;
         {
             let Ok(mut guard) = noise_transport.lock() else {
@@ -4141,35 +4334,11 @@ pub unsafe extern "C" fn hew_connmgr_send(
         }
     }
 
-    // Fix 5: guard the plaintext send path with the same validator that the
-    // encrypted branch runs inside `encode_envelope`.  Callers of
-    // `hew_connmgr_send` must already have serialised the payload (enforced at
-    // the `hew_node_send` level), so the class is truthfully SerializedCrossNode.
-    if validate_cross_node_send_params(
-        MailboxPayloadClass::SerializedCrossNode as u8,
-        crate::mailbox_envelope::CANCEL_TOKEN_NONE,
-    )
-    .is_none()
-    {
-        return -1;
-    }
-    // SAFETY: mgr_ref.transport is valid per caller contract; conn_id verified active above;
-    //         data is valid for size bytes per caller contract.
-    let rc = unsafe {
-        crate::transport::wire_send_envelope(
-            mgr_ref.transport,
-            conn_id,
-            target_actor_id,
-            0,
-            msg_type,
-            data,
-            size,
-        )
-    };
-    if rc != 0 {
-        -1
-    } else {
+    // SAFETY: mgr_ref.transport is valid per caller contract and conn_id is active.
+    if unsafe { send_frame(mgr_ref.transport, conn_id, &encoded) } {
         0
+    } else {
+        -1
     }
 }
 
@@ -4292,7 +4461,7 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
     }
     // SAFETY: caller guarantees manager pointer validity.
     let mgr_ref = unsafe { &*mgr };
-    let Some(bytes) = encode_registry_gossip_control(name, actor_id, is_add) else {
+    let Some(bytes) = encode_registry_gossip_control(mgr_ref, name, actor_id, is_add) else {
         return 0;
     };
 
@@ -4559,6 +4728,23 @@ pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_node_id(route_slot: u16) -> NodeId {
+        test_node_identity(route_slot)
+    }
+
+    fn test_location(route_slot: u16, actor_slot: u64) -> Location {
+        Location::new(test_node_id(route_slot), actor_slot, 1)
+            .expect("test locations use nonzero slots and incarnations")
+    }
+
+    fn test_node_session(route_slot: u16) -> crate::envelope::NodeSessionIdentity {
+        crate::envelope::NodeSessionIdentity {
+            node_id: test_node_id(route_slot),
+            session_incarnation: 1,
+        }
+    }
+
     #[cfg(feature = "profiler")]
     #[test]
     fn snapshot_connections_json_emits_expected_array() {
@@ -4901,10 +5087,9 @@ mod tests {
         // No claim exists for conn 10; any reader token denies immediately.
         let conn10_token = 1_u64;
         let payload = crate::envelope::LinkReqPayload {
-            linker_node_id: 9,
+            linker: test_location(9, 88),
             ref_id: 123,
-            target_serial: 77,
-            linker_serial: 88,
+            target: test_location(1, 77),
             policy_tag: 1,
             reciprocate: 0,
         };
@@ -4919,14 +5104,14 @@ mod tests {
         assert!(
             crate::runtime::rt_current()
                 .dist_monitors
-                .take_remote_watchers(payload.target_serial)
+                .take_remote_watchers(payload.target.slot())
                 .is_empty(),
             "a link request claiming another node must not register a watcher"
         );
 
         crate::runtime::rt_current()
             .dist_monitors
-            .register_remote_link_watcher(payload.target_serial, 2, payload.ref_id);
+            .register_remote_link_watcher(payload.target.slot(), 2, payload.ref_id);
         let unlink = ControlFrame {
             version: WIRE_VERSION,
             ctrl_kind: CTRL_UNLINK,
@@ -4937,7 +5122,7 @@ mod tests {
 
         let watchers = crate::runtime::rt_current()
             .dist_monitors
-            .take_remote_watchers(payload.target_serial);
+            .take_remote_watchers(payload.target.slot());
         assert_eq!(
             watchers.len(),
             1,
@@ -5074,7 +5259,7 @@ mod tests {
                     decode_registry_gossip_payload(&control.payload).expect("gossip payload");
                 assert_eq!(payload.op, crate::cluster::GOSSIP_REGISTRY_ADD);
                 assert_eq!(payload.name, "worker");
-                assert_eq!(payload.actor_id, actor_id);
+                assert_eq!(payload.location, test_location(2, 0x42));
             }
 
             hew_connmgr_free(mgr);
@@ -5090,8 +5275,8 @@ mod tests {
     }
 
     /// A PING SWIM frame is answered with an ACK, and the cross-attribution
-    /// guard rejects a frame whose `from_node` does not match the handshake
-    /// identity of the connection it arrived on.
+    /// guard rejects a frame whose `from` identity does not match the handshake
+    /// identity and session of the connection it arrived on.
     #[test]
     fn swim_ping_is_acked_and_cross_attribution_is_rejected() {
         let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
@@ -5126,6 +5311,7 @@ mod tests {
             let mut peer = ConnectionActor::new(10);
             peer.peer_node_id = 2;
             peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.posture = Posture::Strict;
             peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             (&*mgr).connections.access(|conns| conns.push(peer));
             // Model node 2 as the admitted, published owner of its NodeId so the
@@ -5135,9 +5321,9 @@ mod tests {
             // Honest PING from node 2 (matches the conn's authenticated id).
             let ping = SwimControlPayload {
                 msg_type: crate::cluster::SWIM_MSG_PING,
-                from_node: 2,
+                from: test_node_session(2),
                 incarnation: 1,
-                target_node: 0,
+                target: None,
                 gossip: vec![],
             };
             let frame = decode_wire_frame(&swim_control_frame_bytes(&ping)).expect("frame");
@@ -5160,16 +5346,20 @@ mod tests {
                 assert_eq!(ctrl.ctrl_kind, CTRL_SWIM);
                 let ack = decode_swim_payload(&ctrl.payload).expect("ack payload");
                 assert_eq!(ack.msg_type, crate::cluster::SWIM_MSG_ACK);
-                assert_eq!(ack.from_node, 1, "ACK is stamped with our local node id");
+                assert_eq!(
+                    ack.from,
+                    test_node_session(1),
+                    "ACK is stamped with our local node identity and session"
+                );
             }
 
             // Spoofed PING claiming to be node 9 on node 2's connection is
             // rejected — no further send.
             let spoof = SwimControlPayload {
                 msg_type: crate::cluster::SWIM_MSG_PING,
-                from_node: 9,
+                from: test_node_session(9),
                 incarnation: 1,
-                target_node: 0,
+                target: None,
                 gossip: vec![],
             };
             let spoof_frame = decode_wire_frame(&swim_control_frame_bytes(&spoof)).expect("frame");
@@ -5241,6 +5431,7 @@ mod tests {
             let mut peer = ConnectionActor::new(10);
             peer.peer_node_id = 2;
             peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.posture = Posture::Strict;
             peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             (&*mgr).connections.access(|conns| conns.push(peer));
             // Model node 2 as the admitted, published owner of its NodeId so the
@@ -5250,11 +5441,11 @@ mod tests {
             // ACK from node 2 carrying DEAD-about-node-3 gossip.
             let ack = SwimControlPayload {
                 msg_type: crate::cluster::SWIM_MSG_ACK,
-                from_node: 2,
+                from: test_node_session(2),
                 incarnation: 1,
-                target_node: 0,
+                target: None,
                 gossip: vec![SwimGossipEntry {
-                    node_id: 3,
+                    member: test_node_session(3),
                     state: crate::cluster::MEMBER_DEAD,
                     incarnation: 5,
                 }],
@@ -5330,9 +5521,9 @@ mod tests {
             // dropped — no ACK is sent.
             let ping = SwimControlPayload {
                 msg_type: crate::cluster::SWIM_MSG_PING,
-                from_node: 2,
+                from: test_node_session(2),
                 incarnation: 1,
-                target_node: 0,
+                target: None,
                 gossip: vec![],
             };
             let frame = decode_wire_frame(&swim_control_frame_bytes(&ping)).expect("frame");
@@ -6207,7 +6398,7 @@ mod tests {
 
             // A later REMOVE broadcast must park BEHIND it, not overtake it.
             assert_eq!(
-                hew_connmgr_broadcast_registry_gossip(mgr, "svc", 0, false),
+                hew_connmgr_broadcast_registry_gossip(mgr, "svc", actor_id, false),
                 0,
                 "the REMOVE must not report a direct send while the ADD is parked"
             );
@@ -6432,8 +6623,17 @@ mod tests {
             // peer's one-shot registry-gossip frame. It signals right before
             // handing the frame to the production dispatch.
             let actor_id = crate::pid::hew_pid_make(5, 0x99);
-            let frame_bytes = encode_registry_gossip_control("svc", actor_id, true)
-                .expect("gossip frame encodes");
+            let payload = RegistryGossipPayload {
+                op: crate::cluster::GOSSIP_REGISTRY_ADD,
+                name: "svc".to_owned(),
+                location: test_location(5, 0x99),
+            };
+            let frame_bytes = encode_control_frame(&ControlFrame {
+                version: WIRE_VERSION,
+                ctrl_kind: CTRL_REGISTRY_GOSSIP,
+                payload: encode_registry_gossip_payload(&payload).expect("gossip payload encodes"),
+            })
+            .expect("gossip frame encodes");
             let WireFrame::Control(control) =
                 decode_wire_frame(&frame_bytes).expect("frame decodes")
             else {
@@ -6446,6 +6646,7 @@ mod tests {
                 started_tx.send(()).expect("reader start signal");
                 // SAFETY: manager outlives the join below.
                 handle_control_frame(reader.0, HEW_FEATURE_SUPPORTS_GOSSIP, 30, token, &control);
+                crate::stream_error::take_last_error()
             });
             started_rx.recv().expect("reader surrogate started");
             // Scheduling grace biasing the frame into the PRE-INSTALL window;
@@ -6475,7 +6676,7 @@ mod tests {
                 None,
             );
 
-            reader_handle.join().expect("reader surrogate");
+            let reader_error = reader_handle.join().expect("reader surrogate");
             {
                 let applied = (*applied)
                     .lock()
@@ -6483,7 +6684,7 @@ mod tests {
                 assert_eq!(
                     applied.as_slice(),
                     &[("svc".to_owned(), actor_id, true)],
-                    "the pre-install frame must apply exactly once after publication"
+                    "the pre-install frame must apply exactly once after publication: {reader_error:?}",
                 );
             }
 
@@ -6646,8 +6847,12 @@ mod tests {
         let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
         assert!(!cluster.is_null());
 
-        let link_down_frame = |ref_id: u64| {
-            let payload = crate::envelope::MonitorDownPayload { ref_id, reason: 2 };
+        let link_down_frame = |ref_id: u64, route_slot: u16| {
+            let payload = crate::envelope::MonitorDownPayload {
+                ref_id,
+                target: test_location(route_slot, 1),
+                reason: 2,
+            };
             let bytes =
                 crate::envelope::encode_link_down_payload(&payload).expect("link down encodes");
             ControlFrame {
@@ -6678,7 +6883,7 @@ mod tests {
                 0,
                 "precondition: Unverified conn 10 must have no authenticated identity"
             );
-            handle_link_down_frame(mgr, 10, conn10_token, &link_down_frame(101));
+            handle_link_down_frame(mgr, 10, conn10_token, &link_down_frame(101, 2));
             let diag = take_hew_last_error().expect("gated link down must leave a diagnostic");
             assert!(
                 diag.contains("link down") && diag.contains("missing authenticated peer"),
@@ -6703,7 +6908,7 @@ mod tests {
             test_publish_claim(&*mgr, 3, 21);
 
             let _ = take_hew_last_error();
-            handle_link_down_frame(mgr, 20, conn20_token, &link_down_frame(102));
+            handle_link_down_frame(mgr, 20, conn20_token, &link_down_frame(102, 3));
             let diag = take_hew_last_error().expect("superseded link down must leave a diagnostic");
             assert!(
                 diag.contains("link down") && diag.contains("missing authenticated peer"),
@@ -6724,6 +6929,10 @@ mod tests {
     /// while fire-and-forget user-message delivery to it stays allowed (D9's one
     /// intentional Unverified capability).
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "test covers the full Unverified outbound gate across all control frame types"
+    )]
     fn unverified_peer_receives_no_outbound_gossip_or_swim() {
         let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
         let ops = Box::new(crate::transport::HewTransportOps {
@@ -6809,8 +7018,12 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clear();
-            let count =
-                hew_connmgr_broadcast_registry_gossip(mgr, "svc", 0x1234_5678_9abc_def0, true);
+            let count = hew_connmgr_broadcast_registry_gossip(
+                mgr,
+                "svc",
+                crate::pid::hew_pid_make(1, 0xdef0),
+                true,
+            );
             assert_eq!(
                 count, 1,
                 "registry gossip broadcast reaches exactly the one authenticated peer"

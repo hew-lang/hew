@@ -1069,10 +1069,6 @@ impl HewCluster {
     /// slot. Equal-session reconnects may revive only non-terminal membership;
     /// a strictly higher session starts a fresh SWIM incarnation domain.
     #[cfg(test)]
-    #[allow(
-        dead_code,
-        reason = "called by session admission tests introduced in the following commit"
-    )]
     pub(crate) fn admit_authenticated_session(&self, node_id: u16, session: u32) -> bool {
         if node_id == 0 || node_id == self.config.local_node_id || session == 0 {
             return false;
@@ -1169,7 +1165,6 @@ impl HewCluster {
     }
 
     /// Current durable session for a receiver-local route slot.
-    #[allow(dead_code, reason = "used by connection.rs in the next commit")]
     pub(crate) fn member_session(&self, node_id: u16) -> Option<u32> {
         self.sessions.lock_or_recover().get(&node_id).copied()
     }
@@ -1820,10 +1815,13 @@ impl HewCluster {
     /// affected peer. Entries about the local node are ignored here — local
     /// state is authoritative and self-refutation is handled separately by
     /// [`Self::refute_if_suspected`].
-    pub fn apply_swim_gossip(&self, entries: &[(u16, i32, u64)]) {
+    pub fn apply_swim_gossip(&self, entries: &[(u16, u32, i32, u64)]) {
         let local = self.config.local_node_id;
-        for &(node_id, state, incarnation) in entries {
+        for &(node_id, session, state, incarnation) in entries {
             if node_id == local {
+                continue;
+            }
+            if session == 0 {
                 continue;
             }
             if !matches!(
@@ -1832,7 +1830,61 @@ impl HewCluster {
             ) {
                 continue;
             }
-            self.upsert_member(node_id, state, incarnation, &[]);
+            let mut should_drain = false;
+            {
+                let mut sessions = self.sessions.lock_or_recover();
+                let mut members = self.members.lock_or_recover();
+                match sessions.get(&node_id).copied() {
+                    Some(current) if session < current => continue,
+                    Some(current) if session == current => {
+                        if let Some(transition) = Self::stage_member_transition_locked(
+                            &mut members,
+                            node_id,
+                            state,
+                            incarnation,
+                            &[],
+                            true,
+                        ) {
+                            should_drain = self.queue_member_transition(transition);
+                        }
+                    }
+                    _ => {
+                        sessions.insert(node_id, session);
+                        let old_state = members
+                            .iter()
+                            .find(|member| member.node_id == node_id)
+                            .map(|member| member.state);
+                        if let Some(member) =
+                            members.iter_mut().find(|member| member.node_id == node_id)
+                        {
+                            member.state = state;
+                            member.incarnation = incarnation;
+                            // SAFETY: hew_now_ms has no preconditions.
+                            member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        } else {
+                            members.push(ClusterMember {
+                                node_id,
+                                state,
+                                incarnation,
+                                addr: [0; 128],
+                                // SAFETY: hew_now_ms has no preconditions.
+                                last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+                            });
+                        }
+                        should_drain = self.queue_member_transition(MemberTransition {
+                            node_id,
+                            state,
+                            incarnation,
+                            is_new_member: old_state.is_none(),
+                            old_state,
+                            publication: PublicationTransition::Plain,
+                        });
+                    }
+                }
+            }
+            if should_drain {
+                self.drain_member_transitions();
+            }
         }
     }
 
@@ -1847,10 +1899,10 @@ impl HewCluster {
     /// This is the standard SWIM defence against a false suspicion: a healthy
     /// node that sees itself suspected re-asserts liveness at a higher
     /// incarnation, which wins the LWW conflict resolution everywhere.
-    pub fn refute_if_suspected(&self, entries: &[(u16, i32, u64)]) -> Option<u64> {
+    pub fn refute_if_suspected(&self, entries: &[(u16, u32, i32, u64)]) -> Option<u64> {
         let local = self.config.local_node_id;
         let mut max_suspect_incarnation: Option<u64> = None;
-        for &(node_id, state, incarnation) in entries {
+        for &(node_id, _session, state, incarnation) in entries {
             if node_id == local && (state == MEMBER_SUSPECT || state == MEMBER_DEAD) {
                 max_suspect_incarnation =
                     Some(max_suspect_incarnation.map_or(incarnation, |m| m.max(incarnation)));
@@ -4401,7 +4453,7 @@ mod tests {
         cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.2:9000");
 
         // A peer gossips that node 2 is DEAD at a higher incarnation.
-        cluster.apply_swim_gossip(&[(2, MEMBER_DEAD, 2)]);
+        cluster.apply_swim_gossip(&[(2, 1, MEMBER_DEAD, 2)]);
 
         let members = cluster.members.lock().unwrap();
         let m2 = members
@@ -4419,7 +4471,7 @@ mod tests {
         let cluster = HewCluster::new(make_config(1));
         // Gossip claiming the local node (id 1) is DEAD must be ignored here;
         // self-state is authoritative (refutation handled separately).
-        cluster.apply_swim_gossip(&[(1, MEMBER_DEAD, 99)]);
+        cluster.apply_swim_gossip(&[(1, 1, MEMBER_DEAD, 99)]);
         let members = cluster.members.lock().unwrap();
         assert!(
             !members
@@ -4430,13 +4482,67 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_session_admission_obeys_replay_and_burial_rules() {
+        let cluster = HewCluster::new(make_config(1));
+
+        assert!(cluster.admit_authenticated_session(2, 10));
+        assert_eq!(cluster.member_session(2), Some(10));
+        assert_eq!(cluster.member_state(2), MEMBER_ALIVE);
+        assert_eq!(cluster.member_incarnation(2), Some(1));
+
+        cluster.seed_member_for_test(2, MEMBER_SUSPECT, 5);
+        assert!(cluster.admit_authenticated_session(2, 10));
+        assert_eq!(cluster.member_state(2), MEMBER_ALIVE);
+        assert_eq!(cluster.member_incarnation(2), Some(6));
+
+        cluster.seed_member_for_test(2, MEMBER_DEAD, 7);
+        assert!(!cluster.admit_authenticated_session(2, 10));
+        assert!(!cluster.admit_authenticated_session(2, 9));
+        assert_eq!(cluster.member_state(2), MEMBER_DEAD);
+        assert_eq!(cluster.member_incarnation(2), Some(7));
+
+        assert!(cluster.admit_authenticated_session(2, 11));
+        assert_eq!(cluster.member_session(2), Some(11));
+        assert_eq!(cluster.member_state(2), MEMBER_ALIVE);
+        assert_eq!(cluster.member_incarnation(2), Some(1));
+    }
+
+    #[test]
+    fn swim_gossip_orders_session_before_swim_incarnation() {
+        let cluster = HewCluster::new(make_config(1));
+
+        cluster.apply_swim_gossip(&[(2, 10, MEMBER_DEAD, 100)]);
+        assert_eq!(cluster.member_session(2), Some(10));
+        assert_eq!(cluster.member_state(2), MEMBER_DEAD);
+        assert_eq!(cluster.member_incarnation(2), Some(100));
+
+        cluster.apply_swim_gossip(&[(2, 9, MEMBER_ALIVE, 1_000)]);
+        assert_eq!(cluster.member_session(2), Some(10));
+        assert_eq!(cluster.member_state(2), MEMBER_DEAD);
+        assert_eq!(cluster.member_incarnation(2), Some(100));
+
+        cluster.apply_swim_gossip(&[(2, 10, MEMBER_ALIVE, 99)]);
+        assert_eq!(cluster.member_state(2), MEMBER_DEAD);
+        assert_eq!(cluster.member_incarnation(2), Some(100));
+
+        cluster.apply_swim_gossip(&[(2, 11, MEMBER_ALIVE, 1)]);
+        assert_eq!(cluster.member_session(2), Some(11));
+        assert_eq!(cluster.member_state(2), MEMBER_ALIVE);
+        assert_eq!(cluster.member_incarnation(2), Some(1));
+
+        cluster.apply_swim_gossip(&[(2, 11, MEMBER_SUSPECT, 2)]);
+        assert_eq!(cluster.member_state(2), MEMBER_SUSPECT);
+        assert_eq!(cluster.member_incarnation(2), Some(2));
+    }
+
+    #[test]
     fn refute_if_suspected_bumps_incarnation_past_suspicion() {
         let cluster = HewCluster::new(make_config(1));
         let before = cluster.local_incarnation();
 
         // A peer suspects the local node (id 1) at incarnation 7.
         let new_inc = cluster
-            .refute_if_suspected(&[(1, MEMBER_SUSPECT, 7)])
+            .refute_if_suspected(&[(1, 1, MEMBER_SUSPECT, 7)])
             .expect("self-suspicion must trigger refutation");
 
         assert!(
@@ -4465,7 +4571,7 @@ mod tests {
         let before = cluster.local_incarnation();
         // Gossip about other nodes, and ALIVE-about-self, must not refute.
         assert_eq!(
-            cluster.refute_if_suspected(&[(2, MEMBER_SUSPECT, 9), (1, MEMBER_ALIVE, 3)]),
+            cluster.refute_if_suspected(&[(2, 1, MEMBER_SUSPECT, 9), (1, 1, MEMBER_ALIVE, 3),]),
             None
         );
         assert_eq!(cluster.local_incarnation(), before);

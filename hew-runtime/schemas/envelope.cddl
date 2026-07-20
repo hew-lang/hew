@@ -54,7 +54,7 @@ control-frame = {
 registry-gossip-payload = {
     op:       1 => registry-gossip-op,
     name:     2 => text,           ; bounded by runtime to 1024 UTF-8 bytes
-    actor_id: 3 => actor-id,       ; non-zero for add; ignored for remove
+    location: 3 => location,       ; exact identity for both add and remove
 }
 
 registry-gossip-op = 5 / 6         ; add / remove
@@ -69,14 +69,20 @@ registry-gossip-op = 5 / 6         ; add / remove
 ; echoed ref_id and the terminal reason code.
 
 monitor-req-payload = {
-    watcher_node_id: 1 => node-id,
-    ref_id:          2 => uint,    ; watcher's local monitor-registration id
-    target_serial:   3 => uint,    ; monitored actor's serial on the owning node
+    watcher: 1 => location,
+    ref_id:  2 => uint,            ; watcher's local monitor-registration id
+    target:  3 => location,
 }
 
 monitor-down-payload = {
     ref_id: 1 => uint,             ; echoed from the request
-    reason: 2 => int,              ; terminal reason (HewActorState value, or sentinel)
+    target: 2 => location,
+    reason: 3 => down-reason,
+}
+
+down-reason = {
+    tag:  1 => 1,                  ; 1 = actor-state
+    code: 2 => int,
 }
 
 ; ── Cross-node link payloads ──────────────────────────────────────────────────
@@ -92,12 +98,11 @@ monitor-down-payload = {
 ; MonitorLost=2, CrashLinked=3, Quarantine=4).
 
 link-req-payload = {
-    linker_node_id: 1 => node-id,
-    ref_id:         2 => uint,     ; linker's local link-registration id
-    target_serial:  3 => uint,     ; linked actor's serial on the owning node
-    linker_serial:  4 => uint,     ; linking actor's serial on the linker node
-    policy_tag:     5 => uint,     ; PartitionPolicy discriminant (0..4)
-    reciprocate:    6 => uint,     ; 1 = original request, 0 = reverse (bounds the
+    linker:      1 => location,
+    ref_id:      2 => uint,        ; linker's local link-registration id
+    target:      3 => location,
+    policy_tag:  4 => uint,        ; PartitionPolicy discriminant (0..4)
+    reciprocate: 5 => uint,        ; 1 = original request, 0 = reverse (bounds the
                                    ; bidirectional handshake to one round trip)
 }
 
@@ -114,19 +119,41 @@ link-req-payload = {
 envelope-frame = {
     version:          1 => wire-version,
     frame_type:       2 => 1,            ; 1 = envelope
-    target_actor_id:  3 => actor-id,
-    source_actor_id:  4 => actor-id,
+    target:           3 => location / nil, ; nil only for replies
+    source:           4 => location / nil,
     msg_type:         5 => int,          ; signed; valid range 0..=2^30-1 (zigzag legacy)
     payload:          6 => bstr,         ; serialised message body; 0..* bytes.
                                          ; The bytes inside this bstr are the
                                          ; per-`#[wire]`-type CBOR body described
                                          ; by `wire-body.cddl` (`wire-body` rule).
     request_id:       7 => uint,         ; 0 = fire-and-forget
-    source_node_id:   8 => node-id,      ; 0 on reply envelopes
 }
 
 ; ── Primitive aliases ────────────────────────────────────────────────────────
 
-wire-version  = 1       ; current schema version; decoders reject unknown values
-actor-id      = uint    ; 64-bit actor identity; 0 is not a valid actor id
-node-id       = uint    ; 16-bit node identity; 0 = local / not set
+wire-version = 2        ; current schema version; decoders reject unknown values
+node-id = bstr .size 16
+location = {
+    node:        1 => node-id,
+    slot:        2 => uint, ; non-zero
+    incarnation: 3 => uint, ; non-zero, <= u32 max
+}
+
+node-session = {
+    node:        1 => node-id,
+    incarnation: 2 => uint, ; non-zero, <= u32 max
+}
+
+swim-gossip-entry = {
+    member:      1 => node-session,
+    state:       2 => int,
+    incarnation: 3 => uint,
+}
+
+swim-control-payload = {
+    msg_type:   1 => int,
+    from:       2 => node-session,
+    incarnation: 3 => uint,
+    target:     4 => node-session / nil,
+    gossip:     5 => [* swim-gossip-entry],
+}

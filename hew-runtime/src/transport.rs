@@ -26,6 +26,7 @@ use crate::lifetime::poison_safe::{PoisonSafe, PoisonSafeRw};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::actor::{self, HewActor};
+#[cfg(test)]
 use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::internal::types::HewActorState;
 use crate::set_last_error;
@@ -49,6 +50,7 @@ pub(crate) const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 // Error codes matching the C header.
 const HEW_OK: c_int = 0;
 const HEW_ERR_ACTOR_STOPPED: c_int = -2;
+#[cfg(test)]
 const HEW_ERR_SERIALIZE: c_int = -12;
 /// Generic transport error returned across the `c_int` channel.
 ///
@@ -189,6 +191,7 @@ pub unsafe extern "C" fn hew_actor_ref_remote(
 /// - `conn` must be a valid connection handle for `transport`.
 /// - `payload` must be valid for `payload_len` readable bytes (or null when
 ///   `payload_len` is 0).
+#[cfg(test)]
 pub(crate) unsafe fn wire_send_envelope(
     transport: *mut HewTransport,
     conn: c_int,
@@ -198,15 +201,28 @@ pub(crate) unsafe fn wire_send_envelope(
     payload: *mut u8,
     payload_len: usize,
 ) -> c_int {
+    let target_slot = crate::pid::hew_pid_serial(target_actor_id).max(1);
+    let source_slot = crate::pid::hew_pid_serial(source_actor_id).max(1);
+    let target = crate::node_identity::Location::new(
+        crate::node_identity::NodeId::from_bytes([1; 16]),
+        target_slot,
+        1,
+    )
+    .expect("test adapter target Location is valid");
+    let source = crate::node_identity::Location::new(
+        crate::node_identity::NodeId::from_bytes([2; 16]),
+        source_slot,
+        1,
+    )
+    .expect("test adapter source Location is valid");
     // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
     let bytes = match unsafe {
         encode_envelope_frame_from_raw_parts(
-            target_actor_id,
-            source_actor_id,
+            Some(target),
+            Some(source),
             msg_type,
             payload.cast_const(),
             payload_len,
-            0,
             0,
         )
     } {
@@ -279,6 +295,7 @@ pub unsafe extern "C" fn hew_actor_ref_send(
 
     // SAFETY: remote.transport and remote.conn are valid per the earlier null-check;
     //         data is valid for size bytes per caller contract.
+    #[cfg(test)]
     unsafe {
         wire_send_envelope(
             remote.transport,
@@ -289,6 +306,14 @@ pub unsafe extern "C" fn hew_actor_ref_send(
             data.cast::<u8>(),
             size,
         )
+    }
+    #[cfg(not(test))]
+    {
+        let _ = (msg_type, data, size);
+        set_last_error(
+            "remote actor references cannot supply a v2 Location before the Stage 3 ABI cutover",
+        );
+        HEW_ERR_TRANSPORT
     }
 }
 

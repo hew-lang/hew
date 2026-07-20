@@ -114,7 +114,8 @@ fn swim_timing_env_u32(key: &str) -> Option<u32> {
     raw.parse::<u32>().ok().filter(|v| *v > 0)
 }
 
-/// Build the cluster config for `local_node_id`, applying any SWIM-timing
+/// Build the cluster config for the transitional `local_route_slot`, applying
+/// any SWIM-timing
 /// overrides from the environment.
 ///
 /// `HEW_SWIM_PROTOCOL_PERIOD_MS`, `HEW_SWIM_PING_TIMEOUT_MS`, and
@@ -122,9 +123,9 @@ fn swim_timing_env_u32(key: &str) -> Option<u32> {
 /// thresholds — an operator knob for deployments with non-default network
 /// characteristics, and the mechanism tests use to drive detection on a short
 /// horizon. Each falls back to the [`ClusterConfig`] default when unset.
-fn cluster_config_from_env(local_node_id: u16) -> ClusterConfig {
+fn cluster_config_from_env(local_route_slot: u16) -> ClusterConfig {
     let mut cfg = ClusterConfig {
-        local_node_id,
+        local_node_id: local_route_slot,
         ..ClusterConfig::default()
     };
     if let Some(v) = swim_timing_env_u32("HEW_SWIM_PROTOCOL_PERIOD_MS") {
@@ -220,9 +221,9 @@ pub(crate) struct NodeSlot {
     /// runtime, isolated like `reply_table`; written from the SWIM-DEAD verdict and
     /// the readmission dispatch, read on the send/ask path.
     quarantine: PoisonSafe<HashMap<u16, u64>>,
-    /// Node id assigned to this runtime for local PID encoding/routing. Was
-    /// `pid::LOCAL_NODE_ID`.
-    local_node_id: AtomicU16,
+    /// Transitional v1 route slot used by packed PID encoding until the carried
+    /// Location cutover. Route slot zero remains the local-dispatch sentinel.
+    legacy_local_route_slot: AtomicU16,
 }
 
 impl NodeSlot {
@@ -234,7 +235,7 @@ impl NodeSlot {
             known_nodes: PoisonSafe::new(Vec::new()),
             reply_table: ReplyRoutingTable::new(),
             quarantine: PoisonSafe::new(HashMap::new()),
-            local_node_id: AtomicU16::new(0),
+            legacy_local_route_slot: AtomicU16::new(0),
         }
     }
 
@@ -284,16 +285,30 @@ impl NodeSlot {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *map = pending;
         }
-        let local_node_id = other.local_node_id.swap(0, Ordering::AcqRel);
-        self.local_node_id.store(local_node_id, Ordering::Release);
+        let local_route_slot = other.legacy_local_route_slot.swap(0, Ordering::AcqRel);
+        self.legacy_local_route_slot
+            .store(local_route_slot, Ordering::Release);
     }
 
+    pub(crate) fn local_route_slot(&self) -> u16 {
+        self.legacy_local_route_slot.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_local_route_slot(&self, route_slot: u16) {
+        self.legacy_local_route_slot
+            .store(route_slot, Ordering::Release);
+    }
+
+    /// Transitional compatibility accessor for packed-PID code outside this
+    /// Stage-1 surface.
     pub(crate) fn local_node_id(&self) -> u16 {
-        self.local_node_id.load(Ordering::Acquire)
+        self.local_route_slot()
     }
 
+    /// Transitional compatibility setter for packed-PID code outside this
+    /// Stage-1 surface.
     pub(crate) fn set_local_node_id(&self, node_id: u16) {
-        self.local_node_id.store(node_id, Ordering::Release);
+        self.set_local_route_slot(node_id);
     }
 }
 
@@ -1321,8 +1336,8 @@ unsafe impl Send for SendConnMgr {}
 /// Integrates transport, connections, cluster membership, and registry.
 #[repr(C)]
 pub struct HewNode {
-    /// Unique node identifier (16-bit)
-    pub node_id: u16,
+    /// Transitional compact route slot used by the v1 protocol.
+    pub route_slot: u16,
     /// Bind address for incoming connections
     pub bind_addr: *const c_char,
     /// Transport ops vtable
@@ -1356,7 +1371,7 @@ pub struct HewNode {
 impl std::fmt::Debug for HewNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewNode")
-            .field("node_id", &self.node_id)
+            .field("route_slot", &self.route_slot)
             .field("state", &self.state.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
@@ -1414,7 +1429,7 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
     // SAFETY: registry belongs to `node` for the node lifetime.
     let registry = unsafe { &*node.registry };
     let names = take_registry_names_if(registry, |actor_id| {
-        crate::pid::hew_pid_node(actor_id) == node.node_id
+        crate::pid::hew_pid_node(actor_id) == node.route_slot
     });
     // Node shutdown is the decommission path; remote peers prune their cached
     // names when they observe the corresponding left/dead membership event.
@@ -1438,7 +1453,7 @@ pub(crate) unsafe fn unregister_actor_names(actor_id: u64) {
             }
             // SAFETY: KNOWN_NODES holds node allocations live until `forget_node`.
             let node = unsafe { &*entry.0 };
-            if owner_node_id != 0 && node.node_id != owner_node_id {
+            if owner_node_id != 0 && node.route_slot != owner_node_id {
                 continue;
             }
             if node.registry.is_null() {
@@ -2235,7 +2250,7 @@ extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut 
 ///
 /// `bind_addr` must be a valid NUL-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) -> *mut HewNode {
+pub unsafe extern "C" fn hew_node_new(route_slot: u16, bind_addr: *const c_char) -> *mut HewNode {
     cabi_guard!(bind_addr.is_null(), ptr::null_mut());
 
     // SAFETY: caller guarantees bind_addr points to a valid C string.
@@ -2247,7 +2262,7 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
 
     let registry = Box::into_raw(Box::new(HewRegistry::default()));
     let node = Box::new(HewNode {
-        node_id,
+        route_slot,
         bind_addr: bind_copy,
         transport_ops: ptr::null(),
         transport: ptr::null_mut(),
@@ -2351,24 +2366,23 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
 
     // ── NodeId authority (BLOCK-5 point 1) — before any allocation/listen ──
     // The per-node `PeerAuthSnapshot` (never the process-global `ConfigState`)
-    // is authoritative for `node.node_id` in strict mode. Defence-in-depth:
-    // reject a self-inconsistent snapshot, then reconcile the node id.
+    // is authoritative for the transitional v1 route slot. Defence-in-depth:
+    // reject a self-inconsistent snapshot, then reconcile the route slot.
     if let Err(reason) = node.auth.validate() {
         fail_start!(reason);
     }
-    if let Some(snapshot_id) = node.auth.node_id() {
-        let snapshot_id = snapshot_id.get();
-        if node.node_id == 0 {
-            // A low-level caller deferred the id to its snapshot.
-            node.node_id = snapshot_id;
-        } else if node.node_id != snapshot_id {
-            // An explicit `hew_node_new(explicit_id)` contradicts the snapshot's
-            // strict binding identity — refuse before the listener binds and
-            // before cluster/routing/connmgr are created.
+    if let Some(snapshot_route_slot) = node.auth.legacy_wire_route_slot() {
+        let snapshot_route_slot = snapshot_route_slot.get();
+        if node.route_slot == 0 {
+            // A low-level caller deferred the route slot to its snapshot.
+            node.route_slot = snapshot_route_slot;
+        } else if node.route_slot != snapshot_route_slot {
+            // Refuse before the listener binds and before cluster/routing/connmgr
+            // are created.
             fail_start!(format!(
-                "hew_node_start: explicit node id {} conflicts with strict binding identity \
-                 HEW_NODE_ID={snapshot_id} — refusing to listen (fail-closed)",
-                node.node_id
+                "hew_node_start: explicit route slot {} conflicts with the frozen v1 route slot \
+                 {snapshot_route_slot} — refusing to listen (fail-closed)",
+                node.route_slot
             ));
         }
     }
@@ -2439,7 +2453,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.cluster.is_null() {
-        let cfg = cluster_config_from_env(node.node_id);
+        let cfg = cluster_config_from_env(node.route_slot);
         // SAFETY: config pointer is valid for this call.
         node.cluster = unsafe { cluster::hew_cluster_new(&raw const cfg) };
         if node.cluster.is_null() {
@@ -2450,7 +2464,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
 
     if node.routing_table.is_null() {
         // SAFETY: constructor returns owned routing table pointer or null.
-        node.routing_table = unsafe { routing::hew_routing_table_new(node.node_id) };
+        node.routing_table = unsafe { routing::hew_routing_table_new(node.route_slot) };
         if node.routing_table.is_null() {
             fail_start!("hew_node_start: failed to create routing table");
         }
@@ -2467,7 +2481,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
                 Some(node_inbound_router),
                 node.routing_table,
                 node.cluster,
-                node.node_id,
+                node.route_slot,
                 node.auth.clone(),
             )
         };
@@ -2478,7 +2492,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     // SAFETY: cluster pointer valid; bind_addr points to a stable strdup buffer.
-    let _ = unsafe { cluster::hew_cluster_join(node.cluster, node.node_id, node.bind_addr) };
+    let _ = unsafe { cluster::hew_cluster_join(node.cluster, node.route_slot, node.bind_addr) };
     joined_cluster = true;
 
     // Wire the registry gossip callback so remote name events update our
@@ -2503,7 +2517,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     let stop = Arc::clone(&node.accept_stop);
     let transport = SendTransport(node.transport);
     let conn_mgr = SendConnMgr(node.conn_mgr);
-    let thread_name = format!("hew-node-accept-{}", node.node_id);
+    let thread_name = format!("hew-node-accept-{}", node.route_slot);
     let handle = thread::Builder::new()
         .name(thread_name)
         .spawn(move || accept_loop(transport, conn_mgr, stop.as_ref()));
@@ -2520,7 +2534,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     with_current_node(|guard| {
         if *guard == 0 {
             *guard = ptr::from_mut(node) as usize;
-            crate::pid::hew_pid_set_local_node(node.node_id);
+            crate::pid::hew_pid_set_local_node(node.route_slot);
         }
     });
 
@@ -2977,7 +2991,7 @@ pub unsafe extern "C" fn hew_node_send(
     }
 
     let target_node_id = crate::pid::hew_pid_node(target_pid);
-    if target_node_id == 0 || target_node_id == node.node_id {
+    if target_node_id == 0 || target_node_id == node.route_slot {
         // SAFETY: actor send API handles null payload when len is 0.
         return unsafe {
             crate::actor::hew_actor_send_by_id(
@@ -3175,7 +3189,7 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
     };
     let remote_node_id = crate::pid::hew_pid_node(target_pid);
     let target_serial = crate::pid::hew_pid_serial(target_pid);
-    if remote_node_id == 0 || remote_node_id == rt.node.local_node_id() {
+    if remote_node_id == 0 || remote_node_id == rt.node.local_route_slot() {
         // Not a remote target — the cross-node route does not apply. The checker
         // routes only RemotePid receivers here, but guard fail-closed anyway.
         set_last_error("hew_node_monitor: target is not on a remote node");
@@ -3208,7 +3222,7 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
 
     let payload =
         match crate::envelope::encode_monitor_req_payload(&crate::envelope::MonitorReqPayload {
-            watcher_node_id: rt.node.local_node_id(),
+            watcher_node_id: rt.node.local_route_slot(),
             ref_id,
             target_serial,
         }) {
@@ -3294,7 +3308,7 @@ pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 
 
     let remote_node_id = crate::pid::hew_pid_node(target_pid);
     let target_serial = crate::pid::hew_pid_serial(target_pid);
-    if remote_node_id == 0 || remote_node_id == rt.node.local_node_id() {
+    if remote_node_id == 0 || remote_node_id == rt.node.local_route_slot() {
         set_last_error("hew_node_link_remote: target is not on a remote node");
         return LINK_ERR_INVALID_TARGET;
     }
@@ -3327,7 +3341,7 @@ pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 
     );
 
     let payload = match crate::envelope::encode_link_req_payload(&crate::envelope::LinkReqPayload {
-        linker_node_id: rt.node.local_node_id(),
+        linker_node_id: rt.node.local_route_slot(),
         ref_id,
         target_serial,
         linker_serial: local_serial,
@@ -3424,7 +3438,7 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
     let target_pid = crate::pid::hew_pid_make(remote_node_id, target_serial);
     let payload =
         match crate::envelope::encode_monitor_req_payload(&crate::envelope::MonitorReqPayload {
-            watcher_node_id: rt.node.local_node_id(),
+            watcher_node_id: rt.node.local_route_slot(),
             ref_id,
             target_serial,
         }) {
@@ -3574,7 +3588,7 @@ pub(crate) fn handle_inbound_link_req(
 
     // Step 2 (original only): register the reverse watcher-side LINK entry so the
     // linker's death crashes OUR target actor per the policy.
-    let local_node = rt.node.local_node_id();
+    let local_node = rt.node.local_route_slot();
     let our_target_id = crate::pid::hew_pid_make(local_node, payload.target_serial);
     let reverse_ref = rt.dist_monitors.register_link_watcher(
         authenticated_peer,
@@ -4077,38 +4091,26 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
 // interface for the compiler-generated code. Each corresponds to a
 // `Node::*` builtin in the Hew language.
 
-/// Per-process offset for auto-assigning node IDs within the same process.
+/// Per-process offset for the transitional v1 wire route slot.
 ///
 /// When a process calls `Node::start` more than once, each call gets a
 /// distinct offset added to the process base.
-static NODE_ID_COUNTER: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+static LEGACY_ROUTE_SLOT_COUNTER: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 
-/// Per-process base node ID, initialised once from the OS process ID.
+/// Per-process base for the transitional v1 route slot.
 ///
-/// # Shim note
-///
-/// WHY: The original counter started every process at 1, so every OS process
-/// produced `node_id` == 1, causing `hew_pid_is_local` to misclassify remote
-/// actors as local and bypass TCP routing. Seeding from the OS PID makes
-/// distinct processes get distinct node IDs for the v0.5 two-process case.
-///
-/// WHEN obsolete: when a proper collision-free node-ID assignment scheme is
-/// implemented — either a coordinator-assigned ID exchanged during the
-/// connection handshake, or a wider (> u16) node-ID space. The birthday
-/// bound on u16 is ~180 processes for a 50 % collision probability.
-///
-/// WHAT the real solution looks like: the connecting node sends no ID; the
-/// accepting node assigns a unique u32/u64 scope ID during the handshake,
-/// which both sides then embed in all PIDs for that session.
-static PROCESS_NODE_BASE: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+/// Stage 2 removes this PID-derived wire compatibility value when the v2
+/// handshake carries key-derived `NodeId` and receiver-local route slots stop
+/// crossing the wire.
+static PROCESS_ROUTE_SLOT_BASE: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
 
-/// Derive a non-zero u16 node-ID base from the OS process ID.
+/// Derive a non-zero v1 route-slot base from the OS process ID.
 ///
 /// Uses a FNV-1a–style fold to spread the PID bits across the full u16
-/// range, then forces non-zero (0 is reserved for "local/standalone" in
-/// the PID encoding).
-fn process_node_id_base() -> u16 {
-    *PROCESS_NODE_BASE.get_or_init(|| {
+/// range, then forces non-zero because route slot zero is local dispatch.
+fn process_route_slot_base() -> u16 {
+    *PROCESS_ROUTE_SLOT_BASE.get_or_init(|| {
         let pid = std::process::id(); // u32 OS PID
                                       // FNV-1a 32-bit fold into 16 bits.
         let h = (2_166_136_261u32)
@@ -4123,7 +4125,7 @@ fn process_node_id_base() -> u16 {
             reason = "XOR of two u16-range halves of a u32 always fits in u16"
         )]
         let folded = ((h >> 16) ^ (h & 0xFFFF)) as u16;
-        // Ensure non-zero (0 is "local" in the PID encoding).
+        // Ensure non-zero (0 is local dispatch).
         if folded == 0 {
             1
         } else {
@@ -4132,64 +4134,41 @@ fn process_node_id_base() -> u16 {
     })
 }
 
-/// Map `(base, offset)` to a node ID in `1..=65535`, never landing on the `0`
-/// local/standalone sentinel.
+/// Map `(base, offset)` to a route slot in `1..=65535`.
 ///
 /// A bare `base.wrapping_add(offset)` can wrap a second `Node::start` to `0`
-/// when `base == 65535` (offset 1). `hew_pid_is_local` always treats node-id `0`
-/// as local, so a node that landed on `0` would silently misclassify every
-/// remote actor as local and bypass routing. Mapping through the
+/// when `base == 65535` (offset 1). Mapping through the
 /// `1..=65535` ring (`1 + ((base - 1 + offset) mod 65535)`) keeps the result a
-/// valid non-zero ID for any base/offset, including the wrap case.
-fn next_local_node_id(base: u16, offset: u16) -> u16 {
+/// valid peer route slot for any base/offset, including the wrap case.
+fn next_legacy_route_slot(base: u16, offset: u32) -> u16 {
     // Work in u32 to avoid intermediate u16 wrap; the ring has 65535 slots
     // (1..=65535). `base` is already guaranteed non-zero by
-    // `process_node_id_base`, so `base - 1` is in `0..=65534`.
+    // `process_route_slot_base`, so `base - 1` is in `0..=65534`.
     let ring = 65_535u32;
-    let zero_based = (u32::from(base) - 1 + u32::from(offset)) % ring;
+    let zero_based = (u32::from(base) - 1 + (offset % ring)) % ring;
     #[expect(
         clippy::cast_possible_truncation,
         reason = "zero_based is in 0..65535 so 1 + zero_based fits in u16 (max 65535)"
     )]
-    let id = (1 + zero_based) as u16;
-    id
+    let route_slot = (1 + zero_based) as u16;
+    route_slot
 }
 
-/// Parse `HEW_NODE_ID` into a validated non-zero `u16` stable binding identity.
-///
-/// Returns `Ok(None)` when unset, `Ok(Some(id))` for a value in `1..=65535`,
-/// and `Err` for a malformed or out-of-range value (fail-closed at start).
-fn hew_node_id_from_env() -> Result<Option<std::num::NonZeroU16>, String> {
-    let raw = crate::env::ENV_LOCK.read_access(|()| std::env::var("HEW_NODE_ID").ok());
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    let trimmed = raw.trim();
-    match trimmed.parse::<u16>() {
-        Ok(v) => std::num::NonZeroU16::new(v).map(Some).ok_or_else(|| {
-            "Node::start: HEW_NODE_ID must be a nonzero u16 in 1..=65535 (fail-closed)".to_string()
-        }),
-        Err(_) => Err(format!(
-            "Node::start: HEW_NODE_ID must be a u16 in 1..=65535, got '{trimmed}' (fail-closed)"
-        )),
+fn select_legacy_route_slot(
+    base: u16,
+    offset: u32,
+    bindings: &crate::peer_binding::PeerBindings,
+) -> Option<std::num::NonZeroU16> {
+    for attempt in 0..65_535 {
+        let candidate = next_legacy_route_slot(base, offset.wrapping_add(attempt));
+        if bindings.get(&candidate).is_none() {
+            return std::num::NonZeroU16::new(candidate);
+        }
     }
+    None
 }
 
-/// Whether `HEW_DIST_UNVERIFIED` requests the explicit documented unverified
-/// opt-out (`1` / `true`, case-insensitive).
-fn hew_dist_unverified_from_env() -> bool {
-    crate::env::ENV_LOCK
-        .read_access(|()| std::env::var("HEW_DIST_UNVERIFIED").ok())
-        .is_some_and(|v| {
-            let v = v.trim();
-            v == "1" || v.eq_ignore_ascii_case("true")
-        })
-}
-
-/// Merge start-time environment posture (`HEW_NODE_ID`, `HEW_DIST_UNVERIFIED`,
-/// `HEW_TRANSPORT`) into the staged pre-start config (issue #2652). The pinned
-/// transport is carried by the frozen snapshot so admission interprets peer
-/// credentials (Noise pubkey vs mesh SPKI) consistently with the listener.
+/// Merge the start-time transport selection into staged pre-start config.
 ///
 /// # Errors
 ///
@@ -4197,12 +4176,6 @@ fn hew_dist_unverified_from_env() -> bool {
 fn merge_start_env_into_config(
     cfg: &mut crate::peer_binding::PeerAuthConfig,
 ) -> Result<(), String> {
-    if let Some(id) = hew_node_id_from_env()? {
-        cfg.node_id = Some(id);
-    }
-    if hew_dist_unverified_from_env() {
-        cfg.unverified_optout = true;
-    }
     // Transport (issue #2652): a selection pinned by an earlier transport-
     // sensitive op (`Node::set_transport` / `Node::load_keys` /
     // `Node::allow_peer`) is authoritative and wins over any later env change —
@@ -4247,7 +4220,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
     // Transition `Building → Starting{owner}` under the lock, then run the
     // shared low-level start WITHOUT the lock (it reads the node's installed
     // snapshot, never `ConfigState`), then re-acquire for `Running` / restore.
-    let offset = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let offset = LEGACY_ROUTE_SLOT_COUNTER.fetch_add(1, Ordering::Relaxed);
     let (node, cfg, generation) = {
         let mut guard = PEER_AUTH_STATE
             .lock()
@@ -4259,7 +4232,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
             set_last_error("Node::start: a public node lifecycle is already active (fail-closed)");
             return -1;
         };
-        // Merge start-time environment posture into the staged config.
+        // Merge start-time transport selection into the staged config.
         let mut cfg = building.clone();
         // Fail-closed: a failed pre-start peer-auth step poisoned the staged
         // config. Refuse to start rather than binding a listener with an
@@ -4286,11 +4259,17 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
             set_last_error(msg);
             return -1;
         }
-        // Derive the node id: strict ⇒ the pinned HEW_NODE_ID; else PID-derived.
-        let node_id = match cfg.node_id {
-            Some(id) => id.get(),
-            None => next_local_node_id(process_node_id_base(), offset),
+        // Until the v2 handshake lands in Stage 2, allocate an internal compact
+        // wire route slot that cannot collide with a configured peer slot.
+        let Some(route_slot) =
+            select_legacy_route_slot(process_route_slot_base(), offset, cfg.bindings())
+        else {
+            let msg = "Node::start: no free v1 route slot remains after peer bindings";
+            eprintln!("hew: {msg}");
+            set_last_error(msg);
+            return -1;
         };
+        cfg.legacy_wire_route_slot = Some(route_slot);
         let snapshot = match cfg.snapshot_for_start() {
             Ok(snapshot) => snapshot,
             Err(msg) => {
@@ -4300,7 +4279,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
             }
         };
         // SAFETY: addr was null-checked above and is a valid C string.
-        let node = unsafe { hew_node_new(node_id, addr) };
+        let node = unsafe { hew_node_new(route_slot.get(), addr) };
         if node.is_null() {
             // State unchanged (still Building); the staged config is intact.
             return -1;
@@ -4863,45 +4842,25 @@ fn stage_loaded_identity(
     0
 }
 
-/// `Node::allow_peer(node_id, credential_hex)` — bind a peer's authenticated
-/// credential to the `NodeId` it is permitted to claim (issue #2652). The
+/// `Node::allow_peer(route_slot, credential_hex)` — pin a peer's authenticated
+/// credential to its transitional receiver-local v1 route slot. The
 /// credential is interpreted by the node's pinned transport (TCP ⇒ 32-byte
-/// Noise pubkey; quic-mesh ⇒ cert SPKI). The binding is staged into the
-/// pre-start `Building` `PeerAuthConfig` and frozen into the per-node snapshot
-/// at `Node::start`; a peer whose credential is not bound to the `NodeId` it
-/// claims is rejected at admission (fail-closed).
+/// Noise pubkey; quic-mesh ⇒ cert SPKI). The exact one-to-one pin is staged
+/// into the pre-start `Building` `PeerAuthConfig` and frozen at `Node::start`.
 ///
-/// Returns `0` on success, `-1` on a reserved/local `node_id`, a null/odd/
+/// Returns `0` on success, `-1` on route slot zero, a null/odd/
 /// non-hex string, a credential of the wrong length for the transport, a
-/// credential already bound to a different `NodeId`, or while the public node
-/// lifecycle owns the config. Adds nothing on error. On failure the peer-auth
-/// setup is marked failed so a subsequent `Node::start` refuses to bind a
-/// listener (fail-closed) rather than silently coming up with an incomplete
-/// peer allowlist.
+/// route-slot or credential collision, or while the public node lifecycle owns
+/// the config. Adds nothing on error.
 ///
 /// # Safety
 ///
 /// `credential_hex` must be a valid null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_allow_peer(
-    node_id: u16,
+    route_slot: u16,
     credential_hex: *const c_char,
 ) -> c_int {
-    if node_id == 0 {
-        node_peer_auth_setup_failed(
-            "Node::allow_peer: node id must be nonzero and not the local id",
-        );
-        return -1;
-    }
-    // Reject binding a peer to this node's own pinned identity, when known.
-    if let Ok(Some(local)) = hew_node_id_from_env() {
-        if local.get() == node_id {
-            node_peer_auth_setup_failed(
-                "Node::allow_peer: node id must be nonzero and not the local id",
-            );
-            return -1;
-        }
-    }
     // SAFETY: caller guarantees credential_hex is a valid C string (or null).
     let Some(s) = (unsafe { crate::util::cstr_to_str(&credential_hex, "Node::allow_peer") }) else {
         node_peer_auth_setup_failed("Node::allow_peer: invalid credential argument");
@@ -4978,20 +4937,12 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
             return -1;
         }
     }
-    // A given credential may bind to exactly one NodeId: the same credential
-    // pinned to a different NodeId is a conflict (rotation overlap binds two
-    // *credentials* to one NodeId, never one credential to two NodeIds).
-    for (bound_id, creds) in &cfg.bindings {
-        if *bound_id != node_id && creds.contains(&credential) {
-            let bound_id = *bound_id;
-            drop(guard);
-            node_peer_auth_setup_failed(format!(
-                "Node::allow_peer: credential already bound to node id {bound_id}"
-            ));
-            return -1;
-        }
+    if let Err(err) = cfg.pin_peer(route_slot, credential) {
+        let msg = format!("Node::allow_peer: {err}");
+        drop(guard);
+        node_peer_auth_setup_failed(msg);
+        return -1;
     }
-    cfg.bindings.entry(node_id).or_default().insert(credential);
     // Pin the transport selection (issue #2652): the credential was interpreted
     // under `transport`, so bind the config to it now. Idempotent with the pins
     // in `Node::set_transport` / `stage_loaded_identity` and the start-time
@@ -5200,7 +5151,7 @@ fn setup_remote_ask(
                 req_ptr,
                 req_len,
                 request_id,
-                node.node_id,
+                node.route_slot,
             )
         } {
             Ok(bytes) => bytes,
@@ -5955,25 +5906,42 @@ mod tests {
     }
 
     #[test]
-    fn next_local_node_id_never_yields_zero_sentinel() {
-        // The 0 node-id is the local/standalone sentinel; a node that landed on
-        // it would misclassify every remote actor as local. Verify the mapping
-        // skips 0 across the full base range and accumulating offsets.
+    fn next_legacy_route_slot_never_yields_zero_sentinel() {
+        // Route slot zero is the local-dispatch sentinel.
         for base in [1u16, 2, 100, 65_534, 65_535] {
-            for offset in 0u16..4 {
+            for offset in 0u32..4 {
                 assert_ne!(
-                    next_local_node_id(base, offset),
+                    next_legacy_route_slot(base, offset),
                     0,
                     "base={base} offset={offset} mapped onto the 0 sentinel",
                 );
             }
         }
         // The bare-wrapping_add hazard: base 65535 + offset 1 wrapped to 0.
-        assert_ne!(next_local_node_id(65_535, 1), 0);
+        assert_ne!(next_legacy_route_slot(65_535, 1), 0);
         // Distinct offsets from the same base stay distinct within the ring.
-        assert_ne!(next_local_node_id(100, 0), next_local_node_id(100, 1));
+        assert_ne!(
+            next_legacy_route_slot(100, 0),
+            next_legacy_route_slot(100, 1)
+        );
         // base==1, offset==0 maps to itself (the common single-node case).
-        assert_eq!(next_local_node_id(1, 0), 1);
+        assert_eq!(next_legacy_route_slot(1, 0), 1);
+    }
+
+    #[test]
+    fn legacy_route_slot_selection_skips_peer_pins() {
+        let mut config = crate::peer_binding::PeerAuthConfig::default();
+        config
+            .pin_peer(100, PeerCredential::NoiseKey([0x10; 32]))
+            .unwrap();
+        config
+            .pin_peer(101, PeerCredential::NoiseKey([0x11; 32]))
+            .unwrap();
+
+        assert_eq!(
+            select_legacy_route_slot(100, 0, config.bindings()).map(std::num::NonZeroU16::get),
+            Some(102)
+        );
     }
 
     struct ResetCurrentNode(usize);
@@ -6051,7 +6019,7 @@ mod tests {
     /// a peer presenting an unbound Noise key fails the pre-gate and admission.
     #[cfg(feature = "encryption")]
     fn start_authorized_tcp_node(node_id: u16, peer_node: u16) -> (TestNode, u16) {
-        use crate::peer_binding::{PeerAuthConfig, PeerBindings, NOISE_KEY_LEN};
+        use crate::peer_binding::{PeerAuthConfig, NOISE_KEY_LEN};
 
         let keyfile = std::env::var(TWO_PROCESS_KEYFILE_ENV).expect("2p keyfile env");
         let peer_pub_hex = std::env::var(TWO_PROCESS_PEER_PUBKEY_ENV).expect("2p peer pubkey env");
@@ -6068,18 +6036,13 @@ mod tests {
         let mut peer_pub = [0u8; NOISE_KEY_LEN];
         peer_pub.copy_from_slice(&peer_pub_bytes);
 
-        let mut bindings = PeerBindings::new();
-        bindings
-            .entry(peer_node)
-            .or_default()
-            .insert(PeerCredential::NoiseKey(peer_pub));
-        let snapshot = PeerAuthConfig {
-            node_id: std::num::NonZeroU16::new(node_id),
-            noise_identity: Some(identity),
-            bindings,
-            ..PeerAuthConfig::default()
-        }
-        .snapshot();
+        let mut config = PeerAuthConfig::default();
+        config.legacy_wire_route_slot = std::num::NonZeroU16::new(node_id);
+        config.noise_identity = Some(identity);
+        config
+            .pin_peer(peer_node, PeerCredential::NoiseKey(peer_pub))
+            .expect("distinct two-process peer pin");
+        let snapshot = config.snapshot();
 
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind_addr is a valid C string for the duration of this helper.
@@ -6115,9 +6078,7 @@ mod tests {
     /// now that an unverified outbound ask fails closed before it is ever sent.
     #[cfg(feature = "encryption")]
     fn start_authorized_tcp_pair(id_a: u16, id_b: u16) -> (TestNode, u16, TestNode, u16) {
-        use crate::peer_binding::{
-            PeerAuthConfig, PeerBindings, StableNoiseIdentity, NOISE_KEY_LEN,
-        };
+        use crate::peer_binding::{PeerAuthConfig, StableNoiseIdentity, NOISE_KEY_LEN};
 
         let dir = tempfile::tempdir().expect("authorized tcp pair keydir");
         let identity_a =
@@ -6134,18 +6095,13 @@ mod tests {
                          identity: StableNoiseIdentity,
                          peer_pub: [u8; NOISE_KEY_LEN]|
          -> (TestNode, u16) {
-            let mut bindings = PeerBindings::new();
-            bindings
-                .entry(peer_id)
-                .or_default()
-                .insert(PeerCredential::NoiseKey(peer_pub));
-            let snapshot = PeerAuthConfig {
-                node_id: std::num::NonZeroU16::new(node_id),
-                noise_identity: Some(identity),
-                bindings,
-                ..PeerAuthConfig::default()
-            }
-            .snapshot();
+            let mut config = PeerAuthConfig::default();
+            config.legacy_wire_route_slot = std::num::NonZeroU16::new(node_id);
+            config.noise_identity = Some(identity);
+            config
+                .pin_peer(peer_id, PeerCredential::NoiseKey(peer_pub))
+                .expect("distinct authorized TCP peer pin");
+            let snapshot = config.snapshot();
             let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
             // SAFETY: bind_addr is a valid C string for the duration of this closure.
             let node = unsafe { TestNode::new(node_id, &bind_addr) };
@@ -7020,26 +6976,21 @@ mod tests {
         peer_id: u16,
         peer_spki: Vec<u8>,
     ) -> (TestNode, u16) {
-        use crate::peer_binding::{PeerAuthConfig, PeerBindings};
+        use crate::peer_binding::PeerAuthConfig;
 
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind_addr is a valid C string for the duration of this helper.
         let node = unsafe { TestNode::new(node_id, &bind_addr) };
         assert!(!node.as_ptr().is_null(), "test node allocation failed");
 
-        // Install the credentialed snapshot: strict node identity + the peer's
-        // real SPKI bound to the peer's NodeId.
-        let mut bindings = PeerBindings::new();
-        bindings
-            .entry(peer_id)
-            .or_default()
-            .insert(PeerCredential::Spki(peer_spki));
-        let snapshot = PeerAuthConfig {
-            node_id: std::num::NonZeroU16::new(node_id),
-            bindings,
-            ..PeerAuthConfig::default()
-        }
-        .snapshot();
+        // Install the credentialed snapshot: local v1 route slot + the peer's
+        // real SPKI pinned to its route slot.
+        let mut config = PeerAuthConfig::default();
+        config.legacy_wire_route_slot = std::num::NonZeroU16::new(node_id);
+        config
+            .pin_peer(peer_id, PeerCredential::Spki(peer_spki))
+            .expect("distinct authorized mesh peer pin");
+        let snapshot = config.snapshot();
         // SAFETY: node is freshly created (STOPPED); installing a snapshot is valid.
         let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
         assert_eq!(set_rc, 0, "install auth snapshot on node {node_id}");
@@ -7105,36 +7056,29 @@ mod tests {
         std::ptr::null_mut()
     }
 
-    /// `NodeId` authority (BLOCK-5 point 1): a low-level node whose explicit
-    /// `hew_node_new(id)` contradicts its installed strict snapshot binding
-    /// identity is rejected **before** the listener binds — no socket, no
-    /// manager, fail-closed.
+    /// A low-level node whose explicit v1 route slot contradicts its installed
+    /// snapshot route slot is rejected before the listener binds.
     #[test]
-    fn node_start_rejects_conflicting_snapshot_node_id_before_listen() {
-        use crate::peer_binding::{PeerAuthConfig, PeerBindings, PeerCredential};
+    fn node_start_rejects_conflicting_snapshot_route_slot_before_listen() {
+        use crate::peer_binding::{PeerAuthConfig, PeerCredential};
         let _guard = crate::runtime_test_guard();
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // Explicit low-level id 100 conflicts with the snapshot's strict id 42.
+        // Explicit low-level route slot 100 conflicts with snapshot route slot 42.
         // SAFETY: bind_addr is valid for the duration of this test.
         let node = unsafe { TestNode::new(100, &bind_addr) };
         assert!(!node.as_ptr().is_null());
-        let mut bindings = PeerBindings::new();
-        bindings
-            .entry(42)
-            .or_default()
-            .insert(PeerCredential::NoiseKey([0xAB; 32]));
-        let snapshot = PeerAuthConfig {
-            node_id: std::num::NonZeroU16::new(42),
-            bindings,
-            ..PeerAuthConfig::default()
-        }
-        .snapshot();
+        let mut config = PeerAuthConfig::default();
+        config.legacy_wire_route_slot = std::num::NonZeroU16::new(42);
+        config
+            .pin_peer(43, PeerCredential::NoiseKey([0xAB; 32]))
+            .expect("distinct peer pin");
+        let snapshot = config.snapshot();
         // SAFETY: node is STOPPED; installing a snapshot is valid.
         let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
         assert_eq!(set_rc, 0);
-        // SAFETY: node is valid; start must reject the conflicting id.
+        // SAFETY: node is valid; start must reject the conflicting route slot.
         let rc = unsafe { hew_node_start(node.as_ptr()) };
-        assert_eq!(rc, -1, "conflicting snapshot id must be rejected");
+        assert_eq!(rc, -1, "conflicting snapshot route slot must be rejected");
         // SAFETY: node valid; assert fail-closed: STOPPED, no manager, no transport.
         unsafe {
             let n = &*node.as_ptr();
@@ -7153,32 +7097,27 @@ mod tests {
             }
         };
         assert!(
-            err.contains("conflicts with strict binding identity"),
+            err.contains("conflicts with the frozen v1 route slot"),
             "diagnostic should name the conflict; got: {err}"
         );
     }
 
-    /// `NodeId` authority: a low-level node created with id `0` adopts its
-    /// snapshot's stable `NodeId` at start (a caller that deferred the id).
+    /// A low-level node created with route slot zero adopts the frozen snapshot
+    /// route slot at start.
     #[test]
-    fn node_start_adopts_snapshot_node_id_when_created_with_zero() {
-        use crate::peer_binding::{PeerAuthConfig, PeerBindings, PeerCredential};
+    fn node_start_adopts_snapshot_route_slot_when_created_with_zero() {
+        use crate::peer_binding::{PeerAuthConfig, PeerCredential};
         let _guard = crate::runtime_test_guard();
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind_addr valid for the test.
         let node = unsafe { TestNode::new(0, &bind_addr) };
         assert!(!node.as_ptr().is_null());
-        let mut bindings = PeerBindings::new();
-        bindings
-            .entry(4242)
-            .or_default()
-            .insert(PeerCredential::NoiseKey([0xCD; 32]));
-        let snapshot = PeerAuthConfig {
-            node_id: std::num::NonZeroU16::new(4242),
-            bindings,
-            ..PeerAuthConfig::default()
-        }
-        .snapshot();
+        let mut config = PeerAuthConfig::default();
+        config.legacy_wire_route_slot = std::num::NonZeroU16::new(4242);
+        config
+            .pin_peer(4243, PeerCredential::NoiseKey([0xCD; 32]))
+            .expect("distinct peer pin");
+        let snapshot = config.snapshot();
         // SAFETY: node STOPPED.
         let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
         assert_eq!(set_rc, 0);
@@ -7187,12 +7126,12 @@ mod tests {
         assert_eq!(
             rc,
             0,
-            "start should adopt snapshot id: {:?}",
+            "start should adopt snapshot route slot: {:?}",
             crate::stream_error::take_last_error()
         );
         // SAFETY: node valid & running.
         unsafe {
-            assert_eq!((*node.as_ptr()).node_id, 4242);
+            assert_eq!((*node.as_ptr()).route_slot, 4242);
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
         }
     }
@@ -7201,24 +7140,19 @@ mod tests {
     /// bindings) fails the node's own start before listen.
     #[test]
     fn node_start_rejects_malformed_snapshot() {
-        use crate::peer_binding::{PeerAuthConfig, PeerBindings, PeerCredential};
+        use crate::peer_binding::{PeerAuthConfig, PeerCredential};
         let _guard = crate::runtime_test_guard();
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind_addr valid.
         let node = unsafe { TestNode::new(7, &bind_addr) };
         assert!(!node.as_ptr().is_null());
-        let mut bindings = PeerBindings::new();
-        bindings
-            .entry(42)
-            .or_default()
-            .insert(PeerCredential::NoiseKey([0x11; 32]));
-        let snapshot = PeerAuthConfig {
-            node_id: std::num::NonZeroU16::new(7),
-            unverified_optout: true,
-            bindings,
-            ..PeerAuthConfig::default()
-        }
-        .snapshot();
+        let mut config = PeerAuthConfig::default();
+        config.legacy_wire_route_slot = std::num::NonZeroU16::new(7);
+        config.unverified_optout = true;
+        config
+            .pin_peer(42, PeerCredential::NoiseKey([0x11; 32]))
+            .expect("distinct peer pin");
+        let snapshot = config.snapshot();
         // SAFETY: node STOPPED.
         let set_rc = unsafe { hew_node_set_auth_snapshot(node.as_ptr(), snapshot) };
         assert_eq!(set_rc, 0);
@@ -7228,6 +7162,47 @@ mod tests {
         unsafe {
             assert!((*node.as_ptr()).transport.is_null());
         }
+    }
+
+    #[test]
+    fn public_start_env_ignores_removed_identity_and_unverified_controls() {
+        let _guard = crate::runtime_test_guard();
+        let saved = crate::env::ENV_LOCK.read_access(|()| {
+            [
+                ("HEW_NODE_ID", std::env::var_os("HEW_NODE_ID")),
+                (
+                    "HEW_DIST_UNVERIFIED",
+                    std::env::var_os("HEW_DIST_UNVERIFIED"),
+                ),
+                ("HEW_TRANSPORT", std::env::var_os("HEW_TRANSPORT")),
+            ]
+        });
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: ENV_LOCK serializes process-global environment mutation.
+            unsafe {
+                std::env::set_var("HEW_NODE_ID", "4242");
+                std::env::set_var("HEW_DIST_UNVERIFIED", "true");
+                std::env::remove_var("HEW_TRANSPORT");
+            }
+        });
+
+        let mut config = crate::peer_binding::PeerAuthConfig::default();
+        merge_start_env_into_config(&mut config).unwrap();
+        assert_eq!(config.legacy_wire_route_slot, None);
+        assert!(!config.unverified_optout);
+
+        crate::env::ENV_LOCK.access(|()| {
+            // SAFETY: ENV_LOCK serializes process-global environment mutation.
+            unsafe {
+                for (key, value) in saved {
+                    if let Some(value) = value {
+                        std::env::set_var(key, value);
+                    } else {
+                        std::env::remove_var(key);
+                    }
+                }
+            }
+        });
     }
 
     /// `hew_node_set_auth_snapshot` is rejected once the node is not STOPPED.
@@ -7491,11 +7466,9 @@ mod tests {
         // Building with a pinned TCP Noise identity ⇒ its public key hex.
         let noise = StableNoiseIdentity::from_raw([0x11; 32], [0x22; 32]);
         let expect_hex = "11".repeat(32);
-        let cfg = PeerAuthConfig {
-            transport: Some(TransportSelection::Tcp),
-            noise_identity: Some(noise),
-            ..PeerAuthConfig::default()
-        };
+        let mut cfg = PeerAuthConfig::default();
+        cfg.transport = Some(TransportSelection::Tcp);
+        cfg.noise_identity = Some(noise);
         set_state(ConfigState::Building(cfg.clone()));
         assert_eq!(read(), expect_hex, "Building must read the staged identity");
 
@@ -7647,10 +7620,7 @@ mod tests {
             }
             crate::env::ENV_LOCK.access(|()| {
                 // SAFETY: exclusive process-global env access via ENV_LOCK.
-                unsafe {
-                    std::env::remove_var("HEW_TRANSPORT");
-                    std::env::remove_var("HEW_NODE_ID");
-                }
+                unsafe { std::env::remove_var("HEW_TRANSPORT") }
             });
         };
 
@@ -7691,27 +7661,25 @@ mod tests {
             let ConfigState::Building(cfg) = &g.state else {
                 panic!("staging must remain Building; no node was started");
             };
-            for creds in cfg.bindings.values() {
-                for cred in creds {
-                    match cred {
-                        PeerCredential::NoiseKey(_) => assert_eq!(
-                            cfg.transport,
-                            Some(PeerTransport::Tcp),
-                            "a staged NoiseKey requires the config to be pinned to tcp \
-                             (torn pin: credential typed under tcp but transport re-pinned)"
-                        ),
-                        PeerCredential::Spki(_) => assert_eq!(
-                            cfg.transport,
-                            Some(PeerTransport::QuicMesh),
-                            "a staged SPKI requires the config to be pinned to quic-mesh \
-                             (torn pin: credential typed under quic-mesh but transport re-pinned)"
-                        ),
-                    }
+            for credential in cfg.bindings().values() {
+                match credential {
+                    PeerCredential::NoiseKey(_) => assert_eq!(
+                        cfg.transport,
+                        Some(PeerTransport::Tcp),
+                        "a staged NoiseKey requires the config to be pinned to tcp \
+                         (torn pin: credential typed under tcp but transport re-pinned)"
+                    ),
+                    PeerCredential::Spki(_) => assert_eq!(
+                        cfg.transport,
+                        Some(PeerTransport::QuicMesh),
+                        "a staged SPKI requires the config to be pinned to quic-mesh \
+                         (torn pin: credential typed under quic-mesh but transport re-pinned)"
+                    ),
                 }
             }
             // Whenever a credential is staged, the transport must be pinned (never
             // left None): the stage and the pin are one atomic step under the lock.
-            if !cfg.bindings.is_empty() {
+            if !cfg.bindings().is_empty() {
                 assert!(
                     cfg.transport.is_some(),
                     "a staged credential must leave the transport pinned"
@@ -9379,12 +9347,11 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
-    /// Wire-identity (issue #2652, BLOCK-5 point 1): the `NodeId` a peer
-    /// advertises over the handshake is the operator-pinned `HEW_NODE_ID`
-    /// (`HewNode.node_id`) — NOT a PID-derived value. After an authorized
-    /// quic-mesh handshake, the responder must observe the initiator under the
-    /// exact configured id, and the *credential-bound* authenticated identity
-    /// must resolve to that same id. This proves the two-part invariant the
+    /// Transitional wire routing: the v1 handshake advertises the node's
+    /// configured route slot. After an authorized quic-mesh handshake, the
+    /// responder must observe the initiator under that exact slot, and the
+    /// credential-bound authenticated route must resolve to the same slot. This
+    /// proves the two-part invariant the
     /// `ctrl-frame-binds-to-authenticated-peer` lesson requires: the handshake
     /// `NodeId` is BOTH credential-bound AND equal to the operator-pinned id.
     ///
@@ -9394,8 +9361,8 @@ mod tests {
     /// `ID_A` here is a positive proof of the binding, not a coincidence.
     #[cfg(feature = "quic")]
     #[test]
-    fn wire_identity_peer_observes_configured_node_id() {
-        // Configured ids chosen to be unrelated to any PID-derived scheme.
+    fn wire_route_slot_peer_observes_configured_slot() {
+        // Configured slots chosen to be unrelated to any PID-derived scheme.
         const ID_A: u16 = 331;
         const ID_B: u16 = 332;
 
@@ -9411,7 +9378,7 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // node2 (responder) must have admitted node1's inbound connection under
-        // its configured HEW_NODE_ID (331). Poll briefly: `wait_for_handshake`
+        // its configured route slot (331). Poll briefly: `wait_for_handshake`
         // only proves the socket is up; claim publication completes a moment
         // later inside admission.
         // SAFETY: node2 is valid and its conn_mgr is live while node2 runs.
@@ -9441,8 +9408,7 @@ mod tests {
         assert_eq!(
             connection::peer_node_id_for_conn(mgr2_ref, conn_id),
             ID_A,
-            "peer-observed handshake NodeId must equal the configured HEW_NODE_ID, \
-             not a PID-derived value"
+            "peer-observed v1 route slot must equal the configured slot"
         );
         assert_eq!(
             authenticated, ID_A,

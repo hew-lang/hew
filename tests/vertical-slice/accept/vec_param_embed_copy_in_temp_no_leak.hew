@@ -1,0 +1,62 @@
+// Retain-backed string parameter embeds in anonymous owned-Vec COPY-IN source
+// temps. The caller retains ownership of each parameter while the temporary's
+// independent retained share is released exactly once. The Arena cycle is the
+// generic insert/remove form of the same seam. ASan/LSan catches leaks,
+// refcount underflow, double-free, and caller-after-store use-after-free.
+type Wrap { f: Option<string> }
+type Key<T> { index: i64 }
+type Slot<T> { value: Option<T> }
+type Arena<T> { slots: Vec<Slot<T>> }
+
+fn pushParam(p: string) -> i64 {
+    let v: Vec<Wrap> = [];
+    v.push(Wrap { f: Some(p) });
+    v.len()
+}
+
+fn setParam(p: string) -> i64 {
+    let v: Vec<Wrap> = [];
+    v.push(Wrap { f: None });
+    v.set(0, Wrap { f: Some(p) });
+    v.len()
+}
+
+fn newArena<T>() -> Arena<T> {
+    Arena { slots: Vec::new() }
+}
+
+impl<T> Arena<T> {
+    fn insert(self, value: T) -> Key<T> {
+        let index = self.slots.len();
+        self.slots.push(Slot { value: Some(value) });
+        Key { index: index }
+    }
+
+    fn remove(self, key: Key<T>) -> T {
+        let slot = self.slots.remove(key.index);
+        slot.value.unwrap()
+    }
+
+    fn len(self) -> i64 {
+        self.slots.len()
+    }
+}
+
+fn main() -> i64 {
+    let arena = newArena<string>();
+    for i in 0..32 {
+        let p = f"item-{i}";
+        if pushParam(p) != 1 { return 61; }
+        if p.len() < 6 { return 62; }
+        if setParam(p) != 1 { return 63; }
+        if p.len() < 6 { return 64; }
+
+        let key = arena.insert(f"arena-{i}");
+        let got = arena.remove(key);
+        let expected = f"arena-{i}";
+        if got != expected { return 66; }
+        if got.len() != expected.len() { return 67; }
+        if arena.len() != 0 { return 69; }
+    }
+    0
+}

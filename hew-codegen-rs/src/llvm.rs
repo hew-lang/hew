@@ -12646,6 +12646,11 @@ fn lower_instruction(
             }
             emit_cooperate_check(fn_ctx, block_id, drop_plans)?;
         }
+        Instr::RcIntrinsic { op, .. } => {
+            return Err(CodegenError::FailClosed(format!(
+                "Rc/Weak intrinsic {op:?} reached codegen before ABI lowering"
+            )));
+        }
         Instr::CancellationTokenIsCancelled { dest, token } => {
             // DI-019: the HIR/MIR variant is checker-authoritative proof that
             // `token` is a live CancellationToken and that `dest` is bool.
@@ -20558,6 +20563,12 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
     // (copilot §2): unsupported shapes raise `CodegenError::FailClosed`,
     // never `.ok()?` / `unwrap_or_default()`.
     match drop.kind {
+        hew_mir::DropKind::RcRelease | hew_mir::DropKind::WeakRelease => {
+            Err(CodegenError::FailClosed(format!(
+                "Rc/Weak drop {:?} reached codegen before ABI lowering",
+                drop.kind
+            )))
+        }
         // W5.011 function-scope heap-owning value drops. These carry
         // their release symbol (or recursion intent) in `kind`, not in
         // `drop_fn`, so they bypass the W3.030 runtime-vs-user

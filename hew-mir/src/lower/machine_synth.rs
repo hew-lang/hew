@@ -2947,6 +2947,16 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(event, state_fields, seen, unknown);
         }
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            if let Some(receiver) = receiver {
+                collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
+            }
+            if let Some(value) = value {
+                collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+            }
+        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }

@@ -1610,8 +1610,8 @@ impl Builder {
                 // Place is wired into `binding_locals`. Zero-initialised here so
                 // the flag dominates every `Consume` use site and every
                 // scope-exit drop; set to 1 at each consume. A no-op for every
-                // other binding class (see `resource_needs_drop_flag`).
-                self.maybe_alloc_resource_drop_flag(binding.id, &binding_ty);
+                // other binding class (see `affine_release_needs_drop_flag`).
+                self.maybe_alloc_affine_release_flag(binding.id, &binding_ty);
                 self.maybe_alloc_overwrite_guard_flag(binding);
                 // #2418 — allocate the path-sensitive scope-exit drop-flag for
                 // an owned collection local the pre-pass saw consumed, so a
@@ -2337,7 +2337,7 @@ impl Builder {
                         // move-checker and the per-exit `BindingState`. Every
                         // other consumed owned class keeps the legacy
                         // path-insensitive `owned_locals` removal.
-                        if let Some(flag) = self.resource_drop_flags.get(id).copied() {
+                        if let Some(flag) = self.affine_release_flags.get(id).copied() {
                             self.instructions.push(Instr::ConstI64 {
                                 dest: flag,
                                 value: 1,
@@ -2847,6 +2847,31 @@ impl Builder {
                 let dest = self.alloc_local(ResolvedTy::Bool);
                 self.instructions
                     .push(Instr::CancellationTokenIsCancelled { dest, token });
+                Some(dest)
+            }
+            HirExprKind::RcIntrinsic {
+                op,
+                payload_ty,
+                receiver,
+                value,
+                result_ty,
+            } => {
+                let receiver = receiver
+                    .as_deref()
+                    .and_then(|operand| self.lower_value(operand));
+                let value = value
+                    .as_deref()
+                    .and_then(|operand| self.lower_value(operand));
+                let result_ty = self.subst_ty(result_ty);
+                let dest = self.alloc_local(result_ty.clone());
+                self.push_instr(Instr::RcIntrinsic {
+                    dest,
+                    op: *op,
+                    payload_ty: self.subst_ty(payload_ty),
+                    receiver,
+                    value,
+                    result_ty,
+                });
                 Some(dest)
             }
             HirExprKind::GeneratorNext { receiver, yield_ty } => {

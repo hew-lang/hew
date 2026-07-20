@@ -1,16 +1,17 @@
 use super::{
-    actor_name_from_handle_ty, base_local, binding_ref_target, callee_returns_fresh_owner,
-    machine_layout_name_matches, mangle_layout_key, monomorphic_user_record_key, named_type_marker,
-    resource_needs_drop_flag, ty_is_closure_pair, ty_is_heap_owning_enum_composite,
-    ty_is_local_collection_handle, user_record_layout_key, vec_iter_record_layout_key,
-    ActiveIterationOwner, BindingId, Builder, BuiltinType, ClosurePairIngress, CmpPred,
-    DecisionFact, Disposition, FieldLoadClass, HashMap, HashSet, HirBinding, HirBlock, HirExpr,
-    HirExprKind, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, OwnedLocalEntry, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
-    Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass,
-    ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
-    SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
-    SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_WHILE_LET_ITERATION_NAME,
+    actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
+    callee_returns_fresh_owner, machine_layout_name_matches, mangle_layout_key,
+    monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
+    ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
+    vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
+    ClosurePairIngress, CmpPred, DecisionFact, Disposition, FieldLoadClass, HashMap, HashSet,
+    HirBinding, HirBlock, HirExpr, HirExprKind, HirStmtKind, Instr, IntentKind, LayoutClass,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, OwnedLocalEntry, OwnershipCtx,
+    OwnershipDecision, Place, PlaceProvenance, Projection, ResolvedRef, ResolvedTy, ResourceMarker,
+    SiteId, Strategy, Terminator, ValueClass, ValueOwnership, ValueProvenance,
+    SYNTHETIC_CALL_SCRUTINEE_NAME, SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
+    SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
+    SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1354,6 +1355,16 @@ impl Builder {
                 self.collect_vec_owned_element_keys_from_expr(left);
                 self.collect_vec_owned_element_keys_from_expr(right);
             }
+            HirExprKind::RcIntrinsic {
+                receiver, value, ..
+            } => {
+                if let Some(receiver) = receiver {
+                    self.collect_vec_owned_element_keys_from_expr(receiver);
+                }
+                if let Some(value) = value {
+                    self.collect_vec_owned_element_keys_from_expr(value);
+                }
+            }
             HirExprKind::Unary { operand, .. } => {
                 self.collect_vec_owned_element_keys_from_expr(operand);
             }
@@ -1838,16 +1849,15 @@ impl Builder {
     /// Allocate (once) the path-sensitive drop-flag for a non-idempotent
     /// user `#[resource]` binding (#1933 / #1941). Called at the binding's
     /// introducing `let` after its backend `Place` is wired into
-    /// `binding_locals`. A no-op unless `resource_needs_drop_flag` holds, so
-    /// every non-resource binding and every idempotent / refcounted handle
-    /// (Duplex, lambda, half, `Runtime`-descriptor close) is untouched.
+    /// `binding_locals`. A no-op unless `affine_release_needs_drop_flag`
+    /// holds, so unrelated values and idempotent handles are untouched.
     ///
     /// The flag is a fresh `i64` local zero-initialised at this point so the
     /// initialisation dominates every later `Consume` use site and every
     /// scope-exit drop; codegen gates the close on `flag == 0`. Re-entrant:
     /// a rebind of the same binding id keeps the existing flag (the
     /// dominating zero-init already fired).
-    pub(crate) fn maybe_alloc_resource_drop_flag(
+    pub(crate) fn maybe_alloc_affine_release_flag(
         &mut self,
         binding_id: BindingId,
         ty: &ResolvedTy,
@@ -1855,10 +1865,10 @@ impl Builder {
         let Some(place) = self.binding_locals.get(&binding_id).copied() else {
             return;
         };
-        if !resource_needs_drop_flag(place, ty, &self.type_classes) {
+        if !affine_release_needs_drop_flag(place, ty, &self.type_classes) {
             return;
         }
-        if self.resource_drop_flags.contains_key(&binding_id) {
+        if self.affine_release_flags.contains_key(&binding_id) {
             return;
         }
         let flag = self.alloc_local(ResolvedTy::I64);
@@ -1866,7 +1876,7 @@ impl Builder {
             dest: flag,
             value: 0,
         });
-        self.resource_drop_flags.insert(binding_id, flag);
+        self.affine_release_flags.insert(binding_id, flag);
     }
     /// #2301 -- allocate a zero-init path-sensitive overwrite-release drop-flag
     /// for an owned `var`-local that the pre-pass saw both genuinely consumed

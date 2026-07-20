@@ -3160,6 +3160,7 @@ impl Builder {
                 | HirExprKind::TryWidthCast { .. }
                 | HirExprKind::IdentityCompare { .. }
                 | HirExprKind::CancellationTokenIsCancelled { .. }
+                | HirExprKind::RcIntrinsic { .. }
                 // Spawns/closures/generators produce fresh handles or objects. A
                 // `Closure` capturing a heap place is not destructured into
                 // payload binders on this path, so it never reaches the

@@ -760,7 +760,7 @@ pub(super) fn elaborate(
         &closure_vec_drop_allowed,
         &plain_vec_drop_allowed,
         &indirect_enum_drop_allowed,
-        &builder.resource_drop_flags,
+        &builder.affine_release_flags,
         &builder.collection_drop_flags,
     );
     let ordinary_lifo_drops: Vec<ElabDrop> = lifo_drops
@@ -1572,6 +1572,28 @@ pub(super) fn drop_kind_for(
         Place::LambdaActorHandle(_) => DropKind::LambdaActorRelease,
         Place::SendHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Send),
         Place::RecvHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Recv),
+        Place::Local(_) | Place::ReturnSlot
+            if matches!(
+                ty,
+                ResolvedTy::Named {
+                    builtin: Some(BuiltinType::Rc),
+                    ..
+                }
+            ) =>
+        {
+            DropKind::RcRelease
+        }
+        Place::Local(_) | Place::ReturnSlot
+            if matches!(
+                ty,
+                ResolvedTy::Named {
+                    builtin: Some(BuiltinType::Weak),
+                    ..
+                }
+            ) =>
+        {
+            DropKind::WeakRelease
+        }
         // `dyn Trait` locals carry their drop ritual in the vtable's slot 0
         // (`drop_in_place`); codegen emits the GEP-to-slot-0 dispatch plus
         // a storage-discriminated release ritual after `drop_in_place`
@@ -1872,11 +1894,22 @@ fn place_aware_drop_fn(
 /// at the binding's introduction, the `Consume` set + `mark_binding_moved`
 /// skip, and the `build_lifo_drops` guard attachment), so they cannot
 /// drift on which bindings are flag-gated.
-pub(super) fn resource_needs_drop_flag(
+pub(super) fn affine_release_needs_drop_flag(
     place: Place,
     ty: &ResolvedTy,
     type_classes: &hew_hir::TypeClassTable,
 ) -> bool {
+    if matches!(place, Place::Local(_) | Place::ReturnSlot)
+        && matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                ..
+            }
+        )
+    {
+        return true;
+    }
     // Check the close-ritual classification FIRST: `resource_drop_fn` /
     // `place_aware_drop_fn` never panic and return `UserClose` ONLY for a
     // user `#[resource]` Named type (an open-set generated symbol). Gating
@@ -2714,7 +2747,7 @@ fn build_lifo_drops(
     closure_vec_drop_allowed: &HashSet<BindingId>,
     plain_vec_drop_allowed: &HashSet<BindingId>,
     indirect_enum_drop_allowed: &HashSet<BindingId>,
-    resource_drop_flags: &HashMap<BindingId, Place>,
+    affine_release_flags: &HashMap<BindingId, Place>,
     collection_drop_flags: &HashMap<BindingId, Place>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
@@ -3177,8 +3210,8 @@ fn build_lifo_drops(
                 // close on its path-sensitive runtime drop-flag so it fires
                 // exactly once on a `MaybeConsumed` control-flow join (Live on
                 // one predecessor, Consumed on another). The flag presence in
-                // `resource_drop_flags` is the authority: it is populated iff
-                // `resource_needs_drop_flag` held at the binding's `let`, the
+                // `affine_release_flags` is the authority: it is populated iff
+                // `affine_release_needs_drop_flag` held at the binding's `let`, the
                 // same predicate that decided to KEEP this binding in
                 // `owned_locals` across its consume (no `mark_binding_moved`).
                 // So a flagged binding is exactly one that survived to here and
@@ -3187,7 +3220,7 @@ fn build_lifo_drops(
                 // unguarded as before. `drops_for_exit` independently excludes
                 // the drop entirely on an unconditionally-`Consumed` exit, so
                 // the guard only does runtime work at a genuine join.
-                let guard = resource_drop_flags.get(binding).copied();
+                let guard = affine_release_flags.get(binding).copied();
                 drops.push(ElabDrop {
                     place,
                     ty: ty.clone(),

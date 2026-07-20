@@ -465,6 +465,15 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         | Instr::FloatCmp { dest, lhs, rhs, .. }
         | Instr::IdentityCompare { dest, lhs, rhs } => vec![*dest, *lhs, *rhs],
         Instr::CancellationTokenIsCancelled { dest, token } => vec![*dest, *token],
+        Instr::RcIntrinsic {
+            dest,
+            receiver,
+            value,
+            ..
+        } => std::iter::once(*dest)
+            .chain(receiver.iter().copied())
+            .chain(value.iter().copied())
+            .collect(),
         Instr::GeneratorNext { dest, ctx, .. } => vec![*dest, *ctx],
         Instr::WireCodec { dest, operand, .. } => vec![*dest, *operand],
         Instr::RecordCloneInplace { dest, src, .. } => vec![*dest, *src],
@@ -1746,6 +1755,8 @@ mod slice3_invariants {
                     DropKind::DuplexHalfClose(Direction::Send) => s_count += 1,
                     DropKind::DuplexHalfClose(Direction::Recv) => r_count += 1,
                     DropKind::Resource
+                    | DropKind::RcRelease
+                    | DropKind::WeakRelease
                     | DropKind::LambdaActorRelease
                     | DropKind::CowHeap { .. }
                     | DropKind::RecordInPlace

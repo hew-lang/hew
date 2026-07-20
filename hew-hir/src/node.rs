@@ -4,6 +4,7 @@ use std::{
 };
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
+use hew_types::RcIntrinsicOp;
 use hew_types::{
     ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy, Ty,
     TyPattern, VariantMatch, WireLayoutTable,
@@ -1271,6 +1272,16 @@ pub enum HirVarSelfMethodTarget {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirExprKind {
     Literal(HirLiteral),
+    /// Compiler-known Rc/Weak ownership operation. Strong operands are payload
+    /// pointers and weak operands are allocation-header pointers; `op` carries
+    /// that distinction through every later lowering boundary.
+    RcIntrinsic {
+        op: RcIntrinsicOp,
+        payload_ty: ResolvedTy,
+        receiver: Option<Box<HirExpr>>,
+        value: Option<Box<HirExpr>>,
+        result_ty: ResolvedTy,
+    },
     /// A reference to a compiled regex literal in the module's literal table.
     ///
     /// Produced from `Expr::RegexLiteral` when the pattern appears as a

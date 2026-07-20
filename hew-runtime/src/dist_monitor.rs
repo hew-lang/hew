@@ -43,6 +43,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
+use crate::node_identity::{Location, NodeId};
+
 /// Reason sentinel delivered when a monitored remote actor becomes unreachable
 /// because its connection dropped or its node was declared SWIM-DEAD, rather
 /// than because it exited or crashed.
@@ -111,10 +113,8 @@ pub(crate) struct LinkDown {
 /// link).
 #[derive(Debug)]
 struct WatcherEntry {
-    /// Node owning the monitored/linked actor.
-    remote_node_id: u16,
-    /// Monitored/linked actor's serial on the owning node.
-    target_serial: u64,
+    /// Exact monitored/linked actor identity.
+    target: Location,
     /// One-shot terminal slot armed by the delivery causes.
     slot: TerminalSlot,
     /// Monitor (arm recv slot) vs link (fire mailbox EXIT cascade).
@@ -124,8 +124,8 @@ struct WatcherEntry {
 /// A remote watcher recorded on the target side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RemoteWatcher {
-    /// Node that issued the monitor/link (the DOWN destination).
-    watcher_node_id: u16,
+    /// Exact watcher/linker actor identity (the DOWN destination).
+    watcher: Location,
     /// Watcher's monitor/link-registration id (echoed in the DOWN).
     ref_id: u64,
     /// Whether this watcher is a cross-node LINK (true → the terminal sweep
@@ -139,8 +139,8 @@ struct RemoteWatcher {
 /// sweep so the caller routes the right DOWN frame kind to the right node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RemoteWatcherTarget {
-    /// The watcher node to send the DOWN to.
-    pub watcher_node_id: u16,
+    /// Exact watcher/linker destination.
+    pub watcher: Location,
     /// The watcher's registration id (echoed in the DOWN).
     pub ref_id: u64,
     /// LINK (`CTRL_LINK_DOWN` + mailbox-EXIT) vs MONITOR (`CTRL_MONITOR_DOWN`).
@@ -201,8 +201,8 @@ impl DistMonitorState {
     // ── Watcher side ──────────────────────────────────────────────────────
 
     /// Register a cross-node MONITOR watcher entry and return its `ref_id`.
-    pub(crate) fn register_watcher(&self, remote_node_id: u16, target_serial: u64) -> u64 {
-        self.register_entry(remote_node_id, target_serial, WatcherAction::Observe)
+    pub(crate) fn register_watcher(&self, target: Location) -> u64 {
+        self.register_entry(target, WatcherAction::Observe)
     }
 
     /// Register a cross-node LINK watcher entry and return its `ref_id`. On the
@@ -210,14 +210,12 @@ impl DistMonitorState {
     /// actor `local_actor_id` per `policy_tag`.
     pub(crate) fn register_link_watcher(
         &self,
-        remote_node_id: u16,
-        target_serial: u64,
+        target: Location,
         local_actor_id: u64,
         policy_tag: u8,
     ) -> u64 {
         self.register_entry(
-            remote_node_id,
-            target_serial,
+            target,
             WatcherAction::Link {
                 local_actor_id,
                 policy_tag,
@@ -226,19 +224,13 @@ impl DistMonitorState {
     }
 
     /// Register a watcher entry with the given action and return its `ref_id`.
-    fn register_entry(
-        &self,
-        remote_node_id: u16,
-        target_serial: u64,
-        action: WatcherAction,
-    ) -> u64 {
+    fn register_entry(&self, target: Location, action: WatcherAction) -> u64 {
         let ref_id = self.next_ref_id();
         let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
         watchers.insert(
             ref_id,
             WatcherEntry {
-                remote_node_id,
-                target_serial,
+                target,
                 slot: TerminalSlot::Pending,
                 action,
             },
@@ -256,7 +248,7 @@ impl DistMonitorState {
     /// Only transitions `Pending → Delivered`; a no-op if the slot is already
     /// `Delivered` or `Consumed` (exactly-once). Wakes any blocked `recv_down`.
     /// Returns true if this call armed the slot.
-    pub(crate) fn deliver_to_ref(&self, ref_id: u64, remote_node_id: u16, reason: i32) -> bool {
+    pub(crate) fn deliver_to_ref(&self, ref_id: u64, target: Location, reason: i32) -> bool {
         let armed = {
             let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
             match watchers.get_mut(&ref_id) {
@@ -265,7 +257,7 @@ impl DistMonitorState {
                 // must never arm a link entry's slot (it has no recv consumer).
                 Some(entry)
                     if entry.slot == TerminalSlot::Pending
-                        && entry.remote_node_id == remote_node_id
+                        && entry.target == target
                         && matches!(entry.action, WatcherAction::Observe) =>
                 {
                     entry.slot = TerminalSlot::Delivered(reason);
@@ -300,24 +292,18 @@ impl DistMonitorState {
     pub(crate) fn deliver_link_down_to_ref(
         &self,
         ref_id: u64,
-        authenticated_peer: u16,
+        target: Location,
         reason: i32,
     ) -> Option<LinkDown> {
-        if authenticated_peer == 0 {
-            return None;
-        }
         let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
         match watchers.get_mut(&ref_id) {
-            Some(entry)
-                if entry.slot == TerminalSlot::Pending
-                    && entry.remote_node_id == authenticated_peer =>
-            {
+            Some(entry) if entry.slot == TerminalSlot::Pending && entry.target == target => {
                 if let WatcherAction::Link {
                     local_actor_id,
                     policy_tag,
                 } = entry.action
                 {
-                    let remote_target_serial = entry.target_serial;
+                    let remote_target_serial = entry.target.slot();
                     // Fire-once: a link has no recv step, so go straight to
                     // Consumed (a later partition fan-out finds it non-Pending).
                     entry.slot = TerminalSlot::Consumed;
@@ -342,7 +328,24 @@ impl DistMonitorState {
     /// slot (and may already be consumed) is not overwritten — the drop fan-out
     /// fires only for registrations with no prior definitive signal (R1/R2).
     /// Returns the number of slots newly armed.
-    pub(crate) fn deliver_to_node(&self, remote_node_id: u16, reason: i32) -> usize {
+    pub(crate) fn deliver_to_node(&self, remote_node: NodeId, reason: i32) -> usize {
+        self.deliver_to_matching(|target| target.node() == remote_node, reason)
+    }
+
+    /// Arm pending monitor registrations from one superseded node session.
+    pub(crate) fn deliver_to_session(
+        &self,
+        remote_node: NodeId,
+        session_incarnation: u32,
+        reason: i32,
+    ) -> usize {
+        self.deliver_to_matching(
+            |target| target.node() == remote_node && target.incarnation() == session_incarnation,
+            reason,
+        )
+    }
+
+    fn deliver_to_matching(&self, matches: impl Fn(Location) -> bool, reason: i32) -> usize {
         let armed = {
             let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
             let mut count = 0;
@@ -350,7 +353,7 @@ impl DistMonitorState {
                 // Only MONITOR (Observe) entries arm a recv slot here; link
                 // entries fire through `take_link_downs_for_node` (the mailbox
                 // EXIT cascade has no recv consumer).
-                if entry.remote_node_id == remote_node_id
+                if matches(entry.target)
                     && entry.slot == TerminalSlot::Pending
                     && matches!(entry.action, WatcherAction::Observe)
                 {
@@ -377,19 +380,40 @@ impl DistMonitorState {
     /// partition signal for the same registration.
     pub(crate) fn take_link_downs_for_node(
         &self,
-        remote_node_id: u16,
+        remote_node: NodeId,
+        reason: i32,
+    ) -> Vec<LinkDown> {
+        self.take_link_downs_matching(|target| target.node() == remote_node, reason)
+    }
+
+    /// Consume pending links from one superseded node session.
+    pub(crate) fn take_link_downs_for_session(
+        &self,
+        remote_node: NodeId,
+        session_incarnation: u32,
+        reason: i32,
+    ) -> Vec<LinkDown> {
+        self.take_link_downs_matching(
+            |target| target.node() == remote_node && target.incarnation() == session_incarnation,
+            reason,
+        )
+    }
+
+    fn take_link_downs_matching(
+        &self,
+        matches: impl Fn(Location) -> bool,
         reason: i32,
     ) -> Vec<LinkDown> {
         let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
         let mut downs = Vec::new();
         for entry in watchers.values_mut() {
-            if entry.remote_node_id == remote_node_id && entry.slot == TerminalSlot::Pending {
+            if matches(entry.target) && entry.slot == TerminalSlot::Pending {
                 if let WatcherAction::Link {
                     local_actor_id,
                     policy_tag,
                 } = entry.action
                 {
-                    let remote_target_serial = entry.target_serial;
+                    let remote_target_serial = entry.target.slot();
                     entry.slot = TerminalSlot::Consumed;
                     downs.push(LinkDown {
                         local_actor_id,
@@ -463,12 +487,10 @@ impl DistMonitorState {
     /// thread sees no entry and returns [`MONITOR_REASON_TIMEOUT`] immediately —
     /// the correct response to an explicit demonitor. Without the wake the thread
     /// would wait out its full timeout before observing the missing entry.
-    pub(crate) fn remove_watcher(&self, ref_id: u64) -> Option<(u16, u64)> {
+    pub(crate) fn remove_watcher(&self, ref_id: u64) -> Option<Location> {
         let result = {
             let mut watchers = self.watchers.lock().unwrap_or_else(PoisonError::into_inner);
-            watchers
-                .remove(&ref_id)
-                .map(|e| (e.remote_node_id, e.target_serial))
+            watchers.remove(&ref_id).map(|e| e.target)
         };
         // Wake any thread parked in recv_down on this ref so it observes the
         // removal immediately rather than waiting out its full timeout.
@@ -483,10 +505,10 @@ impl DistMonitorState {
     pub(crate) fn register_remote_watcher(
         &self,
         target_serial: u64,
-        watcher_node_id: u16,
+        watcher: Location,
         ref_id: u64,
     ) {
-        self.register_remote_watcher_kind(target_serial, watcher_node_id, ref_id, false);
+        self.register_remote_watcher_kind(target_serial, watcher, ref_id, false);
     }
 
     /// Record a remote LINK watcher of a locally-owned actor (`CTRL_LINK_REQ`
@@ -495,10 +517,10 @@ impl DistMonitorState {
     pub(crate) fn register_remote_link_watcher(
         &self,
         target_serial: u64,
-        watcher_node_id: u16,
+        watcher: Location,
         ref_id: u64,
     ) {
-        self.register_remote_watcher_kind(target_serial, watcher_node_id, ref_id, true);
+        self.register_remote_watcher_kind(target_serial, watcher, ref_id, true);
     }
 
     /// Record a remote watcher (monitor or link) of a locally-owned actor.
@@ -507,7 +529,7 @@ impl DistMonitorState {
     fn register_remote_watcher_kind(
         &self,
         target_serial: u64,
-        watcher_node_id: u16,
+        watcher: Location,
         ref_id: u64,
         is_link: bool,
     ) {
@@ -517,10 +539,10 @@ impl DistMonitorState {
         // retried REQ does not double-register.
         if !watchers
             .iter()
-            .any(|w| w.watcher_node_id == watcher_node_id && w.ref_id == ref_id)
+            .any(|w| w.watcher == watcher && w.ref_id == ref_id)
         {
             watchers.push(RemoteWatcher {
-                watcher_node_id,
+                watcher,
                 ref_id,
                 is_link,
             });
@@ -529,15 +551,10 @@ impl DistMonitorState {
 
     /// Remove a remote watcher of a locally-owned actor (`CTRL_DEMONITOR`
     /// receipt). Idempotent.
-    pub(crate) fn remove_remote_watcher(
-        &self,
-        target_serial: u64,
-        watcher_node_id: u16,
-        ref_id: u64,
-    ) {
+    pub(crate) fn remove_remote_watcher(&self, target_serial: u64, watcher: Location, ref_id: u64) {
         let mut targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(watchers) = targets.get_mut(&target_serial) {
-            watchers.retain(|w| !(w.watcher_node_id == watcher_node_id && w.ref_id == ref_id));
+            watchers.retain(|w| !(w.watcher == watcher && w.ref_id == ref_id));
             if watchers.is_empty() {
                 targets.remove(&target_serial);
             }
@@ -556,7 +573,7 @@ impl DistMonitorState {
             .map(|ws| {
                 ws.into_iter()
                     .map(|w| RemoteWatcherTarget {
-                        watcher_node_id: w.watcher_node_id,
+                        watcher: w.watcher,
                         ref_id: w.ref_id,
                         is_link: w.is_link,
                     })
@@ -582,12 +599,27 @@ impl DistMonitorState {
     /// Takes only the `targets` lock; no interaction with the `watchers` mutex or
     /// `delivered` condvar, so lock ordering is preserved. Idempotent: pruning a
     /// node with no registered watchers is a no-op returning 0.
-    pub(crate) fn prune_remote_watchers_for_node(&self, dead_watcher_node_id: u16) -> usize {
+    pub(crate) fn prune_remote_watchers_for_node(&self, dead_watcher: NodeId) -> usize {
+        self.prune_remote_watchers_matching(|watcher| watcher.node() == dead_watcher)
+    }
+
+    /// Prune target-side registrations owned by one superseded watcher session.
+    pub(crate) fn prune_remote_watchers_for_session(
+        &self,
+        dead_watcher: NodeId,
+        session_incarnation: u32,
+    ) -> usize {
+        self.prune_remote_watchers_matching(|watcher| {
+            watcher.node() == dead_watcher && watcher.incarnation() == session_incarnation
+        })
+    }
+
+    fn prune_remote_watchers_matching(&self, matches: impl Fn(Location) -> bool) -> usize {
         let mut targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
         let mut pruned = 0usize;
         targets.retain(|_serial, watchers| {
             let before = watchers.len();
-            watchers.retain(|w| w.watcher_node_id != dead_watcher_node_id);
+            watchers.retain(|w| !matches(w.watcher));
             pruned += before - watchers.len();
             // Drop the serial slot when no watchers remain (mirrors
             // remove_remote_watcher's empty-slot cleanup).
@@ -611,17 +643,29 @@ mod tests {
     use super::*;
     use crate::link::POLICY_TAG_CRASH_LINKED;
 
+    fn location(node: u8, slot: u64) -> Location {
+        Location::new(NodeId::from_bytes([node; 16]), slot, 1).unwrap()
+    }
+
+    fn location_with_session(node: u8, slot: u64, session: u32) -> Location {
+        Location::new(NodeId::from_bytes([node; 16]), slot, session).unwrap()
+    }
+
     #[test]
     fn register_and_recv_delivers_reason_exactly_once() {
         let state = DistMonitorState::new();
-        let ref_id = state.register_watcher(7, 99);
+        let target = location(7, 99);
+        let ref_id = state.register_watcher(target);
         assert_ne!(ref_id, 0);
 
         // Arm with the clean-exit reason (HewActorState::Stopped == 6).
-        assert!(state.deliver_to_ref(ref_id, 7, 6), "first arm must succeed");
+        assert!(
+            state.deliver_to_ref(ref_id, target, 6),
+            "first arm must succeed"
+        );
         // A second arm is a no-op (exactly-once arming).
         assert!(
-            !state.deliver_to_ref(ref_id, 7, 5),
+            !state.deliver_to_ref(ref_id, target, 5),
             "second arm must be a no-op"
         );
 
@@ -637,11 +681,16 @@ mod tests {
     #[test]
     fn monitor_down_from_wrong_authenticated_peer_is_rejected() {
         let state = DistMonitorState::new();
-        let ref_id = state.register_watcher(7, 99);
+        let target = location(7, 99);
+        let ref_id = state.register_watcher(target);
 
         assert!(
-            !state.deliver_to_ref(ref_id, 9, 5),
+            !state.deliver_to_ref(ref_id, location(9, 99), 5),
             "DOWN from a different authenticated peer must not arm the monitor"
+        );
+        assert!(
+            !state.deliver_to_ref(ref_id, location_with_session(7, 99, 2), 5),
+            "DOWN from a stale session must not arm the monitor"
         );
         assert_eq!(
             state.recv_down(ref_id, Duration::from_millis(20)),
@@ -650,7 +699,7 @@ mod tests {
         );
 
         assert!(
-            state.deliver_to_ref(ref_id, 7, 6),
+            state.deliver_to_ref(ref_id, target, 6),
             "the owning authenticated peer can still deliver"
         );
         assert_eq!(state.recv_down(ref_id, Duration::from_millis(50)), 6);
@@ -659,16 +708,17 @@ mod tests {
     #[test]
     fn deliver_to_node_arms_only_pending_slots() {
         let state = DistMonitorState::new();
-        let a = state.register_watcher(7, 1);
-        let b = state.register_watcher(7, 2);
-        let other = state.register_watcher(9, 3);
+        let a_target = location(7, 1);
+        let a = state.register_watcher(a_target);
+        let b = state.register_watcher(location(7, 2));
+        let other = state.register_watcher(location(9, 3));
 
         // A clean-exit DOWN already armed `a` before the connection dropped.
-        assert!(state.deliver_to_ref(a, 7, 6));
+        assert!(state.deliver_to_ref(a, a_target, 6));
 
         // Connection drop to node 7 fans out MonitorLost: it must arm only `b`
         // (still pending), not `a` (already delivered) and not `other` (node 9).
-        let armed = state.deliver_to_node(7, MONITOR_REASON_LOST);
+        let armed = state.deliver_to_node(NodeId::from_bytes([7; 16]), MONITOR_REASON_LOST);
         assert_eq!(armed, 1);
 
         // `a` keeps its clean-exit reason; `b` gets MonitorLost; `other` is
@@ -685,16 +735,55 @@ mod tests {
     }
 
     #[test]
+    fn superseded_session_fan_out_leaves_fresh_session_entries_pending() {
+        let state = DistMonitorState::new();
+        let old_target = location_with_session(7, 1, 1);
+        let fresh_target = location_with_session(7, 1, 2);
+        let old_monitor = state.register_watcher(old_target);
+        let fresh_monitor = state.register_watcher(fresh_target);
+        let old_link = state.register_link_watcher(old_target, 100, POLICY_TAG_CRASH_LINKED);
+        let fresh_link = state.register_link_watcher(fresh_target, 200, POLICY_TAG_CRASH_LINKED);
+
+        assert_eq!(
+            state.deliver_to_session(NodeId::from_bytes([7; 16]), 1, MONITOR_REASON_LOST),
+            1
+        );
+        assert_eq!(
+            state.recv_down(old_monitor, Duration::from_millis(50)),
+            MONITOR_REASON_LOST
+        );
+        assert_eq!(
+            state.recv_down(fresh_monitor, Duration::from_millis(20)),
+            MONITOR_REASON_TIMEOUT
+        );
+
+        let downs =
+            state.take_link_downs_for_session(NodeId::from_bytes([7; 16]), 1, MONITOR_REASON_LOST);
+        assert_eq!(downs.len(), 1);
+        assert_eq!(downs[0].local_actor_id, 100);
+        assert!(state
+            .deliver_link_down_to_ref(fresh_link, fresh_target, 6)
+            .is_some());
+        assert!(state
+            .deliver_link_down_to_ref(old_link, old_target, 6)
+            .is_none());
+    }
+
+    #[test]
     fn drop_after_clean_exit_does_not_redeliver() {
         // R2: a clean exit delivers + is consumed, then the node drops; the
         // drop fan-out must NOT re-arm the slot (no second DOWN).
         let state = DistMonitorState::new();
-        let ref_id = state.register_watcher(7, 1);
-        assert!(state.deliver_to_ref(ref_id, 7, 6));
+        let target = location(7, 1);
+        let ref_id = state.register_watcher(target);
+        assert!(state.deliver_to_ref(ref_id, target, 6));
         assert_eq!(state.recv_down(ref_id, Duration::from_millis(50)), 6);
 
         // Node drops afterwards: slot is Consumed, so no re-arm.
-        assert_eq!(state.deliver_to_node(7, MONITOR_REASON_LOST), 0);
+        assert_eq!(
+            state.deliver_to_node(NodeId::from_bytes([7; 16]), MONITOR_REASON_LOST),
+            0
+        );
         assert_eq!(
             state.recv_down(ref_id, Duration::from_millis(20)),
             MONITOR_REASON_TIMEOUT
@@ -713,22 +802,24 @@ mod tests {
     #[test]
     fn recv_pending_times_out_then_delivers_after_arm() {
         let state = DistMonitorState::new();
-        let ref_id = state.register_watcher(7, 1);
+        let target = location(7, 1);
+        let ref_id = state.register_watcher(target);
         // No signal yet: a short recv times out without consuming anything.
         assert_eq!(
             state.recv_down(ref_id, Duration::from_millis(20)),
             MONITOR_REASON_TIMEOUT
         );
         // Now arm and recv: the still-Pending slot delivers.
-        assert!(state.deliver_to_ref(ref_id, 7, 5));
+        assert!(state.deliver_to_ref(ref_id, target, 5));
         assert_eq!(state.recv_down(ref_id, Duration::from_millis(50)), 5);
     }
 
     #[test]
     fn remove_watcher_returns_target_and_is_idempotent() {
         let state = DistMonitorState::new();
-        let ref_id = state.register_watcher(7, 99);
-        assert_eq!(state.remove_watcher(ref_id), Some((7, 99)));
+        let target = location(7, 99);
+        let ref_id = state.register_watcher(target);
+        assert_eq!(state.remove_watcher(ref_id), Some(target));
         // Idempotent: a second remove finds nothing.
         assert_eq!(state.remove_watcher(ref_id), None);
         // recv on the removed ref times out (no entry).
@@ -741,20 +832,25 @@ mod tests {
     #[test]
     fn target_side_register_dedupes_and_take_sweeps() {
         let state = DistMonitorState::new();
-        state.register_remote_watcher(50, 7, 100); // monitor
-        state.register_remote_watcher(50, 7, 100); // duplicate: ignored
-        state.register_remote_link_watcher(50, 9, 200); // link
+        state.register_remote_watcher(50, location(7, 1), 100); // monitor
+        state.register_remote_watcher(50, location(7, 1), 100); // duplicate: ignored
+        state.register_remote_link_watcher(50, location(9, 2), 200); // link
         assert!(state.has_remote_watchers(50));
 
-        let mut taken: Vec<(u16, u64, bool)> = state
+        let taken: Vec<(NodeId, u64, bool)> = state
             .take_remote_watchers(50)
             .into_iter()
-            .map(|w| (w.watcher_node_id, w.ref_id, w.is_link))
+            .map(|w| (w.watcher.node(), w.ref_id, w.is_link))
             .collect();
-        taken.sort_unstable();
         // The monitor watcher carries is_link=false; the link watcher is_link=true
         // so the terminal sweep routes CTRL_LINK_DOWN vs CTRL_MONITOR_DOWN.
-        assert_eq!(taken, vec![(7, 100, false), (9, 200, true)]);
+        assert_eq!(
+            taken,
+            vec![
+                (NodeId::from_bytes([7; 16]), 100, false),
+                (NodeId::from_bytes([9; 16]), 200, true)
+            ]
+        );
         // The sweep removed the entry.
         assert!(!state.has_remote_watchers(50));
         assert!(state.take_remote_watchers(50).is_empty());
@@ -763,12 +859,28 @@ mod tests {
     #[test]
     fn target_side_remove_remote_watcher_is_idempotent() {
         let state = DistMonitorState::new();
-        state.register_remote_watcher(50, 7, 100);
-        state.remove_remote_watcher(50, 7, 100);
+        let watcher = location(7, 1);
+        state.register_remote_watcher(50, watcher, 100);
+        state.remove_remote_watcher(50, watcher, 100);
         assert!(!state.has_remote_watchers(50));
         // Idempotent: removing again does not panic.
-        state.remove_remote_watcher(50, 7, 100);
-        state.remove_remote_watcher(999, 1, 1);
+        state.remove_remote_watcher(50, watcher, 100);
+        state.remove_remote_watcher(999, location(1, 1), 1);
+    }
+
+    #[test]
+    fn target_side_session_prune_preserves_fresh_watcher_session() {
+        let state = DistMonitorState::new();
+        state.register_remote_watcher(50, location_with_session(7, 1, 1), 100);
+        state.register_remote_watcher(50, location_with_session(7, 1, 2), 101);
+
+        assert_eq!(
+            state.prune_remote_watchers_for_session(NodeId::from_bytes([7; 16]), 1),
+            1
+        );
+        let remaining = state.take_remote_watchers(50);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].watcher, location_with_session(7, 1, 2));
     }
 
     /// Pruning a dead watcher node removes exactly its entries and leaves
@@ -777,16 +889,16 @@ mod tests {
     fn prune_remote_watchers_for_node_removes_dead_node_entries() {
         let state = DistMonitorState::new();
         // serial 50: watched by node 7 (two refs) and node 9 (one ref).
-        state.register_remote_watcher(50, 7, 100);
-        state.register_remote_watcher(50, 7, 101);
-        state.register_remote_watcher(50, 9, 200);
+        state.register_remote_watcher(50, location(7, 1), 100);
+        state.register_remote_watcher(50, location(7, 2), 101);
+        state.register_remote_watcher(50, location(9, 3), 200);
         // serial 51: watched only by node 7.
-        state.register_remote_watcher(51, 7, 102);
+        state.register_remote_watcher(51, location(7, 4), 102);
         // serial 52: watched only by node 9.
-        state.register_remote_watcher(52, 9, 201);
+        state.register_remote_watcher(52, location(9, 5), 201);
 
         // Node 7 dies — prune its entries from the target side.
-        let pruned = state.prune_remote_watchers_for_node(7);
+        let pruned = state.prune_remote_watchers_for_node(NodeId::from_bytes([7; 16]));
         // Three entries for node 7 across serials 50 and 51.
         assert_eq!(pruned, 3, "must prune exactly the three node-7 entries");
 
@@ -815,14 +927,14 @@ mod tests {
 
         // Negative: pruning again is a no-op.
         assert_eq!(
-            state.prune_remote_watchers_for_node(7),
+            state.prune_remote_watchers_for_node(NodeId::from_bytes([7; 16])),
             0,
             "second prune must be a no-op"
         );
 
         // Negative: pruning a node with no entries is a no-op.
         assert_eq!(
-            state.prune_remote_watchers_for_node(42),
+            state.prune_remote_watchers_for_node(NodeId::from_bytes([42; 16])),
             0,
             "pruning a node with no entries must return 0"
         );
@@ -834,13 +946,14 @@ mod tests {
     #[test]
     fn link_entry_fires_cascade_exactly_once() {
         let state = DistMonitorState::new();
-        let ref_id = state.register_link_watcher(7, 99, 12_345, POLICY_TAG_CRASH_LINKED);
+        let target = location(7, 99);
+        let ref_id = state.register_link_watcher(target, 12_345, POLICY_TAG_CRASH_LINKED);
         assert_ne!(ref_id, 0);
 
         // First link-down, authenticated as node 7 (the real linked-to peer),
         // fires the cascade carrying the local actor + policy.
         let down = state
-            .deliver_link_down_to_ref(ref_id, 7, 5)
+            .deliver_link_down_to_ref(ref_id, target, 5)
             .expect("first link-down must fire");
         assert_eq!(down.local_actor_id, 12_345);
         assert_eq!(down.reason, 5);
@@ -848,7 +961,7 @@ mod tests {
 
         // Second delivery is a no-op (fire-once): the entry is Consumed.
         assert!(
-            state.deliver_link_down_to_ref(ref_id, 7, 6).is_none(),
+            state.deliver_link_down_to_ref(ref_id, target, 6).is_none(),
             "second link-down must be a no-op"
         );
     }
@@ -862,43 +975,25 @@ mod tests {
     #[test]
     fn link_down_from_wrong_authenticated_peer_is_rejected() {
         let state = DistMonitorState::new();
-        let ref_id = state.register_link_watcher(7, 99, 777, POLICY_TAG_CRASH_LINKED);
+        let target = location(7, 99);
+        let ref_id = state.register_link_watcher(target, 777, POLICY_TAG_CRASH_LINKED);
 
         // Node 99 is connected and authenticated, but it is NOT the peer this
         // link was registered against (node 7) — the forged/misattributed case.
         assert!(
-            state.deliver_link_down_to_ref(ref_id, 99, 4321).is_none(),
+            state
+                .deliver_link_down_to_ref(ref_id, location(99, 99), 4321)
+                .is_none(),
             "a link-down from an unrelated authenticated peer must not fire the cascade"
         );
 
         // The entry must still be Pending: the real peer (node 7) can still
         // legitimately fire it later.
         let down = state
-            .deliver_link_down_to_ref(ref_id, 7, 4321)
+            .deliver_link_down_to_ref(ref_id, target, 4321)
             .expect("the real linked-to peer must still be able to fire the cascade");
         assert_eq!(down.local_actor_id, 777);
         assert_eq!(down.reason, 4321);
-    }
-
-    /// An unauthenticated sender (`authenticated_peer == 0`, e.g.
-    /// `peer_node_id_for_conn`'s documented fallback when no ACTIVE connection
-    /// matches the frame's `conn_id`) must never be admitted by an equality
-    /// coincidence against a `WatcherEntry.remote_node_id` of 0.
-    #[test]
-    fn link_down_with_zero_authenticated_peer_is_rejected_against_zero_remote_node_id() {
-        let state = DistMonitorState::new();
-        // Exercise the delivery guard against a zero-id watcher entry.
-        let ref_id = state.register_link_watcher(0, 99, 777, POLICY_TAG_CRASH_LINKED);
-
-        // Simulates the connection-teardown-race fallback: authenticated == 0.
-        // Without the explicit `authenticated_peer == 0` guard this would match
-        // `entry.remote_node_id == authenticated_peer` (`0 == 0`) and wrongly
-        // fire the cascade.
-        assert!(
-            state.deliver_link_down_to_ref(ref_id, 0, 4321).is_none(),
-            "an unauthenticated sender must not fire the cascade merely because \
-             the entry's remote_node_id also happens to be 0"
-        );
     }
 
     /// A `CTRL_MONITOR_DOWN`-style `deliver_to_ref` must NOT fire a LINK entry,
@@ -908,24 +1003,33 @@ mod tests {
     #[test]
     fn link_and_monitor_delivery_paths_do_not_cross() {
         let state = DistMonitorState::new();
-        let monitor_ref = state.register_watcher(7, 1);
-        let link_ref = state.register_link_watcher(7, 2, 500, POLICY_TAG_CRASH_LINKED);
+        let monitor_target = location(7, 1);
+        let link_target = location(7, 2);
+        let monitor_ref = state.register_watcher(monitor_target);
+        let link_ref = state.register_link_watcher(link_target, 500, POLICY_TAG_CRASH_LINKED);
 
         // A monitor DOWN must not fire the link entry.
         assert!(
-            state.deliver_link_down_to_ref(monitor_ref, 7, 5).is_none(),
+            state
+                .deliver_link_down_to_ref(monitor_ref, monitor_target, 5)
+                .is_none(),
             "link delivery must not fire a monitor entry"
         );
         // A link DOWN must not arm the monitor's recv slot.
         assert!(
-            !state.deliver_to_ref(link_ref, 7, 5),
+            !state.deliver_to_ref(link_ref, link_target, 5),
             "monitor delivery must not arm a link entry"
         );
 
         // Each fires only through its own path.
-        assert!(state.deliver_to_ref(monitor_ref, 7, 6), "monitor arms");
         assert!(
-            state.deliver_link_down_to_ref(link_ref, 7, 5).is_some(),
+            state.deliver_to_ref(monitor_ref, monitor_target, 6),
+            "monitor arms"
+        );
+        assert!(
+            state
+                .deliver_link_down_to_ref(link_ref, link_target, 5)
+                .is_some(),
             "link fires"
         );
     }
@@ -936,27 +1040,32 @@ mod tests {
     #[test]
     fn take_link_downs_for_node_fires_pending_links_only() {
         let state = DistMonitorState::new();
-        let a = state.register_link_watcher(7, 1, 100, POLICY_TAG_CRASH_LINKED);
-        let _b = state.register_link_watcher(7, 2, 200, POLICY_TAG_CRASH_LINKED);
-        let other = state.register_link_watcher(9, 3, 300, POLICY_TAG_CRASH_LINKED);
+        let a_target = location(7, 1);
+        let a = state.register_link_watcher(a_target, 100, POLICY_TAG_CRASH_LINKED);
+        let _b = state.register_link_watcher(location(7, 2), 200, POLICY_TAG_CRASH_LINKED);
+        let other_target = location(9, 3);
+        let other = state.register_link_watcher(other_target, 300, POLICY_TAG_CRASH_LINKED);
         // A monitor on the same node must NOT appear in the link fan-out.
-        let _m = state.register_watcher(7, 4);
+        let _m = state.register_watcher(location(7, 4));
 
         // `a` already received a definitive crash DOWN, authenticated as its own
         // registered peer (node 7).
-        assert!(state.deliver_link_down_to_ref(a, 7, 5).is_some());
+        assert!(state.deliver_link_down_to_ref(a, a_target, 5).is_some());
 
         // Connection drop to node 7: only the still-Pending link `b` fires
         // (MonitorLost == -1); `a` is Consumed, `other` is on node 9, the
         // monitor is not a link.
-        let downs = state.take_link_downs_for_node(7, MONITOR_REASON_LOST);
+        let downs =
+            state.take_link_downs_for_node(NodeId::from_bytes([7; 16]), MONITOR_REASON_LOST);
         assert_eq!(downs.len(), 1, "only the pending link on node 7 fires");
         assert_eq!(downs[0].local_actor_id, 200);
         assert_eq!(downs[0].reason, MONITOR_REASON_LOST);
 
         // `other` (node 9) untouched; still fires on its own node's drop,
         // authenticated as its own registered peer (node 9).
-        assert!(state.deliver_link_down_to_ref(other, 9, 5).is_some());
+        assert!(state
+            .deliver_link_down_to_ref(other, other_target, 5)
+            .is_some());
     }
 
     /// A non-`CrashLinked` policy is carried through the table verbatim so the
@@ -965,9 +1074,10 @@ mod tests {
     fn link_entry_carries_policy_tag_verbatim() {
         let state = DistMonitorState::new();
         // MonitorLost policy (tag 2) — non-fatal.
-        let ref_id = state.register_link_watcher(7, 1, 42, 2);
+        let target = location(7, 1);
+        let ref_id = state.register_link_watcher(target, 42, 2);
         let down = state
-            .deliver_link_down_to_ref(ref_id, 7, 6)
+            .deliver_link_down_to_ref(ref_id, target, 6)
             .expect("link-down fires regardless of policy; the runtime decides fatality");
         assert_eq!(down.policy_tag, 2, "policy tag round-trips verbatim");
         assert_eq!(down.local_actor_id, 42);
@@ -977,7 +1087,8 @@ mod tests {
     fn recv_blocks_until_concurrent_arm() {
         use std::sync::Arc;
         let state = Arc::new(DistMonitorState::new());
-        let ref_id = state.register_watcher(7, 1);
+        let target = location(7, 1);
+        let ref_id = state.register_watcher(target);
 
         let state_recv = Arc::clone(&state);
         let handle = std::thread::spawn(move || {
@@ -987,7 +1098,7 @@ mod tests {
 
         // Give the recv thread time to park on the condvar, then arm.
         std::thread::sleep(Duration::from_millis(50));
-        assert!(state.deliver_to_ref(ref_id, 7, 6));
+        assert!(state.deliver_to_ref(ref_id, target, 6));
 
         let reason = handle.join().expect("recv thread panicked");
         assert_eq!(reason, 6, "blocked recv must wake with the armed reason");
@@ -1004,10 +1115,11 @@ mod tests {
         use std::sync::Arc;
         use std::time::Instant;
         let state = Arc::new(DistMonitorState::new());
-        let ref_id = state.register_watcher(7, 1);
+        let target = location(7, 1);
+        let ref_id = state.register_watcher(target);
 
         // A sibling ref on another node — must NOT be disturbed by this remove.
-        let sibling_ref = state.register_watcher(9, 2);
+        let sibling_ref = state.register_watcher(location(9, 2));
 
         let state_recv = Arc::clone(&state);
         let started = Instant::now();
@@ -1021,7 +1133,7 @@ mod tests {
         let removed = state.remove_watcher(ref_id);
         assert_eq!(
             removed,
-            Some((7, 1)),
+            Some(target),
             "remove_watcher must return the target"
         );
 

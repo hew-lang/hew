@@ -181,6 +181,23 @@ pub struct HewLocation {
     pub reserved: u32,
 }
 
+/// C-compatible remote actor identity.
+///
+/// `RemotePid<T>` is a phantom-typed Hew value with the same carried runtime
+/// representation as [`HewLocation`].
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[repr(C)]
+pub struct HewRemotePid {
+    /// Key-derived node identity.
+    pub node: HewNodeId,
+    /// Node-local monotonic actor slot.
+    pub slot: u64,
+    /// Durable node-session incarnation.
+    pub incarnation: u32,
+    /// Must be zero.
+    pub reserved: u32,
+}
+
 /// Immutable carried actor location.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(transparent)]
@@ -232,6 +249,18 @@ impl From<Location> for HewLocation {
     }
 }
 
+impl From<Location> for HewRemotePid {
+    fn from(value: Location) -> Self {
+        let location = HewLocation::from(value);
+        Self {
+            node: location.node,
+            slot: location.slot,
+            incarnation: location.incarnation,
+            reserved: location.reserved,
+        }
+    }
+}
+
 impl TryFrom<HewLocation> for Location {
     type Error = InvalidLocation;
 
@@ -240,6 +269,19 @@ impl TryFrom<HewLocation> for Location {
             return Err(InvalidLocation::NonZeroReserved);
         }
         Self::new(value.node.into(), value.slot, value.incarnation)
+    }
+}
+
+impl TryFrom<HewRemotePid> for Location {
+    type Error = InvalidLocation;
+
+    fn try_from(value: HewRemotePid) -> Result<Self, Self::Error> {
+        Self::try_from(HewLocation {
+            node: value.node,
+            slot: value.slot,
+            incarnation: value.incarnation,
+            reserved: value.reserved,
+        })
     }
 }
 

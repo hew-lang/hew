@@ -24,6 +24,7 @@ use std::thread::{self, JoinHandle};
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
 use crate::envelope::encode_envelope_frame_from_raw_parts;
+use crate::node_identity::{HewLocation, HewRemotePid, Location};
 use crate::peer_binding::{
     ConfigState, PeerAuthSnapshot, PeerCredential, TransportSelection as PeerTransport,
     PEER_AUTH_STATE,
@@ -38,10 +39,9 @@ pub(crate) const NODE_STATE_RUNNING: u8 = 1;
 const NODE_STATE_STOPPING: u8 = 2;
 const NODE_STATE_STOPPED: u8 = 3;
 
-/// Remote-send rc returned by [`hew_node_send`] when the captured `RemotePid<T>`
-/// names a registration that has since been superseded — the `StaleRef`
-/// fail-closed boundary. The codegen send-path maps this distinct rc to
-/// `SendError::StaleRef`; every OTHER nonzero rc stays the generic routing
+/// Remote-send rc returned when a captured location's node, session, or local
+/// actor slot is no longer current. The codegen send-path maps this distinct rc
+/// to `SendError::StaleRef`; every other nonzero rc stays the generic routing
 /// failure. `pub` so the codegen cross-crate parity test pins its literal to
 /// this producer.
 pub const HEW_ERR_STALE_REF: c_int = -16;
@@ -387,140 +387,6 @@ fn quarantine_evict(node_id: u16) {
             set.remove(&node_id);
         });
     }
-}
-
-// ── Registration incarnation + supersession (actor-slot identity) ──────────────
-//
-// The actor-slot / registration incarnation dimension lives on `HewRegistry`.
-// DISTINCT from the node-level SWIM peer incarnation (the `quarantine` set):
-//   * `quarantine`             — "is the PEER I'm talking to the same incarnation?"
-//   * registration incarnation — "is the ACTOR REGISTRATION I captured still live?"
-// The two counters never read each other (LESSONS `monotonic-epoch-single-clock`).
-
-/// Record that `name` now resolves to `new_serial` on `registry`, bumping its
-/// registration incarnation when the name is re-pointed to a DIFFERENT actor and
-/// superseding the prior serial so any captured `RemotePid<T>` over it fails
-/// closed with `StaleRef` on dispatch.
-///
-/// Returns the registration incarnation for `name` after the update — `0` for a
-/// fresh registration, bumped on each re-registration to a new actor. A
-/// re-registration of the SAME serial is idempotent (no bump, no supersession).
-/// Both the local register path and the cluster gossip ADD path call this so the
-/// server and every client converge on the same supersession verdict.
-fn registration_record(registry: &HewRegistry, name: &str, new_serial: u64) -> u32 {
-    let prev_serial = registry.name_serials.lock_or_recover().get(name).copied();
-    let incarnation = {
-        let mut map = registry.incarnations.lock_or_recover();
-        if let Some(slot) = map.get_mut(name) {
-            if prev_serial == Some(new_serial) {
-                // Idempotent re-register of the same actor: no bump.
-                *slot
-            } else {
-                *slot = slot.saturating_add(1);
-                *slot
-            }
-        } else {
-            map.insert(name.to_string(), 0);
-            0
-        }
-    };
-    // Supersede the previous serial if the name now points at a different actor.
-    if let Some(prev) = prev_serial {
-        if prev != new_serial {
-            registry
-                .superseded_serials
-                .lock_or_recover()
-                .insert(prev, incarnation);
-        }
-    }
-    registry
-        .name_serials
-        .lock_or_recover()
-        .insert(name.to_string(), new_serial);
-    incarnation
-}
-
-/// Mark a serial superseded on `registry` directly. Used by actor-teardown
-/// (`unregister_actor_names`) where a still-live registration's actor is freed:
-/// any captured `RemotePid<T>` over that serial must fail closed with `StaleRef`
-/// rather than route to a dead / replacement actor. A bare unregister of a NAME
-/// does NOT call this — the name→serial bookkeeping persists so a later
-/// re-registration to a different actor supersedes the old serial through
-/// `registration_record`.
-fn registry_supersede_serial(registry: &HewRegistry, serial: u64) {
-    registry
-        .superseded_serials
-        .lock_or_recover()
-        .entry(serial)
-        .or_insert(0);
-}
-
-/// The live registration incarnation for a captured PID, resolved by the PID's
-/// serial against the current node's registry. Returns the incarnation a still-
-/// live registration carries, or `0` when the serial names no tracked
-/// registration / no node is installed. The bare-`u64` resolution path for
-/// `pid::hew_pid_incarnation`.
-pub(crate) fn registration_incarnation_for_serial(serial: u64) -> u32 {
-    with_current_node_read(|guard| {
-        let node = *guard as *const HewNode;
-        if node.is_null() {
-            return 0;
-        }
-        // SAFETY: the read lock pins CURRENT_NODE for the duration of this call.
-        let node = unsafe { &*node };
-        if node.registry.is_null() {
-            return 0;
-        }
-        // SAFETY: registry is valid while the node is installed.
-        let registry = unsafe { &*node.registry };
-        let live_name = registry
-            .name_serials
-            .lock_or_recover()
-            .iter()
-            .find(|(_, &s)| s == serial)
-            .map(|(n, _)| n.clone());
-        match live_name {
-            Some(name) => registry
-                .incarnations
-                .lock_or_recover()
-                .get(&name)
-                .copied()
-                .unwrap_or(0),
-            None => 0,
-        }
-    })
-}
-
-/// Whether a captured PID's serial has been superseded — consulted by the remote
-/// dispatch boundary (`hew_node_send` / ask / monitor) to fail closed with
-/// `StaleRef`. Resolves against the registry of the node the dispatch is leaving
-/// (the captured ref's local node), so a client that learned the supersession
-/// via gossip rejects its stale capture.
-fn serial_is_superseded(registry: &HewRegistry, serial: u64) -> bool {
-    registry
-        .superseded_serials
-        .lock_or_recover()
-        .contains_key(&serial)
-}
-
-/// The single `StaleRef` gate shared across the remote send / ask / monitor
-/// dispatch boundaries (LESSONS `cross-layer-name-gate-agreement` — one helper,
-/// not three divergent checks): does `target_pid` name a registration that has
-/// been superseded by a re-registration of its name to a different actor?
-///
-/// Fails CLOSED (LESSONS `boundary-fail-closed`, DI-012): a superseded capture
-/// is rejected here rather than routed to the live replacement. The check keys
-/// on the captured serial against the dispatching node's registry; a node with
-/// no registry (never started a distributed registry) has nothing to supersede,
-/// so the gate is open. The captured serial uniquely names its registration
-/// because serials are monotonic and never reused.
-fn dispatch_is_stale(node: &HewNode, target_pid: u64) -> bool {
-    if node.registry.is_null() {
-        return false;
-    }
-    // SAFETY: registry is valid while the node is installed.
-    let registry = unsafe { &*node.registry };
-    serial_is_superseded(registry, crate::pid::hew_pid_serial(target_pid))
 }
 
 /// Whether the current dispatch's partition policy is `Quarantine` AND a send/ask
@@ -1292,33 +1158,10 @@ pub(crate) unsafe fn try_remote_send(
 }
 
 /// Node-local distributed registry state.
-///
-/// `incarnations` / `name_serials` / `superseded_serials` together carry the
-/// actor-slot / registration **incarnation** dimension of the spec's
-/// `(NodeId, slot, incarnation)` identity — DISTINCT from the node-level SWIM
-/// peer incarnation (`NodeSlot::quarantine`). They live on the registry (not the
-/// per-runtime `NodeSlot`) because both the local register/unregister path
-/// (`node.registry`) AND the cluster gossip callback (`user_data` → registry)
-/// must keep them in lockstep, and the gossip callback can run on a
-/// connection-reader thread with no installed runtime.
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct HewRegistry {
-    remote_names: Mutex<HashMap<String, u64>>,
-    /// Registration incarnation per name: `0` for a fresh registration, bumped
-    /// each time the name is re-pointed to a DIFFERENT actor.
-    incarnations: Mutex<HashMap<String, u32>>,
-    /// The serial each name currently resolves to. Persists across a bare
-    /// unregister so a later re-registration to a different actor can detect the
-    /// re-point and supersede the prior serial.
-    name_serials: Mutex<HashMap<String, u64>>,
-    /// Serials whose registration has been superseded by a re-registration of
-    /// the same name to a different actor (or whose actor was torn down). Serials
-    /// are monotonic and never reused, so a captured `RemotePid<T>` (a bare
-    /// `u64`) uniquely names its original registration; a hit here makes the
-    /// remote dispatch boundary fail closed with `StaleRef`. Value = the
-    /// incarnation it was superseded at (diagnostics).
-    superseded_serials: Mutex<HashMap<u64, u32>>,
+    remote_names: Mutex<HashMap<String, Location>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1336,7 +1179,7 @@ unsafe impl Send for SendConnMgr {}
 /// Integrates transport, connections, cluster membership, and registry.
 #[repr(C)]
 pub struct HewNode {
-    /// Transitional compact route slot used by the v1 protocol.
+    /// Receiver-local route slot used only for internal dispatch and SWIM.
     pub route_slot: u16,
     /// Bind address for incoming connections
     pub bind_addr: *const c_char,
@@ -1348,7 +1191,7 @@ pub struct HewNode {
     pub conn_mgr: *mut HewConnMgr,
     /// Cluster membership state
     pub cluster: *mut HewCluster,
-    /// PID routing table for remote node delivery.
+    /// Exact-location routing table for remote node delivery.
     pub routing_table: *mut HewRoutingTable,
     /// Local + remote registry
     pub registry: *mut HewRegistry,
@@ -1391,33 +1234,44 @@ fn forget_node(node: *mut HewNode) {
     });
 }
 
-fn take_registry_names_if<F>(registry: &HewRegistry, mut predicate: F) -> Vec<String>
+fn take_registry_names_if<F>(registry: &HewRegistry, mut predicate: F) -> Vec<(String, Location)>
 where
-    F: FnMut(u64) -> bool,
+    F: FnMut(Location) -> bool,
 {
     let mut map = registry.remote_names.lock_or_recover();
-    let names: Vec<String> = map
+    let names: Vec<(String, Location)> = map
         .iter()
-        .filter(|(_, actor_id)| predicate(**actor_id))
-        .map(|(name, _)| name.clone())
+        .filter(|(_, location)| predicate(**location))
+        .map(|(name, location)| (name.clone(), *location))
         .collect();
-    for name in &names {
+    for (name, _) in &names {
         map.remove(name);
     }
     names
 }
 
-unsafe fn unregister_names_from_node(node: &HewNode, names: Vec<String>, emit_gossip_remove: bool) {
-    for name in names {
+unsafe fn unregister_names_from_node(
+    node: &HewNode,
+    names: Vec<(String, Location)>,
+    emit_gossip_remove: bool,
+) {
+    for (name, location) in names {
         let Ok(c_name) = CString::new(name) else {
             continue;
         };
         // SAFETY: `c_name` is a valid NUL-terminated string for the call.
         unsafe { crate::registry::hew_registry_unregister(c_name.as_ptr()) };
         if emit_gossip_remove && !node.cluster.is_null() {
+            let location = HewLocation::from(location);
             // SAFETY: node teardown is serialized against actor-free cleanup by
             // KNOWN_NODES, so the cluster pointer stays valid for this call.
-            unsafe { cluster::hew_cluster_registry_remove(node.cluster, c_name.as_ptr()) };
+            unsafe {
+                cluster::hew_cluster_registry_remove(
+                    node.cluster,
+                    c_name.as_ptr(),
+                    &raw const location,
+                );
+            };
         }
     }
 }
@@ -1428,8 +1282,8 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
     }
     // SAFETY: registry belongs to `node` for the node lifetime.
     let registry = unsafe { &*node.registry };
-    let names = take_registry_names_if(registry, |actor_id| {
-        crate::pid::hew_pid_node(actor_id) == node.route_slot
+    let names = take_registry_names_if(registry, |location| {
+        Some(location.node()) == node.auth.node_identity()
     });
     // Node shutdown is the decommission path; remote peers prune their cached
     // names when they observe the corresponding left/dead membership event.
@@ -1445,7 +1299,7 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
 /// Called from actor teardown so long-running runtimes do not retain stale
 /// local names after a named actor is freed or restarted.
 pub(crate) unsafe fn unregister_actor_names(actor_id: u64) {
-    let owner_node_id = crate::pid::hew_pid_node(actor_id);
+    let actor_slot = crate::pid::hew_pid_serial(actor_id);
     let _ = with_known_nodes_opt(|known| {
         for entry in known.iter().copied() {
             if entry.0.is_null() {
@@ -1453,25 +1307,18 @@ pub(crate) unsafe fn unregister_actor_names(actor_id: u64) {
             }
             // SAFETY: KNOWN_NODES holds node allocations live until `forget_node`.
             let node = unsafe { &*entry.0 };
-            if owner_node_id != 0 && node.route_slot != owner_node_id {
-                continue;
-            }
             if node.registry.is_null() {
                 continue;
             }
 
             // SAFETY: registry belongs to `node` for the node lifetime.
             let registry = unsafe { &*node.registry };
-            let names =
-                take_registry_names_if(registry, |registered_actor| registered_actor == actor_id);
+            let names = take_registry_names_if(registry, |location| {
+                Some(location.node()) == node.auth.node_identity() && location.slot() == actor_slot
+            });
             if names.is_empty() {
                 continue;
             }
-
-            // The actor backing these registrations is being torn down: supersede
-            // its serial so any captured `RemotePid<T>` over it fails closed with
-            // StaleRef rather than routing to a freed or replacement actor.
-            registry_supersede_serial(registry, crate::pid::hew_pid_serial(actor_id));
 
             let emit_gossip_remove =
                 node.state.load(Ordering::Acquire) == NODE_STATE_RUNNING && !node.cluster.is_null();
@@ -2065,11 +1912,11 @@ fn send_reply_envelope(
 /// from a remote peer. Updates the node's `remote_names` map.
 extern "C" fn node_registry_gossip_callback(
     name: *const c_char,
-    actor_id: u64,
+    location: *const HewLocation,
     is_add: bool,
     user_data: *mut c_void,
 ) {
-    if name.is_null() || user_data.is_null() {
+    if name.is_null() || location.is_null() || user_data.is_null() {
         return;
     }
     // SAFETY: user_data is a *mut HewRegistry pointer set during hew_node_start,
@@ -2079,49 +1926,16 @@ extern "C" fn node_registry_gossip_callback(
     let key = unsafe { CStr::from_ptr(name) }
         .to_string_lossy()
         .into_owned();
-    let inserted = {
-        let mut map = registry.remote_names.lock_or_recover();
-        if is_add {
-            // Fail-closed registration-string boundary (gossip side): an inbound
-            // ADD for a name that is already mapped to a DIFFERENT actor is a
-            // cluster-wide ambiguity — two distinct actors (possibly two distinct
-            // qualified actor types) chose the same registration string. Keep the
-            // existing mapping and RECORD the refusal rather than silently
-            // re-pointing routing at whichever gossip arrived last. Qualified
-            // registration keys on the gossip wire (a CDDL/CBOR RegistryEvent
-            // change) are the tracked full fix.
-            match map.get(&key) {
-                Some(existing) if *existing != actor_id => {
-                    set_last_error(format!(
-                        "registry gossip: name `{key}` is already registered to \
-                         actor {existing}; refusing gossiped re-registration to \
-                         actor {actor_id} — registration strings carry no \
-                         actor-type qualifier on the wire, so the conflict cannot \
-                         be disambiguated (qualified registration keys are a \
-                         tracked follow-up)"
-                    ));
-                    false
-                }
-                _ => {
-                    map.insert(key.clone(), actor_id);
-                    true
-                }
-            }
-        } else {
-            map.remove(&key);
-            false
-        }
+    // SAFETY: caller guarantees `location` is readable for the callback.
+    let Ok(location) = Location::try_from(unsafe { *location }) else {
+        set_last_error("registry gossip callback received an invalid Location");
+        return;
     };
-
-    // Mirror the local register path's incarnation bookkeeping on the gossip
-    // side so a client converges on the same supersession verdict as the server:
-    // when a name is re-pointed (via the server's unregister→re-register, which
-    // arrives as a remove then a fresh add), the client supersedes the serial it
-    // previously captured for that name. Done outside the `remote_names` lock to
-    // avoid nesting registry locks.
-    if inserted {
-        let _incarnation =
-            registration_record(registry, &key, crate::pid::hew_pid_serial(actor_id));
+    let mut map = registry.remote_names.lock_or_recover();
+    if is_add {
+        map.insert(key, location);
+    } else if map.get(&key) == Some(&location) {
+        map.remove(&key);
     }
 }
 
@@ -2219,10 +2033,6 @@ fn actor_id_to_registry_ptr(actor_id: u64) -> *mut c_void {
     encoded as *mut c_void
 }
 
-fn registry_ptr_to_actor_id(actor_ptr: *mut c_void) -> u64 {
-    u64::try_from(actor_ptr as usize).expect("usize always fits in u64")
-}
-
 /// Callback invoked by the cluster when a peer leaves or is declared dead.
 /// Drops any cached remote names owned by that departed node.
 extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut c_void) {
@@ -2235,11 +2045,17 @@ extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut 
         return;
     }
 
-    // SAFETY: user_data is a *mut HewRegistry installed during hew_node_start.
-    let registry = unsafe { &*(user_data.cast::<HewRegistry>()) };
-    let _ = take_registry_names_if(registry, |actor_id| {
-        crate::pid::hew_pid_node(actor_id) == node_id
-    });
+    // SAFETY: user_data is the owning HewNode installed during hew_node_start.
+    let node = unsafe { &*(user_data.cast::<HewNode>()) };
+    let Some(dead_identity) = node.auth.node_id_for_route_slot(node_id) else {
+        return;
+    };
+    if node.registry.is_null() {
+        return;
+    }
+    // SAFETY: registry belongs to the live callback-owning node.
+    let registry = unsafe { &*node.registry };
+    let _ = take_registry_names_if(registry, |location| location.node() == dead_identity);
 }
 
 /// Create a new unified distributed node runtime.
@@ -2461,8 +2277,13 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.routing_table.is_null() {
-        // SAFETY: constructor returns owned routing table pointer or null.
-        node.routing_table = unsafe { routing::hew_routing_table_new(node.route_slot) };
+        let configured_routes = node.auth.configured_node_routes();
+        node.routing_table = routing::hew_routing_table_new(
+            node.route_slot,
+            node.auth.node_identity(),
+            node.auth.session_incarnation(),
+            &configured_routes,
+        );
         if node.routing_table.is_null() {
             fail_start!("hew_node_start: failed to create routing table");
         }
@@ -2501,7 +2322,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
             cluster::hew_cluster_set_membership_callback(
                 node.cluster,
                 node_membership_callback,
-                node.registry.cast::<c_void>(),
+                (node as *mut HewNode).cast::<c_void>(),
             );
             cluster::hew_cluster_set_registry_callback(
                 node.cluster,
@@ -2802,65 +2623,39 @@ pub unsafe extern "C" fn hew_node_register(
     let key = unsafe { CStr::from_ptr(name) }
         .to_string_lossy()
         .into_owned();
+    let Some(location) = local_actor_location(node, actor) else {
+        set_last_error("hew_node_register: node has no authenticated Location authority");
+        return -1;
+    };
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
-
-    // Fail-closed registration-string boundary: the user-chosen string is the
-    // cluster-wide routing key, and it carries NO actor-type qualifier on the
-    // wire — two DISTINCT actors (possibly two distinct qualified actor
-    // types, e.g. `bank.Account` and `store.Account`) registering the same
-    // string would silently re-point cluster routing. Refuse the second
-    // registration with a recorded diagnostic instead of clobbering the
-    // mapping. Re-registering the SAME actor under its existing name is
-    // idempotent. Full fix — qualified registration keys on the gossip wire
-    // (a CDDL/CBOR RegistryEvent change) — is a tracked follow-up; this
-    // boundary only refuses the ambiguity, it cannot disambiguate it.
-    {
-        let map = reg.remote_names.lock_or_recover();
-        if let Some(existing) = map.get(&key).copied() {
-            if existing != actor {
-                drop(map);
-                set_last_error(format!(
-                    "hew_node_register: name `{key}` is already registered to \
-                     actor {existing}; refusing to re-point it to actor {actor} \
-                     — registration strings are cluster-wide routing keys and \
-                     carry no actor-type qualifier, so the conflict cannot be \
-                     disambiguated (qualified registration keys on the gossip \
-                     wire are a tracked follow-up). Unregister the existing \
-                     name first or choose a distinct string"
-                ));
-                return -1;
-            }
-        }
+    let previous = reg.remote_names.lock_or_recover().get(&key).copied();
+    if previous == Some(location) {
+        return 0;
     }
-
+    if previous.is_some() {
+        // SAFETY: name is a valid C string by contract.
+        unsafe { crate::registry::hew_registry_unregister(name) };
+    }
     // SAFETY: registry API expects a stable C string pointer.
-    let rc =
-        unsafe { crate::registry::hew_registry_register(name, actor_id_to_registry_ptr(actor)) };
-    if rc != 0 {
+    if unsafe { crate::registry::hew_registry_register(name, actor_id_to_registry_ptr(actor)) } != 0
+    {
         return -1;
     }
-
-    {
-        let mut map = reg.remote_names.lock_or_recover();
-        map.insert(key.clone(), actor);
-    }
-
-    // Record the registration incarnation for this name. A re-registration to a
-    // DIFFERENT actor (e.g. after an unregister) bumps the incarnation and
-    // supersedes the prior serial, so a captured `RemotePid<T>` over the old
-    // actor fails closed with `StaleRef` at the dispatch boundary.
-    let _incarnation = registration_record(reg, &key, crate::pid::hew_pid_serial(actor));
+    reg.remote_names
+        .lock_or_recover()
+        .insert(key.clone(), location);
 
     // Propagate to cluster gossip so remote nodes learn about this actor.
     if !node.cluster.is_null() {
+        let abi_location = HewLocation::from(location);
         // SAFETY: cluster pointer is valid while the node is alive.
-        unsafe { cluster::hew_cluster_registry_add(node.cluster, name, actor) };
+        unsafe { cluster::hew_cluster_registry_add(node.cluster, name, &raw const abi_location) };
     }
     if !node.conn_mgr.is_null() {
         // SAFETY: connection manager pointer is valid while the node is alive.
         unsafe {
-            connection::hew_connmgr_broadcast_registry_gossip(node.conn_mgr, &key, actor, true);
+            connection::hew_connmgr_broadcast_registry_gossip(node.conn_mgr, &key, location, true);
         }
     }
 
@@ -2894,26 +2689,29 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
         .into_owned();
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
-    let removed_actor = {
+    let removed_location = {
         let mut map = reg.remote_names.lock_or_recover();
         map.remove(&key)
+    };
+    let Some(removed_location) = removed_location else {
+        return 0;
     };
 
     // Propagate removal to cluster gossip.
     if !node.cluster.is_null() {
+        let abi_location = HewLocation::from(removed_location);
         // SAFETY: cluster pointer is valid while the node is alive.
-        unsafe { cluster::hew_cluster_registry_remove(node.cluster, name) };
+        unsafe {
+            cluster::hew_cluster_registry_remove(node.cluster, name, &raw const abi_location);
+        };
     }
     if !node.conn_mgr.is_null() {
-        let Some(removed_actor) = removed_actor else {
-            return 0;
-        };
         // SAFETY: connection manager pointer is valid while the node is alive.
         unsafe {
             connection::hew_connmgr_broadcast_registry_gossip(
                 node.conn_mgr,
                 &key,
-                removed_actor,
+                removed_location,
                 false,
             );
         }
@@ -2922,26 +2720,24 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
     0
 }
 
-/// Look up an actor ID by name.
+/// Look up an exact actor location by name.
 ///
 /// # Safety
 ///
 /// - `node` must be valid.
 /// - `name` must be a valid NUL-terminated C string.
+/// - `out` must be writable when non-null. It is written only on success.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char) -> u64 {
-    cabi_guard!(node.is_null() || name.is_null(), 0);
+pub unsafe extern "C" fn hew_node_lookup_location(
+    node: *mut HewNode,
+    name: *const c_char,
+    out: *mut HewRemotePid,
+) -> c_int {
+    cabi_guard!(node.is_null() || name.is_null() || out.is_null(), -1);
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &*node };
-
-    // SAFETY: registry API expects a valid C string pointer.
-    let local_ptr = unsafe { crate::registry::hew_registry_lookup(name) };
-    if !local_ptr.is_null() {
-        return registry_ptr_to_actor_id(local_ptr);
-    }
-
     if node.registry.is_null() {
-        return 0;
+        return -1;
     }
     // SAFETY: name is non-null and valid by caller contract.
     let key = unsafe { CStr::from_ptr(name) }
@@ -2950,10 +2746,38 @@ pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
     let map = reg.remote_names.lock_or_recover();
-    map.get(&key).copied().unwrap_or(0)
+    let Some(location) = map.get(&key).copied() else {
+        return -1;
+    };
+    // SAFETY: caller guarantees `out` is writable.
+    unsafe { out.write(HewRemotePid::from(location)) };
+    0
 }
 
-/// Send a message to a target PID, routing local vs remote by PID node ID.
+/// Temporary scalar compiler adapter, retained until Stage 3b migrates PID
+/// aggregates. Runtime registry and routing remain exact-`Location`.
+///
+/// # Safety
+///
+/// `node` must be valid and `name` must point to a NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char) -> u64 {
+    cabi_guard!(node.is_null() || name.is_null(), 0);
+    let mut remote_pid = HewRemotePid::default();
+    // SAFETY: arguments satisfy the exact lookup contract.
+    if unsafe { hew_node_lookup_location(node, name, &raw mut remote_pid) } != 0 {
+        return 0;
+    }
+    let Ok(location) = Location::try_from(remote_pid) else {
+        return 0;
+    };
+    // SAFETY: caller guarantees node pointer validity.
+    let node = unsafe { &*node };
+    // SAFETY: routing table is owned by the live node.
+    unsafe { routing::packed_pid_for_location(node.routing_table, location) }.unwrap_or(0)
+}
+
+/// Send a message to an exact target location.
 ///
 /// `dispatch` is the TARGET actor TYPE's dispatch function pointer, keying the
 /// cross-node serialize codec `(dispatch, msg_type)` on the remote path. Unused
@@ -2962,18 +2786,23 @@ pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char
 /// # Safety
 ///
 /// - `node` must be valid.
+/// - `target` must point to a valid `HewRemotePid`.
 /// - `payload` must be valid for `payload_len` bytes, or null when len is 0.
 /// - `dispatch` is an opaque codec key, never dereferenced.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_send(
+#[allow(
+    clippy::too_many_lines,
+    reason = "function coordinates exact routing, serialization, and transport ownership"
+)]
+pub unsafe extern "C" fn hew_node_send_location(
     node: *mut HewNode,
-    target_pid: u64,
+    target: *const HewRemotePid,
     dispatch: *const c_void,
     msg_type: i32,
     payload: *const u8,
     payload_len: usize,
 ) -> c_int {
-    if node.is_null() || (payload.is_null() && payload_len > 0) {
+    if node.is_null() || target.is_null() || (payload.is_null() && payload_len > 0) {
         return -1;
     }
     // SAFETY: caller guarantees node pointer validity.
@@ -2981,23 +2810,38 @@ pub unsafe extern "C" fn hew_node_send(
     if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING {
         return -1;
     }
-
-    // StaleRef gate (shared with the ask + monitor paths): a captured
-    // `RemotePid<T>` whose registration has been superseded by a re-registration
-    // of its name to a different actor fails CLOSED here — it is never routed to
-    // the live replacement (DI-012 / LESSONS `boundary-fail-closed`).
-    if dispatch_is_stale(node, target_pid) {
-        set_last_error(format!(
-            "remote send refused: target pid serial {} names a superseded actor \
-             registration (the name was re-registered to a different actor); the \
-             captured RemotePid is stale",
-            crate::pid::hew_pid_serial(target_pid)
-        ));
+    // SAFETY: caller guarantees `target` is readable.
+    let Ok(target) = Location::try_from(unsafe { *target }) else {
+        set_last_error("hew_node_send_location: invalid target Location");
         return HEW_ERR_STALE_REF;
-    }
+    };
 
-    let target_node_id = crate::pid::hew_pid_node(target_pid);
-    if target_node_id == 0 || target_node_id == node.route_slot {
+    // SAFETY: routing table belongs to the running node.
+    let (target_pid, target_node_id, conn_id) =
+        match unsafe { routing::hew_routing_lookup_location(node.routing_table, target) } {
+            routing::LocationRoute::Local { actor_id } => {
+                if crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_none() {
+                    set_last_error("remote send refused: target actor slot is stale");
+                    return HEW_ERR_STALE_REF;
+                }
+                (actor_id, node.route_slot, None)
+            }
+            routing::LocationRoute::Remote {
+                actor_id,
+                route_slot,
+                conn,
+            } => (actor_id, route_slot, Some(conn)),
+            routing::LocationRoute::Partition => {
+                set_last_error("remote send refused: target identity has no live connection");
+                return -1;
+            }
+            routing::LocationRoute::StaleRef => {
+                set_last_error("remote send refused: target Location is stale");
+                return HEW_ERR_STALE_REF;
+            }
+        };
+
+    if conn_id.is_none() {
         // SAFETY: actor send API handles null payload when len is 0.
         return unsafe {
             crate::actor::hew_actor_send_by_id(
@@ -3013,11 +2857,9 @@ pub unsafe extern "C" fn hew_node_send(
     if node.conn_mgr.is_null() {
         return -1;
     }
-    // SAFETY: routing table pointer is valid while node is running.
-    let conn_id = unsafe { routing::hew_routing_lookup(node.routing_table, target_pid) };
-    if conn_id < 0 {
+    let Some(conn_id) = conn_id else {
         return -1;
-    }
+    };
 
     // Quarantine consult: under a Quarantine policy, a buried peer that has not
     // rejoined at a strictly higher incarnation fails closed here — before any
@@ -3083,13 +2925,14 @@ pub unsafe extern "C" fn hew_node_send(
         Some((bytes, len)) => (bytes, len),
         None => (std::ptr::null_mut(), 0),
     };
+    let abi_target = HewLocation::from(target);
     // SAFETY: conn_mgr and conn_id were validated above; send_ptr/send_len are the
     // serialized bytes (or null/0 for an empty payload).
     let rc = unsafe {
         connection::hew_connmgr_send(
             node.conn_mgr,
             conn_id,
-            target_pid,
+            &raw const abi_target,
             msg_type,
             send_ptr,
             send_len,
@@ -3101,6 +2944,48 @@ pub unsafe extern "C" fn hew_node_send(
         unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
     }
     rc
+}
+
+/// Temporary scalar compiler adapter, retained until Stage 3b migrates PID
+/// aggregates. Runtime dispatch resolves the current scalar alias once and then
+/// routes only by the resulting exact `Location`.
+///
+/// # Safety
+///
+/// - `node` must be valid.
+/// - `payload` must be valid for `payload_len` bytes, or null when len is 0.
+/// - `dispatch` is an opaque codec key, never dereferenced.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_send(
+    node: *mut HewNode,
+    target_pid: u64,
+    dispatch: *const c_void,
+    msg_type: i32,
+    payload: *const u8,
+    payload_len: usize,
+) -> c_int {
+    cabi_guard!(node.is_null(), -1);
+    // SAFETY: caller guarantees node pointer validity.
+    let node_ref = unsafe { &*node };
+    // SAFETY: routing table belongs to the live node.
+    let Some(location) =
+        (unsafe { routing::location_from_packed_pid(node_ref.routing_table, target_pid) })
+    else {
+        set_last_error("hew_node_send: packed compiler PID has no current Location");
+        return HEW_ERR_STALE_REF;
+    };
+    let target = HewRemotePid::from(location);
+    // SAFETY: forwarded arguments satisfy the exact send contract.
+    unsafe {
+        hew_node_send_location(
+            node,
+            &raw const target,
+            dispatch,
+            msg_type,
+            payload,
+            payload_len,
+        )
+    }
 }
 
 // ── Cross-node monitor ───────────────────────────────────────────────────────
@@ -3140,7 +3025,7 @@ fn setup_ref_id(ref_id: u64) -> i64 {
 /// `node` must be a valid running `HewNode` pointer.
 unsafe fn send_monitor_control_frame(
     node: &HewNode,
-    target_pid: u64,
+    target: Location,
     ctrl_kind: u64,
     payload: Vec<u8>,
 ) -> c_int {
@@ -3149,11 +3034,18 @@ unsafe fn send_monitor_control_frame(
         return -1;
     }
     // SAFETY: routing table pointer is valid while the node is running.
-    let conn_id = unsafe { routing::hew_routing_lookup(node.routing_table, target_pid) };
-    if conn_id < 0 {
-        set_last_error("cross-node monitor: no route to target node");
-        return -1;
-    }
+    let conn_id = match unsafe { routing::hew_routing_lookup_location(node.routing_table, target) }
+    {
+        routing::LocationRoute::Remote { conn, .. } => conn,
+        routing::LocationRoute::Partition => {
+            set_last_error("cross-node monitor: target identity is partitioned");
+            return -1;
+        }
+        routing::LocationRoute::Local { .. } | routing::LocationRoute::StaleRef => {
+            set_last_error("cross-node monitor: target Location is invalid or stale");
+            return HEW_ERR_STALE_REF;
+        }
+    };
     let frame = crate::envelope::ControlFrame {
         version: crate::envelope::WIRE_VERSION,
         ctrl_kind,
@@ -3175,19 +3067,12 @@ unsafe fn send_monitor_control_frame(
 }
 
 fn local_actor_location(node: &HewNode, actor_id: u64) -> Option<crate::node_identity::Location> {
-    if node.conn_mgr.is_null() {
-        return None;
-    }
-    // SAFETY: the manager is owned by this running node.
-    connection::local_location_for_actor(unsafe { &*node.conn_mgr }, actor_id)
-}
-
-fn remote_actor_location(node: &HewNode, actor_id: u64) -> Option<crate::node_identity::Location> {
-    if node.conn_mgr.is_null() {
-        return None;
-    }
-    // SAFETY: the manager is owned by this running node.
-    connection::remote_location_for_actor(unsafe { &*node.conn_mgr }, actor_id)
+    Location::new(
+        node.auth.node_identity()?,
+        crate::pid::hew_pid_serial(actor_id),
+        node.auth.session_incarnation()?,
+    )
+    .ok()
 }
 
 /// `monitor(RemotePid<T>)` → register a cross-node monitor and return its
@@ -3203,37 +3088,47 @@ fn remote_actor_location(node: &HewNode, actor_id: u64) -> Option<crate::node_id
 /// negative `MonitorError` codes encoded as `-(variant + 1)`, so the Hew surface
 /// constructs `Result<MonitorRef, MonitorError>` and never manufactures an
 /// invalid zero-valued handle.
+///
+/// # Safety
+///
+/// `target` must point to a readable `HewRemotePid`.
 #[no_mangle]
-pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
+pub unsafe extern "C" fn hew_node_monitor_location(target: *const HewRemotePid) -> i64 {
+    if target.is_null() {
+        return MONITOR_ERR_INVALID_TARGET;
+    }
+    // SAFETY: caller guarantees `target` is readable.
+    let Ok(target) = Location::try_from(unsafe { *target }) else {
+        return MONITOR_ERR_STALE_REF;
+    };
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("hew_node_monitor: no runtime installed");
         return MONITOR_ERR_NODE_NOT_RUNNING;
     };
-    let remote_node_id = crate::pid::hew_pid_node(target_pid);
-    let target_serial = crate::pid::hew_pid_serial(target_pid);
-    if remote_node_id == 0 || remote_node_id == rt.node.local_route_slot() {
+    let Some(target_route) = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return None;
+        }
+        // SAFETY: current-node read lock pins the node.
+        Some(unsafe { routing::hew_routing_lookup_location((*node).routing_table, target) })
+    }) else {
+        set_last_error("hew_node_monitor: no active node");
+        return MONITOR_ERR_NODE_NOT_RUNNING;
+    };
+    if matches!(target_route, routing::LocationRoute::Local { .. }) {
         // Not a remote target — the cross-node route does not apply. The checker
         // routes only RemotePid receivers here, but guard fail-closed anyway.
         set_last_error("hew_node_monitor: target is not on a remote node");
         return MONITOR_ERR_INVALID_TARGET;
     }
-
-    // StaleRef gate (shared with the send + ask paths): a captured
-    // `RemotePid<T>` whose registration has been superseded fails CLOSED here —
-    // no watcher is registered against the stale capture, and the typed
-    // StaleRef setup error is returned. The diagnostic names StaleRef so the
-    // cause is not collapsed into the generic no-route case.
-    let stale = with_current_node_read(|guard| {
-        let node = *guard as *const HewNode;
-        // SAFETY: read lock pins the current node pointer for this check.
-        !node.is_null() && dispatch_is_stale(unsafe { &*node }, target_pid)
-    });
-    if stale {
-        set_last_error(format!(
-            "hew_node_monitor: target pid serial {target_serial} names a superseded \
-             actor registration; the captured RemotePid is stale (StaleRef)"
-        ));
+    if matches!(target_route, routing::LocationRoute::StaleRef) {
+        set_last_error("hew_node_monitor: target Location is stale");
         return MONITOR_ERR_STALE_REF;
+    }
+    if matches!(target_route, routing::LocationRoute::Partition) {
+        set_last_error("hew_node_monitor: target identity is partitioned");
+        return MONITOR_ERR_PARTITION;
     }
     let watcher_actor = crate::actor::hew_actor_self();
     if watcher_actor.is_null() {
@@ -3242,17 +3137,14 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
     }
     // SAFETY: `hew_actor_self` returned a live actor pointer.
     let watcher_actor_id = unsafe { (*watcher_actor).id };
-    let Some((watcher, target)) = with_current_node_read(|guard| {
+    let Some(watcher) = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
         if node.is_null() {
             return None;
         }
         // SAFETY: the current-node read lock pins the node.
         let node = unsafe { &*node };
-        Some((
-            local_actor_location(node, watcher_actor_id)?,
-            remote_actor_location(node, target_pid)?,
-        ))
+        local_actor_location(node, watcher_actor_id)
     }) else {
         set_last_error("hew_node_monitor: exact watcher/target Location is unavailable");
         return MONITOR_ERR_STALE_REF;
@@ -3260,9 +3152,7 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
 
     // Record the watcher entry first so the connection-drop / SWIM-DEAD fan-out
     // can deliver even if the request send races a drop.
-    let ref_id = rt
-        .dist_monitors
-        .register_watcher(remote_node_id, target_serial);
+    let ref_id = rt.dist_monitors.register_watcher(target);
 
     let payload =
         match crate::envelope::encode_monitor_req_payload(&crate::envelope::MonitorReqPayload {
@@ -3290,16 +3180,15 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
         let node_ref = unsafe { &*node };
         // SAFETY: node_ref is valid for this call.
         Some(unsafe {
-            send_monitor_control_frame(
-                node_ref,
-                target_pid,
-                crate::envelope::CTRL_MONITOR_REQ,
-                payload,
-            )
+            send_monitor_control_frame(node_ref, target, crate::envelope::CTRL_MONITOR_REQ, payload)
         })
     });
     match send_result {
         Some(0) => setup_ref_id(ref_id),
+        Some(HEW_ERR_STALE_REF) => {
+            rt.dist_monitors.remove_watcher(ref_id);
+            MONITOR_ERR_STALE_REF
+        }
         Some(_) => {
             rt.dist_monitors.remove_watcher(ref_id);
             MONITOR_ERR_PARTITION
@@ -3309,6 +3198,24 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
             MONITOR_ERR_LOCAL_SHUTDOWN
         }
     }
+}
+
+/// Temporary scalar compiler adapter for Stage 3b.
+#[no_mangle]
+pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
+    let Some(location) = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return None;
+        }
+        // SAFETY: read lock pins the current node.
+        unsafe { routing::location_from_packed_pid((*node).routing_table, target_pid) }
+    }) else {
+        return MONITOR_ERR_STALE_REF;
+    };
+    let target = HewRemotePid::from(location);
+    // SAFETY: target is a valid stack value.
+    unsafe { hew_node_monitor_location(&raw const target) }
 }
 
 /// `link_remote(RemotePid<T>, PartitionPolicy)` → establish a cross-node link
@@ -3325,21 +3232,30 @@ pub extern "C" fn hew_node_monitor(target_pid: u64) -> i64 {
 /// Returns a positive internal `ref_id` on success. Setup failures are returned
 /// as negative `LinkError` codes encoded as `-(variant + 1)`, so
 /// `link_remote` cannot report `Ok(())` for a link that was never established.
+///
+/// # Safety
+///
+/// `target` must point to a readable `HewRemotePid`.
 #[no_mangle]
 #[allow(
     clippy::too_many_lines,
     reason = "function coordinates the full session-aware connection lifecycle"
 )]
-pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 {
+pub unsafe extern "C" fn hew_node_link_remote_location(
+    target: *const HewRemotePid,
+    policy_tag: i64,
+) -> i64 {
+    if target.is_null() {
+        return LINK_ERR_INVALID_TARGET;
+    }
+    // SAFETY: caller guarantees `target` is readable.
+    let Ok(target) = Location::try_from(unsafe { *target }) else {
+        return LINK_ERR_STALE_REF;
+    };
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("hew_node_link_remote: no runtime installed");
         return LINK_ERR_NODE_NOT_RUNNING;
     };
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "target_pid is a packed u64 pid reinterpreted as i64 on the Hew side"
-    )]
-    let target_pid = target_pid as u64;
     // The linking subject is the calling actor; a cross-node link with no local
     // actor has nothing to crash, so fail closed.
     let self_actor = crate::actor::hew_actor_self();
@@ -3352,23 +3268,28 @@ pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 
     // looks it up verbatim via get_actor_ptr_by_id, while the wire carries only
     // the serial part so the peer can address the linker on its own node.
     let local_actor_id = unsafe { (*self_actor).id };
-    let remote_node_id = crate::pid::hew_pid_node(target_pid);
-    let target_serial = crate::pid::hew_pid_serial(target_pid);
-    if remote_node_id == 0 || remote_node_id == rt.node.local_route_slot() {
+    let Some(target_route) = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return None;
+        }
+        // SAFETY: current-node read lock pins the node.
+        Some(unsafe { routing::hew_routing_lookup_location((*node).routing_table, target) })
+    }) else {
+        set_last_error("hew_node_link_remote: no active node");
+        return LINK_ERR_NODE_NOT_RUNNING;
+    };
+    if matches!(target_route, routing::LocationRoute::Local { .. }) {
         set_last_error("hew_node_link_remote: target is not on a remote node");
         return LINK_ERR_INVALID_TARGET;
     }
-    let stale = with_current_node_read(|guard| {
-        let node = *guard as *const HewNode;
-        // SAFETY: read lock pins the current node pointer for this check.
-        !node.is_null() && dispatch_is_stale(unsafe { &*node }, target_pid)
-    });
-    if stale {
-        set_last_error(format!(
-            "hew_node_link_remote: target pid serial {target_serial} names a superseded \
-             actor registration; the captured RemotePid is stale (StaleRef)"
-        ));
+    if matches!(target_route, routing::LocationRoute::StaleRef) {
+        set_last_error("hew_node_link_remote: target Location is stale");
         return LINK_ERR_STALE_REF;
+    }
+    if matches!(target_route, routing::LocationRoute::Partition) {
+        set_last_error("hew_node_link_remote: target identity is partitioned");
+        return LINK_ERR_PARTITION;
     }
     #[expect(
         clippy::cast_possible_truncation,
@@ -3379,24 +3300,18 @@ pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 
 
     // Record the watcher-side LINK entry first so a connection-drop / SWIM-DEAD
     // fan-out can deliver even if the request send races a drop.
-    let ref_id = rt.dist_monitors.register_link_watcher(
-        remote_node_id,
-        target_serial,
-        local_actor_id,
-        policy_tag,
-    );
+    let ref_id = rt
+        .dist_monitors
+        .register_link_watcher(target, local_actor_id, policy_tag);
 
-    let Some((linker, target)) = with_current_node_read(|guard| {
+    let Some(linker) = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
         if node.is_null() {
             return None;
         }
         // SAFETY: the current-node read lock pins the node.
         let node = unsafe { &*node };
-        Some((
-            local_actor_location(node, local_actor_id)?,
-            remote_actor_location(node, target_pid)?,
-        ))
+        local_actor_location(node, local_actor_id)
     }) else {
         set_last_error("hew_node_link_remote: exact linker/target Location is unavailable");
         rt.dist_monitors.remove_watcher(ref_id);
@@ -3432,16 +3347,15 @@ pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 
         let node_ref = unsafe { &*node };
         // SAFETY: node_ref is valid for this call.
         Some(unsafe {
-            send_monitor_control_frame(
-                node_ref,
-                target_pid,
-                crate::envelope::CTRL_LINK_REQ,
-                payload,
-            )
+            send_monitor_control_frame(node_ref, target, crate::envelope::CTRL_LINK_REQ, payload)
         })
     });
     match send_result {
         Some(0) => setup_ref_id(ref_id),
+        Some(HEW_ERR_STALE_REF) => {
+            rt.dist_monitors.remove_watcher(ref_id);
+            LINK_ERR_STALE_REF
+        }
         Some(_) => {
             rt.dist_monitors.remove_watcher(ref_id);
             LINK_ERR_PARTITION
@@ -3451,6 +3365,29 @@ pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 
             LINK_ERR_LOCAL_SHUTDOWN
         }
     }
+}
+
+/// Temporary scalar compiler adapter for Stage 3b.
+#[no_mangle]
+pub extern "C" fn hew_node_link_remote(target_pid: i64, policy_tag: i64) -> i64 {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "temporary compiler PID adapter preserves all packed bits"
+    )]
+    let target_pid = target_pid as u64;
+    let Some(location) = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return None;
+        }
+        // SAFETY: read lock pins the current node.
+        unsafe { routing::location_from_packed_pid((*node).routing_table, target_pid) }
+    }) else {
+        return LINK_ERR_STALE_REF;
+    };
+    let target = HewRemotePid::from(location);
+    // SAFETY: target is a valid stack value.
+    unsafe { hew_node_link_remote_location(&raw const target, policy_tag) }
 }
 
 /// `hew_node_monitor_recv(ref_id, timeout_ms)` → block for the cross-node
@@ -3494,10 +3431,9 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
         reason = "ref_id originates from a u64 register_watcher counter reinterpreted as i64 on the Hew side"
     )]
     let ref_id = ref_id as u64;
-    let Some((remote_node_id, target_serial)) = rt.dist_monitors.remove_watcher(ref_id) else {
+    let Some(target) = rt.dist_monitors.remove_watcher(ref_id) else {
         return;
     };
-    let target_pid = crate::pid::hew_pid_make(remote_node_id, target_serial);
     let watcher_actor = crate::actor::hew_actor_self();
     if watcher_actor.is_null() {
         set_last_error("hew_node_demonitor: no current actor (monitor watcher)");
@@ -3505,17 +3441,14 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
     }
     // SAFETY: `hew_actor_self` returned a live actor pointer.
     let watcher_actor_id = unsafe { (*watcher_actor).id };
-    let Some((watcher, target)) = with_current_node_read(|guard| {
+    let Some(watcher) = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
         if node.is_null() {
             return None;
         }
         // SAFETY: the current-node read lock pins the node.
         let node = unsafe { &*node };
-        Some((
-            local_actor_location(node, watcher_actor_id)?,
-            remote_actor_location(node, target_pid)?,
-        ))
+        local_actor_location(node, watcher_actor_id)
     }) else {
         set_last_error("hew_node_demonitor: exact watcher/target Location is unavailable");
         return;
@@ -3541,12 +3474,7 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
         let node_ref = unsafe { &*node };
         // SAFETY: node_ref is valid for this call.
         let _ = unsafe {
-            send_monitor_control_frame(
-                node_ref,
-                target_pid,
-                crate::envelope::CTRL_DEMONITOR,
-                payload,
-            )
+            send_monitor_control_frame(node_ref, target, crate::envelope::CTRL_DEMONITOR, payload)
         };
     });
 }
@@ -3619,11 +3547,10 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32) {
             } else {
                 crate::envelope::CTRL_MONITOR_DOWN
             };
-            // Route the DOWN back to the watcher node by a pid on that node.
-            let watcher_pid = crate::pid::hew_pid_make(watcher.watcher_node_id, 0);
             // SAFETY: node_ref is valid for this call.
-            let _ =
-                unsafe { send_monitor_control_frame(node_ref, watcher_pid, ctrl_kind, payload) };
+            let _ = unsafe {
+                send_monitor_control_frame(node_ref, watcher.watcher, ctrl_kind, payload)
+            };
         }
     });
 }
@@ -3648,10 +3575,7 @@ pub(crate) fn fan_out_remote_monitor_down(target_serial: u64, reason: i32) {
 /// Fail-closed: a no-runtime / no-current-node / no-route state no-ops without
 /// panicking; the EXIT is only ever synthesized later for an entry THIS node
 /// registered, so a forged frame cannot crash an actor this node never linked.
-pub(crate) fn handle_inbound_link_req(
-    payload: &crate::envelope::LinkReqPayload,
-    authenticated_peer: u16,
-) {
+pub(crate) fn handle_inbound_link_req(payload: &crate::envelope::LinkReqPayload) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("handle_inbound_link_req: no runtime installed");
         return;
@@ -3660,7 +3584,7 @@ pub(crate) fn handle_inbound_link_req(
     // watcher on the linker node. The terminal sweep fans CTRL_LINK_DOWN to it.
     rt.dist_monitors.register_remote_link_watcher(
         payload.target.slot(),
-        authenticated_peer,
+        payload.linker,
         payload.ref_id,
     );
 
@@ -3673,12 +3597,9 @@ pub(crate) fn handle_inbound_link_req(
     // linker's death crashes OUR target actor per the policy.
     let local_node = rt.node.local_route_slot();
     let our_target_id = crate::pid::hew_pid_make(local_node, payload.target.slot());
-    let reverse_ref = rt.dist_monitors.register_link_watcher(
-        authenticated_peer,
-        payload.linker.slot(),
-        our_target_id,
-        payload.policy_tag,
-    );
+    let reverse_ref =
+        rt.dist_monitors
+            .register_link_watcher(payload.linker, our_target_id, payload.policy_tag);
 
     // Step 3 (original only): send the reverse CTRL_LINK_REQ so the linker node
     // registers the target-side watcher that fans Direction 2's DOWN back to us.
@@ -3700,8 +3621,6 @@ pub(crate) fn handle_inbound_link_req(
             return;
         }
     };
-    // Route the reverse REQ back to the linker node by a pid on that node.
-    let linker_pid = crate::pid::hew_pid_make(authenticated_peer, payload.linker.slot());
     with_current_node_read(|guard| {
         if *guard == 0 {
             return;
@@ -3711,7 +3630,12 @@ pub(crate) fn handle_inbound_link_req(
         let node_ref = unsafe { &*node };
         // SAFETY: node_ref is valid for this call.
         let _ = unsafe {
-            send_monitor_control_frame(node_ref, linker_pid, crate::envelope::CTRL_LINK_REQ, bytes)
+            send_monitor_control_frame(
+                node_ref,
+                payload.linker,
+                crate::envelope::CTRL_LINK_REQ,
+                bytes,
+            )
         };
     });
 }
@@ -3719,18 +3643,12 @@ pub(crate) fn handle_inbound_link_req(
 /// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
 /// link of one of our local actors. Remove the target-side remote LINK watcher.
 /// Idempotent / fail-closed on a missing entry.
-pub(crate) fn handle_inbound_unlink(
-    payload: &crate::envelope::LinkReqPayload,
-    authenticated_peer: u16,
-) {
+pub(crate) fn handle_inbound_unlink(payload: &crate::envelope::LinkReqPayload) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
-    rt.dist_monitors.remove_remote_watcher(
-        payload.target.slot(),
-        authenticated_peer,
-        payload.ref_id,
-    );
+    rt.dist_monitors
+        .remove_remote_watcher(payload.target.slot(), payload.linker, payload.ref_id);
 }
 
 /// Handle an inbound `CTRL_LINK_DOWN`: a node owning an actor we LINK
@@ -3747,14 +3665,14 @@ pub(crate) fn handle_inbound_unlink(
 /// forged `ref_id` this node never linked NOR a genuinely-connected but
 /// unrelated peer that merely guessed/learned a pending link `ref_id` can crash
 /// an actor we linked to a DIFFERENT, still-alive peer.
-pub(crate) fn handle_inbound_link_down(ref_id: u64, authenticated_peer: u16, reason: i32) {
+pub(crate) fn handle_inbound_link_down(ref_id: u64, target: Location, reason: i32) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         set_last_error("handle_inbound_link_down: no runtime installed");
         return;
     };
-    if let Some(down) =
-        rt.dist_monitors
-            .deliver_link_down_to_ref(ref_id, authenticated_peer, reason)
+    if let Some(down) = rt
+        .dist_monitors
+        .deliver_link_down_to_ref(ref_id, target, reason)
     {
         let _ = crate::link::deliver_cross_node_link_exit(
             down.local_actor_id,
@@ -3781,6 +3699,20 @@ pub(crate) fn handle_inbound_link_down(ref_id: u64, authenticated_peer: u16, rea
 /// demonitor or the watched actor's own death normally removes them. Pruning here
 /// ensures the target-side table stays bounded under watcher-node churn.
 pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
+    let dead_node = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return None;
+        }
+        // SAFETY: current-node read lock pins the node.
+        unsafe { (*node).auth.node_id_for_route_slot(dead_node_id) }
+    });
+    if let Some(dead_node) = dead_node {
+        fan_out_monitor_lost_for_identity(dead_node);
+    }
+}
+
+pub(crate) fn fan_out_monitor_lost_for_identity(dead_node: crate::node_identity::NodeId) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
@@ -3788,7 +3720,7 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
     // blocked recv_down wakes.
     let _ = rt
         .dist_monitors
-        .deliver_to_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
+        .deliver_to_node(dead_node, crate::dist_monitor::MONITOR_REASON_LOST);
     // Link half: fire the cross-node link cascade for every still-Pending LINK
     // watcher on the dead node — the death-signal must fire on the PARTITION
     // terminal cause too (firing only on a clean exit / crash would fail-open: a
@@ -3798,7 +3730,7 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
     // may already have fired.
     let link_downs = rt
         .dist_monitors
-        .take_link_downs_for_node(dead_node_id, crate::dist_monitor::MONITOR_REASON_LOST);
+        .take_link_downs_for_node(dead_node, crate::dist_monitor::MONITOR_REASON_LOST);
     for down in link_downs {
         let _ = crate::link::deliver_cross_node_link_exit(
             down.local_actor_id,
@@ -3810,9 +3742,37 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
     // Prune target-side watcher entries (monitor AND link) the dead node had
     // registered, so the table stays bounded under node churn (target-side watcher
     // prune; covers link watchers via the same map).
+    let _ = rt.dist_monitors.prune_remote_watchers_for_node(dead_node);
+}
+
+pub(crate) fn fan_out_monitor_lost_for_session(
+    dead_node: crate::node_identity::NodeId,
+    session_incarnation: u32,
+) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return;
+    };
+    let _ = rt.dist_monitors.deliver_to_session(
+        dead_node,
+        session_incarnation,
+        crate::dist_monitor::MONITOR_REASON_LOST,
+    );
+    let link_downs = rt.dist_monitors.take_link_downs_for_session(
+        dead_node,
+        session_incarnation,
+        crate::dist_monitor::MONITOR_REASON_LOST,
+    );
+    for down in link_downs {
+        let _ = crate::link::deliver_cross_node_link_exit(
+            down.local_actor_id,
+            down.remote_target_serial,
+            down.reason,
+            down.policy_tag,
+        );
+    }
     let _ = rt
         .dist_monitors
-        .prune_remote_watchers_for_node(dead_node_id);
+        .prune_remote_watchers_for_session(dead_node, session_incarnation);
 }
 
 /// Fail every pending remote ask routed to a SWIM-declared-DEAD node with
@@ -3861,8 +3821,9 @@ pub(crate) fn fail_remote_asks_for_node(dead_node_id: u16) {
         // The real fix — keying the reply table on (node_id, conn_generation) so
         // a DEAD verdict can reach a retired conn's draining asks — requires a
         // reply-table schema change and an exactly-once proof; it is deferred.
-        let conn_id =
-            unsafe { crate::routing::hew_routing_conn_for_node(node.routing_table, dead_node_id) };
+        let conn_id = unsafe {
+            crate::routing::hew_routing_conn_for_route_slot(node.routing_table, dead_node_id)
+        };
         if conn_id < 0 {
             // No route to the dead peer on this node — no pending asks to fail.
             return;
@@ -4584,11 +4545,9 @@ pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: 
 /// `Node::unregister(name)` — remove a name registration from the active node.
 ///
 /// The symmetric counterpart of [`hew_node_api_register_by_pid`]: it clears the
-/// routing mapping for `name` and broadcasts a removal so peers drop the cached
-/// name. The registration-incarnation / `name_serials` bookkeeping persists so a
-/// later re-registration to a DIFFERENT actor supersedes the prior serial (the
-/// `StaleRef` path). Returns 0 on success, -1 on error (no active node, null
-/// name).
+/// current mapping for `name` and broadcasts removal of that exact location so
+/// a reordered old removal cannot erase a later re-registration. Returns 0 on
+/// success, -1 on error (no active node, null name).
 ///
 /// # Safety
 ///
@@ -4612,7 +4571,32 @@ pub unsafe extern "C" fn hew_node_api_unregister(name: *const c_char) -> c_int {
     })
 }
 
-/// `Node::lookup(name)` — Look up a registered actor by name.
+/// `Node::lookup(name)` exact-location runtime entry point.
+///
+/// Writes `out` only when the name resolves successfully.
+///
+/// # Safety
+///
+/// `name` must be a valid null-terminated C string and `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_lookup_location(
+    name: *const c_char,
+    out: *mut HewRemotePid,
+) -> c_int {
+    if name.is_null() || out.is_null() {
+        return -1;
+    }
+    with_current_node_read(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            return -1;
+        }
+        // SAFETY: node is pinned by the read lock; caller guarantees name/output.
+        unsafe { hew_node_lookup_location(node, name, out) }
+    })
+}
+
+/// Temporary scalar `Node::lookup(name)` compiler adapter for Stage 3b.
 ///
 /// # Safety
 ///
@@ -5136,7 +5120,7 @@ enum RemoteAskSetupResult {
     reason = "function orchestrates end-to-end remote ask setup across encoding, auth, and parking"
 )]
 fn setup_remote_ask(
-    pid: u64,
+    target: Location,
     dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -5154,26 +5138,28 @@ fn setup_remote_ask(
             return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
         }
 
-        // Look up the connection for the target node via the routing table.
         // SAFETY: routing_table is valid while node is running.
-        let conn_id = unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
-        if conn_id < 0 {
-            return RemoteAskSetupResult::Error(AskError::RoutingFailed);
-        }
-
-        // StaleRef gate (shared with the send + monitor paths): a captured
-        // `RemotePid<T>` whose registration has been superseded fails CLOSED here
-        // — before any request bytes are serialized — rather than asking the live
-        // replacement (DI-012 / LESSONS `boundary-fail-closed`).
-        if dispatch_is_stale(node, pid) {
-            return RemoteAskSetupResult::Error(AskError::StaleRef);
-        }
+        let (conn_id, target_node_id) = match unsafe {
+            crate::routing::hew_routing_lookup_location(node.routing_table, target)
+        } {
+            routing::LocationRoute::Remote {
+                route_slot, conn, ..
+            } => (conn, route_slot),
+            routing::LocationRoute::Partition => {
+                return RemoteAskSetupResult::Error(AskError::Partition);
+            }
+            routing::LocationRoute::StaleRef => {
+                return RemoteAskSetupResult::Error(AskError::StaleRef);
+            }
+            routing::LocationRoute::Local { .. } => {
+                return RemoteAskSetupResult::Error(AskError::RoutingFailed);
+            }
+        };
 
         // Quarantine consult: under a Quarantine policy, a peer the failure
         // detector buried and that has not yet rejoined at a strictly higher
         // incarnation fails closed here — before any request bytes are serialized,
         // so nothing is allocated on the blocked path.
-        let target_node_id = crate::pid::hew_pid_node(pid);
         if quarantine_blocks_send(node, target_node_id) {
             return RemoteAskSetupResult::Error(AskError::Partition);
         }
@@ -5241,15 +5227,6 @@ fn setup_remote_ask(
         // SAFETY: req_ptr is valid for req_len bytes (or null when req_len == 0).
         // SAFETY: the running node owns a live connection manager.
         let manager = unsafe { &*node.conn_mgr };
-        let Some(target) = connection::remote_location_for_actor(manager, pid) else {
-            set_last_error("hew_node_api_ask: target has no authenticated Location");
-            reply_table().remove(request_id);
-            if let Some((b, _)) = serialized_req {
-                // SAFETY: b came from encode_payload (libc::malloc).
-                unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
-            }
-            return RemoteAskSetupResult::Error(AskError::StaleRef);
-        };
         let source = {
             let actor = crate::actor::hew_actor_self();
             if actor.is_null() {
@@ -5398,8 +5375,8 @@ fn finish_remote_ask_outcome(
 /// - `data` must point to at least `size` readable bytes, or be null when
 ///   `size` is 0.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_api_ask(
-    pid: u64,
+pub unsafe extern "C" fn hew_node_api_ask_location(
+    target: *const HewRemotePid,
     dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -5407,13 +5384,31 @@ pub unsafe extern "C" fn hew_node_api_ask(
     timeout_ms: u64,
     reply_size: usize,
 ) -> *mut c_void {
-    let target_node_id = crate::pid::hew_pid_node(pid);
-    let local_node_id = crate::pid::hew_pid_local_node();
+    if target.is_null() {
+        return ask_null(AskError::StaleRef);
+    }
+    // SAFETY: caller guarantees `target` is readable.
+    let Ok(target) = Location::try_from(unsafe { *target }) else {
+        return ask_null(AskError::StaleRef);
+    };
+    let Some(route) = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return None;
+        }
+        // SAFETY: current-node read lock pins the node.
+        Some(unsafe { routing::hew_routing_lookup_location((*node).routing_table, target) })
+    }) else {
+        return ask_null(AskError::NodeNotRunning);
+    };
 
     // Local path: delegate to the by-ID ask (which packs a reply channel).
-    if target_node_id == 0 || target_node_id == local_node_id {
+    if let routing::LocationRoute::Local { actor_id } = route {
+        if crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_none() {
+            return ask_null(AskError::StaleRef);
+        }
         // SAFETY: data/size are caller-validated; local actor ask is safe here.
-        let result = unsafe { crate::actor::hew_actor_ask_by_id(pid, msg_type, data, size) };
+        let result = unsafe { crate::actor::hew_actor_ask_by_id(actor_id, msg_type, data, size) };
         if result.is_null() {
             // Bridge the actor-level error discriminant into the node error slot
             // so callers of hew_node_api_ask see a consistent error regardless
@@ -5429,7 +5424,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
     // msg_type)` — it is THIS node's local dispatch global for the ask's
     // statically-known target actor type (supplied by codegen).
     let (request_id, pending) =
-        match setup_remote_ask(pid, dispatch, msg_type, data, size, ptr::null_mut()) {
+        match setup_remote_ask(target, dispatch, msg_type, data, size, ptr::null_mut()) {
             RemoteAskSetupResult::Ok(pair) => pair,
             RemoteAskSetupResult::Error(e) => return ask_null(e),
         };
@@ -5466,6 +5461,49 @@ pub unsafe extern "C" fn hew_node_api_ask(
     finish_remote_ask_outcome(dispatch, msg_type, reply_size, &reply)
 }
 
+/// Temporary scalar compiler adapter for Stage 3b.
+///
+/// # Safety
+///
+/// `data` must point to at least `size` readable bytes, or be null when `size`
+/// is zero.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask(
+    pid: u64,
+    dispatch: *const c_void,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    timeout_ms: u64,
+    reply_size: usize,
+) -> *mut c_void {
+    let location = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return Err(AskError::NodeNotRunning);
+        }
+        // SAFETY: current-node read lock pins the node.
+        unsafe { routing::location_from_packed_pid((*node).routing_table, pid) }
+            .ok_or(AskError::StaleRef)
+    });
+    let Ok(location) = location else {
+        return ask_null(location.unwrap_err());
+    };
+    let target = HewRemotePid::from(location);
+    // SAFETY: forwarded arguments satisfy the exact ask contract.
+    unsafe {
+        hew_node_api_ask_location(
+            &raw const target,
+            dispatch,
+            msg_type,
+            data,
+            size,
+            timeout_ms,
+            reply_size,
+        )
+    }
+}
+
 /// Start a non-blocking remote ask for a SUSPENDABLE caller (NEW-5).
 ///
 /// Serializes + submits the ask exactly as the blocking path, registers the
@@ -5486,8 +5524,8 @@ pub unsafe extern "C" fn hew_node_api_ask(
 ///   `size` is 0.
 /// - `caller_actor` must be the live actor whose continuation is about to park.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_api_ask_async(
-    pid: u64,
+pub unsafe extern "C" fn hew_node_api_ask_async_location(
+    target: *const HewRemotePid,
     dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
@@ -5495,11 +5533,13 @@ pub unsafe extern "C" fn hew_node_api_ask_async(
     timeout_ms: u64,
     caller_actor: *mut crate::actor::HewActor,
 ) -> *mut c_void {
-    let target_node_id = crate::pid::hew_pid_node(pid);
-    let local_node_id = crate::pid::hew_pid_local_node();
-    if target_node_id == 0 || target_node_id == local_node_id {
-        return ask_null(AskError::RoutingFailed);
+    if target.is_null() {
+        return ask_null(AskError::StaleRef);
     }
+    // SAFETY: caller guarantees `target` is readable.
+    let Ok(target) = Location::try_from(unsafe { *target }) else {
+        return ask_null(AskError::StaleRef);
+    };
     if caller_actor.is_null() {
         return ask_null(AskError::NoRunnableWork);
     }
@@ -5508,7 +5548,7 @@ pub unsafe extern "C" fn hew_node_api_ask_async(
     // reply decode key is re-supplied to `hew_node_api_ask_finish` at the resume
     // site (codegen knows the target actor type at both ends of the suspend).
     let (request_id, pending) =
-        match setup_remote_ask(pid, dispatch, msg_type, data, size, caller_actor) {
+        match setup_remote_ask(target, dispatch, msg_type, data, size, caller_actor) {
             RemoteAskSetupResult::Ok(pair) => pair,
             RemoteAskSetupResult::Error(e) => return ask_null(e),
         };
@@ -5520,6 +5560,50 @@ pub unsafe extern "C" fn hew_node_api_ask_async(
 
     // Transfer one owning ref to the caller; reclaimed in finish/cancel.
     Arc::into_raw(pending).cast::<c_void>().cast_mut()
+}
+
+/// Temporary scalar compiler adapter for Stage 3b.
+///
+/// # Safety
+///
+/// - `data` must point to at least `size` readable bytes, or be null when
+///   `size` is zero.
+/// - `caller_actor` must be the live actor whose continuation is about to park.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask_async(
+    pid: u64,
+    dispatch: *const c_void,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    timeout_ms: u64,
+    caller_actor: *mut crate::actor::HewActor,
+) -> *mut c_void {
+    let location = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return Err(AskError::NodeNotRunning);
+        }
+        // SAFETY: current-node read lock pins the node.
+        unsafe { routing::location_from_packed_pid((*node).routing_table, pid) }
+            .ok_or(AskError::StaleRef)
+    });
+    let Ok(location) = location else {
+        return ask_null(location.unwrap_err());
+    };
+    let target = HewRemotePid::from(location);
+    // SAFETY: forwarded arguments satisfy the exact async ask contract.
+    unsafe {
+        hew_node_api_ask_async_location(
+            &raw const target,
+            dispatch,
+            msg_type,
+            data,
+            size,
+            timeout_ms,
+            caller_actor,
+        )
+    }
 }
 
 /// Drain the reply deposited for a SUSPENDED remote ask after the coroutine
@@ -5590,6 +5674,22 @@ mod tests {
 
     const TEST_REMOTE_ASK_TIMEOUT_MS: u64 = 250;
 
+    fn test_node_id(route_slot: u16) -> crate::node_identity::NodeId {
+        let mut bytes = [0_u8; 16];
+        bytes[14..].copy_from_slice(&route_slot.to_be_bytes());
+        crate::node_identity::NodeId::from_bytes(bytes)
+    }
+
+    fn test_location(route_slot: u16, actor_slot: u64) -> Location {
+        Location::new(test_node_id(route_slot), actor_slot, 1).unwrap()
+    }
+
+    unsafe fn install_test_auth(node: *mut HewNode, route_slot: u16) {
+        let snapshot = PeerAuthSnapshot::for_test(test_node_id(route_slot), []);
+        // SAFETY: caller owns a stopped test node.
+        assert_eq!(unsafe { hew_node_set_auth_snapshot(node, snapshot) }, 0);
+    }
+
     #[test]
     fn decode_hex_accepts_even_hex_and_rejects_malformed() {
         assert_eq!(decode_hex("00ff1a"), Some(vec![0x00, 0xff, 0x1a]));
@@ -5639,59 +5739,29 @@ mod tests {
     }
 
     #[test]
-    fn registration_record_bumps_incarnation_and_supersedes_on_repoint() {
+    fn registry_repoint_changes_future_lookup_without_rewriting_old_location() {
         let registry = HewRegistry::default();
-        // Fresh registration of name "kv" to serial 100: incarnation 0, nothing
-        // superseded.
-        assert_eq!(registration_record(&registry, "kv", 100), 0);
-        assert!(
-            !serial_is_superseded(&registry, 100),
-            "a fresh registration's serial is not superseded"
+        let old = Location::new(crate::node_identity::NodeId::from_bytes([1; 16]), 100, 3).unwrap();
+        let new = Location::new(crate::node_identity::NodeId::from_bytes([1; 16]), 200, 3).unwrap();
+        registry
+            .remote_names
+            .lock_or_recover()
+            .insert("kv".to_owned(), old);
+        let captured = registry
+            .remote_names
+            .lock_or_recover()
+            .get("kv")
+            .copied()
+            .unwrap();
+        registry
+            .remote_names
+            .lock_or_recover()
+            .insert("kv".to_owned(), new);
+        assert_eq!(captured, old);
+        assert_eq!(
+            registry.remote_names.lock_or_recover().get("kv").copied(),
+            Some(new)
         );
-
-        // Idempotent re-register of the SAME serial: no bump, no supersession.
-        assert_eq!(registration_record(&registry, "kv", 100), 0);
-        assert!(!serial_is_superseded(&registry, 100));
-
-        // Re-point "kv" to a DIFFERENT serial 200: incarnation bumps to 1, and
-        // the previous serial 100 is superseded (a captured RemotePid over 100
-        // must now fail closed with StaleRef).
-        assert_eq!(registration_record(&registry, "kv", 200), 1);
-        assert!(
-            serial_is_superseded(&registry, 100),
-            "the re-pointed-away serial is superseded"
-        );
-        assert!(
-            !serial_is_superseded(&registry, 200),
-            "the live serial is NOT superseded"
-        );
-
-        // A second re-point bumps again.
-        assert_eq!(registration_record(&registry, "kv", 300), 2);
-        assert!(serial_is_superseded(&registry, 200));
-    }
-
-    #[test]
-    fn supersede_serial_marks_a_serial_stale() {
-        let registry = HewRegistry::default();
-        registration_record(&registry, "worker", 42);
-        assert!(!serial_is_superseded(&registry, 42));
-        // Actor-teardown path: superseding the live serial directly (the actor is
-        // being freed) makes a captured ref over it fail closed.
-        registry_supersede_serial(&registry, 42);
-        assert!(serial_is_superseded(&registry, 42));
-    }
-
-    #[test]
-    fn distinct_names_have_independent_incarnations() {
-        let registry = HewRegistry::default();
-        assert_eq!(registration_record(&registry, "a", 1), 0);
-        assert_eq!(registration_record(&registry, "b", 2), 0);
-        // Re-pointing "a" does not touch "b"'s incarnation.
-        assert_eq!(registration_record(&registry, "a", 11), 1);
-        assert_eq!(registration_record(&registry, "b", 2), 0);
-        assert!(serial_is_superseded(&registry, 1));
-        assert!(!serial_is_superseded(&registry, 2));
     }
 
     #[test]
@@ -8170,29 +8240,25 @@ mod tests {
     }
 
     #[test]
-    fn membership_left_prunes_remote_names_for_departed_node() {
+    fn exact_identity_prunes_remote_names_for_departed_node() {
         let _guard = crate::runtime_test_guard();
 
         let registry = HewRegistry::default();
         {
             let mut map = registry.remote_names.lock_or_recover();
-            map.insert("remote-a".to_owned(), (u64::from(202u16) << 48) | 0x10);
-            map.insert("remote-b".to_owned(), (u64::from(202u16) << 48) | 0x11);
-            map.insert("other-node".to_owned(), (u64::from(303u16) << 48) | 0x20);
+            map.insert("remote-a".to_owned(), test_location(202, 0x10));
+            map.insert("remote-b".to_owned(), test_location(202, 0x11));
+            map.insert("other-node".to_owned(), test_location(303, 0x20));
         }
 
-        node_membership_callback(
-            202,
-            cluster::HEW_MEMBERSHIP_EVENT_NODE_LEFT,
-            (&raw const registry).cast_mut().cast::<c_void>(),
-        );
+        let _ = take_registry_names_if(&registry, |location| location.node() == test_node_id(202));
 
         let map = registry.remote_names.lock_or_recover();
         assert!(!map.contains_key("remote-a"));
         assert!(!map.contains_key("remote-b"));
         assert_eq!(
             map.get("other-node").copied(),
-            Some((u64::from(303u16) << 48) | 0x20)
+            Some(test_location(303, 0x20))
         );
     }
 
@@ -8206,12 +8272,22 @@ mod tests {
         // SAFETY: bind_addr is a valid NUL-terminated C string literal.
         let node = unsafe { hew_node_new(50, c"127.0.0.1:0".as_ptr()) };
         assert!(!node.is_null());
+        // SAFETY: test owns this stopped node.
+        unsafe { install_test_auth(node, 50) };
         let name = c"test_unreg_actor";
 
         // SAFETY: node is a valid pointer; name is a valid C string literal.
         unsafe {
             assert_eq!(hew_node_register(node, name.as_ptr(), 999), 0);
-            assert_eq!(hew_node_lookup(node, name.as_ptr()), 999);
+            let mut found = HewRemotePid::default();
+            assert_eq!(
+                hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
+                0
+            );
+            assert_eq!(
+                Location::try_from(found).unwrap(),
+                local_actor_location(&*node, 999).unwrap()
+            );
         }
 
         // SAFETY: node is a valid pointer; name is a valid C string literal.
@@ -8237,13 +8313,8 @@ mod tests {
         unsafe { hew_node_free(node) };
     }
 
-    /// Two distinct actors registering the same user-chosen string must be
-    /// refused with a recorded diagnostic — the registration string is a
-    /// cluster-wide routing key with no actor-type qualifier on the wire, so
-    /// the conflict cannot be disambiguated. Re-registering a DIFFERENT
-    /// string for the second actor succeeds (the refusal is per-name).
     #[test]
-    fn register_same_name_different_actor_fails_closed_with_diagnostic() {
+    fn register_same_name_repoints_future_lookup() {
         // `hew_node_new` records the node in the runtime-owned node slot, which
         // resolves through `rt_current()` and fails closed when no runtime is
         // installed; the guard installs the worker-less default runtime.
@@ -8252,32 +8323,29 @@ mod tests {
         // SAFETY: bind_addr is a valid NUL-terminated C string literal.
         let node = unsafe { hew_node_new(51, c"127.0.0.1:0".as_ptr()) };
         assert!(!node.is_null());
+        // SAFETY: test owns this stopped node.
+        unsafe { install_test_auth(node, 51) };
         let name = c"l18_primary";
 
         // SAFETY: node is a valid pointer; name is a valid C string literal.
         unsafe {
             assert_eq!(hew_node_register(node, name.as_ptr(), 7001), 0);
-            crate::hew_clear_error();
             assert_eq!(
-                hew_node_register(node, name.as_ptr(), 7002),
-                -1,
-                "a second actor must not take over an existing name"
+                hew_node_register(node, name.as_ptr(), 7001),
+                0,
+                "registering the same location is idempotent"
             );
-            // The original mapping is intact (refuse, not clobber).
-            assert_eq!(hew_node_lookup(node, name.as_ptr()), 7001);
+            assert_eq!(hew_node_register(node, name.as_ptr(), 7002), 0);
+            let mut found = HewRemotePid::default();
+            assert_eq!(
+                hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
+                0
+            );
+            assert_eq!(
+                Location::try_from(found).unwrap(),
+                local_actor_location(&*node, 7002).unwrap()
+            );
         }
-        let err_ptr = crate::hew_last_error();
-        assert!(
-            !err_ptr.is_null(),
-            "conflicting registration must record a diagnostic"
-        );
-        // SAFETY: hew_last_error returns a valid C string when non-null.
-        let err = unsafe { CStr::from_ptr(err_ptr) }.to_string_lossy();
-        assert!(
-            err.contains("l18_primary") && err.contains("7001") && err.contains("7002"),
-            "diagnostic must name the string and both actors: {err}"
-        );
-        crate::hew_clear_error();
 
         // Distinct string still registers fine.
         let other = c"l18_secondary";
@@ -8290,58 +8358,104 @@ mod tests {
         }
     }
 
-    /// A gossiped registry ADD whose name is already mapped to a different
-    /// actor keeps the existing mapping and records the refusal — never a
-    /// silent last-write-wins re-pointing of cluster routing. Idempotent
-    /// re-adds of the same mapping stay silent.
     #[test]
-    fn gossip_conflicting_registration_refused_and_recorded() {
+    fn lookup_location_writes_output_only_on_success() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: bind address is a valid C string for the duration of the test.
+        let node = unsafe { hew_node_new(52, c"127.0.0.1:0".as_ptr()) };
+        assert!(!node.is_null());
+        // SAFETY: test owns this stopped node.
+        unsafe { install_test_auth(node, 52) };
+        let missing = c"missing_exact_location";
+        let sentinel = HewRemotePid::from(test_location(99, 777));
+        let mut found = sentinel;
+
+        // SAFETY: node, name, and output pointers are valid.
+        unsafe {
+            assert_eq!(
+                hew_node_lookup_location(node, missing.as_ptr(), &raw mut found),
+                -1
+            );
+            assert_eq!(found, sentinel);
+            hew_node_free(node);
+        }
+    }
+
+    #[test]
+    fn unregister_keeps_issued_location_live_until_actor_death() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: bind address is a valid C string for the duration of the test.
+        let node = unsafe { hew_node_new(53, c"127.0.0.1:0".as_ptr()) };
+        assert!(!node.is_null());
+        // SAFETY: test owns this stopped node.
+        unsafe {
+            install_test_auth(node, 53);
+            assert_eq!(hew_node_start(node), 0);
+            let actor = crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!actor.is_null());
+            let name = c"issued_location_lifetime";
+            assert_eq!(hew_node_register(node, name.as_ptr(), (*actor).id), 0);
+            let mut target = HewRemotePid::default();
+            assert_eq!(
+                hew_node_lookup_location(node, name.as_ptr(), &raw mut target),
+                0
+            );
+            assert_eq!(hew_node_unregister(node, name.as_ptr()), 0);
+            let exact = Location::try_from(target).unwrap();
+            assert_eq!(
+                routing::hew_routing_lookup_location((*node).routing_table, exact),
+                routing::LocationRoute::Local {
+                    actor_id: (*actor).id
+                }
+            );
+            assert_eq!(
+                crate::lifetime::live_actors::get_actor_ptr_by_id((*actor).id),
+                Some(actor)
+            );
+            crate::actor::hew_actor_close(actor);
+            assert_eq!(crate::actor::hew_actor_free(actor), 0);
+            assert_eq!(
+                hew_node_send_location(node, &raw const target, test_dispatch(), 1, ptr::null(), 0,),
+                HEW_ERR_STALE_REF
+            );
+            assert_eq!(hew_node_stop(node), 0);
+            hew_node_free(node);
+        }
+    }
+
+    #[test]
+    fn gossip_repoint_updates_future_lookup_and_old_remove_does_not_erase_it() {
         let _guard = crate::runtime_test_guard();
 
         let registry = HewRegistry::default();
+        let old = HewLocation::from(test_location(90, 9001));
+        let new = HewLocation::from(test_location(90, 9002));
         registry
             .remote_names
             .lock_or_recover()
-            .insert("l18_gossip".to_owned(), 9001);
+            .insert("l18_gossip".to_owned(), Location::try_from(old).unwrap());
         let user_data = (&raw const registry).cast_mut().cast::<c_void>();
         let name = c"l18_gossip";
 
-        // Idempotent re-add: same mapping, no diagnostic.
-        crate::hew_clear_error();
-        node_registry_gossip_callback(name.as_ptr(), 9001, true, user_data);
-        assert!(
-            crate::hew_last_error().is_null(),
-            "same-mapping gossip re-add must stay silent"
-        );
-
-        // Conflicting add: mapping kept, refusal recorded.
-        node_registry_gossip_callback(name.as_ptr(), 9002, true, user_data);
+        node_registry_gossip_callback(name.as_ptr(), &raw const new, true, user_data);
         let map = registry.remote_names.lock_or_recover();
         assert_eq!(
             map.get("l18_gossip").copied(),
-            Some(9001),
-            "conflicting gossip must not re-point the existing mapping"
+            Some(Location::try_from(new).unwrap()),
+            "new registration must re-point future lookup"
         );
         drop(map);
-        let err_ptr = crate::hew_last_error();
-        assert!(
-            !err_ptr.is_null(),
-            "conflicting gossip must record a diagnostic"
+        node_registry_gossip_callback(name.as_ptr(), &raw const old, false, user_data);
+        assert_eq!(
+            registry
+                .remote_names
+                .lock_or_recover()
+                .get("l18_gossip")
+                .copied(),
+            Some(Location::try_from(new).unwrap())
         );
-        // SAFETY: hew_last_error returns a valid C string when non-null.
-        let err = unsafe { CStr::from_ptr(err_ptr) }.to_string_lossy();
-        assert!(
-            err.contains("l18_gossip") && err.contains("9001") && err.contains("9002"),
-            "diagnostic must name the string and both actors: {err}"
-        );
-        crate::hew_clear_error();
-
-        // Removal still applies.
-        node_registry_gossip_callback(name.as_ptr(), 0, false, user_data);
-        assert!(!registry
-            .remote_names
-            .lock_or_recover()
-            .contains_key("l18_gossip"));
     }
 
     // ── Reply routing table unit tests ─────────────────────────────────
@@ -9165,12 +9279,12 @@ mod tests {
             // Simulate a remote registry gossip event arriving.
             let n = &*node.as_ptr();
             let remote_name = c"remote_counter";
-            let remote_pid: u64 = (u64::from(200u16) << 48) | 0x99;
+            let remote_location = HewLocation::from(test_location(200, 0x99));
 
             // Invoke the callback directly (as the cluster would).
             node_registry_gossip_callback(
                 remote_name.as_ptr(),
-                remote_pid,
+                &raw const remote_location,
                 true,
                 n.registry.cast::<c_void>(),
             );
@@ -9179,15 +9293,20 @@ mod tests {
             assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
 
             // Node lookup should find it via remote_names.
+            let mut found = HewRemotePid::default();
             assert_eq!(
-                hew_node_lookup(node.as_ptr(), remote_name.as_ptr()),
-                remote_pid
+                hew_node_lookup_location(node.as_ptr(), remote_name.as_ptr(), &raw mut found,),
+                0
+            );
+            assert_eq!(
+                Location::try_from(found).unwrap(),
+                Location::try_from(remote_location).unwrap()
             );
 
             // Simulate removal.
             node_registry_gossip_callback(
                 remote_name.as_ptr(),
-                0,
+                &raw const remote_location,
                 false,
                 n.registry.cast::<c_void>(),
             );

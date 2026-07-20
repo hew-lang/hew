@@ -82,10 +82,6 @@ pub(crate) struct RuntimeInner {
     /// and remote-ask reply table. Was the `CURRENT_NODE` + `pid::LOCAL_NODE_ID`
     /// + `KNOWN_NODES` + `REPLY_TABLE` globals.
     pub(crate) node: NodeSlot,
-    /// Authenticated one-to-one NodeId/route-slot authority. Stage 1 installs
-    /// the collision-safe substrate; Stage 2 publishes v2 admissions into it.
-    #[allow(dead_code, reason = "Stage 2 publishes authenticated admissions")]
-    pub(crate) peer_routes: PoisonSafe<crate::peer_binding::RouteBindingMap>,
     /// User-defined metric registry (`std::metrics`) and its fail-closed
     /// self-metrics. Was the `metrics::REGISTRY` + `NAMES_DROPPED` /
     /// `SERIES_DROPPED` / `INVALID_OPS` / `COLLISION_REJECTED` globals; resolved
@@ -139,7 +135,6 @@ impl RuntimeInner {
             shutdown_phase: AtomicI32::new(crate::shutdown::PHASE_RUNNING),
             supervisor_roots: PoisonSafe::new(Vec::new()),
             node: NodeSlot::new(),
-            peer_routes: PoisonSafe::new(crate::peer_binding::RouteBindingMap::default()),
             metrics: crate::metrics::MetricsState::new(),
             monitors: crate::monitor::MonitorState::new(),
             dist_monitors: crate::dist_monitor::DistMonitorState::new(),

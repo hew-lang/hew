@@ -1,46 +1,83 @@
-//! PID-based routing table for distributed message delivery.
-//!
-//! Maps remote node IDs (high 16 bits of a PID) to active transport
-//! connection handles.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
+//! Full-`Location` routing for distributed actor delivery.
 
+use crate::node_identity::{Location, NodeId};
 use crate::util::RwLockExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_int;
 use std::sync::RwLock;
 
-/// Number of low bits reserved for PID serial numbers.
-const PID_SERIAL_BITS: u32 = 48;
-/// Return value for local delivery or missing route.
-const HEW_ROUTE_LOCAL_OR_MISSING: c_int = -1;
+/// Return value used by internal route-slot probes when no connection is live.
+const HEW_ROUTE_MISSING: c_int = -1;
 
-/// Maps remote `node_id` → transport connection handle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RouteEntry {
+    route_slot: u16,
+    session_incarnation: u32,
+    conn: c_int,
+}
+
+#[derive(Debug)]
+struct RoutingState {
+    by_node: HashMap<NodeId, RouteEntry>,
+    by_slot: HashMap<u16, NodeId>,
+    retired_nodes: HashSet<NodeId>,
+    known_sessions: HashMap<NodeId, u32>,
+}
+
+/// Exact outcome of resolving a carried actor location.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LocationRoute {
+    /// The location names an actor slot on this node.
+    Local { actor_id: u64 },
+    /// The location names an actor slot behind a live authenticated connection.
+    Remote {
+        actor_id: u64,
+        route_slot: u16,
+        conn: c_int,
+    },
+    /// The identity is configured/current but has no live route.
+    Partition,
+    /// The identity, session, or route alias is no longer current.
+    StaleRef,
+}
+
+/// Maps key-derived node identities to receiver-local transport routes.
 #[derive(Debug)]
 pub struct HewRoutingTable {
-    routes: RwLock<HashMap<u16, c_int>>,
-    local_node_id: u16,
+    state: RwLock<RoutingState>,
+    configured_nodes: HashSet<NodeId>,
+    local_node: Option<NodeId>,
+    local_session_incarnation: Option<u32>,
+    local_route_slot: u16,
 }
 
-impl HewRoutingTable {
-    #[inline]
-    fn node_id_from_pid(target_pid: u64) -> u16 {
-        (target_pid >> PID_SERIAL_BITS) as u16
+/// Create a routing table for one authenticated node lifetime.
+pub(crate) fn hew_routing_table_new(
+    local_route_slot: u16,
+    local_node: Option<NodeId>,
+    local_session_incarnation: Option<u32>,
+    configured_routes: &[(u16, NodeId)],
+) -> *mut HewRoutingTable {
+    if local_node.is_some() != local_session_incarnation.is_some()
+        || local_session_incarnation == Some(0)
+    {
+        return std::ptr::null_mut();
     }
-}
-
-/// Create a new routing table for this node.
-///
-/// # Safety
-///
-/// Returned pointer must be freed with [`hew_routing_table_free`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_routing_table_new(local_node_id: u16) -> *mut HewRoutingTable {
+    let configured_nodes = configured_routes
+        .iter()
+        .map(|(_, node_id)| *node_id)
+        .collect();
     Box::into_raw(Box::new(HewRoutingTable {
-        routes: RwLock::new(HashMap::new()),
-        local_node_id,
+        state: RwLock::new(RoutingState {
+            by_node: HashMap::new(),
+            by_slot: HashMap::new(),
+            retired_nodes: HashSet::new(),
+            known_sessions: HashMap::new(),
+        }),
+        configured_nodes,
+        local_node,
+        local_session_incarnation,
+        local_route_slot,
     }))
 }
 
@@ -48,495 +85,399 @@ pub unsafe extern "C" fn hew_routing_table_new(local_node_id: u16) -> *mut HewRo
 ///
 /// # Safety
 ///
-/// `table` must be a valid pointer returned by [`hew_routing_table_new`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_routing_table_free(table: *mut HewRoutingTable) {
-    if table.is_null() {
-        return;
+/// `table` must be null or a pointer returned by [`hew_routing_table_new`].
+pub(crate) unsafe fn hew_routing_table_free(table: *mut HewRoutingTable) {
+    if !table.is_null() {
+        // SAFETY: caller guarantees ownership of a table allocation.
+        let _ = unsafe { Box::from_raw(table) };
     }
-    // SAFETY: caller guarantees `table` was allocated by `hew_routing_table_new`.
-    let _ = unsafe { Box::from_raw(table) };
 }
 
-/// Add or replace a route from `node_id` to `conn`.
+/// Publish or replace a live authenticated route.
+///
+/// Reusing a receiver-local route slot for a different `NodeId` tombstones the
+/// prior identity before the replacement becomes visible.
 ///
 /// # Safety
 ///
-/// `table` must be a valid pointer returned by [`hew_routing_table_new`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_routing_add_route(
+/// `table` must point to a live routing table.
+pub(crate) unsafe fn hew_routing_add_route(
     table: *mut HewRoutingTable,
-    node_id: u16,
+    node_id: NodeId,
+    route_slot: u16,
+    session_incarnation: u32,
     conn: c_int,
-) {
-    if table.is_null() {
-        return;
+) -> bool {
+    if table.is_null() || route_slot == 0 || session_incarnation == 0 {
+        return false;
     }
-    // SAFETY: caller guarantees `table` is valid.
+    // SAFETY: caller guarantees `table` validity.
     let table = unsafe { &*table };
-    let mut routes = table.routes.write_or_recover();
-    routes.insert(node_id, conn);
+    let mut state = table.state.write_or_recover();
+
+    if let Some(previous_node) = state.by_slot.get(&route_slot).copied() {
+        if previous_node != node_id {
+            state.by_node.remove(&previous_node);
+            state.retired_nodes.insert(previous_node);
+            state.known_sessions.remove(&previous_node);
+        }
+    }
+    if let Some(previous) = state.by_node.get(&node_id).copied() {
+        if previous.route_slot != route_slot {
+            state.by_slot.remove(&previous.route_slot);
+        }
+    }
+
+    state.retired_nodes.remove(&node_id);
+    state.known_sessions.insert(node_id, session_incarnation);
+    state.by_slot.insert(route_slot, node_id);
+    state.by_node.insert(
+        node_id,
+        RouteEntry {
+            route_slot,
+            session_incarnation,
+            conn,
+        },
+    );
+    true
 }
 
-/// Remove the route for `node_id` if present.
+/// Remove a route only when the connection still owns it.
+///
+/// A normal connection loss leaves the configured identity current, so a later
+/// lookup classifies as `Partition`, not `StaleRef`.
 ///
 /// # Safety
 ///
-/// `table` must be a valid pointer returned by [`hew_routing_table_new`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_routing_remove_route(table: *mut HewRoutingTable, node_id: u16) {
-    if table.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees `table` is valid.
-    let table = unsafe { &*table };
-    let mut routes = table.routes.write_or_recover();
-    routes.remove(&node_id);
-}
-
-/// Remove the route for `node_id` only when it still points at `conn`.
-///
-/// Returns `true` when the route was removed and `false` when the route was
-/// missing or had already been replaced.
-///
-/// # Safety
-///
-/// `table` must be a valid pointer returned by [`hew_routing_table_new`].
+/// `table` must point to a live routing table.
 pub(crate) unsafe fn hew_routing_remove_route_if_conn(
     table: *mut HewRoutingTable,
-    node_id: u16,
+    node_id: NodeId,
     conn: c_int,
 ) -> bool {
     if table.is_null() {
         return false;
     }
-    // SAFETY: caller guarantees `table` is valid.
+    // SAFETY: caller guarantees `table` validity.
     let table = unsafe { &*table };
-    let mut routes = table.routes.write_or_recover();
-    if matches!(routes.get(&node_id), Some(current) if *current == conn) {
-        routes.remove(&node_id);
-        true
-    } else {
-        false
+    let mut state = table.state.write_or_recover();
+    let Some(entry) = state.by_node.get(&node_id).copied() else {
+        return false;
+    };
+    if entry.conn != conn {
+        return false;
     }
+    state.by_node.remove(&node_id);
+    state.by_slot.remove(&entry.route_slot);
+    true
 }
 
-/// Resolve a destination PID to a transport connection handle.
-///
-/// Returns:
-/// - `-1` when `target_pid` is local to this node.
-/// - `conn` for a known remote route.
-/// - `-1` when no route exists.
+/// Resolve an exact carried location.
 ///
 /// # Safety
 ///
-/// `table` must be a valid pointer returned by [`hew_routing_table_new`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_routing_lookup(table: *mut HewRoutingTable, target_pid: u64) -> c_int {
-    if table.is_null() {
-        return HEW_ROUTE_LOCAL_OR_MISSING;
-    }
-    // SAFETY: caller guarantees `table` is valid.
-    let table = unsafe { &*table };
-    let node_id = HewRoutingTable::node_id_from_pid(target_pid);
-
-    if node_id == table.local_node_id {
-        return HEW_ROUTE_LOCAL_OR_MISSING;
-    }
-
-    let routes = table.routes.read_or_recover();
-    routes
-        .get(&node_id)
-        .copied()
-        .unwrap_or(HEW_ROUTE_LOCAL_OR_MISSING)
-}
-
-/// Resolve a remote `node_id` directly to its transport connection handle.
-///
-/// Unlike [`hew_routing_lookup`] (which keys on a PID), this keys on the raw
-/// node ID. Returns `-1` when `node_id` is the local node or has no route.
-///
-/// Used by the SWIM-DEAD partition fan-out to find the connection a dead peer's
-/// pending asks were registered against, so they can be failed with
-/// `AskError::Partition`.
-///
-/// # Safety
-///
-/// `table` must be a valid pointer returned by [`hew_routing_table_new`].
-pub(crate) unsafe fn hew_routing_conn_for_node(
+/// `table` must point to a live routing table.
+pub(crate) unsafe fn hew_routing_lookup_location(
     table: *const HewRoutingTable,
-    node_id: u16,
-) -> c_int {
+    location: Location,
+) -> LocationRoute {
     if table.is_null() {
-        return HEW_ROUTE_LOCAL_OR_MISSING;
+        return LocationRoute::StaleRef;
     }
-    // SAFETY: caller guarantees `table` is valid.
+    if !crate::pid::actor_slot_fits_internal_alias(location.slot()) {
+        return LocationRoute::StaleRef;
+    }
+    // SAFETY: caller guarantees `table` validity.
     let table = unsafe { &*table };
-    if node_id == table.local_node_id {
-        return HEW_ROUTE_LOCAL_OR_MISSING;
+
+    if Some(location.node()) == table.local_node {
+        return if Some(location.incarnation()) == table.local_session_incarnation {
+            LocationRoute::Local {
+                actor_id: crate::pid::hew_pid_make(table.local_route_slot, location.slot()),
+            }
+        } else {
+            LocationRoute::StaleRef
+        };
     }
-    let routes = table.routes.read_or_recover();
-    routes
-        .get(&node_id)
-        .copied()
-        .unwrap_or(HEW_ROUTE_LOCAL_OR_MISSING)
+
+    let state = table.state.read_or_recover();
+    if let Some(route) = state.by_node.get(&location.node()).copied() {
+        return if route.session_incarnation == location.incarnation() {
+            LocationRoute::Remote {
+                actor_id: crate::pid::hew_pid_make(route.route_slot, location.slot()),
+                route_slot: route.route_slot,
+                conn: route.conn,
+            }
+        } else {
+            LocationRoute::StaleRef
+        };
+    }
+    if state.retired_nodes.contains(&location.node()) {
+        return LocationRoute::StaleRef;
+    }
+    if !table.configured_nodes.contains(&location.node()) {
+        return LocationRoute::StaleRef;
+    }
+    match state.known_sessions.get(&location.node()).copied() {
+        Some(session) if session != location.incarnation() => LocationRoute::StaleRef,
+        Some(_) | None => LocationRoute::Partition,
+    }
 }
 
-/// Check whether a destination PID is local to this node.
+/// Resolve a live receiver-local route slot to its current identity/session.
 ///
-/// Returns 1 if local, 0 otherwise.
+/// This is the only scalar adapter retained for the Stage 3b compiler boundary.
 ///
 /// # Safety
 ///
-/// `table` must be a valid pointer returned by [`hew_routing_table_new`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_routing_is_local(
-    table: *mut HewRoutingTable,
-    target_pid: u64,
-) -> c_int {
+/// `table` must point to a live routing table.
+pub(crate) unsafe fn location_from_packed_pid(
+    table: *const HewRoutingTable,
+    packed_pid: u64,
+) -> Option<Location> {
     if table.is_null() {
-        return 0;
+        return None;
     }
-    // SAFETY: caller guarantees `table` is valid.
+    // SAFETY: caller guarantees `table` validity.
     let table = unsafe { &*table };
-    c_int::from(HewRoutingTable::node_id_from_pid(target_pid) == table.local_node_id)
+    let route_slot = crate::pid::hew_pid_node(packed_pid);
+    let actor_slot = crate::pid::hew_pid_serial(packed_pid);
+    if actor_slot == 0 {
+        return None;
+    }
+    if route_slot == 0 || route_slot == table.local_route_slot {
+        return Location::new(
+            table.local_node?,
+            actor_slot,
+            table.local_session_incarnation?,
+        )
+        .ok();
+    }
+    let state = table.state.read_or_recover();
+    let node_id = state.by_slot.get(&route_slot)?;
+    let route = state.by_node.get(node_id)?;
+    Location::new(*node_id, actor_slot, route.session_incarnation).ok()
 }
 
-// ── Profiler snapshot ───────────────────────────────────────────────────
-
-/// Build a JSON object with the routing table for the profiler HTTP API.
+/// Resolve an exact location to the current packed internal actor id.
 ///
-/// Format: `{"local_node_id":N,"routes":[{"node_id":N,"conn_id":N},...]}`
+/// Used only by the temporary scalar compiler adapter.
+///
+/// # Safety
+///
+/// `table` must point to a live routing table.
+pub(crate) unsafe fn packed_pid_for_location(
+    table: *const HewRoutingTable,
+    location: Location,
+) -> Option<u64> {
+    // SAFETY: caller guarantees `table` validity.
+    match unsafe { hew_routing_lookup_location(table, location) } {
+        LocationRoute::Local { actor_id } | LocationRoute::Remote { actor_id, .. } => {
+            Some(actor_id)
+        }
+        LocationRoute::Partition | LocationRoute::StaleRef => None,
+    }
+}
+
+/// Resolve a live route slot directly to its connection handle.
+///
+/// This remains an internal SWIM/reply-table convenience; route slots do not
+/// cross a runtime identity boundary.
+///
+/// # Safety
+///
+/// `table` must point to a live routing table.
+pub(crate) unsafe fn hew_routing_conn_for_route_slot(
+    table: *const HewRoutingTable,
+    route_slot: u16,
+) -> c_int {
+    if table.is_null() || route_slot == 0 {
+        return HEW_ROUTE_MISSING;
+    }
+    // SAFETY: caller guarantees `table` validity.
+    let table = unsafe { &*table };
+    if route_slot == table.local_route_slot {
+        return HEW_ROUTE_MISSING;
+    }
+    let state = table.state.read_or_recover();
+    state
+        .by_slot
+        .get(&route_slot)
+        .and_then(|node_id| state.by_node.get(node_id))
+        .map_or(HEW_ROUTE_MISSING, |entry| entry.conn)
+}
+
+#[cfg(test)]
+pub(crate) fn hew_routing_table_new_for_test(local_route_slot: u16) -> *mut HewRoutingTable {
+    let mut bytes = [0_u8; 16];
+    bytes[14..].copy_from_slice(&local_route_slot.to_be_bytes());
+    hew_routing_table_new(
+        local_route_slot,
+        Some(NodeId::from_bytes(bytes)),
+        Some(1),
+        &[],
+    )
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn hew_routing_lookup(table: *const HewRoutingTable, packed_pid: u64) -> c_int {
+    let route_slot = crate::pid::hew_pid_node(packed_pid);
+    // SAFETY: caller guarantees `table` validity.
+    unsafe { hew_routing_conn_for_route_slot(table, route_slot) }
+}
+
 #[cfg(feature = "profiler")]
 pub fn snapshot_routing_json(table: &HewRoutingTable) -> String {
     use std::fmt::Write as _;
 
-    let routes = table.routes.read_or_recover();
-    let routes_json = crate::util::json_array(routes.iter(), |json, (&node_id, &conn_id)| {
-        let _ = write!(json, r#"{{"node_id":{node_id},"conn_id":{conn_id}}}"#);
+    let state = table.state.read_or_recover();
+    let routes_json = crate::util::json_array(state.by_node.iter(), |json, (node_id, route)| {
+        let _ = write!(
+            json,
+            r#"{{"node_id":"{node_id}","route_slot":{},"session_incarnation":{},"conn_id":{}}}"#,
+            route.route_slot, route.session_incarnation, route.conn
+        );
     });
 
-    let mut json = String::new();
-    let _ = write!(
-        json,
-        r#"{{"local_node_id":{},"routes":{routes_json}}}"#,
-        table.local_node_id,
-    );
-    json
+    format!(
+        r#"{{"local_node_id":"{}","local_route_slot":{},"session_incarnation":{},"routes":{routes_json}}}"#,
+        table
+            .local_node
+            .map_or_else(|| "unconfigured".to_owned(), |node| node.to_string()),
+        table.local_route_slot,
+        table.local_session_incarnation.unwrap_or(0)
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ptr;
-    use std::sync::Arc;
-    use std::thread;
 
-    struct SharedTable(*mut HewRoutingTable);
-    // SAFETY: routing table internals are synchronized by an RwLock.
-    unsafe impl Send for SharedTable {}
-    // SAFETY: routing table internals are synchronized by an RwLock.
-    unsafe impl Sync for SharedTable {}
+    fn node(byte: u8) -> NodeId {
+        NodeId::from_bytes([byte; 16])
+    }
 
-    #[cfg(feature = "profiler")]
+    fn location(node: NodeId, slot: u64, session: u32) -> Location {
+        Location::new(node, slot, session).unwrap()
+    }
+
     #[test]
-    fn snapshot_routing_json_emits_local_node_and_routes() {
-        // SAFETY: pointer lifecycle is bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(7);
-            hew_routing_add_route(table, 9, 55);
+    fn exact_location_resolution_distinguishes_live_partition_and_stale() {
+        let local = node(1);
+        let remote = node(2);
+        let unknown = node(3);
+        let table = hew_routing_table_new(7, Some(local), Some(11), &[(9, remote)]);
+        assert!(!table.is_null());
 
+        // SAFETY: table is live for the test.
+        unsafe {
             assert_eq!(
-                snapshot_routing_json(&*table),
-                r#"{"local_node_id":7,"routes":[{"node_id":9,"conn_id":55}]}"#
+                hew_routing_lookup_location(table, location(local, 42, 11)),
+                LocationRoute::Local {
+                    actor_id: crate::pid::hew_pid_make(7, 42)
+                }
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(local, 42, 10)),
+                LocationRoute::StaleRef
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 5)),
+                LocationRoute::Partition
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(unknown, 42, 5)),
+                LocationRoute::StaleRef
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(local, 1_u64 << 48, 11)),
+                LocationRoute::StaleRef
             );
 
+            assert!(hew_routing_add_route(table, remote, 9, 5, 55));
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 5)),
+                LocationRoute::Remote {
+                    actor_id: crate::pid::hew_pid_make(9, 42),
+                    route_slot: 9,
+                    conn: 55
+                }
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 4)),
+                LocationRoute::StaleRef
+            );
+
+            assert!(hew_routing_remove_route_if_conn(table, remote, 55));
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 5)),
+                LocationRoute::Partition
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 4)),
+                LocationRoute::StaleRef
+            );
+            assert!(hew_routing_add_route(table, remote, 9, 6, 56));
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 5)),
+                LocationRoute::StaleRef
+            );
             hew_routing_table_free(table);
         }
     }
 
     #[test]
-    fn local_lookup_returns_minus_one() {
-        // SAFETY: pointers are created and used within test scope.
+    fn route_slot_reuse_tombstones_the_old_identity() {
+        let local = node(1);
+        let old = node(2);
+        let new = node(3);
+        let table = hew_routing_table_new(7, Some(local), Some(1), &[(9, old), (9, new)]);
+
+        // SAFETY: table is live for the test.
         unsafe {
-            let table = hew_routing_table_new(7);
-            let local_pid = (u64::from(7u16) << PID_SERIAL_BITS) | 0x2A;
-            assert_eq!(hew_routing_lookup(table, local_pid), -1);
-            assert_eq!(hew_routing_is_local(table, local_pid), 1);
+            assert!(hew_routing_add_route(table, old, 9, 4, 40));
+            assert!(hew_routing_add_route(table, new, 9, 1, 41));
+            assert_eq!(
+                hew_routing_lookup_location(table, location(old, 8, 4)),
+                LocationRoute::StaleRef
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(new, 8, 1)),
+                LocationRoute::Remote {
+                    actor_id: crate::pid::hew_pid_make(9, 8),
+                    route_slot: 9,
+                    conn: 41
+                }
+            );
             hew_routing_table_free(table);
         }
     }
 
     #[test]
-    fn remote_route_lookup_and_remove() {
-        // SAFETY: pointers are created and used within test scope.
+    fn scalar_adapter_uses_only_current_live_bindings() {
+        let local = node(1);
+        let remote = node(2);
+        let table = hew_routing_table_new(7, Some(local), Some(11), &[(9, remote)]);
+
+        // SAFETY: table is live for the test.
         unsafe {
-            let table = hew_routing_table_new(1);
-            let remote_pid_a = (u64::from(9u16) << PID_SERIAL_BITS) | 0x64;
-            let remote_pid_b = (u64::from(10u16) << PID_SERIAL_BITS) | 0xC8;
-            let local_pid = (u64::from(1u16) << PID_SERIAL_BITS) | 7;
-            assert_eq!(hew_routing_lookup(table, remote_pid_a), -1);
-            assert_eq!(hew_routing_lookup(table, remote_pid_b), -1);
-            assert_eq!(hew_routing_lookup(table, local_pid), -1);
-            hew_routing_add_route(table, 9, 55);
-            hew_routing_add_route(table, 10, 77);
-            assert_eq!(hew_routing_lookup(table, remote_pid_a), 55);
-            assert_eq!(hew_routing_lookup(table, remote_pid_b), 77);
-            assert_eq!(hew_routing_is_local(table, remote_pid_a), 0);
-            hew_routing_remove_route(table, 9);
-            assert_eq!(hew_routing_lookup(table, remote_pid_a), -1);
-            hew_routing_table_free(table);
-        }
-    }
-
-    #[test]
-    fn routing_table_concurrent_access() {
-        // SAFETY: pointer lifecycle is bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(1);
-            assert!(!table.is_null());
-            let shared = Arc::new(SharedTable(table));
-            let mut threads = Vec::new();
-
-            for tid in 0..8usize {
-                let shared = Arc::clone(&shared);
-                threads.push(thread::spawn(move || {
-                    for i in 0..250usize {
-                        #[expect(clippy::cast_possible_truncation, reason = "mod 6 fits in u16")]
-                        let node_id = 2 + ((tid + i) % 6) as u16;
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            clippy::cast_possible_wrap,
-                            reason = "test data: small indices fit in c_int"
-                        )]
-                        let conn = (tid * 1000 + i) as c_int;
-                        hew_routing_add_route(shared.0, node_id, conn);
-                        let pid = (u64::from(node_id) << PID_SERIAL_BITS) | (i as u64);
-                        let _ = hew_routing_lookup(shared.0, pid);
-                        if i % 3 == 0 {
-                            hew_routing_remove_route(shared.0, node_id);
-                        }
-                    }
-                }));
-            }
-
-            for t in threads {
-                t.join().expect("thread should complete without panic");
-            }
-
-            hew_routing_add_route(table, 42, 4242);
-            let pid = (u64::from(42u16) << PID_SERIAL_BITS) | 0x0007;
-            assert_eq!(hew_routing_lookup(table, pid), 4242);
-            hew_routing_table_free(table);
-        }
-    }
-
-    // ── node_id extraction ────────────────────────────────────────────
-
-    #[test]
-    fn node_id_from_pid_extracts_high_bits() {
-        // Hard-coded PID: node_id=42 at bits [63:48], serial=0xDEAD in low 48.
-        let pid: u64 = 0x002A_0000_0000_DEAD;
-        assert_eq!(HewRoutingTable::node_id_from_pid(pid), 42);
-    }
-
-    #[test]
-    fn node_id_from_pid_zero() {
-        assert_eq!(HewRoutingTable::node_id_from_pid(0), 0);
-    }
-
-    #[test]
-    fn node_id_from_pid_max_serial_ignored() {
-        // node_id=5, serial=all-ones in low 48 bits.
-        let pid: u64 = 0x0005_FFFF_FFFF_FFFF;
-        assert_eq!(HewRoutingTable::node_id_from_pid(pid), 5);
-    }
-
-    #[test]
-    fn node_id_from_pid_max_node_id() {
-        // node_id=0xFFFF at bits [63:48], serial=0.
-        let pid: u64 = 0xFFFF_0000_0000_0000;
-        assert_eq!(HewRoutingTable::node_id_from_pid(pid), u16::MAX);
-    }
-
-    // ── null pointer safety ───────────────────────────────────────────
-
-    #[test]
-    fn null_table_safety() {
-        // SAFETY: testing null-pointer guards.
-        unsafe {
-            hew_routing_table_free(ptr::null_mut());
-            hew_routing_add_route(ptr::null_mut(), 1, 42);
-            hew_routing_remove_route(ptr::null_mut(), 1);
-            assert_eq!(hew_routing_lookup(ptr::null_mut(), 0), -1);
-            assert_eq!(hew_routing_is_local(ptr::null_mut(), 0), 0);
-        }
-    }
-
-    // ── empty table ───────────────────────────────────────────────────
-
-    #[test]
-    fn empty_table_lookup_returns_minus_one() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(1);
-            let remote_pid = (u64::from(99u16) << PID_SERIAL_BITS) | 1;
-            assert_eq!(hew_routing_lookup(table, remote_pid), -1);
-            hew_routing_table_free(table);
-        }
-    }
-
-    // ── overwrite ─────────────────────────────────────────────────────
-
-    #[test]
-    fn overwrite_existing_route() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(1);
-            let pid = (u64::from(5u16) << PID_SERIAL_BITS) | 0x7;
-            hew_routing_add_route(table, 5, 100);
-            assert_eq!(hew_routing_lookup(table, pid), 100);
-            hew_routing_add_route(table, 5, 200);
-            assert_eq!(hew_routing_lookup(table, pid), 200);
-            hew_routing_table_free(table);
-        }
-    }
-
-    // ── remove edge cases ─────────────────────────────────────────────
-
-    #[test]
-    fn remove_nonexistent_route_no_panic() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(1);
-            hew_routing_remove_route(table, 42); // must not panic
-            hew_routing_table_free(table);
-        }
-    }
-
-    #[test]
-    fn remove_then_lookup_returns_minus_one() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(1);
-            let pid = (u64::from(3u16) << PID_SERIAL_BITS) | 0xF;
-            hew_routing_add_route(table, 3, 77);
-            assert_eq!(hew_routing_lookup(table, pid), 77);
-            hew_routing_remove_route(table, 3);
-            assert_eq!(hew_routing_lookup(table, pid), -1);
-            hew_routing_table_free(table);
-        }
-    }
-
-    // ── is_local ──────────────────────────────────────────────────────
-
-    #[test]
-    fn is_local_with_different_serials() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(7);
-            let pid_a = (u64::from(7u16) << PID_SERIAL_BITS) | 1;
-            let pid_b = (u64::from(7u16) << PID_SERIAL_BITS) | 9999;
-            assert_eq!(hew_routing_is_local(table, pid_a), 1);
-            assert_eq!(hew_routing_is_local(table, pid_b), 1);
-            hew_routing_table_free(table);
-        }
-    }
-
-    #[test]
-    fn is_local_remote_pid() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(7);
-            let pid = (u64::from(8u16) << PID_SERIAL_BITS) | 1;
-            assert_eq!(hew_routing_is_local(table, pid), 0);
-            hew_routing_table_free(table);
-        }
-    }
-
-    // ── multiple routes ───────────────────────────────────────────────
-
-    #[test]
-    fn multiple_distinct_routes_coexist() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(0);
-            hew_routing_add_route(table, 1, 10);
-            hew_routing_add_route(table, 2, 20);
-            hew_routing_add_route(table, 3, 30);
-            let pid1 = u64::from(1u16) << PID_SERIAL_BITS;
-            let pid2 = u64::from(2u16) << PID_SERIAL_BITS;
-            let pid3 = u64::from(3u16) << PID_SERIAL_BITS;
-            assert_eq!(hew_routing_lookup(table, pid1), 10);
-            assert_eq!(hew_routing_lookup(table, pid2), 20);
-            assert_eq!(hew_routing_lookup(table, pid3), 30);
-            hew_routing_table_free(table);
-        }
-    }
-
-    // ── serial bits are transparent to routing ────────────────────────
-
-    #[test]
-    fn different_serials_same_node_resolve_same_route() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(0);
-            hew_routing_add_route(table, 5, 42);
-            let pid_a = (u64::from(5u16) << PID_SERIAL_BITS) | 1;
-            let pid_b = (u64::from(5u16) << PID_SERIAL_BITS) | 0xFFFF;
-            assert_eq!(hew_routing_lookup(table, pid_a), 42);
-            assert_eq!(hew_routing_lookup(table, pid_b), 42);
-            hew_routing_table_free(table);
-        }
-    }
-
-    // ── local short-circuit ───────────────────────────────────────────
-
-    #[test]
-    fn local_pid_returns_minus_one_despite_route_existing() {
-        // The local-node check short-circuits before the route lookup,
-        // so even an explicitly added route for the local node_id is
-        // unreachable.
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(7);
-            hew_routing_add_route(table, 7, 999);
-            let local_pid = (u64::from(7u16) << PID_SERIAL_BITS) | 0x42;
-            assert_eq!(hew_routing_lookup(table, local_pid), -1);
-            assert_eq!(hew_routing_is_local(table, local_pid), 1);
-            hew_routing_table_free(table);
-        }
-    }
-
-    // ── re-add after remove ───────────────────────────────────────────
-
-    #[test]
-    fn readd_route_after_removal() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(0);
-            let pid = (u64::from(10u16) << PID_SERIAL_BITS) | 1;
-            hew_routing_add_route(table, 10, 55);
-            assert_eq!(hew_routing_lookup(table, pid), 55);
-            hew_routing_remove_route(table, 10);
-            assert_eq!(hew_routing_lookup(table, pid), -1);
-            hew_routing_add_route(table, 10, 88);
-            assert_eq!(hew_routing_lookup(table, pid), 88);
-            hew_routing_table_free(table);
-        }
-    }
-
-    // ── node_id 0 ─────────────────────────────────────────────────────
-
-    #[test]
-    fn node_id_zero_routes_correctly() {
-        // SAFETY: pointer lifecycle bounded to this test.
-        unsafe {
-            let table = hew_routing_table_new(1); // local is 1, not 0
-            hew_routing_add_route(table, 0, 77);
-            let pid = 0x0000_0000_0000_0001u64; // node_id = 0, serial = 1
-            assert_eq!(hew_routing_lookup(table, pid), 77);
-            assert_eq!(hew_routing_is_local(table, pid), 0);
+            assert_eq!(
+                location_from_packed_pid(table, crate::pid::hew_pid_make(7, 42)),
+                Some(location(local, 42, 11))
+            );
+            assert_eq!(
+                location_from_packed_pid(table, crate::pid::hew_pid_make(9, 42)),
+                None
+            );
+            assert!(hew_routing_add_route(table, remote, 9, 5, 55));
+            assert_eq!(
+                location_from_packed_pid(table, crate::pid::hew_pid_make(9, 42)),
+                Some(location(remote, 42, 5))
+            );
+            assert_eq!(
+                packed_pid_for_location(table, location(remote, 42, 5)),
+                Some(crate::pid::hew_pid_make(9, 42))
+            );
             hew_routing_table_free(table);
         }
     }

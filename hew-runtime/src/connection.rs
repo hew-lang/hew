@@ -63,8 +63,7 @@ use crate::envelope::{
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
-use crate::node_identity::Location;
-use crate::node_identity::NodeId;
+use crate::node_identity::{HewLocation, Location, NodeId};
 use crate::peer_binding::{ClaimState, LiveClaim, PeerAuthSnapshot, PeerCredential, Posture};
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
@@ -988,6 +987,16 @@ fn publish_identity_connection_established(
         return;
     }
 
+    if let Some(previous) = superseded.as_ref().filter(|previous| {
+        previous.state == ClaimState::Published
+            && previous.session_incarnation != peer_session_incarnation
+    }) {
+        crate::hew_node::fan_out_monitor_lost_for_session(
+            peer_identity,
+            previous.session_incarnation,
+        );
+    }
+
     let published = if mgr.cluster.is_null() {
         true
     } else {
@@ -1019,7 +1028,15 @@ fn publish_identity_connection_established(
             return;
         }
         // SAFETY: pointer validity is checked by the callee.
-        unsafe { hew_routing_add_route(mgr.routing_table, peer_route_slot, conn_id) };
+        let _ = unsafe {
+            hew_routing_add_route(
+                mgr.routing_table,
+                peer_identity,
+                peer_route_slot,
+                peer_session_incarnation,
+                conn_id,
+            )
+        };
     }
 
     flush_registry_gossip_to_connection(mgr, conn_id, publication_token, peer_feature_flags);
@@ -1114,7 +1131,7 @@ fn retire_identity_connection_publication(
         if !mgr.routing_table.is_null() {
             // SAFETY: pointer validity is checked by the callee.
             let _ = unsafe {
-                hew_routing_remove_route_if_conn(mgr.routing_table, peer_route_slot, conn_id)
+                hew_routing_remove_route_if_conn(mgr.routing_table, peer_identity, conn_id)
             };
         }
     }
@@ -1133,7 +1150,7 @@ fn retire_identity_connection_publication(
     // `peer_node_id` is gone, so every local watcher of an actor on that node
     // gets a MonitorLost DOWN — unless it already received a definitive
     // clean-exit / crash DOWN (only Pending slots are armed; exactly-once).
-    crate::hew_node::fan_out_monitor_lost_for_node(peer_route_slot);
+    crate::hew_node::fan_out_monitor_lost_for_identity(peer_identity);
 }
 
 #[cfg(test)]
@@ -1594,8 +1611,7 @@ fn install_connection_actor(
 // Sole caller is the encryption-gated send path in `hew_connmgr_send`.
 #[cfg(feature = "encryption")]
 unsafe fn encode_envelope(
-    mgr: &HewConnMgr,
-    target_actor_id: u64,
+    target: Location,
     msg_type: i32,
     payload: *mut u8,
     payload_len: usize,
@@ -1605,10 +1621,6 @@ unsafe fn encode_envelope(
     // Cross-node send gates (Gate 1 before Gate 2; fail-closed in all build
     // profiles via set_last_error + return None, not debug_assert).
     validate_cross_node_send_params(payload_class, cancel_token_handle)?;
-    let Some(target) = remote_location_for_actor(mgr, target_actor_id) else {
-        set_last_error("hew_connmgr_send: target has no authenticated Location");
-        return None;
-    };
     // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
     match unsafe {
         encode_envelope_frame_from_raw_parts(
@@ -1628,25 +1640,11 @@ unsafe fn encode_envelope(
     }
 }
 
-fn encode_registry_gossip_control(
-    mgr: &HewConnMgr,
-    name: &str,
-    actor_id: u64,
-    is_add: bool,
-) -> Option<Vec<u8>> {
+fn encode_registry_gossip_control(name: &str, location: Location, is_add: bool) -> Option<Vec<u8>> {
     let op = if is_add {
         crate::cluster::GOSSIP_REGISTRY_ADD
     } else {
         crate::cluster::GOSSIP_REGISTRY_REMOVE
-    };
-    let location = if crate::pid::hew_pid_node(actor_id) == mgr.local_node_id {
-        local_location_for_actor(mgr, actor_id)
-    } else {
-        remote_location_for_actor(mgr, actor_id)
-    };
-    let Some(location) = location else {
-        set_last_error("registry gossip encode: actor has no authenticated Location");
-        return None;
     };
     let payload = RegistryGossipPayload {
         op,
@@ -1730,9 +1728,11 @@ fn handle_control_frame(
     // An `Unverified` (delivery-only) connection carries no control-plane
     // authority — drop its gossip with a diagnostic and apply no registry
     // mutation (fail-closed).
-    if authenticated_peer_node_id(mgr, conn_id, claim_token, "registry gossip").is_none() {
+    let Some((_, peer_identity)) =
+        authenticated_peer_identity(mgr, conn_id, claim_token, "registry gossip")
+    else {
         return;
-    }
+    };
 
     let payload = match decode_registry_gossip_payload(&control.payload) {
         Ok(payload) => payload,
@@ -1761,24 +1761,14 @@ fn handle_control_frame(
         set_last_error("connection reader registry gossip missing cluster");
         return;
     }
+    if !location_matches_node_session(payload.location, peer_identity) {
+        set_last_error("registry gossip rejected a Location not owned by the authenticated peer");
+        return;
+    }
     // SAFETY: cluster pointer is owned by the live node/manager and remains
     // valid while the reader thread is running.
     unsafe {
-        let Some(route_slot) = route_slot_for_identity(mgr_ref, payload.location.node()) else {
-            set_last_error("registry gossip rejected unconfigured NodeId");
-            return;
-        };
-        let actor_id = crate::pid::hew_pid_make(route_slot, payload.location.slot());
-        let expected_session = if route_slot == mgr_ref.local_node_id {
-            mgr_ref.local_session_incarnation
-        } else {
-            (&*mgr_ref.cluster).member_session(route_slot)
-        };
-        if expected_session != Some(payload.location.incarnation()) {
-            set_last_error("registry gossip rejected stale Location session");
-            return;
-        }
-        (&*mgr_ref.cluster).apply_registry_event(&payload.name, actor_id, is_add);
+        (&*mgr_ref.cluster).apply_registry_event(&payload.name, payload.location, is_add);
     }
 }
 
@@ -1846,12 +1836,20 @@ fn location_matches_node_session(
     location: Location,
     identity: crate::envelope::NodeSessionIdentity,
 ) -> bool {
-    location.node() == identity.node_id && location.incarnation() == identity.session_incarnation
+    location.node() == identity.node_id
+        && location.incarnation() == identity.session_incarnation
+        && crate::pid::actor_slot_fits_internal_alias(location.slot())
 }
 
 fn location_matches_local(mgr: &HewConnMgr, location: Location) -> bool {
-    Some(location.node()) == mgr.local_identity
-        && Some(location.incarnation()) == mgr.local_session_incarnation
+    if Some(location.node()) != mgr.local_identity
+        || Some(location.incarnation()) != mgr.local_session_incarnation
+        || !crate::pid::actor_slot_fits_internal_alias(location.slot())
+    {
+        return false;
+    }
+    let actor_id = crate::pid::hew_pid_make(mgr.local_node_id, location.slot());
+    crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_some()
 }
 
 /// Handle an inbound `CTRL_MONITOR_REQ`: a remote node is monitoring
@@ -1875,7 +1873,7 @@ fn handle_monitor_req_frame(
             return;
         }
     };
-    let Some((authenticated, peer_identity)) =
+    let Some((_, peer_identity)) =
         authenticated_peer_identity(mgr, conn_id, claim_token, "monitor req")
     else {
         return;
@@ -1892,8 +1890,11 @@ fn handle_monitor_req_frame(
         set_last_error("connection reader monitor req: no runtime installed");
         return;
     };
-    rt.dist_monitors
-        .register_remote_watcher(payload.target.slot(), authenticated, payload.ref_id);
+    rt.dist_monitors.register_remote_watcher(
+        payload.target.slot(),
+        payload.watcher,
+        payload.ref_id,
+    );
 }
 
 /// Handle an inbound `CTRL_DEMONITOR`: a remote node retracted its
@@ -1914,7 +1915,7 @@ fn handle_demonitor_frame(
             return;
         }
     };
-    let Some((authenticated, peer_identity)) =
+    let Some((_, peer_identity)) =
         authenticated_peer_identity(mgr, conn_id, claim_token, "demonitor")
     else {
         return;
@@ -1931,7 +1932,7 @@ fn handle_demonitor_frame(
         return;
     };
     rt.dist_monitors
-        .remove_remote_watcher(payload.target.slot(), authenticated, payload.ref_id);
+        .remove_remote_watcher(payload.target.slot(), payload.watcher, payload.ref_id);
 }
 
 /// Handle an inbound `CTRL_MONITOR_DOWN`: the node owning an actor we
@@ -1957,7 +1958,7 @@ fn handle_monitor_down_frame(
             return;
         }
     };
-    let Some((authenticated, peer_identity)) =
+    let Some((_, peer_identity)) =
         authenticated_peer_identity(mgr, conn_id, claim_token, "monitor down")
     else {
         return;
@@ -1971,7 +1972,7 @@ fn handle_monitor_down_frame(
         return;
     };
     rt.dist_monitors
-        .deliver_to_ref(payload.ref_id, authenticated, payload.reason);
+        .deliver_to_ref(payload.ref_id, payload.target, payload.reason);
 }
 
 /// Handle an inbound `CTRL_LINK_REQ`: a remote node is linking one of our local
@@ -1996,7 +1997,7 @@ fn handle_link_req_frame(
             return;
         }
     };
-    let Some((authenticated, peer_identity)) =
+    let Some((_, peer_identity)) =
         authenticated_peer_identity(mgr, conn_id, claim_token, "link req")
     else {
         return;
@@ -2009,7 +2010,7 @@ fn handle_link_req_frame(
         set_last_error("connection reader link req Location mismatch");
         return;
     }
-    crate::hew_node::handle_inbound_link_req(&payload, authenticated);
+    crate::hew_node::handle_inbound_link_req(&payload);
 }
 
 /// Handle an inbound `CTRL_UNLINK`: a remote node retracted a prior
@@ -2029,8 +2030,7 @@ fn handle_unlink_frame(
             return;
         }
     };
-    let Some((authenticated, peer_identity)) =
-        authenticated_peer_identity(mgr, conn_id, claim_token, "unlink")
+    let Some((_, peer_identity)) = authenticated_peer_identity(mgr, conn_id, claim_token, "unlink")
     else {
         return;
     };
@@ -2042,7 +2042,7 @@ fn handle_unlink_frame(
         set_last_error("connection reader unlink Location mismatch");
         return;
     }
-    crate::hew_node::handle_inbound_unlink(&payload, authenticated);
+    crate::hew_node::handle_inbound_unlink(&payload);
 }
 
 /// Handle an inbound `CTRL_LINK_DOWN`: the node owning an actor we LINK
@@ -2082,7 +2082,7 @@ fn handle_link_down_frame(
     // because the delivery id is nonzero). Route through the exact-owner gate so
     // an `Unverified`/superseded connection yields `None` and is dropped with a
     // diagnostic before any cross-node exit cascade.
-    let Some((authenticated, peer_identity)) =
+    let Some((_, peer_identity)) =
         authenticated_peer_identity(mgr, conn_id, claim_token, "link down")
     else {
         return;
@@ -2091,7 +2091,7 @@ fn handle_link_down_frame(
         set_last_error("connection reader link down target Location mismatch");
         return;
     }
-    crate::hew_node::handle_inbound_link_down(payload.ref_id, authenticated, payload.reason);
+    crate::hew_node::handle_inbound_link_down(payload.ref_id, payload.target, payload.reason);
 }
 
 fn active_gossip_connection_ids(mgr: &HewConnMgr) -> Vec<c_int> {
@@ -2141,7 +2141,7 @@ fn flush_registry_gossip_to_connection(
     let frames: Vec<Vec<u8>> = events
         .into_iter()
         .filter_map(|event| {
-            encode_registry_gossip_control(mgr, &event.name, event.actor_id, event.is_add)
+            encode_registry_gossip_control(&event.name, event.location, event.is_add)
         })
         .collect();
     send_registry_flush_frames(mgr, conn_id, publication_token, frames, 0);
@@ -2347,17 +2347,6 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
 pub(crate) fn local_location_for_actor(mgr: &HewConnMgr, actor_id: u64) -> Option<Location> {
     let slot = crate::pid::hew_pid_serial(actor_id);
     Location::new(mgr.local_identity?, slot, mgr.local_session_incarnation?).ok()
-}
-
-pub(crate) fn remote_location_for_actor(mgr: &HewConnMgr, actor_id: u64) -> Option<Location> {
-    let route_slot = crate::pid::hew_pid_node(actor_id);
-    let actor_slot = crate::pid::hew_pid_serial(actor_id);
-    let (lock, _) = &mgr.claims;
-    let claims = lock.lock_or_recover();
-    let (node_id, claim) = claims.iter().find(|(_, claim)| {
-        claim.route_slot == route_slot && claim.state == ClaimState::Published
-    })?;
-    Location::new(*node_id, actor_slot, claim.session_incarnation).ok()
 }
 
 /// As [`authenticated_peer_node_id_for_conn`], but tolerant of this
@@ -4099,10 +4088,13 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     {
         let _publication = publication_sync.lock_or_recover();
         publication_removed.store(true, Ordering::Release);
-        if !mgr.routing_table.is_null() && peer_node_id != 0 {
+        if !mgr.routing_table.is_null() {
+            let Some(peer_identity) = peer_identity else {
+                return -1;
+            };
             // SAFETY: routing_table is valid per manager contract.
             let _ = unsafe {
-                hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id)
+                hew_routing_remove_route_if_conn(mgr.routing_table, peer_identity, conn_id)
             };
         }
     }
@@ -4244,43 +4236,63 @@ pub unsafe extern "C" fn hew_connmgr_set_outbound_capacity(
 /// # Safety
 ///
 /// - `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
+/// - `target` must point to a valid exact actor location.
 /// - `data` must point to at least `size` readable bytes, or be null
 ///   when `size` is 0.
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_send(
     mgr: *mut HewConnMgr,
     conn_id: c_int,
-    target_actor_id: u64,
+    target: *const HewLocation,
     msg_type: i32,
     data: *mut u8,
     size: usize,
 ) -> c_int {
-    cabi_guard!(mgr.is_null(), -1);
+    cabi_guard!(mgr.is_null() || target.is_null(), -1);
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
+    // SAFETY: caller guarantees `target` is readable.
+    let Ok(target) = Location::try_from(unsafe { *target }) else {
+        set_last_error("hew_connmgr_send: target location is invalid");
+        return -1;
+    };
 
-    // Verify connection exists, is active, and targets the correct peer node.
-    // The peer_node_id check prevents sends to recycled conn_ids that now
-    // belong to a different node (conn_id reuse safety).
-    let target_node_id = crate::pid::hew_pid_node(target_actor_id);
+    // Verify the connection is the active authenticated owner of this exact
+    // node/session pair. This prevents conn-id and route-slot reuse from
+    // redirecting a carried location.
     #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
         #[cfg(feature = "encryption")]
         let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
-        let ok = mgr_ref.connections.access(|conns| {
+        let publication_token = mgr_ref.connections.access(|conns| {
             let active = conns.iter().find(|c| {
                 c.conn_id == conn_id
                     && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
-                    && (target_node_id == 0 || c.peer_node_id == target_node_id)
+                    && c.peer_identity == Some(target.node())
+                    && c.peer_session_incarnation == target.incarnation()
             });
             #[cfg(feature = "encryption")]
             if let Some(c) = active {
                 noise_out = Some(Arc::clone(&c.noise_transport));
             }
-            active.is_some()
+            active.map(|connection| connection.publication_token)
         });
-        if !ok {
+        let Some(publication_token) = publication_token else {
+            return -1;
+        };
+        let owns_claim = mgr_ref
+            .claims
+            .0
+            .lock_or_recover()
+            .get(&target.node())
+            .is_some_and(|claim| {
+                claim.state == ClaimState::Published
+                    && claim.conn_id == conn_id
+                    && claim.publication_token == publication_token
+                    && claim.session_incarnation == target.incarnation()
+            });
+        if !owns_claim {
             return -1;
         }
         #[cfg(feature = "encryption")]
@@ -4292,8 +4304,7 @@ pub unsafe extern "C" fn hew_connmgr_send(
     // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
     let Some(encoded) = (unsafe {
         encode_envelope(
-            mgr_ref,
-            target_actor_id,
+            target,
             msg_type,
             data,
             size,
@@ -4453,7 +4464,7 @@ pub(crate) unsafe fn hew_connmgr_send_preencoded(
 pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
     mgr: *mut HewConnMgr,
     name: &str,
-    actor_id: u64,
+    location: Location,
     is_add: bool,
 ) -> c_int {
     if mgr.is_null() {
@@ -4461,7 +4472,7 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
     }
     // SAFETY: caller guarantees manager pointer validity.
     let mgr_ref = unsafe { &*mgr };
-    let Some(bytes) = encode_registry_gossip_control(mgr_ref, name, actor_id, is_add) else {
+    let Some(bytes) = encode_registry_gossip_control(name, location, is_add) else {
         return 0;
     };
 
@@ -4624,12 +4635,12 @@ pub unsafe extern "C" fn hew_connmgr_count(mgr: *mut HewConnMgr) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_broadcast(
     mgr: *mut HewConnMgr,
-    target_actor_id: u64,
+    target: *const HewLocation,
     msg_type: i32,
     data: *mut u8,
     size: usize,
 ) -> c_int {
-    cabi_guard!(mgr.is_null(), 0);
+    cabi_guard!(mgr.is_null() || target.is_null(), 0);
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
 
@@ -4645,7 +4656,7 @@ pub unsafe extern "C" fn hew_connmgr_broadcast(
     let mut success_count: c_int = 0;
     for cid in conn_ids {
         // SAFETY: mgr is valid, data/size from caller.
-        let rc = unsafe { hew_connmgr_send(mgr, cid, target_actor_id, msg_type, data, size) };
+        let rc = unsafe { hew_connmgr_send(mgr, cid, target, msg_type, data, size) };
         if rc == 0 {
             success_count += 1;
         }
@@ -5111,7 +5122,11 @@ mod tests {
 
         crate::runtime::rt_current()
             .dist_monitors
-            .register_remote_link_watcher(payload.target.slot(), 2, payload.ref_id);
+            .register_remote_link_watcher(
+                payload.target.slot(),
+                test_location(2, payload.linker.slot()),
+                payload.ref_id,
+            );
         let unlink = ControlFrame {
             version: WIRE_VERSION,
             ctrl_kind: CTRL_UNLINK,
@@ -5128,7 +5143,7 @@ mod tests {
             1,
             "mismatched unlink must not remove watcher"
         );
-        assert_eq!(watchers[0].watcher_node_id, 2);
+        assert_eq!(watchers[0].watcher.node(), test_node_id(2));
         assert_eq!(watchers[0].ref_id, payload.ref_id);
         assert!(watchers[0].is_link);
     }
@@ -5236,9 +5251,9 @@ mod tests {
             test_publish_claim(&*mgr, 3, 11);
             test_publish_claim(&*mgr, 4, 12);
 
-            let actor_id = crate::pid::hew_pid_make(2, 0x42);
+            let location = test_location(2, 0x42);
             assert_eq!(
-                hew_connmgr_broadcast_registry_gossip(mgr, "worker", actor_id, true),
+                hew_connmgr_broadcast_registry_gossip(mgr, "worker", location, true),
                 1
             );
 
@@ -6060,8 +6075,8 @@ mod tests {
         let _rt_guard = crate::runtime_test_guard();
         let rt = crate::runtime::rt_current_opt().expect("test guard installs a runtime");
         let peer: u16 = 42;
-        let target_serial: u64 = 7;
-        let ref_id = rt.dist_monitors.register_watcher(peer, target_serial);
+        let target = test_location(peer, 7);
+        let ref_id = rt.dist_monitors.register_watcher(target);
 
         with_reserved_claim(peer, 95, 400, true, |mgr| {
             // SAFETY: mgr is live for the whole closure.
@@ -6177,7 +6192,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(peer));
             let token = test_publish_claim(&*mgr, 2, 10);
 
-            (&*cluster).emit_registry_add("svc", crate::pid::hew_pid_make(1, 0x77));
+            (&*cluster).emit_registry_add("svc", test_location(1, 0x77));
 
             // Initial flush: the send fails; the frame must be parked, not lost.
             flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
@@ -6386,8 +6401,8 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(peer));
             let token = test_publish_claim(&*mgr, 2, 10);
 
-            let actor_id = crate::pid::hew_pid_make(1, 0x88);
-            (&*cluster).emit_registry_add("svc", actor_id);
+            let location = test_location(1, 0x88);
+            (&*cluster).emit_registry_add("svc", location);
             // The ADD flush fails and parks.
             flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
             assert_eq!(
@@ -6398,7 +6413,7 @@ mod tests {
 
             // A later REMOVE broadcast must park BEHIND it, not overtake it.
             assert_eq!(
-                hew_connmgr_broadcast_registry_gossip(mgr, "svc", actor_id, false),
+                hew_connmgr_broadcast_registry_gossip(mgr, "svc", location, false),
                 0,
                 "the REMOVE must not report a direct send while the ADD is parked"
             );
@@ -6494,7 +6509,7 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(peer));
             let token = test_publish_claim(&*mgr, 2, 10);
 
-            (&*cluster).emit_registry_add("svc", crate::pid::hew_pid_make(1, 0x99));
+            (&*cluster).emit_registry_add("svc", test_location(1, 0x99));
             flush_registry_gossip_to_connection(&*mgr, 10, token, HEW_FEATURE_SUPPORTS_GOSSIP);
             assert_eq!(
                 (*mgr).pending_registry_flush_count.load(Ordering::Acquire),
@@ -6543,20 +6558,22 @@ mod tests {
     /// event the cluster applies.
     extern "C" fn record_registry_apply(
         name: *const std::ffi::c_char,
-        actor_id: u64,
+        location: *const HewLocation,
         is_add: bool,
         user_data: *mut std::ffi::c_void,
     ) {
         // SAFETY: test installs a Mutex<Vec<_>> as the callback user data.
-        let applied = unsafe { &*(user_data.cast::<Mutex<Vec<(String, u64, bool)>>>()) };
+        let applied = unsafe { &*(user_data.cast::<Mutex<Vec<(String, Location, bool)>>>()) };
         // SAFETY: the cluster passes a valid NUL-terminated name.
         let name = unsafe { std::ffi::CStr::from_ptr(name) }
             .to_string_lossy()
             .into_owned();
+        // SAFETY: cluster callback supplies a valid location pointer.
+        let location = Location::try_from(unsafe { *location }).unwrap();
         applied
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((name, actor_id, is_add));
+            .push((name, location, is_add));
     }
 
     /// Real admission ordering through the production pieces (the full
@@ -6575,7 +6592,7 @@ mod tests {
     /// deny loses the peer's one-shot flush and the name never resolves.
     #[test]
     fn control_frame_before_install_applies_registry_event_after_real_publish() {
-        let applied = Box::into_raw(Box::new(Mutex::new(Vec::<(String, u64, bool)>::new())));
+        let applied = Box::into_raw(Box::new(Mutex::new(Vec::<(String, Location, bool)>::new())));
         let ops = Box::new(crate::transport::HewTransportOps {
             connect: None,
             listen: None,
@@ -6622,7 +6639,7 @@ mod tests {
             // Step 2 (real decode + gate): a reader surrogate processes the
             // peer's one-shot registry-gossip frame. It signals right before
             // handing the frame to the production dispatch.
-            let actor_id = crate::pid::hew_pid_make(5, 0x99);
+            let location = test_location(5, 0x99);
             let payload = RegistryGossipPayload {
                 op: crate::cluster::GOSSIP_REGISTRY_ADD,
                 name: "svc".to_owned(),
@@ -6683,7 +6700,7 @@ mod tests {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 assert_eq!(
                     applied.as_slice(),
-                    &[("svc".to_owned(), actor_id, true)],
+                    &[("svc".to_owned(), location, true)],
                     "the pre-install frame must apply exactly once after publication: {reader_error:?}",
                 );
             }
@@ -7018,12 +7035,8 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clear();
-            let count = hew_connmgr_broadcast_registry_gossip(
-                mgr,
-                "svc",
-                crate::pid::hew_pid_make(1, 0xdef0),
-                true,
-            );
+            let count =
+                hew_connmgr_broadcast_registry_gossip(mgr, "svc", test_location(1, 0xdef0), true);
             assert_eq!(
                 count, 1,
                 "registry gossip broadcast reaches exactly the one authenticated peer"
@@ -7500,7 +7513,7 @@ mod tests {
         // SAFETY: all raw pointers are allocated in this test and remain valid
         // until the matching free calls below.
         unsafe {
-            let routing_table = crate::routing::hew_routing_table_new(1);
+            let routing_table = crate::routing::hew_routing_table_new_for_test(1);
             let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
             assert!(!routing_table.is_null() && !cluster.is_null());
             crate::cluster::hew_cluster_set_membership_callback(
@@ -8138,7 +8151,7 @@ mod tests {
 
         let (check_tx, check_rx) = std::sync::mpsc::channel::<(i32, usize)>();
         // SAFETY: hew_routing_table_new allocates a new routing table with no preconditions.
-        let routing_table = unsafe { crate::routing::hew_routing_table_new(1) };
+        let routing_table = crate::routing::hew_routing_table_new_for_test(1);
         assert!(!routing_table.is_null());
 
         // We'll fill in mgr after creation.
@@ -8406,7 +8419,7 @@ mod tests {
                 r#impl: close_impl,
             }));
             let routing_table = if with_routing_table {
-                crate::routing::hew_routing_table_new(1)
+                crate::routing::hew_routing_table_new_for_test(1)
             } else {
                 std::ptr::null_mut()
             };

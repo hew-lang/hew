@@ -219,7 +219,7 @@ pub enum WireFrame {
 
 /// Bounded registry-gossip control payload.
 ///
-/// Encoded as a definite CBOR map `{1: op, 2: name, 3: actor_id}`.
+/// Encoded as a definite CBOR map `{1: op, 2: name, 3: location}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryGossipPayload {
     /// Registry operation (`REGISTRY_GOSSIP_OP_ADD` or `_REMOVE`).
@@ -749,8 +749,7 @@ impl From<DecodeError> for MonitorPayloadError {
 impl EnvelopeFrame {
     /// Construct a fire-and-forget envelope with no reply routing.
     ///
-    /// Convenience constructor for the common case: `request_id = 0`,
-    /// `source_node_id = 0`.
+    /// Convenience constructor for the common case: `request_id = 0`.
     #[must_use]
     pub fn fire_and_forget(
         target: Location,

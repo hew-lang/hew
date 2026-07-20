@@ -231,237 +231,6 @@ pub struct LiveClaim {
     pub state: ClaimState,
 }
 
-/// Published authenticated NodeId-to-route binding.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LiveRouteBinding {
-    node_id: NodeId,
-    route_slot: RouteSlot,
-    credential: PeerCredential,
-    session_incarnation: u32,
-    publication_token: u64,
-}
-
-impl LiveRouteBinding {
-    /// Construct a candidate live route binding.
-    #[must_use]
-    pub fn new(
-        node_id: NodeId,
-        route_slot: RouteSlot,
-        credential: PeerCredential,
-        session_incarnation: u32,
-        publication_token: u64,
-    ) -> Self {
-        Self {
-            node_id,
-            route_slot,
-            credential,
-            session_incarnation,
-            publication_token,
-        }
-    }
-
-    /// Authenticated node identity.
-    #[must_use]
-    pub const fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    /// Receiver-local route slot.
-    #[must_use]
-    pub const fn route_slot(&self) -> RouteSlot {
-        self.route_slot
-    }
-
-    /// Durable peer session incarnation.
-    #[must_use]
-    pub const fn session_incarnation(&self) -> u32 {
-        self.session_incarnation
-    }
-
-    /// Connection/publication owner token.
-    #[must_use]
-    pub const fn publication_token(&self) -> u64 {
-        self.publication_token
-    }
-}
-
-/// Result of resolving a carried `NodeId` through the route authority.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RouteResolution {
-    /// The identity currently has a live authenticated route.
-    Live(LiveRouteBinding),
-    /// The identity was retired; its prior route slot is retained as a tombstone.
-    Retired(RouteSlot),
-    /// The identity has never been published or retired.
-    Unknown,
-}
-
-/// Live route-map publication failure.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RouteMapError {
-    /// Route slot zero is reserved for local dispatch.
-    ReservedRouteSlot,
-    /// Session incarnation zero is invalid.
-    ZeroSession,
-    /// The credential does not derive the advertised identity.
-    CredentialNodeMismatch {
-        /// Advertised identity.
-        advertised: NodeId,
-        /// Identity derived from the credential.
-        derived: NodeId,
-    },
-    /// Another canonical credential is already known for this truncated identity.
-    NodeIdCollision {
-        /// Colliding identity.
-        node_id: NodeId,
-    },
-    /// The `NodeId` is already live under another route slot or owner.
-    NodeAlreadyLive {
-        /// Existing route slot.
-        route_slot: RouteSlot,
-    },
-    /// The route slot is already live under another `NodeId`.
-    RouteSlotAlreadyLive {
-        /// Existing identity.
-        node_id: NodeId,
-    },
-}
-
-impl std::fmt::Display for RouteMapError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ReservedRouteSlot => {
-                formatter.write_str("route slot 0 is reserved for local dispatch")
-            }
-            Self::ZeroSession => formatter.write_str("route binding session must be nonzero"),
-            Self::CredentialNodeMismatch {
-                advertised,
-                derived,
-            } => write!(
-                formatter,
-                "authenticated credential derives {derived}, not advertised NodeId {advertised}"
-            ),
-            Self::NodeIdCollision { node_id } => {
-                write!(
-                    formatter,
-                    "distinct authenticated credentials derive the same NodeId {node_id}"
-                )
-            }
-            Self::NodeAlreadyLive { route_slot } => {
-                write!(
-                    formatter,
-                    "NodeId is already live under route slot {route_slot}"
-                )
-            }
-            Self::RouteSlotAlreadyLive { node_id } => {
-                write!(
-                    formatter,
-                    "route slot is already live under NodeId {node_id}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for RouteMapError {}
-
-/// One-to-one live NodeId/route-slot authority plus retired identity tombstones.
-#[derive(Debug, Default)]
-pub struct RouteBindingMap {
-    live_by_node: HashMap<NodeId, LiveRouteBinding>,
-    live_by_slot: HashMap<RouteSlot, NodeId>,
-    retired_nodes: HashMap<NodeId, RouteSlot>,
-    known_credentials: HashMap<NodeId, PeerCredential>,
-}
-
-impl RouteBindingMap {
-    /// Publish an authenticated live route.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for reserved values, credential mismatch, or a live
-    /// NodeId/slot collision. No map is changed on error.
-    pub fn publish(&mut self, binding: LiveRouteBinding) -> Result<(), RouteMapError> {
-        self.publish_with_deriver(binding, PeerCredential::node_id)
-    }
-
-    fn publish_with_deriver(
-        &mut self,
-        binding: LiveRouteBinding,
-        derive: impl Fn(&PeerCredential) -> NodeId,
-    ) -> Result<(), RouteMapError> {
-        if binding.route_slot == 0 {
-            return Err(RouteMapError::ReservedRouteSlot);
-        }
-        if binding.session_incarnation == 0 {
-            return Err(RouteMapError::ZeroSession);
-        }
-        let derived = derive(&binding.credential);
-        if derived != binding.node_id {
-            return Err(RouteMapError::CredentialNodeMismatch {
-                advertised: binding.node_id,
-                derived,
-            });
-        }
-        if self
-            .known_credentials
-            .get(&binding.node_id)
-            .is_some_and(|known| known != &binding.credential)
-        {
-            return Err(RouteMapError::NodeIdCollision {
-                node_id: binding.node_id,
-            });
-        }
-        if let Some(existing) = self.live_by_node.get(&binding.node_id) {
-            return Err(RouteMapError::NodeAlreadyLive {
-                route_slot: existing.route_slot,
-            });
-        }
-        if let Some(existing) = self.live_by_slot.get(&binding.route_slot) {
-            return Err(RouteMapError::RouteSlotAlreadyLive { node_id: *existing });
-        }
-        self.retired_nodes.remove(&binding.node_id);
-        self.known_credentials
-            .entry(binding.node_id)
-            .or_insert_with(|| binding.credential.clone());
-        self.live_by_slot
-            .insert(binding.route_slot, binding.node_id);
-        self.live_by_node.insert(binding.node_id, binding);
-        Ok(())
-    }
-
-    /// Retire a live binding only when `publication_token` still owns it.
-    pub fn retire(&mut self, node_id: NodeId, publication_token: u64) -> Option<LiveRouteBinding> {
-        let binding = self
-            .live_by_node
-            .get(&node_id)
-            .filter(|binding| binding.publication_token == publication_token)?
-            .clone();
-        self.live_by_node.remove(&node_id);
-        self.live_by_slot.remove(&binding.route_slot);
-        self.retired_nodes.insert(node_id, binding.route_slot);
-        Some(binding)
-    }
-
-    /// Resolve a carried identity as live, retired, or unknown.
-    #[must_use]
-    pub fn resolve_node(&self, node_id: NodeId) -> RouteResolution {
-        if let Some(binding) = self.live_by_node.get(&node_id) {
-            RouteResolution::Live(binding.clone())
-        } else if let Some(route_slot) = self.retired_nodes.get(&node_id) {
-            RouteResolution::Retired(*route_slot)
-        } else {
-            RouteResolution::Unknown
-        }
-    }
-
-    /// Resolve a live route slot to its authenticated `NodeId`.
-    #[must_use]
-    pub fn node_for_slot(&self, route_slot: RouteSlot) -> Option<NodeId> {
-        self.live_by_slot.get(&route_slot).copied()
-    }
-}
-
 /// A node's stable Noise static keypair (TCP transport identity).
 ///
 /// Stored as opaque bytes behind an [`Arc`] so cloning a snapshot never
@@ -822,6 +591,38 @@ struct SnapshotInner {
 }
 
 impl PeerAuthSnapshot {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        node_identity: NodeId,
+        peer_bindings: impl IntoIterator<Item = (RouteSlot, PeerCredential)>,
+    ) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_TEST_LEASE: AtomicU64 = AtomicU64::new(1);
+        let lease_id = NEXT_TEST_LEASE.fetch_add(1, Ordering::Relaxed);
+        let lease_path = std::env::temp_dir().join(format!(
+            "hew-peer-auth-test-{}-{lease_id}",
+            std::process::id()
+        ));
+        let session_lease = NodeSessionLease::acquire(&lease_path, node_identity)
+            .expect("test node session lease should be acquired");
+        let _ = std::fs::remove_file(&lease_path);
+        Self {
+            inner: Arc::new(SnapshotInner {
+                legacy_wire_route_slot: None,
+                unverified: false,
+                transport: TransportSelection::Tcp,
+                bindings: peer_bindings.into_iter().collect(),
+                noise_identity: None,
+                mesh_identity: None,
+                node_identity: Some(node_identity),
+                session_lease: Some(Arc::new(session_lease)),
+                mesh_spki_allowlist: HashSet::new(),
+                setup_error: None,
+            }),
+        }
+    }
+
     /// The low-level default posture: an *unconfigured* node.
     ///
     /// No legacy wire slot, `unverified: false`, empty bindings/allowlist. This is
@@ -948,6 +749,16 @@ impl PeerAuthSnapshot {
             .bindings
             .get(&route_slot)
             .map(PeerCredential::node_id)
+    }
+
+    /// Snapshot the configured receiver-local route aliases and identities.
+    #[must_use]
+    pub fn configured_node_routes(&self) -> Vec<(RouteSlot, NodeId)> {
+        self.inner
+            .bindings
+            .iter()
+            .map(|(route_slot, credential)| (*route_slot, credential.node_id()))
+            .collect()
     }
 
     /// Validate the snapshot is self-consistent (defence-in-depth at the shared
@@ -1379,89 +1190,6 @@ mod tests {
             ..PeerAuthConfig::default()
         };
         assert_eq!(cfg.identity_export_string(), "ab".repeat(NOISE_KEY_LEN));
-    }
-
-    #[test]
-    fn route_map_rejects_live_node_and_slot_collisions() {
-        let credential_a = noise(0xA1);
-        let credential_b = noise(0xB2);
-        let node_a = credential_a.node_id();
-        let node_b = credential_b.node_id();
-        let mut routes = RouteBindingMap::default();
-        routes
-            .publish(LiveRouteBinding::new(
-                node_a,
-                10,
-                credential_a.clone(),
-                1,
-                100,
-            ))
-            .unwrap();
-
-        assert_eq!(
-            routes.publish(LiveRouteBinding::new(node_a, 11, credential_a, 2, 101)),
-            Err(RouteMapError::NodeAlreadyLive { route_slot: 10 })
-        );
-        assert_eq!(
-            routes.publish(LiveRouteBinding::new(node_b, 10, credential_b, 1, 102)),
-            Err(RouteMapError::RouteSlotAlreadyLive { node_id: node_a })
-        );
-    }
-
-    #[test]
-    fn route_map_rejects_injected_node_id_collision_live_and_retired() {
-        let collision = NodeId::from_bytes([0xCC; 16]);
-        let credential_a = noise(0xA1);
-        let credential_b = noise(0xB2);
-        let mut routes = RouteBindingMap::default();
-        routes
-            .publish_with_deriver(
-                LiveRouteBinding::new(collision, 10, credential_a, 1, 100),
-                |_| collision,
-            )
-            .unwrap();
-
-        assert_eq!(
-            routes.publish_with_deriver(
-                LiveRouteBinding::new(collision, 11, credential_b.clone(), 1, 101),
-                |_| collision,
-            ),
-            Err(RouteMapError::NodeIdCollision { node_id: collision })
-        );
-        assert!(routes.retire(collision, 100).is_some());
-        assert_eq!(
-            routes.publish_with_deriver(
-                LiveRouteBinding::new(collision, 11, credential_b, 2, 102),
-                |_| collision,
-            ),
-            Err(RouteMapError::NodeIdCollision { node_id: collision })
-        );
-        assert_eq!(routes.resolve_node(collision), RouteResolution::Retired(10));
-    }
-
-    #[test]
-    fn route_map_retires_node_before_slot_reuse() {
-        let credential_a = noise(0xA1);
-        let credential_b = noise(0xB2);
-        let node_a = credential_a.node_id();
-        let node_b = credential_b.node_id();
-        let mut routes = RouteBindingMap::default();
-        routes
-            .publish(LiveRouteBinding::new(node_a, 10, credential_a, 1, 100))
-            .unwrap();
-        assert!(routes.retire(node_a, 999).is_none());
-        assert!(routes.retire(node_a, 100).is_some());
-        assert_eq!(routes.resolve_node(node_a), RouteResolution::Retired(10));
-
-        routes
-            .publish(LiveRouteBinding::new(node_b, 10, credential_b, 1, 101))
-            .unwrap();
-        assert_eq!(routes.node_for_slot(10), Some(node_b));
-        assert!(matches!(
-            routes.resolve_node(node_b),
-            RouteResolution::Live(_)
-        ));
-        assert_eq!(routes.resolve_node(node_a), RouteResolution::Retired(10));
     }
 
     #[test]

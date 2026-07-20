@@ -379,16 +379,18 @@ impl Checker {
         bound: &hew_parser::ast::TraitBound,
         span: &Span,
         hole_vars: &mut Vec<TypeVar>,
+        context: TypeResolutionContext,
     ) -> crate::ty::TraitObjectBound {
         let args = bound.type_args.as_ref().map_or(vec![], |ta| {
             ta.iter()
-                .map(|t| self.resolve_type_expr_tracking_holes(t, hole_vars))
+                .map(|t| self.resolve_type_expr_tracking_holes_with_context(t, hole_vars, context))
                 .collect()
         });
         let mut assoc_bindings = Vec::with_capacity(bound.assoc_type_bindings.len());
         let mut seen_assoc = HashSet::new();
         for binding in &bound.assoc_type_bindings {
-            let ty = self.resolve_type_expr_tracking_holes(&binding.ty, hole_vars);
+            let ty =
+                self.resolve_type_expr_tracking_holes_with_context(&binding.ty, hole_vars, context);
             if !seen_assoc.insert(binding.name.clone()) {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
@@ -1619,14 +1621,27 @@ impl Checker {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "generic instantiation requires many cases"
-    )]
     pub(super) fn resolve_type_expr_tracking_holes(
         &mut self,
         te: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,
+    ) -> Ty {
+        self.resolve_type_expr_tracking_holes_with_context(
+            te,
+            hole_vars,
+            TypeResolutionContext::Ordinary,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "generic instantiation requires many cases"
+    )]
+    pub(super) fn resolve_type_expr_tracking_holes_with_context(
+        &mut self,
+        te: &Spanned<TypeExpr>,
+        hole_vars: &mut Vec<TypeVar>,
+        context: TypeResolutionContext,
     ) -> Ty {
         match &te.0 {
             TypeExpr::Named { name, type_args } => {
@@ -1834,7 +1849,11 @@ impl Checker {
                 // Non-primitive: resolve generics, aliases, special types
                 let args = type_args.as_ref().map_or(vec![], |ta| {
                     ta.iter()
-                        .map(|te| self.resolve_type_expr_tracking_holes(te, hole_vars))
+                        .map(|te| {
+                            self.resolve_type_expr_tracking_holes_with_context(
+                                te, hole_vars, context,
+                            )
+                        })
                         .collect()
                 });
                 // Check if it's a generic type parameter
@@ -2088,26 +2107,32 @@ impl Checker {
                 }
             }
             TypeExpr::Result { ok, err } => Ty::result(
-                self.resolve_type_expr_tracking_holes(ok, hole_vars),
-                self.resolve_type_expr_tracking_holes(err, hole_vars),
+                self.resolve_type_expr_tracking_holes_with_context(ok, hole_vars, context),
+                self.resolve_type_expr_tracking_holes_with_context(err, hole_vars, context),
             ),
-            TypeExpr::Option(inner) => {
-                Ty::option(self.resolve_type_expr_tracking_holes(inner, hole_vars))
-            }
+            TypeExpr::Option(inner) => Ty::option(
+                self.resolve_type_expr_tracking_holes_with_context(inner, hole_vars, context),
+            ),
             TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
             TypeExpr::Tuple(elems) => Ty::Tuple(
                 elems
                     .iter()
-                    .map(|te| self.resolve_type_expr_tracking_holes(te, hole_vars))
+                    .map(|te| {
+                        self.resolve_type_expr_tracking_holes_with_context(te, hole_vars, context)
+                    })
                     .collect(),
             ),
             TypeExpr::Array { element, size } => Ty::Array(
-                Box::new(self.resolve_type_expr_tracking_holes(element, hole_vars)),
+                Box::new(
+                    self.resolve_type_expr_tracking_holes_with_context(element, hole_vars, context),
+                ),
                 *size,
             ),
             TypeExpr::Slice(element) => Ty::normalize_named(
                 "Vec".to_string(),
-                vec![self.resolve_type_expr_tracking_holes(element, hole_vars)],
+                vec![
+                    self.resolve_type_expr_tracking_holes_with_context(element, hole_vars, context)
+                ],
             ),
             TypeExpr::Function {
                 params,
@@ -2115,25 +2140,51 @@ impl Checker {
             } => Ty::Function {
                 params: params
                     .iter()
-                    .map(|te| self.resolve_type_expr_tracking_holes(te, hole_vars))
+                    .map(|te| {
+                        self.resolve_type_expr_tracking_holes_with_context(te, hole_vars, context)
+                    })
                     .collect(),
-                ret: Box::new(self.resolve_type_expr_tracking_holes(return_type, hole_vars)),
+                ret: Box::new(self.resolve_type_expr_tracking_holes_with_context(
+                    return_type,
+                    hole_vars,
+                    context,
+                )),
             },
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,
             } => Ty::Pointer {
                 is_mutable: *is_mutable,
-                pointee: Box::new(self.resolve_type_expr_tracking_holes(pointee, hole_vars)),
+                pointee: Box::new(
+                    self.resolve_type_expr_tracking_holes_with_context(pointee, hole_vars, context),
+                ),
             },
-            // `&T` immutable borrow — a first-class no-retain shared reference.
-            TypeExpr::Borrow(inner) => Ty::Borrow {
-                pointee: Box::new(self.resolve_type_expr_tracking_holes(inner, hole_vars)),
-            },
+            TypeExpr::Borrow(inner) if context == TypeResolutionContext::ExternSignature => {
+                Ty::Borrow {
+                    pointee: Box::new(
+                        self.resolve_type_expr_tracking_holes_with_context(
+                            inner, hole_vars, context,
+                        ),
+                    ),
+                }
+            }
+            TypeExpr::Borrow(_) => {
+                let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
+                if self.reported_borrow_types_outside_extern.insert(span_key) {
+                    self.report_error(
+                        TypeErrorKind::BorrowTypeOutsideExternSignature,
+                        &te.1,
+                        "`&T` is only allowed in `extern` function signatures; write `T` in \
+                         ordinary Hew code"
+                            .to_string(),
+                    );
+                }
+                Ty::Error
+            }
             TypeExpr::TraitObject(bounds) => {
                 let traits = bounds
                     .iter()
-                    .map(|bound| self.resolve_trait_object_bound(bound, &te.1, hole_vars))
+                    .map(|bound| self.resolve_trait_object_bound(bound, &te.1, hole_vars, context))
                     .collect();
                 Ty::TraitObject { traits }
             }

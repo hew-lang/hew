@@ -1247,7 +1247,20 @@ impl Checker {
         type_expr: &Spanned<TypeExpr>,
         hole_vars: &mut Vec<TypeVar>,
     ) -> Ty {
-        let ty = self.resolve_type_expr_tracking_holes(type_expr, hole_vars);
+        self.resolve_registered_annotation_ty_with_context(
+            type_expr,
+            hole_vars,
+            TypeResolutionContext::Ordinary,
+        )
+    }
+
+    fn resolve_registered_annotation_ty_with_context(
+        &mut self,
+        type_expr: &Spanned<TypeExpr>,
+        hole_vars: &mut Vec<TypeVar>,
+        context: TypeResolutionContext,
+    ) -> Ty {
+        let ty = self.resolve_type_expr_tracking_holes_with_context(type_expr, hole_vars, context);
         self.validate_concrete_collection_types(&ty, &type_expr.1);
         ty
     }
@@ -7468,10 +7481,20 @@ impl Checker {
             let params = f
                 .params
                 .iter()
-                .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
+                .map(|p| {
+                    self.resolve_registered_annotation_ty_with_context(
+                        &p.ty,
+                        &mut hole_vars,
+                        TypeResolutionContext::ExternSignature,
+                    )
+                })
                 .collect();
             let return_type = f.return_type.as_ref().map_or(Ty::Unit, |ret| {
-                self.resolve_registered_annotation_ty(ret, &mut hole_vars)
+                self.resolve_registered_annotation_ty_with_context(
+                    ret,
+                    &mut hole_vars,
+                    TypeResolutionContext::ExternSignature,
+                )
             });
             let sig = FnSig {
                 param_names,

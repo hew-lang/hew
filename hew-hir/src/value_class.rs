@@ -205,9 +205,8 @@ impl ValueClass {
                 builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
                 ..
             } => Self::AffineResource,
-            // `&T` immutable borrow is a non-owning view (F3): reuse `View` so
-            // it shares the no-retain / no-drop drop-elaboration arm. A borrow
-            // binding emits no drop (`build_lifo_drops` View no-op).
+            // An extern-returned `&T` is a non-owning foreign boundary view:
+            // reuse `View` so it shares the no-retain/no-drop elaboration arm.
             ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } => {
                 Self::View
             }

@@ -668,8 +668,8 @@ fn borrowed_param_escape_uppercase_function_call_not_flagged() {
     // parameter to it is a safe borrow under call-boundary ownership — it must
     // NOT raise BorrowedParamReturn.
     let (errors, _) = parse_and_check(concat!(
-        "fn Helper(x: &i64) -> i64 { 5 }\n",
-        "fn f(r: &i64) -> i64 { Helper(r) }\n",
+        "fn Helper(x: Rc<i64>) -> i64 { 5 }\n",
+        "fn f(r: Rc<i64>) -> i64 { Helper(r) }\n",
     ));
     assert!(
         !errors
@@ -685,8 +685,8 @@ fn borrowed_param_escape_lowercase_function_call_not_flagged() {
     // Control for the above: the lowercase spelling was already accepted; it must
     // stay accepted.
     let (errors, _) = parse_and_check(concat!(
-        "fn helper(x: &i64) -> i64 { 5 }\n",
-        "fn f(r: &i64) -> i64 { helper(r) }\n",
+        "fn helper(x: Rc<i64>) -> i64 { 5 }\n",
+        "fn f(r: Rc<i64>) -> i64 { helper(r) }\n",
     ));
     assert!(
         !errors
@@ -703,8 +703,8 @@ fn borrowed_param_escape_lowercase_variant_constructor_flagged() {
     // returned aggregate must raise BorrowedParamReturn.  The old uppercase-first
     // heuristic dropped this, letting a returned reference outlive its owner.
     let (errors, _) = parse_and_check(concat!(
-        "enum Holder { wrap(&i64); empty }\n",
-        "fn f(r: &i64) -> Holder { wrap(r) }\n",
+        "enum Holder { wrap(Rc<i64>); empty }\n",
+        "fn f(r: Rc<i64>) -> Holder { wrap(r) }\n",
     ));
     assert!(
         errors
@@ -720,8 +720,8 @@ fn borrowed_param_escape_uppercase_variant_constructor_flagged() {
     // The uppercase variant spelling was already caught and must stay caught —
     // proves the fix does not regress the originally-handled direction.
     let (errors, _) = parse_and_check(concat!(
-        "enum Holder { Wrap(&i64); Empty }\n",
-        "fn f(r: &i64) -> Holder { Wrap(r) }\n",
+        "enum Holder { Wrap(Rc<i64>); Empty }\n",
+        "fn f(r: Rc<i64>) -> Holder { Wrap(r) }\n",
     ));
     assert!(
         errors
@@ -736,7 +736,7 @@ fn borrowed_param_escape_uppercase_variant_constructor_flagged() {
 fn borrowed_param_escape_builtin_variant_constructor_flagged() {
     // Builtin Option/Result variant constructors must remain classified as
     // aggregate constructors so an embedded borrow param is still flagged.
-    let (errors, _) = parse_and_check("fn f(r: &i64) -> Option<&i64> { Some(r) }\n");
+    let (errors, _) = parse_and_check("fn f(r: Rc<i64>) -> Option<Rc<i64>> { Some(r) }\n");
     assert!(
         errors
             .iter()
@@ -751,8 +751,8 @@ fn borrowed_param_escape_qualified_path_constructor_flagged() {
     // A `Type::Variant` qualified path constructor must remain classified as an
     // aggregate constructor (fail-closed for all `::` paths, including `Rc::new`).
     let (errors, _) = parse_and_check(concat!(
-        "enum Holder { V(&i64); E }\n",
-        "fn f(r: &i64) -> Holder { Holder::V(r) }\n",
+        "enum Holder { V(Rc<i64>); E }\n",
+        "fn f(r: Rc<i64>) -> Holder { Holder::V(r) }\n",
     ));
     assert!(
         errors
@@ -779,7 +779,7 @@ fn borrowed_param_escape_match_arm_variant_collision_flagged() {
     // constructor decision were re-derived locally again.
     let (errors, _) = parse_and_check(concat!(
         "enum Color { red; green; }\n",
-        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    match color { red => red, green => red }\n",
         "}\n",
     ));
@@ -803,7 +803,7 @@ fn borrowed_param_escape_or_pattern_variant_collision_flagged() {
     // InitialisedBeforeUse / MIR-decision-map diagnostic from a sibling pass.
     let (errors, _) = parse_and_check(concat!(
         "enum Color { red; green; }\n",
-        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    match color { red | green => red }\n",
         "}\n",
     ));
@@ -825,7 +825,7 @@ fn borrowed_param_escape_match_payload_binder_not_overflagged() {
     // is. Exactly one BorrowedParamReturn — the `None => red` arm — must fire;
     // the `Some(inner) => inner` arm must stay clean.
     let (errors, _) = parse_and_check(concat!(
-        "fn leak(red: &i64, opt: Option<&i64>) -> &i64 {\n",
+        "fn leak(red: Rc<i64>, opt: Option<Rc<i64>>) -> Rc<i64> {\n",
         "    match opt { Some(inner) => inner, None => red }\n",
         "}\n",
     ));
@@ -850,7 +850,7 @@ fn borrowed_param_escape_consistent_or_binder_not_overflagged() {
     // NO BorrowedParamReturn — a regression here would mean the or-pattern
     // binder set was not threaded through the single authority.
     let (errors, _) = parse_and_check(concat!(
-        "fn leak(p: &i64, r: Result<&i64, &i64>) -> &i64 {\n",
+        "fn leak(p: Rc<i64>, r: Result<Rc<i64>, Rc<i64>>) -> Rc<i64> {\n",
         "    match r { Ok(x) | Err(x) => x }\n",
         "}\n",
     ));
@@ -879,7 +879,7 @@ fn borrowed_param_escape_let_else_unit_variant_collision_flagged() {
     // `DecisionMapTotal` / HIR no-binding error.
     let (errors, _) = parse_and_check(concat!(
         "enum Color { red; green; }\n",
-        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    let red = color else { panic(\"no\") };\n",
         "    red\n",
         "}\n",
@@ -903,7 +903,7 @@ fn borrowed_param_escape_let_else_intermediate_binding_flagged() {
     // danger-propagation path in the same function.
     let (errors, _) = parse_and_check(concat!(
         "enum Color { red; green; }\n",
-        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    let red = color else { panic(\"no\") };\n",
         "    let x = red;\n",
         "    x\n",
@@ -926,7 +926,7 @@ fn borrowed_param_escape_while_let_unit_variant_collision_flagged() {
     // param and is flagged. Locks that consistency in alongside the let-else fix.
     let (errors, _) = parse_and_check(concat!(
         "enum Color { red; green; }\n",
-        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "fn leak(red: Rc<i64>, color: Color) -> Rc<i64> {\n",
         "    while let red = color {\n",
         "        return red;\n",
         "    }\n",
@@ -950,7 +950,7 @@ fn borrowed_param_escape_simple_let_binder_propagation_preserved() {
     // param's danger forward, so returning `y` is flagged. Proves the
     // unit-variant guard did not disable danger-propagation for real binders.
     let (errors, _) = parse_and_check(concat!(
-        "fn leak(red: &i64) -> &i64 {\n",
+        "fn leak(red: Rc<i64>) -> Rc<i64> {\n",
         "    let y = red;\n",
         "    y\n",
         "}\n",

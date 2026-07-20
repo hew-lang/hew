@@ -3273,9 +3273,8 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             Ok(ctx.struct_type(&[ptr, ptr], false).into())
         }
         ResolvedTy::Pointer { .. } => Ok(ctx.ptr_type(AddressSpace::default()).into()),
-        // `&T` immutable borrow is represented as a machine pointer at runtime,
-        // identical lowering to an immutable raw pointer (the borrow/owner
-        // distinction is enforced earlier, in the type checker and MIR).
+        // An extern-signature `&T` foreign view occupies one pointer word. Its
+        // non-owning classification remains distinct from an immutable raw pointer.
         ResolvedTy::Borrow { .. } => Ok(ctx.ptr_type(AddressSpace::default()).into()),
         ResolvedTy::TraitObject { .. } => Ok(dyn_trait_fat_ptr_ty(ctx).into()),
         ResolvedTy::Task(_) => Ok(ctx.ptr_type(AddressSpace::default()).into()),

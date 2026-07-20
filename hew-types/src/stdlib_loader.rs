@@ -493,13 +493,18 @@ fn extern_fn_sig(func: &ExternFnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
     let params: Vec<Ty> = func
         .params
         .iter()
-        .map(|p| type_expr_to_ty(&p.ty.0, module_short))
+        .map(|p| {
+            type_expr_to_ty_with_context(
+                &p.ty.0,
+                module_short,
+                TypeConversionContext::ExternSignature,
+            )
+        })
         .collect();
 
-    let ret = func
-        .return_type
-        .as_ref()
-        .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
+    let ret = func.return_type.as_ref().map_or(Ty::Unit, |rt| {
+        type_expr_to_ty_with_context(&rt.0, module_short, TypeConversionContext::ExternSignature)
+    });
 
     (params, ret)
 }
@@ -510,6 +515,16 @@ fn wrapper_fn_sig(
     func: &FnDecl,
     module_short: &str,
 ) -> (Vec<String>, HashMap<String, Vec<String>>, Vec<Ty>, Ty) {
+    assert!(
+        func.params
+            .iter()
+            .all(|param| !type_expr_contains_borrow(&param.ty.0))
+            && func
+                .return_type
+                .as_ref()
+                .is_none_or(|ret| !type_expr_contains_borrow(&ret.0)),
+        "borrow type reached a non-extern stdlib signature"
+    );
     let (type_params, type_param_bounds) = wrapper_fn_type_params(func);
     let type_param_names: HashSet<String> = type_params.iter().cloned().collect();
     let params: Vec<Ty> = func
@@ -523,6 +538,44 @@ fn wrapper_fn_sig(
     });
 
     (type_params, type_param_bounds, params, ret)
+}
+
+fn type_expr_contains_borrow(type_expr: &TypeExpr) -> bool {
+    match type_expr {
+        TypeExpr::Borrow(_) => true,
+        TypeExpr::Named { type_args, .. } => type_args
+            .as_deref()
+            .is_some_and(|args| args.iter().any(|arg| type_expr_contains_borrow(&arg.0))),
+        TypeExpr::Result { ok, err } => {
+            type_expr_contains_borrow(&ok.0) || type_expr_contains_borrow(&err.0)
+        }
+        TypeExpr::Option(inner) | TypeExpr::Slice(inner) => type_expr_contains_borrow(&inner.0),
+        TypeExpr::Tuple(elements) => elements
+            .iter()
+            .any(|element| type_expr_contains_borrow(&element.0)),
+        TypeExpr::Array { element, .. } => type_expr_contains_borrow(&element.0),
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|param| type_expr_contains_borrow(&param.0))
+                || type_expr_contains_borrow(&return_type.0)
+        }
+        TypeExpr::Pointer { pointee, .. } => type_expr_contains_borrow(&pointee.0),
+        TypeExpr::TraitObject(bounds) => bounds.iter().any(|bound| {
+            bound
+                .type_args
+                .as_deref()
+                .is_some_and(|args| args.iter().any(|arg| type_expr_contains_borrow(&arg.0)))
+                || bound
+                    .assoc_type_bindings
+                    .iter()
+                    .any(|binding| type_expr_contains_borrow(&binding.ty.0))
+        }),
+        TypeExpr::Infer => false,
+    }
 }
 
 fn wrapper_fn_type_params(func: &FnDecl) -> (Vec<String>, HashMap<String, Vec<String>>) {
@@ -558,12 +611,26 @@ fn wrapper_fn_type_params(func: &FnDecl) -> (Vec<String>, HashMap<String, Vec<St
 }
 
 /// Convert a Hew type expression to the type checker's `Ty`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypeConversionContext {
+    Ordinary,
+    ExternSignature,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "type mapping covers all primitive and generic variants"
 )]
 fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
-    type_expr_to_ty_with_params(texpr, module_short, &HashSet::new())
+    type_expr_to_ty_with_context(texpr, module_short, TypeConversionContext::Ordinary)
+}
+
+fn type_expr_to_ty_with_context(
+    texpr: &TypeExpr,
+    module_short: &str,
+    context: TypeConversionContext,
+) -> Ty {
+    type_expr_to_ty_with_params_and_context(texpr, module_short, &HashSet::new(), context)
 }
 
 #[allow(
@@ -574,6 +641,24 @@ fn type_expr_to_ty_with_params(
     texpr: &TypeExpr,
     module_short: &str,
     type_params: &HashSet<String>,
+) -> Ty {
+    type_expr_to_ty_with_params_and_context(
+        texpr,
+        module_short,
+        type_params,
+        TypeConversionContext::Ordinary,
+    )
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "type mapping covers all primitive and generic variants"
+)]
+fn type_expr_to_ty_with_params_and_context(
+    texpr: &TypeExpr,
+    module_short: &str,
+    type_params: &HashSet<String>,
+    context: TypeConversionContext,
 ) -> Ty {
     match texpr {
         TypeExpr::Named { name, type_args } => {
@@ -602,10 +687,11 @@ fn type_expr_to_ty_with_params(
                 "Option" => {
                     if let Some(args) = type_args {
                         if let Some(first) = args.first() {
-                            return Ty::option(type_expr_to_ty_with_params(
+                            return Ty::option(type_expr_to_ty_with_params_and_context(
                                 &first.0,
                                 module_short,
                                 type_params,
+                                context,
                             ));
                         }
                     }
@@ -616,8 +702,18 @@ fn type_expr_to_ty_with_params(
                     if let Some(args) = type_args {
                         if args.len() >= 2 {
                             return Ty::result(
-                                type_expr_to_ty_with_params(&args[0].0, module_short, type_params),
-                                type_expr_to_ty_with_params(&args[1].0, module_short, type_params),
+                                type_expr_to_ty_with_params_and_context(
+                                    &args[0].0,
+                                    module_short,
+                                    type_params,
+                                    context,
+                                ),
+                                type_expr_to_ty_with_params_and_context(
+                                    &args[1].0,
+                                    module_short,
+                                    type_params,
+                                    context,
+                                ),
                             );
                         }
                     }
@@ -630,7 +726,12 @@ fn type_expr_to_ty_with_params(
                         .map(|a| {
                             a.iter()
                                 .map(|(te, _)| {
-                                    type_expr_to_ty_with_params(te, module_short, type_params)
+                                    type_expr_to_ty_with_params_and_context(
+                                        te,
+                                        module_short,
+                                        type_params,
+                                        context,
+                                    )
                                 })
                                 .collect()
                         })
@@ -645,7 +746,12 @@ fn type_expr_to_ty_with_params(
                         .map(|args| {
                             args.iter()
                                 .map(|(te, _)| {
-                                    type_expr_to_ty_with_params(te, module_short, type_params)
+                                    type_expr_to_ty_with_params_and_context(
+                                        te,
+                                        module_short,
+                                        type_params,
+                                        context,
+                                    )
                                 })
                                 .collect()
                         })
@@ -659,7 +765,12 @@ fn type_expr_to_ty_with_params(
                         .map(|args| {
                             args.iter()
                                 .map(|(te, _)| {
-                                    type_expr_to_ty_with_params(te, module_short, type_params)
+                                    type_expr_to_ty_with_params_and_context(
+                                        te,
+                                        module_short,
+                                        type_params,
+                                        context,
+                                    )
                                 })
                                 .collect()
                         })
@@ -667,36 +778,41 @@ fn type_expr_to_ty_with_params(
                 ),
             }
         }
-        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty_with_params(
+        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty_with_params_and_context(
             &inner.0,
             module_short,
             type_params,
+            context,
         )),
         TypeExpr::Result { ok, err } => Ty::result(
-            type_expr_to_ty_with_params(&ok.0, module_short, type_params),
-            type_expr_to_ty_with_params(&err.0, module_short, type_params),
+            type_expr_to_ty_with_params_and_context(&ok.0, module_short, type_params, context),
+            type_expr_to_ty_with_params_and_context(&err.0, module_short, type_params, context),
         ),
         TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
         TypeExpr::Tuple(elems) => Ty::Tuple(
             elems
                 .iter()
-                .map(|(te, _)| type_expr_to_ty_with_params(te, module_short, type_params))
+                .map(|(te, _)| {
+                    type_expr_to_ty_with_params_and_context(te, module_short, type_params, context)
+                })
                 .collect(),
         ),
         TypeExpr::Array { element, size } => Ty::Array(
-            Box::new(type_expr_to_ty_with_params(
+            Box::new(type_expr_to_ty_with_params_and_context(
                 &element.0,
                 module_short,
                 type_params,
+                context,
             )),
             *size,
         ),
         TypeExpr::Slice(element) => Ty::normalize_named(
             "Vec".to_string(),
-            vec![type_expr_to_ty_with_params(
+            vec![type_expr_to_ty_with_params_and_context(
                 &element.0,
                 module_short,
                 type_params,
+                context,
             )],
         ),
         TypeExpr::Infer => Ty::Error,
@@ -706,12 +822,15 @@ fn type_expr_to_ty_with_params(
         } => Ty::Function {
             params: params
                 .iter()
-                .map(|(te, _)| type_expr_to_ty_with_params(te, module_short, type_params))
+                .map(|(te, _)| {
+                    type_expr_to_ty_with_params_and_context(te, module_short, type_params, context)
+                })
                 .collect(),
-            ret: Box::new(type_expr_to_ty_with_params(
+            ret: Box::new(type_expr_to_ty_with_params_and_context(
                 &return_type.0,
                 module_short,
                 type_params,
+                context,
             )),
         },
         TypeExpr::Pointer {
@@ -719,20 +838,26 @@ fn type_expr_to_ty_with_params(
             pointee,
         } => Ty::Pointer {
             is_mutable: *is_mutable,
-            pointee: Box::new(type_expr_to_ty_with_params(
+            pointee: Box::new(type_expr_to_ty_with_params_and_context(
                 &pointee.0,
                 module_short,
                 type_params,
+                context,
             )),
         },
-        // `&T` immutable borrow — first-class no-retain shared reference.
-        TypeExpr::Borrow(inner) => Ty::Borrow {
-            pointee: Box::new(type_expr_to_ty_with_params(
-                &inner.0,
-                module_short,
-                type_params,
-            )),
-        },
+        TypeExpr::Borrow(inner) if context == TypeConversionContext::ExternSignature => {
+            Ty::Borrow {
+                pointee: Box::new(type_expr_to_ty_with_params_and_context(
+                    &inner.0,
+                    module_short,
+                    type_params,
+                    context,
+                )),
+            }
+        }
+        TypeExpr::Borrow(_) => {
+            panic!("borrow type reached a non-extern stdlib signature")
+        }
         TypeExpr::TraitObject(bounds) => Ty::TraitObject {
             traits: bounds
                 .iter()
@@ -1857,6 +1982,19 @@ mod tests {
             Ty::normalize_named("Vec".to_string(), vec![Ty::I32]),
             "slice annotations must alias to Vec<T> in registry-loaded signatures"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "borrow type reached a non-extern stdlib signature")]
+    fn wrapper_signature_rejects_injected_borrow_type() {
+        let mut parsed = parse("pub fn wrapper(value: i64) {}");
+        assert!(parsed.errors.is_empty());
+        let Item::Function(function) = &mut parsed.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let inner = function.params[0].ty.clone();
+        function.params[0].ty = (TypeExpr::Borrow(Box::new(inner)), 21..22);
+        let _ = wrapper_fn_sig(function, "test");
     }
 
     #[test]

@@ -15,7 +15,7 @@ resolve_timeout() {
 TIMEOUT="$(resolve_timeout)"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${ROOT}/target/debug/hew"
+HEW="${HEW_BIN:-${ROOT}/target/debug/hew}"
 
 # libhew.a is the combined runtime+stdlib static library linked into native outputs.
 cargo build -q -p hew-lib
@@ -304,6 +304,24 @@ run_native_under_memory_cap() {
     'ulimit -v 524288 2>/dev/null || true; exec "$1"' _ \
     "${ROOT}/.tmp/compile-out/${base}"
 }
+
+borrow_reject="${ROOT}/tests/vertical-slice/reject/borrow_type_outside_extern.hew"
+borrow_reject_status=0
+if "${HEW}" check "${borrow_reject}" >"${reject_output}" 2>&1; then
+  borrow_reject_status=0
+else
+  borrow_reject_status=$?
+fi
+if [[ "${borrow_reject_status}" -ne 1 ]]; then
+  echo "expected borrow_type_outside_extern to exit 1, got ${borrow_reject_status}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # The diagnostic's backticks must remain literal.
+grep -qF -- \
+  '`&T` is only allowed in `extern` function signatures; write `T` in ordinary Hew code' \
+  "${reject_output}"
+echo "PASS borrow_type_outside_extern (reject)"
 
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/string_return.hew" >"${accept_output}"
 grep -qe '-> string' "${accept_output}"

@@ -2859,71 +2859,6 @@ pub struct PolymorphicMirFunction {
     pub raw: RawMirFunction,
 }
 
-/// Classify whether the `arg_index`-th declared parameter of `callee` is an
-/// immutable borrow (`&T` → [`ResolvedTy::Borrow`]). This is the type-fact the
-/// argument-passing convention consults to decide whether a by-value heap
-/// argument must be retained at the call site: a borrow is non-owning, so the
-/// caller transfers no ownership and the retain (`VWT.copy`) is skipped.
-///
-/// The lookup is the seam W5.011-P3 consumes when it begins emitting
-/// retain-on-copy for by-value heap arguments — P3 gates that emission on
-/// `!callee_param_is_borrow(...)`. P4 lands the type fact and this primitive;
-/// no v0.5 source can yet *construct* a borrow value to pass (there is no
-/// borrow-of-local expression and no `T → &T` coercion at call sites), so the
-/// `true` arm is only reachable today from synthetic MIR. The classifier is
-/// proven directly by unit tests rather than through a (currently
-/// unconstructable) end-to-end call.
-///
-/// Fail-safe by construction (R5): an unresolved `callee` (not present in
-/// `raw_mir`) or an out-of-range `arg_index` returns `false` — the conservative
-/// answer that *keeps* the retain rather than risk dropping ownership. The
-/// classifier never indexes out of bounds and never panics.
-#[must_use]
-pub fn callee_param_is_borrow(raw_mir: &[RawMirFunction], callee: &str, arg_index: usize) -> bool {
-    raw_mir
-        .iter()
-        .find(|f| f.name == callee)
-        .and_then(|f| f.params.get(arg_index))
-        .is_some_and(|ty| matches!(ty, ResolvedTy::Borrow { .. }))
-}
-
-/// Decide whether passing a `CowValue` binding as the `arg_index`-th
-/// argument of a user-function call *escapes* the binding's heap buffer —
-/// i.e. creates an alias the callee may retain or return, so the caller can
-/// no longer prove it is the sole owner at scope exit.
-///
-/// W5-011 P3, Q313 Choice A. Until the M-COW spine emits retain-on-share at
-/// call boundaries, a non-borrow by-value heap argument is shared *without*
-/// a refcount bump: the callee receives the same `rc==1` pointer the caller
-/// holds. If the caller then dropped the binding at scope exit while the
-/// callee (or its result) still referenced it, the program would double-free
-/// or dangle. The conservative, double-free-complete answer is therefore to
-/// *exclude* such bindings from scope-exit drop (they leak; they never
-/// double-free).
-///
-/// A borrow parameter (`&T`, [`ResolvedTy::Borrow`]) is the one exception:
-/// it is non-owning by type, transfers no ownership, and cannot be retained
-/// or returned as an owning value — so the source binding keeps sole
-/// ownership and *stays* drop-eligible. No v0.5 source can construct a
-/// borrow argument yet (see [`callee_param_is_borrow`]); this branch is
-/// proven by synthetic-MIR unit tests and is the seam P4 lights up.
-///
-/// Status note: the shipped W5-011 P3 drop derivation
-/// (`derive_cow_sole_owner`, hew-mir/src/lower.rs) does NOT consult this
-/// classifier. It proves sole ownership structurally — a binding is dropped
-/// only if its backing local is never read as a source operand anywhere in
-/// the finalised instruction+terminator stream — which is strictly more
-/// conservative: a string passed to *any* parameter (borrow or by-value) is
-/// read as a call-arg source operand and excluded (it leaks, never
-/// double-frees). This primitive remains the borrow-ABI escape contract the
-/// retain-on-copy follow-up will consume once a borrow-at-call-site
-/// construction form lands and the derivation can safely keep borrow-arg
-/// sources drop-eligible.
-#[must_use]
-pub fn call_arg_source_escapes(callee_param_is_borrow: bool) -> bool {
-    !callee_param_is_borrow
-}
-
 /// Decide whether a container-ingress runtime method *copies* its incoming
 /// `CowValue` element (so the source binding keeps its own buffer and stays
 /// drop-eligible) or *moves* it (so the container now owns the buffer and
@@ -2938,12 +2873,11 @@ pub fn call_arg_source_escapes(callee_param_is_borrow: bool) -> bool {
 /// symbols fail closed to move-in (excluded): conservative direction never
 /// double-frees.
 ///
-/// Status note: as with [`call_arg_source_escapes`], the shipped P3
-/// derivation does not consult this — a string handed to a container-ingress
-/// runtime call surfaces as a `CallRuntimeAbi` source operand and is excluded
-/// unconditionally (copy-in sources leak rather than double-free). This
-/// primitive documents the per-symbol release contract the future
-/// copy-in-aware refinement will reinstate.
+/// Status note: the shipped P3 derivation does not consult this — a string
+/// handed to a container-ingress runtime call surfaces as a `CallRuntimeAbi`
+/// source operand and is excluded unconditionally (copy-in sources leak rather
+/// than double-free). This primitive documents the per-symbol release contract
+/// that a future copy-in-aware refinement will reinstate.
 #[must_use]
 pub fn container_ingress_is_copy_in(target_symbol: &str) -> bool {
     matches!(target_symbol, "hew_vec_push" | "hew_vec_set")

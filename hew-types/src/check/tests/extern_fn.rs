@@ -4,6 +4,120 @@
 )]
 pub(super) use super::*;
 
+const BORROW_OUTSIDE_EXTERN_MESSAGE: &str =
+    "`&T` is only allowed in `extern` function signatures; write `T` in ordinary Hew code";
+
+fn inject_borrow(ty: &mut Spanned<TypeExpr>, span: Span) {
+    let inner = std::mem::replace(ty, (TypeExpr::Infer, span.clone()));
+    *ty = (TypeExpr::Borrow(Box::new(inner)), span);
+}
+
+fn assert_one_borrow_outside_extern(errors: &[TypeError], span: Span) {
+    assert_eq!(errors.len(), 1, "expected one error, got: {errors:#?}");
+    assert_eq!(
+        errors[0].kind,
+        TypeErrorKind::BorrowTypeOutsideExternSignature
+    );
+    assert_eq!(errors[0].span, span);
+    assert_eq!(errors[0].message, BORROW_OUTSIDE_EXTERN_MESSAGE);
+}
+
+#[test]
+fn extern_borrow_signature_registers_exact_types() {
+    let output = check_source(
+        r#"
+        extern "C" {
+            fn read(value: &i64) -> &i64;
+        }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "errors: {:#?}", output.errors);
+    let sig = output.fn_sigs.get("read").expect("extern signature");
+    let borrow_i64 = Ty::Borrow {
+        pointee: Box::new(Ty::I64),
+    };
+    assert_eq!(sig.params, vec![borrow_i64.clone()]);
+    assert_eq!(sig.return_type, borrow_i64);
+}
+
+#[test]
+fn injected_ordinary_function_borrow_fails_closed() {
+    let mut parsed = hew_parser::parse("fn ordinary(value: i64) {}");
+    assert!(parsed.errors.is_empty());
+    let borrow_span = 19..20;
+    let Item::Function(function) = &mut parsed.program.items[0].0 else {
+        panic!("expected function");
+    };
+    inject_borrow(&mut function.params[0].ty, borrow_span.clone());
+
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert_one_borrow_outside_extern(&output.errors, borrow_span);
+    assert!(output
+        .fn_sigs
+        .get("ordinary")
+        .is_none_or(|sig| { sig.params.iter().all(|ty| !matches!(ty, Ty::Borrow { .. })) }));
+}
+
+#[test]
+fn injected_ordinary_field_and_alias_borrows_fail_closed() {
+    let mut field_program = hew_parser::parse("type Holder { value: i64 }").program;
+    let field_span = 21..22;
+    let Item::TypeDecl(decl) = &mut field_program.items[0].0 else {
+        panic!("expected type declaration");
+    };
+    let TypeBodyItem::Field { ty, .. } = &mut decl.body[0] else {
+        panic!("expected field");
+    };
+    inject_borrow(ty, field_span.clone());
+    let field_output = Checker::new(ModuleRegistry::new(vec![])).check_program(&field_program);
+    assert_one_borrow_outside_extern(&field_output.errors, field_span);
+    assert!(field_output.type_defs.get("Holder").is_none_or(|def| {
+        def.fields
+            .get("value")
+            .is_none_or(|ty| !matches!(ty, Ty::Borrow { .. }))
+    }));
+
+    let mut alias_program = hew_parser::parse("type Alias = i64;").program;
+    let alias_span = 13..14;
+    let Item::TypeAlias(alias) = &mut alias_program.items[0].0 else {
+        panic!("expected type alias");
+    };
+    inject_borrow(&mut alias.ty, alias_span.clone());
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let alias_output = checker.check_program(&alias_program);
+    assert_one_borrow_outside_extern(&alias_output.errors, alias_span);
+    assert!(checker
+        .type_aliases
+        .get("Alias")
+        .is_none_or(|ty| !matches!(ty, Ty::Borrow { .. })));
+}
+
+#[test]
+fn checker_extern_context_does_not_leak_to_ordinary_signature() {
+    let mut parsed =
+        hew_parser::parse("extern \"C\" { fn get() -> &i64; } fn ordinary() -> i64 { 0 }");
+    assert!(parsed.errors.is_empty());
+    let borrow_span = 54..55;
+    let Item::Function(function) = &mut parsed.program.items[1].0 else {
+        panic!("expected ordinary function");
+    };
+    inject_borrow(
+        function.return_type.as_mut().expect("return type"),
+        borrow_span.clone(),
+    );
+
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert_one_borrow_outside_extern(&output.errors, borrow_span);
+    assert!(matches!(
+        output.fn_sigs["get"].return_type,
+        Ty::Borrow { .. }
+    ));
+    assert!(output
+        .fn_sigs
+        .get("ordinary")
+        .is_none_or(|sig| { !matches!(sig.return_type, Ty::Borrow { .. }) }));
+}
+
 // ── W3.001 Stage 2 — #[extern_symbol] ingest into FnSig.extern_symbol ─────────
 
 /// `#[extern_symbol("…")]` on an `extern "C"` block fn populates

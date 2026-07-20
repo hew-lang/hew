@@ -466,31 +466,32 @@ fn duplex_drop_fn_resolves_via_registry() {
 }
 
 // ---------------------------------------------------------------------------
-// W5.011-P4 — immutable-borrow (`&T`) params are non-owning (B-INV-2 reframe)
+// Extern-returned `&T` views are non-owning
 // ---------------------------------------------------------------------------
 
-/// A `&string` parameter is a non-owning view: it never enters the function's
-/// `owned_locals`, so it contributes no `ElabDrop` on any exit. This is the
-/// drop-side half of P4's "borrow is a View, not an owner" invariant (the
-/// type-side half — `ValueClass::of_ty(&T) == View` — is pinned in
-/// `hew-hir`). It guarantees the caller's ownership is never released through
-/// a borrowed parameter, which is what makes the borrow safe to pass without a
-/// retain once W5.011-P3 lands the by-value retain convention.
-///
-/// Surface note: the plan's literal B-INV-2 form ("the owner's `CowValue` drop
-/// fires while a borrow is live") is unconstructable in v0.5 — there is no
-/// borrow-of-local expression and no `T -> &T` coercion, so a borrow and its
-/// owner cannot coexist in one frame from source. This test pins the
-/// reachable, load-bearing half: a borrow param adds no drop of its own.
-///
-/// LESSONS: `cleanup-all-exits` (a non-owning view must NOT be cleaned up).
+/// A view returned by a foreign function remains `ResolvedTy::Borrow` in an
+/// inferred local and never contributes an `ElabDrop`.
 #[test]
-fn borrow_param_contributes_no_drop() {
-    let pipeline = pipeline_with_tc("fn f(x: &string) -> i64 { return 0; }");
+fn ffi_borrow_local_contributes_no_drop() {
+    let pipeline = pipeline_with_tc(
+        "extern \"C\" { fn get() -> &i64; } \
+         fn f() { let view = unsafe { get() }; let _ = view; }",
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "f")
+        .expect("f raw MIR");
+    assert!(
+        raw.locals
+            .iter()
+            .any(|ty| matches!(ty, hew_types::ResolvedTy::Borrow { .. })),
+        "the inferred view local must retain ResolvedTy::Borrow; locals: {:?}",
+        raw.locals
+    );
     let drops = all_plan_drops(&pipeline, "f");
     assert!(
         drops.is_empty(),
-        "a `&string` (borrow) parameter is non-owning and must emit no drops; \
-         got {drops:?}"
+        "a foreign boundary view is non-owning and must emit no drops; got {drops:?}"
     );
 }

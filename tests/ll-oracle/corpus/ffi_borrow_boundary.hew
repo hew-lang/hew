@@ -1,0 +1,15 @@
+// A foreign immutable view remains one pointer through declaration, return,
+// inferred local storage, and a second foreign call.
+extern "C" {
+    fn ffi_borrow_get() -> &i64;
+    fn ffi_borrow_read(value: &i64) -> i64;
+}
+
+fn read_foreign() -> i64 {
+    let view = unsafe { ffi_borrow_get() };
+    unsafe { ffi_borrow_read(view) }
+}
+
+fn main() {
+    println(read_foreign());
+}

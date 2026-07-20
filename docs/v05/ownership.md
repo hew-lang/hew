@@ -7,11 +7,11 @@ mutation of shared data. Passing an owned value to a function is a **borrow** �
 the caller retains ownership and drops the value at its scope exit; the callee
 gets an immutable copy-on-write view. Reuse after a call (`f(p); g(p)`) and
 value-receiver method chains are legal. There is no use-of-moved-value error for
-function calls, no `&`/`*`, and no lifetimes — ownership and borrowing are
-inferred. The entire binding surface is two keywords, `let` (immutable) and
-`var` (mutable); there are no ownership annotations to write. Lifetimes, a
-user-surface `&`/`&mut`, and a capability lattice are permanent refusals, not
-deferred features.
+function calls, no ordinary reference syntax, and no lifetimes — ownership and
+sharing are inferred. The entire binding surface is two keywords, `let`
+(immutable) and `var` (mutable); there are no ownership annotations to write.
+Lifetimes, mutable references, and a capability lattice are permanent refusals,
+not deferred features.
 
 ```hew
 let p = build_point();
@@ -40,24 +40,9 @@ refcount **retain**, not a raw alias and not a deep copy. Mutating a value whose
 buffer is shared **forks** it first (copy-on-write). Every one of these
 obligations is inferred by the compiler; none is written by you.
 
-## `&T` — FFI-boundary annotation only
-
-`&T` exists to describe C-ABI boundaries in `extern` declarations, where the
-foreign function borrows a value it does not own:
-
-```hew
-extern "C" {
-    fn hew_hash_bytes(data: &bytes) -> u64;
-}
-```
-
-Idiomatic Hew code never writes `&`. Borrowing is inferred at every ordinary
-call site — a parameter is a borrow by default — so `&T` carries no meaning in
-normal function signatures and is not a user surface for expressing intent. The
-parser rejects `&mut T` and the legacy `&var T` spelling with a diagnostic:
-Hew has no mutable-reference surface, and exclusive-mutation intent, if it is
-ever needed, will be an inferred property or an intent keyword, not a reference
-type.
+Ordinary Hew syntax has no references; the separate extern-signature-only FFI
+view spelling is documented in the language guide's
+[FFI boundary appendix](../hew-language-guide.md#appendix-a---ffi-boundary-types).
 
 ## `clone x` — the eager-copy cost operation
 

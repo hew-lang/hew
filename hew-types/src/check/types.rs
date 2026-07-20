@@ -2802,6 +2802,8 @@ pub struct Checker {
     /// body resolution (`resolve_param_binding_ty`) both visit the same parameter
     /// annotation.
     pub(super) reported_undefined_named_types: HashSet<(String, SpanKey)>,
+    /// Borrow-type spans already rejected during ordinary annotation resolution.
+    pub(super) reported_borrow_types_outside_extern: HashSet<SpanKey>,
     /// `false` until `collect_types` has registered every type declaration.
     /// The undefined-named-type guard in `resolve_type_expr_tracking_holes`
     /// only fires once this is `true`: type-declaration member resolution runs
@@ -3373,6 +3375,7 @@ impl Checker {
             module_type_exports: HashMap::new(),
             reported_type_visibility_violations: HashSet::new(),
             reported_undefined_named_types: HashSet::new(),
+            reported_borrow_types_outside_extern: HashSet::new(),
             type_decls_registered: false,
             suppress_undefined_type_report: false,
             declared_type_param_names: HashSet::new(),

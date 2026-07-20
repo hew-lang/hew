@@ -132,11 +132,10 @@ pub enum ResolvedTy {
         /// Pointee type
         pointee: Box<ResolvedTy>,
     },
-    /// Immutable borrow `&T` — a first-class, no-retain shared reference (see
-    /// [`Ty::Borrow`]). Non-owning, classified `View`, retain-skipped by
-    /// codegen, with borrow-specific send/return-escape semantics.
+    /// Immutable foreign boundary view `&T` (see [`Ty::Borrow`]). Non-owning,
+    /// classified `View`, and represented as one pointer word at the ABI.
     Borrow {
-        /// Borrowed (pointee) type
+        /// Foreign-view pointee type.
         pointee: Box<ResolvedTy>,
     },
     /// Trait object: `dyn Trait` or `dyn (Trait1 + Trait2)`.

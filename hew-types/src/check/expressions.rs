@@ -8,7 +8,7 @@ use super::*;
 use crate::eq_eligibility::{ty_is_eq_eligible_with_type_params, EqEligibility};
 use crate::BuiltinType;
 
-type DangerousRcBinding = (String, String);
+type DangerousRcBinding = String;
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
 
 impl Checker {
@@ -4406,17 +4406,7 @@ impl Checker {
                         ..
                     }
                 ) {
-                    return Some((p.name.clone(), Some((p.name.clone(), "Rc".to_string()))));
-                }
-                // `&T` immutable borrow (F5): a borrow parameter's owner lives in
-                // the caller's scope. Returning the borrow — directly or stored
-                // in a returned local/aggregate — lets the reference outlive its
-                // owner (the owner is dropped at the caller's scope exit while the
-                // returned borrow dangles). Reuse the same return-position escape
-                // analysis as the Rc case, tagged `borrow` for a borrow-specific
-                // diagnostic.
-                if matches!(ty, Ty::Borrow { .. }) {
-                    return Some((p.name.clone(), Some((p.name.clone(), "borrow".to_string()))));
+                    return Some((p.name.clone(), Some(p.name.clone())));
                 }
                 None
             })
@@ -4439,8 +4429,8 @@ impl Checker {
     ) {
         match expr {
             Expr::Identifier(name) => {
-                if let Some((source_param, tag)) = Self::lookup_dangerous_binding(name, scopes) {
-                    self.emit_borrowed_param_return(name, &source_param, &tag, span);
+                if let Some(source_param) = Self::lookup_dangerous_binding(name, scopes) {
+                    self.emit_borrowed_param_return(name, &source_param, span);
                 }
             }
             // Descend into block expressions: `{ r }` wraps the identifier
@@ -4614,58 +4604,20 @@ impl Checker {
         }
     }
 
-    fn emit_borrowed_param_return(
-        &mut self,
-        name: &str,
-        source_param: &str,
-        tag: &str,
-        span: &Span,
-    ) {
-        let is_borrow = tag == "borrow";
+    fn emit_borrowed_param_return(&mut self, name: &str, source_param: &str, span: &Span) {
         let (message, note, suggestion) = if name == source_param {
-            if is_borrow {
-                (
-                    format!(
-                        "returning borrow parameter `{name}` lets the reference outlive \
-                         its owner — the `&T` borrows a value owned by the caller, which \
-                         is dropped at the caller's scope exit while the returned \
-                         reference would still point at it"
-                    ),
-                    "an immutable borrow `&T` is non-owning; its owner lives in the \
-                     caller's scope and the borrow cannot escape that scope via return"
-                        .to_string(),
-                    format!(
-                        "return an owned value instead — `{name}.clone()` produces an \
-                         owned copy the caller can keep"
-                    ),
-                )
-            } else {
-                (
-                    format!(
-                        "returning Rc parameter `{name}` transfers a borrowed reference \
-                         without incrementing the refcount — this will cause a double-free \
-                         when both the caller's local and the return value are dropped"
-                    ),
-                    "function parameters are borrowed under call-boundary ownership; \
-                     the caller retains ownership and drops at scope exit"
-                        .to_string(),
-                    format!(
-                        "use `{name}.clone()` to create an owned copy with an incremented refcount"
-                    ),
-                )
-            }
-        } else if is_borrow {
             (
                 format!(
-                    "returning local `{name}` which contains borrow parameter \
-                     `{source_param}` — the `&T` reference would outlive its owner, \
-                     which the caller drops at scope exit"
+                    "returning Rc parameter `{name}` transfers a borrowed reference \
+                     without incrementing the refcount — this will cause a double-free \
+                     when both the caller's local and the return value are dropped"
                 ),
+                "function parameters are borrowed under call-boundary ownership; \
+                 the caller retains ownership and drops at scope exit"
+                    .to_string(),
                 format!(
-                    "borrow parameter `{source_param}` is non-owning; storing it in \
-                     `{name}` does not extend the borrowed value's lifetime"
+                    "use `{name}.clone()` to create an owned copy with an incremented refcount"
                 ),
-                format!("return an owned value: clone before storing — `{source_param}.clone()`"),
             )
         } else {
             (

@@ -10,6 +10,10 @@
 # the OS scheduler and avoids the oversubscription that causes eval_e2e flakes.
 [test-groups]
 subprocess-intensive = { max-threads = 8 }
+# ffi-native-link: tests that invoke clang/ld to link a real FFI executable.
+# Keep these links serial so their cold native work does not contend with sibling
+# FFI links during the full workspace run.
+ffi-native-link = { max-threads = 1 }
 # process-timing: tests that measure process-group signal delivery timing (SIGKILL
 # propagation to grandchildren, process-group watchdog latency).  Under 16-core
 # concurrent load the OS scheduler takes variable time to deliver signals and
@@ -101,6 +105,14 @@ slow-timeout = { period = "120s", terminate-after = 4 }
 # failing to launch in ~0.02s); the compile-run assertions stay strict, so a
 # real regression fails both attempts.
 retries = 1
+
+[[profile.ci.overrides]]
+# Native FFI clang/ld linking is CI-cold-slow and load-variable, so serialize
+# this dedicated native-link binary. The `leaks(1)` probe has its own five-second
+# process-tree deadline; this modest outer budget now remains a final backstop.
+filter = "binary(ffi_link_e2e)"
+test-group = "ffi-native-link"
+slow-timeout = { period = "60s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # await_e2e tests each call `hew run` at least twice (the

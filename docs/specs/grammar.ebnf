@@ -172,9 +172,10 @@ DefaultArm     = "default" "{" "state" "}" ;
 
 (* FFI / Extern declarations *)
 ExternBlock    = "extern" StringLit? "{" { ExternFnDecl } "}" ;
-ExternFnDecl   = "fn" Ident "(" ExternParams? ")" RetType? Variadic? ";" ;
+ExternFnDecl   = "fn" Ident "(" ExternParams? ")" ExternRetType? Variadic? ";" ;
 ExternParams   = ExternParam { "," ExternParam } ;
-ExternParam    = Ident ":" Type ;
+ExternParam    = Ident ":" ExternType ;
+ExternRetType  = "->" ExternType ;
 Variadic       = ".." ;
 
 (* Functions *)
@@ -349,6 +350,38 @@ Type           = Ident TypeArgs?
                | "_" ;                             (* Infer type from context *)
 
 TypeArgs       = "<" Type { "," Type } ">" ;
+
+(* Extern signatures recursively admit immutable foreign boundary views. *)
+ExternType     = Ident ExternTypeArgs?
+               | "Task" "<" ExternType ">"
+               | "LocalPid" "<" ExternType ">"
+               | "RemotePid" "<" ExternType ">"
+               | "LambdaPid" "<" ExternType "," ExternType ">"
+               | "Arc" "<" ExternType ">"
+               | "Rc" "<" ExternType ">"
+               | "Weak" "<" ExternType ">"
+               | "Result" "<" ExternType "," ExternType ">"
+               | "Option" "<" ExternType ">"
+               | "Generator" "<" ExternType "," ExternType ">"
+               | "AsyncGenerator" "<" ExternType ">"
+               | "Stream" "<" ExternType ">"
+               | "Sink" "<" ExternType ">"
+               | "Vec" "<" ExternType ">"
+               | "HashMap" "<" ExternType "," ExternType ">"
+               | "(" ExternTypeList? ")"
+               | "[" ExternType ";" IntLit "]"
+               | "[" ExternType "]"
+               | "fn" "(" ExternTypeList? ")" ExternRetType?
+               | "*" "const" ExternType
+               | "*" "mut" ExternType
+               | "&" ExternType
+               | "dyn" ExternTraitBound
+               | "dyn" "(" ExternTraitBounds ")"
+               | "_" ;
+ExternTypeArgs = "<" ExternType { "," ExternType } ">" ;
+ExternTypeList = ExternType { "," ExternType } ;
+ExternTraitBound = Ident ExternTypeArgs? ;
+ExternTraitBounds = ExternTraitBound { "+" ExternTraitBound } ;
 
 (* Wire types *)
 (* Wire fields use standard Type — no separate WireType needed. *)

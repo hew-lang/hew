@@ -9,11 +9,18 @@ use super::*;
 
 impl Parser<'_> {
     // ── Types ──
+    pub(crate) fn parse_type(&mut self) -> Option<Spanned<TypeExpr>> {
+        self.parse_type_with_context(TypeParseContext::Ordinary)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "recursive descent parser requires sequential case handling"
     )]
-    pub(crate) fn parse_type(&mut self) -> Option<Spanned<TypeExpr>> {
+    pub(crate) fn parse_type_with_context(
+        &mut self,
+        context: TypeParseContext,
+    ) -> Option<Spanned<TypeExpr>> {
         let _guard = self.enter_recursion()?;
         let start = self.peek_span().start;
 
@@ -24,12 +31,12 @@ impl Parser<'_> {
                     // Unit type represented as empty tuple
                     TypeExpr::Tuple(Vec::new())
                 } else {
-                    let mut types = vec![self.parse_type()?];
+                    let mut types = vec![self.parse_type_with_context(context)?];
                     while self.eat(&Token::Comma) {
                         if self.peek() == Some(&Token::RightParen) {
                             break;
                         }
-                        types.push(self.parse_type()?);
+                        types.push(self.parse_type_with_context(context)?);
                     }
                     self.expect(&Token::RightParen)?;
 
@@ -42,7 +49,7 @@ impl Parser<'_> {
             }
             Some(Token::LeftBracket) => {
                 self.advance();
-                let element_type = self.parse_type()?;
+                let element_type = self.parse_type_with_context(context)?;
 
                 if self.eat(&Token::Semicolon) {
                     // Array: [T; N] - but AST expects u64, not expr for size
@@ -107,31 +114,37 @@ impl Parser<'_> {
                         return None;
                     }
                 };
-                let pointee = self.parse_type()?;
+                let pointee = self.parse_type_with_context(context)?;
                 TypeExpr::Pointer {
                     is_mutable,
                     pointee: Box::new(pointee),
                 }
             }
             Some(Token::Ampersand) => {
-                // `&T` — immutable non-owning borrow marker (Q320).
-                // Only `&T` is supported in v0.5; `&mut T` / `&var T` are
-                // reserved (locked out of scope by Q320) and produce a
-                // diagnostic.
+                let ampersand_span = self.peek_span();
                 self.advance();
-                // Reject `&mut T` and `&var T` with a helpful diagnostic.
                 if matches!(self.peek(), Some(Token::Mut | Token::Var)) {
-                    let span = self.peek_span();
+                    self.advance();
                     self.error_at(
-                        "mutable borrows (`&mut T`) are not supported in v0.5; \
-                         use `&T` for an immutable borrow"
+                        "mutable borrow types are not supported; use `*mut T` for FFI or \
+                         `T` in ordinary Hew code"
                             .to_string(),
-                        span,
+                        ampersand_span,
                     );
-                    return None;
+                    let inner = self.parse_type_with_context(context)?;
+                    TypeExpr::Borrow(Box::new(inner))
+                } else {
+                    if context == TypeParseContext::Ordinary {
+                        self.error_at(
+                            "`&T` is only allowed in `extern` function signatures; write `T` in \
+                             ordinary Hew code"
+                                .to_string(),
+                            ampersand_span,
+                        );
+                    }
+                    let inner = self.parse_type_with_context(context)?;
+                    TypeExpr::Borrow(Box::new(inner))
                 }
-                let inner = self.parse_type()?;
-                TypeExpr::Borrow(Box::new(inner))
             }
             Some(Token::Dyn) => {
                 self.advance();
@@ -142,7 +155,7 @@ impl Parser<'_> {
                     loop {
                         let name = self.expect_ident()?;
                         let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
-                            self.parse_trait_bound_args()?
+                            self.parse_trait_bound_args_with_context(context)?
                         } else {
                             (None, Vec::new())
                         };
@@ -162,7 +175,7 @@ impl Parser<'_> {
                     // Single trait: dyn TraitName
                     let name = self.expect_ident()?;
                     let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
-                        self.parse_trait_bound_args()?
+                        self.parse_trait_bound_args_with_context(context)?
                     } else {
                         (None, Vec::new())
                     };
@@ -180,7 +193,7 @@ impl Parser<'_> {
 
                 let mut params = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                    params.push(self.parse_type()?);
+                    params.push(self.parse_type_with_context(context)?);
                     if !self.eat(&Token::Comma) {
                         break;
                     }
@@ -188,7 +201,7 @@ impl Parser<'_> {
                 self.expect(&Token::RightParen)?;
 
                 let return_type = if self.eat(&Token::Arrow) {
-                    Box::new(self.parse_type()?)
+                    Box::new(self.parse_type_with_context(context)?)
                 } else {
                     // Default to unit type
                     Box::new((TypeExpr::Tuple(Vec::new()), 0..0))
@@ -220,7 +233,7 @@ impl Parser<'_> {
                         break;
                     }
                     let type_args = if self.eat(&Token::Less) {
-                        Some(self.parse_type_args()?)
+                        Some(self.parse_type_args_with_context(context)?)
                     } else {
                         None
                     };
@@ -392,8 +405,19 @@ impl Parser<'_> {
         reason = "None vs Some(None) vs Some(Some(v)) distinguishes absent, present-but-empty, and present-with-value"
     )]
     pub(crate) fn parse_opt_return_type(&mut self) -> Option<Option<Spanned<TypeExpr>>> {
+        self.parse_opt_return_type_with_context(TypeParseContext::Ordinary)
+    }
+
+    #[expect(
+        clippy::option_option,
+        reason = "None vs Some(None) vs Some(Some(v)) distinguishes absent, present-but-empty, and present-with-value"
+    )]
+    pub(crate) fn parse_opt_return_type_with_context(
+        &mut self,
+        context: TypeParseContext,
+    ) -> Option<Option<Spanned<TypeExpr>>> {
         if self.eat(&Token::Arrow) {
-            Some(Some(self.parse_type()?))
+            Some(Some(self.parse_type_with_context(context)?))
         } else {
             Some(None)
         }
@@ -414,10 +438,17 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_type_args(&mut self) -> Option<Vec<Spanned<TypeExpr>>> {
+        self.parse_type_args_with_context(TypeParseContext::Ordinary)
+    }
+
+    fn parse_type_args_with_context(
+        &mut self,
+        context: TypeParseContext,
+    ) -> Option<Vec<Spanned<TypeExpr>>> {
         let mut args = Vec::new();
 
         while !self.at_end() && !self.at_closing_angle() {
-            args.push(self.parse_type()?);
+            args.push(self.parse_type_with_context(context)?);
             if !self.eat(&Token::Comma) {
                 break;
             }
@@ -431,6 +462,13 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_trait_bound_args(&mut self) -> Option<ParsedTraitBoundArgs> {
+        self.parse_trait_bound_args_with_context(TypeParseContext::Ordinary)
+    }
+
+    fn parse_trait_bound_args_with_context(
+        &mut self,
+        context: TypeParseContext,
+    ) -> Option<ParsedTraitBoundArgs> {
         let mut type_args = Vec::new();
         let mut assoc_type_bindings = Vec::new();
 
@@ -440,10 +478,10 @@ impl Parser<'_> {
             {
                 let name = self.expect_ident()?;
                 self.expect(&Token::Equal)?;
-                let ty = self.parse_type()?;
+                let ty = self.parse_type_with_context(context)?;
                 assoc_type_bindings.push(AssocTypeBinding { name, ty });
             } else {
-                type_args.push(self.parse_type()?);
+                type_args.push(self.parse_type_with_context(context)?);
             }
 
             if !self.eat(&Token::Comma) {
@@ -530,12 +568,27 @@ impl Parser<'_> {
     }
 
     pub(crate) fn parse_params(&mut self) -> Vec<Param> {
-        self.parse_params_with_implicit_self(false)
+        self.parse_params_with_context(TypeParseContext::Ordinary)
+    }
+
+    pub(crate) fn parse_params_with_context(&mut self, context: TypeParseContext) -> Vec<Param> {
+        self.parse_params_with_implicit_self_and_context(false, context)
     }
 
     pub(crate) fn parse_params_with_implicit_self(
         &mut self,
         allow_implicit_self: bool,
+    ) -> Vec<Param> {
+        self.parse_params_with_implicit_self_and_context(
+            allow_implicit_self,
+            TypeParseContext::Ordinary,
+        )
+    }
+
+    fn parse_params_with_implicit_self_and_context(
+        &mut self,
+        allow_implicit_self: bool,
+        context: TypeParseContext,
     ) -> Vec<Param> {
         let mut params = Vec::new();
 
@@ -603,7 +656,7 @@ impl Parser<'_> {
                 });
                 // Consume the optional `: Type` annotation so recovery is clean
                 if self.eat(&Token::Colon) {
-                    self.parse_type();
+                    self.parse_type_with_context(context);
                 }
                 // Skip any trailing comma to continue parsing further params
                 if self.eat(&Token::Comma) {
@@ -619,7 +672,7 @@ impl Parser<'_> {
                 break;
             }
 
-            if let Some(ty) = self.parse_type() {
+            if let Some(ty) = self.parse_type_with_context(context) {
                 params.push(Param {
                     name,
                     ty,

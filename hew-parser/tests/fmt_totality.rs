@@ -874,10 +874,10 @@ fn fmt_totality_type_expr_pointer() {
     assert_roundtrip("extern \"C\" {\n    fn puts(s: *const i8) -> i64;\n}\n");
 }
 
-/// `TypeExpr::Borrow` — `&T` borrow.
+/// `TypeExpr::Borrow` — extern-only `&T` foreign boundary view.
 #[test]
 fn fmt_totality_type_expr_borrow() {
-    assert_roundtrip("fn f(x: &i64) -> i64 {\n    0\n}\n");
+    assert_roundtrip("extern \"C\" {\n    fn f(x: &i64) -> i64;\n}\n");
 }
 
 /// `TypeExpr::TraitObject` — `dyn Trait`.

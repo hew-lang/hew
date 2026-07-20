@@ -1,140 +1,132 @@
-//! Borrow type spelling: `&T` is the canonical immutable borrow-marker syntax.
-//!
-//! M-COW P0 adds `&T` as surface sugar for an immutable non-owning borrow.
-//! The mutable borrow form `&mut T` is intentionally reserved — it must be
-//! rejected with a clear diagnostic so users don't accidentally write Rust
-//! idioms that Hew does not support.
-//!
-//! Tests:
-//!   1. `&T` in a parameter position parses to `TypeExpr::Borrow`.
-//!   2. `&T` in a return-type position parses correctly.
-//!   3. `&mut T` is rejected with a diagnostic mentioning `&mut`.
-//!   4. `&var T` is rejected (legacy spelling guard).
+//! `&T` is an immutable, non-owning view spelling reserved for foreign signatures.
 
 use hew_parser::{
     ast::{Item, TypeExpr},
     parse,
 };
 
-fn first_param_type(src: &str) -> TypeExpr {
+const OUTSIDE_EXTERN_MESSAGE: &str =
+    "`&T` is only allowed in `extern` function signatures; write `T` in ordinary Hew code";
+
+fn extern_functions(src: &str) -> Vec<hew_parser::ast::ExternFnDecl> {
     let result = parse(src);
     assert!(
         result.errors.is_empty(),
         "unexpected parse errors for `{src}`: {:#?}",
         result.errors
     );
-    let item = result
-        .program
-        .items
-        .into_iter()
-        .next()
-        .expect("expected one item")
-        .0;
-    let Item::Function(fn_decl) = item else {
-        panic!("expected Item::Function, got {item:?}");
+    let item = result.program.items.into_iter().next().expect("one item").0;
+    let Item::ExternBlock(block) = item else {
+        panic!("expected extern block, got {item:?}");
     };
-    fn_decl
-        .params
-        .into_iter()
-        .next()
-        .expect("expected one param")
-        .ty
-        .0
+    block.functions
 }
 
-fn return_type(src: &str) -> TypeExpr {
+fn assert_rejected_at_ampersand(src: &str) {
+    let ampersand = src.rfind('&').expect("fixture must contain an ampersand");
     let result = parse(src);
-    assert!(
-        result.errors.is_empty(),
-        "unexpected parse errors for `{src}`: {:#?}",
+    assert_eq!(
+        result.errors.len(),
+        1,
+        "errors for `{src}`: {:#?}",
         result.errors
     );
-    let item = result
-        .program
-        .items
-        .into_iter()
-        .next()
-        .expect("expected one item")
-        .0;
-    let Item::Function(fn_decl) = item else {
-        panic!("expected Item::Function, got {item:?}");
+    let error = &result.errors[0];
+    assert_eq!(error.message, OUTSIDE_EXTERN_MESSAGE);
+    assert_eq!(error.span, ampersand..ampersand + 1);
+}
+
+#[test]
+fn extern_borrow_parameter_and_return_parse() {
+    let functions =
+        extern_functions("extern \"C\" { fn read(value: &i64) -> i64; fn get() -> &i64; }");
+    assert!(matches!(functions[0].params[0].ty.0, TypeExpr::Borrow(_)));
+    assert!(matches!(
+        functions[1].return_type.as_ref().map(|ty| &ty.0),
+        Some(TypeExpr::Borrow(_))
+    ));
+}
+
+#[test]
+fn extern_borrow_context_recurses_through_generics_and_callbacks() {
+    let functions = extern_functions(
+        "extern \"C\" { fn nested(value: &Vec<i64>, callback: fn(&i64) -> i64) -> \
+         Option<&i64>; }",
+    );
+    let params = &functions[0].params;
+    assert!(matches!(params[0].ty.0, TypeExpr::Borrow(_)));
+    let TypeExpr::Function {
+        params: callback_params,
+        ..
+    } = &params[1].ty.0
+    else {
+        panic!("expected callback type, got {:?}", params[1].ty.0);
     };
-    fn_decl
-        .return_type
-        .expect("expected a return type annotation")
-        .0
+    assert!(matches!(callback_params[0].0, TypeExpr::Borrow(_)));
+
+    let Some((TypeExpr::Named { type_args, .. }, _)) = &functions[0].return_type else {
+        panic!("expected generic return type");
+    };
+    assert!(matches!(
+        type_args.as_deref(),
+        Some([(TypeExpr::Borrow(_), _)])
+    ));
 }
 
 #[test]
-fn borrow_type_param_parses_to_borrow_variant() {
-    // `&T` in parameter position must produce `TypeExpr::Borrow`, not
-    // `TypeExpr::Pointer { is_mutable: false }`.
-    let ty = first_param_type("fn foo(x: &string) -> i32 { return 0; }");
-    match ty {
-        TypeExpr::Borrow(inner) => match inner.0 {
-            TypeExpr::Named { ref name, .. } if name == "string" => {}
-            other => panic!("expected Named(string) inside Borrow, got {other:?}"),
-        },
-        other => panic!("expected TypeExpr::Borrow, got {other:?}"),
+fn extern_borrow_remains_distinct_from_const_pointer() {
+    let functions =
+        extern_functions("extern \"C\" { fn borrow(value: &i32); fn pointer(value: *const i32); }");
+    assert!(matches!(functions[0].params[0].ty.0, TypeExpr::Borrow(_)));
+    assert!(matches!(
+        functions[1].params[0].ty.0,
+        TypeExpr::Pointer {
+            is_mutable: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn ordinary_borrow_positions_are_rejected() {
+    for source in [
+        "fn f(value: &i64) {}",
+        "fn f() -> &i64 {}",
+        "type Field { value: &i64 }",
+        "enum Payload { Value(&i64) }",
+        "type Alias = &i64;",
+        "trait Read { fn read(value: &i64); }",
+        "type Callback = fn(&i64) -> i64;",
+        "type Nested = Option<&i64>;",
+    ] {
+        assert_rejected_at_ampersand(source);
     }
 }
 
 #[test]
-fn borrow_type_return_pos_parses_to_borrow_variant() {
-    // `&T` in return-type position — same shape.
-    let ty = return_type("fn foo() -> &string { return \"\"; }");
-    match ty {
-        TypeExpr::Borrow(inner) => match inner.0 {
-            TypeExpr::Named { ref name, .. } if name == "string" => {}
-            other => panic!("expected Named(string) inside Borrow, got {other:?}"),
-        },
-        other => panic!("expected TypeExpr::Borrow, got {other:?}"),
+fn extern_context_does_not_leak_to_following_item() {
+    assert_rejected_at_ampersand(
+        "extern \"C\" { fn read(value: &i64); } fn ordinary(value: &i64) {}",
+    );
+}
+
+#[test]
+fn mutable_borrow_spellings_are_rejected_everywhere() {
+    for source in [
+        "fn f(value: &mut i64) {}",
+        "fn f(value: &var i64) {}",
+        "extern \"C\" { fn f(value: &mut i64); }",
+        "extern \"C\" { fn f(value: &var i64); }",
+    ] {
+        let result = parse(source);
+        assert_eq!(
+            result.errors.len(),
+            1,
+            "errors for `{source}`: {:#?}",
+            result.errors
+        );
+        let message = &result.errors[0].message;
+        assert!(message.contains("*mut T"), "message: {message}");
+        assert!(message.contains("ordinary Hew code"), "message: {message}");
     }
-}
-
-#[test]
-fn borrow_type_distinct_from_const_pointer() {
-    // `&T` and `*const T` must parse to different variants — they are
-    // distinct surface forms with different round-trip identities.
-    let borrow = first_param_type("fn f(x: &i32) -> i32 { return 0; }");
-    let ptr = first_param_type("fn f(x: *const i32) -> i32 { return 0; }");
-    assert!(
-        matches!(borrow, TypeExpr::Borrow(_)),
-        "expected Borrow for `&i32`, got {borrow:?}"
-    );
-    assert!(
-        matches!(
-            ptr,
-            TypeExpr::Pointer {
-                is_mutable: false,
-                ..
-            }
-        ),
-        "expected Pointer{{is_mutable:false}} for `*const i32`, got {ptr:?}"
-    );
-}
-
-#[test]
-fn borrow_mut_is_rejected() {
-    // `&mut T` must be rejected — mutable borrows are not part of Hew v0.5.
-    let result = parse("fn f(x: &mut i32) -> i32 { return 0; }");
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for `&mut T`, got none"
-    );
-    let msg = &result.errors[0].message;
-    assert!(
-        msg.contains("&mut") || msg.contains("mutable"),
-        "expected diagnostic to mention `&mut` or `mutable`, got: {msg}"
-    );
-}
-
-#[test]
-fn borrow_var_is_rejected() {
-    // `&var T` must be rejected — `var` is not a valid borrow qualifier.
-    let result = parse("fn f(x: &var i32) -> i32 { return 0; }");
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for `&var T`, got none"
-    );
 }

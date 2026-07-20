@@ -18,7 +18,7 @@
 //! with the E2E test suite.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, Instr, IrPipeline, Place};
+use hew_mir::{container_ingress_is_copy_in, lower_hir_module, Instr, IrPipeline, Place};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -574,4 +574,13 @@ fn discarded_unlink_emits_call_runtime_abi_without_dest() {
         "discarded unlink() call must use dest=None; got {:?}",
         call.dest()
     );
+}
+
+#[test]
+fn container_ingress_copy_in_vs_move_in() {
+    assert!(container_ingress_is_copy_in("hew_vec_push"));
+    assert!(container_ingress_is_copy_in("hew_vec_set"));
+    assert!(!container_ingress_is_copy_in("hew_hashmap_insert_layout"));
+    assert!(!container_ingress_is_copy_in("hew_hashset_insert_layout"));
+    assert!(!container_ingress_is_copy_in("hew_some_unknown_ingress"));
 }

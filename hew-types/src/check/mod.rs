@@ -77,6 +77,12 @@ use crate::lowering_facts::{LoweringFact, LoweringFactError};
 
 static BUILTIN_FUNCTION_NAMES: OnceLock<HashSet<String>> = OnceLock::new();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TypeResolutionContext {
+    Ordinary,
+    ExternSignature,
+}
+
 #[must_use]
 pub fn builtin_function_names() -> &'static HashSet<String> {
     BUILTIN_FUNCTION_NAMES.get_or_init(|| {

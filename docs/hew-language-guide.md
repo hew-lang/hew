@@ -895,10 +895,11 @@ identifier or method name; it only acts as the prefix when an operand follows
 directly (`clone x`, `clone foo.bar()`), never in `clone(args)` or `clone.field`.
 
 It binds at unary precedence and takes the whole postfix chain: `clone x.f()`
-clones the result of `x.f()`, and `clone a + b` is `(clone a) + b`. There is no
-`&x` borrow expression in Hew — `&` is bitwise-and and the type-level borrow
-marker (`&T`) only; writing `&x` is rejected with a diagnostic pointing you at
-`clone x`.
+clones the result of `x.f()`, and `clone a + b` is `(clone a) + b`. Ordinary
+Hew uses values, implicit sharing, and `clone`; it has no borrow expression or
+reference type. Writing `&x` is rejected with a diagnostic pointing you at
+`clone x`. The separate `&T` spelling is confined to foreign declarations; see
+[Appendix A](#appendix-a---ffi-boundary-types).
 
 ### Struct value param and returning a struct
 
@@ -3303,3 +3304,31 @@ with `bytes.to_string()`. The method form (`stream.read(n)`) is NOT supported ye
 > pointer to a `BytesTriple`, matching the runtime's representation.
 
 Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
+
+## Appendix A - FFI boundary types
+
+Hew uses `&T` only inside the parameter and return type trees of functions in
+an `extern` block. It describes an immutable, non-owning foreign view with the
+same one-pointer ABI as C's `const T*`:
+
+```hew
+extern "C" {
+    fn current_value() -> &i64;
+    fn read_value(value: &i64) -> i64;
+}
+
+fn read_current() -> i64 {
+    let view = unsafe { current_value() };
+    unsafe { read_value(view) }
+}
+```
+
+The foreign implementation owns the pointee and must keep it alive for every
+use. A view returned by foreign code may be held in an inferred local, read, or
+passed to another foreign function only while that foreign lifetime guarantee
+holds. Hew does not retain, clone, or drop the pointee.
+
+Ordinary function signatures, fields, aliases, and other Hew declarations use
+`T`, not `&T`. There is no `&expr` operation and no conversion from `T` to
+`&T`. Mutable FFI access uses the raw-pointer spelling `*mut T`; Hew does not
+provide `&mut T` or `&var T`.

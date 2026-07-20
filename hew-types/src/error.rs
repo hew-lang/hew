@@ -695,6 +695,8 @@ pub enum TypeErrorKind {
     /// such a parameter) without cloning aliases the caller's pointer,
     /// causing a double-free.  Fail-closed: always an error.
     BorrowedParamReturn,
+    /// An immutable foreign boundary view appeared outside an extern signature.
+    BorrowTypeOutsideExternSignature,
     /// Branches of an or-pattern bind different names.
     OrPatternBindingMismatch,
     /// Storing `Rc<T>` (or a type that transitively contains `Rc<T>`) inside
@@ -1335,6 +1337,7 @@ impl TypeErrorKind {
             Self::UnresolvedImport => "UnresolvedImport",
             Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",
             Self::BorrowedParamReturn => "BorrowedParamReturn",
+            Self::BorrowTypeOutsideExternSignature => "BorrowTypeOutsideExternSignature",
             Self::OrPatternBindingMismatch => "OrPatternBindingMismatch",
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
             Self::TaskNotNameable => "TaskNotNameable",

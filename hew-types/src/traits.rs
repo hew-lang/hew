@@ -1007,9 +1007,10 @@ impl TraitRegistry {
                             .all(|a| self.implements_marker_guarded(a, marker, visiting)),
                     };
                 }
-                // Rc<T>: reference-counted, single-threaded — explicitly NOT Send or Sync.
-                // Supports Clone (inc ref-count) and Drop (dec ref-count); NOT Copy or Frozen.
-                if *builtin == Some(BuiltinType::Rc) {
+                // Rc<T>/Weak<T>: reference-counted, single-threaded — explicitly
+                // NOT Send or Sync. Both support Clone and Drop, but not Copy or
+                // Frozen.
+                if matches!(builtin, Some(BuiltinType::Rc | BuiltinType::Weak)) {
                     return matches!(marker, MarkerTrait::Clone | MarkerTrait::Drop);
                 }
                 // Recursion guard: a recursive type graph (e.g. an

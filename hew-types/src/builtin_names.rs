@@ -377,6 +377,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
+            | BuiltinType::Weak
             | BuiltinType::NodeId
             | BuiltinType::Location
             | BuiltinType::HewActor

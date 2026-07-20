@@ -80,7 +80,12 @@ fn eq_ineligibility(
             ..
         } if args.len() == 1 => eq_ineligibility(&args[0], type_defs, type_params),
         Ty::Named {
-            builtin: Some(BuiltinType::HashMap | BuiltinType::HashSet | BuiltinType::Rc),
+            builtin: Some(
+                BuiltinType::HashMap
+                    | BuiltinType::HashSet
+                    | BuiltinType::Rc
+                    | BuiltinType::Weak,
+            ),
             ..
         }
         | Ty::CancellationToken

@@ -21750,6 +21750,27 @@ impl LowerCtx {
         }
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
+            Some(MethodCallRewrite::RcIntrinsic { op, .. }) => {
+                // Fail closed until the dedicated HIR node owns receiver/value
+                // intent and preserves the typed operation.
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: format!("typed Rc/Weak intrinsic `{op:?}`"),
+                        owning_pass: "rc-weak-hir-lowering".to_string(),
+                    },
+                    span,
+                    "typed Rc/Weak checker facts reached HIR before intrinsic lowering",
+                ));
+                let ret_ty = self
+                    .resolved_expr_types
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(ResolvedTy::Unit);
+                (
+                    HirExprKind::Unsupported(format!("typed Rc/Weak intrinsic `{op:?}`")),
+                    ret_ty,
+                )
+            }
             Some(MethodCallRewrite::BuiltinVecIntoIter { elem_ty }) => {
                 self.lower_builtin_vec_into_iter(receiver, elem_ty, span)
             }

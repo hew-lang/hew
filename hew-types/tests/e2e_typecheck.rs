@@ -11,6 +11,7 @@ use common::{
 use hew_parser::ast::{Expr, Item, Stmt};
 use hew_types::check::SpanKey;
 use hew_types::error::TypeErrorKind;
+use hew_types::{MethodCallRewrite, RcIntrinsicOp};
 
 fn platform_limitation_error_count(output: &hew_types::TypeCheckOutput, fragment: &str) -> usize {
     output
@@ -1568,6 +1569,209 @@ fn rc_construction_and_methods_typecheck() {
         output.errors.is_empty(),
         "Rc<i64> basic usage should type-check cleanly, got: {:#?}",
         output.errors
+    );
+}
+
+#[test]
+fn rc_weak_surface_records_typed_intrinsics() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let rc = Rc::new(42);
+            let alias = rc.clone();
+            let _value = alias.get();
+            rc.set(9);
+            let weak = rc.downgrade();
+            let weak2 = weak.clone();
+            let _upgraded = weak2.upgrade();
+            let _strong = rc.strong_count();
+            let _weak = rc.weak_count();
+            let _unique = rc.is_unique();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "complete Rc/Weak surface should type-check cleanly: {:#?}",
+        output.errors
+    );
+    let ops = output
+        .method_call_rewrites
+        .values()
+        .filter_map(|rewrite| match rewrite {
+            MethodCallRewrite::RcIntrinsic { op, payload_ty } => {
+                assert_eq!(payload_ty, &hew_types::ResolvedTy::I64);
+                Some(*op)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for expected in [
+        RcIntrinsicOp::New,
+        RcIntrinsicOp::Clone,
+        RcIntrinsicOp::GetCopy,
+        RcIntrinsicOp::Set,
+        RcIntrinsicOp::Downgrade,
+        RcIntrinsicOp::WeakClone,
+        RcIntrinsicOp::WeakUpgrade,
+        RcIntrinsicOp::StrongCount,
+        RcIntrinsicOp::WeakCount,
+        RcIntrinsicOp::IsUnique,
+    ] {
+        assert!(
+            ops.contains(&expected),
+            "missing typed intrinsic {expected:?}: {ops:?}"
+        );
+    }
+}
+
+#[test]
+fn weak_breaks_recursive_value_size_cycle() {
+    let output = typecheck_inline(
+        r"
+        type Node {
+            parent: Option<Weak<Node>>,
+            value: i64,
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Weak<Node> must be an indirection for recursive-size analysis: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn weak_rejected_at_actor_send_boundary() {
+    let output = typecheck_inline(
+        r"
+        actor Sink {
+            let _unused: i64;
+            receive fn consume(value: Weak<i64>) {}
+        }
+        fn main() {
+            let rc = Rc::new(1);
+            let weak = rc.downgrade();
+            let sink = spawn Sink(_unused: 0);
+            sink.consume(weak);
+        }
+        ",
+    );
+    let errors = output
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::InvalidSend)
+        .count();
+    assert_eq!(
+        errors, 1,
+        "Weak must be structurally non-Send: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rc_new_rejects_borrowed_non_copy_parameter_without_clone() {
+    let rejected = typecheck_inline(
+        r"
+        fn wrap(value: string) -> Rc<string> {
+            Rc::new(value)
+        }
+        fn main() {}
+        ",
+    );
+    let errors = rejected
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::BorrowedParamReturn)
+        .count();
+    assert_eq!(
+        errors, 1,
+        "borrowed Rc::new source must fail once: {:#?}",
+        rejected.errors
+    );
+
+    let accepted = typecheck_inline(
+        r"
+        fn wrap(value: string) -> Rc<string> {
+            Rc::new(value.clone())
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        accepted.errors.is_empty(),
+        "an explicit clone must materialize an owned Rc::new source: {:#?}",
+        accepted.errors
+    );
+}
+
+#[test]
+fn rc_set_rejects_borrowed_non_copy_parameter_without_clone() {
+    let rejected = typecheck_inline(
+        r"
+        fn replace(rc: Rc<string>, value: string) {
+            rc.set(value);
+        }
+        fn main() {}
+        ",
+    );
+    let errors = rejected
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::BorrowedParamReturn)
+        .count();
+    assert_eq!(
+        errors, 1,
+        "borrowed Rc.set source must fail once: {:#?}",
+        rejected.errors
+    );
+
+    let accepted = typecheck_inline(
+        r"
+        fn replace(rc: Rc<string>, value: string) {
+            rc.set(value.clone());
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        accepted.errors.is_empty(),
+        "an explicit clone must materialize an owned Rc.set source: {:#?}",
+        accepted.errors
+    );
+}
+
+#[test]
+fn weak_param_return_requires_clone() {
+    let rejected = typecheck_inline(
+        r"
+        fn identity(value: Weak<i64>) -> Weak<i64> { value }
+        fn main() {}
+        ",
+    );
+    assert_eq!(
+        rejected
+            .errors
+            .iter()
+            .filter(|error| error.kind == TypeErrorKind::BorrowedParamReturn)
+            .count(),
+        1,
+        "returning borrowed Weak without clone must fail once: {:#?}",
+        rejected.errors
+    );
+
+    let accepted = typecheck_inline(
+        r"
+        fn identity(value: Weak<i64>) -> Weak<i64> { value.clone() }
+        fn main() {}
+        ",
+    );
+    assert!(
+        accepted.errors.is_empty(),
+        "cloned Weak return must pass: {:#?}",
+        accepted.errors
     );
 }
 

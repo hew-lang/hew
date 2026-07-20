@@ -890,8 +890,8 @@ impl Checker {
         self.current_function = Some(fn_name.to_string());
         self.env.push_scope();
         // Scratch map of per-pattern bound names is function-local: the
-        // borrowed-Rc escape scanner (`warn_rc_param_return`, run at the end of
-        // this same call) consumes only this function's pattern spans. Clear so
+        // borrowed-affine escape scanner (`warn_affine_param_escape`, run at
+        // the end of this same call) consumes only this function's pattern spans. Clear so
         // it never accumulates across the whole program.
         self.pattern_bound_names.clear();
 
@@ -1003,13 +1003,9 @@ impl Checker {
             );
         }
 
-        // ── Rc<T> call-boundary safety: warn on returning a borrowed Rc param ──
-        // Under borrow-on-call semantics the callee does not own function params.
-        // Returning an Rc param without .clone() aliases the caller's pointer —
-        // both caller-local drop and callee-result drop will fire on the same
-        // allocation → double-free.  Emit a warning with a .clone() suggestion.
+        // Borrowed affine parameters must be cloned before they escape.
         if !fd.is_generator {
-            self.warn_rc_param_return(fd);
+            self.warn_affine_param_escape(fd);
         }
         self.reject_owned_handle_field_accessors(fd);
 

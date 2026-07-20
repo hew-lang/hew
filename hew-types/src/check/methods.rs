@@ -4528,10 +4528,14 @@ impl Checker {
             .first()
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
+        let record = |checker: &mut Self, op| {
+            checker.record_rc_intrinsic(span, op, &inner_ty);
+        };
         match method {
             // rc.clone() increments the reference count and returns a new Rc<T>
             "clone" => {
                 self.check_arity(args, 0, "`Rc::clone`", span);
+                record(self, RcIntrinsicOp::Clone);
                 Ty::rc(inner_ty)
             }
             // rc.get() copies the inner value out of the Rc.
@@ -4555,12 +4559,40 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
+                record(self, RcIntrinsicOp::GetCopy);
                 inner_ty
+            }
+            "set" => {
+                self.check_arity(args, 1, "`Rc::set`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, arg_span) = arg.expr();
+                    let arg_ty = self.synthesize(expr, arg_span);
+                    self.expect_type(&inner_ty, &arg_ty, arg_span);
+                    self.reject_borrowed_parameter_consumption(expr, arg_span, "Rc::set");
+                }
+                record(self, RcIntrinsicOp::Set);
+                Ty::Unit
+            }
+            "downgrade" => {
+                self.check_arity(args, 0, "`Rc::downgrade`", span);
+                record(self, RcIntrinsicOp::Downgrade);
+                Ty::weak(inner_ty)
             }
             // rc.strong_count() returns the current reference count as i64
             "strong_count" => {
                 self.check_arity(args, 0, "`Rc::strong_count`", span);
+                record(self, RcIntrinsicOp::StrongCount);
                 Ty::I64
+            }
+            "weak_count" => {
+                self.check_arity(args, 0, "`Rc::weak_count`", span);
+                record(self, RcIntrinsicOp::WeakCount);
+                Ty::I64
+            }
+            "is_unique" => {
+                self.check_arity(args, 0, "`Rc::is_unique`", span);
+                record(self, RcIntrinsicOp::IsUnique);
+                Ty::Bool
             }
             _ => {
                 for arg in args {
@@ -4574,6 +4606,61 @@ impl Checker {
                 );
                 Ty::Error
             }
+        }
+    }
+
+    pub(super) fn check_weak_method(
+        &mut self,
+        type_args: &[Ty],
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let inner_ty = type_args
+            .first()
+            .cloned()
+            .unwrap_or(Ty::Var(TypeVar::fresh()));
+        match method {
+            "clone" => {
+                self.check_arity(args, 0, "`Weak::clone`", span);
+                self.record_rc_intrinsic(span, RcIntrinsicOp::WeakClone, &inner_ty);
+                Ty::weak(inner_ty)
+            }
+            "upgrade" => {
+                self.check_arity(args, 0, "`Weak::upgrade`", span);
+                self.record_rc_intrinsic(span, RcIntrinsicOp::WeakUpgrade, &inner_ty);
+                Ty::option(Ty::rc(inner_ty))
+            }
+            _ => {
+                for arg in args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on `Weak<{}>`", inner_ty.user_facing()),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    fn record_rc_intrinsic(&mut self, span: &Span, op: RcIntrinsicOp, payload_ty: &Ty) {
+        let resolved = self
+            .subst
+            .resolve(payload_ty)
+            .materialize_literal_defaults();
+        match ResolvedTy::from_ty(&resolved) {
+            Ok(payload_ty) => self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::RcIntrinsic { op, payload_ty },
+            ),
+            Err(_) => self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "Rc/Weak operations require a concrete payload type".to_string(),
+            ),
         }
     }
 
@@ -6495,6 +6582,15 @@ impl Checker {
                 },
                 _,
             ) => self.check_rc_method(type_args, method, args, span),
+            // Weak<T> methods
+            (
+                Ty::Named {
+                    builtin: Some(BuiltinType::Weak),
+                    args: type_args,
+                    ..
+                },
+                _,
+            ) => self.check_weak_method(type_args, method, args, span),
             // instant receiver methods (`.elapsed()`, `.duration_since()`) are
             // declared in the `impl instant` block in `std/builtins.hew` with
             // monomorphic `#[extern_symbol(hew_instant_*)]` annotations, mirroring

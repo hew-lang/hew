@@ -40,6 +40,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
+            | BuiltinType::Weak
             | BuiltinType::NodeId
             | BuiltinType::Location
             | BuiltinType::HewActor
@@ -755,7 +756,6 @@ impl Ty {
                     | "Some"
                     | "None"
                     | "Arc"
-                    | "Weak"
                     | "Send"
                     | "Frozen"
                     | "Copy"
@@ -1078,6 +1078,12 @@ impl Ty {
     #[must_use]
     pub fn rc(inner: Ty) -> Ty {
         Self::builtin_named(BuiltinType::Rc, vec![inner])
+    }
+
+    /// Construct `Weak<inner>`.
+    #[must_use]
+    pub fn weak(inner: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::Weak, vec![inner])
     }
 
     // -- Accessor helpers: match on Named patterns --

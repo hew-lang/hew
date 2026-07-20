@@ -58,7 +58,7 @@ const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 const QUIC_WORKER_THREADS: usize = 2;
 
 /// ALPN protocol identifier for Hew mesh traffic.
-const HEW_ALPN: &[u8] = b"hew-mesh/1";
+const HEW_ALPN: &[u8] = b"hew-mesh/2";
 
 /// Default server name used for self-signed certificates.
 const DEFAULT_SERVER_NAME: &str = "hew-mesh.local";

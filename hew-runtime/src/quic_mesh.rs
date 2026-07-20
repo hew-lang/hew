@@ -1796,9 +1796,13 @@ pub(crate) unsafe fn hew_transport_quic_mesh_peer_spki(
     // SAFETY: ops-check above guarantees impl is a QuicMeshTransport.
     let qmt = unsafe { &*t.r#impl.cast::<QuicMeshTransport>() };
     let conn = qmt.get_conn(conn_id)?;
+    peer_spki(&conn.peer.conn)
+}
+
+fn peer_spki(connection: &quinn::Connection) -> Option<Vec<u8>> {
     // quinn 0.11: `peer_identity()` yields `Box<dyn Any>` downcasting to the
     // presented `Vec<CertificateDer<'static>>` (the peer's cert chain).
-    let identity = conn.peer.conn.peer_identity()?;
+    let identity = connection.peer_identity()?;
     let certs = identity.downcast::<Vec<CertificateDer<'static>>>().ok()?;
     let leaf = certs.first()?;
     extract_spki_from_cert_der(leaf.as_ref()).ok()
@@ -1950,7 +1954,7 @@ impl QuicMesh {
 // TLS config builders
 // ---------------------------------------------------------------------------
 
-const HEW_MESH_ALPN: &[u8] = b"hew-mesh/2";
+const HEW_MESH_ALPN: &[u8] = b"hew-mesh/3";
 const MESH_IDLE_TIMEOUT_SECS: u64 = 30;
 
 /// Build Quinn server and client configs from a [`MeshTls`].
@@ -2188,6 +2192,14 @@ impl PeerConn {
     /// Remote socket address of the peer.
     pub fn remote_address(&self) -> std::net::SocketAddr {
         self.conn.remote_address()
+    }
+
+    /// Node identity derived from the peer certificate authenticated by mTLS.
+    #[must_use]
+    pub fn authenticated_node_id(&self) -> Option<crate::node_identity::NodeId> {
+        Some(crate::node_identity::NodeId::from_spki(&peer_spki(
+            &self.conn,
+        )?))
     }
 
     /// Open a new bidirectional stream for the given `lane_kind`.

@@ -341,6 +341,8 @@ pub struct HewCluster {
     config: ClusterConfig,
     /// Current membership list (protected by mutex for thread safety).
     members: Mutex<Vec<ClusterMember>>,
+    /// Durable authenticated session incarnation per receiver-local route slot.
+    sessions: Mutex<HashMap<u16, u32>>,
     /// Current connection publication token per peer.
     connection_tokens: Mutex<ConnectionTokens>,
     /// Deferred membership transitions waiting to notify callbacks.
@@ -773,6 +775,7 @@ impl HewCluster {
         Self {
             config,
             members: Mutex::new(Vec::with_capacity(16)),
+            sessions: Mutex::new(HashMap::new()),
             connection_tokens: Mutex::new(ConnectionTokens::default()),
             pending_member_transitions: Mutex::new(PendingMemberTransitions::default()),
             events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
@@ -1062,26 +1065,113 @@ impl HewCluster {
         }
     }
 
-    /// Admit a previously unknown peer whose `NodeId` was learned from the
-    /// connection protocol handshake.
-    ///
-    /// Existing members are left untouched so a bare reconnect cannot resurrect
-    /// a DEAD/LEFT peer without the strictly-higher incarnation required by the
-    /// gossip admission gate.
-    pub(crate) fn admit_handshake_peer(&self, node_id: u16) {
-        if node_id == 0 || node_id == self.config.local_node_id {
-            return;
+    /// Admit an authenticated durable node session for a receiver-local route
+    /// slot. Equal-session reconnects may revive only non-terminal membership;
+    /// a strictly higher session starts a fresh SWIM incarnation domain.
+    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "called by session admission tests introduced in the following commit"
+    )]
+    pub(crate) fn admit_authenticated_session(&self, node_id: u16, session: u32) -> bool {
+        if node_id == 0 || node_id == self.config.local_node_id || session == 0 {
+            return false;
         }
-        let unknown = {
-            let members = self.members.lock_or_recover();
-            !members.iter().any(|member| member.node_id == node_id)
+
+        let mut should_drain = false;
+        let accepted = {
+            let mut sessions = self.sessions.lock_or_recover();
+            let mut members = self.members.lock_or_recover();
+            let current_session = sessions.get(&node_id).copied();
+            let member_index = members.iter().position(|member| member.node_id == node_id);
+
+            match current_session {
+                Some(current) if session < current => false,
+                Some(current) if session == current => {
+                    let Some(index) = member_index else {
+                        return false;
+                    };
+                    let member = &mut members[index];
+                    if matches!(member.state, MEMBER_DEAD | MEMBER_LEFT) {
+                        false
+                    } else if member.state == MEMBER_ALIVE {
+                        // SAFETY: hew_now_ms has no preconditions.
+                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        true
+                    } else {
+                        let next_incarnation = member.incarnation.saturating_add(1);
+                        if let Some(transition) = Self::stage_member_transition_locked(
+                            &mut members,
+                            node_id,
+                            MEMBER_ALIVE,
+                            next_incarnation,
+                            &[],
+                            false,
+                        ) {
+                            should_drain = self.queue_member_transition(transition);
+                        }
+                        true
+                    }
+                }
+                _ => {
+                    sessions.insert(node_id, session);
+                    if let Some(index) = member_index {
+                        let member = &mut members[index];
+                        let old_state = member.state;
+                        member.state = MEMBER_ALIVE;
+                        member.incarnation = 1;
+                        // SAFETY: hew_now_ms has no preconditions.
+                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        should_drain = self.queue_member_transition(MemberTransition {
+                            node_id,
+                            state: MEMBER_ALIVE,
+                            incarnation: 1,
+                            is_new_member: false,
+                            old_state: Some(old_state),
+                            publication: PublicationTransition::Plain,
+                        });
+                    } else {
+                        let mut member = ClusterMember {
+                            node_id,
+                            state: MEMBER_ALIVE,
+                            incarnation: 1,
+                            addr: [0; 128],
+                            // SAFETY: hew_now_ms has no preconditions.
+                            last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+                        };
+                        member.addr[0] = 0;
+                        members.push(member);
+                        should_drain = self.queue_member_transition(MemberTransition {
+                            node_id,
+                            state: MEMBER_ALIVE,
+                            incarnation: 1,
+                            is_new_member: true,
+                            old_state: None,
+                            publication: PublicationTransition::Plain,
+                        });
+                    }
+                    true
+                }
+            }
         };
-        if unknown {
-            // A concurrent connection may admit the same peer between this
-            // check and `upsert_member`; equal-incarnation ALIVE upserts are
-            // idempotent under the member-table lock.
+        if should_drain {
+            self.drain_member_transitions();
+        }
+        accepted
+    }
+
+    /// Stage-1 compatibility helper for tests and low-level callers.
+    #[cfg(test)]
+    pub(crate) fn admit_handshake_peer(&self, node_id: u16) {
+        if self.member_incarnation(node_id).is_none() {
             self.upsert_member(node_id, MEMBER_ALIVE, 1, &[]);
         }
+    }
+
+    /// Current durable session for a receiver-local route slot.
+    #[allow(dead_code, reason = "used by connection.rs in the next commit")]
+    pub(crate) fn member_session(&self, node_id: u16) -> Option<u32> {
+        self.sessions.lock_or_recover().get(&node_id).copied()
     }
 
     /// Seed a member directly into the table without running the transition
@@ -2248,14 +2338,19 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token(
     0
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "function coordinates admission, session verification, and durable publication in sequence"
+)]
 pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_removed(
     cluster: *mut HewCluster,
     node_id: u16,
+    session: u32,
     publication_token: u64,
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
 ) -> c_int {
-    if cluster.is_null() {
+    if cluster.is_null() || node_id == 0 || session == 0 {
         return -1;
     }
     // SAFETY: caller guarantees `cluster` is valid.
@@ -2266,24 +2361,57 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
         if publication_removed.load(Ordering::Acquire) {
             return 0;
         }
+        let mut sessions = cluster.sessions.lock_or_recover();
+        let previous_session = sessions.get(&node_id).copied();
+        match previous_session {
+            Some(current) if session < current => return -1,
+            Some(current) if session == current => {}
+            _ => {
+                sessions.insert(node_id, session);
+            }
+        }
+        let session_is_new = previous_session != Some(session);
         let mut tokens = cluster.connection_tokens.lock_or_recover();
         tokens.current.insert(node_id, publication_token);
 
         let mut members = cluster.members.lock_or_recover();
-        let member = members
-            .iter()
-            .find(|m| m.node_id == node_id)
-            .map(|m| (m.state, m.incarnation));
-        if let Some((state, old_incarnation)) = member {
-            if state == MEMBER_ALIVE {
+        let member_index = members.iter().position(|member| member.node_id == node_id);
+        if let Some(index) = member_index {
+            let state = members[index].state;
+            let old_incarnation = members[index].incarnation;
+            if session_is_new {
+                members[index].state = MEMBER_ALIVE;
+                members[index].incarnation = 1;
+                // SAFETY: hew_now_ms has no preconditions.
+                members[index].last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                should_drain = cluster.queue_member_transition(
+                    MemberTransition {
+                        node_id,
+                        state: MEMBER_ALIVE,
+                        incarnation: 1,
+                        is_new_member: false,
+                        old_state: Some(state),
+                        publication: PublicationTransition::Plain,
+                    }
+                    .with_publication(
+                        PublicationTransition::GuardedTokenEstablished {
+                            publication_token,
+                            publication_sync: Arc::clone(publication_sync),
+                            publication_removed: Arc::clone(publication_removed),
+                        },
+                    ),
+                );
+            } else if state == MEMBER_ALIVE {
                 if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                     // SAFETY: hew_now_ms has no preconditions.
                     member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
                 }
                 tokens.visible.insert(node_id, publication_token);
             } else {
-                // Locally-synthesized reconnect bump (guarded-token variant);
-                // cannot readmit a DEAD/LEFT node — gossip_announced=false.
+                if matches!(state, MEMBER_DEAD | MEMBER_LEFT) {
+                    tokens.current.remove(&node_id);
+                    return -1;
+                }
                 let incarnation = old_incarnation.saturating_add(1);
                 if let Some(transition) = HewCluster::stage_member_transition_locked(
                     &mut members,
@@ -2313,7 +2441,30 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
             }
             true
         } else {
-            false
+            members.push(ClusterMember {
+                node_id,
+                state: MEMBER_ALIVE,
+                incarnation: 1,
+                addr: [0; 128],
+                // SAFETY: hew_now_ms has no preconditions.
+                last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+            });
+            should_drain = cluster.queue_member_transition(
+                MemberTransition {
+                    node_id,
+                    state: MEMBER_ALIVE,
+                    incarnation: 1,
+                    is_new_member: true,
+                    old_state: None,
+                    publication: PublicationTransition::Plain,
+                }
+                .with_publication(PublicationTransition::GuardedTokenEstablished {
+                    publication_token,
+                    publication_sync: Arc::clone(publication_sync),
+                    publication_removed: Arc::clone(publication_removed),
+                }),
+            );
+            true
         }
     };
     if !known_member {
@@ -2927,6 +3078,7 @@ mod tests {
                 hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
                 0
             );
+            (&*cluster).sessions.lock_or_recover().insert(2, 1);
 
             let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
             let lost_cluster = SendCluster(cluster);
@@ -3059,6 +3211,7 @@ mod tests {
                 let rc = hew_cluster_notify_connection_established_for_token_if_not_removed(
                     cluster.0,
                     2,
+                    1,
                     2,
                     &publication_sync_for_thread,
                     &publication_removed_for_thread,
@@ -3180,6 +3333,7 @@ mod tests {
                 hew_cluster_notify_connection_established_for_token(cluster, 2, 1),
                 0
             );
+            (&*cluster).sessions.lock_or_recover().insert(2, 1);
 
             let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
             let lost_cluster = SendCluster(cluster);
@@ -3216,6 +3370,7 @@ mod tests {
                 hew_cluster_notify_connection_established_for_token_if_not_removed(
                     cluster,
                     2,
+                    1,
                     2,
                     &publication_sync,
                     &publication_removed,
@@ -3396,6 +3551,7 @@ mod tests {
                 let rc = hew_cluster_notify_connection_established_for_token_if_not_removed(
                     cluster.0,
                     2,
+                    1,
                     2,
                     &publication_sync_for_thread,
                     &publication_removed_for_thread,

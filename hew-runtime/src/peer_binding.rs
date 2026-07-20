@@ -208,6 +208,9 @@ pub enum ClaimState {
     Reserved,
     /// The connection is established and owns this `NodeId`'s routes/tokens.
     Published,
+    /// The last live connection retired; the durable session remains as a replay
+    /// fence for later admissions.
+    Retired,
 }
 
 /// The live owner of a `NodeId` on one connection manager.
@@ -216,6 +219,10 @@ pub struct LiveClaim {
     /// The authenticated credential owning this `NodeId`; `None` only under
     /// `Unverified` posture.
     pub credential: Option<PeerCredential>,
+    /// Receiver-local route slot resolved from the authenticated credential.
+    pub route_slot: RouteSlot,
+    /// Durable session incarnation advertised by the peer.
+    pub session_incarnation: u32,
     /// The transport connection id that holds this claim.
     pub conn_id: c_int,
     /// The publication token uniquely identifying this admission.
@@ -701,10 +708,23 @@ impl PeerAuthConfig {
     ///
     /// Returns a typed message on an invalid posture combination.
     pub fn validate_public(&self) -> Result<(), String> {
-        if !self.bindings.is_empty() && self.node_identity.is_none() {
+        if self.node_identity.is_none() || self.identity_path.is_none() {
             return Err(
-                "Node::start: strict distributed mode requires Node::load_keys before peer \
-                 bindings can be used (fail-closed)"
+                "Node::start: protocol v2 requires Node::load_keys before start \
+                 (authenticated identity and durable session are mandatory)"
+                    .to_string(),
+            );
+        }
+        let has_transport_identity = match self.transport.unwrap_or(TransportSelection::Tcp) {
+            TransportSelection::Tcp => self.noise_identity.is_some(),
+            #[cfg(feature = "quic")]
+            TransportSelection::QuicMesh => self.mesh_identity.is_some(),
+            #[cfg(feature = "quic")]
+            TransportSelection::Quic => false,
+        };
+        if !has_transport_identity {
+            return Err(
+                "Node::start: protocol v2 requires an authenticated tcp-noise or quic-mesh identity"
                     .to_string(),
             );
         }
@@ -833,12 +853,6 @@ impl PeerAuthSnapshot {
         self.inner.legacy_wire_route_slot
     }
 
-    /// Transitional compatibility accessor for the Stage-1 v1 admission code.
-    #[must_use]
-    pub(crate) fn node_id(&self) -> Option<NonZeroU16> {
-        self.legacy_wire_route_slot()
-    }
-
     /// Whether this snapshot is the explicit documented unverified opt-out.
     #[must_use]
     pub fn is_unverified_optout(&self) -> bool {
@@ -901,10 +915,39 @@ impl PeerAuthSnapshot {
     #[must_use]
     pub fn noise_pubkey_allowlisted(&self, pubkey: &[u8; NOISE_KEY_LEN]) -> bool {
         let cred = PeerCredential::NoiseKey(*pubkey);
+        self.route_slot_for_credential(&cred).is_some()
+    }
+
+    /// Resolve an authenticated credential to its receiver-local route slot.
+    ///
+    /// Admission uses this after transport authentication: the v2 handshake
+    /// carries a key-derived [`NodeId`], never the receiver's compact route slot.
+    #[must_use]
+    pub fn route_slot_for_credential(&self, credential: &PeerCredential) -> Option<RouteSlot> {
         self.inner
             .bindings
-            .values()
-            .any(|credential| *credential == cred)
+            .iter()
+            .find(|(_, bound)| *bound == credential)
+            .map(|(route_slot, _)| *route_slot)
+    }
+
+    /// Resolve a configured key-derived identity to its receiver-local route slot.
+    #[must_use]
+    pub fn route_slot_for_node_id(&self, node_id: NodeId) -> Option<RouteSlot> {
+        self.inner
+            .bindings
+            .iter()
+            .find(|(_, credential)| credential.node_id() == node_id)
+            .map(|(route_slot, _)| *route_slot)
+    }
+
+    /// Resolve a configured route slot to the peer's key-derived identity.
+    #[must_use]
+    pub fn node_id_for_route_slot(&self, route_slot: RouteSlot) -> Option<NodeId> {
+        self.inner
+            .bindings
+            .get(&route_slot)
+            .map(PeerCredential::node_id)
     }
 
     /// Validate the snapshot is self-consistent (defence-in-depth at the shared
@@ -999,11 +1042,7 @@ impl PeerAuthSnapshot {
 
     /// The route slot this credential is bound to, if any.
     fn credential_bound_route_slot(&self, cred: &PeerCredential) -> Option<RouteSlot> {
-        self.inner
-            .bindings
-            .iter()
-            .find(|(_, bound)| **bound == *cred)
-            .map(|(route_slot, _)| *route_slot)
+        self.route_slot_for_credential(cred)
     }
 }
 
@@ -1171,6 +1210,17 @@ mod tests {
             snap.authorize(Posture::Strict, 42, Some(&noise(0xCC))),
             PeerAuthz::CredentialMismatch
         );
+    }
+
+    #[test]
+    fn credential_lookup_resolves_route_slot_and_derived_node_id() {
+        let credential = noise(0xBB);
+        let snap = bound_config(&[(42, credential.clone())]).snapshot();
+        let node_id = credential.node_id();
+
+        assert_eq!(snap.route_slot_for_credential(&credential), Some(42));
+        assert_eq!(snap.route_slot_for_node_id(node_id), Some(42));
+        assert_eq!(snap.node_id_for_route_slot(42), Some(node_id));
     }
 
     #[test]

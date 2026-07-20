@@ -63,9 +63,8 @@ use crate::envelope::{
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
-use crate::peer_binding::{
-    ClaimState, LiveClaim, PeerAuthSnapshot, PeerAuthz, PeerCredential, Posture,
-};
+use crate::node_identity::NodeId;
+use crate::peer_binding::{ClaimState, LiveClaim, PeerAuthSnapshot, PeerCredential, Posture};
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
@@ -84,9 +83,9 @@ pub const CONN_STATE_DRAINING: i32 = 2;
 /// Connection is closed.
 pub const CONN_STATE_CLOSED: i32 = 3;
 
-const HEW_HANDSHAKE_SIZE: usize = 48;
-const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x01";
-const HEW_PROTOCOL_VERSION: u16 = 1;
+const HEW_HANDSHAKE_SIZE: usize = 72;
+const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x02";
+const HEW_PROTOCOL_VERSION: u16 = 2;
 // Advertised only when the `encryption` feature is compiled in; both consumers
 // (`local_feature_flags` and `supports_encryption`) are encryption-gated.
 #[cfg(feature = "encryption")]
@@ -130,9 +129,10 @@ const RECONNECT_JITTER_MAX_PERCENT: u64 = 110;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HewHandshake {
     protocol_version: u16,
-    node_id: u16,
     schema_hash: u32,
     feature_flags: u32,
+    node_id: NodeId,
+    session_incarnation: u32,
     static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN],
 }
 
@@ -141,26 +141,39 @@ impl HewHandshake {
         let mut out = [0u8; HEW_HANDSHAKE_SIZE];
         out[0..4].copy_from_slice(&HEW_HANDSHAKE_MAGIC);
         out[4..6].copy_from_slice(&self.protocol_version.to_be_bytes());
-        out[6..8].copy_from_slice(&self.node_id.to_be_bytes());
+        // 6..8 and 36..40 are reserved and remain zero.
         out[8..12].copy_from_slice(&self.schema_hash.to_be_bytes());
         out[12..16].copy_from_slice(&self.feature_flags.to_be_bytes());
-        out[16..48].copy_from_slice(&self.static_noise_pubkey);
+        out[16..32].copy_from_slice(&self.node_id.to_bytes());
+        out[32..36].copy_from_slice(&self.session_incarnation.to_be_bytes());
+        out[40..72].copy_from_slice(&self.static_noise_pubkey);
         out
     }
 
     fn deserialize(buf: &[u8]) -> Option<Self> {
-        if buf.len() != HEW_HANDSHAKE_SIZE || buf[0..4] != HEW_HANDSHAKE_MAGIC {
+        if buf.len() != HEW_HANDSHAKE_SIZE
+            || buf[0..4] != HEW_HANDSHAKE_MAGIC
+            || buf[6..8] != [0, 0]
+            || buf[36..40] != [0, 0, 0, 0]
+        {
+            return None;
+        }
+        let mut node_id = [0u8; 16];
+        node_id.copy_from_slice(&buf[16..32]);
+        if node_id == [0; 16] {
             return None;
         }
         let mut static_noise_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
-        static_noise_pubkey.copy_from_slice(&buf[16..48]);
-        Some(Self {
+        static_noise_pubkey.copy_from_slice(&buf[40..72]);
+        let handshake = Self {
             protocol_version: u16::from_be_bytes([buf[4], buf[5]]),
-            node_id: u16::from_be_bytes([buf[6], buf[7]]),
             schema_hash: u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
             feature_flags: u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]),
+            node_id: NodeId::from_bytes(node_id),
+            session_incarnation: u32::from_be_bytes([buf[32], buf[33], buf[34], buf[35]]),
             static_noise_pubkey,
-        })
+        };
+        (handshake.session_incarnation != 0).then_some(handshake)
     }
 }
 
@@ -179,6 +192,10 @@ struct ConnectionActor {
     publication_removed: Arc<AtomicBool>,
     /// Remote node identity from handshake.
     peer_node_id: u16,
+    /// Authenticated key-derived identity from the v2 handshake.
+    peer_identity: Option<NodeId>,
+    /// Authenticated durable peer session from the v2 handshake.
+    peer_session_incarnation: u32,
     /// Remote capability bitfield from handshake.
     peer_feature_flags: u32,
     /// Per-connection admission posture (issue #2652). `Strict` connections
@@ -302,13 +319,17 @@ pub struct HewConnMgr {
     /// Concurrent managers hold independent snapshots, so there is no shared
     /// admission authority across nodes.
     pub(crate) auth: PeerAuthSnapshot,
+    /// Key-derived local identity advertised by the v2 handshake.
+    local_identity: Option<NodeId>,
+    /// Durable local session incarnation advertised by the v2 handshake.
+    local_session_incarnation: Option<u32>,
     /// Live `NodeId` claim table (issue #2652, D3). The single serializing guard
     /// for the reserve → publish → retire window: exactly one connection may own
     /// a `NodeId`'s route + cluster token at a time. The condvar coordinates the
     /// reserve/publish handoff so a concurrent admission for the same `NodeId`
     /// waits rather than racing. Per-manager, so two concurrent nodes hold
     /// independent claim tables (a `NodeId` on node1 never collides with node2).
-    pub(crate) claims: (Mutex<HashMap<u16, LiveClaim>>, Condvar),
+    pub(crate) claims: (Mutex<HashMap<NodeId, LiveClaim>>, Condvar),
     /// Encoded registry-gossip flush frames whose initial send failed, parked
     /// for retry, keyed by connection and bound to that admission's
     /// publication token. The connection-establish flush is one-shot — the
@@ -449,6 +470,8 @@ impl ConnectionActor {
             publication_sync: Arc::new(Mutex::new(())),
             publication_removed: Arc::new(AtomicBool::new(false)),
             peer_node_id: 0,
+            peer_identity: None,
+            peer_session_incarnation: 0,
             peer_feature_flags: 0,
             posture: Posture::Strict,
             credential: None,
@@ -609,39 +632,63 @@ enum ClaimReservation {
 /// - `Reserved` (another admission in flight) ⇒ wait on the condvar until it
 ///   publishes/aborts, then re-evaluate; on timeout ⇒ reject.
 /// - absent ⇒ insert `Reserved`; no supersede.
-fn reserve_claim(
+fn reserve_identity_claim(
     mgr: &HewConnMgr,
-    node_id: u16,
+    node_id: NodeId,
+    route_slot: u16,
+    session_incarnation: u32,
     credential: Option<&PeerCredential>,
     conn_id: c_int,
     publication_token: u64,
 ) -> ClaimReservation {
+    if route_slot == 0 || session_incarnation == 0 {
+        return ClaimReservation::Rejected(format!(
+            "invalid route slot/session for NodeId {node_id} (route_slot={route_slot}, session={session_incarnation})"
+        ));
+    }
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
     loop {
         match map.get(&node_id) {
-            Some(existing) if existing.state == ClaimState::Published => {
-                if existing.credential.as_ref() == credential {
-                    // Same-credential reconnect: supersede the live claim.
-                    let superseded = existing.clone();
+            Some(existing) if existing.state != ClaimState::Reserved => {
+                if existing.credential.as_ref() == credential && existing.route_slot == route_slot {
+                    if session_incarnation < existing.session_incarnation {
+                        return ClaimReservation::Rejected(format!(
+                            "lower-session replay for NodeId {node_id}: received {session_incarnation}, current {}",
+                            existing.session_incarnation
+                        ));
+                    }
+                    if session_incarnation == existing.session_incarnation
+                        && !mgr.cluster.is_null()
+                        && matches!(
+                            // SAFETY: cluster is owned by the live manager.
+                            unsafe { (&*mgr.cluster).member_state(route_slot) },
+                            crate::cluster::MEMBER_DEAD | crate::cluster::MEMBER_LEFT
+                        )
+                    {
+                        return ClaimReservation::Rejected(format!(
+                            "equal session {session_incarnation} cannot revive buried NodeId {node_id}"
+                        ));
+                    }
+                    // Same-credential reconnect or a higher durable session.
+                    let superseded = Some(existing.clone());
                     map.insert(
                         node_id,
                         LiveClaim {
                             credential: credential.cloned(),
+                            route_slot,
+                            session_incarnation,
                             conn_id,
                             publication_token,
                             state: ClaimState::Reserved,
                         },
                     );
-                    return ClaimReservation::Reserved {
-                        superseded: Some(superseded),
-                    };
+                    return ClaimReservation::Reserved { superseded };
                 }
-                // Different-credential live owner ⇒ reject fail-closed. Key
-                // rotation is sequential break-before-make (D5); there is no
-                // different-credential live-replacement path.
+                // A NodeId is key-derived, so another credential or route slot is
+                // either a collision or a wrong local pin.
                 return ClaimReservation::Rejected(format!(
-                    "duplicate live claim for node id {node_id} held by a different credential (conn {conn_id})"
+                    "NodeId {node_id} is already bound to another credential or route slot (conn {conn_id})"
                 ));
             }
             Some(_reserved) => {
@@ -664,6 +711,8 @@ fn reserve_claim(
                     node_id,
                     LiveClaim {
                         credential: credential.cloned(),
+                        route_slot,
+                        session_incarnation,
                         conn_id,
                         publication_token,
                         state: ClaimState::Reserved,
@@ -678,9 +727,9 @@ fn reserve_claim(
 /// Abort a reservation on install failure (issue #2652, D3 step 2). If
 /// `claims[node_id]` is still our exact `Reserved` claim, restore the superseded
 /// claim (if any) or remove it, then wake any waiter.
-fn abort_claim(
+fn abort_identity_claim(
     mgr: &HewConnMgr,
-    node_id: u16,
+    node_id: NodeId,
     conn_id: c_int,
     publication_token: u64,
     superseded: Option<LiveClaim>,
@@ -710,7 +759,12 @@ fn abort_claim(
 /// Returns `true` iff `claims[node_id]` is still our exact reservation (so the
 /// caller may write route + cluster token under the same lock). A superseding
 /// claim arriving meanwhile ⇒ `false` (abort publish, write nothing).
-fn publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, publication_token: u64) -> bool {
+fn publish_identity_claim(
+    mgr: &HewConnMgr,
+    node_id: NodeId,
+    conn_id: c_int,
+    publication_token: u64,
+) -> bool {
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
     let still_ours = map.get(&node_id).is_some_and(|c| {
@@ -733,14 +787,21 @@ fn publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, publication_tok
 /// then wakes any waiter. Returns `true` iff this connection was the exact owner
 /// (drives the real route removal / `MonitorLost` fan-out). A non-matching /
 /// superseded connection removes nothing and reports "not owner".
-fn retire_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, publication_token: u64) -> bool {
+fn retire_identity_claim(
+    mgr: &HewConnMgr,
+    node_id: NodeId,
+    conn_id: c_int,
+    publication_token: u64,
+) -> bool {
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
     let is_owner = map
         .get(&node_id)
         .is_some_and(|c| c.conn_id == conn_id && c.publication_token == publication_token);
     if is_owner {
-        map.remove(&node_id);
+        if let Some(claim) = map.get_mut(&node_id) {
+            claim.state = ClaimState::Retired;
+        }
     }
     drop(map);
     condvar.notify_all();
@@ -752,18 +813,119 @@ fn retire_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, publication_toke
 /// superseded claim (if any) to thread into publish. Panics on rejection — the
 /// unit tests below only reserve fresh or same-`NodeId` reconnect claims.
 #[cfg(test)]
-fn test_reserve_unverified(
+fn reserve_unverified_identity_claim(
     mgr: &HewConnMgr,
-    node_id: u16,
+    node_id: NodeId,
+    route_slot: u16,
+    session_incarnation: u32,
     conn_id: c_int,
     token: u64,
 ) -> Option<LiveClaim> {
-    match reserve_claim(mgr, node_id, None, conn_id, token) {
+    match reserve_identity_claim(
+        mgr,
+        node_id,
+        route_slot,
+        session_incarnation,
+        None,
+        conn_id,
+        token,
+    ) {
         ClaimReservation::Reserved { superseded } => superseded,
         ClaimReservation::Rejected(detail) => {
             panic!("unexpected claim rejection in test (node {node_id}, conn {conn_id}): {detail}")
         }
     }
+}
+
+#[cfg(test)]
+fn test_node_identity(route_slot: u16) -> NodeId {
+    let mut bytes = [0_u8; 16];
+    bytes[14..].copy_from_slice(&route_slot.to_be_bytes());
+    NodeId::from_bytes(bytes)
+}
+
+#[cfg(test)]
+fn reserve_claim(
+    mgr: &HewConnMgr,
+    route_slot: u16,
+    credential: Option<&PeerCredential>,
+    conn_id: c_int,
+    publication_token: u64,
+) -> ClaimReservation {
+    reserve_identity_claim(
+        mgr,
+        test_node_identity(route_slot),
+        route_slot,
+        1,
+        credential,
+        conn_id,
+        publication_token,
+    )
+}
+
+#[cfg(test)]
+fn abort_claim(
+    mgr: &HewConnMgr,
+    route_slot: u16,
+    conn_id: c_int,
+    publication_token: u64,
+    superseded: Option<LiveClaim>,
+) {
+    abort_identity_claim(
+        mgr,
+        test_node_identity(route_slot),
+        conn_id,
+        publication_token,
+        superseded,
+    );
+}
+
+#[cfg(test)]
+fn publish_claim(
+    mgr: &HewConnMgr,
+    route_slot: u16,
+    conn_id: c_int,
+    publication_token: u64,
+) -> bool {
+    let identity = test_node_identity(route_slot);
+    mgr.connections.access(|connections| {
+        if let Some(connection) = connections
+            .iter_mut()
+            .find(|connection| connection.conn_id == conn_id)
+        {
+            connection.peer_identity = Some(identity);
+            connection.peer_session_incarnation = 1;
+            connection.publication_token = publication_token;
+        }
+    });
+    publish_identity_claim(mgr, identity, conn_id, publication_token)
+}
+
+#[cfg(test)]
+fn retire_claim(mgr: &HewConnMgr, route_slot: u16, conn_id: c_int, publication_token: u64) -> bool {
+    retire_identity_claim(
+        mgr,
+        test_node_identity(route_slot),
+        conn_id,
+        publication_token,
+    )
+}
+
+#[cfg(test)]
+fn test_reserve_unverified(
+    mgr: &HewConnMgr,
+    route_slot: u16,
+    conn_id: c_int,
+    publication_token: u64,
+) -> Option<LiveClaim> {
+    reserve_unverified_identity_claim(
+        mgr,
+        test_node_identity(route_slot),
+        route_slot,
+        1,
+        conn_id,
+        publication_token,
+    )
 }
 
 /// Test helper: reserve **and** publish a claim binding `node_id` to `conn_id`,
@@ -772,9 +934,10 @@ fn test_reserve_unverified(
 /// the issue #2652 exact-owner gate ([`authenticated_peer_node_id_for_conn`])
 /// recognises the connection as the current published owner of its `NodeId`.
 #[cfg(test)]
-fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) -> u64 {
+fn test_publish_claim(mgr: &HewConnMgr, route_slot: u16, conn_id: c_int) -> u64 {
+    let node_id = test_node_identity(route_slot);
     let token = next_publication_token(mgr);
-    test_reserve_unverified(mgr, node_id, conn_id, token);
+    reserve_unverified_identity_claim(mgr, node_id, route_slot, 1, conn_id, token);
     let (lock, condvar) = &mgr.claims;
     let mut guard = lock
         .lock()
@@ -789,6 +952,8 @@ fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) -> u64 {
     // admission (production sets `actor.publication_token` before install).
     mgr.connections.access(|conns| {
         if let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) {
+            conn.peer_identity = Some(node_id);
+            conn.peer_session_incarnation = 1;
             conn.publication_token = token;
         }
     });
@@ -799,9 +964,11 @@ fn test_publish_claim(mgr: &HewConnMgr, node_id: u16, conn_id: c_int) -> u64 {
     clippy::too_many_arguments,
     reason = "publication threads route/cluster/gossip metadata plus the issue #2652 superseded claim; bundling them would obscure the call site"
 )]
-fn publish_connection_established(
+fn publish_identity_connection_established(
     mgr: &HewConnMgr,
-    peer_node_id: u16,
+    peer_identity: NodeId,
+    peer_route_slot: u16,
+    peer_session_incarnation: u32,
     conn_id: c_int,
     peer_feature_flags: u32,
     publication_token: u64,
@@ -809,10 +976,6 @@ fn publish_connection_established(
     publication_removed: &Arc<AtomicBool>,
     superseded: Option<LiveClaim>,
 ) {
-    if peer_node_id == 0 {
-        return;
-    }
-
     if publication_removed.load(Ordering::Acquire) {
         return;
     }
@@ -820,29 +983,30 @@ fn publish_connection_established(
     // Transition our reservation Reserved → Published (issue #2652, D3 step 3).
     // A superseding admission arriving in the reserve window ⇒ we are no longer
     // the map owner ⇒ abort publish (write no route / cluster token / gossip).
-    if !publish_claim(mgr, peer_node_id, conn_id, publication_token) {
+    if !publish_identity_claim(mgr, peer_identity, conn_id, publication_token) {
         return;
     }
 
     let published = if mgr.cluster.is_null() {
         true
     } else {
-        // The handshake is the first point where a bare-address dial learns the
-        // peer's real node identity. Admit that authenticated identity before
-        // publishing the connection so SWIM, routing, and registry gossip all
-        // use the same NodeId instead of a caller-side placeholder.
         // SAFETY: cluster is owned by the live manager.
-        unsafe { (&*mgr.cluster).admit_handshake_peer(peer_node_id) };
         // SAFETY: pointer validity is checked by the callee.
-        unsafe {
+        let result = unsafe {
             crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
                 mgr.cluster,
-                peer_node_id,
+                peer_route_slot,
+                peer_session_incarnation,
                 publication_token,
                 publication_sync,
                 publication_removed,
-            ) == 1
+            )
+        };
+        if result < 0 {
+            let _ = retire_identity_claim(mgr, peer_identity, conn_id, publication_token);
+            return;
         }
+        result == 1
     };
     if !published {
         return;
@@ -854,7 +1018,7 @@ fn publish_connection_established(
             return;
         }
         // SAFETY: pointer validity is checked by the callee.
-        unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
+        unsafe { hew_routing_add_route(mgr.routing_table, peer_route_slot, conn_id) };
     }
 
     flush_registry_gossip_to_connection(mgr, conn_id, publication_token, peer_feature_flags);
@@ -876,29 +1040,70 @@ fn publish_connection_established(
     // check); close its transport so it can no longer emit SWIM/gossip/control
     // frames. Its actor tears down via the normal reader-exit path.
     if let Some(superseded) = superseded {
-        if superseded.conn_id != conn_id {
+        if superseded.state == ClaimState::Published && superseded.conn_id != conn_id {
             // SAFETY: mgr.transport is valid while the manager is alive.
             unsafe { close_transport_conn(mgr.transport, superseded.conn_id) };
         }
     }
 }
 
-fn retire_connection_publication(
+#[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "legacy test adapter mirrors the pre-v2 publication surface"
+)]
+fn publish_connection_established(
     mgr: &HewConnMgr,
-    peer_node_id: u16,
+    peer_route_slot: u16,
+    conn_id: c_int,
+    peer_feature_flags: u32,
+    publication_token: u64,
+    publication_sync: &Arc<Mutex<()>>,
+    publication_removed: &Arc<AtomicBool>,
+    superseded: Option<LiveClaim>,
+) {
+    let identity = test_node_identity(peer_route_slot);
+    mgr.connections.access(|connections| {
+        if let Some(connection) = connections
+            .iter_mut()
+            .find(|connection| connection.conn_id == conn_id)
+        {
+            connection.peer_identity = Some(identity);
+            connection.peer_session_incarnation = 1;
+            connection.publication_token = publication_token;
+        }
+    });
+    publish_identity_connection_established(
+        mgr,
+        identity,
+        peer_route_slot,
+        1,
+        conn_id,
+        peer_feature_flags,
+        publication_token,
+        publication_sync,
+        publication_removed,
+        superseded,
+    );
+}
+
+fn retire_identity_connection_publication(
+    mgr: &HewConnMgr,
+    peer_identity: Option<NodeId>,
+    peer_route_slot: u16,
     conn_id: c_int,
     publication_token: u64,
     publication_sync: &Arc<Mutex<()>>,
 ) {
-    if peer_node_id == 0 {
+    let Some(peer_identity) = peer_identity else {
         return;
-    }
+    };
 
     // Retire our claim iff we are still the exact owner (issue #2652, D3 retire).
     // A superseded / non-matching connection removes nothing and must NOT drive
     // route removal, a cluster-lost notification, or a MonitorLost fan-out — the
     // peer is still live under a newer claim.
-    let is_owner = retire_claim(mgr, peer_node_id, conn_id, publication_token);
+    let is_owner = retire_identity_claim(mgr, peer_identity, conn_id, publication_token);
     if !is_owner {
         return;
     }
@@ -908,7 +1113,7 @@ fn retire_connection_publication(
         if !mgr.routing_table.is_null() {
             // SAFETY: pointer validity is checked by the callee.
             let _ = unsafe {
-                hew_routing_remove_route_if_conn(mgr.routing_table, peer_node_id, conn_id)
+                hew_routing_remove_route_if_conn(mgr.routing_table, peer_route_slot, conn_id)
             };
         }
     }
@@ -917,7 +1122,7 @@ fn retire_connection_publication(
         let _ = unsafe {
             crate::cluster::hew_cluster_notify_connection_lost_if_current(
                 mgr.cluster,
-                peer_node_id,
+                peer_route_slot,
                 publication_token,
             )
         };
@@ -927,7 +1132,25 @@ fn retire_connection_publication(
     // `peer_node_id` is gone, so every local watcher of an actor on that node
     // gets a MonitorLost DOWN — unless it already received a definitive
     // clean-exit / crash DOWN (only Pending slots are armed; exactly-once).
-    crate::hew_node::fan_out_monitor_lost_for_node(peer_node_id);
+    crate::hew_node::fan_out_monitor_lost_for_node(peer_route_slot);
+}
+
+#[cfg(test)]
+fn retire_connection_publication(
+    mgr: &HewConnMgr,
+    peer_route_slot: u16,
+    conn_id: c_int,
+    publication_token: u64,
+    publication_sync: &Arc<Mutex<()>>,
+) {
+    retire_identity_connection_publication(
+        mgr,
+        Some(test_node_identity(peer_route_slot)),
+        peer_route_slot,
+        conn_id,
+        publication_token,
+        publication_sync,
+    );
 }
 
 fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
@@ -1177,14 +1400,16 @@ fn local_schema_hash() -> u32 {
 }
 
 fn local_handshake(
-    local_node_id: u16,
+    local_node_id: NodeId,
+    session_incarnation: u32,
     static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN],
 ) -> HewHandshake {
     HewHandshake {
         protocol_version: HEW_PROTOCOL_VERSION,
-        node_id: local_node_id,
         schema_hash: local_schema_hash(),
         feature_flags: local_feature_flags(),
+        node_id: local_node_id,
+        session_incarnation,
         static_noise_pubkey,
     }
 }
@@ -1197,10 +1422,8 @@ fn schema_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
     local.schema_hash == peer.schema_hash
 }
 
-fn peer_identity_compatible(local_node_id: u16, peer_node_id: u16, expected: Option<u16>) -> bool {
-    peer_node_id != 0
-        && peer_node_id != local_node_id
-        && expected.is_none_or(|expected| expected == peer_node_id)
+fn peer_identity_compatible(local_node_id: NodeId, peer_node_id: NodeId) -> bool {
+    peer_node_id != local_node_id
 }
 
 unsafe fn send_frame(transport: *mut HewTransport, conn_id: c_int, payload: &[u8]) -> bool {
@@ -2008,11 +2231,11 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
                     && c.posture == Posture::Strict
                     && c.peer_node_id != 0
             })
-            .map_or(0, |c| c.peer_node_id)
+            .map(|c| (c.peer_identity, c.peer_node_id))
     });
-    if claimed == 0 {
+    let Some((Some(identity), route_slot)) = claimed else {
         return 0;
-    }
+    };
     // (b)+(c) the connection must be the *exact current owner* of the published
     // claim for its NodeId (issue #2652, D9 / BLOCK-4 point 2): the claim must be
     // `Published` AND owned by THIS `conn_id`. A superseded connection (D3 point
@@ -2023,8 +2246,10 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
     let guard = lock
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match guard.get(&claimed) {
-        Some(claim) if claim.state == ClaimState::Published && claim.conn_id == conn_id => claimed,
+    match guard.get(&identity) {
+        Some(claim) if claim.state == ClaimState::Published && claim.conn_id == conn_id => {
+            route_slot
+        }
         _ => 0,
     }
 }
@@ -2076,9 +2301,9 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
         let own_claim = guard
             .iter()
             .find(|(_, claim)| claim.conn_id == conn_id && claim.publication_token == claim_token)
-            .map(|(node_id, claim)| (*node_id, claim.state));
+            .map(|(node_id, claim)| (*node_id, claim.route_slot, claim.state));
         match own_claim {
-            Some((claimed, ClaimState::Published)) => {
+            Some((claimed, route_slot, ClaimState::Published)) => {
                 // Our admission published. Publication happens strictly after
                 // the connections-list install, so the entry is present; bind
                 // it by the same publication token (never bare `conn_id`) and
@@ -2093,12 +2318,13 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
                                 && c.publication_token == claim_token
                                 && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
                                 && c.posture == Posture::Strict
-                                && c.peer_node_id == claimed
+                                && c.peer_identity == Some(claimed)
+                                && c.peer_node_id == route_slot
                         })
                         .map_or(0, |c| c.peer_node_id)
                 });
             }
-            Some((_, ClaimState::Reserved)) => {
+            Some((_, _, ClaimState::Reserved)) => {
                 // Our own admission is mid-flight (pre-install or
                 // pre-publication); wait for it to publish or abort rather
                 // than dropping the frame.
@@ -2111,7 +2337,7 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
             }
             // No claim owned by this admission: superseded, aborted, or a
             // claimless (node_id 0) connection — no authority, deny now.
-            None => return 0,
+            Some((_, _, ClaimState::Retired)) | None => return 0,
         }
     }
 }
@@ -2443,7 +2669,7 @@ fn supports_encryption(flags: u32) -> bool {
 #[cfg(feature = "encryption")]
 fn noise_is_initiator(local: &HewHandshake, peer: &HewHandshake) -> Option<bool> {
     if local.node_id != peer.node_id {
-        return Some(local.node_id < peer.node_id);
+        return Some(local.node_id.to_bytes() < peer.node_id.to_bytes());
     }
     match local.static_noise_pubkey.cmp(&peer.static_noise_pubkey) {
         std::cmp::Ordering::Less => Some(true),
@@ -2768,7 +2994,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
     // demonstrated-loopback endpoint. Production installs a real per-node
     // snapshot via the internal `connmgr_new` constructor below.
     // SAFETY: transport contract forwarded to the internal constructor.
-    unsafe {
+    let mgr = unsafe {
         connmgr_new(
             transport,
             router,
@@ -2777,7 +3003,16 @@ pub unsafe extern "C" fn hew_connmgr_new(
             local_node_id,
             PeerAuthSnapshot::unconfigured(),
         )
+    };
+    #[cfg(test)]
+    if !mgr.is_null() && local_node_id != 0 {
+        // SAFETY: `mgr` was just allocated above and is uniquely owned here.
+        unsafe {
+            (*mgr).local_identity = Some(test_node_identity(local_node_id));
+            (*mgr).local_session_incarnation = Some(1);
+        }
     }
+    mgr
 }
 
 /// Internal constructor taking the per-node [`PeerAuthSnapshot`] by value.
@@ -2801,6 +3036,8 @@ pub(crate) unsafe fn connmgr_new(
     auth: PeerAuthSnapshot,
 ) -> *mut HewConnMgr {
     cabi_guard!(transport.is_null(), std::ptr::null_mut());
+    let local_identity = auth.node_identity();
+    let local_session_incarnation = auth.session_incarnation();
     let mgr = Box::new(HewConnMgr {
         connections: PoisonSafe::new(Vec::with_capacity(16)),
         expected_peer_ids: PoisonSafe::new(HashMap::new()),
@@ -2818,6 +3055,8 @@ pub(crate) unsafe fn connmgr_new(
         next_publication_token: AtomicU64::new(1),
         local_node_id,
         auth,
+        local_identity,
+        local_session_incarnation,
         claims: (Mutex::new(HashMap::new()), Condvar::new()),
         pending_registry_flush: PoisonSafe::new(HashMap::new()),
         pending_registry_flush_count: AtomicUsize::new(0),
@@ -3142,61 +3381,77 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let mut local_noise_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
     #[cfg(feature = "encryption")]
     let local_noise_private = {
-        let Ok(pattern) = NOISE_PATTERN.parse() else {
-            // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-            set_last_error("hew_connmgr_add: invalid noise pattern");
-            return -1;
+        #[cfg(feature = "quic")]
+        let skip_noise = {
+            // SAFETY: mgr.transport is valid while the connection manager is alive.
+            unsafe {
+                crate::quic_transport::hew_transport_is_quic(mgr.transport)
+                    || crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport)
+            }
         };
-        if let Some(identity) = mgr.auth.noise_identity() {
-            // Stable per-node Noise identity (issue #2652, D1): present the same
-            // static key on every connection and across restarts so peers can
-            // pin it via `Node::allow_peer`. Retires per-connection keypair
-            // churn, which made a node's Noise public key unbindable.
-            local_noise_pubkey.copy_from_slice(&identity.public());
-            Zeroizing::new(identity.private().to_vec())
+        #[cfg(not(feature = "quic"))]
+        let skip_noise = false;
+        if skip_noise {
+            Zeroizing::new(Vec::new())
         } else {
-            // No stable identity loaded (unconfigured / loopback-dev node): fall
-            // back to an ephemeral keypair. Such a node is `Unverified`
-            // (delivery-only); no peer pins its key, so churn is harmless.
-            let builder = snow::Builder::new(pattern);
-            let Ok(keypair) = builder.generate_keypair() else {
+            let Ok(pattern) = NOISE_PATTERN.parse() else {
                 // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
                 unsafe { close_transport_conn(mgr.transport, conn_id) };
-                set_last_error("hew_connmgr_add: failed to generate noise keypair");
+                set_last_error("hew_connmgr_add: invalid noise pattern");
                 return -1;
             };
-            local_noise_pubkey.copy_from_slice(&keypair.public);
-            Zeroizing::new(keypair.private)
+            if let Some(identity) = mgr.auth.noise_identity() {
+                // Stable per-node Noise identity (issue #2652, D1): present the same
+                // static key on every connection and across restarts so peers can
+                // pin it via `Node::allow_peer`. Retires per-connection keypair
+                // churn, which made a node's Noise public key unbindable.
+                local_noise_pubkey.copy_from_slice(&identity.public());
+                Zeroizing::new(identity.private().to_vec())
+            } else {
+                // No stable identity loaded (unconfigured / loopback-dev node): fall
+                // back to an ephemeral keypair. Such a node is `Unverified`
+                // (delivery-only); no peer pins its key, so churn is harmless.
+                let builder = snow::Builder::new(pattern);
+                let Ok(keypair) = builder.generate_keypair() else {
+                    // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
+                    unsafe { close_transport_conn(mgr.transport, conn_id) };
+                    set_last_error("hew_connmgr_add: failed to generate noise keypair");
+                    return -1;
+                };
+                local_noise_pubkey.copy_from_slice(&keypair.public);
+                Zeroizing::new(keypair.private)
+            }
         }
     };
 
-    let local_hs = local_handshake(mgr.local_node_id, local_noise_pubkey);
+    let (Some(local_identity), Some(local_session_incarnation)) =
+        (mgr.local_identity, mgr.local_session_incarnation)
+    else {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(
+            "hew_connmgr_add: v2 distributed handshake requires a loaded authenticated local identity and durable session",
+        );
+        return -1;
+    };
+    let local_hs = local_handshake(
+        local_identity,
+        local_session_incarnation,
+        local_noise_pubkey,
+    );
     // SAFETY: mgr.transport and conn_id are valid per caller contract; local_hs is stack-local.
     let Some(peer_hs) = (unsafe { handshake_exchange(mgr.transport, conn_id, local_hs) }) else {
         // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
         unsafe { close_transport_conn(mgr.transport, conn_id) };
         return -1;
     };
-    if !peer_identity_compatible(mgr.local_node_id, peer_hs.node_id, expected_peer_node_id) {
+    if !peer_identity_compatible(local_identity, peer_hs.node_id) {
         // SAFETY: mgr.transport and conn_id are valid per caller contract.
         unsafe { close_transport_conn(mgr.transport, conn_id) };
-        if peer_hs.node_id == 0 {
-            set_last_error(format!(
-                "hew_connmgr_add: peer handshake used reserved node id 0 for conn {conn_id}"
-            ));
-        } else if peer_hs.node_id == mgr.local_node_id {
-            set_last_error(format!(
-                "hew_connmgr_add: peer node id {} collides with local node id for conn {conn_id}",
-                peer_hs.node_id
-            ));
-        } else {
-            set_last_error(format!(
-                "hew_connmgr_add: peer node id {} does not match expected node id {} for conn {conn_id}",
-                peer_hs.node_id,
-                expected_peer_node_id.unwrap_or(0)
-            ));
-        }
+        set_last_error(format!(
+            "hew_connmgr_add: peer NodeId {} collides with local NodeId for conn {conn_id}",
+            peer_hs.node_id
+        ));
         return -1;
     }
 
@@ -3217,15 +3472,23 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let remote_ip_class =
         unsafe { crate::transport::hew_transport_conn_remote_ip_class(mgr.transport, conn_id) };
     let posture = mgr.auth.posture_for(remote_ip_class);
+    if posture != Posture::Strict {
+        // v2 identity-bearing traffic is never admitted through the diagnostic
+        // unverified posture.
+        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: v2 identity traffic requires authenticated strict posture (conn {conn_id})"
+        ));
+        return -1;
+    }
     if posture == Posture::Strict {
-        let unconfigured = !mgr.auth.has_bindings()
-            && mgr.auth.node_id().is_none()
-            && !mgr.auth.is_unverified_optout();
+        let unconfigured = !mgr.auth.has_bindings();
         if unconfigured {
             // SAFETY: mgr.transport and conn_id are valid per caller contract.
             unsafe { close_transport_conn(mgr.transport, conn_id) };
             set_last_error(format!(
-                "hew_connmgr_add: strict connection to non-loopback peer requires HEW_NODE_ID (conn {conn_id})"
+                "hew_connmgr_add: strict connection requires configured peer credentials (conn {conn_id})"
             ));
             return -1;
         }
@@ -3313,6 +3576,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
             ));
             return -1;
         }
+        if peer_hs.static_noise_pubkey != peer_static_pubkey {
+            // SAFETY: mgr.transport and conn_id are valid per caller contract.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            set_last_error(format!(
+                "hew_connmgr_add: authenticated Noise key does not match the v2 handshake key for conn {conn_id}"
+            ));
+            return -1;
+        }
         peer_credential = Some(PeerCredential::NoiseKey(peer_static_pubkey));
         Some(noise)
     } else {
@@ -3335,58 +3606,81 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     #[cfg(feature = "quic")]
     // SAFETY: mgr.transport is valid while the manager is alive; conn_id is the
     // live handle being admitted. A non-mesh/unknown conn yields None.
-    let peer_credential: Option<PeerCredential> =
-        if unsafe { crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport) } {
-            // SAFETY: same caller contract as above.
-            unsafe { crate::quic_mesh::hew_transport_quic_mesh_peer_spki(mgr.transport, conn_id) }
-                .map(PeerCredential::Spki)
-        } else {
-            noise_credential
-        };
+    let peer_credential: Option<PeerCredential> = if unsafe {
+        crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport)
+    } {
+        if peer_hs.static_noise_pubkey != [0; NOISE_STATIC_PUBKEY_LEN] {
+            // SAFETY: mgr.transport and conn_id are valid per caller contract.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            set_last_error(format!(
+                    "hew_connmgr_add: quic-mesh v2 handshake carried a non-zero Noise key for conn {conn_id}"
+                ));
+            return -1;
+        }
+        // SAFETY: same caller contract as above.
+        unsafe { crate::quic_mesh::hew_transport_quic_mesh_peer_spki(mgr.transport, conn_id) }
+            .map(PeerCredential::Spki)
+    } else {
+        noise_credential
+    };
     #[cfg(not(feature = "quic"))]
     let peer_credential: Option<PeerCredential> = noise_credential;
 
-    // Authorize the claimed identity against the frozen per-node authority, then
-    // reserve the `NodeId` claim (issue #2652, D3). node_id 0 is the pre-identity
-    // / bare-address case: no claim, no authority (publication skips it too).
+    let Some(peer_credential) = peer_credential else {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: authenticated transport credential unavailable for conn {conn_id}"
+        ));
+        return -1;
+    };
+    let derived_peer_identity = peer_credential.node_id();
+    if derived_peer_identity != peer_hs.node_id {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: authenticated credential derives NodeId {derived_peer_identity}, not advertised {} (conn {conn_id})",
+            peer_hs.node_id
+        ));
+        return -1;
+    }
+    let Some(peer_route_slot) = mgr.auth.route_slot_for_credential(&peer_credential) else {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: authenticated credential has no configured route slot (conn {conn_id})"
+        ));
+        return -1;
+    };
+    if expected_peer_node_id.is_some_and(|expected| expected != peer_route_slot) {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: peer route slot {peer_route_slot} does not match expected node id {} for conn {conn_id}",
+            expected_peer_node_id.unwrap_or_default()
+        ));
+        return -1;
+    }
+
+    // Reserve the authenticated NodeId/session claim before any route, cluster,
+    // registry, SWIM, monitor, link, or reply-table publication.
     let claim_token = next_publication_token(mgr);
-    let superseded_claim: Option<LiveClaim> = if peer_hs.node_id != 0 {
-        match mgr
-            .auth
-            .authorize(posture, peer_hs.node_id, peer_credential.as_ref())
-        {
-            PeerAuthz::Authorized(_) | PeerAuthz::Unverified => {
-                match reserve_claim(
-                    mgr,
-                    peer_hs.node_id,
-                    peer_credential.as_ref(),
-                    conn_id,
-                    claim_token,
-                ) {
-                    ClaimReservation::Reserved { superseded } => superseded,
-                    ClaimReservation::Rejected(detail) => {
-                        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-                        unsafe { close_transport_conn(mgr.transport, conn_id) };
-                        set_last_error(format!("hew_connmgr_add: {detail}"));
-                        return -1;
-                    }
-                }
-            }
-            reject => {
-                // Strict posture with an absent / mismatched / bound-elsewhere
-                // credential ⇒ reject fail-closed. The claimed identity is not
-                // authenticated by the presented credential.
-                // SAFETY: mgr.transport and conn_id are valid per caller contract.
-                unsafe { close_transport_conn(mgr.transport, conn_id) };
-                set_last_error(format!(
-                    "hew_connmgr_add: peer failed identity binding for node id {} (conn {conn_id}): {reject:?}",
-                    peer_hs.node_id
-                ));
-                return -1;
-            }
+    let superseded_claim: Option<LiveClaim> = match reserve_identity_claim(
+        mgr,
+        peer_hs.node_id,
+        peer_route_slot,
+        peer_hs.session_incarnation,
+        Some(&peer_credential),
+        conn_id,
+        claim_token,
+    ) {
+        ClaimReservation::Reserved { superseded } => superseded,
+        ClaimReservation::Rejected(detail) => {
+            // SAFETY: mgr.transport and conn_id are valid per caller contract.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            set_last_error(format!("hew_connmgr_add: {detail}"));
+            return -1;
         }
-    } else {
-        None
     };
 
     let mut actor = ConnectionActor::new(conn_id);
@@ -3400,10 +3694,12 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         .superseded_claim
         .lock_or_recover()
         .clone_from(&superseded_claim);
-    actor.peer_node_id = peer_hs.node_id;
+    actor.peer_node_id = peer_route_slot;
+    actor.peer_identity = Some(peer_hs.node_id);
+    actor.peer_session_incarnation = peer_hs.session_incarnation;
     actor.peer_feature_flags = peer_hs.feature_flags;
     actor.posture = posture;
-    actor.credential = peer_credential;
+    actor.credential = Some(peer_credential);
     #[cfg(feature = "encryption")]
     if let Some(noise) = upgraded_noise {
         let Ok(mut guard) = actor.noise_transport.lock() else {
@@ -3460,9 +3756,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         unsafe { actor.close_transport() };
         // Abort the reservation (issue #2652, D3 step 2): restore the superseded
         // claim (if any) or remove our Reserved entry, and wake any waiter.
-        if peer_hs.node_id != 0 {
-            abort_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
-        }
+        abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
         set_last_error(format!(
             "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
         ));
@@ -3476,18 +3770,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     } = match install_connection_actor(mgr, actor) {
         Ok(publication) => publication,
         Err(ConnectionInstallError::Shutdown) => {
-            if peer_hs.node_id != 0 {
-                abort_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
-            }
+            abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
             set_last_error(format!(
                 "hew_connmgr_add: manager shutdown won install race for conn {conn_id}"
             ));
             return -1;
         }
         Err(ConnectionInstallError::Duplicate) => {
-            if peer_hs.node_id != 0 {
-                abort_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
-            }
+            abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
             set_last_error(format!(
                 "hew_connmgr_add: connection {conn_id} became duplicate during install"
             ));
@@ -3495,9 +3785,11 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         }
     };
 
-    publish_connection_established(
+    publish_identity_connection_established(
         mgr,
         peer_hs.node_id,
+        peer_route_slot,
+        peer_hs.session_incarnation,
         conn_id,
         peer_hs.feature_flags,
         publication_token,
@@ -3517,26 +3809,24 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
 /// (if any).
 fn resolve_admission_claim_before_join(
     mgr: &HewConnMgr,
-    peer_node_id: u16,
+    peer_identity: Option<NodeId>,
     conn_id: c_int,
     publication_token: u64,
     stashed_superseded: Option<LiveClaim>,
 ) -> Option<LiveClaim> {
-    if peer_node_id == 0 {
-        return None;
-    }
+    let peer_identity = peer_identity?;
     let (lock, condvar) = &mgr.claims;
     let mut guard = lock.lock_or_recover();
-    match guard.get(&peer_node_id) {
+    match guard.get(&peer_identity) {
         Some(claim) if claim.conn_id == conn_id && claim.publication_token == publication_token => {
             match claim.state {
                 ClaimState::Reserved => {
                     match stashed_superseded {
                         Some(prev) => {
-                            guard.insert(peer_node_id, prev);
+                            guard.insert(peer_identity, prev);
                         }
                         None => {
-                            guard.remove(&peer_node_id);
+                            guard.remove(&peer_identity);
                         }
                     }
                     drop(guard);
@@ -3544,6 +3834,7 @@ fn resolve_admission_claim_before_join(
                     None
                 }
                 ClaimState::Published => stashed_superseded,
+                ClaimState::Retired => None,
             }
         }
         _ => None,
@@ -3558,6 +3849,10 @@ fn resolve_admission_claim_before_join(
 ///
 /// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
 #[no_mangle]
+#[allow(
+    clippy::too_many_lines,
+    reason = "function handles the full connection teardown and claim retirement protocol"
+)]
 pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
     if mgr.is_null() {
         set_last_error("hew_connmgr_remove: manager is null");
@@ -3580,13 +3875,19 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         let conn = &conns[idx];
         Some((
             conn.peer_node_id,
+            conn.peer_identity,
             conn.publication_token,
             Arc::clone(&conn.publication_sync),
             Arc::clone(&conn.publication_removed),
         ))
     });
-    let Some((peer_node_id, publication_token, publication_sync, publication_removed)) =
-        publication_data
+    let Some((
+        peer_node_id,
+        peer_identity,
+        publication_token,
+        publication_sync,
+        publication_removed,
+    )) = publication_data
     else {
         return -1;
     };
@@ -3660,7 +3961,7 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // connection instead of orphaning it claimless.
     let restore_after_retire = resolve_admission_claim_before_join(
         mgr,
-        peer_node_id,
+        peer_identity,
         conn_id,
         publication_token,
         conn.superseded_claim.lock_or_recover().take(),
@@ -3683,8 +3984,9 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // cluster connection-lost notification. Deferred until after drop(conn) so
     // that a racing replacement connection can establish and publish first —
     // its higher publication token then suppresses this notification.
-    retire_connection_publication(
+    retire_identity_connection_publication(
         mgr,
+        peer_identity,
         peer_node_id,
         conn_id,
         publication_token,
@@ -3696,9 +3998,24 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // connection — guarded on an EMPTY slot so a racing fresh admission's
     // reservation is never overwritten.
     if let Some(prev) = restore_after_retire {
+        let Some(peer_identity) = peer_identity else {
+            return 0;
+        };
         let (lock, condvar) = &mgr.claims;
         let mut guard = lock.lock_or_recover();
-        guard.entry(peer_node_id).or_insert(prev);
+        match guard.entry(peer_identity) {
+            std::collections::hash_map::Entry::Occupied(mut occupied)
+                if occupied.get().state == ClaimState::Retired
+                    && occupied.get().conn_id == conn_id
+                    && occupied.get().publication_token == publication_token =>
+            {
+                occupied.insert(prev);
+            }
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(prev);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {}
+        }
         drop(guard);
         condvar.notify_all();
     }
@@ -4271,6 +4588,8 @@ mod tests {
             reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 0,
+            local_identity: None,
+            local_session_incarnation: None,
             auth: PeerAuthSnapshot::unconfigured(),
             claims: (
                 std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -4308,12 +4627,15 @@ mod tests {
     }
 
     #[test]
-    fn peer_identity_validation_rejects_reserved_colliding_and_unexpected_ids() {
-        assert!(peer_identity_compatible(10, 20, None));
-        assert!(peer_identity_compatible(10, 20, Some(20)));
-        assert!(!peer_identity_compatible(10, 0, None));
-        assert!(!peer_identity_compatible(10, 10, None));
-        assert!(!peer_identity_compatible(10, 20, Some(21)));
+    fn peer_identity_validation_rejects_self_connections() {
+        assert!(peer_identity_compatible(
+            test_node_identity(10),
+            test_node_identity(20)
+        ));
+        assert!(!peer_identity_compatible(
+            test_node_identity(10),
+            test_node_identity(10)
+        ));
     }
 
     #[test]
@@ -4346,6 +4668,8 @@ mod tests {
             reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 1,
+            local_identity: None,
+            local_session_incarnation: None,
             auth: PeerAuthSnapshot::unconfigured(),
             claims: (
                 std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -4411,7 +4735,8 @@ mod tests {
             buf: *mut std::ffi::c_void,
             len: usize,
         ) -> c_int {
-            let peer_hs = local_handshake(20, [0u8; NOISE_STATIC_PUBKEY_LEN]);
+            let peer_hs =
+                local_handshake(test_node_identity(20), 1, [0u8; NOISE_STATIC_PUBKEY_LEN]);
             let encoded = peer_hs.serialize();
             if len != encoded.len() {
                 // A read past the initial handshake (e.g. a post-identity-gate
@@ -4508,11 +4833,9 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_attempt_replays_pin_and_rejects_changed_identity() {
-        // Case A: pinned reconnect must replay the pin and reject the id-20
-        // peer as a changed identity — the exact discriminator that proves
-        // Slice 2 actually calls hew_connmgr_expect_peer before add: without
-        // the replay, `expected` would be None and this peer would pass.
+    fn reconnect_attempt_requires_authenticated_credential_before_pin_check() {
+        // A v2 reconnect cannot reach the route-slot pin check without a
+        // transport-authenticated credential.
         let (outcome, closed_ids, count, error_message) =
             run_reconnect_attempt_replay_case(Some(7));
         assert_eq!(
@@ -4530,16 +4853,15 @@ mod tests {
             "the rejected reconnect's transport connection must be closed"
         );
         assert!(
-            error_message.contains("does not match expected node id 7"),
-            "rejection must surface the identity-gate error, got: {error_message}"
+            error_message.contains("requires configured peer credentials"),
+            "rejection must surface the credential gate, got: {error_message}"
         );
 
-        // Case B: a bare-address reconnect (no pin) must stay permissive for
-        // the same id-20 peer — the identity gate must not fire at all.
+        // A bare-address reconnect is rejected at the same credential gate.
         let (_, _, _, error_message) = run_reconnect_attempt_replay_case(None);
         assert!(
-            !error_message.contains("does not match expected node id"),
-            "an unpinned reconnect must not reject on identity, got: {error_message}"
+            error_message.contains("requires configured peer credentials"),
+            "an unpinned reconnect must still require authentication, got: {error_message}"
         );
     }
 
@@ -4565,6 +4887,8 @@ mod tests {
             reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 1,
+            local_identity: None,
+            local_session_incarnation: None,
             auth: PeerAuthSnapshot::unconfigured(),
             claims: (
                 std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -5132,6 +5456,8 @@ mod tests {
     fn install_strict_conn(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, token: u64) {
         let mut strict = ConnectionActor::new(conn_id);
         strict.peer_node_id = node_id;
+        strict.peer_identity = Some(test_node_identity(node_id));
+        strict.peer_session_incarnation = 1;
         strict.publication_token = token;
         strict.posture = crate::peer_binding::Posture::Strict;
         strict.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -5433,6 +5759,8 @@ mod tests {
                 // handle, exactly what hew_connmgr_remove must join.
                 let mut actor = ConnectionActor::new(90);
                 actor.peer_node_id = 12;
+                actor.peer_identity = Some(test_node_identity(12));
+                actor.peer_session_incarnation = 1;
                 actor.publication_token = 300;
                 actor.posture = crate::peer_binding::Posture::Strict;
                 actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -5460,7 +5788,9 @@ mod tests {
                 );
                 let (lock, _condvar) = &(*mgr).claims;
                 assert!(
-                    lock.lock_or_recover().get(&12).is_none(),
+                    lock.lock_or_recover()
+                        .get(&test_node_identity(12))
+                        .is_none(),
                     "the aborted reservation must leave no dangling claim"
                 );
             }
@@ -5504,7 +5834,9 @@ mod tests {
 
                 let (lock, _condvar) = &(*mgr).claims;
                 let guard = lock.lock_or_recover();
-                let restored = guard.get(&13).expect("superseded claim must be restored");
+                let restored = guard
+                    .get(&test_node_identity(13))
+                    .expect("superseded claim must be restored");
                 assert_eq!(
                     restored.conn_id, 95,
                     "restored claim owner is the original conn"
@@ -5757,7 +6089,9 @@ mod tests {
 
                 let (lock, _condvar) = &(*mgr).claims;
                 let guard = lock.lock_or_recover();
-                let restored = guard.get(&15).expect("predecessor claim must be restored");
+                let restored = guard
+                    .get(&test_node_identity(15))
+                    .expect("predecessor claim must be restored");
                 assert_eq!(restored.conn_id, 95);
                 assert_eq!(restored.publication_token, 700);
                 assert_eq!(restored.state, ClaimState::Published);
@@ -5767,7 +6101,7 @@ mod tests {
 
     /// The counter-half: when the publication COMPLETES, the publish path
     /// clears the stash (and closes the superseded connection), so a later
-    /// remove retires the claim without restoring anything — no resurrected
+    /// remove retains only the successor's retired replay fence — no resurrected
     /// authority for a closed predecessor.
     #[test]
     fn remove_after_completed_publication_restores_nothing() {
@@ -5807,10 +6141,12 @@ mod tests {
                 assert_eq!(hew_connmgr_remove(mgr, 96), 0, "remove must succeed");
 
                 let (lock, _condvar) = &(*mgr).claims;
-                assert!(
-                    lock.lock_or_recover().get(&16).is_none(),
-                    "a completed publication's remove must not restore the predecessor"
-                );
+                let guard = lock.lock_or_recover();
+                let retired = guard
+                    .get(&test_node_identity(16))
+                    .expect("completed publication must retain a replay fence");
+                assert_eq!(retired.conn_id, 96);
+                assert_eq!(retired.state, ClaimState::Retired);
             }
         });
     }
@@ -7140,7 +7476,11 @@ mod tests {
     }
 
     fn claim_snapshot(mgr: &HewConnMgr, node_id: u16) -> Option<LiveClaim> {
-        mgr.claims.0.lock_or_recover().get(&node_id).cloned()
+        mgr.claims
+            .0
+            .lock_or_recover()
+            .get(&test_node_identity(node_id))
+            .cloned()
     }
 
     #[test]
@@ -7165,10 +7505,58 @@ mod tests {
         );
 
         assert!(retire_claim(mgr, 42, 100, 1), "exact owner should retire");
-        assert!(
-            claim_snapshot(mgr, 42).is_none(),
-            "claim removed after exact-owner retire"
+        assert_eq!(
+            claim_snapshot(mgr, 42)
+                .expect("retired claim remains as a replay fence")
+                .state,
+            ClaimState::Retired
         );
+        free_claim_test_mgr(mgr_ptr, transport);
+    }
+
+    #[test]
+    fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // SAFETY: mgr_ptr is live until free below.
+        let mgr = unsafe { &*mgr_ptr };
+        let identity = test_node_identity(42);
+
+        assert!(matches!(
+            reserve_identity_claim(mgr, identity, 42, 7, None, 100, 1),
+            ClaimReservation::Reserved { superseded: None }
+        ));
+        assert!(publish_identity_claim(mgr, identity, 100, 1));
+        assert!(retire_identity_claim(mgr, identity, 100, 1));
+
+        assert!(matches!(
+            reserve_identity_claim(mgr, identity, 42, 6, None, 200, 2),
+            ClaimReservation::Rejected(_)
+        ));
+
+        let equal_superseded = match reserve_identity_claim(mgr, identity, 42, 7, None, 200, 2) {
+            ClaimReservation::Reserved {
+                superseded: Some(retired),
+            } => retired,
+            ClaimReservation::Reserved { superseded: None } => {
+                panic!("equal-session reconnect must retain the retired fence")
+            }
+            ClaimReservation::Rejected(detail) => {
+                panic!("equal-session reconnect must be admitted: {detail}")
+            }
+        };
+        assert_eq!(equal_superseded.state, ClaimState::Retired);
+        abort_identity_claim(mgr, identity, 200, 2, Some(equal_superseded));
+
+        assert!(matches!(
+            reserve_identity_claim(mgr, identity, 42, 8, None, 300, 3),
+            ClaimReservation::Reserved {
+                superseded: Some(LiveClaim {
+                    state: ClaimState::Retired,
+                    ..
+                })
+            }
+        ));
+
         free_claim_test_mgr(mgr_ptr, transport);
     }
 
@@ -7190,7 +7578,7 @@ mod tests {
         // B presents a different credential for the same NodeId ⇒ reject.
         match reserve_claim(mgr, 42, cred_b.as_ref(), 200, 2) {
             ClaimReservation::Rejected(detail) => {
-                assert!(detail.contains("different credential"), "detail: {detail}");
+                assert!(detail.contains("another credential"), "detail: {detail}");
             }
             ClaimReservation::Reserved { .. } => {
                 panic!("different-credential reserve must be rejected fail-closed")
@@ -7276,7 +7664,12 @@ mod tests {
         );
         // The real owner retires.
         assert!(retire_claim(mgr, 9, 100, 1));
-        assert!(claim_snapshot(mgr, 9).is_none());
+        assert_eq!(
+            claim_snapshot(mgr, 9)
+                .expect("retired claim remains as a replay fence")
+                .state,
+            ClaimState::Retired
+        );
         free_claim_test_mgr(mgr_ptr, transport);
     }
 
@@ -8113,9 +8506,10 @@ mod tests {
     fn handshake_round_trip() {
         let hs = HewHandshake {
             protocol_version: HEW_PROTOCOL_VERSION,
-            node_id: 42,
             schema_hash: 0x1234_5678,
             feature_flags: HEW_FEATURE_SUPPORTS_GOSSIP,
+            node_id: test_node_identity(42),
+            session_incarnation: 7,
             static_noise_pubkey: [7; NOISE_STATIC_PUBKEY_LEN],
         };
         let encoded = hs.serialize();
@@ -8126,14 +8520,16 @@ mod tests {
     #[test]
     fn handshake_rejects_invalid_magic() {
         let mut bytes = [0u8; HEW_HANDSHAKE_SIZE];
-        bytes.copy_from_slice(&local_handshake(0, [0; NOISE_STATIC_PUBKEY_LEN]).serialize());
+        bytes.copy_from_slice(
+            &local_handshake(test_node_identity(1), 1, [0; NOISE_STATIC_PUBKEY_LEN]).serialize(),
+        );
         bytes[0] = b'X';
         assert!(HewHandshake::deserialize(&bytes).is_none());
     }
 
     #[test]
     fn protocol_version_mismatch_rejected() {
-        let local = local_handshake(0, [0; NOISE_STATIC_PUBKEY_LEN]);
+        let local = local_handshake(test_node_identity(1), 1, [0; NOISE_STATIC_PUBKEY_LEN]);
         let mut peer = local;
         peer.protocol_version = local.protocol_version.wrapping_add(1);
         assert!(!version_compatible(&local, &peer));
@@ -8141,7 +8537,7 @@ mod tests {
 
     #[test]
     fn handshake_rejects_future_protocol_version() {
-        let local = local_handshake(0, [0; NOISE_STATIC_PUBKEY_LEN]);
+        let local = local_handshake(test_node_identity(1), 1, [0; NOISE_STATIC_PUBKEY_LEN]);
         let peer = HewHandshake {
             protocol_version: 999,
             ..local
@@ -8151,10 +8547,49 @@ mod tests {
 
     #[test]
     fn schema_hash_mismatch_rejected() {
-        let local = local_handshake(0, [0; NOISE_STATIC_PUBKEY_LEN]);
+        let local = local_handshake(test_node_identity(1), 1, [0; NOISE_STATIC_PUBKEY_LEN]);
         let mut peer = local;
         peer.schema_hash ^= 0x0100_0000;
         assert!(!schema_compatible(&local, &peer));
+    }
+
+    #[test]
+    fn handshake_rejects_zero_session_and_nonzero_reserved_fields() {
+        let encoded =
+            local_handshake(test_node_identity(1), 1, [0; NOISE_STATIC_PUBKEY_LEN]).serialize();
+
+        let mut zero_session = encoded;
+        zero_session[32..36].fill(0);
+        assert!(HewHandshake::deserialize(&zero_session).is_none());
+
+        let mut reserved_header = encoded;
+        reserved_header[6] = 1;
+        assert!(HewHandshake::deserialize(&reserved_header).is_none());
+
+        let mut reserved_identity = encoded;
+        reserved_identity[36] = 1;
+        assert!(HewHandshake::deserialize(&reserved_identity).is_none());
+    }
+
+    #[test]
+    fn handshake_rejects_v1_length_and_magic() {
+        let old = [0_u8; 48];
+        assert!(HewHandshake::deserialize(&old).is_none());
+        assert!(HewHandshake::deserialize(&[0_u8; 71]).is_none());
+        assert!(HewHandshake::deserialize(&[0_u8; 73]).is_none());
+
+        let mut encoded =
+            local_handshake(test_node_identity(1), 1, [0; NOISE_STATIC_PUBKEY_LEN]).serialize();
+        encoded[..4].copy_from_slice(b"HEW\x01");
+        assert!(HewHandshake::deserialize(&encoded).is_none());
+    }
+
+    #[test]
+    fn handshake_rejects_zero_node_id() {
+        let mut encoded =
+            local_handshake(test_node_identity(1), 1, [0; NOISE_STATIC_PUBKEY_LEN]).serialize();
+        encoded[16..32].fill(0);
+        assert!(HewHandshake::deserialize(&encoded).is_none());
     }
 
     #[test]

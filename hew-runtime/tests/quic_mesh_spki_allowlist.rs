@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 use std::ffi::CString;
 
+use hew_runtime::node_identity::NodeId;
 use hew_runtime::peer_binding::{
     PeerAuthConfig, PeerAuthSnapshot, PeerCredential, TransportSelection,
 };
@@ -202,6 +203,16 @@ async fn two_mesh_listeners_with_cross_pinned_spkis_exchange_a_payload() {
     let peer_from_a = a_inbound_res
         .expect("accept returned None")
         .expect("accept handshake");
+    assert_eq!(
+        peer_from_b.authenticated_node_id(),
+        Some(NodeId::from_spki(&spki_alpha)),
+        "dialer must derive node A's locally computed NodeId from the authenticated certificate",
+    );
+    assert_eq!(
+        peer_from_a.authenticated_node_id(),
+        Some(NodeId::from_spki(&spki_beta)),
+        "listener must derive node B's locally computed NodeId from the authenticated certificate",
+    );
 
     // Exchange a payload over a fresh lane to prove send/recv work end-to-end
     // (not just the handshake).

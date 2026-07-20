@@ -250,9 +250,12 @@ fn remote_pid_ask_lowers_to_remote_ask_terminator() {
             type Reply = i64;
         }
 
-        fn main() -> i64 {
-            let remote = RemotePid::<Worker>::from_raw(2, 7);
+        fn ask_remote(remote: RemotePid<Worker>) -> i64 {
             let result: Result<i64, AskError> = remote.ask(Ping { n: 21 }, 250);
+            0
+        }
+
+        fn main() -> i64 {
             0
         }
         ",
@@ -264,12 +267,12 @@ fn remote_pid_ask_lowers_to_remote_ask_terminator() {
         pipeline.diagnostics
     );
     let double_id = i32::from_ne_bytes(compute_default_msg_id("Worker::double").to_ne_bytes());
-    let main = pipeline
+    let ask_remote = pipeline
         .raw_mir
         .iter()
-        .find(|func| func.name == "main")
-        .expect("main MIR");
-    assert!(main.blocks.iter().any(|block| {
+        .find(|func| func.name == "ask_remote")
+        .expect("ask_remote MIR");
+    assert!(ask_remote.blocks.iter().any(|block| {
         matches!(
             &block.terminator,
             Terminator::RemoteAsk {

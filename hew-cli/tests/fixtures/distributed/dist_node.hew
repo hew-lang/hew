@@ -33,19 +33,13 @@ import std::link_monitor::{ MonitorError };
 // the Stopped terminal state from within its own handler. `stop(self)` is not a
 // working surface yet, so the actor calls the runtime self-stop directly.
 //
-// hew_node_api_unregister: the stale_ref scenario re-points a registered name to
-// a DIFFERENT actor (unregister + re-register), superseding the old serial so a
-// captured RemotePid fails closed with StaleRef. `Node::unregister` is not yet a
-// Hew surface, so the server calls the runtime api directly.
+// hew_node_api_unregister: the repoint_preserves_ref scenario re-points a
+// registered name to a DIFFERENT actor. `Node::unregister` is not yet a Hew
+// surface, so the server calls the runtime api directly.
 extern "C" {
     fn hew_actor_self_stop();
     fn hew_actor_self_id() -> i64;
     fn hew_node_api_unregister(name: string) -> i32;
-    fn hew_node_api_lookup(name: string) -> i64;
-    fn hew_pid_local_node() -> u16;
-    fn hew_pid_node(pid: i64) -> u16;
-    fn hew_pid_serial(pid: i64) -> u64;
-    fn hew_pid_incarnation(pid: i64) -> u32;
 }
 
 // `record` is Serializable — required for RemotePid messaging across the wire.
@@ -161,9 +155,8 @@ impl ActorMsg for WireProbe {
 }
 
 record DistIdentity {
-    packed: i64,
-    node_id: u16,
-    serial: u64,
+    node_id: string,
+    slot: u64,
     incarnation: u32,
 }
 
@@ -177,24 +170,20 @@ enum IdentityResp {
 
 actor IdentityProbe {
     receive fn handle(_req: IdentityReq) -> IdentityResp {
-        let packed = unsafe {
-            hew_actor_self_id()
+        let self_pid: Result<RemotePid<IdentityProbe>, LookupError> = Node::lookup("identity");
+        let identity = match self_pid {
+            Result::Ok(pid) => DistIdentity {
+                node_id: to_string(pid.node_id()),
+                slot: pid.slot(),
+                incarnation: pid.incarnation(),
+            },
+            Result::Err(_) => DistIdentity {
+                node_id: "",
+                slot: 0,
+                incarnation: 0,
+            },
         };
-        let node_id = unsafe {
-            hew_pid_local_node()
-        };
-        let serial = unsafe {
-            hew_pid_serial(packed)
-        };
-        let incarnation = unsafe {
-            hew_pid_incarnation(packed)
-        };
-        IdentityResp::Value(DistIdentity {
-            packed: packed,
-            node_id: node_id,
-            serial: serial,
-            incarnation: incarnation,
-        })
+        IdentityResp::Value(identity)
     }
 }
 
@@ -483,14 +472,10 @@ fn run_server(port: string, scenario: string) {
             // the client closes its cross-node monitor (CTRL_DEMONITOR received).
             scenario_server_monitor_close_reclaim();
         } else {
-            if scenario == "stale_ref" {
-                // StaleRef scenario: after a settle window (long enough for the
-                // client to look up "kv" and capture the original actor's pid),
-                // re-point "kv" to a DIFFERENT actor. The unregister + register
-                // bumps the registration incarnation and supersedes the original
-                // serial; the removal+add gossip propagates the re-point so the
-                // client supersedes its captured serial. The client then observes
-                // StaleRef on the captured ref.
+            if scenario == "repoint_preserves_ref" {
+                // After the client captures the original actor's pid, re-point
+                // "kv" to a DIFFERENT live actor. Future lookups must observe the
+                // replacement while the already-issued Location remains valid.
                 sleep(1s);
                 let _ = unsafe {
                     hew_node_api_unregister("kv")
@@ -498,7 +483,7 @@ fn run_server(port: string, scenario: string) {
                 let s2: HashMap<string, string> = HashMap::new();
                 let kv2 = spawn KeyValue(store: s2);
                 Node::register("kv", kv2);
-                println("SERVER_REPOINTED stale_ref");
+                println("SERVER_REPOINTED repoint_preserves_ref");
                 sleep(2m);
             } else {
                 // All other scenarios: stay alive until the harness kills us.
@@ -643,47 +628,26 @@ fn scenario_wire_cbor(wp: RemotePid<WireProbe>) -> i64 {
 // Scenario: identity_location
 //
 // Proves the runtime identity tuple across two OS processes. Registry gossip
-// yields a packed remote pid whose `(node_id, serial)` location exactly matches
-// the actor's self-reported identity, whose registration incarnation is the
-// fresh value 0, and whose node is a live SWIM member distinct from this client.
+// yields an exact remote Location whose node key and slot match the actor's
+// self-reported identity and whose node key is distinct from this client.
 fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
-    let raw = unsafe {
-        hew_node_api_lookup("identity")
+    let local_node = match Node::id() {
+        Some(id) => id,
+        None => {
+            println("FAIL identity_location local-node-id-missing");
+            return 2;
+        },
     };
-    if raw == 0 {
-        println("FAIL identity_location raw-lookup-zero");
-        return 2;
-    }
-    let local_node = unsafe {
-        hew_pid_local_node()
-    };
-    let remote_node = unsafe {
-        hew_pid_node(raw)
-    };
-    let remote_serial = unsafe {
-        hew_pid_serial(raw)
-    };
-    let remote_incarnation = unsafe {
-        hew_pid_incarnation(raw)
-    };
-    let member_state = unsafe {
-        hew_dist_member_state(remote_node)
-    };
-    if local_node == 0 || remote_node == 0 || local_node == remote_node {
+    let remote_node = identity.node_id();
+    let remote_slot = identity.slot();
+    let remote_incarnation = identity.incarnation();
+    if local_node == remote_node {
         println("FAIL identity_location node-ids-not-distinct");
         return 3;
     }
-    if remote_serial == 0 {
-        println("FAIL identity_location serial-zero");
+    if remote_slot == 0 {
+        println("FAIL identity_location slot-zero");
         return 4;
-    }
-    if remote_incarnation != 0 {
-        println(f"FAIL identity_location client-incarnation={remote_incarnation}");
-        return 5;
-    }
-    if member_state != 0 {
-        println(f"FAIL identity_location member-state={member_state}");
-        return 6;
     }
     let inspected = identity.ask(IdentityReq::Inspect, 5000);
     match inspected {
@@ -694,27 +658,23 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
         Result::Ok(resp) => {
             match resp {
                 IdentityResp::Value(actual) => {
-                    if actual.packed != raw {
-                        println("FAIL identity_location packed-mismatch");
+                    if actual.node_id != to_string(remote_node) {
+                        println("FAIL identity_location node-mismatch");
                         return 8;
                     }
-                    if actual.node_id != remote_node {
-                        println("FAIL identity_location node-mismatch");
+                    if actual.slot != remote_slot {
+                        println("FAIL identity_location slot-mismatch");
                         return 9;
-                    }
-                    if actual.serial != remote_serial {
-                        println("FAIL identity_location serial-mismatch");
-                        return 10;
                     }
                     if actual.incarnation != remote_incarnation {
                         println("FAIL identity_location incarnation-mismatch");
-                        return 11;
+                        return 10;
                     }
                 },
             }
         },
     }
-    println(f"PASS identity_location local={local_node} remote={remote_node} serial={remote_serial} incarnation={remote_incarnation} state={member_state}");
+    println(f"PASS identity_location local={local_node} remote={remote_node} slot={remote_slot} incarnation={remote_incarnation}");
     0
 }
 
@@ -978,72 +938,78 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
-// Scenario: stale_ref
+// Scenario: repoint_preserves_ref
 //
-// StaleRef identity-hardening proof: the client looks up "kv" and
-// captures a RemotePid for the ORIGINAL actor. The server then re-points "kv" to
-// a DIFFERENT actor (unregister + re-register), which supersedes the original
-// serial. Once the re-point gossip propagates, the client's CAPTURED ref must
-// fail closed with StaleRef on BOTH send and ask — never silently deliver to the
-// replacement, never a generic routing error.
-//
-// Teeth: the test fails if the captured ref ever succeeds (delivered to the new
-// actor) and requires the EXACT StaleRef discriminant on both verbs.
-fn scenario_stale_ref(kv: RemotePid<KeyValue>) -> i64 {
-    // Poll the captured ref until the re-point supersedes it. Bounded: ~60
-    // attempts at 100 ms = 6 s, generous for the 1 s server settle + gossip
-    // while still failing closed if StaleRef never fires.
+// The client seeds the ORIGINAL actor, then waits until a future lookup returns a
+// DIFFERENT exact Location. The captured ref must still address the original
+// live actor, while the replacement starts with independent state.
+fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
+    let seeded = kv.ask(KvReq::Put(KvPut { key: "owner", val: "original" }), 5000);
+    match seeded {
+        Result::Err(_) => {
+            println("FAIL repoint_preserves_ref seed-error");
+            return 2;
+        },
+        Result::Ok(_) => {},
+    }
+
     var attempts: i64 = 0;
     loop {
-        let probe = kv.send(KvReq::Put(KvPut { key: "x", val: "y" }));
-        match probe {
-            Result::Ok(_) => {
-                // Still routing to the original (pre-re-point) — retry until the
-                // supersession propagates. A success AFTER the deadline is a
-                // failure: the captured ref must go stale.
+        let current: Result<RemotePid<KeyValue>, LookupError> = Node::lookup("kv");
+        match current {
+            Result::Err(_) => {
                 attempts = attempts + 1;
                 if attempts >= 60 {
-                    println("FAIL stale_ref send-never-stale");
-                    return 2;
+                    println("FAIL repoint_preserves_ref lookup-error");
+                    return 3;
                 }
                 sleep(100ms);
             },
-            Result::Err(e) => {
-                match e {
-                    SendError::StaleRef => {
-                        // send is stale; now require ask to be stale too (the
-                        // shared gate fires on every verb).
-                        let ask_probe = kv.ask(KvReq::GetKey("x"), 2000);
-                        match ask_probe {
-                            Result::Ok(_) => {
-                                println("FAIL stale_ref ask-succeeded-after-send-stale");
-                                return 3;
-                            },
-                            Result::Err(ae) => {
-                                match ae {
-                                    AskError::StaleRef => {
-                                        println("PASS stale_ref send=stale ask=stale");
-                                        return 0;
-                                    },
-                                    _ => {
-                                        println("FAIL stale_ref ask-wrong-error");
-                                        return 4;
-                                    },
-                                }
-                            },
-                        }
-                    },
-                    _ => {
-                        // Any non-StaleRef error before supersession is a routing
-                        // race (the re-point removal may transiently drop the
-                        // route); retry within the deadline rather than accept it.
-                        attempts = attempts + 1;
-                        if attempts >= 60 {
-                            println("FAIL stale_ref send-wrong-error");
+            Result::Ok(replacement) => {
+                if replacement == kv {
+                    attempts = attempts + 1;
+                    if attempts >= 60 {
+                        println("FAIL repoint_preserves_ref location-never-changed");
+                        return 4;
+                    }
+                    sleep(100ms);
+                } else {
+                    let old_value = kv.ask(KvReq::GetKey("owner"), 5000);
+                    match old_value {
+                        Result::Err(_) => {
+                            println("FAIL repoint_preserves_ref captured-ref-error");
                             return 5;
+                        },
+                        Result::Ok(KvResp::Ack) => {
+                            println("FAIL repoint_preserves_ref captured-ref-ack");
+                            return 6;
+                        },
+                        Result::Ok(KvResp::Value(v)) => {
+                            if v != "original" {
+                                println("FAIL repoint_preserves_ref captured-ref-wrong-actor");
+                                return 7;
+                            }
                         }
-                        sleep(100ms);
-                    },
+                    }
+                    let new_value = replacement.ask(KvReq::GetKey("owner"), 5000);
+                    match new_value {
+                        Result::Err(_) => {
+                            println("FAIL repoint_preserves_ref replacement-error");
+                            return 8;
+                        },
+                        Result::Ok(KvResp::Ack) => {
+                            println("FAIL repoint_preserves_ref replacement-ack");
+                            return 9;
+                        },
+                        Result::Ok(KvResp::Value(v)) => {
+                            if v != "" {
+                                println("FAIL repoint_preserves_ref replacement-not-fresh");
+                                return 10;
+                            }
+                        }
+                    }
+                    println("PASS repoint_preserves_ref captured=live future=replacement");
+                    return 0;
                 }
             },
         }
@@ -1492,8 +1458,8 @@ fn run_client(port: string, scenario: string) -> i64 {
                                     if scenario == "partition_ask" {
                                         scenario_partition_ask(kv)
                                     } else {
-                                        if scenario == "stale_ref" {
-                                            scenario_stale_ref(kv)
+                                        if scenario == "repoint_preserves_ref" {
+                                            scenario_repoint_preserves_ref(kv)
                                         } else {
                                             if scenario == "monitor_watcher_node_death" {
                                                 scenario_client_watcher_node_death(kv)

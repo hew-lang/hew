@@ -191,12 +191,13 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    (network actor attach requires a live net surface fixture).
     "hew_tcp_attach_local",
     // -- Cross-node monitor surface. `monitor(RemotePid<T>)` lowers to
-    //    `hew_node_monitor` and `MonitorRef::recv_down` to `hew_node_monitor_recv`,
+    //    `hew_node_monitor_location` and `MonitorRef::recv_down` to
+    //    `hew_node_monitor_recv`,
     //    but both require a two-process distributed program to exercise; they are
     //    proven by the compiled two-process e2e fixture
     //    (hew-cli/tests/distributed_two_process_e2e.rs), not the single-program
     //    golden checked-mir corpus, so they pin as uncovered here.
-    "hew_node_monitor",
+    "hew_node_monitor_location",
     "hew_node_monitor_recv",
     // -- Native-only `Node::*` catalog identities not exercised by the
     //    single-program golden corpus. Node start/register/shutdown are covered
@@ -204,16 +205,17 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    by the distributed integration suite.
     "Node::allow_peer",
     "Node::connect",
+    "Node::id",
     "Node::identity_key",
     "Node::load_keys",
     // -- Cross-node link surface. An explicit `link(RemotePid<T>)` lowers to
-    //    `hew_node_link_remote`, but exercising it requires a two-process
+    //    `hew_node_link_remote_location`, but exercising it requires a two-process
     //    distributed program (the link only materializes across a node
     //    transport); it is proven by the compiled two-process e2e fixture
     //    (hew-cli/tests/distributed_two_process_e2e.rs `link_remote_crash_cascade_*`),
     //    not the single-program golden checked-mir corpus, so it pins as
     //    uncovered here alongside the cross-node monitor families.
-    "hew_node_link_remote",
+    "hew_node_link_remote_location",
     // -- Ptr element-type variants with no source-reachable producer
     //    (no user surface yields a ptr-element Vec).
     // -- Owned Vec.get is lowered through the clone-returning ABI for

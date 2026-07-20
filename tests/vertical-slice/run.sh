@@ -3372,17 +3372,6 @@ run_accept_expect_status "tuple_heap_return" 42
     "${ROOT}/tests/vertical-slice/accept/result_handler_heap_oracle.hew" \
     >"${accept_output}" 2>&1
 
-# ---------------------------------------------------------------------------
-# RemotePid<T>::send — in-place Result<(), SendError> construction gate
-# ---------------------------------------------------------------------------
-
-# Accept: RemotePid<T>::send on a synthetic pid (no peer online) must lower
-# end-to-end and return SendError::NodeRoutingNotWired (variant 2) in the Err
-# arm. Exit 42 asserts the correct tag/payload written by
-# emit_remote_pid_send_call. Regression in the in-place construction would
-# produce a wrong SendError discriminant, exiting 1 or 2 instead.
-run_accept_expect_status "remote_pid_send" 42
-
 # Accept: Node::lookup(name) must expose the registered local actor as a
 # RemotePid<T>, and pid.send(msg) must deliver through the in-process
 # send-by-id path.
@@ -3401,10 +3390,10 @@ printf '%s\n' \
     'record Ping { n: i64 }' \
     'actor Worker { receive fn ping(msg: Ping) {} }' \
     'impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }' \
-    'fn main() {' \
-    '    let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);' \
+    'fn probe(pid: RemotePid<Worker>) {' \
     '    let result = pid.tell(Ping { n: 1 });' \
     '}' \
+    'fn main() {}' \
     >"${old_verb_output}"
 expect_check_fail_contains \
     "${old_verb_output}" \

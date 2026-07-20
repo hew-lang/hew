@@ -781,9 +781,8 @@ fn remote_ask_round_trip_returns_exact_values() {
 }
 
 /// Node identity/location proof across two OS processes. The remote actor's
-/// packed `(node_id, serial)` identity must match the registry lookup exactly,
-/// carry fresh registration incarnation 0, and name an ALIVE SWIM member that is
-/// distinct from the client's non-zero node id.
+/// key-backed node id, slot, and session incarnation must match the registry
+/// lookup exactly, and its node id must differ from the client's.
 #[test]
 fn node_identity_location_and_incarnation_cross_process() {
     let stdout = run_two_process_scenario("identity_location");
@@ -791,32 +790,37 @@ fn node_identity_location_and_incarnation_cross_process() {
         .lines()
         .find(|line| line.starts_with("PASS identity_location "))
         .unwrap_or_else(|| panic!("missing identity PASS line; client stdout:\n{stdout}"));
-    let field = |name: &str| -> u64 {
+    let field = |name: &str| -> &str {
         line.split_whitespace()
             .find_map(|part| part.strip_prefix(&format!("{name}=")))
             .unwrap_or_else(|| panic!("missing {name}= field in {line}"))
-            .parse()
-            .unwrap_or_else(|error| panic!("invalid {name}= field in {line}: {error}"))
     };
     let local = field("local");
     let remote = field("remote");
-    let serial = field("serial");
-    assert_ne!(local, 0, "local node id must be non-zero: {line}");
-    assert_ne!(remote, 0, "remote node id must be non-zero: {line}");
+    let parse_u64 = |name: &str| {
+        field(name)
+            .parse::<u64>()
+            .unwrap_or_else(|error| panic!("invalid {name}= field in {line}: {error}"))
+    };
+    assert!(
+        local.len() == 32 && local.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "local node id must be 32 hexadecimal digits: {line}"
+    );
+    assert!(
+        remote.len() == 32 && remote.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "remote node id must be 32 hexadecimal digits: {line}"
+    );
+    assert_ne!(local, "00000000000000000000000000000000", "{line}");
+    assert_ne!(remote, "00000000000000000000000000000000", "{line}");
     assert_ne!(
         local, remote,
         "two processes must have distinct node ids: {line}"
     );
-    assert_ne!(serial, 0, "actor serial must be non-zero: {line}");
-    assert_eq!(
-        field("incarnation"),
+    assert_ne!(parse_u64("slot"), 0, "actor slot must be non-zero: {line}");
+    assert_ne!(
+        parse_u64("incarnation"),
         0,
-        "fresh registration incarnation: {line}"
-    );
-    assert_eq!(
-        field("state"),
-        0,
-        "remote SWIM member must be ALIVE: {line}"
+        "session incarnation must be non-zero: {line}"
     );
     assert!(
         !stdout.contains("FAIL "),
@@ -824,32 +828,20 @@ fn node_identity_location_and_incarnation_cross_process() {
     );
 }
 
-/// `StaleRef` supersession: a captured `RemotePid<T>` fails closed with `StaleRef` once
-/// its registration is superseded by a re-registration of the same name to a
-/// DIFFERENT actor — on both `send` and `ask`, across two OS processes.
-///
-/// The client looks up "kv" (capturing the original actor's pid), the server
-/// re-points "kv" to a fresh actor (unregister + re-register, which supersedes
-/// the original serial and gossips the re-point), and the client's captured ref
-/// must observe `SendError::StaleRef` / `AskError::StaleRef` — never a silent
-/// delivery to the replacement, never a generic routing error.
-///
-/// Teeth: the scenario fails if the captured ref ever succeeds after the
-/// re-point, and the exact `StaleRef` discriminant is required on BOTH verbs.
+/// Re-pointing a registry name changes future lookups without revoking an
+/// already-issued Location for a still-live actor.
 #[test]
-fn captured_remote_ref_fails_closed_with_stale_ref_after_repoint() {
-    let stdout = run_two_process_scenario("stale_ref");
+fn captured_remote_ref_survives_name_repoint() {
+    let stdout = run_two_process_scenario("repoint_preserves_ref");
 
     assert!(
-        stdout.contains("PASS stale_ref send=stale ask=stale"),
-        "expected the captured ref to go StaleRef on both send and ask after the \
-         server re-pointed the name; client stdout:\n{stdout}"
+        stdout.contains("PASS repoint_preserves_ref captured=live future=replacement"),
+        "expected the captured ref to remain live while a future lookup selected \
+         the replacement actor; client stdout:\n{stdout}"
     );
-    // Negative guard: no FAIL line — in particular not `send-never-stale` (the ref
-    // kept delivering to the replacement) or a wrong-error discriminant.
     assert!(
         !stdout.contains("FAIL "),
-        "client reported a FAIL on the StaleRef scenario; client stdout:\n{stdout}"
+        "client reported a FAIL on the re-point scenario; client stdout:\n{stdout}"
     );
 }
 

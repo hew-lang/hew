@@ -228,7 +228,7 @@ fn remote_pid_ask_rejects_nonserializable_reply() {
 }
 
 #[test]
-fn local_pid_to_remote_via_stub_compiles() {
+fn local_pid_to_remote_via_is_not_public() {
     let output = typecheck(
         r#"
         actor Bot {
@@ -241,13 +241,12 @@ fn local_pid_to_remote_via_stub_compiles() {
         }
     "#,
     );
-    let undefined = output
-        .errors
-        .iter()
-        .any(|e| matches!(e.kind, hew_types::error::TypeErrorKind::UndefinedMethod));
     assert!(
-        !undefined,
-        "to_remote_via should be dispatched on LocalPid (no UndefinedMethod): {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, hew_types::error::TypeErrorKind::UndefinedMethod)),
+        "provenance-free LocalPid::to_remote_via must be undefined: {:#?}",
         output.errors
     );
 }

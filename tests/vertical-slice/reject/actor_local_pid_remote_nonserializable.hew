@@ -24,7 +24,7 @@ impl ActorMsg for Holder {
 
 fn main() {
     let local: LocalPid<Holder> = spawn Holder();
-    let peer: RemotePid<Holder> = RemotePid::from_raw<Holder>(1, 0);
+    let peer: RemotePid<Holder>;
     let sent: Result<(), SendError> = peer.send(local);
     match sent {
         Ok(_) => println("sent"),

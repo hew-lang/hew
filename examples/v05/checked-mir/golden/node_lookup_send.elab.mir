@@ -54,10 +54,8 @@ fn main -> i64
     use BindingId(15) status site=SiteId(75) ty=i64 intent=Read
     return site=Some(SiteId(75)) ty=i64
     drop BindingId(10) delivered ty=Result<(), SendError>
-    drop BindingId(9) pid ty=RemotePid<Worker>
     drop BindingId(8) found ty=Result<RemotePid<Worker>, LookupError>
     drop BindingId(6) unexpected ty=Result<(), SendError>
-    drop BindingId(5) pid ty=RemotePid<Worker>
     drop BindingId(4) missing ty=Result<RemotePid<Worker>, LookupError>
     drop BindingId(3) worker ty=LocalPid<Worker>
   drop_plans:
@@ -90,20 +88,16 @@ fn main -> i64
     goto[bb11->bb5] ->
       (none)
     cancel[bb11] ->
-      drop _16 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     goto[bb12->bb11] ->
       (none)
     cancel[bb12] ->
-      drop _16 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     goto[bb13->bb11] ->
       (none)
     cancel[bb13] ->
-      drop _16 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     panic[bb14] ->
-      drop _16 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     branch[bb15: bb13/bb14] ->
       (none)
@@ -130,15 +124,12 @@ fn main -> i64
     goto[bb25->bb24] ->
       (none)
     cancel[bb25] ->
-      drop _42 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     goto[bb26->bb24] ->
       (none)
     cancel[bb26] ->
-      drop _42 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     panic[bb27] ->
-      drop _42 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     branch[bb28: bb26/bb27] ->
       (none)
@@ -149,7 +140,6 @@ fn main -> i64
     goto[bb31->bb18] ->
       (none)
     cancel[bb31] ->
-      drop _42 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     branch[bb32: bb34/bb37] ->
       (none)
@@ -158,22 +148,18 @@ fn main -> i64
     goto[bb34->bb33] ->
       (none)
     cancel[bb34] ->
-      drop _42 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     goto[bb35->bb33] ->
       (none)
     cancel[bb35] ->
-      drop _42 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     panic[bb36] ->
-      drop _42 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     branch[bb37: bb35/bb36] ->
       (none)
     goto[bb38->bb31] ->
       (none)
     cancel[bb38] ->
-      drop _42 ty=RemotePid<Worker> kind=resource
       drop actor4 ty=LocalPid<Worker> kind=resource
     return[bb39] ->
       drop actor4 ty=LocalPid<Worker> kind=resource

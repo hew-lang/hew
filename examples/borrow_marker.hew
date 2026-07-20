@@ -1,13 +1,9 @@
-// Borrow-marker syntax demo (M-COW P0).
+// Foreign borrow-view syntax demo.
 //
-// `&T` marks a parameter as an immutable non-owning borrow — the canonical
-// annotation for read-only views passed across FFI boundaries.  In v0.5 P0
-// the marker is surface syntax only; it round-trips through the formatter
-// and is accepted in extern "C" signatures (equivalent to `*const T`).
-//
-// Transparent coercion at regular Hew call sites (passing `string` to a
-// function expecting `&string`) is follow-on work (type-checker coercion
-// rule) scheduled for the P2 milestone.
+// `&T` is permanently confined to extern function signatures. It describes an
+// immutable, non-owning, one-pointer view equivalent to C's `const T*`; it is
+// not an ordinary Hew reference type and there is no value-to-view coercion.
+// Foreign code owns each pointee and must keep it alive for every call.
 extern "C" {
     // Write `msg` to the log without retaining it.
     fn hew_log_write_borrow(msg: &string);

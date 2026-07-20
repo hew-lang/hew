@@ -500,9 +500,11 @@ In Hew, actors are **single-threaded** and process **one message at a time**. Th
 
 - There is only ever one thread of execution within an actor
 - Mutable aliasing cannot cause data races
-- Multiple mutable references to the same data are **safe**
+- Mutation through an actor's `var` state remains serialized
 
-Therefore, within an actor, values behave like a normal single-threaded language (Python, JavaScript, single-threaded C). You can have multiple references to mutable data without restriction.
+Therefore, within an actor, values behave like a normal single-threaded
+language (Python, JavaScript, single-threaded C). Actor state can be updated
+through `var` bindings without reference or lifetime annotations.
 
 #### 3.4.2 Comparison to Other Languages
 
@@ -517,14 +519,14 @@ Rust's approach is overkill for single-threaded code. Pony's capability system i
 
 ##### Hew vs Rust Ownership
 
-| Scenario                        | Rust                  | Hew                               |
-| ------------------------------- | --------------------- | --------------------------------- |
-| Two `&mut` to same data         | ❌ Compile error      | ✅ Allowed (within actor)         |
-| Send non-Send across threads    | ❌ Compile error      | ❌ Compile error (actor boundary) |
-| Borrow checker overhead         | Always on             | Only at actor boundaries          |
-| Lifetime annotations            | Required              | Never needed                      |
-| Passing `&mut` to helper fn     | Requires borrow rules | ✅ Unrestricted (same actor)      |
-| Storing refs to state in locals | Lifetime constraints  | ✅ Unrestricted (same actor)      |
+| Scenario                         | Rust                             | Hew                               |
+| -------------------------------- | -------------------------------- | --------------------------------- |
+| Aliasing mutable data            | `&mut` exclusivity is checked    | Value/COW semantics; no refs      |
+| Send non-Send across threads     | ❌ Compile error                 | ❌ Compile error (actor boundary) |
+| Borrow checker overhead          | Always on                        | No ordinary borrow checker        |
+| Lifetime annotations             | Required                         | Never needed                      |
+| Passing state to a helper fn     | Reference rules may be required  | Ordinary value parameter          |
+| Keeping state-derived local data | Lifetime constraints may apply   | Owned/inferred value              |
 
 #### 3.4.3 Binding vs. Ownership
 
@@ -616,7 +618,7 @@ fn main() {
 >   - **Immutable-shareable** types (`string`, `bytes`): alias-shared by **refcount retain** — the receiver gets a retained reference to the same backing buffer; no byte copy occurs; a COW write-barrier (`ensure_unique`) forks the buffer before any subsequent mutation, preserving actor isolation.
 >   - **Mutable collections** (`Vec<T>`, `HashMap<K,V>`, `HashSet<T>`): **deep-copied** into the receiver's per-actor heap.
 >   - **Consumed-linear (`iso`/Linear) values**: zero-copy **ownership move** (P6 — not yet surfaced in edition 2026).
-> - The send-admissibility gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Note: bare `copy` does **not** imply sendability — a type may derive `Copy` yet hold non-send internals (`copy ⊥ sendable`, B-INV-3). `View`/borrow (`&T`) is rejected across actor boundaries and is not `Send`.
+> - The send-admissibility gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Note: bare `copy` does **not** imply sendability — a type may derive `Copy` yet hold non-send internals (`copy ⊥ sendable`, B-INV-3). Foreign-view syntax is not legal in ordinary message declarations, so it cannot cross an actor boundary.
 > - From the programmer's perspective the gated model is indistinguishable from move-then-independent-value: the receiver observes an independent value; the sender cannot use the value after send. Alias-sharing is a runtime optimization valid precisely because immutable-shareable values are never mutated in place through shared aliases.
 
 **Why move semantics?**
@@ -1233,7 +1235,7 @@ At the **language level**, `send()` **moves** the value — the sender loses acc
 | **Mutable owned collections** | **Deep-copied** into the receiver's per-actor heap | `Vec<T>`, `HashMap<K,V>`, `HashSet<T>` |
 | **Consumed-linear (`iso`/Linear)** | Zero-copy **ownership move** (P6 — not surfaced in edition 2026) | — |
 
-The gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Bare `copy` does **not** imply sendability (`copy ⊥ sendable`, B-INV-3). `View`/borrow (`&T`) is rejected across actor boundaries and is not `Send`.
+The gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Bare `copy` does **not** imply sendability (`copy ⊥ sendable`, B-INV-3). Foreign-view syntax is not legal in ordinary message declarations, so it cannot cross an actor boundary.
 
 This hybrid gives the safety of Rust's move semantics (no use-after-send bugs) with actor isolation (no shared mutable state between actors).
 
@@ -1245,7 +1247,7 @@ This hybrid gives the safety of Rust's move semantics (no use-after-send bugs) w
 
 - When a message is sent to an actor (via method call or `.send()`), the value is moved at the language level — the sender can no longer use it. At runtime, the mechanism is gated: immutable-shareable values (`string`, `bytes`) are alias-shared by retain; mutable collections are deep-copied; `iso`/Linear values are moved (P6).
 - The receiver observes an independent value (alias-sharing is an optimization invisible to program semantics)
-- No user-visible references or borrows cross actor boundaries — `&T` (borrow/`View`) is not `Send` and is rejected at the actor boundary entirely; the runtime retain optimization applies only to admissible immutable-shareable **owned** values, and the receiver always observes an independent owned value at the language level, never a borrow into the sender's heap
+- No user-visible references or borrows cross actor boundaries: ordinary message declarations cannot contain foreign-view syntax. The runtime retain optimization applies only to admissible immutable-shareable **owned** values, and the receiver always observes an independent owned value at the language level, never a view into the sender's heap.
 
 ```hew
 type Message { body: string }
@@ -1547,12 +1549,12 @@ Semantics:
    tracks the single live binding and rejects any use after the consuming
    method call.
 
-A correct use (illustrative — `Database` and `Transaction` are hypothetical types
-showing the `#[linear]` pattern; `&Database` uses reference syntax not in Hew):
+A correct use (illustrative — `Database` and `Transaction` are hypothetical
+types showing the `#[linear]` pattern):
 
 <!-- doctest: skip -->
 ```hew
-fn transfer(db: &Database, from: AccountId, to: AccountId, amount: Money)
+fn transfer(db: Database, from: AccountId, to: AccountId, amount: Money)
     -> Result<(), DbError>
 {
     let tx = db.begin_transaction()?;
@@ -1566,7 +1568,7 @@ The compile error for forgetting to consume (illustrative):
 
 <!-- doctest: skip -->
 ```hew
-fn forgot_to_commit(db: &Database) -> Result<(), DbError> {
+fn forgot_to_commit(db: Database) -> Result<(), DbError> {
     let tx = db.begin_transaction()?;
     tx.debit(account, money)?;
     Ok(())
@@ -2004,21 +2006,14 @@ help: or annotate the lambda parameters directly
 
 ### 3.9 Foreign Function Interface (FFI)
 
-> **In-planning — deferred to v0.6+.** The full FFI surface described in this
-> section (`extern "C"` blocks, `#[repr(C)]`, `#[export]`, C-string helpers,
-> and safe-wrapper patterns) is not lowered in v0.5. The v0.5 compiler lowers
-> only the fixed `hew_*` runtime allowlist (§8.4); any other foreign-call
-> declaration reaches a cutover diagnostic during HIR lowering. This section
-> documents the intended v0.6+ design so implementers and embedders can plan
-> for it. No v0.5 code should rely on the constructs below.
+> **Partially implemented in v0.6.** `extern "C"` blocks, unsafe foreign calls,
+> and native static-library linking with `hew build --link-lib` are shipped.
+> Layout/export attributes and the higher-level C-string wrapper surface remain
+> planned; their subsections are marked accordingly.
 
 Hew provides FFI capabilities for interoperating with C libraries and system calls.
 
 #### 3.9.1 Extern Function Declaration
-
-> **v0.6+.** `extern "C"` blocks with arbitrary foreign symbols are not lowered
-> in v0.5. Declarations of foreign functions other than the runtime's own
-> `hew_*` symbols produce a cutover diagnostic.
 
 External C functions are declared in `extern` blocks:
 
@@ -2073,10 +2068,9 @@ type FileInfo {
 
 #### 3.9.3 Type Mapping: Hew ↔ C
 
-> **v0.6+.** This mapping becomes relevant when `extern "C"` blocks and
-> `#[repr(C)]` land. In v0.5, raw pointer types (`*const T`, `*mut T`) are
-> only usable within the runtime allowlist; the cross-language mapping
-> below is informational for v0.6+ planning.
+> Primitive, raw-pointer, function-pointer, and immutable-view mappings apply
+> to shipped `extern "C"` declarations. Aggregate layout remains contingent on
+> the planned `#[repr(C)]` surface.
 
 | Hew Type                  | C Type                      | Notes                      |
 | ------------------------- | --------------------------- | -------------------------- |
@@ -2086,10 +2080,16 @@ type FileInfo {
 | `usize`                   | `uintptr_t` / `size_t`      | Platform-dependent         |
 | `f32`, `f64`              | `float`, `double`           | IEEE 754                   |
 | `bool`                    | `_Bool` / `bool`            | C99 bool                   |
+| `&T`                      | `const T*`                  | Non-owning immutable view  |
 | `*const T`                | `const T*`                  | Immutable raw pointer      |
 | `*mut T`                  | `T*`                        | Mutable raw pointer        |
 | `*const u8`               | `const char*`               | C string (null-terminated) |
 | `fn(...) -> T`            | Function pointer            | C function pointer         |
+
+`&T` is legal only within an `extern` function's parameter or return type
+tree. It is immutable, non-owning, and represented by one pointer. Foreign code
+owns the pointee and guarantees its lifetime; Hew never retains or drops it.
+Ordinary Hew declarations use `T`, and mutable foreign access uses `*mut T`.
 
 #### 3.9.4 Exporting Functions to C
 
@@ -2113,10 +2113,8 @@ extern "C" fn my_callback(value: i32) -> i32 {
 
 #### 3.9.5 Safety Rules
 
-> **v0.6+.** The `unsafe` block, C string helper (`to_c_string`), and
-> `#[resource]` close pattern shown below are the intended v0.6+ surface.
-> In v0.5, `unsafe {}` blocks are parsed but produce a cutover diagnostic
-> during HIR lowering; there is no user-accessible unsafe escape hatch.
+> Unsafe foreign calls are shipped. The C-string helper (`to_c_string`) and
+> the complete `#[resource]` safe-wrapper pattern shown below remain planned.
 
 **All FFI calls are `unsafe`:**
 
@@ -2980,15 +2978,11 @@ safepoint before its body reaches a consuming or close call.
    HEW-FUTURE.md §1.2 alongside the broader cancellation-token
    vocabulary.
 
-3. **`&` and `&mut` borrow into a child.** Shared `&` borrow into a
-   child is admitted only when the borrow's referent is provably alive
-   for the entire lexical scope-block and no mutable borrow of the same
-   region is live while any child runs. Mutable `&mut` borrow into a
-   child is rejected in edition 2026: the child runs on a substrate
-   thread distinct from the parent's, and aliased mutable access cannot
-   be made safe without synchronisation that the language deliberately
-   does not auto-inject (HEW-FUTURE.md §1.6). The rejection diagnostic
-   names the mutable borrow site and points at the fork child.
+3. **Value capture.** A child receives captured values by move, or by an
+   explicit `clone` when the parent must keep an independent value. Foreign
+   view syntax cannot occur in an ordinary child-task signature or capture.
+   Actor fields remain isolated from the child and cannot be captured as
+   shared mutable state.
 
 4. **Task<T> handle escape.** A `Task<T>` handle bound by `fork name =
    expr` is usable only within the lexical scope-block that introduced
@@ -3302,26 +3296,23 @@ reachable from inside a child body.
 > (a) `fork[]` array form yielding `[T; N]` on scope exit;
 > (b) a `scope_par_map(items, |x| f(x))` stdlib op;
 > (c) actor-mailbox accumulation via an anonymous `fork _ = …;`.
-> The example below uses an indicative placeholder pending ratification.
+> The example below demonstrates value capture without accumulating child
+> results; a collection-returning form remains pending ratification.
 
 <!-- doctest: skip -->
 ```hew
 actor DataProcessor {
     var cache: HashMap<string, Data> = HashMap::new();
 
-    receive fn process_batch(ids: Vec<string>) -> Vec<Data> {
-        // Indicative shape; see §4.8 design-unsettled note above.
-        // The scope joins all forks on exit; `data` is populated
-        // via the (unsettled) accumulation mechanism.
-        var data: Vec<Data> = Vec::new();
+    receive fn prefetch(ids: Vec<string>) {
         scope {
             for id in ids {
-                // Captures of `id` move into the child; actor fields
-                // (e.g. `cache`) are not in scope inside the child body.
-                fork _ = collect_into(&mut data, fetch_data(id));
+                // The child receives an independent value. Actor fields
+                // such as `cache` are not in scope inside the child body.
+                let child_id = clone id;
+                fork _ = fetch_data(child_id);
             }
-        };
-        data
+        }
     }
 }
 ```

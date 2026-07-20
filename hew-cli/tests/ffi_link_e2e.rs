@@ -36,7 +36,73 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use support::leak_slope::{
+    leaks_supported, measure_leaks, HIGH_FRAMES, LOW_FRAMES, SLOPE_TOLERANCE,
+};
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
+
+const BORROW_BOUNDARY_RUST: &str = r#"static VALUES: [i64; 4] = [i64::MIN, -1, 0, i64::MAX];
+
+#[no_mangle]
+pub extern "C" fn borrow_boundary_get(index: i64) -> *const i64 {
+    match index {
+        0..=3 => &VALUES[index as usize],
+        _ => core::ptr::null(),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn borrow_boundary_read(value: *const i64) -> i64 {
+    assert!(!value.is_null());
+    unsafe { *value }
+}
+"#;
+
+const BORROW_BOUNDARY_HEW: &str = r#"extern "C" {
+    fn borrow_boundary_get(index: i64) -> &i64;
+    fn borrow_boundary_read(value: &i64) -> i64;
+}
+
+fn read_at(index: i64) -> i64 {
+    let view = unsafe { borrow_boundary_get(index) };
+    unsafe { borrow_boundary_read(view) }
+}
+
+fn main() {
+    let min = read_at(0);
+    let neg = read_at(1);
+    let zero = read_at(2);
+    let max = read_at(3);
+    println(f"{min},{neg},{zero},{max}");
+}
+"#;
+
+fn borrow_boundary_loop_source(iterations: usize) -> String {
+    format!(
+        r#"extern "C" {{
+    fn borrow_boundary_get(index: i64) -> &i64;
+    fn borrow_boundary_read(value: &i64) -> i64;
+}}
+
+fn read_at(index: i64) -> i64 {{
+    let view = unsafe {{ borrow_boundary_get(index) }};
+    unsafe {{ borrow_boundary_read(view) }}
+}}
+
+fn main() {{
+    var i: i64 = 0;
+    while i < {iterations} {{
+        let low = read_at(0);
+        let high = read_at(3);
+        if low == high {{
+            panic("foreign boundary values unexpectedly match");
+        }}
+        i = i + 1;
+    }}
+}}
+"#,
+    )
+}
 
 /// Compile `source` into a `staticlib` archive `lib<name>.a` under `dir`,
 /// following the supported native-package recipe: `panic = "abort"` (matches
@@ -591,6 +657,7 @@ fn main() {
     let r: i64 = unsafe { mvp_add(2, 3) };
     println(f"mvp_add={r}");
 }
+
 "#,
     );
     let out_bin = dir.path().join("mvp_out");
@@ -614,6 +681,91 @@ fn main() {
     assert!(
         stdout.contains("mvp_add=5"),
         "expected `mvp_add=5`, got:\n{stdout}"
+    );
+}
+
+/// A foreign `*const i64` return crosses Hew as `&i64`, remains non-owning in
+/// an inferred ordinary local, and can be passed back to a foreign reader.
+#[test]
+fn ffi_borrow_boundary_links_and_prints_exact_values() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(lib) = build_staticlib(dir.path(), "borrow_boundary", BORROW_BOUNDARY_RUST) else {
+        return;
+    };
+    let program = write_program(dir.path(), "borrow_boundary_values", BORROW_BOUNDARY_HEW);
+    let binary = dir.path().join("borrow_boundary_values");
+
+    let link = hew_build(Some(&lib), &program, &binary, dir.path());
+    assert!(
+        link.status.success(),
+        "foreign borrow boundary must link:\n{}",
+        describe_output(&link),
+    );
+
+    let run = run_bounded_command(Command::new(&binary), "run foreign borrow boundary");
+    assert!(
+        run.status.success(),
+        "foreign borrow boundary must run:\n{}",
+        describe_output(&run),
+    );
+    assert_eq!(
+        run.stdout,
+        b"-9223372036854775808,-1,0,9223372036854775807\n",
+        "foreign boundary values must remain byte-exact:\n{}",
+        describe_output(&run),
+    );
+}
+
+/// Repeated foreign-returned views neither acquire ownership nor trigger a
+/// release under the poisoned allocator and leak-slope oracles.
+#[test]
+fn ffi_borrow_boundary_has_no_drop_or_leak_slope() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(lib) = build_staticlib(dir.path(), "borrow_boundary", BORROW_BOUNDARY_RUST) else {
+        return;
+    };
+
+    let build_loop = |iterations, name: &str| {
+        let program = write_program(dir.path(), name, &borrow_boundary_loop_source(iterations));
+        let binary = dir.path().join(name);
+        let link = hew_build(Some(&lib), &program, &binary, dir.path());
+        assert!(
+            link.status.success(),
+            "foreign borrow loop must link:\n{}",
+            describe_output(&link),
+        );
+        binary
+    };
+
+    let high_binary = build_loop(HIGH_FRAMES, "borrow_boundary_high");
+    let mut scribble = Command::new(&high_binary);
+    scribble
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1");
+    let scribble = run_bounded_command(scribble, "run foreign borrow boundary under scribble");
+    assert!(
+        scribble.status.success(),
+        "foreign borrow boundary must not release static pointers:\n{}",
+        describe_output(&scribble),
+    );
+
+    if !leaks_supported("ffi_borrow_boundary") {
+        return;
+    }
+    let low_binary = build_loop(LOW_FRAMES, "borrow_boundary_low");
+    let Some(low_leaks) = measure_leaks(&low_binary) else {
+        return;
+    };
+    let Some(high_leaks) = measure_leaks(&high_binary) else {
+        return;
+    };
+    assert!(
+        high_leaks <= low_leaks + SLOPE_TOLERANCE,
+        "foreign borrow leak slope exceeded tolerance: low={low_leaks}, \
+         high={high_leaks}, tolerance={SLOPE_TOLERANCE}",
     );
 }
 

@@ -1765,6 +1765,31 @@ impl Builder {
         }
     }
 
+    fn binding_ref_use_intent(&self, expr: &HirExpr) -> IntentKind {
+        if self.param_ownership.borrow_arg_sites.contains(&expr.site)
+            || self.bytes_local_share_sites.contains(&expr.site)
+            || self.string_local_share_sites.contains_key(&expr.site)
+        {
+            IntentKind::Read
+        } else {
+            expr.intent
+        }
+    }
+
+    fn is_consumed_bound_local(&self, expr: &HirExpr) -> bool {
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &expr.kind
+        else {
+            return false;
+        };
+        self.binding_locals.contains_key(binding)
+            && !self.capture_env_sources.contains_key(binding)
+            && !self.funcupdate_param_ids.contains(binding)
+            && self.binding_ref_use_intent(expr) == IntentKind::Consume
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single match over assignable HIR target shapes (binding, record field, \
@@ -1881,26 +1906,28 @@ impl Builder {
                 let arg_places = vec![receiver_place, index_place, src];
                 let next = self.alloc_block();
                 // A Vec index-assignment of a fresh materialised rvalue
-                // (`v[i] = Name { .. }`, `v[i] = make()`) has the SAME
-                // unbound-temp hole the `.set(i, ..)` method path does:
+                // (`v[i] = Name { .. }`, `v[i] = make()`) or a consumed bound
+                // local (`v[i] = h`) has the SAME source-owner hole:
                 // `hew_vec_set_owned` is COPY-IN (deep-clones the element into
-                // the slot), but the throwaway constructor temp has no binding
-                // and no scope-exit drop to balance that clone, so its owned
-                // heap leaks. Route it to the MOVE-in sibling
+                // the slot), but neither source has a later drop to balance that
+                // clone. The constructor temp is unbound, while checked MIR
+                // marks the local `Use { Consume }` and suppresses its scope-exit
+                // drop. Route either sole-owner source to the MOVE-in sibling
                 // `hew_vec_set_owned_move` (byte-transfers the element's heap
-                // into the slot without a clone; the source temp is then dead).
+                // into the slot without a clone; the source is then dead).
                 // `expr_is_materialized_owner` is the identical fresh-rvalue
-                // predicate the `.set()`/push paths use: a bare `BindingRef`
-                // (a shared/after-read local) returns false and stays COPY-IN
-                // (moving it would double-free the live binding's heap), and a
-                // construction embedding a whole by-value parameter returns
-                // false too. This mirrors the method path's Vec::Set routing.
+                // predicate the `.set()`/push paths use. The second predicate is
+                // deliberately narrower: only a non-parameter, non-capture
+                // `BindingRef` whose effective MIR use intent is `Consume`
+                // moves. A borrowed/read binding stays COPY-IN, as do
+                // constructions embedding a whole by-value parameter.
                 let effective_symbol = if target_symbol.as_str() == "hew_vec_set_owned"
-                    && Self::expr_is_materialized_owner(
+                    && (Self::expr_is_materialized_owner(
                         value,
                         &self.funcupdate_fn_returns_fresh,
                         &self.funcupdate_param_ids,
-                    ) {
+                    ) || self.is_consumed_bound_local(value))
+                {
                     "hew_vec_set_owned_move"
                 } else {
                     target_symbol.as_str()
@@ -2288,14 +2315,7 @@ impl Builder {
                     // exit. Consulted at the single resource-arg `Use` emission
                     // point; non-borrow sites (consumed params, unresolved
                     // callees) keep the over-stamped intent unchanged.
-                    let use_intent = if self.param_ownership.borrow_arg_sites.contains(&expr.site)
-                        || self.bytes_local_share_sites.contains(&expr.site)
-                        || self.string_local_share_sites.contains_key(&expr.site)
-                    {
-                        IntentKind::Read
-                    } else {
-                        expr.intent
-                    };
+                    let use_intent = self.binding_ref_use_intent(expr);
                     self.statements.push(MirStatement::Use {
                         binding: *id,
                         name: name.clone(),

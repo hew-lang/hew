@@ -1,0 +1,23 @@
+// MIR-corpus fixture: consumed bound-local owned-element index assignment.
+//
+// The assignment consumes `h` in checked MIR, so its scope-exit drop is
+// suppressed. The store must therefore use `hew_vec_set_owned_move`: COPY-IN
+// would clone into the slot and orphan `h`'s original nested Vec heap.
+record Holder {
+    items: Vec<string>
+}
+
+fn mkItems() -> Vec<string> {
+    let xs: Vec<string> = Vec::new();
+    xs.push("deep-elem-a");
+    xs.push("deep-elem-b");
+    return xs;
+}
+
+fn main() {
+    var v: Vec<Holder> = Vec::new();
+    v.push(Holder { items: mkItems() });
+    let h = Holder { items: mkItems() };
+    v[0] = h;
+    println(v.len());
+}

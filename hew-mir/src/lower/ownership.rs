@@ -9,9 +9,30 @@ use super::{
     MirStatement, OwnedLocalEntry, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
     Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass,
     ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
-    SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
-    SYNTHETIC_WHILE_LET_ITERATION_NAME,
+    SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
+    SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WholeParamEmbedClass {
+    None,
+    RetainBackedStringOnly,
+    UnsupportedBorrowAlias,
+}
+
+impl WholeParamEmbedClass {
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::UnsupportedBorrowAlias, _) | (_, Self::UnsupportedBorrowAlias) => {
+                Self::UnsupportedBorrowAlias
+            }
+            (Self::RetainBackedStringOnly, _) | (_, Self::RetainBackedStringOnly) => {
+                Self::RetainBackedStringOnly
+            }
+            (Self::None, Self::None) => Self::None,
+        }
+    }
+}
 
 impl Builder {
     /// The ownership classify context over this builder's live registries — the
@@ -269,6 +290,74 @@ impl Builder {
             _ => false,
         };
         is_fresh_producer.then_some(ty)
+    }
+    /// Return the owned type of a fresh Vec COPY-IN element temporary whose
+    /// only whole-parameter embeds are independently retained strings.
+    ///
+    /// A by-value parameter remains caller-owned. Aggregate lowering explicitly
+    /// retains a whole `string` parameter before storing it, so the anonymous
+    /// source temp owns exactly that retained share and may receive one ordinary
+    /// scope-exit drop. Other heap-owning parameter types are stored as borrowed
+    /// aliases; minting an aggregate owner for them would free the caller's
+    /// value.
+    pub(crate) fn copy_in_param_embed_temp_owned_ty(
+        &self,
+        callee: &str,
+        arg: &HirExpr,
+    ) -> Option<ResolvedTy> {
+        if !matches!(callee, "hew_vec_push_owned" | "hew_vec_set_owned") {
+            return None;
+        }
+        if !matches!(
+            arg.kind,
+            HirExprKind::StructInit { .. }
+                | HirExprKind::TupleLiteral { .. }
+                | HirExprKind::MachineVariantCtor { .. }
+        ) {
+            return None;
+        }
+        let class = Self::classify_whole_param_embeds(
+            arg,
+            &self.funcupdate_param_ids,
+            &|ty| self.subst_ty(ty),
+            true,
+            &|ty| crate::model::ty_owns_heap_mir(ty, &self.record_field_orders, &self.enum_layouts),
+        );
+        if class != WholeParamEmbedClass::RetainBackedStringOnly {
+            return None;
+        }
+        let ty = self.subst_ty(&arg.ty);
+        crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts)
+            .then_some(ty)
+    }
+    /// Register the proven retain-backed Vec element source after all call
+    /// arguments have materialised. Push uses args[0]/places[1], while set uses
+    /// args[1]/places[2]; the receiver and set index can never become owners.
+    pub(crate) fn register_copy_in_param_embed_temp_owner(
+        &mut self,
+        callee: &str,
+        args: &[HirExpr],
+        arg_places: &[Place],
+    ) {
+        let candidate = match callee {
+            "hew_vec_push_owned" if args.len() == 1 => Some((&args[0], 1)),
+            "hew_vec_set_owned" if args.len() == 2 => Some((&args[1], 2)),
+            _ => None,
+        }
+        .and_then(|(arg, place_index)| {
+            let ty = self.copy_in_param_embed_temp_owned_ty(callee, arg)?;
+            let place = arg_places.get(place_index).copied()?;
+            Some((arg.site, place, ty))
+        });
+        let Some((site, Place::Local(local), ty)) = candidate else {
+            return;
+        };
+        // Fresh constructors must never lower into a parameter slot. Keep the
+        // mint fail-closed if that invariant ever changes.
+        if self.parameter_locals.contains(&local) {
+            return;
+        }
+        self.register_synthetic_owned_local(SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, site, local, ty);
     }
     /// Whether a direct-`Call` callee resolves to a runtime symbol carrying the
     /// `produces_fresh_owned_string` ownership contract. The symbol is resolved
@@ -2349,29 +2438,20 @@ impl Builder {
             // result, or a `.clone()` is refcount-bumped / COW-copied / consumed
             // into the new slot — empirically owner-preserving (a destructive
             // funcupdate over such a record does not dangle the source). The ONE
-            // exception is a WHOLE by-value PARAMETER operand: a parameter is a
-            // borrow stored WITHOUT a refcount bump, so `{ ..Wrap { s: p, .. },
-            // s: new }` frees the caller's `p` at the override-drop. Reject a
-            // construction that embeds (directly or through nested constructions)
-            // a whole parameter; admit every other construction. A nested `..base`
-            // is checked too — its own embedded parameters dangle identically.
-            HirExprKind::StructInit { fields, base, .. } => {
-                !fields
-                    .iter()
-                    .any(|(_, v)| Self::expr_embeds_whole_param(v, params))
-                    && base
-                        .as_deref()
-                        .is_none_or(|b| !Self::expr_embeds_whole_param(b, params))
+            // exception is a WHOLE by-value PARAMETER operand. Non-string heap
+            // parameters are borrowed aliases stored without a clone; string
+            // parameters carry a retained share but remain intentionally outside
+            // the destructive/MOVE-owner route. Reject both embed classes here.
+            // A nested `..base` is checked too.
+            HirExprKind::StructInit { .. } => {
+                Self::classify_whole_param_embeds(expr, params, &ResolvedTy::clone, false, &|_| {
+                    false
+                }) == WholeParamEmbedClass::None
             }
-            HirExprKind::TupleLiteral { elements } => !elements
-                .iter()
-                .any(|value| Self::expr_embeds_whole_param(value, params)),
-            HirExprKind::MachineVariantCtor { payload, .. } => {
-                payload.as_ref().is_none_or(|fields| {
-                    !fields
-                        .iter()
-                        .any(|(_, value)| Self::expr_embeds_whole_param(value, params))
-                })
+            HirExprKind::TupleLiteral { .. } | HirExprKind::MachineVariantCtor { .. } => {
+                Self::classify_whole_param_embeds(expr, params, &ResolvedTy::clone, false, &|_| {
+                    false
+                }) == WholeParamEmbedClass::None
             }
             // A projection is materialised iff its object chain is.
             HirExprKind::FieldAccess { object, .. } => {
@@ -2386,42 +2466,83 @@ impl Builder {
             _ => false,
         }
     }
-    /// True when `expr` is, or embeds through a construction, a WHOLE by-value
-    /// parameter — the borrow that a constructor stores without a refcount bump.
+    /// Classify WHOLE by-value parameter embeds through constructors.
     ///
     /// Recurses only through constructions (struct / tuple / machine-variant
-    /// literals), which embed operands by value. A PROJECTION (`p.inner`), a
-    /// CALL, a `.clone()`, a `Vec` element, and a literal are NOT embeds of a
-    /// whole parameter — a field read bumps, a call/clone materialises a fresh
-    /// value — so they stop the recursion (return `false`). A bare parameter
-    /// binding is the borrow this catches; a bare LOCAL is move-consumed into the
-    /// construction and stays an owner, so only `params` membership returns
-    /// `true`.
-    pub(crate) fn expr_embeds_whole_param(expr: &HirExpr, params: &HashSet<BindingId>) -> bool {
+    /// literals), which embed operands by value. For the existing materialised-
+    /// owner route, other leaves stop the recursion. The Vec COPY-IN mint uses
+    /// the stricter mode: every non-constructor heap-owning leaf fails closed,
+    /// because a projection or unproven call result can carry an unretained alias
+    /// derived from another parameter. This admits only construction trees whose
+    /// owned leaves are the whole retained string parameters being discharged.
+    fn classify_whole_param_embeds(
+        expr: &HirExpr,
+        params: &HashSet<BindingId>,
+        resolve_ty: &impl Fn(&ResolvedTy) -> ResolvedTy,
+        reject_unproven_owned_leaves: bool,
+        owns_heap: &impl Fn(&ResolvedTy) -> bool,
+    ) -> WholeParamEmbedClass {
         match &expr.kind {
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(id),
                 ..
-            } => params.contains(id),
-            HirExprKind::StructInit { fields, base, .. } => {
-                fields
-                    .iter()
-                    .any(|(_, v)| Self::expr_embeds_whole_param(v, params))
-                    || base
-                        .as_deref()
-                        .is_some_and(|b| Self::expr_embeds_whole_param(b, params))
+            } if params.contains(id) => {
+                if matches!(resolve_ty(&expr.ty), ResolvedTy::String) {
+                    WholeParamEmbedClass::RetainBackedStringOnly
+                } else {
+                    WholeParamEmbedClass::UnsupportedBorrowAlias
+                }
             }
+            HirExprKind::StructInit { fields, base, .. } => fields
+                .iter()
+                .map(|(_, value)| {
+                    Self::classify_whole_param_embeds(
+                        value,
+                        params,
+                        resolve_ty,
+                        reject_unproven_owned_leaves,
+                        owns_heap,
+                    )
+                })
+                .chain(base.iter().map(|value| {
+                    Self::classify_whole_param_embeds(
+                        value,
+                        params,
+                        resolve_ty,
+                        reject_unproven_owned_leaves,
+                        owns_heap,
+                    )
+                }))
+                .fold(WholeParamEmbedClass::None, WholeParamEmbedClass::merge),
             HirExprKind::TupleLiteral { elements } => elements
                 .iter()
-                .any(|e| Self::expr_embeds_whole_param(e, params)),
-            HirExprKind::MachineVariantCtor { payload, .. } => {
-                payload.as_ref().is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .any(|(_, v)| Self::expr_embeds_whole_param(v, params))
+                .map(|value| {
+                    Self::classify_whole_param_embeds(
+                        value,
+                        params,
+                        resolve_ty,
+                        reject_unproven_owned_leaves,
+                        owns_heap,
+                    )
                 })
+                .fold(WholeParamEmbedClass::None, WholeParamEmbedClass::merge),
+            HirExprKind::MachineVariantCtor { payload, .. } => payload
+                .iter()
+                .flatten()
+                .map(|(_, value)| {
+                    Self::classify_whole_param_embeds(
+                        value,
+                        params,
+                        resolve_ty,
+                        reject_unproven_owned_leaves,
+                        owns_heap,
+                    )
+                })
+                .fold(WholeParamEmbedClass::None, WholeParamEmbedClass::merge),
+            _ if reject_unproven_owned_leaves && owns_heap(&resolve_ty(&expr.ty)) => {
+                WholeParamEmbedClass::UnsupportedBorrowAlias
             }
-            _ => false,
+            _ => WholeParamEmbedClass::None,
         }
     }
     /// Emit a `MirStatement::Use(Consume)` for a managed-type binding that is

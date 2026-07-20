@@ -1,6 +1,6 @@
 //! Anonymous caller-owned result and while-let scrutinee drop regressions.
 
-use hew_mir::{DropKind, ElabDrop, ExitPath, IrPipeline, MirStatement};
+use hew_mir::{DropKind, ElabDrop, ExitPath, Instr, IrPipeline, MirStatement, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -46,6 +46,185 @@ fn enum_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -
         .filter(|drop| matches!(drop.kind, DropKind::EnumInPlace))
         .cloned()
         .collect()
+}
+
+fn record_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -> Vec<ElabDrop> {
+    p.elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| pred(exit))
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|drop| matches!(drop.kind, DropKind::RecordInPlace))
+        .cloned()
+        .collect()
+}
+
+fn tuple_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -> Vec<ElabDrop> {
+    p.elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| pred(exit))
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|drop| matches!(drop.kind, DropKind::TupleInPlace))
+        .cloned()
+        .collect()
+}
+
+fn call_count(p: &IrPipeline, fn_name: &str, symbol: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(&block.terminator, Terminator::Call { callee, .. } if callee == symbol)
+        })
+        .count()
+}
+
+fn string_retain_count(p: &IrPipeline, fn_name: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| matches!(instr, Instr::StringRetain { .. }))
+        .count()
+}
+
+fn assert_record_param_embed_mints(p: &IrPipeline) {
+    for (fn_name, copy_symbol, move_symbol) in [
+        ("pushParam", "hew_vec_push_owned", "hew_vec_push_owned_move"),
+        ("setParam", "hew_vec_set_owned", "hew_vec_set_owned_move"),
+    ] {
+        assert_eq!(string_retain_count(p, fn_name), 1);
+        assert_eq!(call_count(p, fn_name, copy_symbol), 1);
+        assert_eq!(call_count(p, fn_name, move_symbol), 0);
+        assert_eq!(synthetic_binds(p, fn_name, "__hew_copy_in_param_temp"), 1);
+        assert_eq!(
+            record_drops(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
+            1,
+            "{fn_name} must drop the retained source-temp share exactly once"
+        );
+    }
+}
+
+fn assert_tuple_param_embed_mints(p: &IrPipeline) {
+    for (fn_name, copy_symbol, move_symbol) in [
+        (
+            "tuplePushParam",
+            "hew_vec_push_owned",
+            "hew_vec_push_owned_move",
+        ),
+        (
+            "tupleSetParam",
+            "hew_vec_set_owned",
+            "hew_vec_set_owned_move",
+        ),
+    ] {
+        assert_eq!(string_retain_count(p, fn_name), 1);
+        assert_eq!(call_count(p, fn_name, copy_symbol), 1);
+        assert_eq!(call_count(p, fn_name, move_symbol), 0);
+        assert_eq!(synthetic_binds(p, fn_name, "__hew_copy_in_param_temp"), 1);
+        assert_eq!(
+            tuple_drops(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
+            1,
+            "{fn_name} must drop the retained tuple source-temp share exactly once"
+        );
+    }
+}
+
+fn assert_unsupported_param_embeds_fail_closed(p: &IrPipeline) {
+    assert_eq!(call_count(p, "unsupported", "hew_vec_push_owned"), 1);
+    for fn_name in ["unsupported", "unsupportedProjection"] {
+        assert_eq!(
+            synthetic_binds(p, fn_name, "__hew_copy_in_param_temp"),
+            0,
+            "{fn_name} must not mint an owner for an unretained parameter alias"
+        );
+        assert!(
+            record_drops(p, fn_name, |_| true).is_empty(),
+            "{fn_name} must not drop a caller-owned parameter alias"
+        );
+    }
+}
+
+#[test]
+fn vec_copy_in_string_param_temps_own_only_their_retained_share() {
+    let p = pipeline_with_tc(
+        r#"
+type Holder { items: Vec<string> }
+type Wrap { f: Option<string> }
+type HolderWrap { f: Option<Holder> }
+type MixedWrap { s: string, items: Vec<string> }
+
+fn pushParam(p: string) {
+    let v: Vec<Wrap> = [];
+    v.push(Wrap { f: Some(p) });
+}
+
+fn setParam(p: string) {
+    let v: Vec<Wrap> = [];
+    v.set(0, Wrap { f: Some(p) });
+}
+
+fn tuplePushParam(p: string) {
+    let v: Vec<(string, i64)> = [];
+    v.push((p, 1));
+}
+
+fn tupleSetParam(p: string) {
+    let v: Vec<(string, i64)> = [];
+    v.set(0, (p, 1));
+}
+
+fn boundFirst(p: string) {
+    let v: Vec<Wrap> = [];
+    let w = Wrap { f: Some(p) };
+    v.push(w);
+}
+
+fn freshMove() {
+    let v: Vec<Wrap> = [];
+    v.push(Wrap { f: Some("item".to_upper()) });
+}
+
+fn unsupported(p: Holder) {
+    let v: Vec<HolderWrap> = [];
+    v.push(HolderWrap { f: Some(p) });
+}
+
+fn unsupportedProjection(p: string, h: Holder) {
+    let v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { s: p, items: h.items });
+}
+"#,
+    );
+
+    assert_record_param_embed_mints(&p);
+    assert_tuple_param_embed_mints(&p);
+
+    assert_eq!(
+        synthetic_binds(&p, "boundFirst", "__hew_copy_in_param_temp"),
+        0,
+        "a named source already has its ordinary owner"
+    );
+    assert_eq!(call_count(&p, "freshMove", "hew_vec_push_owned_move"), 1);
+    assert_eq!(
+        synthetic_binds(&p, "freshMove", "__hew_copy_in_param_temp"),
+        0,
+        "a no-parameter fresh owner must stay on MOVE-IN"
+    );
+    assert_unsupported_param_embeds_fail_closed(&p);
 }
 
 #[test]

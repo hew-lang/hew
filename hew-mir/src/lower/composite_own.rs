@@ -3191,6 +3191,16 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                 }
             }
         }
+        // COPY-IN Vec element stores clone the whole tuple source rather than
+        // consuming it. Preserve the tuple's scope-exit owner exactly as the
+        // record/enum provers do; the receiver and any element binder remain
+        // borrowed for this call.
+        let copy_in_elem_store = matches!(
+            &block.terminator,
+            Terminator::Call { callee, .. }
+                if crate::runtime_symbols::callee_ownership_contract(callee)
+                    .is_vec_copy_in_element_store()
+        );
         // Caller-side owned-param completion: a whole tuple passed by value at a
         // proven-borrow call position is a transient borrow, so the caller keeps
         // its `TupleInPlace` scope-exit drop. Element binders (`f(t.0)`) are a
@@ -3205,7 +3215,8 @@ pub(super) fn derive_tuple_composite_drop_allowed(
         // not an escape (`binder_read_is_borrow_safe_terminator`).
         for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
-                if alias_of.contains_key(&l)
+                if !copy_in_elem_store
+                    && alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
                     && !proven_borrow_arg_locals.contains(&l)
                     && !binder_read_is_borrow_safe_terminator(
@@ -3216,7 +3227,8 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                 {
                     note_alias_escape(l, &mut excluded_roots);
                 }
-                if is_escape_binder(l)
+                if !copy_in_elem_store
+                    && is_escape_binder(l)
                     && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),

@@ -4610,6 +4610,9 @@ impl Builder {
                         self.enforce_closure_pair_ingress(arg);
                     }
                 }
+                // COPY-IN param embeds stay caller-borrowed; only the source
+                // temp's independently retained string share gains an owner.
+                self.register_copy_in_param_embed_temp_owner(&callee, args, &arg_places);
                 let dest = if matches!(ret_ty, ResolvedTy::Unit) {
                     None
                 } else {

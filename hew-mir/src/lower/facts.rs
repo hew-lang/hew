@@ -1674,9 +1674,15 @@ fn collect_borrow_arg_sites_in_expr(
 /// this module (an extern / runtime primitive / aggregate constructor) is fresh
 /// by the owned-return ABI (`callee_returns_fresh_owner` → `true`).
 ///
-/// Conservative by construction: a helper that returns a let-bound local
-/// (`fn make() { let x = Inner { .. }; x }`) is classified non-fresh — sound
-/// (fail-closed), at the cost of over-rejecting that idiom as a funcupdate base.
+/// Fresh-owner see-through (fix (i)): a helper that tail-returns a
+/// single-assignment `let`-bound local — the `fn make() { let x = Inner{..}; x }`
+/// idiom AND the `[..]` array-literal desugar (`{ let __a = Vec::new();
+/// __a.push(e); __a }`) — IS proven fresh, because the shared
+/// [`crate::return_provenance::return_alias_bits`] walk now sees THROUGH such a
+/// tail to its initializer plus interior appends. The see-through stays
+/// fail-closed: a `var`, a reassignment, a param root (`let x = h; x`
+/// re-derives the param leaf), or any other use of the local that could inject
+/// an unmeasured alias keeps the `OPAQUE` leaf and the function non-fresh.
 pub(crate) fn compute_fn_returns_fresh_owner(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
 ) -> HashMap<hew_hir::ItemId, bool> {
@@ -1732,7 +1738,7 @@ fn fn_body_returns_fresh_owner(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, bool>
     // module-global fixpoint suffices.
     return_values
         .iter()
-        .all(|e| !return_value_may_alias_borrow(e, fresh))
+        .all(|e| !return_value_may_alias_borrow(e, &f.body, fresh))
 }
 /// True when `expr`, used as a function's return value, MAY alias a by-value
 /// heap parameter of that function — i.e. the returned value is (or transitively
@@ -1761,8 +1767,12 @@ fn fn_body_returns_fresh_owner(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, bool>
 /// reassign consumers unchanged while #2648's Precise driver consumes the same
 /// walk under a different policy. Pinned byte-identical by the
 /// `coarse_verdict_differential` frozen-reference test.
-fn return_value_may_alias_borrow(expr: &HirExpr, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
-    crate::return_provenance::coarse_may_alias_borrow(expr, fresh)
+fn return_value_may_alias_borrow(
+    expr: &HirExpr,
+    body: &hew_hir::HirBlock,
+    fresh: &HashMap<hew_hir::ItemId, bool>,
+) -> bool {
+    crate::return_provenance::coarse_may_alias_borrow_in_body(expr, body, fresh)
 }
 /// Resolve a `Call` callee to its freshness fact.
 ///

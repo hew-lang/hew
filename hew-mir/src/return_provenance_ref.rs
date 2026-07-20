@@ -22,10 +22,14 @@
 
 use std::collections::HashMap;
 
-use hew_hir::{HirExpr, HirExprKind, HirFn, ResolvedRef};
+use hew_hir::{BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirStmtKind, ResolvedRef};
 use hew_types::ResolvedTy;
 
 use crate::lower::collect_return_values_in_block;
+use crate::return_provenance::{
+    expr_mentions_binding, method_receiver_and_args, place_root_binding, stmt_mentions_binding,
+    SeeThroughScope,
+};
 
 /// Verbatim copy of the pre-refactor `compute_fn_returns_fresh_owner`.
 pub fn compute_fn_returns_fresh_owner_ref(
@@ -62,41 +66,52 @@ fn fn_body_returns_fresh_owner_ref(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, b
     if return_values.is_empty() {
         return false;
     }
+    let root = SeeThroughScope {
+        block: &f.body,
+        parent: None,
+    };
     return_values
         .iter()
-        .all(|e| !return_value_may_alias_borrow_ref(e, fresh))
+        .all(|e| !return_value_may_alias_borrow_ref(e, Some(&root), fresh))
 }
 
 /// Verbatim copy of the pre-refactor `return_value_may_alias_borrow` — the leaf
 /// this module parameterizes. This is the transfer the differential pins.
 fn return_value_may_alias_borrow_ref(
     expr: &HirExpr,
+    scope: Option<&SeeThroughScope>,
     fresh: &HashMap<hew_hir::ItemId, bool>,
 ) -> bool {
     match &expr.kind {
-        HirExprKind::Block(block) => block
-            .tail
-            .as_deref()
-            .is_none_or(|t| return_value_may_alias_borrow_ref(t, fresh)),
+        HirExprKind::Block(block) => match &block.tail {
+            None => true,
+            Some(tail) => {
+                let child = SeeThroughScope {
+                    block,
+                    parent: scope,
+                };
+                return_value_may_alias_borrow_ref(tail, Some(&child), fresh)
+            }
+        },
         HirExprKind::If {
             then_expr,
             else_expr,
             ..
         } => {
-            return_value_may_alias_borrow_ref(then_expr, fresh)
+            return_value_may_alias_borrow_ref(then_expr, scope, fresh)
                 || else_expr
                     .as_deref()
-                    .is_none_or(|e| return_value_may_alias_borrow_ref(e, fresh))
+                    .is_none_or(|e| return_value_may_alias_borrow_ref(e, scope, fresh))
         }
         HirExprKind::Match { arms, .. } => {
             arms.is_empty()
                 || arms
                     .iter()
-                    .any(|arm| return_value_may_alias_borrow_ref(&arm.body, fresh))
+                    .any(|arm| return_value_may_alias_borrow_ref(&arm.body, scope, fresh))
         }
         HirExprKind::Return { value } => value
             .as_deref()
-            .is_none_or(|v| return_value_may_alias_borrow_ref(v, fresh)),
+            .is_none_or(|v| return_value_may_alias_borrow_ref(v, scope, fresh)),
         HirExprKind::RecordCloneCall { .. }
         | HirExprKind::Index { .. }
         | HirExprKind::Slice { .. }
@@ -104,30 +119,94 @@ fn return_value_may_alias_borrow_ref(
         HirExprKind::StructInit { fields, base, .. } => {
             fields
                 .iter()
-                .any(|(_, v)| return_value_may_alias_borrow_ref(v, fresh))
+                .any(|(_, v)| return_value_may_alias_borrow_ref(v, scope, fresh))
                 || base
                     .as_deref()
-                    .is_some_and(|b| return_value_may_alias_borrow_ref(b, fresh))
+                    .is_some_and(|b| return_value_may_alias_borrow_ref(b, scope, fresh))
         }
         HirExprKind::TupleLiteral { elements } => elements
             .iter()
-            .any(|e| return_value_may_alias_borrow_ref(e, fresh)),
+            .any(|e| return_value_may_alias_borrow_ref(e, scope, fresh)),
         HirExprKind::MachineVariantCtor { payload, .. } => payload.as_ref().is_some_and(|fields| {
             fields
                 .iter()
-                .any(|(_, v)| return_value_may_alias_borrow_ref(v, fresh))
+                .any(|(_, v)| return_value_may_alias_borrow_ref(v, scope, fresh))
         }),
         HirExprKind::Call { callee, args } => {
             !callee_is_resolved_item_ref(callee)
                 || (!callee_returns_fresh_owner_ref(callee, fresh)
                     && args
                         .iter()
-                        .any(|a| return_value_may_alias_borrow_ref(a, fresh)))
+                        .any(|a| return_value_may_alias_borrow_ref(a, scope, fresh)))
         }
-        HirExprKind::FieldAccess { object, .. } => return_value_may_alias_borrow_ref(object, fresh),
-        HirExprKind::TupleIndex { tuple, .. } => return_value_may_alias_borrow_ref(tuple, fresh),
+        HirExprKind::FieldAccess { object, .. } => {
+            return_value_may_alias_borrow_ref(object, scope, fresh)
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            return_value_may_alias_borrow_ref(tuple, scope, fresh)
+        }
+        // Fresh-owner see-through (fix (i)) — the independent bool twin of
+        // `see_through_let_binding_bits`. Reuses the shared structural
+        // scope/append/mention plumbing so only the may-alias recursion is
+        // reimplemented; the `coarse_verdict_differential` pin then proves the two
+        // see-throughs agree over the whole corpus.
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } => scope
+            .and_then(|s| s.resolve(*id))
+            .and_then(|block| block_let_may_alias_ref(block, *id, scope, fresh))
+            .unwrap_or(true),
         _ => true,
     }
+}
+
+/// Independent bool twin of `see_through_let_binding_bits`: `Some(may_alias)`
+/// for a single-assignment `let`-bound local seen through to its init plus
+/// interior appends; `None` (keep the fail-closed leaf) for a `var`, a
+/// reassignment, or any other use of `id`. `may_alias` mirrors `!bits.is_fresh()`.
+fn block_let_may_alias_ref(
+    block: &HirBlock,
+    id: BindingId,
+    scope: Option<&SeeThroughScope>,
+    fresh: &HashMap<hew_hir::ItemId, bool>,
+) -> Option<bool> {
+    let mut init_may_alias: Option<bool> = None;
+    let mut content_may_alias = false;
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(binding, init) if binding.id == id => {
+                if binding.mutable {
+                    return None;
+                }
+                let init = init.as_ref()?;
+                init_may_alias = Some(return_value_may_alias_borrow_ref(init, scope, fresh));
+            }
+            HirStmtKind::Assign { target, .. } if place_root_binding(target) == Some(id) => {
+                return None;
+            }
+            _ => {
+                if let HirStmtKind::Expr(e) = &stmt.kind {
+                    if let Some((receiver, args)) = method_receiver_and_args(e) {
+                        if place_root_binding(receiver) == Some(id) {
+                            for arg in &args {
+                                if expr_mentions_binding(arg, id) {
+                                    return None;
+                                }
+                                content_may_alias |=
+                                    return_value_may_alias_borrow_ref(arg, scope, fresh);
+                            }
+                            continue;
+                        }
+                    }
+                }
+                if stmt_mentions_binding(stmt, id) {
+                    return None;
+                }
+            }
+        }
+    }
+    init_may_alias.map(|base| base || content_may_alias)
 }
 
 /// Verbatim copy of the pre-refactor `callee_returns_fresh_owner`.

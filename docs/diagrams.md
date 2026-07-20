@@ -212,17 +212,20 @@ block-beta
 
 ## 5. Distributed Node State Machine
 
-Governs the lifecycle of a `HewNode` in distributed mode (`hew-runtime/src/hew_node.rs`). Each node has a `node_id: u16`, a bound address, and a transport vtable.
+Governs the lifecycle of a `HewNode` in distributed mode
+(`hew-runtime/src/hew_node.rs`). Each node has a key-derived 128-bit `NodeId`, a
+durable session incarnation, a receiver-local route slot, a bound address, and
+a transport vtable.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> STARTING: hew_node_start()
+    [*] --> STARTING: hew_node_start()<br/>burn durable session
 
-    STARTING --> RUNNING: transport.listen() succeeds,<br/>accept_thread spawned
-    STARTING --> STOPPED: bind/listen failure
+    STARTING --> RUNNING: credential + v2 handshake ready,<br/>transport.listen() succeeds
+    STARTING --> STOPPED: identity/session/bind failure
 
     RUNNING --> STOPPING: hew_node_stop()
-    RUNNING --> RUNNING: hew_node_send() /<br/>try_remote_send()
+    RUNNING --> RUNNING: full-Location send/ask/<br/>monitor/link routing
 
     STOPPING --> STOPPED: accept_thread joined,<br/>connections closed,<br/>transport.destroy()
 
@@ -235,9 +238,9 @@ stateDiagram-v2
 
     note right of RUNNING
         NODE_STATE_RUNNING = 1
-        Accepts connections,
-        routes messages via
-        HewRegistry (remote_names)
+        Publishes authenticated
+        NodeId/session routes and
+        exact registry Locations
     end note
 
     note right of STOPPING
@@ -251,10 +254,13 @@ stateDiagram-v2
 
 **Node components:**
 
-- `HewRegistry` — maps string names to remote actor IDs
+- `NodeId` — first 16 bytes of the domain-separated SHA-256 credential digest
+- `Location` — `{ NodeId, actor slot, durable session incarnation }`
+- `HewRegistry` — maps string discovery names to exact `Location` values
+- `PeerBindings` — maps receiver-local non-zero route slots one-to-one with credentials
 - `HewTransportOps` — vtable: `connect`, `listen`, `accept`, `send`, `recv`, `close_conn`, `destroy`
 - `HewActorRef` — discriminated union: `ACTOR_REF_LOCAL(0)` or `ACTOR_REF_REMOTE(1)`
-- `next_peer_node` — auto-incrementing connection ID counter
+- `MonitorState` — single watcher-side monitor/link observation authority
 
 ---
 
@@ -276,33 +282,34 @@ flowchart LR
     F["wire-frame<br/>(CBOR map)"] -->|"frame_type=0"| CF["ControlFrame"]
     F -->|"frame_type=1"| EF["EnvelopeFrame"]
 
-    CF --> CV["version (key 1) = 1"]
+    CF --> CV["version (key 1) = 2"]
     CF --> CT["frame_type (key 2) = 0"]
     CF --> CK["ctrl_kind (key 3): uint"]
     CF --> CP["payload (key 4): bstr"]
 
-    EF --> EV["version (key 1) = 1"]
+    EF --> EV["version (key 1) = 2"]
     EF --> ET["frame_type (key 2) = 1"]
-    EF --> EA["target_actor_id (key 3): uint"]
-    EF --> ES["source_actor_id (key 4): uint"]
+    EF --> EA["target (key 3): Location or nil"]
+    EF --> ES["source (key 4): Location or nil"]
     EF --> EM["msg_type (key 5): int"]
     EF --> EP["payload (key 6): bstr<br/>(wire-body.cddl body)"]
     EF --> ER["request_id (key 7): uint"]
-    EF --> EN["source_node_id (key 8): uint"]
 ```
 
 **EnvelopeFrame fields:**
 
 | CDDL key | Field | Type | Notes |
 | --- | --- | --- | --- |
-| 1 | `version` | `uint` | Must equal `1`; unknown versions rejected |
+| 1 | `version` | `uint` | Must equal `2`; unknown versions rejected |
 | 2 | `frame_type` | `uint` | `0` = control, `1` = envelope |
-| 3 | `target_actor_id` | `uint` | Non-zero actor identity |
-| 4 | `source_actor_id` | `uint` | Sender actor identity |
+| 3 | `target` | `Location / nil` | Exact destination; nil only for replies |
+| 4 | `source` | `Location / nil` | Exact authenticated sender when present |
 | 5 | `msg_type` | `int` | Signed; valid range `0..=2^30-1` |
 | 6 | `payload` | `bstr` | Serialised message body (see §6.2) |
 | 7 | `request_id` | `uint` | `0` = fire-and-forget; `> 0` = ask/reply |
-| 8 | `source_node_id` | `uint` | `0` on reply envelopes; non-zero on ask |
+
+`Location` is the map `{ 1: node-id bstr(16), 2: non-zero actor slot,
+3: non-zero u32 session incarnation }`. Route slots never appear in this map.
 
 The transport layer (QUIC stream or TCP with a 4-byte LE length prefix) owns
 frame delimitation. The CBOR envelope does **not** re-encode payload length.

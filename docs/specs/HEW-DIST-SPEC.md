@@ -1,481 +1,336 @@
-# HEW-DIST-SPEC v0
-
-**Status:** v0 distributed `Node::*` specification. This is a pre-v1 contract: it defines what Hew may claim publicly about distributed actor messaging before behavior-changing runtime work proceeds.
-**Audience:** language designers, runtime implementers, codegen/ABI reviewers, docs reviewers, and example authors.
-**Stance:** Hew may allow local-looking syntax for remote actor operations, but it must not claim local-only semantics. Every remote boundary exposes typed failure.
-
----
-
-## 1. Status & scope
-
-This document is the normative distributed companion to [`HEW-SPEC-2026.md`](./HEW-SPEC-2026.md) section 11.
-
-In scope for v0:
-
-- distributed node identity and pid-reference shape
-- delivery, ordering, lookup, ask, timeout, cancellation, monitoring, failure detection, backpressure, wire negotiation, authorization, observability, testing, and WASM policy
-- the public honesty bar for docs and examples
-
-Out of scope for v0:
-
-- durable workflows, distributed transactions, or placement durability
-- stronger delivery guarantees than at-most-once
-- automatic ratification of remote ownership rules still deferred to [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
-
-This spec gates future `Node::*` implementation work. It does not claim that every requirement here is already shipped.
-
-## 2. Glossary
-
-| Term | Meaning |
-| --- | --- |
-| Node | A Hew runtime instance participating in distributed actor messaging. |
-| NodeId | The stable distributed node identity; key-backed and UUID-class, not a process-global slot. |
-| LocalPid / RemotePid | A reference to an actor endpoint; distributed identity includes node and incarnation data. |
-| PID | Runtime routing identity used to reach an actor instance. |
-| Incarnation | A generation value that changes when a node, actor, or registration is replaced. |
-| Name | A human-readable registration key. |
-| Namespace | The authorization and lookup scope that bounds names. |
-| Ask | A request-response remote operation expecting a typed reply or typed failure. |
-| Send | A fire-and-forget remote operation. |
-| Link | A supervision relationship that couples failure propagation. |
-| Monitor | A one-way failure observation relationship. |
-| Supervisor | The policy owner for restart and failure handling. |
-| Peer | Another node in the distributed topology. |
-| Partition | A connectivity failure where peers cannot currently exchange the traffic required for the operation. |
-| Suspect | Failure-detector state meaning a peer may be unavailable but is not yet declared dead. |
-| Dead | Failure-detector state meaning the peer is considered unreachable until a fresh session is established. |
-| Schema id | The identifier for a payload contract carried on the wire where required. |
-| ALPN | The negotiated application protocol name used to distinguish incompatible transport families or major versions. |
-
-## 3. Identity & incarnation
-
-`NodeId` is the distributed identity root. It is UUID-class and key-backed. An implementation may cache a smaller routing slot internally, but the public identity contract is not a process-global singleton and is not satisfied by a bare integer slot.
-
-`RemotePid` identity is defined as `(NodeId, slot, incarnation)`:
-
-- `NodeId` identifies the node authority.
-- `slot` identifies the actor location within that node's routing domain.
-- `incarnation` distinguishes stale references from live replacements.
-
-Name registration is scoped by namespace. Re-registering a name creates a new incarnation for that registration. A lookup that resolves through stale node, actor, or registration identity must fail closed with `StaleRef`; it must not silently bind to a replacement actor with a different incarnation.
+# Hew Distributed Runtime Specification
 
-The implementation may expose local convenience APIs, but distributed identity must remain inspectable enough for latency-aware, failure-aware, and authorization-aware code.
-
-### 3.1 Pid reference ownership
+**Status:** normative for v0.6.0-rc1
+**Protocol epoch:** 2
+**Targets:** native only
 
-`LocalPid<A>` and `RemotePid<A>` are **refcounted identity references**
-(`Rc`/`Arc`-shaped), consistent with [`HEW-SPEC-2026.md`](./HEW-SPEC-2026.md) §3.7.8.
-They are `Frozen` and `Send`: the same identity may be addressed concurrently
-from many holders, locally and across node boundaries. They are **not** affine
-per-call handles in the sense of
-[`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
-§7 tier-1; they are the *identity* side of the identity-vs-authority split that
-governs distributed references.
+This document defines node identity, peer admission, actor locations, routing,
+registry discovery, messaging, monitors, links, and failure handling for Hew's
+distributed runtime.
 
-- Identity may be cloned freely (refcount bump) and shared. Cloning a
-  pid reference does not duplicate authority, mailbox capacity, supervision
-  power, or any other resource — it only duplicates the means to *name*
-  the actor.
-- Cycles between actors that hold strong identity references to one
-  another are broken with weak pid references, per `HEW-SPEC-2026.md` §3.7.8.
-  Supervision trees naturally avoid cycles: parents hold strong identity
-  references to children; children, when they need to address their
-  parent, hold a weak pid reference or use an explicit message protocol.
-- No user-visible `close()`, `free()`, or `release()` is ever required on
-  a pid reference in normal Hew code. This satisfies the prime invariant of
-  `handle-safety-and-resource-lifetime.md` §1 ("no user-visible manual
-  free in normal Hew code") for distributed identity.
-- Identity does **not** confer authority. Holding a pid reference lets the
-  holder *address* the actor; whether a given message, observation, or
-  capability invocation is permitted is governed by §12 (security &
-  capabilities). A capability transferred over a pid reference is a
-  separate value with its own ownership shape (§12); revoking that
-  capability does not invalidate the underlying identity.
-- Stale identity — a reference whose `NodeId` is gone, whose `slot` is
-  vacated, or whose `incarnation` has been replaced — must fail closed
-  with `StaleRef` (§3, §6). This is consistent with the fail-closed
-  posture of `handle-safety-and-resource-lifetime.md` §3.1 and with the
-  general distributed prohibition on sentinel substitutes in §4.
-- The checker is the authority for ownership classification of
-  pid-reference values, per `handle-safety-and-resource-lifetime.md` §5
-  (single ownership oracle). Codegen and the runtime consume that
-  classification fail-closed and do not re-derive it.
+## 1. Conformance language
 
-## 4. Delivery semantics
+The terms **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
-Distributed fire-and-forget send is **at-most-once**. If an application needs retry behavior, it must opt into an idempotence-aware wrapper at a higher layer; retry is not implied by the base `send` semantics.
+Implementations MUST reject malformed, unauthenticated, stale, or
+version-incompatible input before publishing routes or mutating distributed
+lifecycle state. There is no protocol-epoch fallback.
 
-Remote `ask` operations return typed success or typed failure. Remote `lookup` operations return typed success or typed failure. Sentinel values, zero values, or panic-shaped substitutes are forbidden at distributed boundaries.
+## 2. Identity and routing terms
 
-The language may permit the same call syntax for local and remote actor interactions. The semantics are still different:
+### 2.1 `NodeId`
 
-- remote operations can time out, be cancelled, be unauthorized, or fail version negotiation
-- delivery success is bounded by transport, peer health, and mailbox/backpressure state
-- the caller must be able to observe failure explicitly
+A `NodeId` is an immutable 128-bit identity derived from the node's stable
+authenticated public credential. It is not configured independently and is not
+derived from an operating-system process identifier, address, or route slot.
 
-Per `(sender, receiver)` FIFO ordering holds only while both parties communicate over one live connection/session. This spec does not promise duplicate suppression beyond the at-most-once base guarantee.
+The canonical derivation is:
 
-## 5. Ordering & connection lifetime
+```text
+digest = SHA-256(
+    "hew-node-id-v1\0"
+    || credential_kind:u8
+    || credential_length:u32-big-endian
+    || canonical_credential_bytes
+)
+NodeId = digest[0..16]
+```
 
-Ordering and liveness guarantees end at the connection lifetime boundary.
+Credential kinds are:
 
-- Reconnect does not preserve in-flight ordering.
-- Incarnation bumps do not preserve message continuity.
-- A fresh connection/session is a fresh ordering domain.
+| Value | Credential |
+|---:|---|
+| `1` | Noise-XX X25519 static public key, exactly 32 bytes |
+| `2` | Canonical DER TLS leaf SubjectPublicKeyInfo |
 
-When a connection drops mid-flight:
+The text representation is exactly 32 lowercase hexadecimal digits. Parsers MAY
+accept uppercase hexadecimal input but MUST render lowercase.
 
-- outstanding `ask` operations resolve to a typed failure such as `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk`, depending on the failure surface observed by the caller
-- the implementation must not synthesize a successful reply
-- callers may observe order gaps after reconnect and must not treat reconnect as transparent continuation
+Rotating the stable key rotates the `NodeId`. Reusing the same stable key
+preserves the `NodeId`.
 
-Returning peers re-enter the system through a fresh negotiated session. If the peer or target actor now presents a newer incarnation, older references remain invalid and fail with `StaleRef`.
+### 2.2 Route slots
 
-## 6. Lookup & ask error taxonomy
+A route slot is a non-zero `u16` alias local to one receiving node. Slot `0` is
+reserved for local dispatch and MUST NOT be assigned to a peer.
 
-Every remote operation must expose typed failure. Downstream consumers must handle the variants explicitly; wildcard/default fallthrough at the public boundary is not the intended contract.
+Route slots are not distributed identity and do not appear in `Location`.
+Different nodes MAY assign different route slots to the same peer. APIs that
+accept a route-slot argument, including `Node::allow_peer`, interpret it only in
+the caller's local routing namespace.
 
-| Variant | Applies to | Trigger |
-| --- | --- | --- |
-| `NotFound` | lookup | The namespace is reachable, but no live registration matches the requested name/incarnation. |
-| `Partition` | lookup, send, ask, monitor | The node cannot currently establish or maintain the route required for the operation. |
-| `Timeout` | lookup, ask | The caller-supplied deadline expires before a terminal result arrives. |
-| `VersionMismatch` | lookup, send, ask | Peer or payload negotiation rejects the operation because versions, features, schema id, or ALPN are incompatible. |
-| `Unauthorized` | lookup, send, ask | Authorization policy denies the namespace, name, capability, or message type. |
-| `DecodeFailure` | ask, send, monitor | The payload, envelope, or reply cannot be decoded according to the negotiated contract. |
-| `OrphanedAsk` | ask | A reply or terminal event arrives after the ask correlation state has been removed or superseded. |
-| `StaleRef` | lookup, send, ask, monitor | The referenced node/slot/incarnation no longer names a live target. |
-| `Cancelled` | lookup, ask, send | The caller or owning scope cancelled the operation before it completed. |
-| `LocalShutdown` | lookup, send, ask, monitor | The local node is stopping or stopped before the operation can complete. |
-| `Backpressure` / `WouldBlock` | send, ask | The operation cannot currently enter the required queue or credit window without violating the published bound. |
-| `MonitorLost` | monitor | The monitor relationship itself cannot be maintained across restart, partition, or teardown. |
+The peer-binding table is one-to-one:
 
-The exact type split between `LookupError`, `AskError`, `SendError`, and `MonitorError` may vary, but the public surface must preserve these named failure conditions or tighter typed equivalents.
+- one route slot maps to exactly one credential;
+- one credential maps to exactly one route slot;
+- repeated identical pins are idempotent;
+- conflicting pins fail closed.
 
-## 7. Timeout & cancellation
+### 2.3 Session incarnation
 
-Every remote operation has a caller-supplied timeout or deadline. v0 forbids a hidden global distributed timeout as the public contract.
+Each stable node identity owns a durable, non-zero `u32` session incarnation.
+Starting a node burns and persists the next incarnation before the node becomes
+routable. The journal is locked for exclusive use, recovers from a torn latest
+record, rejects a key-derived identity mismatch, and refuses overflow.
 
-Cancellation is cooperative:
+A same-key restart therefore keeps the `NodeId` and advances the session
+incarnation. A carried location from an earlier session is stale.
 
-- the caller may cancel before completion
-- cancellation is observed at the next safe point in the operation lifecycle
-- cancellation resolves to `Cancelled`, not to a sentinel success shape
+### 2.4 `Location`
 
-Shutdown and cancellation obligations include all exit paths that own distributed work: ask tables, accept loops, peer sessions, gossip windows, and inbound worker state. Partial cleanup that only drains a user mailbox is insufficient.
+A remote actor is identified by:
 
-## 8. Supervision: link & monitor across nodes
+```text
+Location {
+    node: NodeId,          // 16 bytes
+    slot: u64,             // non-zero actor slot
+    incarnation: u32,      // non-zero durable node session
+    reserved: u32 = 0
+}
+```
 
-`monitor` crosses node boundaries by default. It is the default mechanism for observing remote failure without coupling restart policy.
+The native C ABI representation is 32 bytes. The reserved field MUST be zero.
+Actor slot `0` and session incarnation `0` are invalid.
 
-`link` does **not** cross node boundaries by default. Cross-node link, if offered, is opt-in and must document partition behavior explicitly so that a transient network split does not masquerade as a local crash cascade.
+`RemotePid<T>` is a phantom-typed inline `Location`. It owns no heap allocation,
+has no reference count, and does not keep either the remote node or actor alive.
+Moving, storing, or duplicating the location metadata does not grant authority
+and does not affect actor lifetime.
 
-Remote restart policy must specify:
+There is no public provenance-free constructor. A program obtains a
+`RemotePid<T>` only from authenticated runtime discovery or another typed value
+that already carries a validated location.
+
+## 3. Stable credentials and peer configuration
 
-- who owns restart authority
-- where the replacement actor is placed
-- whether the replacement increments actor or registration incarnation
-- which typed failure is observed by outstanding asks and monitors during the transition
+`Node::load_keys(path)` loads or creates the stable credential for the selected
+native transport. `Node::identity_key()` returns the corresponding public
+credential as lowercase hexadecimal for out-of-band exchange.
 
-Monitor delivery is itself best-effort across distributed failures. If the monitor relationship cannot be maintained, the observer receives `MonitorLost`; the implementation must not fabricate a successful completion event for the monitored operation.
+`Node::allow_peer(route_slot, credential_hex)` pins a peer credential to a
+receiver-local route slot. It MUST be called before `Node::start`.
+
+For TCP, the credential is the peer's 32-byte Noise static public key. For
+quic-mesh, it is the peer certificate's canonical SPKI.
+
+The runtime derives the local `NodeId` from the loaded local credential and
+derives the peer `NodeId` from the credential authenticated by the transport.
+Admission MUST compare the authenticated credential, derived `NodeId`, current
+session, configured route slot, and publication state before exposing the peer
+to routing, registry gossip, SWIM, asks, monitors, or links.
 
-### 8.1 Supervision ownership
+An unbound credential, mismatched credential, duplicate identity owner,
+retired-identity replay, malformed key, or identity collision MUST fail closed.
 
-A parent supervisor's *reference* to a remote child is a refcounted `RemotePid`
-(the §3.1 identity shape). The reference may be cloned and used for messaging
-without affecting restart authority.
+## 4. Protocol-epoch 2 handshake
+
+Every connection exchanges exactly 72 bytes before actor traffic:
 
-A parent supervisor's *restart authority* over a remote child is a **supervision
-token** in the sense of
-[`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
-§3.1 mechanism D (adopted for shutdown / cancellation / session lifetime). The
-supervision token:
+| Offset | Size | Field |
+|---:|---:|---|
+| `0` | 4 | magic `HEW\x02` |
+| `4` | 2 | protocol version, big-endian, value `2` |
+| `6` | 2 | reserved, zero |
+| `8` | 4 | schema hash, big-endian |
+| `12` | 4 | feature flags, big-endian |
+| `16` | 16 | key-derived `NodeId` |
+| `32` | 4 | durable session incarnation, big-endian |
+| `36` | 4 | reserved, zero |
+| `40` | 32 | Noise static public key, or zero when the transport authenticates by SPKI |
 
-- **Must** be held by exactly one supervisor at a time. Transfer is explicit;
-  the token is not duplicated on clone.
-- **Must not** be implicitly copied across a cross-node `link` boundary. Cross-node
-  `link` remains opt-in (per §8 above); if offered, an opt-in cross-node link
-  *transfers* (does not duplicate) restart authority to the accepting end.
-- **Must** be invalidated on any of the following exit paths: supervisor stop,
-  explicit `unlink`, child incarnation bump, peer reaching `Dead`, or session
-  reset. This enumeration is exhaustive for v0; implementations must not treat
-  partial teardown as sufficient (LESSONS `cleanup-all-exits`).
-- After invalidation, any attempt to exercise restart authority **must** resolve
-  to a typed failure. The typed failure is the existing `MonitorLost` variant
-  (§6); no new `SupervisionLost` variant is introduced in v0. This keeps the §6
-  taxonomy stable and the soundness matrix untouched.
+The receiver MUST reject:
 
-The checker is the authority for ownership classification of supervision tokens,
-per [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
-§5 (single ownership oracle).
+- any length other than 72 bytes;
+- any magic or protocol version other than epoch 2;
+- non-zero reserved bytes;
+- an all-zero `NodeId`;
+- session incarnation `0`;
+- schema incompatibility;
+- a `NodeId` that differs from the authenticated credential derivation;
+- a credential that is not pinned to the selected receiver-local route slot;
+- a lower-session replay;
+- an equal-session attempt to revive a buried member.
 
-**Implementation gap:** Single-holder restart-authority enforcement is
-spec-defined but **NOT** yet runtime-enforced (tracked: #2162). The spec is the
-authority for the ownership/transfer shape described above. The current type
-system does not yet model supervision tokens as a distinct type-level boundary;
-they are treated as ordinary Copy values, and `hew-types` has no
-`MarkerTrait::Capability` or equivalent. The runtime does not yet enforce
-single-holder transfer exclusivity. No existing supervision scaffolding claims
-to enforce single-holder tokens; the gap is absence of enforcement, not wrong
-enforcement. For rc1, supervision tokens are not a runtime security boundary.
-
-**WASM policy:** Supervision token obligations are native-only; see §15 for WASM
-policy.
-
-## 9. Failure detector model
-
-Hew distributed nodes use an adaptive detector model in the φ-accrual / SWIM-Lifeguard family. The public observation contract is two-state:
-
-- `Suspect`
-- `Dead`
-
-Applications may observe the following:
-
-- while a peer is `Suspect`, new remote work may still succeed, but callers must be prepared for `Partition` or `Timeout`
-- once a peer is `Dead`, new remote work to that peer fails with typed failure; the detector must not convert uncertainty into synthetic success
-- when a peer returns, it does so by establishing a fresh session; if identity or incarnation changed, old references remain stale
-
-The detector is advisory for liveness, never authoritative for success. A detector transition may accelerate failure, but it may not manufacture a reply that no remote actor produced.
-
-## 10. Backpressure
-
-Distributed messaging requires end-to-end backpressure beyond transport-level flow control.
-
-The v0 contract requires:
-
-- explicit credits or an equivalent bounded admission mechanism for remote send
-- a bounded system mailbox, or quota-controlled priority lanes if system traffic is separated from user traffic
-- typed backpressure on the send surface via `Backpressure` or `WouldBlock`
-- no silent drop as the default overflow behavior for distributed hot paths
-
-Backpressure must be observable in operator surfaces such as per-peer stats, mailbox watermarks, queue depth, or credit state.
-
-## 11. Wire & version negotiation
-
-Connection setup must negotiate enough information to reject incompatible peers before application traffic is misinterpreted.
-
-The handshake contract includes:
-
-- `NodeId` (`node_id: u16`)
-- Hew protocol version (`protocol_version: u16`)
-- Schema hash (`schema_hash: u32`)
-- Feature flags (`feature_flags: u32`)
-- Noise static key (capability proof appropriate to the transport/security mode)
-
-Payloads that require typed compatibility must carry schema identity/version. Incompatible ALPN major versions are rejected at negotiation time. Incompatible payload or feature negotiation resolves to `VersionMismatch`; malformed envelopes or payloads resolve to `DecodeFailure`.
-
-This spec records a validation obligation: CI and release qualification must exercise at least `vN`/`vN+1` wire compatibility for supported distributed versions.
-
-## 12. Security & capabilities
-
-Non-loopback distributed mode requires authenticated peers by default. Key-backed identity and mutually authenticated transport are the baseline contract for that mode.
-
-Authorization is explicit and scoped:
-
-- by namespace
-- by registered name
-- by message type or capability
-
-Named lookup is not ambient authority. A string name is valid only within an opened or granted namespace. Public docs and examples must not present the global registry as an unrestricted authority surface.
-
-Sealed actor references and explicit capability transfer are the design target for untrusted or partially trusted boundaries. Their ownership mechanics are ratified in §12.1.
-
-### 12.1 Sealed-reference and capability ownership
-
-A **sealed actor reference** is a refcounted identity object — it has the same
-§3.1 shape as a pid reference. Sealing limits *who* may mint exercise of authority
-through the reference; it does not make the identity affine. Sealed references
-may be cloned and shared, and no user-visible `close()` or `free()` is required.
-
-A **capability** is an authority token in the sense of
-[`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
-§3.1 mechanism D. Key ownership properties:
-
-- Capability transfer between principals (local or remote) is **move-by-default**.
-  Duplicating authority requires an explicit re-grant by the original grantor.
-  Cloning a sealed reference does not duplicate the capability.
-- Capabilities are **revocable** by the grantor. After revocation, any attempt
-  to exercise the capability **must** resolve to the existing `Unauthorized`
-  typed failure variant (§6). No new `Revoked` variant is introduced in v0;
-  this keeps the §6 taxonomy and soundness matrix stable.
-- Wire-encoded capability frames are subject to the existing fail-closed
-  serialization posture (LESSONS `serializer-fail-closed`). A malformed or
-  expired capability frame **must** resolve to `DecodeFailure` or `Unauthorized`,
-  never to a silent local-shape success. Partial or best-effort wire encoding
-  of capability proofs is forbidden.
-
-The checker is the authority for ownership classification of capability tokens,
-per [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
-§5 (single ownership oracle). Cross-linking §11: capability proof appropriate
-to the transport/security mode is carried in the handshake contract; §12.1 does
-not restate those mechanics, only the ownership shape of tokens once transferred.
-
-**Implementation gap:** Capability transfer and grantor-side revocation are
-spec-defined but **NOT** yet runtime-enforced (tracked: #1706). The spec is the
-authority for the ownership/transfer shape described above. The current type
-system does not yet model capability tokens as a distinct type-level boundary;
-they are treated as ordinary Copy values, and `hew-types` has no
-`MarkerTrait::Capability` or equivalent. The runtime does not yet enforce
-transfer exclusivity or grantor-side revocation. For rc1, capability tokens are
-not a runtime security boundary.
-
-**WASM policy:** Capability token obligations are native-only; see §15 for WASM
-policy.
-
-Authorization failure resolves to `Unauthorized`; authn/authz teardown during an active operation must not collapse into a local-shaped success.
-
-### 12.2 Peer identity binding — `NodeId` ↔ authenticated credential
-
-A peer's advertised `NodeId` is not self-asserted authority. In `Strict`
-(non-loopback / configured) mode a connection is admitted only when the
-authenticated transport credential — the Noise static public key on TCP, or the
-pinned certificate SPKI on quic-mesh — is **bound in advance** to the exact
-`NodeId` the peer claims in its handshake. An admitted key may therefore claim
-only the `NodeId` it is bound to; a key bound to node *M* that claims node *N*,
-a claimed node with no bound credential, or a `Strict` connection presenting no
-credential at all, are each rejected at admission (fail-closed) before the peer
-becomes routable or gains any cluster/registry/reply authority.
-
-Two invariants follow, and both are load-bearing:
-
-- **The handshake `NodeId` is the operator-pinned identity.** The `NodeId` a peer
-  advertises is its configured `HEW_NODE_ID` (the consumed node identity), never
-  a value derived from a process id or connection ordinal. A low-level node whose
-  explicit id contradicts its bound strict identity is refused before it binds a
-  listener.
-- **`Unverified` is delivery-only across BOTH planes.** A loopback-dev or
-  explicit opt-out (`Unverified`) connection carries no control-plane and no
-  ask/reply authority: it may not inject registry gossip, SWIM/cluster
-  membership, or monitor/link control, and an inbound *ask* arriving on such a
-  connection is dropped with a diagnostic (no reply, no route, no membership
-  side effect). Its sole capability is fire-and-forget delivery on the
-  self-declared delivery route. Reply completion additionally validates the
-  originating `(connection manager, connection id)` — a reply arriving on any
-  other connection than the one the ask was issued on is dropped.
-
-Per-node authority is isolated: each node carries its own frozen peer-auth
-snapshot (identity, bindings, allowlist, setup error). Concurrent nodes in one
-process never share credential state, and poisoning one node's peer-auth setup
-never mints or weakens another node's listener identity.
-
-
-## 13. Observability
-
-Distributed envelopes must carry trace context sufficient to correlate cross-node hops. A `traceparent`-equivalent field is the minimum contract.
-
-`Node::stats()` or its successor surface must expose, at minimum:
-
-- per-peer health
-- drops and decode failures
-- mailbox watermarks
-- ask depth
-- flow-control or credit state
-
-Implementations must also provide a recent-event flight recorder. Size policy and retention strategy are implementation-defined, but the obligation to retain recent distributed events for debugging is normative.
-
-## 14. Deterministic distributed testing
-
-`SimTransport` is a required test artifact for distributed Hew. The spec requires it to support:
-
-- drop
-- duplicate
-- reorder
-- partition
-- delay
-- clock-skew
-
-Distributed property tests must name and check stable invariants, including:
-
-1. **Typed-failure invariant:** remote lookup/ask/send never collapse partition or timeout into sentinel success.
-2. **Stale-ref invariant:** an incarnation bump makes old references fail closed.
-3. **Live-session FIFO invariant:** per-sender/per-receiver FIFO holds only inside one live negotiated session.
-4. **Reconnect-gap invariant:** reconnect may expose ordering gaps, but must not claim continuity it did not preserve.
-5. **Cancellation invariant:** cancellation resolves to `Cancelled` or another typed terminal failure, never a fabricated reply.
-6. **Backpressure invariant:** bounded queues surface `Backpressure`/`WouldBlock` rather than silently dropping hot-path traffic.
-7. **Detector-honesty invariant:** suspect/dead transitions may surface failure sooner, but never synthesize success.
-
-Tests should assert final stable invariants rather than one exact transient sequence.
-
-## 15. WASM policy
-
-`Node::*` is native-only in v0. The normative policy is a compile-time gate:
-
-- programs targeting WASM must be rejected when they use `Node::*`
-- the diagnostic must name that distributed `Node::*` requires the native runtime
-- docs and examples must not imply browser/WASM distributed support unless and until a later spec ratifies it
-
-This policy is the distributed counterpart to Hew's explicit parity rules: native-only behavior must be named, not implied.
-
-## 16. Examples policy
-
-Every distributed example is part of the contract surface.
-
-Distributed examples must:
-
-- handle the error branch on remote lookup, send, ask, monitor, or shutdown boundaries
-- show caller-supplied timeout/deadline where a remote reply is awaited
-- avoid teaching sentinel comparisons such as `!= 0` for remote lookup success
-- avoid implying that remote operations are local-equivalent
-
-Examples that omit typed-failure handling on remote boundaries are bugs against this spec.
-
-## 17. Anti-patterns
-
-The following are forbidden in distributed Hew docs, examples, stdlib surface design, and future `Node::*` claims:
-
-1. claiming that local-looking syntax implies local-equivalent semantics
-2. claiming delivery guarantees stronger than at-most-once
-3. hiding remote blocking behavior or relying on a fixed global remote timeout
-4. assuming GC-style lifetime rescue for remote handles or remote state
-5. making a partition look like ordinary local absence
-6. leaving distributed hot paths on unbounded mailboxes
-7. treating a global string registry as ambient authority
-8. treating single-process global runtime state as the permanent cluster identity model
-9. layering QUIC framing in a way that recreates head-of-line blocking
-10. changing wire compatibility without explicit negotiation and version policy
-
-## 18. Coordination & dependency graph
-
-This v0 spec is stage 0 of the distributed roadmap and gates later implementation work.
-
-| Stage | Meaning | Dependency from this spec |
-| --- | --- | --- |
-| 0 | Spec and honesty pass | This document and `HEW-SPEC-2026.md` section 11 define the public contract. |
-| 1 | Identity and ownership foundations | Gated by sections 3, 6, and 7; ownership ratification depends on [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md). |
-| 2 | Wire and version negotiation | Gated by section 11. |
-| 3 | Failure detector and supervision | Gated by sections 8 and 9. |
-| 4 | Backpressure and quiescence | Gated by sections 7 and 10. |
-| 5 | Deterministic distributed testing | Gated by section 14. |
-| 6 | Security and capabilities | Gated by section 12. |
-| 7 | Placement and virtual actors | Informed by this spec, but placement semantics remain a later design effort. |
-| 8 | Production hardening | Depends on stages 1-7 being implemented and validated. |
-
-The concrete follow-on work named by the distributed research record maps to this v0 contract as follows:
-
-1. generation-checked `RemotePid` + node incarnation — gated by sections 3 and 5
-2. typed result on `Node::lookup` and remote await — gated by sections 4 and 6
-3. caller-supplied timeout and cancellation for remote await — gated by section 7
-4. per-call QUIC streams and handshake/version negotiation — gated by section 11
-5. bound system mailbox and priority quotas — gated by section 10
-6. adaptive failure detector — gated by section 9
-7. `SimTransport` and distributed property tests — gated by section 14
-8. authenticated nodes by default plus per-name authorization — gated by section 12
-9. distributed observability (`traceparent`/stats/flight recorder) — gated by section 13
-10. end-to-end backpressure credits for fire-and-forget — gated by section 10
-11. `RuntimeContext` replacing permanent process-global node ownership — gated by sections 3 and 18; §3 pid-reference ownership is ratified and matches already-shipped runtime behaviour; §8 supervision-token and §12 capability-transfer ownership are ratified as normative spec intent, pending runtime enforcement under issues #1228 and #1399
-12. defining link versus monitor across node boundaries — gated by section 8
-13. `Node::*` WASM policy — defined by section 15
-14. virtual-actor placement (`Cluster::activate`) — explicitly later than v0, stage 7
-15. production hardening and soak/version-skew readiness — stage 8, after the earlier stages land
-
-Normative ownership status for sections 3, 8, and 12:
-
-- **§3 (pid-reference ownership):** `LocalPid` and `RemotePid` are refcounted
-  identity references (`Frozen`, `Send`) consistent with `HEW-SPEC-2026.md`
-  §3.7.8. This matches shipped runtime behaviour; no outstanding implementation
-  obligation.
-- **§8 (supervision ownership):** Normative spec intent. Runtime enforcement of
-  single-holder restart-authority tokens is tracked under issue #1228
-  (RuntimeContext handle-shaped API) and issue #1399 (move-checker substrate).
-- **§12 (capability transfer):** Normative spec intent. Runtime enforcement of
-  capability transfer ownership and revocation is tracked under issue #1706.
+An equal-session reconnect is valid only for a live, non-buried member. A
+strictly higher durable session can replace an earlier connection and readmit a
+buried member.
+
+## 5. Wire framing and schema
+
+Transport framing carries CBOR wire frames defined by
+`hew-runtime/schemas/envelope.cddl`. The wire schema version is `2`.
+
+A wire `location` is a CBOR map containing:
+
+```text
+{
+    1: node-id bstr of exactly 16 bytes,
+    2: non-zero actor slot,
+    3: non-zero session incarnation no greater than u32::MAX
+}
+```
+
+Unknown versions, duplicate or unknown map keys, malformed lengths, zero fields,
+non-zero reserved fields, invalid reason tags, and truncated CBOR MUST be
+rejected without state mutation.
+
+Actor-message bodies use the per-type `#[wire]` CBOR schema. Message and reply
+types crossing a node boundary MUST satisfy the compiler's serializability
+requirements.
+
+## 6. Route publication and stale checks
+
+The routing table maps a key-derived `NodeId` to the receiver-local route slot,
+connection owner, and durable peer session. Publication occurs only after
+transport authentication and handshake admission complete.
+
+Every send, ask, monitor, or link operation resolves the carried `NodeId` to the
+current published route, compares the carried session incarnation, and validates
+the exact actor slot. It MUST fail closed if any component differs.
+
+A same-key restart with a higher session fences every earlier location, even if
+the replacement process deliberately reuses the same actor slot. The exact
+public error is `StaleRef`.
+
+When a connection is superseded, the previous connection loses data-plane and
+control-plane authority immediately. Payload-carried route hints never restore
+that authority.
+
+## 7. Registry and names
+
+`Node::register(name, actor)` publishes the actor's exact `Location`.
+`Node::lookup<T>(name)` returns a typed `RemotePid<T>` discovered through the
+authenticated registry.
+
+Names are discovery aliases, not identity:
+
+- registering the same name for the same live actor is idempotent;
+- repointing a name changes future lookup results only;
+- unregistering a name does not revoke an already issued location;
+- actor death makes every location for that actor slot stale;
+- registry add and remove operations carry the exact `Location`.
+
+Registry gossip from an unauthenticated, unverified, stale, or superseded
+connection MUST be rejected.
+
+## 8. Messaging and asks
+
+`RemotePid<T>.send(message)` is fire-and-forget delivery. `RemotePid<T>.ask`
+creates a request identifier, sends the typed request, suspends the caller, and
+resumes with either the typed reply or `AskError`.
+
+Pending asks are owned by one reply table. Connection loss, SWIM death, local
+shutdown, cancellation, timeout, version mismatch, stale identity, and explicit
+peer rejection resolve through that authority. A terminal resolution removes
+the request exactly once; a later reply or failure signal is ignored.
+
+Distributed operations MUST return typed failure rather than fabricate success
+or wait indefinitely after the route is known dead.
+
+## 9. Monitors and `DOWN`
+
+Watcher-side monitor and link registrations share one `MonitorState`
+observation authority. Target-side remote watcher entries exist only to fan
+terminal control frames back to the owning watcher.
+
+`monitor(remote_pid)` returns `Result<MonitorRef, MonitorError>`.
+`MonitorRef::id()` borrows the resource and returns its stable `MonitorId`;
+`MonitorRef::close()` removes the registration. Observation identifiers are
+non-zero `u64` values, never reused, and exhaust only after issuing
+`u64::MAX`.
+
+An actor receives monitor termination through one typed hook:
+
+<!-- doctest: skip -->
+```hew
+import std::link_monitor::{DownNotification, DownReason, DownTarget};
+
+actor Watcher {
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        match note.target {
+            DownTarget::Remote(location) => {
+                println(f"remote actor down: {location}");
+            },
+            DownTarget::Local(slot) => {
+                println(f"local actor {slot} down");
+            },
+        }
+        match note.reason {
+            DownReason::Exited => println("clean exit"),
+            DownReason::Crashed(_) => println("crash"),
+            DownReason::MonitorLost => println("partition"),
+            DownReason::LocalShutdown => println("local shutdown"),
+        }
+    }
+}
+```
+
+The delivered `DownNotification.monitor` MUST equal the originating
+`MonitorRef::id()`. Clean exit, crash, partition, SWIM death, and local shutdown
+each produce at most one terminal claim. The first valid terminal claim removes
+the observation before mailbox delivery, so duplicate frames and close-versus-
+DOWN races cannot produce a second notification.
+
+The copied mailbox payload has one owner and is freed exactly once after hook
+dispatch, no-hook discard, or mailbox shutdown drain.
+
+Closing a monitor delivers no `DOWN`. Close, watcher-node death, actor teardown,
+connection replacement, and node shutdown MUST leave the corresponding
+watcher-side and target-side tables empty.
+
+## 10. Links
+
+Cross-node links use the same observation identifier allocator and route/session
+validation as monitors. A link request carries the exact linker and target
+locations plus the `PartitionPolicy`.
+
+`CrashLinked` delivers a system exit to the local linked actor. Other policies
+retain their documented non-fatal behavior. Link clean exit, crash, partition,
+unlink, and shutdown cleanup are claimed by the same lifecycle authority used
+for monitor observations.
+
+## 11. Membership, burial, and rejoin
+
+SWIM membership is keyed by `NodeId` and durable node session. SWIM's own
+incarnation orders membership updates within that node session.
+
+A DEAD or LEFT member is buried. Equal- or lower-session traffic cannot revive
+it. A strictly higher durable session can be admitted, clears quarantine, and
+then resumes registry and routing publication.
+
+Quarantine blocks sends, asks, monitors, and links until a valid higher-session
+readmission.
+
+## 12. Native-only target posture
+
+Distributed nodes, remote messaging, authenticated transports, registry gossip,
+SWIM, monitors, and cross-node links are native-only. The wasm32 checker rejects
+these surfaces. There is no wasm networking shim and no success-shaped fallback.
+
+## 13. Configuration example
+
+Each operator exchanges the output of `Node::identity_key()` out of band and
+assigns the peer any free local route slot:
+
+<!-- doctest: skip -->
+```hew
+Node::set_transport("tcp");
+Node::load_keys("server.key");
+println(f"pin this credential on peers: {Node::identity_key()}");
+
+// Slot 0 is reserved. Slot 1 is this process's local alias for this peer.
+Node::allow_peer(1, "8f4c...64-hex-digits-total");
+Node::start("0.0.0.0:9000");
+```
+
+A client that pinned the server at local route slot `1` connects with:
+
+<!-- doctest: skip -->
+```hew
+Node::connect("1@127.0.0.1:9000");
+let found: Result<RemotePid<Counter>, LookupError> = Node::lookup("counter");
+```
+
+The route-slot prefix selects the local credential pin. The authenticated key
+derives the peer's `NodeId`; the numeric prefix is never the peer identity.

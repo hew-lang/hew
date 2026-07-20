@@ -35,28 +35,25 @@ ad-hoc per-shape heap walkers.
 
 ### Security — distributed peer identity (breaking)
 
-- **Authenticated `NodeId` ↔ credential binding.** In `Strict` (non-loopback /
-  configured) distributed mode, a peer is admitted only when its authenticated
-  transport credential — the Noise static public key on TCP, or the pinned
-  certificate SPKI on quic-mesh — is bound in advance to the exact `NodeId` it
-  claims in its handshake. An admitted key can therefore claim only the `NodeId`
-  it is bound to; a mismatched, unbound, or credential-less `Strict` connection
-  is rejected at admission (fail-closed) before the peer becomes routable or
-  gains any cluster/registry/reply authority. The handshake `NodeId` is the
-  operator-pinned `HEW_NODE_ID` (never PID-derived), and a node whose explicit id
-  contradicts its bound strict identity is refused before it binds a listener.
-  `Unverified` (loopback-dev / opt-out) connections are delivery-only across
-  **both** the control and data planes: they neither inject nor receive registry
-  gossip or SWIM/cluster membership, may not drive monitor/link control, and an
-  inbound *ask* on such a connection is dropped with a diagnostic. Reply
-  completion additionally validates the originating connection. (#2652)
-- **`Node::allow_peer` now takes two arguments.** The signature changed from
-  `Node::allow_peer(node_id)` to `Node::allow_peer(node_id, credential_hex)`,
-  binding the peer's authenticated credential (lowercase-hex Noise pubkey on TCP,
-  cert SPKI on quic-mesh) to the `NodeId` it may claim. A malformed credential
-  fails closed. The new companion `Node::identity_key() -> String` returns this
-  node's stable public credential as lowercase hex (`""` before a stable identity
-  is loaded) for operators to pin via a peer's `allow_peer`. (#2652)
+- **Key-derived `NodeId` and protocol epoch 2.** A node's 128-bit identity is
+  derived from its authenticated stable Noise key or TLS SPKI. The fixed 72-byte
+  v2 handshake carries that identity plus a durable session incarnation and has
+  no fallback to an older epoch. Mismatched keys, stale sessions, malformed
+  reserved fields, and unbound peers are rejected before route publication.
+- **Receiver-local route slots.** `Node::allow_peer(route_slot,
+  credential_hex)` pins a peer credential to a non-zero local `u16` alias; slot
+  `0` is reserved. Route slots are never distributed identity. The runtime
+  enforces one-to-one slot/credential bindings and derives each peer `NodeId`
+  after transport authentication.
+- **Durable full actor locations.** `RemotePid<T>` is now an allocation-free
+  32-byte value carrying `{ NodeId, actor slot, session incarnation }`. A
+  same-key restart advances the durable session and fences every PID from the
+  prior process with `StaleRef`. Registry names remain discovery aliases:
+  repointing a name changes future lookup only.
+- **Single monitor/link lifecycle authority.** `#[on(down)]` receives typed
+  `DownNotification` values, `MonitorRef::id()` correlates the originating
+  registration, and clean exit, crash, partition, close, and shutdown converge
+  on exactly-once observation cleanup and mailbox delivery.
 
 ### Fixed — actor and machine correctness (correctness fence)
 

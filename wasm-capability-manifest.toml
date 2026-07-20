@@ -401,12 +401,12 @@ tracking_label = "WASM-TODO: os"
 [[feature]]
 id = "distributed"
 enum_variant = "Distributed"
-label = "`Node::*`, `RemotePid<T>::tell` / `::ask`"
-prose_label = "`Node::*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `allow_peer`, `register`, `lookup`), `RemotePid<T>::tell` / `::ask`"
-reason = "the Node:: cluster API and RemotePid messaging route through the native mesh transport (hew_node_api_* / hew_remote_pid_tell), which is not compiled for wasm32; no wasm32 distributed runtime exists yet"
+label = "`Node::*`, remote messaging, and cross-node lifecycle"
+prose_label = "`Node::*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), `RemotePid<T>::send` / `::ask`, and remote monitor/link operations"
+reason = "key-derived node identity, durable sessions, authenticated peer admission, registry gossip, SWIM, RemotePid routing, and cross-node monitor/link delivery require the native mesh runtime, which is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "Native mesh transport (hew_node_api_* / hew_remote_pid_tell); not compiled for wasm32"
+runtime_status = "Native authenticated mesh, full-Location routing, and distributed lifecycle runtime; not compiled for wasm32"
 categories = ["stdlib", "distributed", "actor"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO: distributed"
@@ -502,8 +502,8 @@ tracking_label = "WASM-TODO: process-execution"
 
 [[backlog]]
 id = "distributed"
-gap = "Distributed node API / remote-actor messaging parity"
-blocker = "wasm peer transport for the `Node::*` cluster API and `RemotePid` routing (`hew_node_api_*` is native-only)"
+gap = "Key-backed distributed identity, remote-actor messaging, and lifecycle parity"
+blocker = "wasm peer transport plus authenticated identity/session, registry, SWIM, full-Location routing, and cross-node monitor/link authorities"
 tracking_label = "WASM-TODO: distributed"
 
 [[backlog]]

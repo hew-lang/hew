@@ -101,7 +101,7 @@ The **Checker disposition** column documents what the type checker emits when
 | **`std::net::quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`** | 🚫 Error (`Quic`) | `quic_transport` is feature-gated and not compiled for wasm32 | WASM-TODO |
 | **`std::net::dns.resolve`, `dns.lookup_host`** | 🚫 Error (`Dns`) | Native OS resolver; not compiled for wasm32 | WASM-TODO |
 | **`std::os.*`** | 🚫 Error (`OsEnv`) | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO |
-| **`Node::*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `allow_peer`, `register`, `lookup`), `RemotePid<T>::send` / `::ask`** | 🚫 Error (`Distributed`) | Native mesh transport (`hew_node_api_*` / `hew_remote_pid_send`); not compiled for wasm32 | WASM-TODO |
+| **`Node::*`, `RemotePid<T>::send` / `::ask`, remote monitor/link operations** | 🚫 Error (`Distributed`) | Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only | WASM-TODO |
 | **`std::crypto::crypto.random_bytes`** | 🚫 Error (`CryptoRandom`) | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists | WASM-TODO |
 
 ---
@@ -210,20 +210,15 @@ would otherwise end in a trap or linker failure:
   feature-specific diagnostic rather than a native-symbol failure downstream.
   - WASM-TODO: define a host capability model for subprocess execution.
 
-- **Distributed node API / remote-actor messaging**: The `Node::*` cluster API
-  (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `allow_peer`,
-  `register`, `lookup`) and `RemotePid<T>::send` / `RemotePid<T>::ask` lower to
-  the native mesh transport (`hew_node_api_*` and `hew_remote_pid_send` →
-  `hew_actor_send_by_id`), which is gated behind
-  `#[cfg(not(target_arch = "wasm32"))]` and absent from the wasm32 link set.
-  Before this gate the checker admitted these on wasm32 and codegen emitted a
-  module importing an undefined `env::hew_node_api_*` symbol that failed at
-  instantiation (admit-then-abort). The checker now rejects the whole `Node::`
-  namespace and remote messaging with `Distributed`, so distributed programs
-  fail closed at check time the same way `net.*` / `quic.*` / `tls.*` already
-  do. Basic single-process actors (`spawn` / `send` / `ask`) remain available.
-  - WASM-TODO: decide a wasm peer transport before exposing any distributed
-    surface on wasm32.
+- **Key-backed distributed identity and remote actors**: The `Node::*` cluster
+  API, `RemotePid<T>::send` / `RemotePid<T>::ask`, registry/SWIM, durable
+  session fencing, and cross-node monitor/link delivery lower to the native
+  authenticated mesh runtime. That runtime is absent from the wasm32 link set.
+  The checker rejects the whole distributed surface with `Distributed`, so
+  wasm32 never receives a success-shaped networking shim. Basic single-process
+  actors (`spawn` / local `send` / local `ask`) remain available.
+  - WASM-TODO: define a wasm peer transport and identity/session authority
+    before exposing any distributed surface.
 
 - **`std::crypto::crypto.random_bytes`**: Secure randomness is backed by
   `ring::SystemRandom`, which is native-only and absent from the wasm32 link set.
@@ -318,7 +313,7 @@ These gaps are explicitly deferred and tracked here:
 | `std::os` parity | WASI-backed args/env/path/system shims for the current stdlib surface | `WASM-TODO: os` |
 | `crypto.random_bytes` parity | Secure wasm32 entropy source and explicit capability classification | `WASM-TODO: crypto-random` |
 | Process execution parity | Explicit host capability model for subprocesses | `WASM-TODO: process-execution` |
-| Distributed node API / remote-actor messaging parity | wasm peer transport for the `Node::*` cluster API and `RemotePid` routing (`hew_node_api_*` is native-only) | `WASM-TODO: distributed` |
+| Key-backed distributed identity, remote-actor messaging, and lifecycle parity | wasm peer transport plus authenticated identity/session, registry, SWIM, full-Location routing, and cross-node monitor/link authorities | `WASM-TODO: distributed` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |
 | Structured concurrency scopes | Cooperative task work queue integrated with `hew_sched_run`, `TaskEntry` continuation/resume, completion wakeups, and non-blocking scope joins | `WASM-TODO: scope` |

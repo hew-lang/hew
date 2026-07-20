@@ -3220,60 +3220,104 @@ call when both actors are intentionally local. Full example:
 [`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)
 and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew).
 
-#### Peer authentication (native quic-mesh)
+#### Key-backed node identity and peer authentication (native only)
 
-On the QUIC mesh transport, peers authenticate by mutual TLS with pinned public
-keys. Call these before `Node::start`:
+Every distributed node identity is derived from its stable authenticated public
+credential. `Node::load_keys(path)` loads or creates that credential, and
+`Node::identity_key()` returns the public half as lowercase hexadecimal for
+out-of-band exchange.
+
+The runtime computes:
+
+```text
+SHA-256(
+  "hew-node-id-v1\0"
+  || credential-kind byte
+  || credential length as u32 big-endian
+  || canonical credential bytes
+)[0..16]
+```
+
+The resulting `NodeId` renders as 32 lowercase hexadecimal digits. The
+credential-kind byte is `1` for a TCP Noise static key and `2` for a canonical
+TLS leaf SPKI. Keeping the key preserves the `NodeId`; rotating the key rotates
+the identity.
+
+`Node::allow_peer(route_slot, credential)` binds a peer credential to a
+receiver-local non-zero `u16` route slot. Slot `0` is reserved for local
+dispatch. A route slot is only a compact alias inside the configuring process:
+it never becomes the peer's identity and may differ on every node.
+
+Call all identity and pinning operations before `Node::start`:
 
 <!-- doctest: skip -->
 ```hew
 Node::set_transport("quic-mesh");
-Node::load_keys("node.key");        // mint+persist this node's identity (stable SPKI)
-let me = Node::identity_key();       // this node's stable public credential (hex)
-Node::allow_peer(2, "3059…0107");   // bind peer NodeId 2 to its cert SPKI; fail-closed
+Node::load_keys("node.key");
+println(f"pin this credential on peers: {Node::identity_key()}");
+
+// This process chooses local route slot 2 for the peer.
+Node::allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
 Node::start("0.0.0.0:9000");
 ```
 
-`load_keys` loads the node's TLS identity from the keyfile, creating one on
-first run so the public key stays stable across restarts. `Node::identity_key()`
-returns this node's own stable public credential for the pinned transport as
-lowercase hex (the cert SPKI on quic-mesh, the 32-byte Noise public key on
-tcp-noise), or the empty string `""` before an identity is loaded — hand it to a
-peer so they can pin it with their own `allow_peer`. `allow_peer(node_id,
-credential)` binds a peer's authenticated credential (quic-mesh: cert SPKI;
-tcp-noise: 32-byte Noise public key, both lowercase hex) to the `NodeId` that
-peer is permitted to claim — a peer whose credential is unbound, or which
-claims a `NodeId` its credential is not bound to, is rejected (fail-closed).
-Configuring any binding requires this node's own stable id via the `HEW_NODE_ID`
-environment variable. These are native-only; WASM/sandbox builds carry no
-networking. See [`examples/distributed_hello.hew`](../examples/distributed_hello.hew).
+On TCP, the pinned credential is the peer's 32-byte Noise public key. On
+quic-mesh, it is the peer certificate's canonical SPKI. An unbound or mismatched
+credential is rejected before the peer becomes routable.
 
-Launch each node with its own stable `HEW_NODE_ID` — the identity it claims in
-the handshake, which must match the id its peers bound via `allow_peer`:
+A client selects its local pin when connecting:
 
 <!-- doctest: skip -->
-```sh
-# Node 1 claims NodeId 1; its peers pin identity_key() -> 1
-HEW_NODE_ID=1 hew run node.hew
-# Node 2 claims NodeId 2; its peers pin identity_key() -> 2
-HEW_NODE_ID=2 hew run node.hew
+```hew
+Node::connect("2@127.0.0.1:9000");
 ```
 
-In `Strict` (configured / non-loopback) mode `HEW_NODE_ID` is authoritative: it
-is never derived from a runtime PID, and a node whose configured id contradicts
-the identity its own credential is bound to is refused before it binds a
-listener. To exchange credentials, each operator runs their node once, reads the
-`Node::identity_key()` value it prints, and hands that hex string to the other
-operator to pin with `allow_peer(their_node_id, their_identity_key)`.
+The `2@` prefix is the client's route slot for that server. The authenticated
+key, not the numeric prefix, determines the server's `NodeId`.
 
-**Migrating from the one-argument `allow_peer`.** Earlier releases accepted
-`Node::allow_peer(node_id)`, which allow-listed a `NodeId` without binding it to
-a specific credential — any admitted key could then claim that id. The call now
-requires the peer's credential: `Node::allow_peer(node_id, credential_hex)`.
-Replace every one-argument call with the two-argument form, passing the peer's
-`identity_key()` (lowercase hex: the cert SPKI on quic-mesh, the 32-byte Noise
-public key on tcp-noise). The one-argument form no longer compiles, and a
-malformed credential fails closed at `Node::start`.
+Each successful start also advances a durable non-zero session incarnation in
+the key's journal. A same-key restart therefore has the same `NodeId` and a
+higher session. `RemotePid<T>` carries the complete `Location`:
+
+```text
+{ node: NodeId, slot: u64, incarnation: u32 }
+```
+
+The value is an allocation-free 32-byte inline handle. It has no reference
+count, does not keep the actor alive, and cannot be constructed from raw
+integers. A PID captured before a same-key restart fails with `StaleRef`, even
+if the replacement process reuses the same actor slot.
+
+Registry names are discovery aliases. Repointing a name affects future
+`Node::lookup` calls but does not rewrite or revoke a previously issued
+`RemotePid`.
+
+Remote monitors deliver one typed notification through `#[on(down)]`:
+
+<!-- doctest: skip -->
+```hew
+import std::link_monitor::{DownNotification, DownReason};
+
+actor Watcher {
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        match note.reason {
+            DownReason::Exited => println("peer exited"),
+            DownReason::Crashed(_) => println("peer crashed"),
+            DownReason::MonitorLost => println("peer became unreachable"),
+            DownReason::LocalShutdown => println("local node shut down"),
+        }
+    }
+}
+```
+
+`MonitorRef::id()` matches `DownNotification.monitor`. Closing the handle
+removes the registration and delivers no notification.
+
+The complete protocol and identity rules are normative in
+[`HEW-DIST-SPEC.md`](specs/HEW-DIST-SPEC.md). Distributed nodes, remote
+messaging, and link/monitor propagation are native-only; wasm32 rejects these
+surfaces.
 
 ### TLS client — free-function surface (with a v0.5 data-plane caveat)
 

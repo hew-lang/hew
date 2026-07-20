@@ -41,13 +41,15 @@ that conform to that schema live in
 ### What lives in the substrate
 
 - A `wire-frame` is either a `control-frame` or an `envelope-frame`. Both
-  are CBOR maps keyed by small integers (1..=8). `frame_type` (key `2`)
-  selects the branch.
+  are CBOR maps keyed by small integers. `frame_type` (key `2`) selects the
+  branch.
 - An `envelope-frame` carries one actor-to-actor message and includes
-  `version`, `frame_type`, `target_actor_id`, `source_actor_id`,
-  `msg_type`, `payload` (the user-level serialised body, as `bstr`),
-  `request_id`, and `source_node_id`.
-- `version` is currently fixed at `1`. Decoders **must** reject unknown
+  `version`, `frame_type`, exact target/source `Location` values, `msg_type`,
+  `payload` (the user-level serialised body, as `bstr`), and `request_id`.
+- A `Location` carries a 16-byte key-derived `NodeId`, non-zero actor slot,
+  and non-zero durable session incarnation. Receiver-local route slots do not
+  enter the frame.
+- `version` is fixed at `2`. Decoders **must** reject unknown
   versions with `UnknownVersion`; they must not best-effort parse a frame
   whose version they do not recognise.
 

@@ -20,23 +20,26 @@ fn main() {
     counter.increment(3);
 
     // ── Secure distributed node (QUIC mesh, mutual TLS) ──────
-    // load_keys mints (and persists) this node's identity so its public key
-    // stays stable across restarts; identity_key() returns that public
-    // credential (lowercase hex) to hand a peer so they can pin it. allow_peer
-    // binds a peer's cert SPKI to the NodeId (here 2) that peer is permitted to
-    // claim — a peer presenting an unbound SPKI, or claiming a NodeId its SPKI
-    // is not bound to, is rejected (fail-closed). Both run before start so the
-    // listener adopts them. Strict binding requires this node's own stable id
-    // via the HEW_NODE_ID env var, e.g.  HEW_NODE_ID=1 hew run distributed_hello.hew
+    // load_keys mints and persists the stable key from which this node's NodeId
+    // is derived. identity_key() returns the public credential (lowercase hex)
+    // for out-of-band exchange. allow_peer binds a peer credential to this
+    // process's receiver-local route slot 2; the numeric slot is not identity.
+    // A peer presenting any other credential is rejected before it is routable.
     Node::set_transport("quic-mesh");
     Node::load_keys("node.key");
     let me = Node::identity_key();
     println(f"this node's pinnable credential: {me}");
     Node::allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
     Node::start("127.0.0.1:0");
+    match Node::id() {
+        Some(id) => println(f"this node's key-derived identity: {id}"),
+        None => println("node identity unavailable"),
+    }
     Node::register("counter", counter);
-    // A second node would: Node::connect("127.0.0.1:9000") then
-    // Node::lookup("counter") and message the RemotePid over the mesh.
+    // A second node that pinned this credential at its local route slot 2 would
+    // call Node::connect("2@127.0.0.1:9000"), then Node::lookup("counter") and
+    // message the returned RemotePid. The PID carries NodeId, actor slot, and
+    // durable session incarnation, so a same-key restart fences the old value.
     Node::shutdown();
     println("Counter node demo complete");
 }

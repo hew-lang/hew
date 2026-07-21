@@ -212,6 +212,32 @@ fn indexed(i: i64) -> i64 {
 }
 
 #[test]
+fn destructive_update_of_projected_member_transfers_out_of_the_synthetic_root() {
+    let p = pipeline(
+        r#"
+record Inner { label: string, n: i64 }
+record Mid { inner: Inner, k: i64 }
+
+fn transfer() -> i64 {
+    let v: Vec<Mid> = [];
+    v.push(Mid { inner: Inner { label: "a".to_upper(), n: 7 }, k: 3 });
+    let u = Inner { label: "b".to_upper(), ..v[0].inner };
+    u.label.len()
+}
+"#,
+    );
+
+    assert_eq!(call_count(&p, "transfer", "hew_vec_get_clone"), 1);
+    assert_eq!(synthetic_binds(&p, "transfer"), 1);
+    let locals = synthetic_locals(&p, "transfer");
+    assert_eq!(locals.len(), 1);
+    assert!(
+        synthetic_drop_exits(&p, "transfer", locals[0]).is_empty(),
+        "the destructive update transfers the projected member and must exclude the parent root"
+    );
+}
+
+#[test]
 fn early_return_back_edge_and_break_each_release_the_live_root_once() {
     let p = pipeline(
         r#"

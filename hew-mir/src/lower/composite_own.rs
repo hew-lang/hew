@@ -1935,6 +1935,19 @@ pub(super) fn derive_owned_record_drop_allowed(
                     }
                 }
             }
+            // A destructive functional update over an owned nested-record
+            // binder uses `RecordFieldDrop` for an overridden COW leaf. The
+            // binder aliases its parent root's storage, so the leaf release
+            // discharges part of that root just like the `FieldDropInPlace`
+            // case above. Exclude the attributed root or its later recursive
+            // drop would release the overridden leaf a second time. Keep a
+            // whole-root `RecordFieldDrop` on the existing interior-operation
+            // path below; only an attributed field binder transfers ownership.
+            if let Instr::RecordFieldDrop { record, .. } = instr {
+                if let Some(l) = base_local(*record).filter(|local| is_escape_binder(*local)) {
+                    note_field_escape(l, &mut excluded_roots);
+                }
+            }
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member) from a real whole-record escape.
             if let Instr::Move { dest, src } = instr {

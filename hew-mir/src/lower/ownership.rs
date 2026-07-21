@@ -4,14 +4,15 @@ use super::{
     monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
-    ClosurePairIngress, CmpPred, DecisionFact, Disposition, FieldLoadClass, HashMap, HashSet,
-    HirBinding, HirBlock, HirExpr, HirExprKind, HirStmtKind, Instr, IntentKind, LayoutClass,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, OwnedLocalEntry, OwnershipCtx,
-    OwnershipDecision, Place, PlaceProvenance, Projection, ResolvedRef, ResolvedTy, ResourceMarker,
-    SiteId, Strategy, Terminator, ValueClass, ValueOwnership, ValueProvenance,
-    SYNTHETIC_CALL_SCRUTINEE_NAME, SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
-    SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
-    SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME, SYNTHETIC_WHILE_LET_ITERATION_NAME,
+    ClosurePairIngress, CmpPred, DecisionFact, Disposition, FieldLoadClass,
+    FreshVecGetCloneProjectionBase, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
+    HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    OwnedLocalEntry, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance, Projection,
+    ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass,
+    ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
+    SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
+    SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
+    SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +106,19 @@ impl Builder {
         self.record_binding_scope(binding);
         self.register_owned_local(binding, name.to_string(), ty);
         binding
+    }
+
+    pub(crate) fn note_fresh_vec_clone_projection_base(
+        &mut self,
+        place: Place,
+        ty: ResolvedTy,
+        site: SiteId,
+    ) {
+        let Place::Local(local) = place else {
+            unreachable!("the Vec clone destination is always a local");
+        };
+        self.fresh_vec_get_clone_projection_bases
+            .push(FreshVecGetCloneProjectionBase { local, ty, site });
     }
 
     /// Registers the ordinary scope-exit owner for a fresh composite cloned by

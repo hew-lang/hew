@@ -264,11 +264,8 @@ fn lower_file_to_mir(
         return Err(());
     }
 
-    let mut pipeline = hew_mir::lower_hir_module_with_facts(
-        &lower_output.module,
-        &tco.actor_send_aliasing,
-        mir_pointer_width(&target),
-    );
+    let mut pipeline =
+        hew_mir::lower_hir_module_with_facts(&lower_output.module, mir_pointer_width(&target));
     // Route checker-authored layout facts onto the pipeline.
     pipeline.attach_lowering_facts(&tco);
     if render_pipeline_mir_diagnostics(
@@ -351,11 +348,8 @@ fn lower_file_to_mir_for_target(
         return Err(());
     }
 
-    let mut pipeline = hew_mir::lower_hir_module_with_facts(
-        &lower_output.module,
-        &tco.actor_send_aliasing,
-        mir_pointer_width(target),
-    );
+    let mut pipeline =
+        hew_mir::lower_hir_module_with_facts(&lower_output.module, mir_pointer_width(target));
     pipeline.attach_lowering_facts(&tco);
     if render_pipeline_mir_diagnostics(
         &state.program,
@@ -459,11 +453,8 @@ fn run_check_deep_gates(
         return Err(());
     }
 
-    let mut pipeline = hew_mir::lower_hir_module_with_facts(
-        &lower_output.module,
-        &tco.actor_send_aliasing,
-        mir_pointer_width(target),
-    );
+    let mut pipeline =
+        hew_mir::lower_hir_module_with_facts(&lower_output.module, mir_pointer_width(target));
     // Clone checker-authored layout-fact lifecycle into the pipeline
     // (see the matching invocation in `check_command`).
     pipeline.attach_lowering_facts(tco);
@@ -704,11 +695,8 @@ pub(crate) fn compile_native_from_program(
         return Err(());
     }
 
-    let mut pipeline = hew_mir::lower_hir_module_with_facts(
-        &lower_output.module,
-        &tco.actor_send_aliasing,
-        mir_pointer_width(&target),
-    );
+    let mut pipeline =
+        hew_mir::lower_hir_module_with_facts(&lower_output.module, mir_pointer_width(&target));
     // Route checker-authored layout facts onto the pipeline.
     pipeline.attach_lowering_facts(&tco);
     if render_pipeline_mir_diagnostics(
@@ -1529,12 +1517,7 @@ fn cmd_check(a: &args::CheckArgs) {
         if a.show_stack_hints {
             diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
         } else if a.explain_cow {
-            explain_cow::render_explain_cow(
-                &result.actor_send_aliasing,
-                &result.source,
-                &input,
-                &mut std::io::stdout(),
-            );
+            explain_cow::render_explain_cow(&result.source, &input, &mut std::io::stdout());
         }
     }
 

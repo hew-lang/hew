@@ -22,12 +22,7 @@ pub enum BorrowKind {
     Mutable,
 }
 
-/// Binary alias-vs-copy discriminant carried by [`Terminator::Send`].
-///
-/// Codegen uses this in Phase P5.2 to branch between the legacy
-/// deep-copy mailbox path (`Copy`) and the refcounted alias envelope
-/// path (`Alias`). The field is populated by MIR lowering from the
-/// checker's `actor_send_aliasing` side table.
+/// Transitional outbound ownership discriminant carried by [`Terminator::Send`].
 ///
 /// **Fail-closed default**: a missing or unresolved classification in
 /// the checker's side table MUST produce `Copy`. `Copy` is the safe
@@ -38,10 +33,9 @@ pub enum BorrowKind {
 /// LESSONS: `serializer-fail-closed` (P0) — every fallback / default
 /// path MUST be `Copy`. The `Default` impl below enforces this.
 ///
-/// `alias-byte-copy-not-semantic-clone` / `copy ⊥ sendable` (P0):
-/// this discriminant is derived SOLELY from the checker's
-/// `actor_send_aliasing` classification, never from a `Copy`-marker
-/// or `implements_marker(Copy)` check.
+/// MIR's outbound preparation pass replaces this binary representation with
+/// resolved per-argument snapshot/transfer modes. The checker does not author
+/// mechanism choices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SendAliasMode {
     /// Sender and receiver are isolated: the runtime deep-copies the
@@ -262,24 +256,6 @@ pub struct IrPipeline {
     /// pipeline finalization fails closed on any remaining `Pending`
     /// element layout fact.
     pub hashset_lowering_facts: Vec<hew_types::HashSetLoweringFact>,
-    /// Checker-authored alias-vs-copy decision per actor send site.
-    ///
-    /// Keyed by the source span of each actor-send argument expression
-    /// (the same `SpanKey` the checker inserts during
-    /// `enforce_actor_boundary_send`). Populated by
-    /// `lower_hir_module_with_facts` from `TypeCheckOutput::actor_send_aliasing`
-    /// so codegen (Phase P5.2) can branch on the decision without
-    /// re-examining the AST.
-    ///
-    /// This field mirrors the checker's map for codegen's future use.
-    /// MIR lowering itself reads from the map it was called with (via
-    /// `lower_hir_module_with_facts`) and stamps each
-    /// `Terminator::Send.alias_mode` at construction time.
-    ///
-    /// LESSONS: `serializer-fail-closed` (P0) — a missing entry maps
-    /// to `SendAliasMode::Copy`; `Alias` is ONLY set on explicit
-    /// `ActorSendAliasing::Alias` entries.
-    pub actor_send_aliasing: HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     /// Polymorphic (un-monomorphised) MIR for every generic origin function
     /// in the module (W5.007a). One entry per generic `HirFn` whose body is
     /// lowered against `ResolvedTy::TypeParam` operands instead of being
@@ -482,24 +458,6 @@ impl IrPipeline {
         self.hashset_lowering_facts = tco.hashset_layout_facts.values().cloned().collect();
         self.user_clone_record_seeds
             .clone_from(&tco.user_clone_record_seeds);
-    }
-
-    /// Store the checker's `actor_send_aliasing` side table in the pipeline
-    /// for codegen (Phase P5.2) to consume.
-    ///
-    /// This is called by driver glue (`hew-cli`) alongside
-    /// `attach_lowering_facts`. It mirrors — for codegen's future reference —
-    /// the same map that was passed to `lower_hir_module_with_facts` so that
-    /// the decisions stamped on each `Terminator::Send.alias_mode` during
-    /// lowering are also available as a flat lookup table.
-    ///
-    /// Calling this after `lower_hir_module_with_facts` is idempotent: the
-    /// `alias_mode` values on existing terminators are already correct; this
-    /// method just makes the raw map accessible on the pipeline struct for
-    /// diagnostic / `--explain-cow` rendering.
-    pub fn attach_actor_send_aliasing(&mut self, tco: &hew_types::TypeCheckOutput) {
-        self.actor_send_aliasing
-            .clone_from(&tco.actor_send_aliasing);
     }
 }
 
@@ -3448,12 +3406,8 @@ pub enum Terminator {
     /// here so the escape check has a construction site to look for;
     /// the v0.5 integer spine never constructs it.
     ///
-    /// `alias_mode` is the binary alias-vs-copy discriminant derived
-    /// from the checker's `actor_send_aliasing` side table. It is
-    /// populated by `lower_actor_send` at MIR construction time and
-    /// consumed by codegen (Phase P5.2) to select the send path.
-    /// **Fail-closed default is `Copy`**: a site with no checker entry
-    /// always uses the safe deep-copy path.
+    /// `alias_mode` is a temporary raw-MIR placeholder until outbound
+    /// preparation resolves per-argument snapshot/transfer modes.
     Send {
         actor: Place,
         msg_type: i32,

@@ -1284,20 +1284,6 @@ struct Builder {
     /// labels are a type-checker error; MIR still reports a diagnostic instead
     /// of panicking if malformed HIR reaches this boundary.
     pub(crate) loop_stack: Vec<LoopFrame>,
-    /// Checker's per-send-site alias classification, keyed by the source span
-    /// of each actor-send argument expression (same key as
-    /// `TypeCheckOutput::actor_send_aliasing`). Populated by the caller
-    /// (`lower_function` / `lower_hir_module_with_facts`); empty for the
-    /// backward-compat `lower_hir_module` path.
-    ///
-    /// `lower_actor_send` looks up `SpanKey::from(&args[0].span)` here and
-    /// stamps the resulting `SendAliasMode` onto `Terminator::Send.alias_mode`.
-    /// **Missing entry → `SendAliasMode::Copy`** (fail-closed).
-    ///
-    /// LESSONS: `serializer-fail-closed` (P0) — default MUST be Copy.
-    /// `copy ⊥ sendable` (P0) — derived SOLELY from this table, never from
-    /// a `Copy`-marker check.
-    pub(crate) actor_send_aliasing: HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     /// Stage 2 (gdb `-g`): byte-offset span `(start, end)` of the HIR
     /// statement / tail expression currently being lowered. Set at each
     /// statement boundary (`stmt`) and at the function tail (`function_body`);
@@ -1332,38 +1318,7 @@ struct Builder {
               and module_fn_names construction"
 )]
 pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
-    lower_hir_module_with_facts(module, &HashMap::new(), PointerWidth::default())
-}
-
-/// Collapse a per-module-indexed `actor_send_aliasing` map to the `module_idx
-/// = 0` keys MIR uses for send-site lookups (`SpanKey::from`). A byte range is
-/// emitted as `Alias` only when every module's entry for it agrees on `Alias`;
-/// any `Copy` classification or cross-file conflict at the same byte range is
-/// dropped so the lookup misses and defaults to the safe `Copy` path.
-pub(crate) fn collapse_actor_send_aliasing_to_idx0(
-    map: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
-) -> HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing> {
-    let mut all_alias: HashMap<(usize, usize), bool> = HashMap::new();
-    for (k, v) in map {
-        let entry = all_alias.entry((k.start, k.end)).or_insert(true);
-        if !matches!(v, hew_types::ActorSendAliasing::Alias) {
-            *entry = false;
-        }
-    }
-    all_alias
-        .into_iter()
-        .filter(|&(_, is_alias)| is_alias)
-        .map(|((start, end), _)| {
-            (
-                hew_types::SpanKey {
-                    start,
-                    end,
-                    module_idx: 0,
-                },
-                hew_types::ActorSendAliasing::Alias,
-            )
-        })
-        .collect()
+    lower_hir_module_with_facts(module, PointerWidth::default())
 }
 
 /// Resolve the proven source origin of a lowered function body for codegen
@@ -1390,19 +1345,7 @@ fn resolve_source_origin(id: hew_hir::ItemId, module: &HirModule) -> SourceOrigi
     }
 }
 
-/// Lower a HIR module to MIR, threading the checker's per-send-site alias
-/// classification so each [`Terminator::Send`] carries the correct
-/// [`crate::model::SendAliasMode`] discriminant at construction time.
-///
-/// This is the preferred entry point for driver glue that has access to a
-/// `TypeCheckOutput`. Pass `tco.actor_send_aliasing` (or the equivalent map
-/// from `CompileOutput`). The returned [`IrPipeline`] will have every
-/// `Terminator::Send.alias_mode` set from the map; sites absent from the map
-/// default to `SendAliasMode::Copy` (fail-closed).
-///
-/// `lower_hir_module` is the backward-compatible wrapper that passes an
-/// empty map and is used by all existing tests; it remains correct because
-/// `Copy` is the safe fallback for every send site.
+/// Lower a HIR module to MIR with target-specific facts.
 ///
 /// `pointer_width` is the target pointer width (32 on wasm32, 64 native),
 /// derived from the compile target so the `isize`/`usize` div/rem signed-MIN
@@ -1416,17 +1359,7 @@ fn resolve_source_origin(id: hew_hir::ItemId, module: &HirModule) -> SourceOrigi
               in the same function so the producers share record_field_orders, type_classes, \
               and module_fn_names construction"
 )]
-#[allow(
-    clippy::implicit_hasher,
-    reason = "callers always supply a standard RandomState HashMap; \
-              generalising S would require threading the type parameter through all \
-              internal free functions which would be more disruptive than the lint value"
-)]
-pub fn lower_hir_module_with_facts(
-    module: &HirModule,
-    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
-    pointer_width: PointerWidth,
-) -> IrPipeline {
+pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWidth) -> IrPipeline {
     fn resolve_coalesce_key_plan(
         actor: &HirActorDecl,
         handlers: &[ActorHandlerLayout],
@@ -1563,18 +1496,6 @@ pub fn lower_hir_module_with_facts(
         }
     }
 
-    // The checker stamps `actor_send_aliasing` with a per-module `SpanKey`
-    // index (0 = root, N = N-th non-root module), but MIR looks each send up
-    // by `SpanKey::from(&arg.span)` (module_idx = 0) because post-flatten HIR
-    // spans carry no module identity. Without re-keying, every send inside a
-    // non-root (imported/file-import) actor or fn body misses its checker fact
-    // and silently degrades to the `Copy` deep-copy path. Collapse to idx-0
-    // keys here, keeping `Alias` only where every module's entry for a byte
-    // range agrees — any `Copy` or cross-file conflict falls back to the safe
-    // `Copy` default, which is collision-safe and strictly safer than the
-    // pre-module-idx idx-0 scheme.
-    let collapsed_actor_send_aliasing = collapse_actor_send_aliasing_to_idx0(actor_send_aliasing);
-    let actor_send_aliasing = &collapsed_actor_send_aliasing;
     let mut thir = Vec::new();
     let mut raw_mir = Vec::new();
     let mut checked_mir = Vec::new();
@@ -3034,7 +2955,6 @@ pub fn lower_hir_module_with_facts(
                         Some(&module.vec_generic_element_abi),
                         &module.supervisor_child_slots,
                         &module.pool_accessor_sites,
-                        actor_send_aliasing,
                         pointer_width,
                         crate::model::FunctionCallConv::Default,
                         task_entry_adapter_symbols.clone(),
@@ -3087,7 +3007,6 @@ pub fn lower_hir_module_with_facts(
                     Some(&module.vec_generic_element_abi),
                     &module.supervisor_child_slots,
                     &module.pool_accessor_sites,
-                    actor_send_aliasing,
                     pointer_width,
                     crate::model::FunctionCallConv::Default,
                     task_entry_adapter_symbols.clone(),
@@ -3127,7 +3046,6 @@ pub fn lower_hir_module_with_facts(
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     &module.pool_accessor_sites,
-                    actor_send_aliasing,
                     pointer_width,
                     &mut emitted_actor_handler_symbols,
                     &task_entry_adapter_symbols,
@@ -3170,7 +3088,6 @@ pub fn lower_hir_module_with_facts(
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     &module.pool_accessor_sites,
-                    actor_send_aliasing,
                     pointer_width,
                     &mut emitted_actor_handler_symbols,
                     &task_entry_adapter_symbols,
@@ -3258,7 +3175,6 @@ pub fn lower_hir_module_with_facts(
                     &param_ownership,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
-                    actor_send_aliasing,
                     pointer_width,
                 );
                 thir.push(lowered.thir);
@@ -3328,7 +3244,6 @@ pub fn lower_hir_module_with_facts(
             Some(&module.vec_generic_element_abi),
             &module.supervisor_child_slots,
             &module.pool_accessor_sites,
-            actor_send_aliasing,
             pointer_width,
             crate::model::FunctionCallConv::Default,
             task_entry_adapter_symbols.clone(),
@@ -3550,12 +3465,6 @@ pub fn lower_hir_module_with_facts(
         // TypeCheckOutput leave these empty.
         hashmap_lowering_facts: Vec::new(),
         hashset_lowering_facts: Vec::new(),
-        // The caller-supplied alias classification is stored on the pipeline
-        // for future codegen use (Phase P5.2). The same map was used by
-        // `lower_actor_send` during HIR-to-MIR lowering above to stamp each
-        // `Terminator::Send.alias_mode`; storing it here lets the P5.2
-        // codegen branch consult the flat map without re-walking the MIR.
-        actor_send_aliasing: actor_send_aliasing.clone(),
         polymorphic_mir,
         // Populated by `attach_lowering_facts` from `TypeCheckOutput`; empty
         // here so the lowerer does not depend on `TypeCheckOutput` directly.
@@ -3744,7 +3653,6 @@ pub(crate) fn lower_function(
     vec_generic_element_abi: Option<&HashMap<hew_types::Ty, hew_types::VecElementToken>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     pool_accessor_sites: &HashMap<hew_hir::SiteId, hew_types::PoolAccessor>,
-    actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,
     call_conv: crate::model::FunctionCallConv,
     task_entry_adapter_symbols: TaskEntryAdapterSymbols,
@@ -3792,7 +3700,6 @@ pub(crate) fn lower_function(
         vec_generic_element_abi: vec_generic_element_abi.cloned().unwrap_or_default(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         pool_accessor_sites: pool_accessor_sites.clone(),
-        actor_send_aliasing: actor_send_aliasing.clone(),
         pointer_width,
         current_function_symbol: emit_name.clone(),
         current_function_call_conv: call_conv,

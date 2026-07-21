@@ -1659,15 +1659,11 @@ fn weak_rejected_at_actor_send_boundary() {
         }
         ",
     );
-    let errors = output
-        .errors
-        .iter()
-        .filter(|error| error.kind == TypeErrorKind::InvalidSend)
-        .count();
+    assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidSend);
     assert_eq!(
-        errors, 1,
-        "Weak must be structurally non-Send: {:#?}",
-        output.errors
+        output.errors[0].message,
+        "cannot send `Weak<i64>` to actor: type is not Send"
     );
 }
 
@@ -1791,12 +1787,78 @@ fn rc_rejected_at_actor_send_boundary() {
         }
         ",
     );
+    assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidSend);
+    assert_eq!(
+        output.errors[0].message,
+        "cannot send `Rc<i64>` to actor: type is not Send"
+    );
+}
+
+#[test]
+fn ordinary_actor_send_keeps_sender_binding_readable() {
+    let output = typecheck_inline(
+        r"
+        type Boxed {
+            payload: Vec<i64>,
+        }
+
+        actor Sink {
+            let _unused: i64;
+            receive fn take(value: Boxed) {}
+        }
+
+        fn main() {
+            let sink = spawn Sink(_unused: 0);
+            let value = Boxed { payload: [1, 2] };
+            sink.take(value);
+            sink.take(value);
+            value.payload.push(3);
+            println(value.payload[2]);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "ordinary actor sends are snapshots and must not move the sender binding: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn nested_rc_and_weak_send_rejections_do_not_cascade() {
+    let output = typecheck_inline(
+        r"
+        type RcBox {
+            value: Rc<i64>,
+        }
+
+        actor Sink {
+            let _unused: i64;
+            receive fn take_box(value: RcBox) {}
+            receive fn take_tuple(value: (i64, Weak<i64>)) {}
+        }
+
+        fn main() {
+            let sink = spawn Sink(_unused: 0);
+            let rc = Rc::new(1);
+            let weak = rc.downgrade();
+            let boxed = RcBox { value: rc.clone() };
+            let pair = (2, weak);
+            sink.take_box(boxed);
+            sink.take_tuple(pair);
+            println(boxed.value.strong_count());
+            println(pair.0);
+        }
+        ",
+    );
+    assert_eq!(output.errors.len(), 2, "{:#?}", output.errors);
     assert!(
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "Rc<i64> must be rejected at actor send boundary with InvalidSend, got: {:#?}",
+            .all(|error| error.kind == TypeErrorKind::InvalidSend),
+        "{:#?}",
         output.errors
     );
 }

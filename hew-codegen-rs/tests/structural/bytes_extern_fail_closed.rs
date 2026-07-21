@@ -158,7 +158,6 @@ fn pipeline_with_extern(
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
-        actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: vec![],
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],

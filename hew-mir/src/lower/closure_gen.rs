@@ -425,7 +425,6 @@ impl Builder {
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
-            actor_send_aliasing: self.actor_send_aliasing.clone(),
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             // Child builders (closure shims, lambda-actor bodies, gen bodies)
             // inherit the parent's target pointer width so an isize/usize
@@ -702,7 +701,6 @@ impl Builder {
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
-            actor_send_aliasing: self.actor_send_aliasing.clone(),
             pointer_width: self.pointer_width,
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
@@ -1931,7 +1929,6 @@ impl Builder {
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
-            actor_send_aliasing: self.actor_send_aliasing.clone(),
             pointer_width: self.pointer_width,
             current_function_symbol: body_name.clone(),
             current_function_call_conv: crate::model::FunctionCallConv::Default,

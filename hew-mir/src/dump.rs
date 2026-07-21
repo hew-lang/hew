@@ -1951,7 +1951,6 @@ mod tests {
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
             hashset_lowering_facts: vec![],
-            actor_send_aliasing: std::collections::HashMap::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],

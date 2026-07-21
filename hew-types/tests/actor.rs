@@ -21,8 +21,6 @@ mod actor_lifecycle_hooks;
 mod actor_method_dispatch;
 #[path = "actor/actor_protocol_descriptor.rs"]
 mod actor_protocol_descriptor;
-#[path = "actor/actor_send_aliasing_metadata.rs"]
-mod actor_send_aliasing_metadata;
 #[path = "actor/actor_state_lock_contract.rs"]
 mod actor_state_lock_contract;
 #[path = "actor/generic_actor_spawn_checker.rs"]

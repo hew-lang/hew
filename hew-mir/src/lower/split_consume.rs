@@ -1349,7 +1349,6 @@ mod slice3_invariants {
                 None,
                 &HashMap::new(),
                 &HashMap::new(),
-                &HashMap::new(),
                 PointerWidth::Bits64,
                 crate::model::FunctionCallConv::ActorHandler,
                 TaskEntryAdapterSymbols::default(),

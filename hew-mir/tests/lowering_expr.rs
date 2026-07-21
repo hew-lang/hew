@@ -62,8 +62,6 @@ mod runtime_abi_instr;
 mod select_arm_dataflow;
 #[path = "lowering_expr/select_arm_owned_registration.rs"]
 mod select_arm_owned_registration;
-#[path = "lowering_expr/send_alias_mode.rs"]
-mod send_alias_mode;
 #[path = "lowering_expr/state_clone_classification.rs"]
 mod state_clone_classification;
 #[path = "lowering_expr/tuple_construct_lowering.rs"]

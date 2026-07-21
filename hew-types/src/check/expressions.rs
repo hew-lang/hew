@@ -1047,8 +1047,8 @@ impl Checker {
 
     pub(super) fn enforce_actor_boundary_send(
         &mut self,
-        expr: &Expr,
-        move_span: &Span,
+        _expr: &Expr,
+        _move_span: &Span,
         error_span: &Span,
         ty: &Ty,
     ) {
@@ -1056,86 +1056,6 @@ impl Checker {
         if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
             self.report_invalid_actor_send(&ty, error_span);
         }
-        // Compute the alias-vs-copy decision before `mark_expr_moved_if_non_copy`
-        // marks the binding moved — the move-checker contract is what gives
-        // the alias path its no-write-after-send invariant.
-        let decision = self.classify_actor_send_aliasing(expr, &ty);
-        self.mark_expr_moved_if_non_copy(expr, move_span, &ty);
-        self.actor_send_aliasing.insert(
-            SpanKey::in_module(move_span, self.current_module_idx),
-            decision,
-        );
-    }
-
-    /// Decide whether an actor-send arg should ride the alias (refcount-bumped
-    /// envelope) path or the copy (legacy deep-copy mailbox) path.
-    ///
-    /// The arg is recorded as `Alias` only when *all* hold:
-    ///
-    /// * The arg is a bare identifier expression. Field accesses, projections,
-    ///   and freshly constructed values stay `Copy` because the move-checker
-    ///   does not invalidate their parent binding, so reusing the underlying
-    ///   storage from an aliased envelope would be unsound.
-    /// * The arg's resolved type is **not** `Copy`. `Copy` payloads already
-    ///   fit inline at the mailbox boundary and the alias bit would be
-    ///   ambiguous (cloning a `Copy` is free).
-    /// * The arg's resolved type does **not** implement `Drop` (neither the
-    ///   stdlib-registered marker nor a user-declared `impl Drop for T`). A
-    ///   destructor means sender-side drop suppression has to be coordinated
-    ///   with the receiver, which Phase α does not handle yet.
-    ///
-    /// Capability transfer (HEW-DIST-SPEC §12) is a third class that must
-    /// stay `Copy` and instead flip a `CAPABILITY_TRANSFER` header bit at
-    /// codegen time. Until `hew-types` exposes a capability predicate, the
-    /// rule conservatively keeps every send `Copy` unless it independently
-    /// matches the alias preconditions.
-    ///
-    /// **Stub note (HEW-DIST-SPEC §12 capability predicate)**:
-    /// - WHY: `hew-types` does not yet have a `MarkerTrait::Capability` or
-    ///   equivalent registry of capability handle types.
-    /// - WHEN obsolete: when capability typing lands (issue tracking
-    ///   §12 ratification).
-    /// - WHAT real solution: a predicate `is_capability_type(&self, &Ty)` that
-    ///   returns true for capability handles; this function would then
-    ///   return `Copy` for capability args and codegen would set
-    ///   `HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER` on the envelope header.
-    fn classify_actor_send_aliasing(&self, expr: &Expr, ty: &Ty) -> ActorSendAliasing {
-        if !matches!(expr, Expr::Identifier(_)) {
-            return ActorSendAliasing::Copy(ActorSendCopyReason::NotIdentifier);
-        }
-        if self.registry.implements_marker(ty, MarkerTrait::Copy) {
-            return ActorSendAliasing::Copy(ActorSendCopyReason::CopyType);
-        }
-        if self.registry.implements_marker(ty, MarkerTrait::Drop) {
-            return ActorSendAliasing::Copy(ActorSendCopyReason::StdlibDrop);
-        }
-        // `MarkerTrait::Drop` covers stdlib drop types and `Rc`, but a
-        // user-defined `impl Drop for T` records into `trait_impls_set`
-        // without flipping the marker. The alias path's sender-side drop
-        // suppression is unsafe for user destructors until receiver-side
-        // coordination is in place, so any user `impl Drop` stays Copy.
-        if let Ty::Named { name, builtin, .. } = ty {
-            if self
-                .trait_impls_set
-                .contains(&(name.clone(), "Drop".to_string()))
-            {
-                return ActorSendAliasing::Copy(ActorSendCopyReason::UserDrop);
-            }
-            // Built-in heap-owning collections (`Vec`, `HashMap`, `HashSet`)
-            // do not implement the `Drop` marker through the trait registry —
-            // their `Drop` derivation depends on element types, and a
-            // collection of `Copy` elements (e.g. `HashMap<String, i64>`)
-            // therefore reports `implements_marker(MarkerTrait::Drop) == false`.
-            // The collection itself still owns heap memory, so the alias
-            // path's contract (no sender-side drop) would leak the
-            // backing buffer.  Classify them as `Copy(StdlibDrop)` so the
-            // codegen deep-copy fires and the receiver
-            // gets an independent copy.
-            if builtin.is_some_and(BuiltinType::is_collection) {
-                return ActorSendAliasing::Copy(ActorSendCopyReason::StdlibDrop);
-            }
-        }
-        ActorSendAliasing::Alias
     }
 
     pub(super) fn synthesize_yield(&mut self, value: Option<&Spanned<Expr>>, span: &Span) -> Ty {

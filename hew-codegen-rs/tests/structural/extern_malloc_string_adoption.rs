@@ -127,7 +127,6 @@ fn pipeline_adopt_extern(malloc_string_return: bool) -> IrPipeline {
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
-        actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: vec![],
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],

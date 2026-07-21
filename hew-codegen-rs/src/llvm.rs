@@ -27425,23 +27425,16 @@ fn lower_terminator<'ctx>(
             msg_type,
             value,
             next,
-            // `alias_mode` is deliberately UNCONSUMED by codegen today. It is
-            // the checker-authoritative alias-vs-copy classification stamped
-            // by MIR lowering (P5.1 threading; contract pinned by
-            // `hew-mir/tests/send_alias_mode.rs`), reserved for the
-            // retain-on-share send spine (P5.2) — which will retain the
-            // payload's heap reference on an `Alias` send instead of the
-            // plain mailbox memcpy below. Every send today lowers to
+            // `alias_mode` is deliberately UNCONSUMED by codegen during the
+            // checker semantic cutover. MIR's outbound preparation pass
+            // replaces this transitional binary mode with resolved
+            // snapshot/transfer modes. Every send today lowers to
             // `hew_actor_send_by_id` regardless of this field: the only
             // payload special-case is the `send_gated_string` borrow retain
             // below, which rides the SEPARATE `borrow_mode`/`borrow_tainted`
             // mechanism (string-only roots in `compute_borrow_taint`; bytes
-            // never enter that branch). `--explain-cow` renders from the
-            // checker's `actor_send_aliasing` map (`hew-cli/src/explain_cow.rs`),
-            // not from this field, so ignoring it here changes no diagnostic
-            // output. Consuming it without wiring the retain would either be
-            // a no-op or an unbalanced refcount — bind it `_` until P5.2
-            // lands (LESSONS: checker-authority / codegen-abi-authority).
+            // never enter that branch). Consuming the mode without wiring
+            // preparation would be a no-op or an unbalanced refcount.
             alias_mode: _,
         } => {
             let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;

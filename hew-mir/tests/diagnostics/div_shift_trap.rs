@@ -426,7 +426,7 @@ fn pipeline_with_width(source: &str, width: PointerWidth) -> IrPipeline {
     );
     let verify = verify_hir(&output.module);
     assert!(verify.is_empty(), "HIR verify: {verify:?}");
-    hew_mir::lower_hir_module_with_facts(&output.module, &std::collections::HashMap::new(), width)
+    hew_mir::lower_hir_module_with_facts(&output.module, width)
 }
 
 /// Return the set of `Instr::ConstI64` values emitted in the function.

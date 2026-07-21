@@ -276,15 +276,11 @@ fn vec_int_is_vec_string_rejected_as_mismatch() {
 }
 
 // ---------------------------------------------------------------------------
-// Use-after-move (plan §D-D4): existing rule fires; `is` adds no special case.
+// Actor-send snapshots do not move ordinary values.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn is_after_actor_send_emits_use_after_move() {
-    // Plan §D-D4: `is` adds no special case for moved/consumed operands —
-    // the existing use-after-move rule fires. Actor-send is a move site for
-    // non-Copy payloads. After `s.consume(h)` moves `h`, evaluating `h is q`
-    // re-uses the moved binding and must trip `UseAfterMove`.
+fn is_after_actor_send_reads_sender_snapshot_source() {
     let src = r#"
         type Payload { data: string; }
 
@@ -302,15 +298,7 @@ fn is_after_actor_send_emits_use_after_move() {
         }
     "#;
     let output = typecheck_isolated(src);
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| matches!(e.kind, TypeErrorKind::UseAfterMove)),
-        "expected `UseAfterMove` diagnostic from the existing move-checker rule, \
-         got: {:#?}",
-        output.errors
-    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
 
 // ---------------------------------------------------------------------------

@@ -163,16 +163,6 @@ pub struct CheckOutput {
     /// escape-analysis pass. Surfaced behind `hew check --show-stack-hints`.
     /// Empty when type-checking failed before the walker ran.
     pub stack_hints: Vec<hew_types::check::StackHint>,
-    /// Alias-vs-copy decision per actor send site, keyed by source span.
-    ///
-    /// Populated when type-checking succeeds and the type-check output is
-    /// available. Empty when `FrontendOptions::no_typecheck` is set or when
-    /// type errors prevent the checker from completing.
-    ///
-    /// Cloned directly from `TypeCheckOutput::actor_send_aliasing`; consumed
-    /// by `--explain-cow` rendering in `hew check`.
-    pub actor_send_aliasing:
-        HashMap<hew_types::check::SpanKey, hew_types::check::ActorSendAliasing>,
     /// Source content of the checked file, used for line/column mapping in
     /// `--explain-cow` output. Empty when type-checking is skipped.
     /// Source text of the checked file, retained so the CLI can render
@@ -607,15 +597,9 @@ pub fn check_program(
                 .as_ref()
                 .map(|tco| tco.stack_hints.clone())
                 .unwrap_or_default();
-            let actor_send_aliasing = tcr
-                .tco
-                .as_ref()
-                .map(|tco| tco.actor_send_aliasing.clone())
-                .unwrap_or_default();
             Ok(CheckOutput {
                 diagnostics,
                 stack_hints,
-                actor_send_aliasing,
                 source: source.to_string(),
             })
         }
@@ -1623,16 +1607,9 @@ pub fn check_file_with_state(
         .as_ref()
         .map(|tco| tco.stack_hints.clone())
         .unwrap_or_default();
-    let actor_send_aliasing = state
-        .typecheck_result
-        .tco
-        .as_ref()
-        .map(|tco| tco.actor_send_aliasing.clone())
-        .unwrap_or_default();
     let output = CheckOutput {
         diagnostics,
         stack_hints,
-        actor_send_aliasing,
         source: state.source.clone(),
     };
     Ok((output, state))

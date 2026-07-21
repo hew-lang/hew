@@ -1,0 +1,15 @@
+import std::concurrency::lifecycle;
+
+fn main() {
+    var service: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle::Created;
+    let created = service.state_name();
+    service.step(Initialise);
+    let initialising = service.state_name();
+    service.step(lifecycle.LifecycleEvent::Started { handle: 42 });
+    let running = service.state_name();
+    service.step(Stop);
+    let stopping = service.state_name();
+    service.step(Stop);
+    let stopped = service.state_name();
+    println(f"lifecycle:{created}:{initialising}:{running}:{stopping}:{stopped}");
+}

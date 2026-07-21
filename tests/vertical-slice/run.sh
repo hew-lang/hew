@@ -446,6 +446,12 @@ run_accept_expect_stdout_contains \
     "std_concurrency_import_run" \
     "scope:7:8:9:2"
 
+# std::concurrency::lifecycle's imported generic machine must execute the full
+# happy-path transition sequence with exact state names.
+run_accept_expect_stdout_contains \
+    "std_concurrency_lifecycle_import_run" \
+    "lifecycle:Created:Initialising:Running:Stopping:Stopped"
+
 # Regression guard: a plain record with an Option<i64> field must compile and
 # run.  The MIR field classifier must NOT strip args from generic enum types
 # (Option, Result) even though their origin names appear in machine_layout_names.

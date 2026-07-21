@@ -115,6 +115,8 @@ jobs:
               - 'docs/**'
             scripts:
               - 'scripts/**'
+              - '.github/workflows/freebsd.yml'
+              - '.github/workflows/release-gate.yml'
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lightweight docs/scripts coverage — required signal for narrow PRs.
@@ -151,6 +153,10 @@ jobs:
       - name: Exercise O2 differential gate
         if: needs.changes.outputs.scripts == 'true'
         run: make o2-differential-selftest
+
+      - name: Verify FreeBSD workflow contract
+        if: needs.changes.outputs.scripts == 'true'
+        run: make freebsd-workflow-contract-check
       # <<< CI-PARITY-STEPS
 
   # ─────────────────────────────────────────────────────────────────────────

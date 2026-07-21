@@ -80,6 +80,7 @@ CI_REQUIRED_CHECKS=(
     "Cargo clippy (ci.yml: cargo clippy --workspace --tests -- -D warnings)	make lint"
     "verify-ffi (ci.yml: make verify-ffi)	make lint"
     "runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)	make lint"
+    "FreeBSD workflow contract (ci.yml: make freebsd-workflow-contract-check)	make freebsd-workflow-contract-check"
     "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"
     "playground-check (release-gate.yml: make playground-check)	make playground-check"
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
@@ -669,6 +670,7 @@ case "$LANE" in
     scripts-config)
         add_command "make leak-scan"
         add_command "cargo fmt --all -- --check"
+        add_command "make freebsd-workflow-contract-check"
         add_command "make test-rust"
         add_command "make o2-differential-selftest"
         ;;
@@ -787,6 +789,7 @@ case "$LANE" in
         # fallback preflight predicts a green merge-queue outcome.
         add_command "make ci-preflight-smoke"
         add_command "make lint"
+        add_command "make freebsd-workflow-contract-check"
         add_command "make playground-check"
         add_command "make test"
         add_command "make test-vertical-slice"

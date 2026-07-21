@@ -221,6 +221,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         // EnumCloneInplace allocates a fresh enum clone with the same
         // non-aliasing guarantee (tag-dispatched payload deep-clone).
         | Instr::EnumCloneInplace { .. }
+        | Instr::ValueSnapshotClone { .. }
         // A payload-slot neutralize writes a constant null — it produces no
         // interior-alias dest (it retires one).
         | Instr::NeutralizePayloadSlot { .. } => None,

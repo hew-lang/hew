@@ -738,6 +738,18 @@ fn render_instr(instr: &Instr) -> String {
             render_place(src),
             enum_name
         ),
+        Instr::ValueSnapshotClone {
+            dest,
+            src,
+            ty,
+            plan,
+        } => format!(
+            "{} = snapshot_clone {} ty={} plan={:?}",
+            render_place(dest),
+            render_place(src),
+            ty.user_facing(),
+            plan.root()
+        ),
 
         // Data movement
         Instr::Move { dest, src } => {

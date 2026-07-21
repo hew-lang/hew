@@ -4301,6 +4301,14 @@ pub enum Instr {
         src: Place,
         enum_name: String,
     },
+    /// Clone one outbound actor argument into a fresh prepared owner using the
+    /// shared structural snapshot plan.
+    ValueSnapshotClone {
+        dest: Place,
+        src: Place,
+        ty: ResolvedTy,
+        plan: crate::state_clone::ValueSnapshotPlan,
+    },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
     /// Neutralize (null) an enum/machine payload slot whose heap ownership has

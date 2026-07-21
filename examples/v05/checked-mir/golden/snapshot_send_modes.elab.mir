@@ -49,7 +49,7 @@ fn main -> ()
     call[bb5 hew_vec_push_i64 -> bb6] ->
       (none)
     return[bb6] ->
-      drop _4 ty=string kind=cow_heap(hew_string_drop)
+      drop _11 ty=Boxed kind=record_in_place
       drop actor0 ty=LocalPid<Sink> kind=resource
 
 fn i8::fmt -> string

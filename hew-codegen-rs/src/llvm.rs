@@ -13261,6 +13261,14 @@ fn lower_instruction(
         } => {
             lower_enum_clone_inplace_instr(fn_ctx, *dest, *src, enum_name)?;
         }
+        Instr::ValueSnapshotClone {
+            dest,
+            src,
+            ty,
+            plan,
+        } => {
+            lower_value_snapshot_clone_instr(fn_ctx, *dest, *src, ty, plan)?;
+        }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
         }
@@ -18237,6 +18245,248 @@ fn emit_state_field_old_value_release(
         .llvm_ctx_with(|| format!("{label} old-value release join"))?;
     fn_ctx.builder.position_at_end(cont_bb);
     Ok(())
+}
+
+fn trap_on_null_snapshot_clone<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: PointerValue<'ctx>,
+    label: &str,
+) -> CodegenResult<()> {
+    let is_null = fn_ctx
+        .builder
+        .build_is_null(value, &format!("{label}_is_null"))
+        .llvm_ctx_with(|| format!("{label} null check"))?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed(format!("{label}: missing parent function")))?;
+    let ok_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_ok"));
+    let trap_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_trap"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_null, trap_bb, ok_bb)
+        .llvm_ctx_with(|| format!("{label} null branch"))?;
+    fn_ctx.builder.position_at_end(trap_bb);
+    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap_fn, &[], "trap")
+        .llvm_ctx_with(|| format!("{label} trap"))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    fn_ctx.builder.position_at_end(ok_bb);
+    Ok(())
+}
+
+fn lower_allocating_snapshot_clone<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    src: Place,
+    symbol: &'static str,
+    label: &str,
+) -> CodegenResult<()> {
+    let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+    let source = fn_ctx
+        .builder
+        .build_load(src_ty, src_ptr, &format!("{label}_source"))
+        .llvm_ctx_with(|| format!("{label} source load"))?
+        .into_pointer_value();
+    let helper = get_or_declare_clone_helper(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &CloneHelper::Allocating { name: symbol },
+    );
+    let cloned = fn_ctx
+        .builder
+        .build_call(helper, &[source.into()], label)
+        .llvm_ctx_with(|| format!("{label} clone call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{label} returned void")))?
+        .into_pointer_value();
+    trap_on_null_snapshot_clone(fn_ctx, cloned, label)?;
+    let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, cloned)
+        .llvm_ctx_with(|| format!("{label} dest store"))?;
+    Ok(())
+}
+
+fn lower_value_snapshot_clone_instr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    src: Place,
+    ty: &ResolvedTy,
+    plan: &hew_mir::state_clone::ValueSnapshotPlan,
+) -> CodegenResult<()> {
+    match plan.root() {
+        StateFieldCloneKind::BitCopy { .. } => {
+            let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+            let value = fn_ctx
+                .builder
+                .build_load(src_ty, src_ptr, "snapshot_bitcopy_load")
+                .llvm_ctx("snapshot bitcopy load")?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, value)
+                .llvm_ctx("snapshot bitcopy store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::String => lower_allocating_snapshot_clone(
+            fn_ctx,
+            dest,
+            src,
+            "hew_string_clone",
+            "snapshot_string",
+        ),
+        StateFieldCloneKind::Bytes => {
+            let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+            let value = fn_ctx
+                .builder
+                .build_load(src_ty, src_ptr, "snapshot_bytes_source")
+                .llvm_ctx("snapshot bytes source load")?
+                .into_pointer_value();
+            let helper = get_or_declare_clone_helper(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &CloneHelper::RefcountBump {
+                    name: "hew_bytes_clone_ref",
+                },
+            );
+            fn_ctx
+                .builder
+                .build_call(helper, &[value.into()], "snapshot_bytes_retain")
+                .llvm_ctx("snapshot bytes retain")?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, value)
+                .llvm_ctx("snapshot bytes dest store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::Tuple { elems } => {
+            let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+            let BasicTypeEnum::StructType(tuple_ty) = src_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "snapshot tuple `{}` has non-struct LLVM type {src_ty:?}",
+                    ty.user_facing()
+                )));
+            };
+            let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+            let key = state_kind_tuple_key(elems);
+            let record_layouts = codegen_record_layouts(fn_ctx);
+            let witnesses = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+            emit_tuple_kind_inplace_thunk_bodies(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &key,
+                tuple_ty,
+                elems,
+                &witnesses,
+            )?;
+            let size = fn_ctx.target_data.get_abi_size(&tuple_ty);
+            let align = fn_ctx.target_data.get_abi_alignment(&tuple_ty);
+            fn_ctx
+                .builder
+                .build_memcpy(
+                    dest_ptr,
+                    align,
+                    src_ptr,
+                    align,
+                    fn_ctx.ctx.i64_type().const_int(size, false),
+                )
+                .llvm_ctx("snapshot tuple memcpy")?;
+            let helper = get_or_declare_tuple_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key);
+            let rc = fn_ctx
+                .builder
+                .build_call(
+                    helper,
+                    &[src_ptr.into(), dest_ptr.into()],
+                    "snapshot_tuple_clone",
+                )
+                .llvm_ctx("snapshot tuple clone call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("snapshot tuple clone returned void".into())
+                })?
+                .into_int_value();
+            let failed = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    rc,
+                    fn_ctx.ctx.i32_type().const_zero(),
+                    "snapshot_tuple_failed",
+                )
+                .llvm_ctx("snapshot tuple result check")?;
+            let parent = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|block| block.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("snapshot tuple missing parent function".into())
+                })?;
+            let ok_bb = fn_ctx.ctx.append_basic_block(parent, "snapshot_tuple_ok");
+            let trap_bb = fn_ctx.ctx.append_basic_block(parent, "snapshot_tuple_trap");
+            fn_ctx
+                .builder
+                .build_conditional_branch(failed, trap_bb, ok_bb)
+                .llvm_ctx("snapshot tuple branch")?;
+            fn_ctx.builder.position_at_end(trap_bb);
+            let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+                .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
+                .get_declaration(fn_ctx.llvm_mod, &[])
+                .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
+            fn_ctx
+                .builder
+                .build_call(trap_fn, &[], "trap")
+                .llvm_ctx("snapshot tuple trap")?;
+            fn_ctx
+                .builder
+                .build_unreachable()
+                .llvm_ctx("snapshot tuple unreachable")?;
+            fn_ctx.builder.position_at_end(ok_bb);
+            Ok(())
+        }
+        StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. } => {
+            let Some((clone_symbol, _)) = collection_elem_clone_drop_syms(ty) else {
+                return Err(CodegenError::FailClosed(format!(
+                    "snapshot collection `{}` has no canonical clone helper",
+                    ty.user_facing()
+                )));
+            };
+            lower_allocating_snapshot_clone(fn_ctx, dest, src, clone_symbol, "snapshot_collection")
+        }
+        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => Err(CodegenError::FailClosed(
+            "successful actor snapshot plan contains Rc/Weak".into(),
+        )),
+        StateFieldCloneKind::Array { .. }
+        | StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::UserRecord { .. }
+        | StateFieldCloneKind::Enum { .. }
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::Resource { .. } => Err(CodegenError::FailClosed(format!(
+            "snapshot clone for `{}` reached unsupported direct kind {:?}",
+            ty.user_facing(),
+            plan.root()
+        ))),
+    }
 }
 
 /// Byte size of the heap env box's leading free-thunk slot. The thunk

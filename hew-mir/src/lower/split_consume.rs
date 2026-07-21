@@ -478,6 +478,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::WireCodec { dest, operand, .. } => vec![*dest, *operand],
         Instr::RecordCloneInplace { dest, src, .. } => vec![*dest, *src],
         Instr::EnumCloneInplace { dest, src, .. } => vec![*dest, *src],
+        Instr::ValueSnapshotClone { dest, src, .. } => vec![*dest, *src],
         Instr::IntArithChecked {
             dest,
             lhs,

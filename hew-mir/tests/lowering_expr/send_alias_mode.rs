@@ -1,6 +1,6 @@
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
-    lower_hir_module, validate_outbound_actor_modes, MirCheck, SendAliasMode, Terminator,
+    lower_hir_module, validate_outbound_actor_modes, Instr, MirCheck, SendAliasMode, Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
@@ -76,6 +76,17 @@ fn snapshot_send_resolves_every_argument_independently() {
         "{:#?}",
         send_modes(&pipeline)
     );
+    assert!(
+        pipeline
+            .raw_mir
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .any(|block| block
+                .instructions
+                .iter()
+                .any(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))),
+        "last-use transfer must neutralize the sender slot"
+    );
 }
 
 #[test]
@@ -108,6 +119,19 @@ fn loop_back_edge_and_projection_force_snapshot() {
             .iter()
             .any(|modes| modes == &[SendAliasMode::SnapshotMaterialize]),
         "{modes:#?}"
+    );
+    assert!(
+        pipeline
+            .raw_mir
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .any(|block| block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::ValueSnapshotClone { dest, src, .. } if dest != src
+                )
+            })),
+        "projection snapshots must clone into a fresh destination"
     );
 }
 

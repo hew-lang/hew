@@ -325,6 +325,13 @@ struct PendingOutboundArg {
     site: SiteId,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedOutboundArg {
+    source: Place,
+    ty: ResolvedTy,
+    mode: SendAliasMode,
+}
+
 #[derive(Debug, Clone, Default)]
 struct PendingOutboundSite {
     args: Vec<PendingOutboundArg>,
@@ -3706,18 +3713,8 @@ fn ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the exhaustive structural-kind match is the fail-closed outbound policy boundary"
-)]
-fn resolve_outbound_actor_modes(blocks: &mut [BasicBlock], builder: &mut Builder) {
-    let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
-    let projection_tainted = temp_drop::compute_projection_alias_taint(
-        blocks,
-        &builder.match_project_consumed_binder_locals,
-        &builder.locals,
-    );
-    let record_layouts: Vec<RecordLayout> = builder
+fn outbound_record_layouts(builder: &Builder) -> Vec<RecordLayout> {
+    builder
         .record_field_orders
         .iter()
         .map(|(name, fields)| RecordLayout {
@@ -3726,8 +3723,26 @@ fn resolve_outbound_actor_modes(blocks: &mut [BasicBlock], builder: &mut Builder
             field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
         })
         .chain(builder.closure_record_layouts.iter().cloned())
-        .collect();
+        .collect()
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exhaustive structural-kind match is the fail-closed outbound policy boundary"
+)]
+fn resolve_outbound_actor_modes(
+    blocks: &mut [BasicBlock],
+    builder: &mut Builder,
+) -> HashMap<u32, Vec<ResolvedOutboundArg>> {
+    let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
+    let projection_tainted = temp_drop::compute_projection_alias_taint(
+        blocks,
+        &builder.match_project_consumed_binder_locals,
+        &builder.locals,
+    );
+    let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_outbound_actor_args);
+    let mut resolved = HashMap::new();
 
     for block in blocks.iter_mut() {
         let Some(site) = pending.get(&block.id) else {
@@ -3842,6 +3857,18 @@ fn resolve_outbound_actor_modes(blocks: &mut [BasicBlock], builder: &mut Builder
                 }
             })
             .collect();
+        resolved.insert(
+            block.id,
+            site.args
+                .iter()
+                .zip(modes.iter().copied())
+                .map(|(arg, mode)| ResolvedOutboundArg {
+                    source: arg.source,
+                    ty: arg.ty.clone(),
+                    mode,
+                })
+                .collect(),
+        );
 
         match &mut block.terminator {
             Terminator::Send { arg_modes, .. } | Terminator::Ask { arg_modes, .. } => {
@@ -3884,6 +3911,141 @@ fn resolve_outbound_actor_modes(blocks: &mut [BasicBlock], builder: &mut Builder
                 },
                 note: "raw outbound facts must be discharged before checked MIR".to_string(),
             });
+        }
+    }
+    resolved
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "preparation keeps mode execution, pack rewriting, and suspend-carrier rewriting in one ownership-critical pass"
+)]
+fn prepare_outbound_actor_payloads(
+    blocks: &mut [BasicBlock],
+    builder: &mut Builder,
+    resolved: &HashMap<u32, Vec<ResolvedOutboundArg>>,
+) {
+    let record_layouts = outbound_record_layouts(builder);
+    for block in blocks.iter_mut() {
+        let Some(args) = resolved.get(&block.id) else {
+            continue;
+        };
+        let payload = match &block.terminator {
+            Terminator::Send { value, .. } | Terminator::Ask { value, .. } => *value,
+            Terminator::Suspend { .. } => {
+                let Some(SuspendKind::Ask { value, .. }) = builder.suspend_kinds.get(&block.id)
+                else {
+                    continue;
+                };
+                *value
+            }
+            _ => continue,
+        };
+
+        let mut prep = Vec::new();
+        let mut prepared = Vec::with_capacity(args.len());
+        for arg in args {
+            match arg.mode {
+                SendAliasMode::SnapshotBitCopy => prepared.push(arg.source),
+                SendAliasMode::TransferLastUse => {
+                    let dest = builder.alloc_local(arg.ty.clone());
+                    prep.push(Instr::Move {
+                        dest,
+                        src: arg.source,
+                    });
+                    prep.push(Instr::NeutralizePayloadSlot { place: arg.source });
+                    prepared.push(dest);
+                }
+                SendAliasMode::SnapshotRetain | SendAliasMode::SnapshotMaterialize => {
+                    let Ok(plan) =
+                        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                            &arg.ty,
+                            &record_layouts,
+                            &builder.enum_layouts,
+                            &builder.opaque_handle_names,
+                            &builder.resource_opaque_close,
+                        )
+                    else {
+                        prepared.push(arg.source);
+                        continue;
+                    };
+                    let dest = builder.alloc_local(arg.ty.clone());
+                    match plan.root() {
+                        SnapshotFieldKind::UserRecord { name } => {
+                            prep.push(Instr::RecordCloneInplace {
+                                dest,
+                                src: arg.source,
+                                record_name: name.clone(),
+                            });
+                        }
+                        SnapshotFieldKind::Enum { name } => {
+                            prep.push(Instr::EnumCloneInplace {
+                                dest,
+                                src: arg.source,
+                                enum_name: name.clone(),
+                            });
+                        }
+                        _ => prep.push(Instr::ValueSnapshotClone {
+                            dest,
+                            src: arg.source,
+                            ty: arg.ty.clone(),
+                            plan,
+                        }),
+                    }
+                    prepared.push(dest);
+                }
+            }
+        }
+
+        let insert_at = if prepared.len() > 1 {
+            block
+                .instructions
+                .iter()
+                .position(
+                    |instr| matches!(instr, Instr::RecordInit { dest, .. } if *dest == payload),
+                )
+                .unwrap_or(block.instructions.len())
+        } else {
+            block.instructions.len()
+        };
+        for (offset, instr) in prep.into_iter().enumerate() {
+            let at = insert_at + offset;
+            cfg_util::shift_instr_spans_on_insert(
+                &mut builder.instr_spans,
+                block.id,
+                u32::try_from(at).unwrap_or(u32::MAX),
+            );
+            block.instructions.insert(at, instr);
+        }
+
+        let prepared_payload = match prepared.as_slice() {
+            [] => payload,
+            [single] => *single,
+            _ => {
+                let Some(Instr::RecordInit { fields, .. }) = block.instructions.iter_mut().find(
+                    |instr| matches!(instr, Instr::RecordInit { dest, .. } if *dest == payload),
+                ) else {
+                    continue;
+                };
+                for ((_, field), prepared) in fields.iter_mut().zip(&prepared) {
+                    *field = *prepared;
+                }
+                payload
+            }
+        };
+
+        match &mut block.terminator {
+            Terminator::Send { value, .. } | Terminator::Ask { value, .. } => {
+                *value = prepared_payload;
+            }
+            Terminator::Suspend { .. } => {
+                if let Some(SuspendKind::Ask { value, .. }) =
+                    builder.suspend_kinds.get_mut(&block.id)
+                {
+                    *value = prepared_payload;
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -4178,7 +4340,8 @@ pub(crate) fn lower_function(
     // (`load_locals` is empty whenever `current_actor_state_fields` was
     // never populated).
     classify_actor_state_load_modes(&mut blocks, &builder.suspend_kinds, &builder.locals);
-    resolve_outbound_actor_modes(&mut blocks, &mut builder);
+    let resolved_outbound = resolve_outbound_actor_modes(&mut blocks, &mut builder);
+    prepare_outbound_actor_payloads(&mut blocks, &mut builder, &resolved_outbound);
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"

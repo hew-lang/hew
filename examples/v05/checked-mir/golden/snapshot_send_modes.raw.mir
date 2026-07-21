@@ -28,6 +28,9 @@ fn main() -> () [conv=default]
     _14: __hew_packed_args_main_0
     _15: Vec<i64>
     _16: i64
+    _17: string
+    _18: Boxed
+    _19: string
   bb0:
     stmt: bind BindingId(4) sink site=SiteId(0) ty=LocalPid<Sink>
     stmt: bind BindingId(5) n site=SiteId(1) ty=i64
@@ -64,8 +67,11 @@ fn main() -> () [conv=default]
     _11 = move _10
     _12 = string_lit "last"
     _13 = move _12
-    string.retain _4
-    _14 = record_init __hew_packed_args_main_0 { .0=_2, .1=_4, .2=_11, .3=_13 }
+    _17 = snapshot_clone _4 ty=string plan=String
+    _18 = record_clone _11 record=Boxed
+    _19 = move _13
+    neutralize_payload _13
+    _14 = record_init __hew_packed_args_main_0 { .0=_2, .1=_17, .2=_18, .3=_19 }
     send actor0[msg=1476289385] _14 alias=Copy -> bb4
   bb4:
     stmt: eval site=SiteId(15) ty=()

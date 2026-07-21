@@ -102,6 +102,7 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         Instr::RecordCloneInplace { src, .. } => vec![*src],
         // `EnumCloneInplace` likewise borrows `src` (non-consuming read).
         Instr::EnumCloneInplace { src, .. } => vec![*src],
+        Instr::ValueSnapshotClone { src, .. } => vec![*src],
         Instr::BoolNot { operand, .. }
         | Instr::FloatNeg { operand, .. }
         | Instr::IntBitNot { operand, .. }
@@ -659,6 +660,7 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::RecordCloneInplace { .. }
         // EnumCloneInplace has the same non-consuming-read semantics.
         | Instr::EnumCloneInplace { .. }
+        | Instr::ValueSnapshotClone { .. }
         // A payload-slot neutralize nulls the scrutinee's transferred slot; it
         // does not hand any local out of the body.
         | Instr::NeutralizePayloadSlot { .. } => false,

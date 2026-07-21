@@ -13,11 +13,16 @@
 //!    bodies), so the method *is* emitted and resolves the helper — e.g.
 //!    `net.set_read_timeout` calling `net_result_from_status`.
 //!
-//! 3. **Skip on genuinely-unresolvable call**: when a method body calls a bare
+//! 3. **Lexical/overload calls**: fn-typed parameters and source builtin names
+//!    resolved by overload lowering are admitted without weakening the general
+//!    bare-call gate.
+//!
+//! 4. **Skip on genuinely-unresolvable call**: when a method body calls a bare
 //!    name that resolves in neither `fn_registry`, the same-module rewrite map,
-//!    nor the builtin variant-ctor set, the method is *skipped* — not emitted —
-//!    and the module still imports cleanly (no module-level hard error). An
-//!    actual call to the skipped method fails closed downstream.
+//!    the builtin variant-ctor set, a fn-typed parameter, nor the overload
+//!    builtin set, the method is *skipped* — not emitted — and the module still
+//!    imports cleanly (no module-level hard error). An actual call to the
+//!    skipped method fails closed downstream.
 
 use hew_hir::{HirDiagnosticKind, HirItem};
 use hew_parser::ast::{Item, Program};
@@ -350,6 +355,74 @@ impl Foo {
 }
 
 #[test]
+fn imported_impl_body_calling_fn_typed_parameter_is_emitted() {
+    let imported_src = r"
+pub type Foo {
+    n: i64;
+}
+impl Foo {
+    pub fn apply(f: Foo, callback: fn()) {
+        callback();
+    }
+}
+";
+    let program = build_imported_impl_program_src(imported_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    let apply_emitted = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::apply"));
+    assert!(
+        apply_emitted,
+        "expected `Foo::apply` to be emitted: `callback` is a lexically-bound \
+         fn-typed parameter, not an unresolved global call"
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_ok(),
+        "imported impl method calling a fn-typed parameter must lower cleanly. Got: {:#?}",
+        result.err()
+    );
+}
+
+#[test]
+fn imported_impl_body_calling_overloaded_source_builtin_is_emitted() {
+    let imported_src = r"
+pub type Foo {
+    n: i64;
+}
+impl Foo {
+    pub fn report(f: Foo) {
+        println(f.n);
+    }
+}
+";
+    let program = build_imported_impl_program_src(imported_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    let report_emitted = output
+        .module
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::report"));
+    assert!(
+        report_emitted,
+        "expected `Foo::report` to be emitted: `println` is a source builtin \
+         resolved to a concrete catalog entry during overload lowering"
+    );
+
+    let result = output.into_result();
+    assert!(
+        result.is_ok(),
+        "imported impl method calling an overloaded source builtin must lower cleanly. Got: {:#?}",
+        result.err()
+    );
+}
+
+#[test]
 fn imported_impl_signature_returning_same_module_record_is_emitted() {
     // Regression for the imported-impl signature gate used by
     // std::text::regex: methods such as `Pattern::captures` return a public
@@ -522,5 +595,48 @@ impl Foo {
         blocked.is_empty(),
         "skipping an unresolvable-call imported impl method must not emit a \
          module-level diagnostic; got: {blocked:?}"
+    );
+}
+
+#[test]
+fn called_imported_impl_body_with_unresolvable_call_fails_closed() {
+    let imported_src = r"
+pub type Foo {
+    n: i64;
+}
+impl Foo {
+    pub fn bar(f: Foo) -> i64 { nonexistent_fn(f.n) }
+}
+";
+    let root_src = r"
+fn main() -> i64 {
+    let f = Foo { n: 42 };
+    f.bar()
+}
+";
+    let program = build_imported_module_program_src(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    let diagnostic = output
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CallableUnsupportedInMir { name } if name == "Foo::bar"
+            )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "calling a skipped imported impl method must fail closed with \
+                 CallableUnsupportedInMir for `Foo::bar`; got: {:#?}",
+                output.diagnostics
+            )
+        });
+    assert!(
+        diagnostic
+            .note
+            .contains("has no MIR body or runtime-ABI lowering"),
+        "fail-closed diagnostic must explain the missing callable body: {diagnostic:?}"
     );
 }

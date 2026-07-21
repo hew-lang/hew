@@ -1,0 +1,16 @@
+//! Compiled/executed proof for imported std::bench impl methods.
+
+import std::bench;
+import std::testing;
+
+#[test]
+fn test_imported_bench_suite_add_and_report() {
+    let s = bench.suite("Imported Bench");
+    s.add("noop", 1, || {});
+
+    testing.assert_eq(s.results.len(), 1);
+    testing.assert_eq_str(s.results[0].name, "noop");
+    testing.assert_eq(s.results[0].iterations, 1);
+
+    s.report();
+}

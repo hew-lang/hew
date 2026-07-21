@@ -117,6 +117,19 @@ run_accept_expect_stdout() {
   diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
 }
 
+run_accept_expect_stdout_contains() {
+  local fixture="$1"
+  shift
+  run_accept_expect_status "${fixture}" 0
+  for expected in "$@"; do
+    if ! grep -qF -- "${expected}" "${stdout_output}"; then
+      echo "expected ${fixture} stdout to contain: ${expected}" >&2
+      cat "${stdout_output}" >&2
+      exit 1
+    fi
+  done
+}
+
 # Run a fixture that is expected to terminate via a hardware trap. Accepts exit
 # code 132 (SIGILL+128 on x86_64 Linux: `ud2`) or 133 (SIGTRAP+128 on
 # aarch64/macOS: `brk #1`) — both are valid trap-signal encodings of
@@ -419,6 +432,13 @@ run_accept_expect_stdout "nested_string_concat_temp"
 # bindings + a helper chain) must keep compiling and produce deterministic
 # output — the D108 non-regression the return-provenance preflight protects.
 run_accept_expect_stdout "call_scrutinee_fresh_forwarder_release"
+
+# Imported std::bench impl methods must carry MIR bodies across the module
+# boundary. The output timings vary, so assert the stable report fragments.
+run_accept_expect_stdout_contains \
+    "std_bench_import_run" \
+    "=== Imported Bench ===" \
+    "  noop  1 iters  avg "
 
 # Regression guard: a plain record with an Option<i64> field must compile and
 # run.  The MIR field classifier must NOT strip args from generic enum types

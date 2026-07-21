@@ -18662,6 +18662,15 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
                 .llvm_ctx("prepared IO null store")?;
             Ok(())
         }
+        StateFieldCloneKind::ClosurePair
+            if matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }) =>
+        {
+            Err(CodegenError::FailClosed(format!(
+                "function-typed values are not supported as actor messages yet \
+                 (payload type `{}`)",
+                ty.user_facing()
+            )))
+        }
         StateFieldCloneKind::OpaqueHandle { .. } | StateFieldCloneKind::ClosurePair => {
             Err(CodegenError::FailClosed(format!(
                 "prepared carrier `{}` has unsupported cleanup kind {:?}",

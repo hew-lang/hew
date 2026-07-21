@@ -1604,7 +1604,7 @@ pub unsafe extern "C" fn hew_task_scope_join_all(scope: *mut HewTaskScope) {
         if detach_cancelled_worker {
             t.detached_on_cancel = true;
         } else if let Some(handle) = t.thread_handle.take() {
-            let _ = handle.join();
+            crate::util::report_join_panic("task scope worker thread", handle.join());
             t.detached_on_cancel = false;
         } else {
             t.detached_on_cancel = false;
@@ -1688,7 +1688,7 @@ unsafe fn cancel_scope_deadlines(scope: &mut HewTaskScope) {
         deadline.cancelled.store(true, Ordering::Release);
         if let Some(handle) = deadline.thread_handle.take() {
             handle.thread().unpark();
-            let _ = handle.join();
+            crate::util::report_join_panic("task scope deadline thread", handle.join());
         }
     }
 }
@@ -3605,6 +3605,95 @@ mod tests {
             error.contains("detached worker intentional panic"),
             "panic payload must be included in the diagnostic: {error}"
         );
+    }
+
+    #[test]
+    fn scope_join_reports_worker_panic_and_consumes_handle() {
+        crate::hew_clear_error();
+        // SAFETY: this test exclusively owns the scope and task allocations.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            (*task).store_state(HewTaskState::Running, Ordering::Release);
+            (*task).thread_handle = Some(std::thread::spawn(|| {
+                panic!("scope worker intentional panic")
+            }));
+
+            hew_task_scope_join_all(scope);
+
+            let error_ptr = crate::hew_last_error();
+            assert!(
+                !error_ptr.is_null(),
+                "joining a panicked scope worker must record a diagnostic"
+            );
+            // SAFETY: hew_task_scope_join_all populated this thread's last-error slot.
+            let error = CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8");
+            assert!(
+                error.contains("task scope worker thread panicked during teardown"),
+                "unexpected last error: {error}"
+            );
+            assert!(
+                error.contains("scope worker intentional panic"),
+                "panic payload must be included in the diagnostic: {error}"
+            );
+            assert!(
+                (*task).thread_handle.is_none(),
+                "join_all must consume the worker handle"
+            );
+            assert!(!(*task).detached_on_cancel);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn scope_destroy_reports_deadline_panic_and_reclaims_deadline() {
+        crate::hew_clear_error();
+        // SAFETY: this test exclusively owns the scope and deadline allocation.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            (*scope).deadlines = Box::into_raw(Box::new(HewTaskScopeDeadline {
+                cancelled: Arc::clone(&cancelled),
+                thread_handle: Some(std::thread::spawn(|| {
+                    panic!("scope deadline intentional panic");
+                })),
+                next: ptr::null_mut(),
+            }));
+
+            cancel_scope_deadlines(&mut *scope);
+
+            let error_ptr = crate::hew_last_error();
+            assert!(
+                !error_ptr.is_null(),
+                "joining a panicked deadline thread must record a diagnostic"
+            );
+            // SAFETY: cancel_scope_deadlines populated this thread's last-error slot.
+            let error = CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8");
+            assert!(
+                error.contains("task scope deadline thread panicked during teardown"),
+                "unexpected last error: {error}"
+            );
+            assert!(
+                error.contains("scope deadline intentional panic"),
+                "panic payload must be included in the diagnostic: {error}"
+            );
+            assert!(
+                (*scope).deadlines.is_null(),
+                "deadline cleanup must unlink the reclaimed node"
+            );
+            assert!(
+                cancelled.load(Ordering::Acquire),
+                "deadline cleanup must publish cancellation before joining"
+            );
+
+            hew_task_scope_destroy(scope);
+        }
     }
 
     #[test]

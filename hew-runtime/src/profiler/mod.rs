@@ -158,7 +158,10 @@ pub fn maybe_start_with_context(
             let Some(disc_dir) = discovery::discovery_dir() else {
                 eprintln!("[hew-pprof] could not resolve a safe discovery directory");
                 PROFILER_SHUTDOWN.store(true, Ordering::Release);
-                let _ = sampler_handle.join();
+                crate::util::report_join_panic(
+                    "hew profiler sampler thread",
+                    sampler_handle.join(),
+                );
                 return;
             };
 
@@ -183,7 +186,7 @@ pub fn maybe_start_with_context(
     let Ok(server_handle) = server_handle else {
         eprintln!("[hew-pprof] failed to spawn server thread");
         PROFILER_SHUTDOWN.store(true, Ordering::Release);
-        let _ = sampler_handle.join();
+        crate::util::report_join_panic("hew profiler sampler thread", sampler_handle.join());
         return;
     };
 
@@ -312,8 +315,11 @@ pub(crate) fn shutdown() {
     // joining so no other path is blocked while we wait for the threads.
     let threads = PROFILER_STATE.access(Option::take);
     if let Some(threads) = threads {
-        let _ = threads.server_handle.join();
-        let _ = threads.sampler_handle.join();
+        crate::util::report_join_panic("hew profiler server thread", threads.server_handle.join());
+        crate::util::report_join_panic(
+            "hew profiler sampler thread",
+            threads.sampler_handle.join(),
+        );
     }
 
     // Clean up unix socket and discovery file if we were in unix mode.
@@ -323,5 +329,85 @@ pub(crate) fn shutdown() {
         if let Some(disc_dir) = disc_dir {
             discovery::cleanup(&disc_dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    static PROFILER_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn last_error_string() -> String {
+        let error_ptr = crate::hew_last_error();
+        assert!(!error_ptr.is_null(), "expected a last-error diagnostic");
+        // SAFETY: the caller established that the current thread's last-error is set.
+        unsafe {
+            CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8")
+                .to_owned()
+        }
+    }
+
+    #[test]
+    fn shutdown_reports_server_panic_and_consumes_profiler_state() {
+        let _guard = PROFILER_TEST_MUTEX.lock_or_recover();
+        shutdown();
+        crate::hew_clear_error();
+        PROFILER_SHUTDOWN.store(false, Ordering::Release);
+        PROFILER_STATE.access(|state| {
+            *state = Some(ProfilerThreads {
+                server_handle: std::thread::spawn(|| {
+                    panic!("profiler server intentional panic");
+                }),
+                sampler_handle: std::thread::spawn(|| {}),
+            });
+        });
+
+        shutdown();
+
+        let error = last_error_string();
+        assert!(
+            error.contains("hew profiler server thread panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("profiler server intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+        assert!(PROFILER_STATE.access(|state| state.is_none()));
+        assert!(PROFILER_SHUTDOWN.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn shutdown_reports_sampler_panic_and_consumes_profiler_state() {
+        let _guard = PROFILER_TEST_MUTEX.lock_or_recover();
+        shutdown();
+        crate::hew_clear_error();
+        PROFILER_SHUTDOWN.store(false, Ordering::Release);
+        PROFILER_STATE.access(|state| {
+            *state = Some(ProfilerThreads {
+                server_handle: std::thread::spawn(|| {}),
+                sampler_handle: std::thread::spawn(|| {
+                    panic!("profiler sampler intentional panic");
+                }),
+            });
+        });
+
+        shutdown();
+
+        let error = last_error_string();
+        assert!(
+            error.contains("hew profiler sampler thread panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("profiler sampler intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+        assert!(PROFILER_STATE.access(|state| state.is_none()));
+        assert!(PROFILER_SHUTDOWN.load(Ordering::Acquire));
     }
 }

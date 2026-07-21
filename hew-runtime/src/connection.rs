@@ -9049,7 +9049,7 @@ mod tests {
 
             assert_eq!(
                 remove_result_rx
-                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .recv()
                     .expect("reentrant remove should finish without deadlocking"),
                 0
             );

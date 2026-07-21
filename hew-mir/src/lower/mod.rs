@@ -174,6 +174,10 @@ type TaskEntryAdapterSymbols = Rc<RefCell<HashMap<String, String>>>;
 #[derive(Debug, Clone, Copy)]
 struct GeneratorShellCallGate;
 
+// These literals mirror the runtime's offset_of!-derived authorities. MIR
+// cannot depend on the runtime in production because the dependency points
+// from the runtime toward compiler-independent crates; native tests compare
+// this copy with the runtime so layout changes fail at the boundary.
 const HEW_CTX_OFFSET_ACTOR_ID: usize = 8;
 const HEW_CTX_OFFSET_PARENT_SUPERVISOR: usize = 16;
 const HEW_CTX_OFFSET_TRACE: usize = 56;

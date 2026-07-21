@@ -35,9 +35,6 @@
 
 # ── examples/ ────────────────────────────────────────────────────────────────
 
-# deferred-nyi: channel/select syntax not yet lowered
-examples/benchmark_demo.hew
-
 # deferred-nyi: distributed / net NYI features
 
 # deferred-nyi: lambda actor syntax not yet supported

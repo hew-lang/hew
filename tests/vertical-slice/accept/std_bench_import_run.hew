@@ -1,0 +1,7 @@
+import std::bench;
+
+fn main() {
+    let s = bench.suite("Imported Bench");
+    s.add("noop", 1, || {});
+    s.report();
+}

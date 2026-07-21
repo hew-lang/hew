@@ -925,8 +925,8 @@ struct ImplCloseSignature {
 /// Per-impl-block context threaded into `lower_impl_block` for imported
 /// modules. Carries the same-module fn-name rewrite map (bare helper name →
 /// mangled qualified symbol, identical to the free-function imported path) and
-/// the set of method names to skip because their bodies call a private helper
-/// the importer cannot reach.
+/// the set of method names to skip because their bodies or signatures cannot
+/// be resolved safely across the module boundary.
 struct ImportedImplLowering<'a> {
     rewrites: &'a HashMap<String, String>,
     skip_methods: &'a HashSet<String>,
@@ -3894,13 +3894,15 @@ pub fn lower_program_with_mono_cap(
                                 //
                                 // A method is skipped when EITHER:
                                 //  - its body calls a bare name that resolves in
-                                //    neither the same-module rewrite map nor
+                                //    neither the same-module rewrite map,
                                 //    `fn_registry` (which by now holds every
                                 //    seeded stdlib/runtime symbol and every
-                                //    same-module extern fn) — catches
-                                //    codegen-intercepted builtins that are not
-                                //    extern-declared, e.g. `std::channel`'s
-                                //    `recv` → `hew_channel_recv_layout`; OR
+                                //    same-module extern fn), a lexically-bound
+                                //    fn-typed parameter, nor the source builtin
+                                //    overload set — catches codegen-intercepted
+                                //    builtins that are not extern-declared, e.g.
+                                //    `std::channel`'s `recv` →
+                                //    `hew_channel_recv_layout`; OR
                                 //  - its signature names a user type that would
                                 //    not resolve at the MIR boundary — a
                                 //    cross-module dotted type (`fs.IoError`) or a
@@ -3930,6 +3932,14 @@ pub fn lower_program_with_mono_cap(
                                     .unwrap_or_default();
                                 let mut skip_methods: HashSet<String> = HashSet::new();
                                 for method in &impl_decl.methods {
+                                    let callable_params: HashSet<&str> = method
+                                        .params
+                                        .iter()
+                                        .filter(|param| {
+                                            matches!(&param.ty.0, TypeExpr::Function { .. })
+                                        })
+                                        .map(|param| param.name.as_str())
+                                        .collect();
                                     let body_unresolvable = collect_all_bare_call_names(
                                         &method.body,
                                     )
@@ -3949,6 +3959,8 @@ pub fn lower_program_with_mono_cap(
                                         !is_builtin_enum_variant_bare_name(&callee)
                                             && !same_module_fn_rewrites.contains_key(&callee)
                                             && !ctx.fn_registry.contains_key(&callee)
+                                            && !callable_params.contains(callee.as_str())
+                                            && !stdlib_catalog::is_overloaded_builtin(&callee)
                                     });
                                     // The generic params in scope for this method:
                                     // the impl-block params plus the method's own.
@@ -6821,12 +6833,12 @@ fn collect_bare_fn_call_refs(body: &Block, candidate_fns: &HashSet<String>) -> V
 ///
 /// Used to decide whether an imported impl-method body is safe to lower: a body
 /// that calls a bare name resolvable in neither `fn_registry`, the same-module
-/// rewrite map, nor the runtime/stdlib catalog cannot be lowered cross-module
+/// rewrite map, a lexically-bound fn-typed parameter, the source builtin
+/// overload set, nor the runtime/stdlib catalog cannot be lowered cross-module
 /// (e.g. `std::channel`'s `recv` calls the codegen-intercepted
 /// `hew_channel_recv_layout`, which is not extern-declared in the module and
-/// never reaches the imported
-/// `fn_registry`). Such methods are skipped, matching the prior behaviour where
-/// every imported impl method was dropped.
+/// never reaches the imported `fn_registry`). Such methods are skipped,
+/// matching the prior behaviour where every imported impl method was dropped.
 fn collect_all_bare_call_names(body: &Block) -> Vec<String> {
     let mut found = CallNames::default();
     scan_block_for_private_refs(body, None, &mut found);

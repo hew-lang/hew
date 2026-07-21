@@ -1,0 +1,11 @@
+import std::concurrency::{ScopeError};
+
+fn main() {
+    let failures: Vec<i64> = [8, 9];
+    let error: ScopeError<i64> = ScopeError {
+        primary: 7,
+        also_failed: failures,
+        cancelled_count: 2,
+    };
+    println(f"scope:{error.primary}:{error.also_failed[0]}:{error.also_failed[1]}:{error.cancelled_count}");
+}

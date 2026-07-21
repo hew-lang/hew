@@ -440,6 +440,12 @@ run_accept_expect_stdout_contains \
     "=== Imported Bench ===" \
     "  noop  1 iters  avg "
 
+# std::concurrency's generic failure record must construct across the module
+# boundary and preserve every exact field value at runtime.
+run_accept_expect_stdout_contains \
+    "std_concurrency_import_run" \
+    "scope:7:8:9:2"
+
 # Regression guard: a plain record with an Option<i64> field must compile and
 # run.  The MIR field classifier must NOT strip args from generic enum types
 # (Option, Result) even though their origin names appear in machine_layout_names.

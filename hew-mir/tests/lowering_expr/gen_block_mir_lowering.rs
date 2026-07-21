@@ -14,7 +14,10 @@
 //! ships. This file is that gate for the generator MIR lane.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{IrPipeline, MirDiagnosticKind, RawMirFunction, Terminator};
+use hew_mir::{
+    terminator_source_places, GeneratorEnvFieldPlan, IrPipeline, MirDiagnosticKind, Place,
+    RawMirFunction, Terminator,
+};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn lower_checked(source: &str) -> IrPipeline {
@@ -475,6 +478,28 @@ fn gen_block_capturing_scalar_is_admitted() {
     );
     // The gen body must still be produced (capture admitted, env materialised).
     let _body = find_gen_body(&pipeline, "main");
+    let main = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main MIR must exist");
+    let make_term = main
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            term @ Terminator::MakeGenerator { .. } => Some(term),
+            _ => None,
+        })
+        .expect("main must construct the generator");
+    let Terminator::MakeGenerator { env: Some(env), .. } = make_term else {
+        panic!("scalar capture must carry a typed generator env plan");
+    };
+    assert!(matches!(env.place, Place::Local(_)));
+    assert!(
+        matches!(&env.ty, hew_types::ResolvedTy::Named { name, .. } if name.starts_with("__hew_gen_env_main_"))
+    );
+    assert_eq!(env.fields, vec![GeneratorEnvFieldPlan::TrivialCopy]);
+    assert_eq!(terminator_source_places(make_term, None), vec![env.place]);
 }
 
 /// A `gen fn` whose parameter is a bare named-function reference (`fn(i64)->i64`,

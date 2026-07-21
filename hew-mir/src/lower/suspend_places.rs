@@ -307,19 +307,9 @@ pub fn terminator_source_places(
         Terminator::Call { args, .. } => args.clone(),
         Terminator::Yield { value, .. } => vec![*value],
         // `dest` is the handle slot the generator is written into (a write);
-        // `body_fn` is a static symbol, not a Place. `env` (when present) IS
-        // read — the ramp flat-copies the capture env into the coro frame —
-        // but is deliberately NOT listed as a source: the env place is always
-        // the dedicated closure-env aggregate local `ClosureEnvInit` just
-        // built (never a user binding or a leaf string/bytes temp), and
-        // listing it would make the escape scans treat the env local itself
-        // as escaping. Every USER value enters the env through
-        // `ClosureEnvInit`, whose reads the dataflow table
-        // (`dataflow::instr_reads_writes`) already reports — consumers that
-        // need every read (the nested fresh-temp collectors) use that table,
-        // not this one. Note the asymmetry with `MakeLambdaActor` below,
-        // which does list its env.
-        Terminator::MakeGenerator { .. } => Vec::new(),
+        // `body_fn` is a static symbol. The typed env plan's place is the
+        // synthetic RecordInit shell read and consumed by construction.
+        Terminator::MakeGenerator { env, .. } => env.iter().map(|plan| plan.place).collect(),
         // Lambda-actor construction: `dest` is written; `body_fn` and
         // `state_drop_fn` are static symbols. The capture env (when
         // present) is READ — codegen heap-boxes its bytes — so it is a
@@ -1049,8 +1039,10 @@ pub(super) fn terminator_escape_places(
         Terminator::Return
         | Terminator::Goto { .. }
         | Terminator::Branch { .. }
-        | Terminator::Trap { .. }
-        | Terminator::MakeGenerator { .. } => Vec::new(),
+        | Terminator::Trap { .. } => Vec::new(),
+        // Only the synthetic env record shell escapes into the heap clone.
+        // Its source bindings were already read by RecordInit and remain live.
+        Terminator::MakeGenerator { env, .. } => env.iter().map(|plan| plan.place).collect(),
         // Lambda-actor construction: body_fn and state_drop_fn are static
         // symbols and the `dest` handle slot is the WRITE — but the capture
         // env (when present) transfers into the actor's heap-boxed state,

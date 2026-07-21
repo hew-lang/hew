@@ -335,10 +335,24 @@ fn render_terminator(term: &Terminator) -> String {
             next,
             env,
         } => {
-            let env_str = env
-                .as_ref()
-                .map(|p| format!(", env={}", render_place(p)))
-                .unwrap_or_default();
+            let env_str = env.as_ref().map_or_else(String::new, |plan| {
+                let fields = plan
+                    .fields
+                    .iter()
+                    .map(|field| match field {
+                        crate::model::GeneratorEnvFieldPlan::TrivialCopy => "copy".to_string(),
+                        crate::model::GeneratorEnvFieldPlan::Owned(snapshot) => {
+                            format!("owned({:?})", snapshot.root())
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    ", env={}:{:?}, fields=[{fields}]",
+                    render_place(&plan.place),
+                    plan.ty
+                )
+            });
             format!(
                 "{} = make_generator {body_fn}{env_str} -> bb{next}",
                 render_place(dest)

@@ -9,6 +9,7 @@ use super::{
     ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin, StreamProducerPumpCtx,
     SuspendKind, Terminator, ThirFunction, ValueClass,
 };
+use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
 impl Builder {
     /// True when `ty` may be admitted as a generator-env capture field: a
@@ -86,6 +87,31 @@ impl Builder {
             &self.enum_layouts,
             &self.opaque_handle_names,
         )
+    }
+
+    fn gen_env_capture_field_plan(&self, ty: &ResolvedTy) -> Option<GeneratorEnvFieldPlan> {
+        if matches!(ty, ResolvedTy::Function { .. })
+            || matches!(ty, ResolvedTy::Closure { captures, .. } if captures.is_empty())
+        {
+            return Some(GeneratorEnvFieldPlan::TrivialCopy);
+        }
+        let record_layouts = self.record_layouts_for_classification();
+        let plan = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+            ty,
+            &record_layouts,
+            &self.enum_layouts,
+            &self.opaque_handle_names,
+            &self.resource_opaque_close,
+        )
+        .ok()?;
+        if matches!(
+            plan.root(),
+            crate::state_clone::StateFieldCloneKind::BitCopy { .. }
+        ) {
+            Some(GeneratorEnvFieldPlan::TrivialCopy)
+        } else {
+            Some(GeneratorEnvFieldPlan::Owned(plan))
+        }
     }
 
     pub(crate) fn sanitize_symbol_component(input: &str) -> String {
@@ -1700,6 +1726,7 @@ impl Builder {
         let mut env_place: Option<Place> = None;
         let mut env_ty: Option<ResolvedTy> = None;
         let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
+        let mut env_field_plans: Vec<GeneratorEnvFieldPlan> = Vec::new();
         // Capture bindings rejected below as inadmissible to the flat env. Each
         // gets a root `NotYetImplemented`; the body sub-builder reads this set
         // to suppress the downstream `InitialisedBeforeUse`/`UnresolvedPlace`
@@ -1762,12 +1789,19 @@ impl Builder {
                     // anonymous-gen capture has that external provenance gate.
                     && !(self.generator_shell_call_gate.is_some()
                         && self.closure_pair_param_owned.contains(&capture.binding));
+                let capture_field_plan = capture_ty
+                    .as_ref()
+                    .and_then(|ty| self.gen_env_capture_field_plan(ty));
                 match (slot, capture_ty) {
                     (Some(src), Some(ty))
-                        if self.gen_env_capture_admissible(&ty) && !fn_env_provenance_unproven =>
+                        if self.gen_env_capture_admissible(&ty)
+                            && !fn_env_provenance_unproven
+                            && capture_field_plan.is_some() =>
                     {
                         init_fields.push((offset, src));
                         field_tys.push(ty);
+                        env_field_plans
+                            .push(capture_field_plan.expect("generator env plan guard checked"));
                     }
                     (Some(_), Some(ty)) => {
                         // Not admissible to the flat-`memcpy`'d generator env.
@@ -2208,11 +2242,20 @@ impl Builder {
         // the ramp's returned `llvm.coro.begin` handle) is stored into
         // `gen_place`; the gen-block expression evaluates to that place.
         let next = self.alloc_block();
+        let env = match (env_place, env_ty) {
+            (Some(place), Some(ty)) => Some(GeneratorEnvPlan {
+                place,
+                ty,
+                fields: env_field_plans,
+            }),
+            (None, None) => None,
+            _ => unreachable!("generator env place/type must be constructed together"),
+        };
         self.finish_current_block(Terminator::MakeGenerator {
             dest: gen_place,
             body_fn: body_name.clone(),
             next,
-            env: env_place,
+            env,
         });
         self.start_block(next);
         gen_place

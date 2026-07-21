@@ -27406,8 +27406,9 @@ fn lower_terminator<'ctx>(
                         .build_store(env_field_ptr, ptr_ty.const_null())
                         .llvm_ctx("gen companion env null")?;
                 }
-                Some(env_place) => {
-                    let (env_slot, env_slot_ty) = place_pointer(fn_ctx, *env_place)?;
+                Some(env_plan) => {
+                    let env_place = env_plan.place;
+                    let (env_slot, env_slot_ty) = place_pointer(fn_ctx, env_place)?;
                     let BasicTypeEnum::StructType(env_struct) = env_slot_ty else {
                         return Err(CodegenError::FailClosed(format!(
                             "MakeGenerator env place {env_place:?} is not struct-typed \

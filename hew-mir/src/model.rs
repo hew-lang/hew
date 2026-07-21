@@ -3252,6 +3252,26 @@ pub enum TrapKind {
     UnreachableCallContinuation,
 }
 
+/// Ordered construction plan for one generator capture environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratorEnvPlan {
+    /// Synthetic stack record consumed by `MakeGenerator`.
+    pub place: Place,
+    /// Resolved synthetic record type used to validate the codegen layout.
+    pub ty: ResolvedTy,
+    /// Per-field construction mode in capture declaration order.
+    pub fields: Vec<GeneratorEnvFieldPlan>,
+}
+
+/// Construction mode for one generator environment field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeneratorEnvFieldPlan {
+    /// The shallow seed already constitutes an independent value.
+    TrivialCopy,
+    /// The shallow seed must be replaced by a semantic structural clone.
+    Owned(crate::state_clone::ValueSnapshotPlan),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
     /// Return whatever has been written into `Place::ReturnSlot`. The
@@ -3319,25 +3339,16 @@ pub enum Terminator {
     /// body-fn pointer is not a `Place` and the construction is
     /// self-describing without a call-site side table.
     ///
-    /// `env` is the stack `Place` holding the `RecordInit`'d capture-env
-    /// record, or `None` for a capture-free generator (the companion's `env`
-    /// field is then null). The generator body's free variables — a `gen
-    /// fn`'s formal parameters and a `gen { }`'s captured outer locals — live
-    /// in this record, in `HirGenCapture` order. Codegen heap-copies the
-    /// record (`hew_cont_frame_alloc` + `memcpy`) so it outlives this
-    /// constructing frame — the body reads it across suspends, long after
-    /// construction returns — and passes the heap copy's address to the ramp,
-    /// which reads it back through `Local(1)` via `ClosureEnvFieldLoad`. Only
-    /// no-drop capture field classes (`BitCopy` scalars, pids) are
-    /// materialised today; owned fields (string/aggregate) fail closed at the
-    /// construction site because the flat heap-copy would alias their heap
-    /// and risk a double-free / UAF without a per-field clone + env-drop
-    /// protocol.
+    /// `env` is the typed plan for the stack `RecordInit`'d capture-env record,
+    /// or `None` for a capture-free generator. Its fields preserve
+    /// `HirGenCapture` declaration order and distinguish trivial copied bytes
+    /// from structural owned clones. The stack record is a synthetic alias
+    /// shell consumed by this terminator; source bindings remain live.
     MakeGenerator {
         dest: Place,
         body_fn: String,
         next: u32,
-        env: Option<Place>,
+        env: Option<GeneratorEnvPlan>,
     },
     /// Lambda-actor construction at an `actor |params| { body }` spawn
     /// site. Codegen emits `hew_lambda_actor_new(mailbox_capacity, shape,

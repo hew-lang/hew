@@ -18668,6 +18668,21 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
     }
 }
 
+fn validate_prepared_outbound_modes(
+    fn_ctx: &FnCtx<'_, '_>,
+    value: Place,
+    modes: &[hew_mir::SendAliasMode],
+) -> CodegenResult<()> {
+    let ty = place_resolved_ty(fn_ctx, value)?;
+    if modes.is_empty() && !matches!(ty, ResolvedTy::Unit) {
+        return Err(CodegenError::FailClosed(format!(
+            "prepared outbound payload `{}` has no resolved argument modes",
+            ty.user_facing()
+        )));
+    }
+    Ok(())
+}
+
 /// Byte size of the heap env box's leading free-thunk slot. The thunk
 /// Lower `Instr::RecordCloneInplace { dest, src, record_name }` to:
 ///   1. `memcpy(dest_ptr, src_ptr, abi_sizeof(Record))` — replicates BitCopy
@@ -20999,38 +21014,6 @@ fn has_unhandled_borrow_escape(func: &RawMirFunction, tainted: &HashSet<u32>) ->
         }
     }
     false
-}
-
-/// Emit an `alloca` in the entry block of the current function, regardless of
-/// where the builder is presently positioned.
-///
-/// A re-send escape (`Terminator::Send`) materialises its retained payload into
-/// a scratch slot mid-block; if that `alloca` were emitted in place it could sit
-/// inside a loop and grow the stack on every iteration. Hoisting it to the entry
-/// block (the standard LLVM idiom — alloca at function entry) makes it a single
-/// fixed slot that dominates every use, leaving the builder's current insert
-/// position untouched.
-fn build_entry_alloca<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    ty: BasicTypeEnum<'ctx>,
-    name: &str,
-) -> CodegenResult<PointerValue<'ctx>> {
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm(format!("{name}: entry alloca has no parent function"))
-        })?;
-    let entry = parent
-        .get_first_basic_block()
-        .ok_or_else(|| CodegenError::Llvm(format!("{name}: parent function has no entry block")))?;
-    let tmp = fn_ctx.ctx.create_builder();
-    match entry.get_first_instruction() {
-        Some(first) => tmp.position_before(&first),
-        None => tmp.position_at_end(entry),
-    }
-    tmp.build_alloca(ty, name).llvm_ctx("entry alloca")
 }
 
 /// Resolve the `@llvm.lifetime.start.p0` / `@llvm.lifetime.end.p0` intrinsic
@@ -25921,26 +25904,29 @@ fn dispatch_collapsed_suspend<'ctx>(
             actor,
             msg_type,
             value,
-            arg_modes: _,
+            arg_modes,
             cleanup_plan,
             result_dest,
             reply_dest,
             error_dest,
-        } => crate::suspend::emit_suspending_ask_terminator(
-            fn_ctx,
-            crate::suspend::SuspendingAskEmit {
-                actor: *actor,
-                msg_type: *msg_type,
-                value: *value,
-                cleanup_plan: cleanup_plan.clone(),
-                result_dest: *result_dest,
-                reply_dest: *reply_dest,
-                error_dest: *error_dest,
-                resume,
-                cleanup,
-                deadline_ns: await_deadlines.get(&block_id).copied(),
-            },
-        ),
+        } => {
+            validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
+            crate::suspend::emit_suspending_ask_terminator(
+                fn_ctx,
+                crate::suspend::SuspendingAskEmit {
+                    actor: *actor,
+                    msg_type: *msg_type,
+                    value: *value,
+                    cleanup_plan: cleanup_plan.clone(),
+                    result_dest: *result_dest,
+                    reply_dest: *reply_dest,
+                    error_dest: *error_dest,
+                    resume,
+                    cleanup,
+                    deadline_ns: await_deadlines.get(&block_id).copied(),
+                },
+            )
+        }
         SuspendKind::Read {
             conn,
             result_dest,
@@ -27857,55 +27843,14 @@ fn lower_terminator<'ctx>(
             msg_type,
             value,
             next,
-            // `arg_modes` are deliberately UNCONSUMED by codegen during the
-            // checker semantic cutover. MIR's outbound preparation pass
-            // replaces this transitional binary mode with resolved
-            // snapshot/transfer modes. Every send today lowers to
-            // `hew_actor_send_by_id` regardless of this field: the only
-            // payload special-case is the `send_gated_string` borrow retain
-            // below, which rides the SEPARATE `borrow_mode`/`borrow_tainted`
-            // mechanism (string-only roots in `compute_borrow_taint`; bytes
-            // never enter that branch). Consuming the mode without wiring
-            // preparation would be a no-op or an unbalanced refcount.
-            arg_modes: _,
+            arg_modes,
             cleanup_plan,
         } => {
+            validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
             let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
             let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
-            // P5-RX Stage 2a (A625): a borrowed-String receive view that
-            // escapes into a re-send must take its OWN owner — the new envelope
-            // the runtime builds from this payload releases its buffer, which
-            // would double-free the original envelope-owned buffer. Under
-            // `borrow_mode != 0` retain via `hew_string_clone` into a scratch
-            // slot and send that; under `borrow_mode == 0` (copy mode) send the
-            // handler's private handle exactly as before.
-            let send_gated_string = matches!(
-                fn_ctx.borrow_mode.zip(place_base_local(value)),
-                Some((_, base)) if fn_ctx.borrow_tainted.contains(&base)
-            );
-            let (payload_ptr, payload_size) = if send_gated_string {
-                let borrow_mode = fn_ctx
-                    .borrow_mode
-                    .expect("send_gated_string implies borrow_mode is Some");
-                let (src_ptr, src_ty) = place_pointer(fn_ctx, *value)?;
-                let handle = fn_ctx
-                    .builder
-                    .build_load(src_ty, src_ptr, "actor_send_payload_load")
-                    .llvm_ctx("actor send payload load")?;
-                let owner =
-                    emit_borrow_gated_string_clone(fn_ctx, borrow_mode, handle, "send_payload")?;
-                let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-                let scratch =
-                    build_entry_alloca(fn_ctx, ptr_ty.into(), "actor_send_payload_scratch")?;
-                fn_ctx
-                    .builder
-                    .build_store(scratch, owner)
-                    .llvm_ctx("actor send scratch store")?;
-                let size = ptr_ty.size_of();
-                (scratch, size)
-            } else {
-                actor_payload_ptr_size(fn_ctx, *value, "actor_send_payload")?
-            };
+            let (payload_ptr, payload_size) =
+                actor_payload_ptr_size(fn_ctx, *value, "actor_send_payload")?;
             let send = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -27997,13 +27942,14 @@ fn lower_terminator<'ctx>(
             actor,
             msg_type,
             value,
-            arg_modes: _,
+            arg_modes,
             cleanup_plan,
             result_dest,
             reply_dest,
             error_dest,
             next,
         } => {
+            validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
             let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_ask receiver")?;
             let (payload_ptr, payload_size) =
                 actor_payload_ptr_size(fn_ctx, *value, "actor_ask_payload")?;

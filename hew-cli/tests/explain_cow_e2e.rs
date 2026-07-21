@@ -28,15 +28,14 @@ fn fixture_path() -> std::path::PathBuf {
 
 /// `hew check --explain-cow` exits 0 and emits one line per actor send site.
 ///
-/// The fixture has two sends: a `String` (non-Copy bare identifier, yields
-/// ALIAS) and an `i64` (Copy type, yields COPY). The test verifies:
+/// The fixture has two sends: a last-use `String` and an `i64` literal.
 /// - exit code 0 (file type-checks successfully)
 /// - exactly two send entries appear in stdout
-/// - the String send is classified ALIAS
-/// - the i64 send is classified COPY with the feature-gate reason
+/// - the String send is classified `TRANSFER_LAST_USE`
+/// - the i64 send is classified `SNAPSHOT_BIT_COPY`
 /// - each entry names the fixture file
 #[test]
-fn explain_cow_golden_alias_and_copy_sites() {
+fn explain_cow_renders_mir_authored_send_modes() {
     let fixture = fixture_path();
     let fixture_str = fixture.to_str().expect("fixture path is valid UTF-8");
 
@@ -55,7 +54,7 @@ fn explain_cow_golden_alias_and_copy_sites() {
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
 
     // Collect only the send-entry lines (not the trailing "file: OK" on stderr).
-    let send_lines: Vec<&str> = stdout.lines().filter(|l| l.contains("send —")).collect();
+    let send_lines: Vec<&str> = stdout.lines().filter(|l| l.contains("send -")).collect();
     assert_eq!(
         send_lines.len(),
         2,
@@ -63,32 +62,22 @@ fn explain_cow_golden_alias_and_copy_sites() {
         send_lines.len()
     );
 
-    // Line 24 (String send) must be ALIAS.
-    let alias_line = send_lines.iter().find(|l| l.contains("ALIAS")).copied();
+    let transfer_line = send_lines
+        .iter()
+        .find(|line| line.contains("TRANSFER_LAST_USE"))
+        .copied();
     assert!(
-        alias_line.is_some(),
-        "expected one ALIAS entry (String send), got:\n{stdout}"
-    );
-    let alias_line = alias_line.unwrap();
-    assert!(
-        alias_line.contains(":24:"),
-        "ALIAS entry must be on line 24 (String send), got: {alias_line:?}"
+        transfer_line.is_some(),
+        "expected one TRANSFER_LAST_USE entry, got:\n{stdout}"
     );
 
-    // Line 25 (i64 send) must be COPY with the feature-gate reason.
-    let copy_line = send_lines.iter().find(|l| l.contains("COPY")).copied();
+    let copy_line = send_lines
+        .iter()
+        .find(|line| line.contains("SNAPSHOT_BIT_COPY"))
+        .copied();
     assert!(
         copy_line.is_some(),
-        "expected one COPY entry (i64 send), got:\n{stdout}"
-    );
-    let copy_line = copy_line.unwrap();
-    assert!(
-        copy_line.contains(":25:"),
-        "COPY entry must be on line 25 (i64 send), got: {copy_line:?}"
-    );
-    assert!(
-        copy_line.contains("non-identifier expression"),
-        "COPY entry for the i64 literal send must name the `non-identifier expression` reason, got: {copy_line:?}"
+        "expected one SNAPSHOT_BIT_COPY entry, got:\n{stdout}"
     );
 
     // Both entries must name the fixture file.

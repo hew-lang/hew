@@ -485,6 +485,26 @@ fn run_check_deep_gates(
     Ok(())
 }
 
+fn build_explain_cow_pipeline(
+    target: &target::TargetSpec,
+    state: &hew_compile::FileFrontendState,
+) -> Option<hew_mir::IrPipeline> {
+    let tco = state.typecheck_result.tco.as_ref()?;
+    let lowered = hew_hir::lower_program(
+        &state.program,
+        tco,
+        &hew_hir::ResolutionCtx,
+        hir_target_arch(target),
+    );
+    if !lowered.diagnostics.is_empty() {
+        return None;
+    }
+    let mut pipeline =
+        hew_mir::lower_hir_module_with_facts(&lowered.module, mir_pointer_width(target));
+    pipeline.attach_lowering_facts(tco);
+    pipeline.diagnostics.is_empty().then_some(pipeline)
+}
+
 fn emit_module(
     pipeline: &hew_mir::IrPipeline,
     module_name: &str,
@@ -1517,7 +1537,9 @@ fn cmd_check(a: &args::CheckArgs) {
         if a.show_stack_hints {
             diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
         } else if a.explain_cow {
-            explain_cow::render_explain_cow(&result.source, &input, &mut std::io::stdout());
+            if let Some(pipeline) = build_explain_cow_pipeline(&target, &state) {
+                explain_cow::render_explain_cow(&pipeline, &input, &mut std::io::stdout());
+            }
         }
     }
 

@@ -1,0 +1,11 @@
+import std::machines::toggle::{Toggle};
+
+fn main() {
+    var toggle: Toggle = Toggle::Off;
+    let off = toggle.state_name();
+    toggle.step(Flip);
+    let on = toggle.state_name();
+    toggle.step(Flip);
+    let off_again = toggle.state_name();
+    println(f"toggle:{off}:{on}:{off_again}");
+}

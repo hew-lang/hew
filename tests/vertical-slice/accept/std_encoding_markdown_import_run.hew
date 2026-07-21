@@ -1,0 +1,9 @@
+import std::encoding::markdown;
+
+fn main() {
+    let html = markdown.to_html("**bold**");
+    if html != "<p><strong>bold</strong></p>\n" {
+        panic(f"unexpected markdown HTML: {html}");
+    }
+    println("markdown:<p><strong>bold</strong></p>");
+}

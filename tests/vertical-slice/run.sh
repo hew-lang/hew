@@ -440,6 +440,48 @@ run_accept_expect_stdout_contains \
     "=== Imported Bench ===" \
     "  noop  1 iters  avg "
 
+# std::concurrency's generic failure record must construct across the module
+# boundary and preserve every exact field value at runtime.
+run_accept_expect_stdout_contains \
+    "std_concurrency_import_run" \
+    "scope:7:8:9:2"
+
+# std::concurrency::lifecycle's imported generic machine must execute the full
+# happy-path transition sequence with exact state names.
+run_accept_expect_stdout_contains \
+    "std_concurrency_lifecycle_import_run" \
+    "lifecycle:Created:Initialising:Running:Stopping:Stopped"
+
+# std::encoding::markdown must call the native renderer through its imported
+# wrapper and return the exact CommonMark HTML for a stable input.
+run_accept_expect_stdout_contains \
+    "std_encoding_markdown_import_run" \
+    "markdown:<p><strong>bold</strong></p>"
+
+# std::io::closable's imported trait and error enum must support a concrete
+# implementation, receiver dispatch, and exact variant matching.
+run_accept_expect_stdout_contains \
+    "std_io_closable_import_run" \
+    "closable:AlreadyClosed"
+
+# std::machines::toggle must construct its imported state and execute both
+# cross-module event transitions with exact state names.
+run_accept_expect_stdout_contains \
+    "std_machines_toggle_import_run" \
+    "toggle:Off:On:Off"
+
+# std::encoding::wire::value_trait must dispatch an imported canonical method
+# through a generic bound to JSON's concrete implementation.
+run_accept_expect_stdout_contains \
+    "std_encoding_wire_value_trait_import_run" \
+    "canonical-value:42"
+
+# std::io's imported write wrapper must reach the runtime and emit the exact
+# requested bytes.
+run_accept_expect_stdout_contains \
+    "std_io_import_run" \
+    "stdlib-io:write"
+
 # Regression guard: a plain record with an Option<i64> field must compile and
 # run.  The MIR field classifier must NOT strip args from generic enum types
 # (Option, Result) even though their origin names appear in machine_layout_names.

@@ -1,0 +1,5 @@
+import std::io;
+
+fn main() {
+    io.write("stdlib-io:write\n");
+}

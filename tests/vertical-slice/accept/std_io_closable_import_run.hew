@@ -1,0 +1,25 @@
+import std::io::closable::{Closable, CloseError};
+import std::io::closable;
+
+type TestHandle {
+    id: i64;
+}
+
+impl Closable for TestHandle {
+    fn close(handle: TestHandle) -> Result<(), closable.CloseError> {
+        if handle.id == 7 {
+            Err(closable.CloseError::AlreadyClosed)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn main() {
+    let handle = TestHandle { id: 7 };
+    match handle.close() {
+        Err(CloseError::AlreadyClosed) => println("closable:AlreadyClosed"),
+        Err(CloseError::Io(_)) => println("closable:Io"),
+        Ok(_) => println("closable:Ok"),
+    }
+}

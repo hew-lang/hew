@@ -323,21 +323,23 @@ entry:
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
-  %gen_companion_alloc = call ptr @hew_cont_frame_alloc(i64 ptrtoint (ptr getelementptr ({ ptr, ptr, ptr, i8, i8, i64 }, ptr null, i32 1) to i64))
-  %gen_companion_started_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 3
+  %gen_companion_alloc = call ptr @hew_cont_frame_alloc(i64 ptrtoint (ptr getelementptr ({ ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr null, i32 1) to i64))
+  %gen_companion_env_drop_thunk_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 2
+  store ptr null, ptr %gen_companion_env_drop_thunk_ptr, align 8
+  %gen_companion_started_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 4
   store i8 0, ptr %gen_companion_started_ptr, align 1
-  %gen_companion_out_drop_thunk_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 2
+  %gen_companion_out_drop_thunk_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 3
   store ptr null, ptr %gen_companion_out_drop_thunk_ptr, align 8
-  %gen_companion_env_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 1
-  %gen_companion_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 5
+  %gen_companion_env_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 1
+  %gen_companion_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 6
   store ptr null, ptr %gen_companion_env_ptr, align 8
   %gen_body_ramp_call = call ptr @__hew_gen_body_main_0(ptr %gen_companion_out_ptr)
-  %gen_companion_handle_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 0
+  %gen_companion_handle_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 0
   store ptr %gen_body_ramp_call, ptr %gen_companion_handle_ptr, align 8
   %gen_companion_ramp_done = call i1 @hew_cont_done(ptr %gen_body_ramp_call)
   %gen_companion_pending_bit = icmp eq i1 %gen_companion_ramp_done, false
   %gen_companion_pending_i8 = zext i1 %gen_companion_pending_bit to i8
-  %gen_companion_pending_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 4
+  %gen_companion_pending_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_companion_alloc, i32 0, i32 5
   store i8 %gen_companion_pending_i8, ptr %gen_companion_pending_ptr, align 1
   store ptr %gen_companion_alloc, ptr %local_0, align 8
   br label %bb1
@@ -354,10 +356,10 @@ bb1:                                              ; preds = %bb0
 
 bb2:                                              ; preds = %after_cooperate7, %bb1
   %gen_next_companion = load ptr, ptr %local_4, align 8
-  %gen_next_handle_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_next_companion, i32 0, i32 0
+  %gen_next_handle_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_next_companion, i32 0, i32 0
   %gen_next_handle = load ptr, ptr %gen_next_handle_ptr, align 8
-  %gen_next_pending_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_next_companion, i32 0, i32 4
-  %gen_next_started_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_next_companion, i32 0, i32 3
+  %gen_next_pending_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_next_companion, i32 0, i32 5
+  %gen_next_started_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_next_companion, i32 0, i32 4
   %gen_next_started = load i8, ptr %gen_next_started_ptr, align 1
   %gen_next_started_set = icmp ne i8 %gen_next_started, 0
   %machine_tag_ptr = getelementptr inbounds nuw %"Option$$i64", ptr %local_6, i32 0, i32 0
@@ -460,7 +462,7 @@ gen_next_none:                                    ; preds = %gen_next_check_done
   br label %gen_next_cont
 
 gen_next_some:                                    ; preds = %gen_next_check_done
-  %gen_next_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_next_companion, i32 0, i32 5
+  %gen_next_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, i64 }, ptr %gen_next_companion, i32 0, i32 6
   %gen_next_value = load i64, ptr %gen_next_out_ptr, align 8
   store i8 0, ptr %machine_tag_ptr, align 1
   store i64 %gen_next_value, ptr %machine_variant_field_ptr, align 8

@@ -3625,9 +3625,27 @@ a callable cancel handle that `select` can hold as a source.
 
 ### 4.12 Generators
 
-> See HEW-FUTURE.md §1.6 for the remaining deferred generator forms (`async gen fn`,
-> `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`). Scalar-parameter and fn-typed-parameter
-> `gen fn` forms are live as of v0.5 (see §1.6 for detail).
+Generator construction snapshots every captured value into a heap-owned
+environment before the body ramp reaches its first `yield`. Bit-copy values and
+proven null-environment function values are copied directly. Strings, bytes,
+`Rc`, `Weak`, supported collections, tuples, fixed arrays, records, and enums
+are cloned structurally when every reachable leaf has both a total clone and
+the matching inverse drop.
+
+The caller, enclosing closure, or actor state remains the owner of the capture
+source. The generator owns only its snapshot. Destroying a completed,
+suspended, or never-resumed generator destroys the coroutine frame first,
+drops environment fields in reverse declaration order, frees the environment,
+drops any pending yielded value, and finally frees the companion.
+
+Opaque handles, resources, IO handles, trait objects, and capturing closure
+pairs are not cloneable generator captures. A whole owned value loaded from a
+generator environment is an alias; it must be cloned explicitly before being
+yielded or otherwise moved into another owner.
+
+> See HEW-FUTURE.md §1.6 for the remaining deferred generator forms (`async gen
+> fn`, `Lazy<T>`, `#[prefetch(N)]`). `gen fn`, `gen {}`, and `receive gen fn`
+> use the snapshot semantics above.
 
 ---
 

@@ -7981,6 +7981,69 @@ fn collect_closure_capture_drop_seeds(
     (record_seeds, enum_seeds)
 }
 
+fn collect_generator_env_clone_seeds(raw_mir: &[RawMirFunction]) -> (Vec<String>, Vec<String>) {
+    let mut record_seeds = Vec::new();
+    let mut enum_seeds = Vec::new();
+    let mut record_seen = HashSet::new();
+    let mut enum_seen = HashSet::new();
+
+    fn add_kind(
+        kind: &StateFieldCloneKind,
+        record_seeds: &mut Vec<String>,
+        enum_seeds: &mut Vec<String>,
+        record_seen: &mut HashSet<String>,
+        enum_seen: &mut HashSet<String>,
+    ) {
+        match kind {
+            StateFieldCloneKind::UserRecord { name } => {
+                if record_seen.insert(name.clone()) {
+                    record_seeds.push(name.clone());
+                }
+            }
+            StateFieldCloneKind::Enum { name } => {
+                if enum_seen.insert(name.clone()) {
+                    enum_seeds.push(name.clone());
+                }
+            }
+            StateFieldCloneKind::Tuple { elems } => {
+                for elem in elems {
+                    add_kind(elem, record_seeds, enum_seeds, record_seen, enum_seen);
+                }
+            }
+            StateFieldCloneKind::Array { elem, .. }
+            | StateFieldCloneKind::Vec { elem }
+            | StateFieldCloneKind::HashSet { elem } => {
+                add_kind(elem, record_seeds, enum_seeds, record_seen, enum_seen);
+            }
+            StateFieldCloneKind::HashMap { key, val } => {
+                add_kind(key, record_seeds, enum_seeds, record_seen, enum_seen);
+                add_kind(val, record_seeds, enum_seeds, record_seen, enum_seen);
+            }
+            _ => {}
+        }
+    }
+
+    for function in raw_mir {
+        for block in &function.blocks {
+            let Terminator::MakeGenerator { env: Some(env), .. } = &block.terminator else {
+                continue;
+            };
+            for field in &env.fields {
+                if let hew_mir::GeneratorEnvFieldPlan::Owned(plan) = field {
+                    add_kind(
+                        plan.root(),
+                        &mut record_seeds,
+                        &mut enum_seeds,
+                        &mut record_seen,
+                        &mut enum_seen,
+                    );
+                }
+            }
+        }
+    }
+    (record_seeds, enum_seeds)
+}
+
 /// Collect the record/enum layout keys of every inline composite yield-value
 /// release (`Instr::Drop { drop_fn: Some(DropFnSpec::InPlace(_)) }`) in raw
 /// MIR so the `__hew_{record,enum}_drop_inplace_<key>` body is synthesised
@@ -13020,8 +13083,9 @@ fn lower_instruction(
         } => {
             // Generator consumption on the `llvm.coro.*` continuation substrate.
             // The `Generator<Y, R>` slot points at the heap companion
-            // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending,
-            // Y out_value }`; construction (`MakeGenerator`) already ran the body
+            // `{ ptr handle, ptr env, ptr env_drop_thunk, ptr out_drop_thunk,
+            // i8 started, i8 pending, Y out_value }`; construction
+            // (`MakeGenerator`) already ran the body
             // to its FIRST yield, so the first value sits in `companion.out_value`
             // with `started == 0` and `pending == 1`.
             //
@@ -13078,7 +13142,7 @@ fn lower_instruction(
                 .build_load(ptr_ty, handle_ptr, "gen_next_handle")
                 .llvm_ctx("gen next handle load")?
                 .into_pointer_value();
-            // The `pending` flag (field 4): set to 0 once a value is consumed (or
+            // The `pending` flag (field 5): set to 0 once a value is consumed (or
             // the body is done) so the scope-exit destroy does not double-drop a
             // value the consumer now owns.
             let pending_ptr = fn_ctx
@@ -13092,7 +13156,7 @@ fn lower_instruction(
                 .map_err(|e| {
                     CodegenError::FailClosed(format!("gen next pending GEP failed: {e:?}"))
                 })?;
-            // The `started` gate (field 3).
+            // The `started` gate (field 4).
             let started_ptr = fn_ctx
                 .builder
                 .build_struct_gep(
@@ -22397,8 +22461,9 @@ fn resolved_ty_cow_heap_release(
         } => Some(CowHeapRelease::HashSet),
         // A `Generator<Y, R>` / `AsyncGenerator<Y>` value releases via
         // `hew_gen_coro_destroy`: the value is the heap companion
-        // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending,
-        // Y out }`; destroy runs the coro frame's `cleanup` outline (dropping
+        // `{ ptr handle, ptr env, ptr env_drop_thunk, ptr out_drop_thunk,
+        // i8 started, i8 pending, Y out }`; destroy runs the coro frame's
+        // `cleanup` outline (dropping
         // every value the body still owns — mid-iteration suspended values,
         // cross-yield-live owned locals), typed-drops an un-consumed pending
         // out-value via the planted thunk, then frees the companion. Single
@@ -25645,19 +25710,21 @@ pub(crate) fn emit_enum_variant_literal(
 
 /// The companion struct field ordinals — kept in lock-step with the runtime
 /// `hew_gen_coro_destroy` byte-offset reads (`hew-runtime/src/cont.rs`). The
-/// three leading `ptr` fields (handle, env, out-drop thunk) and the two trailing
+/// four leading `ptr` fields (handle, env, env-drop thunk, out-drop thunk) and the two trailing
 /// `i8` flags (started, pending) sit at fixed offsets the runtime computes from
 /// the target pointer width; only `Y out_value` has a `Y`-dependent offset, and
 /// the runtime never touches it directly (it dispatches through the thunk).
 const GEN_COMPANION_HANDLE_FIELD: u32 = 0;
 const GEN_COMPANION_ENV_FIELD: u32 = 1;
-const GEN_COMPANION_OUT_DROP_THUNK_FIELD: u32 = 2;
-const GEN_COMPANION_STARTED_FIELD: u32 = 3;
-const GEN_COMPANION_PENDING_FIELD: u32 = 4;
-const GEN_COMPANION_OUT_VALUE_FIELD: u32 = 5;
+const GEN_COMPANION_ENV_DROP_THUNK_FIELD: u32 = 2;
+const GEN_COMPANION_OUT_DROP_THUNK_FIELD: u32 = 3;
+const GEN_COMPANION_STARTED_FIELD: u32 = 4;
+const GEN_COMPANION_PENDING_FIELD: u32 = 5;
+const GEN_COMPANION_OUT_VALUE_FIELD: u32 = 6;
 
 /// The yield type `Y` and the coro-companion struct
-/// `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending, Y out }`
+/// `{ ptr handle, ptr env, ptr env_drop_thunk, ptr out_drop_thunk,
+///    i8 started, i8 pending, Y out }`
 /// for a `Generator<Y, R>` / `AsyncGenerator<Y>` place.
 ///
 /// A generator value on the coro substrate is a heap **companion** the
@@ -25668,24 +25735,27 @@ const GEN_COMPANION_OUT_VALUE_FIELD: u32 = 5;
 ///   capture-free generator). The body reads its free variables through this
 ///   pointer; it is heap-owned (not the caller's stack record) so it stays valid
 ///   across every suspend, when the constructing frame has long returned.
-/// - field 2 `out_drop_thunk` — `ptr` to the per-`Y` `void(ptr companion)` typed
+/// - field 2 `env_drop_thunk` — `ptr` to the per-environment `void(ptr env)`
+///   payload-drop thunk, or null when the environment has no owned fields.
+/// - field 3 `out_drop_thunk` — `ptr` to the per-`Y` `void(ptr companion)` typed
 ///   out-drop thunk, or null when `Y` is `BitCopy` (nothing to drop). The runtime
 ///   destroy calls it (passing this companion) IFF `pending != 0`; the thunk GEPs
 ///   to `out_value` and runs the typed drop for `Y` exactly once.
-/// - field 3 `started` — `i8` lazy-resume gate (0 until the first value is
+/// - field 4 `started` — `i8` lazy-resume gate (0 until the first value is
 ///   consumed; see below),
-/// - field 4 `pending` — `i8` un-consumed-yield flag. 1 while `out_value` holds
+/// - field 5 `pending` — `i8` un-consumed-yield flag. 1 while `out_value` holds
 ///   an owned value the consumer has not yet moved out (a `yield` is a MOVE, so
 ///   the companion is that value's sole owner until a `.next()` reads it); 0 once
 ///   consumed, or when the body completed without leaving a value pending. The
 ///   runtime destroy drops `out_value` only when this is non-zero — dropping a
 ///   consumed (`pending == 0`) value would double-free the consumer's copy.
-/// - field 5 `out_value` — `Y`, the value channel the body publishes each
+/// - field 6 `out_value` — `Y`, the value channel the body publishes each
 ///   yield into and the consumer reads.
 ///
-/// `handle`, `env`, and `out_drop_thunk` are the first three `ptr` fields
-/// (offsets 0, `ptr_width`, `2*ptr_width`) and `started` / `pending` follow at
-/// `3*ptr_width` / `3*ptr_width+1`, so the runtime `hew_gen_coro_destroy` reads
+/// `handle`, `env`, `env_drop_thunk`, and `out_drop_thunk` are the first four
+/// `ptr` fields (offsets 0 through `3*ptr_width`) and `started` / `pending`
+/// follow at `4*ptr_width` / `4*ptr_width+1`, so the runtime
+/// `hew_gen_coro_destroy` reads
 /// them all at fixed offsets without knowing `Y`. Only `out_value`'s offset
 /// depends on `Y`, and the runtime never reads it directly.
 ///
@@ -25747,14 +25817,16 @@ fn generator_coro_companion_ty<'ctx>(
     };
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let i8_ty = fn_ctx.ctx.i8_type();
-    // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending, Y out }`.
-    // The three `ptr` fields lead so the runtime destroy reads them (and the two
+    // `{ ptr handle, ptr env, ptr env_drop_thunk, ptr out_drop_thunk,
+    //    i8 started, i8 pending, Y out }`.
+    // The four `ptr` fields lead so the runtime destroy reads them (and the two
     // trailing flag bytes) at pointer-width-derived offsets without knowing `Y`.
     // Unpacked (natural alignment) so the out-value's load/store honour `Y`'s
-    // alignment; the two `i8` flags pack immediately after the three pointers
-    // (offsets `3*ptr_width`, `3*ptr_width+1`), matching the runtime's reads.
+    // alignment; the two `i8` flags pack immediately after the four pointers
+    // (offsets `4*ptr_width`, `4*ptr_width+1`), matching the runtime's reads.
     let companion = fn_ctx.ctx.struct_type(
         &[
+            ptr_ty.into(),
             ptr_ty.into(),
             ptr_ty.into(),
             ptr_ty.into(),
@@ -25765,6 +25837,280 @@ fn generator_coro_companion_ty<'ctx>(
         false,
     );
     Ok((yield_llvm, companion))
+}
+
+fn validate_generator_env_plan<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    plan: &hew_mir::GeneratorEnvPlan,
+    env_struct: StructType<'ctx>,
+) -> CodegenResult<Vec<(u32, StateFieldCloneKind)>> {
+    let place_ty = place_resolved_ty(fn_ctx, plan.place)?;
+    if place_ty != &plan.ty {
+        return Err(CodegenError::FailClosed(format!(
+            "generator env plan type {:?} does not match place {:?} type {place_ty:?}",
+            plan.ty, plan.place
+        )));
+    }
+    let ResolvedTy::Named { name, .. } = &plan.ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "generator env plan type must be a synthetic record, got {:?}",
+            plan.ty
+        )));
+    };
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let layout = record_layouts
+        .iter()
+        .find(|layout| layout.name == *name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "generator env plan `{name}` has no registered record layout"
+            ))
+        })?;
+    let llvm_field_count = usize::try_from(env_struct.count_fields()).map_err(|_| {
+        CodegenError::FailClosed("generator env LLVM field count exceeds usize".into())
+    })?;
+    if layout.field_tys.len() != plan.fields.len() || llvm_field_count != plan.fields.len() {
+        return Err(CodegenError::FailClosed(format!(
+            "generator env plan `{name}` field count drift: MIR plan {}, resolved layout {}, \
+             LLVM layout {}",
+            plan.fields.len(),
+            layout.field_tys.len(),
+            llvm_field_count
+        )));
+    }
+
+    let mut owned = Vec::new();
+    for (idx, (field_ty, field_plan)) in layout.field_tys.iter().zip(&plan.fields).enumerate() {
+        let field_idx = u32::try_from(idx).map_err(|_| {
+            CodegenError::FailClosed("generator env field count exceeds u32::MAX".into())
+        })?;
+        let actual_llvm = env_struct
+            .get_field_type_at_index(field_idx)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "generator env `{name}` LLVM layout has no field {field_idx}"
+                ))
+            })?;
+        let expected_llvm = resolve_ty(
+            fn_ctx.ctx,
+            fn_ctx.target_data,
+            field_ty,
+            fn_ctx.record_layouts,
+        )?;
+        if actual_llvm != expected_llvm {
+            return Err(CodegenError::FailClosed(format!(
+                "generator env `{name}` field {field_idx} LLVM type drift: plan type \
+                 {field_ty:?} resolves to {expected_llvm:?}, layout carries {actual_llvm:?}"
+            )));
+        }
+
+        let null_env_trivial = matches!(field_ty, ResolvedTy::Function { .. })
+            || matches!(field_ty, ResolvedTy::Closure { captures, .. } if captures.is_empty());
+        let classified = if null_env_trivial {
+            None
+        } else {
+            Some(
+                hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                    field_ty,
+                    &record_layouts,
+                    fn_ctx.enum_layouts,
+                    &[],
+                    fn_ctx.resource_opaque_close,
+                )
+                .map_err(|error| {
+                    CodegenError::FailClosed(format!(
+                        "generator env `{name}` field {field_idx} classification failed: {error}"
+                    ))
+                })?,
+            )
+        };
+        match field_plan {
+            hew_mir::GeneratorEnvFieldPlan::TrivialCopy
+                if null_env_trivial
+                    || classified.as_ref().is_some_and(|snapshot| {
+                        matches!(snapshot.root(), StateFieldCloneKind::BitCopy { .. })
+                    }) => {}
+            hew_mir::GeneratorEnvFieldPlan::TrivialCopy => {
+                return Err(CodegenError::FailClosed(format!(
+                    "generator env `{name}` field {field_idx} is marked TrivialCopy but \
+                     classifies as {:?}",
+                    classified
+                        .as_ref()
+                        .map(hew_mir::state_clone::ValueSnapshotPlan::root)
+                )));
+            }
+            hew_mir::GeneratorEnvFieldPlan::Owned(snapshot) => {
+                if classified.as_ref() != Some(snapshot) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "generator env `{name}` field {field_idx} snapshot plan drift: MIR \
+                         {:?}, codegen {:?}",
+                        snapshot.root(),
+                        classified
+                            .as_ref()
+                            .map(hew_mir::state_clone::ValueSnapshotPlan::root)
+                    )));
+                }
+                if !snapshot
+                    .is_clone_total(
+                        &record_layouts,
+                        fn_ctx.enum_layouts,
+                        &[],
+                        fn_ctx.resource_opaque_close,
+                    )
+                    .map_err(|error| {
+                        CodegenError::FailClosed(format!(
+                            "generator env `{name}` field {field_idx} clone-total validation \
+                             failed: {error}"
+                        ))
+                    })?
+                {
+                    return Err(CodegenError::FailClosed(format!(
+                        "generator env `{name}` field {field_idx} is not clone-total: {:?}",
+                        snapshot.root()
+                    )));
+                }
+                if matches!(snapshot.root(), StateFieldCloneKind::BitCopy { .. }) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "generator env `{name}` field {field_idx} uses Owned for BitCopy"
+                    )));
+                }
+                owned.push((field_idx, snapshot.root().clone()));
+            }
+        }
+    }
+    Ok(owned)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "generator env clone emission needs the typed plan, validated source/destination \
+              struct pointers, companion allocation, and body symbol in one ownership boundary"
+)]
+fn emit_generator_env_owned_clones<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    body_fn: &str,
+    plan: &hew_mir::GeneratorEnvPlan,
+    env_struct: StructType<'ctx>,
+    src: PointerValue<'ctx>,
+    dst: PointerValue<'ctx>,
+    companion: PointerValue<'ctx>,
+) -> CodegenResult<Option<FunctionValue<'ctx>>> {
+    let owned = validate_generator_env_plan(fn_ctx, plan, env_struct)?;
+    if owned.is_empty() {
+        return Ok(None);
+    }
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| {
+            CodegenError::FailClosed("generator env clone has no parent function".into())
+        })?;
+    let clone_bbs: Vec<_> = (0..owned.len())
+        .map(|idx| {
+            fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("gen_env_clone_{idx}"))
+        })
+        .collect();
+    let store_bbs: Vec<_> = (0..owned.len())
+        .map(|idx| {
+            fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("gen_env_clone_{idx}_store"))
+        })
+        .collect();
+    let rollback_bbs: Vec<_> = (0..owned.len())
+        .map(|idx| {
+            fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("gen_env_clone_{idx}_rollback"))
+        })
+        .collect();
+    let success_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "gen_env_clone_success");
+    fn_ctx
+        .builder
+        .build_unconditional_branch(clone_bbs[0])
+        .llvm_ctx("generator env first clone branch")?;
+
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let witnesses = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+    for (step_idx, (field_idx, kind)) in owned.iter().enumerate() {
+        fn_ctx.builder.position_at_end(clone_bbs[step_idx]);
+        let next_bb = clone_bbs.get(step_idx + 1).copied().unwrap_or(success_bb);
+        emit_field_clone_step(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &fn_ctx.builder,
+            Some(env_struct),
+            src,
+            dst,
+            *field_idx,
+            kind,
+            false,
+            store_bbs[step_idx],
+            rollback_bbs[step_idx],
+            next_bb,
+            &witnesses,
+        )?;
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let frame_free = fn_ctx
+        .llvm_mod
+        .get_function("hew_cont_frame_free")
+        .unwrap_or_else(|| {
+            fn_ctx.llvm_mod.add_function(
+                "hew_cont_frame_free",
+                fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    let trap = Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic missing".into()))?
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
+    for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
+        fn_ctx.builder.position_at_end(*rollback_bb);
+        for (field_idx, kind) in owned[..step_idx].iter().rev() {
+            emit_field_drop_step(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &fn_ctx.builder,
+                Some(env_struct),
+                dst,
+                *field_idx,
+                kind,
+                &witnesses,
+            )?;
+        }
+        fn_ctx
+            .builder
+            .build_call(frame_free, &[dst.into()], "gen_env_rollback_free")
+            .llvm_ctx("generator env rollback free")?;
+        fn_ctx
+            .builder
+            .build_call(
+                frame_free,
+                &[companion.into()],
+                "gen_companion_rollback_free",
+            )
+            .llvm_ctx("generator companion rollback free")?;
+        fn_ctx
+            .builder
+            .build_call(trap, &[], "gen_env_clone_trap")
+            .llvm_ctx("generator env clone trap")?;
+        fn_ctx
+            .builder
+            .build_unreachable()
+            .llvm_ctx("generator env clone unreachable")?;
+    }
+    fn_ctx.builder.position_at_end(success_bb);
+    let thunk =
+        crate::thunks::get_or_emit_generator_env_drop_thunk(fn_ctx, body_fn, env_struct, &owned)?;
+    Ok(Some(thunk))
 }
 
 /// Synthesise (or fetch) the per-`Y` typed out-drop thunk for a generator
@@ -27242,7 +27588,8 @@ fn lower_terminator<'ctx>(
             // Construction shape (mirrors the proven `coro_emission_exec`
             // driver):
             //   1. Heap-allocate the companion `{ ptr handle, ptr env,
-            //      ptr out_drop_thunk, i8 started, i8 pending, Y out_value }` via
+            //      ptr env_drop_thunk, ptr out_drop_thunk, i8 started,
+            //      i8 pending, Y out_value }` via
             //      `hew_cont_frame_alloc` — the `Generator<Y, R>` value points at
             //      it. Plant the per-`Y` out-drop thunk (null for BitCopy `Y`).
             //   2. Call `__hew_gen_body(&companion.out_value, env_ptr?)`. The
@@ -27254,13 +27601,10 @@ fn lower_terminator<'ctx>(
             //      live un-consumed yield in `out_value`).
             //   4. Store the companion pointer into the `Generator<Y, R>` slot.
             //
-            // The env (capture record) is passed by ADDRESS into the ramp's
-            // env param: the coro frame is single-owner (no body thread), so the
-            // body reads the caller's env record directly while constructing the
-            // frame — no deep-copy/thread-boundary protocol is needed. Captures
-            // are plain-copyable only (`gen_env_capture_admissible` fail-closes
-            // owned and opaque captures), so the body's env reads are read-only
-            // views and there is no per-field clone or env-field drop.
+            // The ramp receives the heap environment only after every owned
+            // field has been cloned successfully. Body field loads are aliases
+            // of that sole-owned snapshot; the runtime dispatches its typed
+            // reverse-order drop thunk before freeing the allocation.
             let body_function = fn_ctx.llvm_mod.get_function(body_fn).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Terminator::MakeGenerator: generator body fn `{body_fn}` was not \
@@ -27291,8 +27635,9 @@ fn lower_terminator<'ctx>(
             }
 
             // ── 1. Heap-allocate the companion via `hew_cont_frame_alloc`. ──
-            // The companion `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started,
-            // i8 pending, Y out_value }` is allocated through the SAME
+            // The companion `{ ptr handle, ptr env, ptr env_drop_thunk,
+            // ptr out_drop_thunk, i8 started, i8 pending, Y out_value }` is
+            // allocated through the SAME
             // size-headered allocator the coro frame uses, so its scope-exit drop
             // (`hew_gen_coro_destroy` → `hew_cont_frame_free`) is symmetric without
             // separate size bookkeeping. `hew_cont_frame_alloc` 16-byte-aligns
@@ -27312,7 +27657,27 @@ fn lower_terminator<'ctx>(
                 "gen companion hew_cont_frame_alloc call",
             )?;
 
-            // ── 2. Init the `started` gate (field 3) to 0: the consumer's first
+            // ── 2. Plant a null env-drop thunk (field 2). Stage 4 replaces
+            // this with the typed payload-drop thunk for owned environments.
+            let env_drop_thunk_ptr = fn_ctx
+                .builder
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_ENV_DROP_THUNK_FIELD,
+                    "gen_companion_env_drop_thunk_ptr",
+                )
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!(
+                        "gen companion env-drop-thunk GEP failed: {e:?}"
+                    ))
+                })?;
+            fn_ctx
+                .builder
+                .build_store(env_drop_thunk_ptr, ptr_ty.const_null())
+                .llvm_ctx("gen companion env-drop-thunk null store")?;
+
+            // ── 2a. Init the `started` gate (field 4) to 0: the consumer's first
             // `.next()` reads the pre-positioned first value WITHOUT resuming.
             let started_ptr = fn_ctx
                 .builder
@@ -27330,7 +27695,7 @@ fn lower_terminator<'ctx>(
                 .build_store(started_ptr, fn_ctx.ctx.i8_type().const_zero())
                 .llvm_ctx("gen companion started init")?;
 
-            // ── 2b. Plant the per-`Y` typed out-drop thunk (field 2). Null only
+            // ── 2b. Plant the per-`Y` typed out-drop thunk (field 3). Null only
             // when `Y` has neither heap ownership nor a captured closure env box
             // for the slot-drop path to release. The runtime destroy calls it
             // (passing this companion) IFF `pending != 0`, so a generator dropped
@@ -27371,9 +27736,9 @@ fn lower_terminator<'ctx>(
             // env MUST be heap-owned, not the caller's stack record. Heap-copy the
             // env into a fresh block now (the caller's record is live HERE), store
             // its pointer in the companion (freed by `hew_gen_coro_destroy`), and
-            // pass THAT to the ramp. Captures are plain-copyable only
-            // (`gen_env_capture_admissible` rejects owned/opaque), so a flat
-            // memcpy + flat free is sound — no per-field clone or drop.
+            // pass THAT to the ramp. The memcpy is only a shallow seed:
+            // `emit_generator_env_owned_clones` replaces every owned field with
+            // an independent semantic clone before the ramp can observe it.
             let env_field_ptr = fn_ctx
                 .builder
                 .build_struct_gep(
@@ -27406,8 +27771,9 @@ fn lower_terminator<'ctx>(
                         .build_store(env_field_ptr, ptr_ty.const_null())
                         .llvm_ctx("gen companion env null")?;
                 }
-                Some(env_place) => {
-                    let (env_slot, env_slot_ty) = place_pointer(fn_ctx, *env_place)?;
+                Some(env_plan) => {
+                    let env_place = env_plan.place;
+                    let (env_slot, env_slot_ty) = place_pointer(fn_ctx, env_place)?;
                     let BasicTypeEnum::StructType(env_struct) = env_slot_ty else {
                         return Err(CodegenError::FailClosed(format!(
                             "MakeGenerator env place {env_place:?} is not struct-typed \
@@ -27449,6 +27815,18 @@ fn lower_terminator<'ctx>(
                                 "MakeGenerator env memcpy failed: {e:?}"
                             ))
                         })?;
+                    let env_drop_thunk = emit_generator_env_owned_clones(
+                        fn_ctx, body_fn, env_plan, env_struct, env_slot, heap_env, companion,
+                    )?;
+                    if let Some(thunk) = env_drop_thunk {
+                        fn_ctx
+                            .builder
+                            .build_store(
+                                env_drop_thunk_ptr,
+                                thunk.as_global_value().as_pointer_value(),
+                            )
+                            .llvm_ctx("gen companion env-drop-thunk store")?;
+                    }
                     fn_ctx
                         .builder
                         .build_store(env_field_ptr, heap_env)
@@ -27488,7 +27866,7 @@ fn lower_terminator<'ctx>(
                 .build_store(handle_ptr, gen_handle)
                 .llvm_ctx("gen companion handle store")?;
 
-            // ── 3b. Init the `pending` flag (field 4). The ramp pre-ran the body
+            // ── 3b. Init the `pending` flag (field 5). The ramp pre-ran the body
             // to its first `yield` (or to completion). If the body suspended at a
             // yield (`!hew_cont_done(handle)`), the value it published into
             // `out_value` is a live, un-consumed owned value the companion now
@@ -31685,6 +32063,18 @@ fn build_module_for_target<'ctx>(
             enum_inplace_drop_seeds.push(seed);
         }
     }
+    let (generator_env_record_seeds, generator_env_enum_seeds) =
+        collect_generator_env_clone_seeds(&pipeline.raw_mir);
+    for seed in generator_env_record_seeds {
+        if !vec_owned_record_seeds.contains(&seed) {
+            vec_owned_record_seeds.push(seed);
+        }
+    }
+    for seed in generator_env_enum_seeds {
+        if !enum_inplace_drop_seeds.contains(&seed) {
+            enum_inplace_drop_seeds.push(seed);
+        }
+    }
     emit_state_clone_drop_synthesis(
         ctx,
         &llvm_mod,
@@ -31968,8 +32358,9 @@ fn build_module_for_target<'ctx>(
 /// cleanup then produces the target-correct wasm table call while preserving the
 /// native single-owner drop contract:
 ///
-/// - `hew_gen_coro_destroy(companion)` destroys the frame, frees the heap env,
-///   typed-drops an unconsumed pending `out_value`, and frees the companion.
+/// - `hew_gen_coro_destroy(companion)` destroys the frame, typed-drops and frees
+///   the heap env, typed-drops an unconsumed pending `out_value`, and frees the
+///   companion.
 fn emit_wasm_coro_runtime_overrides<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -31989,6 +32380,8 @@ fn emit_wasm_coro_runtime_overrides<'ctx>(
     let builder = ctx.create_builder();
     let entry = ctx.append_basic_block(destroy_fn, "entry");
     let do_destroy = ctx.append_basic_block(destroy_fn, "do_destroy");
+    let env_drop_invoke = ctx.append_basic_block(destroy_fn, "env_drop_invoke");
+    let env_free = ctx.append_basic_block(destroy_fn, "env_free");
     let pending_check = ctx.append_basic_block(destroy_fn, "pending_check");
     let thunk_call = ctx.append_basic_block(destroy_fn, "out_drop_call");
     let free_companion = ctx.append_basic_block(destroy_fn, "free_companion");
@@ -32050,6 +32443,41 @@ fn emit_wasm_coro_runtime_overrides<'ctx>(
         .build_load(ptr_ty, env_slot, "gen_destroy_env")
         .llvm_ctx("wasm gen destroy env load")?
         .into_pointer_value();
+    let env_thunk_slot = unsafe {
+        builder.build_in_bounds_gep(
+            i8_ty,
+            companion,
+            &[i64_ty.const_int(ptr_width * 2, false)],
+            "gen_destroy_env_thunk_slot",
+        )
+    }
+    .llvm_ctx("wasm gen destroy env thunk slot gep")?;
+    let env_thunk = builder
+        .build_load(ptr_ty, env_thunk_slot, "gen_destroy_env_thunk")
+        .llvm_ctx("wasm gen destroy env thunk load")?
+        .into_pointer_value();
+    let env_thunk_is_null = builder
+        .build_is_null(env_thunk, "gen_destroy_env_thunk_null")
+        .llvm_ctx("wasm gen destroy env thunk null check")?;
+    builder
+        .build_conditional_branch(env_thunk_is_null, env_free, env_drop_invoke)
+        .llvm_ctx("wasm gen destroy env thunk branch")?;
+
+    builder.position_at_end(env_drop_invoke);
+    let env_thunk_ty = void_ty.fn_type(&[ptr_ty.into()], false);
+    builder
+        .build_indirect_call(
+            env_thunk_ty,
+            env_thunk,
+            &[env.into()],
+            "gen_destroy_env_drop",
+        )
+        .llvm_ctx("wasm gen destroy env-drop thunk call")?;
+    builder
+        .build_unconditional_branch(env_free)
+        .llvm_ctx("wasm gen destroy env drop -> free")?;
+
+    builder.position_at_end(env_free);
     let frame_free = llvm_mod
         .get_function("hew_cont_frame_free")
         .unwrap_or_else(|| {
@@ -32068,7 +32496,7 @@ fn emit_wasm_coro_runtime_overrides<'ctx>(
 
     builder.position_at_end(pending_check);
     let pending_offset = ptr_width
-        .checked_mul(3)
+        .checked_mul(4)
         .and_then(|base| base.checked_add(1))
         .ok_or_else(|| {
             CodegenError::FailClosed("generator companion pending offset overflow".into())
@@ -32103,7 +32531,7 @@ fn emit_wasm_coro_runtime_overrides<'ctx>(
         builder.build_in_bounds_gep(
             i8_ty,
             companion,
-            &[i64_ty.const_int(ptr_width * 2, false)],
+            &[i64_ty.const_int(ptr_width * 3, false)],
             "gen_destroy_thunk_slot",
         )
     }

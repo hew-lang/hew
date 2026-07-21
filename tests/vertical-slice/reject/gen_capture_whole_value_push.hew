@@ -1,0 +1,8 @@
+fn main() {
+    let items: Vec<i64> = Vec::new();
+    let _g = gen {
+        let sink: Vec<Vec<i64>> = Vec::new();
+        sink.push(items);
+        yield sink.len();
+    };
+}

@@ -1,0 +1,7 @@
+fn main() {
+    let items: Vec<i64> = Vec::new();
+    let _g = gen {
+        let _tuple = (items, 1);
+        yield 0;
+    };
+}

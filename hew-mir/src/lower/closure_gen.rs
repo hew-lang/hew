@@ -9,83 +9,111 @@ use super::{
     ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin, StreamProducerPumpCtx,
     SuspendKind, Terminator, ThirFunction, ValueClass,
 };
+use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
 impl Builder {
-    /// True when `ty` may be admitted as a generator-env capture field: a
-    /// plain, recursively-copyable value — every leaf `BitCopy` AND the whole
-    /// transitively free of `#[opaque]` runtime handles.
+    /// True when `ty` may be snapshotted into a generator environment with a
+    /// total semantic clone and inverse drop.
     ///
-    /// The generator's env record is heap-copied once, at construction
-    /// (`Terminator::MakeGenerator`'s `hew_cont_frame_alloc` + flat `memcpy`),
-    /// and the coro ramp reads that heap copy by address across every suspend
-    /// — no per-field clone or drop protocol exists for it. An admitted value
-    /// must therefore be safe to bit-copy with no ownership consequence.
-    ///
-    /// Three shapes are admitted:
-    ///   1. `ValueClass::BitCopy` scalars (i64/f64/bool/char/…), actor pids, and
-    ///      `#[copy]` records — provided they are transitively free of `#[opaque]`
-    ///      runtime handles (gate 2 below).
-    ///   2. `ResolvedTy::Function { .. }` — a fn-typed value. Safety rests on
-    ///      four properties: (a) `Terminator::MakeGenerator` flat-`memcpy`s
-    ///      the whole env record once at construction, and the companion's
-    ///      release (`hew_gen_coro_destroy`) only frees that flat buffer —
-    ///      neither recurses into inner pointers, so a non-null env-box is not
-    ///      freed by the generator; (b) `Function` is `PersistentShare`, so
-    ///      the body side never drops the fn value; (c) a named fn literal
-    ///      produced by the compiler has a null env word; and (d) a capturing
-    ///      closure that structurally unifies with `fn(..)` (via `unify.rs`)
-    ///      is REFUSED at the generator-constructor call boundary
-    ///      (`generator_arg_laundered_closure` in `lower_direct_call`). That
-    ///      gate tracks local producer provenance and fails closed for fn-typed
-    ///      parameters and call results whose env word is not provably null.
-    ///   3. `ResolvedTy::Closure { captures, .. }` where `captures.is_empty()` —
-    ///      an empty-capture closure. No heap env box exists to alias. Closures
-    ///      with non-empty captures carry a heap-boxed env; flat-copying them would
-    ///      shallow-alias the caller's heap → double-free / UAF at generator
-    ///      teardown. That case is REJECTED here; admitting it takes the
-    ///      clone-into-env protocol (`genfn-owned-captures`).
-    ///
-    /// Rejected shapes (fail closed):
-    ///   * `ResolvedTy::Closure { captures, .. }` with non-empty `captures`.
-    ///   * `ResolvedTy::TraitObject` — a `{data, vtable}` fat pointer with a heap
-    ///     data box; NOT null-env-safe.
-    ///   * owned / non-`BitCopy` values — `string`/`Bytes`/`Vec`/`HashMap`,
-    ///     owned records, `Generator`, `CancellationToken`, etc.
-    ///   * `#[opaque]`-only handles (classifies as `BitCopy` but aliases a
-    ///     runtime resource on copy).
-    ///
-    /// A scalar (`i64`/`f64`/`bool`/`char`/…), an actor pid (a non-owning
-    /// by-value reference), a `#[copy]` record of such fields, a bare named fn,
-    /// and an empty-capture closure all answer `true` (admissible). Every other
-    /// shape answers `false` (fail closed).
+    /// Named functions and empty-capture closures remain trivial because their
+    /// environment word is proven null. Every other admitted shape must pass the
+    /// shared layout-aware clone-total verdict; affine/resource/opaque handles,
+    /// trait objects, and capturing closure pairs remain fail-closed.
     fn gen_env_capture_admissible(&self, ty: &ResolvedTy) -> bool {
-        // Fast-path: admit a fn-typed value (`fn(..)->R`). Safety is guaranteed
-        // by flat-free semantics (generator runtime never recurses into inner
-        // pointers), PersistentShare no-drop on the body side, and the
-        // generator-constructor argument gate (`generator_arg_laundered_closure`)
-        // refusing a capturing closure laundered through `fn(..)` at the call
-        // boundary. Its provenance ledger rejects fn-typed parameters and call
-        // results whose env word is not provably null.
         if matches!(ty, ResolvedTy::Function { .. }) {
             return true;
         }
-        // Admit an empty-capture closure: same null-env guarantee.
-        // A closure with non-empty captures carries a heap-boxed env; reject it
-        // (admitting it takes the `genfn-owned-captures` clone-into-env protocol).
         if let ResolvedTy::Closure { captures, .. } = ty {
             return captures.is_empty();
         }
-        // For all other types, require BitCopy AND transitively opaque-free.
-        if ValueClass::of_ty(ty, &self.type_classes) != ValueClass::BitCopy {
-            return false;
-        }
         let record_layouts = self.record_layouts_for_classification();
-        !crate::model::ty_contains_unclonable_opaque_with_names(
+        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
             ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
+            &self.resource_opaque_close,
         )
+        .and_then(|plan| {
+            plan.is_clone_total(
+                &record_layouts,
+                &self.enum_layouts,
+                &self.opaque_handle_names,
+                &self.resource_opaque_close,
+            )
+        })
+        .unwrap_or(false)
+    }
+
+    fn gen_env_capture_field_plan(&self, ty: &ResolvedTy) -> Option<GeneratorEnvFieldPlan> {
+        if matches!(ty, ResolvedTy::Function { .. })
+            || matches!(ty, ResolvedTy::Closure { captures, .. } if captures.is_empty())
+        {
+            return Some(GeneratorEnvFieldPlan::TrivialCopy);
+        }
+        let record_layouts = self.record_layouts_for_classification();
+        let plan = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+            ty,
+            &record_layouts,
+            &self.enum_layouts,
+            &self.opaque_handle_names,
+            &self.resource_opaque_close,
+        )
+        .ok()?;
+        if matches!(
+            plan.root(),
+            crate::state_clone::StateFieldCloneKind::BitCopy { .. }
+        ) {
+            Some(GeneratorEnvFieldPlan::TrivialCopy)
+        } else {
+            Some(GeneratorEnvFieldPlan::Owned(plan))
+        }
+    }
+
+    pub(crate) fn capture_env_whole_escape_requires_clone(&self, ty: &ResolvedTy) -> bool {
+        let class = ValueClass::of_ty(ty, &self.type_classes);
+        !matches!(ty, ResolvedTy::String)
+            && class != ValueClass::BitCopy
+            && class != ValueClass::PersistentShare
+    }
+
+    pub(crate) fn reject_capture_env_whole_escape(
+        &mut self,
+        name: &str,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) {
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: format!("whole-value move of captured generator/closure value `{name}`"),
+                site,
+            },
+            note: format!(
+                "captured owned value `{name}` cannot be moved out of the generator/closure \
+                 environment; it has type `{}` and is borrowed into the environment, whose \
+                 storage remains the owner. Clone it explicitly before moving it, or use it only \
+                 through borrowing methods/projections.",
+                ty.user_facing()
+            ),
+        });
+    }
+
+    pub(crate) fn reject_capture_env_whole_escape_expr(&mut self, expr: &HirExpr) -> bool {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(binding),
+        } = &expr.kind
+        else {
+            return false;
+        };
+        let Some(source) = self.capture_env_sources.get(binding).cloned() else {
+            return false;
+        };
+        if !self.capture_env_whole_escape_requires_clone(&source.ty) {
+            return false;
+        }
+        self.reject_capture_env_whole_escape(name, &source.ty, expr.site);
+        true
     }
 
     pub(crate) fn sanitize_symbol_component(input: &str) -> String {
@@ -529,8 +557,8 @@ impl Builder {
         // #2301 -- run the same owned-Vec-key / consumed-and-reassigned-binding
         // pre-pass on the closure body that `function_body` runs for a
         // top-level function. `lower_closure_shim` builds a brand-new child
-        // `Builder` and lowers `body` directly via `lower_value` below; without
-        // this call, `prepass_consumed_bindings`/`prepass_reassigned_bindings`
+        // `Builder` and lowers `body` directly below; without this call,
+        // `prepass_consumed_bindings`/`prepass_reassigned_bindings`
         // stay empty for every closure-local binding, so
         // `maybe_alloc_overwrite_guard_flag` never fires inside a closure body
         // and a `var` consumed on one control-flow arm and overwritten on a
@@ -539,8 +567,8 @@ impl Builder {
         // release a byte-identical top-level function body would.
         builder.collect_expr_prepass_facts(body);
 
-        if let Some(src) = builder.lower_value(body) {
-            builder.instructions.push(Instr::Move {
+        if let Some(src) = builder.lower_value_for_move(body) {
+            builder.push_instr(Instr::Move {
                 dest: Place::ReturnSlot,
                 src,
             });
@@ -1239,7 +1267,7 @@ impl Builder {
         //     unconditionally.
         if matches!(shape, crate::model::LambdaActorShape::Ask) {
             if let Some(src) = tail_place {
-                body_builder.instructions.push(Instr::Move {
+                body_builder.push_instr(Instr::Move {
                     dest: Place::ReturnSlot,
                     src,
                 });
@@ -1679,28 +1707,23 @@ impl Builder {
         // through `Local(1)` (the env-pointer param; `Local(0)` is the
         // out-pointer) via `ClosureEnvFieldLoad` (registered below).
         //
-        // SCOPE / FAIL-CLOSED: `gen_env_capture_admissible` governs what may
-        // be admitted to the flat-copied env. `Terminator::MakeGenerator`
-        // copies the env's bytes flat once, at construction, and its release
-        // (`hew_gen_coro_destroy`, `hew-runtime/src/cont.rs`) frees only that
-        // flat buffer. Admitted shapes:
-        //   * `BitCopy` scalars transitively free of `#[opaque]` handles.
+        // SCOPE / FAIL-CLOSED: `gen_env_capture_admissible` governs what may be
+        // snapshotted into the heap env. `Terminator::MakeGenerator` shallow-
+        // seeds the record, replaces every owned field with a semantic clone,
+        // and plants the reverse-order payload-drop thunk. Admitted shapes:
+        //   * clone-total structural values (String/Bytes/Rc/Weak, supported
+        //     collections, tuples/arrays, records, and enums);
+        //   * `BitCopy` scalars;
         //   * `ResolvedTy::Function` — a bare named-fn reference whose runtime
-        //     env word is null; safe to flat-copy.
+        //     env word is null;
         //   * `ResolvedTy::Closure` with no captures — same null-env guarantee.
-        // Rejected shapes (fail closed):
-        //   * owned / non-`BitCopy` (string/Vec/record): flat-copying
-        //     shallow-aliases the caller's heap → double-free / UAF; and
-        //   * `#[opaque]`-only handles: classifies as `BitCopy` (pointer-width,
-        //     no implicit drop) yet is a runtime handle — bit-copying it into
-        //     the env aliases the caller's handle → the same UAF; and
-        //   * `Closure` with non-empty `captures`: heap-boxed env — same
-        //     shallow-alias hazard. Admitting it takes the `genfn-owned-captures`
-        //     clone-into-env + env-field-drop-on-destroy protocol.
+        // Opaque/resource/IO handles, trait objects, and closure pairs with a
+        // non-null environment remain rejected because no total clone exists.
         let mut env_place: Option<Place> = None;
         let mut env_ty: Option<ResolvedTy> = None;
         let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
-        // Capture bindings rejected below as inadmissible to the flat env. Each
+        let mut env_field_plans: Vec<GeneratorEnvFieldPlan> = Vec::new();
+        // Capture bindings rejected below as inadmissible to the owned env. Each
         // gets a root `NotYetImplemented`; the body sub-builder reads this set
         // to suppress the downstream `InitialisedBeforeUse`/`UnresolvedPlace`
         // cascade for the same bindings (only the root rejection is actionable).
@@ -1762,35 +1785,30 @@ impl Builder {
                     // anonymous-gen capture has that external provenance gate.
                     && !(self.generator_shell_call_gate.is_some()
                         && self.closure_pair_param_owned.contains(&capture.binding));
+                let capture_field_plan = capture_ty
+                    .as_ref()
+                    .and_then(|ty| self.gen_env_capture_field_plan(ty));
                 match (slot, capture_ty) {
                     (Some(src), Some(ty))
-                        if self.gen_env_capture_admissible(&ty) && !fn_env_provenance_unproven =>
+                        if self.gen_env_capture_admissible(&ty)
+                            && !fn_env_provenance_unproven
+                            && capture_field_plan.is_some() =>
                     {
                         init_fields.push((offset, src));
                         field_tys.push(ty);
+                        env_field_plans
+                            .push(capture_field_plan.expect("generator env plan guard checked"));
                     }
                     (Some(_), Some(ty)) => {
-                        // Not admissible to the flat-`memcpy`'d generator env.
-                        // Four fail-closed shapes reach this arm; name the reason
-                        // precisely so the diagnostic is actionable:
+                        // Not admissible to the owned generator env. Name the
+                        // fail-closed reason precisely:
                         //   * `Function` with unproven env provenance — an
                         //     anonymous gen block captured a parameter/call
                         //     result/aggregate read without a direct gen-fn call
                         //     boundary proving the pair's env word null; OR
-                        //   * `Closure` with non-empty `captures` — a heap-boxed
-                        //     env; flat-copying it shallow-aliases the caller's env
-                        //     → double-free / UAF at generator teardown (admitting
-                        //     it takes a clone-into-env protocol); OR
-                        //   * owned / non-`BitCopy` (string/Vec/owned record) —
-                        //     no clone-into-env protocol exists yet; OR
-                        //   * `BitCopy`-but-opaque — an `#[opaque]` runtime
-                        //     handle (or an aggregate transitively containing
-                        //     one) classifies as `BitCopy` yet aliases a runtime
-                        //     resource.
-                        // `Terminator::MakeGenerator` deep-copies the env's flat
-                        // bytes once, at construction, so shallow-copying any of
-                        // these would alias the caller's resource → double-free /
-                        // UAF at generator teardown.
+                        //   * a closure pair with a non-null heap environment;
+                        //   * an opaque/resource/IO handle with no dup primitive;
+                        //   * a trait object or other unsupported structural leaf.
                         let reason = if fn_env_provenance_unproven {
                             "its fn value may carry a heap closure environment, and this \
                              anonymous generator construction has no call-boundary proof \
@@ -1798,24 +1816,24 @@ impl Builder {
                         } else {
                             match &ty {
                                 ResolvedTy::Closure { captures, .. } if !captures.is_empty() => {
-                                    "a closure with a captured environment cannot yet be admitted \
-                                 into the generator's flat-copied env; its heap env would be \
-                                 shallow-aliased (double-free / UAF at teardown). \
-                                 Owned/closure-env captures need the clone-into-env + \
-                                 env-field-drop-on-destroy protocol"
+                                    "a closure with a captured environment has no total clone; \
+                                     shallow-copying its sole-owned env pointer would alias the \
+                                     box and double-free it at teardown"
                                 }
-                                _ if ValueClass::of_ty(&ty, &self.type_classes)
-                                    == ValueClass::BitCopy =>
+                                _ if crate::model::ty_contains_unclonable_opaque_with_names(
+                                    &ty,
+                                    &self.record_layouts_for_classification(),
+                                    &self.enum_layouts,
+                                    &self.opaque_handle_names,
+                                ) =>
                                 {
                                     "it transitively contains an `#[opaque]` runtime handle; an \
-                                 opaque handle is a pointer-width value with no clone helper, \
-                                 so flat-copying it into the generator's env would alias the \
-                                 caller's handle and double-free / use-after-free at teardown"
+                                     opaque handle has no clone helper, so copying it would alias \
+                                     the caller's handle"
                                 }
                                 _ => {
-                                    "it is an owned / non-BitCopy value; the generator's env is a \
-                                 flat heap copy taken once at construction and can carry only \
-                                 plain copyable values"
+                                    "its structural shape does not provide both a total clone and \
+                                     the matching inverse drop"
                                 }
                             }
                         };
@@ -1838,11 +1856,8 @@ impl Builder {
                             },
                             note: format!(
                                 "cannot capture `{}` (type `{}`) into a generator: {reason}. \
-                                 Only plain copyable values and null-env fn references may be \
-                                 admitted into the generator's flat-copied env. DROP-TODO: a \
-                                 per-field clone-into-env + env-field-drop-on-destroy protocol \
-                                 (mirroring the lambda `state_drop_fn`) would admit \
-                                 owned/closure-env captures safely.",
+                                 Only clone-total values and proven null-env fn references may be \
+                                 admitted into a generator environment.",
                                 capture.name,
                                 ty.user_facing()
                             ),
@@ -2021,8 +2036,8 @@ impl Builder {
         }
         // Lower the tail expression (the implicit return value of the block).
         if let Some(tail) = &body.tail {
-            if let Some(src) = body_builder.lower_value(tail) {
-                body_builder.instructions.push(Instr::Move {
+            if let Some(src) = body_builder.lower_value_for_move(tail) {
+                body_builder.push_instr(Instr::Move {
                     dest: Place::ReturnSlot,
                     src,
                 });
@@ -2208,11 +2223,20 @@ impl Builder {
         // the ramp's returned `llvm.coro.begin` handle) is stored into
         // `gen_place`; the gen-block expression evaluates to that place.
         let next = self.alloc_block();
+        let env = match (env_place, env_ty) {
+            (Some(place), Some(ty)) => Some(GeneratorEnvPlan {
+                place,
+                ty,
+                fields: env_field_plans,
+            }),
+            (None, None) => None,
+            _ => unreachable!("generator env place/type must be constructed together"),
+        };
         self.finish_current_block(Terminator::MakeGenerator {
             dest: gen_place,
             body_fn: body_name.clone(),
             next,
-            env: env_place,
+            env,
         });
         self.start_block(next);
         gen_place
@@ -2587,7 +2611,7 @@ impl Builder {
         // `yield;` — unit-typed generator), allocate a unit constant.
         let value_place = if let Some(val_expr) = value {
             self.decide(val_expr);
-            match self.lower_value(val_expr) {
+            match self.lower_value_for_move(val_expr) {
                 Some(p) => p,
                 None => {
                     // The value sub-expression failed to lower.  The child

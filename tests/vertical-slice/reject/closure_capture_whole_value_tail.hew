@@ -1,0 +1,4 @@
+fn main() {
+    let items: Vec<i64> = Vec::new();
+    let _f = || items;
+}

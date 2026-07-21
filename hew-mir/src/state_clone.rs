@@ -282,6 +282,214 @@ impl ValueSnapshotPlan {
     pub fn into_root(self) -> StateFieldCloneKind {
         self.root
     }
+
+    /// Return whether every leaf has both a total semantic clone and its inverse
+    /// drop under the supplied layout registries.
+    ///
+    /// This is deliberately stricter than
+    /// [`StateFieldCloneKind::supports_value_class_drop_spine`], which also
+    /// admits drop-only affine handles and closure pairs. Registry-backed record
+    /// and enum roots are resolved recursively so a drop-only leaf cannot hide
+    /// behind a name-only kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClassificationError`] when a referenced layout is missing or a
+    /// recursively referenced field cannot be classified.
+    pub fn is_clone_total(
+        &self,
+        record_layouts: &[RecordLayout],
+        enum_layouts: &[EnumLayout],
+        opaque_handle_names: &[String],
+        resource_close: &[(String, String)],
+    ) -> Result<bool, ClassificationError> {
+        let mut visited = HashSet::new();
+        clone_kind_is_total(
+            &self.root,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            &mut visited,
+        )
+    }
+}
+
+fn clone_kind_is_total(
+    kind: &StateFieldCloneKind,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    visited: &mut HashSet<String>,
+) -> Result<bool, ClassificationError> {
+    match kind {
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::String
+        | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak => Ok(true),
+        StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::Resource { .. }
+        | StateFieldCloneKind::OpaqueHandle { .. } => Ok(false),
+        StateFieldCloneKind::Tuple { elems } => {
+            for elem in elems {
+                if !clone_kind_is_total(
+                    elem,
+                    record_layouts,
+                    enum_layouts,
+                    opaque_handle_names,
+                    resource_close,
+                    visited,
+                )? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        StateFieldCloneKind::Array { elem, .. }
+        | StateFieldCloneKind::Vec { elem }
+        | StateFieldCloneKind::HashSet { elem } => clone_kind_is_total(
+            elem,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            visited,
+        ),
+        StateFieldCloneKind::HashMap { key, val } => Ok(clone_kind_is_total(
+            key,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            visited,
+        )? && clone_kind_is_total(
+            val,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            visited,
+        )?),
+        StateFieldCloneKind::UserRecord { name } => clone_record_is_total(
+            name,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            visited,
+        ),
+        StateFieldCloneKind::Enum { name } => clone_enum_is_total(
+            name,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            visited,
+        ),
+    }
+}
+
+fn clone_record_is_total(
+    name: &str,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    visited: &mut HashSet<String>,
+) -> Result<bool, ClassificationError> {
+    let visit_key = format!("record:{name}");
+    if !visited.insert(visit_key.clone()) {
+        return Ok(true);
+    }
+    let layout = record_layouts
+        .iter()
+        .find(|layout| layout.name == name)
+        .ok_or_else(|| ClassificationError::MissingRecordLayout {
+            name: name.to_string(),
+        })?;
+    for field_ty in &layout.field_tys {
+        if !classified_type_is_clone_total(
+            field_ty,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            visited,
+        )? {
+            visited.remove(&visit_key);
+            return Ok(false);
+        }
+    }
+    visited.remove(&visit_key);
+    Ok(true)
+}
+
+fn clone_enum_is_total(
+    name: &str,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    visited: &mut HashSet<String>,
+) -> Result<bool, ClassificationError> {
+    let visit_key = format!("enum:{name}");
+    if !visited.insert(visit_key.clone()) {
+        return Ok(true);
+    }
+    let layout = enum_layouts
+        .iter()
+        .find(|layout| layout.name == name)
+        .ok_or_else(|| ClassificationError::MissingEnumLayout {
+            name: name.to_string(),
+        })?;
+    for field_ty in layout
+        .variants
+        .iter()
+        .flat_map(|variant| &variant.field_tys)
+    {
+        if !classified_type_is_clone_total(
+            field_ty,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            visited,
+        )? {
+            visited.remove(&visit_key);
+            return Ok(false);
+        }
+    }
+    visited.remove(&visit_key);
+    Ok(true)
+}
+
+fn classified_type_is_clone_total(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    visited: &mut HashSet<String>,
+) -> Result<bool, ClassificationError> {
+    let kind = classify_state_field_full_impl(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+        &mut HashSet::new(),
+    )?;
+    clone_kind_is_total(
+        &kind,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+        visited,
+    )
 }
 
 impl StateFieldCloneKind {
@@ -625,6 +833,9 @@ pub enum ClassificationError {
     /// the MIR producer can attribute the missing layout to its source
     /// site.
     MissingRecordLayout { name: String },
+    /// A name-only enum kind could not be resolved against the enum layout
+    /// registry supplied by the MIR pipeline.
+    MissingEnumLayout { name: String },
     /// A field type was outside the closed variant set. The carried
     /// rendering uses `ResolvedTy::Debug` so diagnostics show what shape
     /// was rejected (an actor with `Function`-typed state, a closure
@@ -656,6 +867,12 @@ impl std::fmt::Display for ClassificationError {
                 "actor-state classifier could not resolve `RecordLayout` for nested \
                  user record `{name}` (lowering-invariant: record layouts must precede \
                  actor layouts in `lower_hir_module`)",
+            ),
+            ClassificationError::MissingEnumLayout { name } => write!(
+                f,
+                "actor-state classifier could not resolve `EnumLayout` for nested enum \
+                 `{name}` (lowering-invariant: enum layouts must precede value snapshot \
+                 planning)",
             ),
             ClassificationError::Unsupported { rendered } => write!(
                 f,
@@ -2010,6 +2227,74 @@ mod tests {
 
         assert_eq!(rc_plan.root(), &StateFieldCloneKind::Rc);
         assert_eq!(weak_plan.root(), &StateFieldCloneKind::Weak);
+    }
+
+    #[test]
+    fn value_snapshot_clone_total_rejects_drop_only_leaves_transitively() {
+        let cloneable = ValueSnapshotPlan {
+            root: StateFieldCloneKind::Tuple {
+                elems: vec![
+                    StateFieldCloneKind::String,
+                    StateFieldCloneKind::Rc,
+                    StateFieldCloneKind::Array {
+                        elem: Box::new(StateFieldCloneKind::Weak),
+                        len: 2,
+                    },
+                ],
+            },
+        };
+        assert!(cloneable.is_clone_total(&[], &[], &[], &[]).unwrap());
+
+        for root in [
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Generator,
+            },
+            StateFieldCloneKind::ClosurePair,
+            StateFieldCloneKind::Resource {
+                name: "Pattern".to_string(),
+                close_symbol: "Pattern::free".to_string(),
+            },
+            StateFieldCloneKind::OpaqueHandle {
+                name: "json.Value".to_string(),
+            },
+        ] {
+            assert!(!ValueSnapshotPlan { root }
+                .is_clone_total(&[], &[], &[], &[])
+                .unwrap());
+        }
+
+        let records = vec![
+            RecordLayout {
+                name: "Cloneable".to_string(),
+                field_tys: vec![
+                    ResolvedTy::String,
+                    builtin(hew_types::BuiltinType::Rc, vec![ResolvedTy::I64]),
+                ],
+                field_names: vec!["label".to_string(), "root".to_string()],
+            },
+            RecordLayout {
+                name: "DropOnly".to_string(),
+                field_tys: vec![ResolvedTy::Function {
+                    params: vec![],
+                    ret: Box::new(ResolvedTy::Unit),
+                }],
+                field_names: vec!["callback".to_string()],
+            },
+        ];
+        assert!(ValueSnapshotPlan {
+            root: StateFieldCloneKind::UserRecord {
+                name: "Cloneable".to_string(),
+            },
+        }
+        .is_clone_total(&records, &[], &[], &[])
+        .unwrap());
+        assert!(!ValueSnapshotPlan {
+            root: StateFieldCloneKind::UserRecord {
+                name: "DropOnly".to_string(),
+            },
+        }
+        .is_clone_total(&records, &[], &[], &[])
+        .unwrap());
     }
 
     #[test]

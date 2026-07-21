@@ -3389,9 +3389,123 @@ fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
              got IR:\n{ir}"
     );
     assert!(
+        ir.contains("gen_companion_env_drop_thunk_ptr")
+            && ir.contains("store ptr null, ptr %gen_companion_env_drop_thunk_ptr"),
+        "MakeGenerator must plant the Stage 3 null env-drop thunk field; got IR:\n{ir}"
+    );
+    assert!(
         m.verify().is_ok(),
         "module with MakeGenerator must pass LLVM verify:\n{ir}"
     );
+}
+
+#[test]
+fn generator_env_clone_emits_ordered_clones_rollback_and_payload_drop() {
+    let rc_ty = ResolvedTy::named_builtin("Rc", hew_types::BuiltinType::Rc, vec![ResolvedTy::I64]);
+    let weak_ty =
+        ResolvedTy::named_builtin("Weak", hew_types::BuiltinType::Weak, vec![ResolvedTy::I64]);
+    let vec_ty =
+        ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::I64]);
+    let env_ty = ResolvedTy::named_user("__hew_gen_env_owned_test", vec![]);
+    let field_tys = vec![ResolvedTy::String, vec_ty, rc_ty, weak_ty];
+    let env_layout = MirRecordLayout {
+        name: "__hew_gen_env_owned_test".to_string(),
+        field_tys: field_tys.clone(),
+        field_names: vec![],
+    };
+    let ctx = Context::create();
+    let mut harness = build_harness(&ctx, std::slice::from_ref(&env_layout), &[]);
+    harness
+        .record_field_resolved_tys
+        .insert("__hew_gen_env_owned_test".to_string(), field_tys.clone());
+    let module = ctx.create_module("generator_env_clone_test");
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, env_ty.clone());
+    let (src, src_ty) = fn_ctx.locals[&0];
+    let BasicTypeEnum::StructType(env_struct) = src_ty else {
+        panic!("generator env test local must lower to a struct");
+    };
+    let dst = fn_ctx
+        .builder
+        .build_alloca(env_struct, "heap_env")
+        .expect("env destination alloca");
+    let companion = fn_ctx
+        .builder
+        .build_alloca(ctx.i8_type().array_type(64), "companion")
+        .expect("companion storage");
+    let record_layouts = codegen_record_layouts(&fn_ctx);
+    let fields = field_tys
+        .iter()
+        .map(|ty| {
+            hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                ty,
+                &record_layouts,
+                &[],
+                &[],
+                &[],
+            )
+            .map(hew_mir::GeneratorEnvFieldPlan::Owned)
+            .expect("owned generator field must classify")
+        })
+        .collect();
+    let plan = hew_mir::GeneratorEnvPlan {
+        place: Place::Local(0),
+        ty: env_ty,
+        fields,
+    };
+    fn_ctx
+        .builder
+        .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
+        .expect("shallow seed memcpy");
+    let thunk = emit_generator_env_owned_clones(
+        &fn_ctx,
+        "__hew_gen_body_owned_test",
+        &plan,
+        env_struct,
+        src,
+        dst,
+        companion,
+    )
+    .expect("generator env clones must emit")
+    .expect("owned environment must produce a drop thunk");
+    assert_eq!(
+        thunk.get_name().to_str().unwrap(),
+        "__hew_generator_env_drop___hew_gen_body_owned_test"
+    );
+    finish_test_fn(&fn_ctx);
+
+    let ir = module.print_to_string().to_string();
+    assert_eq!(ir.matches("call ptr @hew_string_clone").count(), 1);
+    assert_eq!(ir.matches("call ptr @hew_vec_clone_owned").count(), 1);
+    assert_eq!(ir.matches("call ptr @hew_rc_clone").count(), 1);
+    assert_eq!(ir.matches("call ptr @hew_weak_clone_rc").count(), 1);
+    let thunk_start = ir
+        .find("define private void @__hew_generator_env_drop___hew_gen_body_owned_test")
+        .expect("env drop thunk definition");
+    let thunk_ir = &ir[thunk_start..];
+    let thunk_ir = &thunk_ir[..thunk_ir.find("\n}").expect("env thunk end")];
+    assert_eq!(thunk_ir.matches("call void @hew_rc_drop").count(), 1);
+    assert_eq!(thunk_ir.matches("call void @hew_weak_drop_rc").count(), 1);
+    assert_eq!(
+        thunk_ir.matches("call void @hew_cont_frame_free").count(),
+        0
+    );
+
+    let rollback_start = ir
+        .find("gen_env_clone_3_rollback:")
+        .expect("last-field rollback block");
+    let rollback_ir = &ir[rollback_start..];
+    let rollback_ir = &rollback_ir[..rollback_ir.find("\n\n").unwrap_or(rollback_ir.len())];
+    let rc_drop = rollback_ir.find("@hew_rc_drop").expect("Rc rollback drop");
+    let vec_drop = rollback_ir
+        .find("@hew_vec_free_owned")
+        .expect("Vec rollback drop");
+    let string_drop = rollback_ir
+        .find("@hew_string_drop")
+        .expect("String rollback drop");
+    assert!(rc_drop < vec_drop && vec_drop < string_drop);
+    assert!(!ir.contains("__hew_record_drop_inplace___hew_gen_env_owned_test"));
+    assert!(module.verify().is_ok(), "generator env clone IR:\n{ir}");
 }
 
 #[test]

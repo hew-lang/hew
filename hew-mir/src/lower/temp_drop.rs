@@ -1275,6 +1275,11 @@ pub(super) fn compute_projection_alias_taint(
                 }
             }
         }
+        if let Terminator::MakeGenerator { env: Some(env), .. } = &block.terminator {
+            if let Some(local) = base_local(env.place) {
+                tainted.insert(local);
+            }
+        }
     }
     loop {
         let mut changed = false;

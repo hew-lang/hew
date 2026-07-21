@@ -732,6 +732,59 @@ fn get_or_emit_spawn_env_rc_drop_thunk<'ctx>(
     Ok(thunk)
 }
 
+/// Synthesise the payload-only drop thunk for one generator environment.
+///
+/// The runtime owns the allocation and calls this thunk before
+/// `hew_cont_frame_free`, so this function drops only owned fields in reverse
+/// declaration order.
+pub(crate) fn get_or_emit_generator_env_drop_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    body_fn: &str,
+    env_struct: StructType<'ctx>,
+    owned_field_kinds: &[(u32, StateFieldCloneKind)],
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let symbol = format!("__hew_generator_env_drop_{body_fn}");
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&symbol) {
+        return Ok(existing);
+    }
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let thunk = fn_ctx.llvm_mod.add_function(
+        &symbol,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::Private),
+    );
+    let entry = ctx.append_basic_block(thunk, "entry");
+    let builder = ctx.create_builder();
+    builder.position_at_end(entry);
+    let env = thunk
+        .get_nth_param(0)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "generator env drop thunk `{symbol}` is missing its env parameter"
+            ))
+        })?
+        .into_pointer_value();
+    let record_layouts = crate::llvm::codegen_record_layouts(fn_ctx);
+    let witnesses = crate::llvm::fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+    for (field_idx, kind) in owned_field_kinds.iter().rev() {
+        crate::llvm::emit_field_drop_step(
+            ctx,
+            fn_ctx.llvm_mod,
+            &builder,
+            Some(env_struct),
+            env,
+            *field_idx,
+            kind,
+            &witnesses,
+        )?;
+    }
+    builder
+        .build_return(None)
+        .llvm_ctx_with(|| format!("generator env drop thunk `{symbol}` return"))?;
+    Ok(thunk)
+}
+
 /// Synthesise (once per closure shim) the `void(ptr env)` free thunk the
 /// env box's header slot carries. The thunk is the SOLE teardown owner of an
 /// escaping (heap-boxed) closure env — it runs in two acts, both keyed to the

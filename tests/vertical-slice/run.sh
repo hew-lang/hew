@@ -2746,18 +2746,84 @@ expect_check_fail_error_count_no_cascade \
   "gen_fn_capture_opaque_handle" \
   "InitialisedBeforeUse" "UnresolvedPlace"
 
-# Reject: a generator that captures an owned (non-BitCopy) value — specifically
-# a `string` — as a free variable must fail closed. Owned values hold heap state
-# with a unique owner; shallow-copying them across the generator body-thread
-# boundary aliases the caller's heap (double-free / UAF on teardown).
-#
-# Error count: exactly 1 — the root NotYetImplemented; the cascade secondaries
-# are suppressed by the same capture-poisoning path.
+# Owned clone-total parameters are snapshotted into the generator environment;
+# the caller's original remains live after generator teardown.
+run_accept_expect_stdout "gen_fn_capture_owned_value"
+run_accept_expect_stdout "gen_closure_env_owned_capture"
+
+# Raw aggregate loads from a generator env remain aliases. Whole-value escapes
+# must clone explicitly or fail closed rather than create a second owner.
 expect_check_fail_error_count_no_cascade \
-  "${ROOT}/tests/vertical-slice/reject/gen_fn_capture_owned_value.hew" \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_escape.hew" \
   1 \
-  "gen_fn_capture_owned_value" \
+  "gen_capture_whole_value_escape" \
   "InitialisedBeforeUse" "UnresolvedPlace"
+
+# Every whole-value capture load is tagged and every MIR Move is checked before
+# emission and again before block sealing. Rebinding, aggregate/container
+# storage, explicit/implicit return, block tails, control-flow joins, by-value
+# function arguments, and tuple construction therefore all reject aliases
+# loaded from the capture environment.
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_let_move.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_let_move"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_push.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_push"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_return.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_return"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_tail.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_tail"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/closure_capture_whole_value_tail.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "closure_capture_whole_value_tail"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/closure_capture_whole_value_braced_tail.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "closure_capture_whole_value_braced_tail"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/closure_capture_whole_value_match_arm.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "closure_capture_whole_value_match_arm"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_match_arm.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_match_arm"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/closure_capture_whole_value_if_else.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "closure_capture_whole_value_if_else"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_if_else.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_if_else"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_fn_arg.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_fn_arg"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_tuple.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_tuple"
 
 # Reject: a generator that reads BOTH an inadmissible (`#[opaque]`) parameter
 # AND an otherwise-admissible scalar parameter as free variables of its body.
@@ -2867,16 +2933,9 @@ grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
 run_accept_expect_status "receive_gen_fn_teardown_fault" 134
 grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
 
-# Reject: an actor state field of an owned (non-BitCopy) type read inside a
-# `receive gen fn` body fails closed with the SAME generator
-# capture-admissibility gate a standalone `gen fn` uses — never the
-# unknown-actor-handler NYI the dispatch bridge would otherwise mask it
-# behind.
-expect_check_fail_error_count_no_cascade \
-  "${ROOT}/tests/vertical-slice/reject/receive_gen_fn_owned_state_capture.hew" \
-  1 \
-  "receive_gen_fn_owned_state_capture" \
-  "unknown actor handler"
+# Owned actor-state fields are snapshotted through the same clone-total plan as
+# direct generator parameters.
+run_accept_expect_stdout "receive_gen_fn_owned_state_capture"
 
 # ---------------------------------------------------------------------------
 # Sink<T> / Stream<T> Wire-capability admissibility gate

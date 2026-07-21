@@ -873,6 +873,18 @@ mod hew_lib_bootstrap_tests {
         );
     }
 
+    #[test]
+    fn target_authority_preserves_non_debug_profile() {
+        let exe = Path::new("/workspace/target/release-lib/deps/e2e-test");
+        assert_eq!(
+            target_dir_and_profile_from_exe(exe),
+            Some((
+                PathBuf::from("/workspace/target"),
+                "release-lib".to_string()
+            ))
+        );
+    }
+
     /// N threads race `ensure_built_serialized` on one tempdir; the injected
     /// build stub must run exactly once (`fd_lock` serializes the writers, the
     /// stamp fast-path short-circuits everyone after the first winner).

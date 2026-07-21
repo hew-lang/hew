@@ -116,16 +116,6 @@ impl Builder {
         true
     }
 
-    pub(crate) fn reject_capture_env_let_escape(
-        &mut self,
-        binding: BindingId,
-        value: &HirExpr,
-    ) -> bool {
-        let generator_clone_only = self.prepass_generator_capture_bindings.contains(&binding)
-            && !self.prepass_binding_ref_uses.contains(&binding);
-        !generator_clone_only && self.reject_capture_env_whole_escape_expr(value)
-    }
-
     pub(crate) fn sanitize_symbol_component(input: &str) -> String {
         input
             .chars()
@@ -2620,11 +2610,8 @@ impl Builder {
         // Lower the yielded value to a Place.  If the value is absent (bare
         // `yield;` — unit-typed generator), allocate a unit constant.
         let value_place = if let Some(val_expr) = value {
-            if self.reject_capture_env_whole_escape_expr(val_expr) {
-                return None;
-            }
             self.decide(val_expr);
-            match self.lower_value(val_expr) {
+            match self.lower_value_for_move(val_expr) {
                 Some(p) => p,
                 None => {
                     // The value sub-expression failed to lower.  The child

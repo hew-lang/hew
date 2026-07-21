@@ -62,6 +62,7 @@ mod drop_plan;
 mod expr;
 mod facts;
 mod machine_synth;
+mod move_value;
 mod ownership;
 mod pattern;
 mod rc_intrinsic;
@@ -5719,7 +5720,7 @@ impl Builder {
                 u32::try_from(tail.span.start).unwrap_or(u32::MAX),
                 u32::try_from(tail.span.end).unwrap_or(u32::MAX),
             ));
-            let value_place = self.lower_value(tail);
+            let value_place = self.lower_value_for_move(tail);
             self.decide(tail);
             self.mark_returned_binding_moved(tail);
             // A divergent tail leaves the cursor at an unreachable join block.

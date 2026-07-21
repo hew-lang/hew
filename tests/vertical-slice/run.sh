@@ -2759,9 +2759,9 @@ expect_check_fail_error_count_no_cascade \
   "gen_capture_whole_value_escape" \
   "InitialisedBeforeUse" "UnresolvedPlace"
 
-# The same fail-closed wall applies to every other whole-value move shape, not
-# only `yield`: rebinding, storing into another owner, and returning from a
-# generator body all load aliases from the capture environment.
+# Every whole-value move reaches the centralized MIR move-lowering boundary:
+# rebinding, aggregate/container storage, return, by-value function arguments,
+# and tuple construction all reject aliases loaded from the capture environment.
 # shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_let_move.hew" \
@@ -2777,6 +2777,16 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_return.hew" \
   'captured owned value `items` cannot be moved out of the generator/closure environment' \
   "gen_capture_whole_value_return"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_fn_arg.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_fn_arg"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_tuple.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_tuple"
 
 # Reject: a generator that reads BOTH an inadmissible (`#[opaque]`) parameter
 # AND an otherwise-admissible scalar parameter as free variables of its body.

@@ -1257,11 +1257,7 @@ impl Builder {
                     }
                 }
                 let diag_len_before_value = self.diagnostics.len();
-                let value_place = if self.reject_capture_env_let_escape(binding.id, value) {
-                    None
-                } else {
-                    self.lower_value(value)
-                };
+                let value_place = self.lower_let_value(binding.id, value);
                 // Cascade suppression: a `let` whose initializer failed to lower
                 // (`None`) AFTER emitting its own diagnostic poisons the binding,
                 // so a later `BindingRef` to it stays silent instead of stacking
@@ -1645,11 +1641,7 @@ impl Builder {
                 });
             }
             HirStmtKind::Return(Some(expr)) => {
-                let value_place = if self.reject_capture_env_whole_escape_expr(expr) {
-                    None
-                } else {
-                    self.lower_value(expr)
-                };
+                let value_place = self.lower_value_for_move(expr);
                 self.decide(expr);
                 self.mark_returned_binding_moved(expr);
                 self.statements.push(MirStatement::Return {
@@ -2225,10 +2217,8 @@ impl Builder {
             }),
         }
     }
-
-    /// Walk an expression, emit checker-stream `MirStatement`s plus
-    /// backend-stream `Instr`s, and return the `Place` that holds the
-    /// expression's value (or `None` if the construct is outside the
+    /// Lower an expression into the backend instruction stream and return the
+    /// `Place` that holds the expression's value (or `None` if the construct is outside the
     /// spine subset — a `MirDiagnostic` is recorded in that case).
     #[allow(
         clippy::too_many_lines,
@@ -2760,7 +2750,7 @@ impl Builder {
                 // Lower each element expression to a MIR Place.
                 let lowered_elements: Vec<Place> = elements
                     .iter()
-                    .map(|elem| self.lower_value(elem))
+                    .map(|elem| self.lower_value_for_move(elem))
                     .collect::<Option<Vec<_>>>()?;
 
                 // B1: an owned single-owner element is MOVED into the tuple —
@@ -2979,8 +2969,18 @@ impl Builder {
                         // with a HirModule that bypassed the producer).
                         if self.module_fn_names.contains(&mangled) {
                             let ret_ty = self.subst_ty(&expr.ty);
-                            return self
-                                .lower_direct_call(&mangled, None, args, &ret_ty, expr.site);
+                            let callee_item = match callee_resolved {
+                                ResolvedRef::Item(item) => Some(item),
+                                _ => None,
+                            };
+                            return self.lower_direct_call(
+                                &mangled,
+                                None,
+                                callee_item,
+                                args,
+                                &ret_ty,
+                                expr.site,
+                            );
                         }
                     }
                     // User-defined function in the same module: emit a call terminator.
@@ -2994,7 +2994,18 @@ impl Builder {
                             ResolvedRef::Builtin(family) => Some(family),
                             _ => None,
                         };
-                        return self.lower_direct_call(name, builtin, args, &expr.ty, expr.site);
+                        let callee_item = match callee_resolved {
+                            ResolvedRef::Item(item) => Some(item),
+                            _ => None,
+                        };
+                        return self.lower_direct_call(
+                            name,
+                            builtin,
+                            callee_item,
+                            args,
+                            &expr.ty,
+                            expr.site,
+                        );
                     }
                 }
                 if matches!(
@@ -3044,7 +3055,7 @@ impl Builder {
                     let callee_place = self.lower_value(callee)?;
                     let mut arg_places = Vec::with_capacity(args.len());
                     for arg in args {
-                        arg_places.push(self.lower_value(arg)?);
+                        arg_places.push(self.lower_value_for_move(arg)?);
                     }
                     let dest = if matches!(ret_ty, ResolvedTy::Unit) {
                         None
@@ -3365,10 +3376,7 @@ impl Builder {
                 // Lower each explicit field value to a Place, keyed by name.
                 let mut explicit: HashMap<String, Place> = HashMap::new();
                 for (fname, fexpr) in fields {
-                    if self.reject_capture_env_whole_escape_expr(fexpr) {
-                        return None;
-                    }
-                    if let Some(place) = self.lower_value(fexpr) {
+                    if let Some(place) = self.lower_value_for_move(fexpr) {
                         explicit.insert(fname.clone(), place);
                     }
                 }
@@ -3386,7 +3394,7 @@ impl Builder {
 
                 // Lower the functional-update base, if any.
                 let base_place: Option<Place> = if let Some(base_expr) = base {
-                    let place = self.lower_value(base_expr);
+                    let place = self.lower_value_for_move(base_expr);
                     // (2) Consume the base — see the guard note above. An owned
                     // record handed in via `..base` moves into the new record,
                     // so mark the source binding consumed: a later use (a second
@@ -4624,10 +4632,11 @@ impl Builder {
                 let receiver_place = self.lower_value(receiver)?;
                 let mut arg_places = vec![receiver_place];
                 for arg in args {
-                    if is_vec_element_store && self.reject_capture_env_whole_escape_expr(arg) {
-                        return None;
-                    }
-                    arg_places.push(self.lower_value(arg)?);
+                    let arg_place = self.lower_method_arg_value(
+                        arg,
+                        is_vec_element_store || builtin_method_arg_is_move_ingress(*target_family),
+                    )?;
+                    arg_places.push(arg_place);
                     if builtin_method_arg_is_move_ingress(*target_family) {
                         self.consume_moved_builtin_method_arg(arg);
                     }
@@ -4927,7 +4936,7 @@ impl Builder {
                 // the source-declared order here for determinism.
                 if let Some(fields) = payload {
                     for (field_idx, (_field_name, field_expr)) in fields.iter().enumerate() {
-                        let Some(src) = self.lower_value(field_expr) else {
+                        let Some(src) = self.lower_value_for_move(field_expr) else {
                             continue;
                         };
                         let field_idx_u32 =
@@ -5351,11 +5360,7 @@ impl Builder {
                 // dead cursor block for any lexically-following code. A `return`
                 // diverges, so this expression yields no value (`None`).
                 if let Some(expr_value) = value {
-                    let value_place = if self.reject_capture_env_whole_escape_expr(expr_value) {
-                        None
-                    } else {
-                        self.lower_value(expr_value)
-                    };
+                    let value_place = self.lower_value_for_move(expr_value);
                     self.decide(expr_value);
                     self.mark_returned_binding_moved(expr_value);
                     self.statements.push(MirStatement::Return {
@@ -7722,6 +7727,7 @@ impl Builder {
         &mut self,
         callee_symbol: &str,
         builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
+        callee_item: Option<hew_hir::ItemId>,
         hir_args: &[hew_hir::HirExpr],
         ret_ty: &ResolvedTy,
         _site: hew_hir::SiteId,
@@ -7751,13 +7757,7 @@ impl Builder {
         // Lower each argument left-to-right.  If any fails to produce a
         // Place, fail the whole call — argument diagnostics already capture
         // the root cause.
-        let mut arg_places = Vec::with_capacity(hir_args.len());
-        for arg in hir_args {
-            match self.lower_value(arg) {
-                Some(p) => arg_places.push(p),
-                None => return None,
-            }
-        }
+        let arg_places = self.lower_direct_call_args(callee_item, hir_args)?;
 
         // Allocate a destination local for the return value, unless the
         // callee is declared Unit-returning or divergent. Never-returning

@@ -2811,6 +2811,7 @@ impl Builder {
             return self.lower_direct_call(
                 &sup_layout.bootstrap_symbol,
                 None,
+                None,
                 &bootstrap_args,
                 &expr.ty,
                 expr.site,

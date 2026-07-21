@@ -69,6 +69,19 @@ pub(crate) fn panic_payload_message(panic_payload: &(dyn std::any::Any + Send)) 
     }
 }
 
+/// Report a background-thread panic observed while joining during teardown.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn report_join_panic(context: &str, join_result: std::thread::Result<()>) {
+    if let Err(panic_payload) = join_result {
+        let message = format!(
+            "{context} panicked during teardown: {}",
+            panic_payload_message(panic_payload.as_ref())
+        );
+        crate::set_last_error(message.clone());
+        eprintln!("hew: {message}");
+    }
+}
+
 /// Extension trait for [`Mutex`] that recovers from poisoned locks.
 pub(crate) trait MutexExt<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;

@@ -275,7 +275,7 @@ pub(crate) unsafe fn stop_swim_driver(node: *mut HewNode) {
     };
     handle.stop.store(true, Ordering::Release);
     if let Some(join) = handle.join.take() {
-        let _ = join.join();
+        crate::util::report_join_panic("hew SWIM driver thread", join.join());
     }
 }
 
@@ -417,6 +417,7 @@ unsafe fn run_one_period(node: *mut HewNode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CStr;
 
     /// Stopping a node with no running driver is a safe no-op.
     #[test]
@@ -470,5 +471,50 @@ mod tests {
 
         // SAFETY: node was allocated by hew_node_new and the driver is stopped.
         unsafe { crate::hew_node::hew_node_free(node) };
+    }
+
+    #[test]
+    fn stop_reports_driver_panic_and_removes_registry_entry() {
+        crate::hew_clear_error();
+        let node = 0xdead_1000 as *mut HewNode;
+        let stop = Arc::new(AtomicBool::new(false));
+        let join = std::thread::spawn(|| panic!("SWIM driver intentional panic"));
+        SWIM_DRIVERS.access(|slot| {
+            slot.get_or_insert_with(HashMap::new).insert(
+                node as usize,
+                DriverHandle {
+                    stop: Arc::clone(&stop),
+                    join: Some(join),
+                },
+            );
+        });
+
+        // SAFETY: the fabricated pointer is used only as a registry key.
+        unsafe { stop_swim_driver(node) };
+
+        let error_ptr = crate::hew_last_error();
+        assert!(
+            !error_ptr.is_null(),
+            "joining a panicked SWIM driver must record a diagnostic"
+        );
+        // SAFETY: stop_swim_driver populated this thread's last-error slot.
+        let error = unsafe {
+            CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8")
+        };
+        assert!(
+            error.contains("hew SWIM driver thread panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("SWIM driver intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+        assert!(stop.load(Ordering::Acquire));
+        assert!(SWIM_DRIVERS.access(|slot| {
+            slot.as_ref()
+                .is_none_or(|table| !table.contains_key(&(node as usize)))
+        }));
     }
 }

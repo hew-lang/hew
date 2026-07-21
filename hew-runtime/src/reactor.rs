@@ -1783,12 +1783,13 @@ fn queue_unregister_fds(fds: &[c_int]) {
 /// idempotent.
 pub(crate) fn reactor_shutdown() {
     REACTOR_STOP.store(true, Ordering::Release);
-    if let Some(slot) = REACTOR_HANDLE.get() {
-        if let Ok(mut guard) = slot.lock() {
-            if let Some(handle) = guard.take() {
-                let _ = handle.join();
-            }
-        }
+    let handle = REACTOR_HANDLE.get().and_then(|slot| {
+        slot.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    });
+    if let Some(handle) = handle {
+        crate::util::report_join_panic("hew I/O reactor thread", handle.join());
     }
     REACTOR_RUNNING.store(false, Ordering::SeqCst);
     REACTOR_STOP.store(false, Ordering::SeqCst);
@@ -2039,6 +2040,7 @@ fn fire_resume_pre_deposit_hook() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CStr;
     use std::sync::Mutex as StdMutex;
     use std::time::{Duration, Instant};
 
@@ -2083,6 +2085,53 @@ mod tests {
         assert!(
             elapsed < Duration::from_millis(500),
             "reactor join took too long ({elapsed:?}) — possible hung thread"
+        );
+    }
+
+    #[test]
+    fn reactor_shutdown_reports_worker_panic_and_clears_state() {
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+        crate::hew_clear_error();
+
+        REACTOR_STATE.access(|state| state.pending.push(Pending::Remove { conn: 17 }));
+        let slot = REACTOR_HANDLE.get_or_init(|| Mutex::new(None));
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(std::thread::spawn(|| panic!("reactor intentional panic")));
+        REACTOR_RUNNING.store(true, Ordering::SeqCst);
+
+        reactor_shutdown();
+
+        let error_ptr = crate::hew_last_error();
+        assert!(
+            !error_ptr.is_null(),
+            "joining a panicked reactor must record a diagnostic"
+        );
+        // SAFETY: reactor_shutdown populated this thread's last-error slot.
+        let error = unsafe {
+            CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8")
+        };
+        assert!(
+            error.contains("hew I/O reactor thread panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("reactor intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+        assert!(!REACTOR_RUNNING.load(Ordering::SeqCst));
+        assert!(REACTOR_STATE.access(|state| state.pending.is_empty()));
+        assert!(
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none(),
+            "shutdown must consume the reactor join handle"
         );
     }
 

@@ -2462,6 +2462,14 @@ fn drain_inbound_ask_workers(inbound_active: Option<&Arc<AtomicUsize>>) {
     }
 }
 
+fn stop_node_accept_thread(node: &mut HewNode) {
+    node.accept_stop.store(true, Ordering::Release);
+    let handle = node.accept_thread.lock_or_recover().take();
+    if let Some(handle) = handle {
+        crate::util::report_join_panic("hew node accept thread", handle.join());
+    }
+}
+
 /// Stop the node runtime.
 ///
 /// # Safety
@@ -2550,13 +2558,7 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
                 }
             });
         }
-        node.accept_stop.store(true, Ordering::Release);
-        {
-            let mut guard = node.accept_thread.lock_or_recover();
-            if let Some(handle) = guard.take() {
-                let _ = handle.join();
-            }
-        }
+        stop_node_accept_thread(node);
 
         // Stop and JOIN the SWIM ticker before freeing the cluster / conn_mgr
         // it dereferences each period. The join is the lifetime barrier: once
@@ -6266,6 +6268,47 @@ mod tests {
     use std::time::{Duration, Instant};
 
     const TEST_REMOTE_ASK_TIMEOUT_MS: u64 = 250;
+
+    #[test]
+    fn accept_thread_stop_reports_panic_and_consumes_handle() {
+        let _runtime_guard = crate::runtime_test_guard();
+        crate::hew_clear_error();
+        let bind = CString::new("127.0.0.1:0").expect("valid bind address");
+        // SAFETY: bind is a valid C string for the duration of the call.
+        let node_ptr = unsafe { hew_node_new(991, bind.as_ptr()) };
+        assert!(!node_ptr.is_null());
+        // SAFETY: this test exclusively owns the live node allocation.
+        let node = unsafe { &mut *node_ptr };
+        *node.accept_thread.lock_or_recover() =
+            Some(std::thread::spawn(|| panic!("accept intentional panic")));
+
+        stop_node_accept_thread(node);
+
+        let error_ptr = crate::hew_last_error();
+        assert!(
+            !error_ptr.is_null(),
+            "joining a panicked accept thread must record a diagnostic"
+        );
+        // SAFETY: stop_node_accept_thread populated this thread's last-error slot.
+        let error = unsafe {
+            CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8")
+        };
+        assert!(
+            error.contains("hew node accept thread panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("accept intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+        assert!(node.accept_stop.load(Ordering::Acquire));
+        assert!(node.accept_thread.lock_or_recover().is_none());
+
+        // SAFETY: the test owns node_ptr and its accept thread has been joined.
+        unsafe { hew_node_free(node_ptr) };
+    }
 
     #[test]
     fn monitor_and_link_setup_statuses_match_hew_error_discriminants() {

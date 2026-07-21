@@ -532,7 +532,7 @@ impl Drop for ConnectionActor {
         // Wait for reader thread (best-effort).
         if let Some(handle) = self.reader_handle.take() {
             if handle.thread().id() != thread::current().id() {
-                let _ = handle.join();
+                crate::util::report_join_panic("connection reader thread", handle.join());
             }
         }
     }
@@ -606,7 +606,7 @@ fn collect_finished_reconnect_workers(mgr: &HewConnMgr) {
         while idx < workers.len() {
             if workers[idx].is_finished() {
                 let handle = workers.swap_remove(idx);
-                let _ = handle.join();
+                crate::util::report_join_panic("connection reconnect worker", handle.join());
             } else {
                 idx += 1;
             }
@@ -3495,11 +3495,11 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         mgr.reader_lifecycle.wait_for_idle();
         let workers: Vec<JoinHandle<()>> = mgr.reverse_link_workers.access(std::mem::take);
         for worker in workers {
-            let _ = worker.join();
+            crate::util::report_join_panic("connection reverse-link worker", worker.join());
         }
         let workers: Vec<JoinHandle<()>> = mgr.reconnect_workers.access(std::mem::take);
         for worker in workers {
-            let _ = worker.join();
+            crate::util::report_join_panic("connection reconnect worker", worker.join());
         }
         // mgr is dropped here, freeing the HewConnMgr.
     }
@@ -3622,7 +3622,7 @@ pub(crate) unsafe fn hew_connmgr_track_reverse_link_worker(
     worker: JoinHandle<()>,
 ) {
     if mgr.is_null() {
-        let _ = worker.join();
+        crate::util::report_join_panic("connection reverse-link worker", worker.join());
         return;
     }
     // SAFETY: caller guarantees `mgr` is valid for this call.
@@ -3641,7 +3641,7 @@ pub(crate) unsafe fn hew_connmgr_track_reverse_link_worker(
         finished
     });
     for worker in finished {
-        let _ = worker.join();
+        crate::util::report_join_panic("connection reverse-link worker", worker.join());
     }
 }
 
@@ -5090,6 +5090,205 @@ pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn last_error_string() -> String {
+        let error_ptr = crate::hew_last_error();
+        assert!(!error_ptr.is_null(), "expected a last-error diagnostic");
+        // SAFETY: the caller established that the current thread's last-error is set.
+        unsafe {
+            CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8")
+                .to_owned()
+        }
+    }
+
+    fn test_manager_with_transport() -> (*mut HewConnMgr, *mut HewTransport) {
+        let transport = Box::into_raw(Box::new(HewTransport {
+            ops: std::ptr::null(),
+            r#impl: std::ptr::null_mut(),
+        }));
+        // SAFETY: transport is a live test-owned allocation and the remaining pointers are null.
+        let mgr = unsafe {
+            hew_connmgr_new(
+                transport,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+            )
+        };
+        assert!(!mgr.is_null());
+        (mgr, transport)
+    }
+
+    unsafe fn free_test_manager_and_transport(mgr: *mut HewConnMgr, transport: *mut HewTransport) {
+        // SAFETY: the caller owns both allocations and the manager still borrows transport.
+        unsafe { hew_connmgr_free(mgr) };
+        // SAFETY: the manager has been freed and no connection actor references transport.
+        let _ = unsafe { Box::from_raw(transport) };
+    }
+
+    #[test]
+    fn connection_actor_drop_reports_reader_panic() {
+        crate::hew_clear_error();
+        let mut actor = ConnectionActor::new(17);
+        actor.reader_handle = Some(std::thread::spawn(|| panic!("reader intentional panic")));
+
+        drop(actor);
+
+        let error = last_error_string();
+        assert!(
+            error.contains("connection reader thread panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("reader intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+    }
+
+    #[test]
+    fn collect_finished_reconnect_worker_reports_panic_and_removes_handle() {
+        crate::hew_clear_error();
+        let (mgr, transport) = test_manager_with_transport();
+        let worker = std::thread::spawn(|| panic!("reconnect collector intentional panic"));
+        while !worker.is_finished() {
+            std::thread::yield_now();
+        }
+        // SAFETY: mgr is live and exclusively owned by this test.
+        unsafe { &*mgr }
+            .reconnect_workers
+            .access(|workers| workers.push(worker));
+
+        // SAFETY: mgr is live for this call.
+        collect_finished_reconnect_workers(unsafe { &*mgr });
+
+        let error = last_error_string();
+        assert!(
+            error.contains("connection reconnect worker panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("reconnect collector intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+        // SAFETY: mgr is live for this assertion.
+        assert!(unsafe { &*mgr }
+            .reconnect_workers
+            .access(|workers| workers.is_empty()));
+
+        // SAFETY: this test owns mgr and transport.
+        unsafe { free_test_manager_and_transport(mgr, transport) };
+    }
+
+    #[test]
+    fn manager_free_reports_reverse_link_worker_panic() {
+        crate::hew_clear_error();
+        let (mgr, transport) = test_manager_with_transport();
+        let exited = Arc::new(AtomicBool::new(false));
+        let worker_exited = Arc::clone(&exited);
+        let worker = std::thread::spawn(move || {
+            worker_exited.store(true, Ordering::Release);
+            panic!("reverse-link free intentional panic");
+        });
+        // SAFETY: mgr is live and exclusively owned by this test.
+        unsafe { &*mgr }
+            .reverse_link_workers
+            .access(|workers| workers.push(worker));
+
+        // SAFETY: this test owns mgr and transport.
+        unsafe { free_test_manager_and_transport(mgr, transport) };
+
+        let error = last_error_string();
+        assert!(
+            error.contains("connection reverse-link worker panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("reverse-link free intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+        assert!(
+            exited.load(Ordering::Acquire),
+            "manager free must join the reverse-link worker before returning"
+        );
+    }
+
+    #[test]
+    fn manager_free_reports_reconnect_worker_panic() {
+        crate::hew_clear_error();
+        let (mgr, transport) = test_manager_with_transport();
+        let exited = Arc::new(AtomicBool::new(false));
+        let worker_exited = Arc::clone(&exited);
+        let worker = std::thread::spawn(move || {
+            worker_exited.store(true, Ordering::Release);
+            panic!("reconnect free intentional panic");
+        });
+        // SAFETY: mgr is live and exclusively owned by this test.
+        unsafe { &*mgr }
+            .reconnect_workers
+            .access(|workers| workers.push(worker));
+
+        // SAFETY: this test owns mgr and transport.
+        unsafe { free_test_manager_and_transport(mgr, transport) };
+
+        let error = last_error_string();
+        assert!(
+            error.contains("connection reconnect worker panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("reconnect free intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+        assert!(
+            exited.load(Ordering::Acquire),
+            "manager free must join the reconnect worker before returning"
+        );
+    }
+
+    #[test]
+    fn reverse_link_tracking_reports_panics_on_immediate_and_reaped_joins() {
+        crate::hew_clear_error();
+        let immediate = std::thread::spawn(|| panic!("reverse-link null manager panic"));
+        // SAFETY: null manager explicitly requests an immediate join.
+        unsafe { hew_connmgr_track_reverse_link_worker(std::ptr::null_mut(), immediate) };
+        let error = last_error_string();
+        assert!(error.contains("reverse-link null manager panic"));
+
+        crate::hew_clear_error();
+        let (mgr, transport) = test_manager_with_transport();
+        let finished = std::thread::spawn(|| panic!("reverse-link reaped panic"));
+        while !finished.is_finished() {
+            std::thread::yield_now();
+        }
+        // SAFETY: mgr is live and exclusively owned by this test.
+        unsafe { &*mgr }
+            .reverse_link_workers
+            .access(|workers| workers.push(finished));
+        let following = std::thread::spawn(|| {});
+        // SAFETY: mgr remains live through manager teardown below.
+        unsafe { hew_connmgr_track_reverse_link_worker(mgr, following) };
+
+        let error = last_error_string();
+        assert!(
+            error.contains("connection reverse-link worker panicked during teardown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("reverse-link reaped panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
+        // SAFETY: mgr remains live and only the non-panicking following worker is tracked.
+        let tracked_workers = unsafe { &*mgr }
+            .reverse_link_workers
+            .access(|workers| workers.len());
+        assert_eq!(tracked_workers, 1);
+
+        // SAFETY: this test owns mgr and transport.
+        unsafe { free_test_manager_and_transport(mgr, transport) };
+    }
 
     fn test_node_id(route_slot: u16) -> NodeId {
         test_node_identity(route_slot)

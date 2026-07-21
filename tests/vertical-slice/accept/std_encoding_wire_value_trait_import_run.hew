@@ -1,0 +1,14 @@
+import std::encoding::wire::value_trait::{CanonicalValueMethods};
+import std::encoding::json;
+
+fn canonical_int<T: CanonicalValueMethods>(value: T) -> i64 {
+    let result = value.get_int();
+    value.free();
+    result
+}
+
+fn main() {
+    let value = json.parse("42");
+    let result = canonical_int(value);
+    println(f"canonical-value:{result}");
+}

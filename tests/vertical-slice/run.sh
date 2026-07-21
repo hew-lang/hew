@@ -470,6 +470,12 @@ run_accept_expect_stdout_contains \
     "std_machines_toggle_import_run" \
     "toggle:Off:On:Off"
 
+# std::encoding::wire::value_trait must dispatch an imported canonical method
+# through a generic bound to JSON's concrete implementation.
+run_accept_expect_stdout_contains \
+    "std_encoding_wire_value_trait_import_run" \
+    "canonical-value:42"
+
 # Regression guard: a plain record with an Option<i64> field must compile and
 # run.  The MIR field classifier must NOT strip args from generic enum types
 # (Option, Result) even though their origin names appear in machine_layout_names.

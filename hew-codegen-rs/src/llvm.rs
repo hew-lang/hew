@@ -7981,6 +7981,69 @@ fn collect_closure_capture_drop_seeds(
     (record_seeds, enum_seeds)
 }
 
+fn collect_generator_env_clone_seeds(raw_mir: &[RawMirFunction]) -> (Vec<String>, Vec<String>) {
+    let mut record_seeds = Vec::new();
+    let mut enum_seeds = Vec::new();
+    let mut record_seen = HashSet::new();
+    let mut enum_seen = HashSet::new();
+
+    fn add_kind(
+        kind: &StateFieldCloneKind,
+        record_seeds: &mut Vec<String>,
+        enum_seeds: &mut Vec<String>,
+        record_seen: &mut HashSet<String>,
+        enum_seen: &mut HashSet<String>,
+    ) {
+        match kind {
+            StateFieldCloneKind::UserRecord { name } => {
+                if record_seen.insert(name.clone()) {
+                    record_seeds.push(name.clone());
+                }
+            }
+            StateFieldCloneKind::Enum { name } => {
+                if enum_seen.insert(name.clone()) {
+                    enum_seeds.push(name.clone());
+                }
+            }
+            StateFieldCloneKind::Tuple { elems } => {
+                for elem in elems {
+                    add_kind(elem, record_seeds, enum_seeds, record_seen, enum_seen);
+                }
+            }
+            StateFieldCloneKind::Array { elem, .. }
+            | StateFieldCloneKind::Vec { elem }
+            | StateFieldCloneKind::HashSet { elem } => {
+                add_kind(elem, record_seeds, enum_seeds, record_seen, enum_seen);
+            }
+            StateFieldCloneKind::HashMap { key, val } => {
+                add_kind(key, record_seeds, enum_seeds, record_seen, enum_seen);
+                add_kind(val, record_seeds, enum_seeds, record_seen, enum_seen);
+            }
+            _ => {}
+        }
+    }
+
+    for function in raw_mir {
+        for block in &function.blocks {
+            let Terminator::MakeGenerator { env: Some(env), .. } = &block.terminator else {
+                continue;
+            };
+            for field in &env.fields {
+                if let hew_mir::GeneratorEnvFieldPlan::Owned(plan) = field {
+                    add_kind(
+                        plan.root(),
+                        &mut record_seeds,
+                        &mut enum_seeds,
+                        &mut record_seen,
+                        &mut enum_seen,
+                    );
+                }
+            }
+        }
+    }
+    (record_seeds, enum_seeds)
+}
+
 /// Collect the record/enum layout keys of every inline composite yield-value
 /// release (`Instr::Drop { drop_fn: Some(DropFnSpec::InPlace(_)) }`) in raw
 /// MIR so the `__hew_{record,enum}_drop_inplace_<key>` body is synthesised
@@ -25776,6 +25839,280 @@ fn generator_coro_companion_ty<'ctx>(
     Ok((yield_llvm, companion))
 }
 
+fn validate_generator_env_plan<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    plan: &hew_mir::GeneratorEnvPlan,
+    env_struct: StructType<'ctx>,
+) -> CodegenResult<Vec<(u32, StateFieldCloneKind)>> {
+    let place_ty = place_resolved_ty(fn_ctx, plan.place)?;
+    if place_ty != &plan.ty {
+        return Err(CodegenError::FailClosed(format!(
+            "generator env plan type {:?} does not match place {:?} type {place_ty:?}",
+            plan.ty, plan.place
+        )));
+    }
+    let ResolvedTy::Named { name, .. } = &plan.ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "generator env plan type must be a synthetic record, got {:?}",
+            plan.ty
+        )));
+    };
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let layout = record_layouts
+        .iter()
+        .find(|layout| layout.name == *name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "generator env plan `{name}` has no registered record layout"
+            ))
+        })?;
+    let llvm_field_count = usize::try_from(env_struct.count_fields()).map_err(|_| {
+        CodegenError::FailClosed("generator env LLVM field count exceeds usize".into())
+    })?;
+    if layout.field_tys.len() != plan.fields.len() || llvm_field_count != plan.fields.len() {
+        return Err(CodegenError::FailClosed(format!(
+            "generator env plan `{name}` field count drift: MIR plan {}, resolved layout {}, \
+             LLVM layout {}",
+            plan.fields.len(),
+            layout.field_tys.len(),
+            llvm_field_count
+        )));
+    }
+
+    let mut owned = Vec::new();
+    for (idx, (field_ty, field_plan)) in layout.field_tys.iter().zip(&plan.fields).enumerate() {
+        let field_idx = u32::try_from(idx).map_err(|_| {
+            CodegenError::FailClosed("generator env field count exceeds u32::MAX".into())
+        })?;
+        let actual_llvm = env_struct
+            .get_field_type_at_index(field_idx)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "generator env `{name}` LLVM layout has no field {field_idx}"
+                ))
+            })?;
+        let expected_llvm = resolve_ty(
+            fn_ctx.ctx,
+            fn_ctx.target_data,
+            field_ty,
+            fn_ctx.record_layouts,
+        )?;
+        if actual_llvm != expected_llvm {
+            return Err(CodegenError::FailClosed(format!(
+                "generator env `{name}` field {field_idx} LLVM type drift: plan type \
+                 {field_ty:?} resolves to {expected_llvm:?}, layout carries {actual_llvm:?}"
+            )));
+        }
+
+        let null_env_trivial = matches!(field_ty, ResolvedTy::Function { .. })
+            || matches!(field_ty, ResolvedTy::Closure { captures, .. } if captures.is_empty());
+        let classified = if null_env_trivial {
+            None
+        } else {
+            Some(
+                hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                    field_ty,
+                    &record_layouts,
+                    fn_ctx.enum_layouts,
+                    &[],
+                    fn_ctx.resource_opaque_close,
+                )
+                .map_err(|error| {
+                    CodegenError::FailClosed(format!(
+                        "generator env `{name}` field {field_idx} classification failed: {error}"
+                    ))
+                })?,
+            )
+        };
+        match field_plan {
+            hew_mir::GeneratorEnvFieldPlan::TrivialCopy
+                if null_env_trivial
+                    || classified.as_ref().is_some_and(|snapshot| {
+                        matches!(snapshot.root(), StateFieldCloneKind::BitCopy { .. })
+                    }) => {}
+            hew_mir::GeneratorEnvFieldPlan::TrivialCopy => {
+                return Err(CodegenError::FailClosed(format!(
+                    "generator env `{name}` field {field_idx} is marked TrivialCopy but \
+                     classifies as {:?}",
+                    classified
+                        .as_ref()
+                        .map(hew_mir::state_clone::ValueSnapshotPlan::root)
+                )));
+            }
+            hew_mir::GeneratorEnvFieldPlan::Owned(snapshot) => {
+                if classified.as_ref() != Some(snapshot) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "generator env `{name}` field {field_idx} snapshot plan drift: MIR \
+                         {:?}, codegen {:?}",
+                        snapshot.root(),
+                        classified
+                            .as_ref()
+                            .map(hew_mir::state_clone::ValueSnapshotPlan::root)
+                    )));
+                }
+                if !snapshot
+                    .is_clone_total(
+                        &record_layouts,
+                        fn_ctx.enum_layouts,
+                        &[],
+                        fn_ctx.resource_opaque_close,
+                    )
+                    .map_err(|error| {
+                        CodegenError::FailClosed(format!(
+                            "generator env `{name}` field {field_idx} clone-total validation \
+                             failed: {error}"
+                        ))
+                    })?
+                {
+                    return Err(CodegenError::FailClosed(format!(
+                        "generator env `{name}` field {field_idx} is not clone-total: {:?}",
+                        snapshot.root()
+                    )));
+                }
+                if matches!(snapshot.root(), StateFieldCloneKind::BitCopy { .. }) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "generator env `{name}` field {field_idx} uses Owned for BitCopy"
+                    )));
+                }
+                owned.push((field_idx, snapshot.root().clone()));
+            }
+        }
+    }
+    Ok(owned)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "generator env clone emission needs the typed plan, validated source/destination \
+              struct pointers, companion allocation, and body symbol in one ownership boundary"
+)]
+fn emit_generator_env_owned_clones<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    body_fn: &str,
+    plan: &hew_mir::GeneratorEnvPlan,
+    env_struct: StructType<'ctx>,
+    src: PointerValue<'ctx>,
+    dst: PointerValue<'ctx>,
+    companion: PointerValue<'ctx>,
+) -> CodegenResult<Option<FunctionValue<'ctx>>> {
+    let owned = validate_generator_env_plan(fn_ctx, plan, env_struct)?;
+    if owned.is_empty() {
+        return Ok(None);
+    }
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| {
+            CodegenError::FailClosed("generator env clone has no parent function".into())
+        })?;
+    let clone_bbs: Vec<_> = (0..owned.len())
+        .map(|idx| {
+            fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("gen_env_clone_{idx}"))
+        })
+        .collect();
+    let store_bbs: Vec<_> = (0..owned.len())
+        .map(|idx| {
+            fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("gen_env_clone_{idx}_store"))
+        })
+        .collect();
+    let rollback_bbs: Vec<_> = (0..owned.len())
+        .map(|idx| {
+            fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("gen_env_clone_{idx}_rollback"))
+        })
+        .collect();
+    let success_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "gen_env_clone_success");
+    fn_ctx
+        .builder
+        .build_unconditional_branch(clone_bbs[0])
+        .llvm_ctx("generator env first clone branch")?;
+
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let witnesses = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+    for (step_idx, (field_idx, kind)) in owned.iter().enumerate() {
+        fn_ctx.builder.position_at_end(clone_bbs[step_idx]);
+        let next_bb = clone_bbs.get(step_idx + 1).copied().unwrap_or(success_bb);
+        emit_field_clone_step(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &fn_ctx.builder,
+            Some(env_struct),
+            src,
+            dst,
+            *field_idx,
+            kind,
+            false,
+            store_bbs[step_idx],
+            rollback_bbs[step_idx],
+            next_bb,
+            &witnesses,
+        )?;
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let frame_free = fn_ctx
+        .llvm_mod
+        .get_function("hew_cont_frame_free")
+        .unwrap_or_else(|| {
+            fn_ctx.llvm_mod.add_function(
+                "hew_cont_frame_free",
+                fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    let trap = Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic missing".into()))?
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
+    for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
+        fn_ctx.builder.position_at_end(*rollback_bb);
+        for (field_idx, kind) in owned[..step_idx].iter().rev() {
+            emit_field_drop_step(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &fn_ctx.builder,
+                Some(env_struct),
+                dst,
+                *field_idx,
+                kind,
+                &witnesses,
+            )?;
+        }
+        fn_ctx
+            .builder
+            .build_call(frame_free, &[dst.into()], "gen_env_rollback_free")
+            .llvm_ctx("generator env rollback free")?;
+        fn_ctx
+            .builder
+            .build_call(
+                frame_free,
+                &[companion.into()],
+                "gen_companion_rollback_free",
+            )
+            .llvm_ctx("generator companion rollback free")?;
+        fn_ctx
+            .builder
+            .build_call(trap, &[], "gen_env_clone_trap")
+            .llvm_ctx("generator env clone trap")?;
+        fn_ctx
+            .builder
+            .build_unreachable()
+            .llvm_ctx("generator env clone unreachable")?;
+    }
+    fn_ctx.builder.position_at_end(success_bb);
+    let thunk =
+        crate::thunks::get_or_emit_generator_env_drop_thunk(fn_ctx, body_fn, env_struct, &owned)?;
+    Ok(Some(thunk))
+}
+
 /// Synthesise (or fetch) the per-`Y` typed out-drop thunk for a generator
 /// companion, or `None` when the slot-drop path has nothing to release.
 ///
@@ -27481,6 +27818,18 @@ fn lower_terminator<'ctx>(
                                 "MakeGenerator env memcpy failed: {e:?}"
                             ))
                         })?;
+                    let env_drop_thunk = emit_generator_env_owned_clones(
+                        fn_ctx, body_fn, env_plan, env_struct, env_slot, heap_env, companion,
+                    )?;
+                    if let Some(thunk) = env_drop_thunk {
+                        fn_ctx
+                            .builder
+                            .build_store(
+                                env_drop_thunk_ptr,
+                                thunk.as_global_value().as_pointer_value(),
+                            )
+                            .llvm_ctx("gen companion env-drop-thunk store")?;
+                    }
                     fn_ctx
                         .builder
                         .build_store(env_field_ptr, heap_env)
@@ -31713,6 +32062,18 @@ fn build_module_for_target<'ctx>(
         }
     }
     for seed in closure_capture_enum_seeds {
+        if !enum_inplace_drop_seeds.contains(&seed) {
+            enum_inplace_drop_seeds.push(seed);
+        }
+    }
+    let (generator_env_record_seeds, generator_env_enum_seeds) =
+        collect_generator_env_clone_seeds(&pipeline.raw_mir);
+    for seed in generator_env_record_seeds {
+        if !vec_owned_record_seeds.contains(&seed) {
+            vec_owned_record_seeds.push(seed);
+        }
+    }
+    for seed in generator_env_enum_seeds {
         if !enum_inplace_drop_seeds.contains(&seed) {
             enum_inplace_drop_seeds.push(seed);
         }

@@ -1045,16 +1045,47 @@ impl Checker {
         }
     }
 
+    fn ty_contains_affine_actor_transfer(ty: &Ty) -> bool {
+        match ty {
+            Ty::CancellationToken => true,
+            Ty::Named { args, builtin, .. } => {
+                matches!(
+                    builtin,
+                    Some(
+                        BuiltinType::Sender
+                            | BuiltinType::Receiver
+                            | BuiltinType::Stream
+                            | BuiltinType::Sink
+                            | BuiltinType::Duplex
+                            | BuiltinType::SendHalf
+                            | BuiltinType::RecvHalf
+                            | BuiltinType::Generator
+                            | BuiltinType::AsyncGenerator
+                            | BuiltinType::CancellationToken
+                    )
+                ) || args.iter().any(Self::ty_contains_affine_actor_transfer)
+            }
+            Ty::Tuple(elements) => elements.iter().any(Self::ty_contains_affine_actor_transfer),
+            Ty::Array(element, _) | Ty::Slice(element) => {
+                Self::ty_contains_affine_actor_transfer(element)
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn enforce_actor_boundary_send(
         &mut self,
-        _expr: &Expr,
-        _move_span: &Span,
+        expr: &Expr,
+        move_span: &Span,
         error_span: &Span,
         ty: &Ty,
     ) {
         let ty = self.subst.resolve(ty);
         if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
             self.report_invalid_actor_send(&ty, error_span);
+        }
+        if Self::ty_contains_affine_actor_transfer(&ty) {
+            self.mark_expr_moved_if_non_copy(expr, move_span, &ty);
         }
     }
 

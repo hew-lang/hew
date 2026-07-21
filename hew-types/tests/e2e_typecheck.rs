@@ -1826,6 +1826,34 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
 }
 
 #[test]
+fn actor_spawn_still_moves_affine_handle_arguments() {
+    let output = typecheck_inline(
+        r#"
+        import std::stream;
+
+        actor Writer {
+            let sink: stream.Sink<string>;
+        }
+
+        fn main() {
+            let (sink, _input) = stream.pipe(4);
+            let _writer = spawn Writer(sink: sink);
+            sink.send("after-move");
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "snapshot sends preserve ordinary values, but affine spawn arguments must \
+         remain consumed: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn nested_rc_and_weak_send_rejections_do_not_cascade() {
     let output = typecheck_inline(
         r"

@@ -361,6 +361,9 @@ struct Builder {
     /// source independently before packing; the post-CFG outbound pass resolves
     /// modes and clears this map before checked MIR is built.
     pending_outbound_actor_args: HashMap<u32, PendingOutboundSite>,
+    /// Send block -> (pre-liveness-branch preparation block, recover block) for
+    /// fungible child tells.
+    fungible_outbound_edges: HashMap<u32, (u32, u32)>,
     /// Completed basic blocks in construction order. Block id `0` is the
     /// function's entry block; subsequent ids are monotone in allocation
     /// order. The currently-being-built block (`current_block_id` /
@@ -3926,6 +3929,7 @@ fn prepare_outbound_actor_payloads(
     resolved: &HashMap<u32, Vec<ResolvedOutboundArg>>,
 ) {
     let record_layouts = outbound_record_layouts(builder);
+    let mut edge_insertions: Vec<(u32, u32, Vec<Instr>, Vec<Instr>)> = Vec::new();
     for block in blocks.iter_mut() {
         let Some(args) = resolved.get(&block.id) else {
             continue;
@@ -3943,7 +3947,13 @@ fn prepare_outbound_actor_payloads(
         };
 
         let mut prep = Vec::new();
+        let mut recover_drops = Vec::new();
         let mut prepared = Vec::with_capacity(args.len());
+        let fungible_edges = builder
+            .fungible_outbound_edges
+            .get(&block.id)
+            .copied()
+            .filter(|_| args.iter().all(|arg| !ty_contains_channel_handle(&arg.ty)));
         for arg in args {
             match arg.mode {
                 SendAliasMode::SnapshotBitCopy => prepared.push(arg.source),
@@ -3954,6 +3964,23 @@ fn prepare_outbound_actor_payloads(
                         src: arg.source,
                     });
                     prep.push(Instr::NeutralizePayloadSlot { place: arg.source });
+                    if let Ok(plan) =
+                        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                            &arg.ty,
+                            &record_layouts,
+                            &builder.enum_layouts,
+                            &builder.opaque_handle_names,
+                            &builder.resource_opaque_close,
+                        )
+                    {
+                        if !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
+                            recover_drops.push(Instr::ValueSnapshotDrop {
+                                value: dest,
+                                ty: arg.ty.clone(),
+                                plan,
+                            });
+                        }
+                    }
                     prepared.push(dest);
                 }
                 SendAliasMode::SnapshotRetain | SendAliasMode::SnapshotMaterialize => {
@@ -3970,28 +3997,28 @@ fn prepare_outbound_actor_payloads(
                         continue;
                     };
                     let dest = builder.alloc_local(arg.ty.clone());
-                    match plan.root() {
-                        SnapshotFieldKind::UserRecord { name } => {
-                            prep.push(Instr::RecordCloneInplace {
-                                dest,
-                                src: arg.source,
-                                record_name: name.clone(),
-                            });
-                        }
-                        SnapshotFieldKind::Enum { name } => {
-                            prep.push(Instr::EnumCloneInplace {
-                                dest,
-                                src: arg.source,
-                                enum_name: name.clone(),
-                            });
-                        }
-                        _ => prep.push(Instr::ValueSnapshotClone {
-                            dest,
-                            src: arg.source,
+                    prep.push(Instr::ValueSnapshotClone {
+                        dest,
+                        src: arg.source,
+                        ty: arg.ty.clone(),
+                        plan: plan.clone(),
+                    });
+                    if !builder
+                        .binding_locals
+                        .values()
+                        .any(|place| *place == arg.source)
+                    {
+                        prep.push(Instr::ValueSnapshotDrop {
+                            value: arg.source,
                             ty: arg.ty.clone(),
-                            plan,
-                        }),
+                            plan: plan.clone(),
+                        });
                     }
+                    recover_drops.push(Instr::ValueSnapshotDrop {
+                        value: dest,
+                        ty: arg.ty.clone(),
+                        plan,
+                    });
                     prepared.push(dest);
                 }
             }
@@ -4008,14 +4035,16 @@ fn prepare_outbound_actor_payloads(
         } else {
             block.instructions.len()
         };
-        for (offset, instr) in prep.into_iter().enumerate() {
-            let at = insert_at + offset;
-            cfg_util::shift_instr_spans_on_insert(
-                &mut builder.instr_spans,
-                block.id,
-                u32::try_from(at).unwrap_or(u32::MAX),
-            );
-            block.instructions.insert(at, instr);
+        if fungible_edges.is_none() {
+            for (offset, instr) in prep.iter().cloned().enumerate() {
+                let at = insert_at + offset;
+                cfg_util::shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(at).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(at, instr);
+            }
         }
 
         let prepared_payload = match prepared.as_slice() {
@@ -4033,19 +4062,76 @@ fn prepare_outbound_actor_payloads(
                 payload
             }
         };
+        let cleanup_plan = base_local(prepared_payload)
+            .and_then(|local| builder.locals.get(local as usize))
+            .and_then(|ty| {
+                crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                    ty,
+                    &record_layouts,
+                    &builder.enum_layouts,
+                    &builder.opaque_handle_names,
+                    &builder.resource_opaque_close,
+                )
+                .ok()
+            })
+            .filter(|plan| !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }));
 
         match &mut block.terminator {
-            Terminator::Send { value, .. } | Terminator::Ask { value, .. } => {
+            Terminator::Send {
+                value,
+                cleanup_plan: carrier_cleanup,
+                ..
+            }
+            | Terminator::Ask {
+                value,
+                cleanup_plan: carrier_cleanup,
+                ..
+            } => {
                 *value = prepared_payload;
+                *carrier_cleanup = cleanup_plan;
             }
             Terminator::Suspend { .. } => {
-                if let Some(SuspendKind::Ask { value, .. }) =
-                    builder.suspend_kinds.get_mut(&block.id)
+                if let Some(SuspendKind::Ask {
+                    value,
+                    cleanup_plan: carrier_cleanup,
+                    ..
+                }) = builder.suspend_kinds.get_mut(&block.id)
                 {
                     *value = prepared_payload;
+                    *carrier_cleanup = cleanup_plan;
                 }
             }
             _ => {}
+        }
+        if let Some((prepare_block, recover_block)) = fungible_edges {
+            edge_insertions.push((prepare_block, recover_block, prep, recover_drops));
+        }
+    }
+
+    for (prepare_block, recover_block, prep, drops) in edge_insertions {
+        if let Some(block) = blocks.iter_mut().find(|block| block.id == prepare_block) {
+            let insert_at = block.instructions.len();
+            for (offset, instr) in prep.into_iter().enumerate() {
+                let at = insert_at + offset;
+                cfg_util::shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(at).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(at, instr);
+            }
+        }
+        if let Some(block) = blocks.iter_mut().find(|block| block.id == recover_block) {
+            let insert_at = block.instructions.len();
+            for (offset, instr) in drops.into_iter().enumerate() {
+                let at = insert_at + offset;
+                cfg_util::shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(at).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(at, instr);
+            }
         }
     }
 }

@@ -67,6 +67,7 @@ pub(crate) struct SuspendingAskEmit {
     pub(crate) actor: Place,
     pub(crate) msg_type: i32,
     pub(crate) value: Place,
+    pub(crate) cleanup_plan: Option<hew_mir::state_clone::ValueSnapshotPlan>,
     pub(crate) result_dest: Place,
     pub(crate) reply_dest: Place,
     pub(crate) error_dest: Place,
@@ -4959,6 +4960,9 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
     // channel and bind Err(AskError) without suspending (no worker to free —
     // we never parked). ──────────────────────────────────────────────────────
     fn_ctx.builder.position_at_end(send_err_bb);
+    if let Some(plan) = &term.cleanup_plan {
+        crate::llvm::emit_prepared_carrier_drop(fn_ctx, term.value, plan)?;
+    }
     let ch_free = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,

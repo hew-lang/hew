@@ -1,11 +1,11 @@
 use super::{
     actor_name_from_handle_ty, actor_name_from_remote_pid_ty, is_self_expr,
     is_unit_close_error_result, is_unit_send_error_result, method_name_from_id,
-    recv_result_payload_ty, ActorLayout, ActorMethodInfo, Builder, BuiltinType, CmpPred,
-    FieldOffset, FloatWidth, FungibleChildRef, HashMap, HirExpr, HirExprKind, Instr, MirDiagnostic,
-    MirDiagnosticKind, PendingOutboundArg, PendingOutboundSite, Place, ReleaseSymbolVerdict,
-    ResolvedTy, RuntimeCallContext, SuspendKind, Terminator, CHILD_LOOKUP_RESULT_TY_NAME,
-    RECEIVE_GEN_STREAM_CAPACITY,
+    recv_result_payload_ty, ty_contains_channel_handle, ActorLayout, ActorMethodInfo, Builder,
+    BuiltinType, CmpPred, FieldOffset, FloatWidth, FungibleChildRef, HashMap, HirExpr, HirExprKind,
+    Instr, MirDiagnostic, MirDiagnosticKind, PendingOutboundArg, PendingOutboundSite, Place,
+    ReleaseSymbolVerdict, ResolvedTy, RuntimeCallContext, SuspendKind, Terminator,
+    CHILD_LOOKUP_RESULT_TY_NAME, RECEIVE_GEN_STREAM_CAPACITY,
 };
 
 impl Builder {
@@ -2125,6 +2125,7 @@ impl Builder {
         }
         let actor = self.lower_value(receiver)?;
         let child_ref = self.fungible_child_ref_of(actor);
+        let mut fungible_edges = None;
         // Argument evaluation stays HERE, in the pre-branch block: an argument
         // expression's effects are user-visible and must run whether or not a
         // fungible child is live — the liveness branch below decides DELIVERY,
@@ -2162,6 +2163,7 @@ impl Builder {
         // current cursor where the multi-arg pack (if any) is built and the Send
         // terminator is emitted with the freshly-resolved child pointer.
         if let Some(child_ref) = child_ref {
+            let prepare_block = self.current_block_id;
             let (live_bb, recover_bb) = self.emit_fungible_reresolve(child_ref, actor);
             // recover_bb: not-live → the Send is skipped, so nothing consumes
             // the already-evaluated argument values. Release each one exactly
@@ -2169,7 +2171,9 @@ impl Builder {
             // exclusive, so the release runs exactly once), then continue.
             self.start_block(recover_bb);
             for (place, ty) in &lowered {
-                self.emit_undelivered_send_payload_release(*place, ty, site)?;
+                if ty_contains_channel_handle(ty) {
+                    self.emit_undelivered_send_payload_release(*place, ty, site)?;
+                }
             }
             self.finish_current_block(Terminator::Goto { target: next });
             // live_bb: the freshly-resolved current child; the Send below
@@ -2177,6 +2181,7 @@ impl Builder {
             // edge only (pure MIR construction over the pre-branch argument
             // places — no user effect moves across the branch).
             self.start_block(live_bb);
+            fungible_edges = Some((prepare_block, recover_bb));
             if value.is_none() {
                 let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
                     lowered.iter().cloned().unzip();
@@ -2184,6 +2189,10 @@ impl Builder {
             }
         }
         let value = value.expect("payload place is populated for every arity above");
+        if let Some(edges) = fungible_edges {
+            self.fungible_outbound_edges
+                .insert(self.current_block_id, edges);
+        }
         self.record_pending_outbound_args(
             self.current_block_id,
             lowered
@@ -2197,6 +2206,7 @@ impl Builder {
             value,
             next,
             arg_modes: Vec::new(),
+            cleanup_plan: None,
         });
         self.start_block(next);
         None
@@ -2294,6 +2304,7 @@ impl Builder {
             value,
             next,
             arg_modes: Vec::new(),
+            cleanup_plan: None,
         });
         self.start_block(next);
         Some(stream)
@@ -2494,6 +2505,7 @@ impl Builder {
                 msg_type: info.msg_type,
                 value,
                 arg_modes: Vec::new(),
+                cleanup_plan: None,
                 result_dest,
                 reply_dest,
                 error_dest,
@@ -2529,6 +2541,7 @@ impl Builder {
                 msg_type: info.msg_type,
                 value,
                 arg_modes: Vec::new(),
+                cleanup_plan: None,
                 result_dest,
                 reply_dest,
                 error_dest,

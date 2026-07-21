@@ -711,6 +711,7 @@ clone_trap:                                       ; preds = %bb3
   unreachable
 
 actor_send_fail:                                  ; preds = %clone_ok
+  call void @__hew_record_drop_inplace___hew_packed_args_main_0(ptr %local_14)
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
@@ -734,6 +735,7 @@ clone_trap30:                                     ; preds = %bb4
   unreachable
 
 actor_send_fail39:                                ; preds = %clone_ok29
+  call void @__hew_record_drop_inplace___hew_packed_args_main_1(ptr %local_16)
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
@@ -1477,6 +1479,84 @@ done:                                             ; preds = %do_drop, %entry
 
 declare void @hew_vec_free_owned(ptr)
 
+define internal i32 @__hew_record_clone_inplace___hew_packed_args_main_0(ptr %0, ptr %1) {
+entry:
+  br label %step_0_clone
+
+success:                                          ; preds = %step_0_store
+  ret i32 0
+
+fail:                                             ; preds = %rb_step_0
+  ret i32 1
+
+rb_step_0:                                        ; preds = %step_0_clone
+  br label %fail
+
+step_0_store:                                     ; preds = %step_0_clone
+  br label %success
+
+step_0_clone:                                     ; preds = %entry
+  %src_f0_ptr = getelementptr inbounds nuw %__hew_packed_args_main_0, ptr %0, i32 0, i32 0
+  %dst_f0_ptr = getelementptr inbounds nuw %__hew_packed_args_main_0, ptr %1, i32 0, i32 0
+  %record_clone_inplace_f0 = call i32 @__hew_record_clone_inplace_Boxed(ptr %src_f0_ptr, ptr %dst_f0_ptr)
+  %record_clone_failed_f0 = icmp ne i32 %record_clone_inplace_f0, 0
+  br i1 %record_clone_failed_f0, label %rb_step_0, label %step_0_store
+}
+
+define internal void @__hew_record_drop_inplace___hew_packed_args_main_0(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  %drop_f0_ptr = getelementptr inbounds nuw %__hew_packed_args_main_0, ptr %0, i32 0, i32 0
+  call void @__hew_record_drop_inplace_Boxed(ptr %drop_f0_ptr)
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
+
+define internal i32 @__hew_record_clone_inplace___hew_packed_args_main_1(ptr %0, ptr %1) {
+entry:
+  br label %step_0_clone
+
+success:                                          ; preds = %step_0_store
+  ret i32 0
+
+fail:                                             ; preds = %rb_step_0
+  ret i32 1
+
+rb_step_0:                                        ; preds = %step_0_clone
+  br label %fail
+
+step_0_store:                                     ; preds = %step_0_clone
+  br label %success
+
+step_0_clone:                                     ; preds = %entry
+  %src_f0_ptr = getelementptr inbounds nuw %__hew_packed_args_main_1, ptr %0, i32 0, i32 0
+  %dst_f0_ptr = getelementptr inbounds nuw %__hew_packed_args_main_1, ptr %1, i32 0, i32 0
+  %record_clone_inplace_f0 = call i32 @__hew_record_clone_inplace_Boxed(ptr %src_f0_ptr, ptr %dst_f0_ptr)
+  %record_clone_failed_f0 = icmp ne i32 %record_clone_inplace_f0, 0
+  br i1 %record_clone_failed_f0, label %rb_step_0, label %step_0_store
+}
+
+define internal void @__hew_record_drop_inplace___hew_packed_args_main_1(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  %drop_f0_ptr = getelementptr inbounds nuw %__hew_packed_args_main_1, ptr %0, i32 0, i32 0
+  call void @__hew_record_drop_inplace_Boxed(ptr %drop_f0_ptr)
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
+
 define internal i32 @__hew_record_clone_inplace_CrashInfo(ptr %0, ptr %1) {
 entry:
   br label %step_0_clone
@@ -1539,6 +1619,50 @@ entry:
   %ow_old_d0_f0_neutralized = select i1 %ow_old_d0_f0_matched0, ptr null, ptr %ow_old_d0_f0_val
   store ptr %ow_old_d0_f0_neutralized, ptr %ow_old_d0_f0_ptr, align 8
   call void @__hew_record_drop_inplace_Boxed(ptr %0)
+  ret void
+}
+
+define internal void @__hew_record_overwrite_release___hew_packed_args_main_0(ptr %0, ptr %1) {
+entry:
+  %ow_slot_0 = alloca ptr, align 8
+  store ptr null, ptr %ow_slot_0, align 8
+  %ow_new_d0_f0_rec_ptr = getelementptr inbounds nuw %__hew_packed_args_main_0, ptr %1, i32 0, i32 0
+  %ow_new_d1_f0_ptr = getelementptr inbounds nuw %Boxed, ptr %ow_new_d0_f0_rec_ptr, i32 0, i32 0
+  %ow_new_d1_f0_leaf = load ptr, ptr %ow_new_d1_f0_ptr, align 8
+  store ptr %ow_new_d1_f0_leaf, ptr %ow_slot_0, align 8
+  %ow_old_d0_f0_rec_ptr = getelementptr inbounds nuw %__hew_packed_args_main_0, ptr %0, i32 0, i32 0
+  %ow_old_d1_f0_ptr = getelementptr inbounds nuw %Boxed, ptr %ow_old_d0_f0_rec_ptr, i32 0, i32 0
+  %ow_old_d1_f0_val = load ptr, ptr %ow_old_d1_f0_ptr, align 8
+  %ow_old_d1_f0_int = ptrtoint ptr %ow_old_d1_f0_val to i64
+  %ow_old_d1_f0_cmp0_leaf = load ptr, ptr %ow_slot_0, align 8
+  %ow_old_d1_f0_cmp0_int = ptrtoint ptr %ow_old_d1_f0_cmp0_leaf to i64
+  %ow_old_d1_f0_cmp0_eq = icmp eq i64 %ow_old_d1_f0_int, %ow_old_d1_f0_cmp0_int
+  %ow_old_d1_f0_matched0 = or i1 false, %ow_old_d1_f0_cmp0_eq
+  %ow_old_d1_f0_neutralized = select i1 %ow_old_d1_f0_matched0, ptr null, ptr %ow_old_d1_f0_val
+  store ptr %ow_old_d1_f0_neutralized, ptr %ow_old_d1_f0_ptr, align 8
+  call void @__hew_record_drop_inplace___hew_packed_args_main_0(ptr %0)
+  ret void
+}
+
+define internal void @__hew_record_overwrite_release___hew_packed_args_main_1(ptr %0, ptr %1) {
+entry:
+  %ow_slot_0 = alloca ptr, align 8
+  store ptr null, ptr %ow_slot_0, align 8
+  %ow_new_d0_f0_rec_ptr = getelementptr inbounds nuw %__hew_packed_args_main_1, ptr %1, i32 0, i32 0
+  %ow_new_d1_f0_ptr = getelementptr inbounds nuw %Boxed, ptr %ow_new_d0_f0_rec_ptr, i32 0, i32 0
+  %ow_new_d1_f0_leaf = load ptr, ptr %ow_new_d1_f0_ptr, align 8
+  store ptr %ow_new_d1_f0_leaf, ptr %ow_slot_0, align 8
+  %ow_old_d0_f0_rec_ptr = getelementptr inbounds nuw %__hew_packed_args_main_1, ptr %0, i32 0, i32 0
+  %ow_old_d1_f0_ptr = getelementptr inbounds nuw %Boxed, ptr %ow_old_d0_f0_rec_ptr, i32 0, i32 0
+  %ow_old_d1_f0_val = load ptr, ptr %ow_old_d1_f0_ptr, align 8
+  %ow_old_d1_f0_int = ptrtoint ptr %ow_old_d1_f0_val to i64
+  %ow_old_d1_f0_cmp0_leaf = load ptr, ptr %ow_slot_0, align 8
+  %ow_old_d1_f0_cmp0_int = ptrtoint ptr %ow_old_d1_f0_cmp0_leaf to i64
+  %ow_old_d1_f0_cmp0_eq = icmp eq i64 %ow_old_d1_f0_int, %ow_old_d1_f0_cmp0_int
+  %ow_old_d1_f0_matched0 = or i1 false, %ow_old_d1_f0_cmp0_eq
+  %ow_old_d1_f0_neutralized = select i1 %ow_old_d1_f0_matched0, ptr null, ptr %ow_old_d1_f0_val
+  store ptr %ow_old_d1_f0_neutralized, ptr %ow_old_d1_f0_ptr, align 8
+  call void @__hew_record_drop_inplace___hew_packed_args_main_1(ptr %0)
   ret void
 }
 

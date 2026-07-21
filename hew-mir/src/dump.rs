@@ -380,6 +380,7 @@ fn render_terminator(term: &Terminator) -> String {
             value,
             next,
             arg_modes: _,
+            cleanup_plan: _,
         } => format!(
             "send {}[msg={msg_type}] {} alias=Copy -> bb{next}",
             render_place(actor),
@@ -390,6 +391,7 @@ fn render_terminator(term: &Terminator) -> String {
             msg_type,
             value,
             arg_modes: _,
+            cleanup_plan: _,
             result_dest,
             reply_dest,
             error_dest,
@@ -747,6 +749,12 @@ fn render_instr(instr: &Instr) -> String {
             "{} = snapshot_clone {} ty={} plan={:?}",
             render_place(dest),
             render_place(src),
+            ty.user_facing(),
+            plan.root()
+        ),
+        Instr::ValueSnapshotDrop { value, ty, plan } => format!(
+            "snapshot_drop {} ty={} plan={:?}",
+            render_place(value),
             ty.user_facing(),
             plan.root()
         ),

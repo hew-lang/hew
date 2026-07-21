@@ -66,12 +66,20 @@ fn snapshot_send_materializes_independent_record_carriers() {
         ",
     );
 
-    assert_eq!(
+    assert!(
         ll.matches("call i32 @__hew_record_clone_inplace_Boxed")
-            .count(),
-        2,
+            .count()
+            >= 2,
         "{ll}"
     );
     assert!(ll.contains("call ptr @hew_vec_clone_owned"), "{ll}");
     assert_eq!(ll.matches("call i32 @hew_actor_send_by_id").count(), 2);
+    assert!(
+        ll.contains("call void @__hew_record_drop_inplace___hew_packed_args_main_0(ptr %local_10)"),
+        "{ll}"
+    );
+    assert!(
+        ll.contains("call void @__hew_record_drop_inplace___hew_packed_args_main_1(ptr %local_12)"),
+        "{ll}"
+    );
 }

@@ -7761,7 +7761,15 @@ fn collect_record_clone_inplace_seeds(
     for func in raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
-                let Instr::RecordCloneInplace { record_name, .. } = instr else {
+                let record_name = match instr {
+                    Instr::RecordCloneInplace { record_name, .. } => Some(record_name),
+                    Instr::ValueSnapshotClone { plan, .. } => match plan.root() {
+                        hew_mir::StateFieldCloneKind::UserRecord { name } => Some(name),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let Some(record_name) = record_name else {
                     continue;
                 };
                 if !record_layouts.iter().any(|rl| rl.name == *record_name) {
@@ -7769,6 +7777,28 @@ fn collect_record_clone_inplace_seeds(
                 }
                 if seen.insert(record_name.clone()) {
                     seeds.push(record_name.clone());
+                }
+            }
+            let cleanup_plan = match &block.terminator {
+                Terminator::Send { cleanup_plan, .. } | Terminator::Ask { cleanup_plan, .. } => {
+                    cleanup_plan.as_ref()
+                }
+                Terminator::Suspend { .. } => func.suspend_kinds.get(&block.id).and_then(|kind| {
+                    if let SuspendKind::Ask { cleanup_plan, .. } = kind {
+                        cleanup_plan.as_ref()
+                    } else {
+                        None
+                    }
+                }),
+                _ => None,
+            };
+            if let Some(hew_mir::StateFieldCloneKind::UserRecord { name }) =
+                cleanup_plan.map(hew_mir::state_clone::ValueSnapshotPlan::root)
+            {
+                if record_layouts.iter().any(|layout| layout.name == *name)
+                    && seen.insert(name.clone())
+                {
+                    seeds.push(name.clone());
                 }
             }
         }
@@ -7806,7 +7836,15 @@ fn collect_enum_clone_inplace_seeds(
     for func in raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
-                let Instr::EnumCloneInplace { enum_name, .. } = instr else {
+                let enum_name = match instr {
+                    Instr::EnumCloneInplace { enum_name, .. } => Some(enum_name),
+                    Instr::ValueSnapshotClone { plan, .. } => match plan.root() {
+                        hew_mir::StateFieldCloneKind::Enum { name } => Some(name),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let Some(enum_name) = enum_name else {
                     continue;
                 };
                 if !enum_layouts.iter().any(|el| el.name == *enum_name) {
@@ -7814,6 +7852,28 @@ fn collect_enum_clone_inplace_seeds(
                 }
                 if seen.insert(enum_name.clone()) {
                     seeds.push(enum_name.clone());
+                }
+            }
+            let cleanup_plan = match &block.terminator {
+                Terminator::Send { cleanup_plan, .. } | Terminator::Ask { cleanup_plan, .. } => {
+                    cleanup_plan.as_ref()
+                }
+                Terminator::Suspend { .. } => func.suspend_kinds.get(&block.id).and_then(|kind| {
+                    if let SuspendKind::Ask { cleanup_plan, .. } = kind {
+                        cleanup_plan.as_ref()
+                    } else {
+                        None
+                    }
+                }),
+                _ => None,
+            };
+            if let Some(hew_mir::StateFieldCloneKind::Enum { name }) =
+                cleanup_plan.map(hew_mir::state_clone::ValueSnapshotPlan::root)
+            {
+                if enum_layouts.iter().any(|layout| layout.name == *name)
+                    && seen.insert(name.clone())
+                {
+                    seeds.push(name.clone());
                 }
             }
         }
@@ -13269,6 +13329,9 @@ fn lower_instruction(
         } => {
             lower_value_snapshot_clone_instr(fn_ctx, *dest, *src, ty, plan)?;
         }
+        Instr::ValueSnapshotDrop { value, plan, .. } => {
+            emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+        }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
         }
@@ -18472,17 +18535,111 @@ fn lower_value_snapshot_clone_instr<'ctx>(
             };
             lower_allocating_snapshot_clone(fn_ctx, dest, src, clone_symbol, "snapshot_collection")
         }
+        StateFieldCloneKind::UserRecord { name } => {
+            lower_record_clone_inplace_instr(fn_ctx, dest, src, name)
+        }
+        StateFieldCloneKind::Enum { name } => {
+            lower_enum_clone_inplace_instr(fn_ctx, dest, src, name)
+        }
         StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => Err(CodegenError::FailClosed(
             "successful actor snapshot plan contains Rc/Weak".into(),
         )),
         StateFieldCloneKind::Array { .. }
         | StateFieldCloneKind::IoHandle { .. }
-        | StateFieldCloneKind::UserRecord { .. }
-        | StateFieldCloneKind::Enum { .. }
         | StateFieldCloneKind::OpaqueHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. } => Err(CodegenError::FailClosed(format!(
             "snapshot clone for `{}` reached unsupported direct kind {:?}",
+            ty.user_facing(),
+            plan.root()
+        ))),
+    }
+}
+
+pub(crate) fn emit_prepared_carrier_drop<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: Place,
+    plan: &hew_mir::state_clone::ValueSnapshotPlan,
+) -> CodegenResult<()> {
+    let ty = place_resolved_ty(fn_ctx, value)?;
+    match plan.root() {
+        StateFieldCloneKind::BitCopy { .. } => Ok(()),
+        StateFieldCloneKind::String
+        | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. } => {
+            let symbol = match plan.root() {
+                StateFieldCloneKind::String => "hew_string_drop",
+                StateFieldCloneKind::Bytes => "hew_bytes_drop",
+                StateFieldCloneKind::Vec { .. }
+                | StateFieldCloneKind::HashMap { .. }
+                | StateFieldCloneKind::HashSet { .. } => collection_elem_clone_drop_syms(ty)
+                    .map(|(_, drop)| drop)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "prepared carrier `{}` has no collection drop helper",
+                            ty.user_facing()
+                        ))
+                    })?,
+                _ => unreachable!("outer match limits leaf kinds"),
+            };
+            let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            let handle = fn_ctx
+                .builder
+                .build_load(slot_ty, slot, "prepared_carrier_handle")
+                .llvm_ctx("prepared carrier handle load")?
+                .into_pointer_value();
+            let helper = get_or_declare_drop_helper(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &DropHelper { name: symbol },
+            );
+            fn_ctx
+                .builder
+                .build_call(helper, &[handle.into()], "prepared_carrier_drop")
+                .llvm_ctx("prepared carrier drop call")?;
+            fn_ctx
+                .builder
+                .build_store(
+                    slot,
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
+                )
+                .llvm_ctx("prepared carrier null store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::UserRecord { .. } => emit_record_inplace_drop_call(fn_ctx, value, ty),
+        StateFieldCloneKind::Enum { .. } => emit_enum_inplace_drop_call(fn_ctx, value, ty),
+        StateFieldCloneKind::Tuple { .. } => {
+            let ResolvedTy::Tuple(elems) = ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "prepared tuple carrier has non-tuple type {ty:?}"
+                )));
+            };
+            let tuple_key = crate::thunks::tuple_thunk_key(elems);
+            let tuple_llvm_ty =
+                resolve_ty(fn_ctx.ctx, fn_ctx.target_data, ty, fn_ctx.record_layouts)?;
+            emit_tuple_drop_inplace_body_only(fn_ctx, &tuple_key, elems, tuple_llvm_ty)?;
+            let helper = get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &tuple_key);
+            let (slot, _) = place_pointer(fn_ctx, value)?;
+            fn_ctx
+                .builder
+                .build_call(helper, &[slot.into()], "prepared_tuple_drop")
+                .llvm_ctx("prepared tuple drop")?;
+            Ok(())
+        }
+        StateFieldCloneKind::Array { .. } => {
+            let (slot, _) = place_pointer(fn_ctx, value)?;
+            emit_aggregate_recursive_drop(fn_ctx, slot, ty, 0, "prepared_array_drop")
+        }
+        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => Err(CodegenError::FailClosed(
+            "prepared actor carrier drop contains Rc/Weak".into(),
+        )),
+        StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::Resource { .. } => Err(CodegenError::FailClosed(format!(
+            "prepared carrier `{}` has unsupported cleanup kind {:?}",
             ty.user_facing(),
             plan.root()
         ))),
@@ -25743,6 +25900,7 @@ fn dispatch_collapsed_suspend<'ctx>(
             msg_type,
             value,
             arg_modes: _,
+            cleanup_plan,
             result_dest,
             reply_dest,
             error_dest,
@@ -25752,6 +25910,7 @@ fn dispatch_collapsed_suspend<'ctx>(
                 actor: *actor,
                 msg_type: *msg_type,
                 value: *value,
+                cleanup_plan: cleanup_plan.clone(),
                 result_dest: *result_dest,
                 reply_dest: *reply_dest,
                 error_dest: *error_dest,
@@ -27687,6 +27846,7 @@ fn lower_terminator<'ctx>(
             // never enter that branch). Consuming the mode without wiring
             // preparation would be a no-op or an unbalanced refcount.
             arg_modes: _,
+            cleanup_plan,
         } => {
             let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
             let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
@@ -27806,6 +27966,9 @@ fn lower_terminator<'ctx>(
                 .llvm_ctx("send status branch")?;
 
             fn_ctx.builder.position_at_end(send_fail_bb);
+            if let Some(plan) = cleanup_plan {
+                emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+            }
             emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED as u64, "actor_send_fail")?;
         }
         Terminator::Ask {
@@ -27813,6 +27976,7 @@ fn lower_terminator<'ctx>(
             msg_type,
             value,
             arg_modes: _,
+            cleanup_plan,
             result_dest,
             reply_dest,
             error_dest,
@@ -27900,6 +28064,9 @@ fn lower_terminator<'ctx>(
             // Err path: call hew_actor_ask_take_last_error → store tag into
             // error_dest → emit Result::Err(error_dest).
             fn_ctx.builder.position_at_end(err_bb);
+            if let Some(plan) = cleanup_plan {
+                emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+            }
             let err_fn = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,

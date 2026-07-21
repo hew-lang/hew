@@ -68,7 +68,7 @@ fn main() -> () [conv=default]
     _12 = string_lit "last"
     _13 = move _12
     _17 = snapshot_clone _4 ty=string plan=String
-    _18 = record_clone _11 record=Boxed
+    _18 = snapshot_clone _11 ty=Boxed plan=UserRecord { name: "Boxed" }
     _19 = move _13
     neutralize_payload _13
     _14 = record_init __hew_packed_args_main_0 { .0=_2, .1=_17, .2=_18, .3=_19 }

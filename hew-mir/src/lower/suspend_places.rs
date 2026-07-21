@@ -102,7 +102,10 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         Instr::RecordCloneInplace { src, .. } => vec![*src],
         // `EnumCloneInplace` likewise borrows `src` (non-consuming read).
         Instr::EnumCloneInplace { src, .. } => vec![*src],
-        Instr::ValueSnapshotClone { src, .. } => vec![*src],
+        // Snapshot cloning borrows the source and writes a fresh non-aliasing
+        // destination; it must not suppress the sender original's drop.
+        Instr::ValueSnapshotClone { .. } => vec![],
+        Instr::ValueSnapshotDrop { value, .. } => vec![*value],
         Instr::BoolNot { operand, .. }
         | Instr::FloatNeg { operand, .. }
         | Instr::IntBitNot { operand, .. }
@@ -661,6 +664,7 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         // EnumCloneInplace has the same non-consuming-read semantics.
         | Instr::EnumCloneInplace { .. }
         | Instr::ValueSnapshotClone { .. }
+        | Instr::ValueSnapshotDrop { .. }
         // A payload-slot neutralize nulls the scrutinee's transferred slot; it
         // does not hand any local out of the body.
         | Instr::NeutralizePayloadSlot { .. } => false,
@@ -1093,6 +1097,7 @@ mod f1_suspending_escape_poison {
             msg_type: 0,
             value,
             arg_modes: vec![crate::model::SendAliasMode::SnapshotMaterialize],
+            cleanup_plan: None,
             result_dest: Place::Local(4),
             reply_dest: Place::Local(5),
             error_dest: Place::Local(6),
@@ -1133,6 +1138,7 @@ mod f1_suspending_escape_poison {
             msg_type: 0,
             value,
             arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
+            cleanup_plan: None,
             result_dest: Place::Local(4),
             reply_dest: Place::Local(5),
             error_dest: Place::Local(6),
@@ -1143,6 +1149,7 @@ mod f1_suspending_escape_poison {
             msg_type: 0,
             value,
             arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
+            cleanup_plan: None,
             result_dest: Place::Local(4),
             reply_dest: Place::Local(5),
             error_dest: Place::Local(6),
@@ -1422,6 +1429,7 @@ mod f1_suspending_escape_poison {
                 value: Place::Local(1),
                 next: 1,
                 arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
+                cleanup_plan: None,
             },
         };
         let allowed = derive_local_bytes_drop_allowed(

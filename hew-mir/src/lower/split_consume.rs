@@ -479,6 +479,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::RecordCloneInplace { dest, src, .. } => vec![*dest, *src],
         Instr::EnumCloneInplace { dest, src, .. } => vec![*dest, *src],
         Instr::ValueSnapshotClone { dest, src, .. } => vec![*dest, *src],
+        Instr::ValueSnapshotDrop { value, .. } => vec![*value],
         Instr::IntArithChecked {
             dest,
             lhs,

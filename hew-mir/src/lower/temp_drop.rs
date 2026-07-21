@@ -222,6 +222,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         // non-aliasing guarantee (tag-dispatched payload deep-clone).
         | Instr::EnumCloneInplace { .. }
         | Instr::ValueSnapshotClone { .. }
+        | Instr::ValueSnapshotDrop { .. }
         // A payload-slot neutralize writes a constant null — it produces no
         // interior-alias dest (it retires one).
         | Instr::NeutralizePayloadSlot { .. } => None,
@@ -2653,6 +2654,7 @@ mod nested_fresh_string_temp_drop_admission {
                     value: Place::Local(2),
                     next: 1,
                     arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
+                    cleanup_plan: None,
                 },
             ),
             ret_block(1),
@@ -3650,6 +3652,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                     value: Place::Local(2),
                     next: 2,
                     arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
+                    cleanup_plan: None,
                 },
             ),
             ret_block(2),

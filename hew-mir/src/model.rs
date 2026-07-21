@@ -2473,6 +2473,7 @@ pub enum SuspendKind {
         msg_type: i32,
         value: Place,
         arg_modes: Vec<SendAliasMode>,
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
         result_dest: Place,
         reply_dest: Place,
         error_dest: Place,
@@ -3397,6 +3398,9 @@ pub enum Terminator {
         next: u32,
         /// One resolved mode per source argument, in handler parameter order.
         arg_modes: Vec<SendAliasMode>,
+        /// Whole prepared-carrier drop witness used only when transport retains
+        /// caller ownership on an error edge.
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
     },
     /// Actor ask: send `value` to `actor` on a caller-owned reply
     /// channel and resume at `next` once the reply has been received.
@@ -3428,6 +3432,7 @@ pub enum Terminator {
         value: Place,
         /// One resolved mode per source argument, in handler parameter order.
         arg_modes: Vec<SendAliasMode>,
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
         /// `Result<R, AskError>` slot — the user-visible binding type after
         /// the R-ASK unification.  Codegen emits `Ok(reply_value)` on a
         /// successful reply (non-null pointer from `hew_actor_ask`) and
@@ -4306,6 +4311,13 @@ pub enum Instr {
     ValueSnapshotClone {
         dest: Place,
         src: Place,
+        ty: ResolvedTy,
+        plan: crate::state_clone::ValueSnapshotPlan,
+    },
+    /// Drop one prepared outbound owner on an edge where transport never
+    /// accepted it.
+    ValueSnapshotDrop {
+        value: Place,
         ty: ResolvedTy,
         plan: crate::state_clone::ValueSnapshotPlan,
     },

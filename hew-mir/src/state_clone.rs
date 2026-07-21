@@ -257,6 +257,33 @@ pub enum StateFieldCloneKind {
     Resource { name: String, close_symbol: String },
 }
 
+/// Reusable structural clone/drop plan for one owned value.
+///
+/// This is deliberately a thin wrapper over [`StateFieldCloneKind`]: actor
+/// state, message snapshots, and whole-value cleanup must consume the same
+/// closed kind authority rather than growing boundary-specific classifiers.
+/// The plan describes cloneability only. In particular, an [`Rc`](StateFieldCloneKind::Rc)
+/// or [`Weak`](StateFieldCloneKind::Weak) root remains structurally cloneable
+/// while the type checker independently rejects it at actor boundaries.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ValueSnapshotPlan {
+    root: StateFieldCloneKind,
+}
+
+impl ValueSnapshotPlan {
+    /// Return the shared structural root consumed by clone and drop synthesis.
+    #[must_use]
+    pub const fn root(&self) -> &StateFieldCloneKind {
+        &self.root
+    }
+
+    /// Consume the plan and return its shared structural root.
+    #[must_use]
+    pub fn into_root(self) -> StateFieldCloneKind {
+        self.root
+    }
+}
+
 impl StateFieldCloneKind {
     /// True when this kind is, or transitively contains, an [`OpaqueHandle`].
     ///
@@ -772,20 +799,49 @@ pub fn classify_actor_state_fields_with_resource_handles(
     opaque_handle_names: &[String],
     resource_close: &[(String, String)],
 ) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
-    let mut visited: HashSet<String> = HashSet::new();
     state_field_tys
         .iter()
         .map(|ty| {
-            classify_state_field_full_impl(
+            classify_value_snapshot_plan_with_resource_handles(
                 ty,
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
                 resource_close,
-                &mut visited,
             )
+            .map(ValueSnapshotPlan::into_root)
         })
         .collect()
+}
+
+/// Classify one owned value into the structural plan shared by actor-state
+/// cloning, outbound snapshots, and inverse whole-value cleanup.
+///
+/// This API intentionally accepts the complete layout/handle witness set used
+/// by the existing actor-state classifier. Callers must not reclassify from
+/// syntax or LLVM shape.
+///
+/// # Errors
+///
+/// Returns [`ClassificationError`] for every unsupported or recursively
+/// unclassifiable shape accepted by the underlying closed classifier.
+pub fn classify_value_snapshot_plan_with_resource_handles(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+) -> Result<ValueSnapshotPlan, ClassificationError> {
+    let mut visited = HashSet::new();
+    classify_state_field_full_impl(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+        &mut visited,
+    )
+    .map(|root| ValueSnapshotPlan { root })
 }
 
 /// owned-string-record classifier for a direct user record with owned `string` fields.
@@ -1915,6 +1971,23 @@ mod tests {
         );
         assert!(StateFieldCloneKind::Rc.supports_value_class_drop_spine());
         assert!(StateFieldCloneKind::Weak.supports_value_class_drop_spine());
+    }
+
+    #[test]
+    fn value_snapshot_plan_preserves_rc_and_weak_structural_kinds() {
+        let payload = named("Node", vec![]);
+        let rc = builtin(hew_types::BuiltinType::Rc, vec![payload.clone()]);
+        let weak = builtin(hew_types::BuiltinType::Weak, vec![payload]);
+
+        let rc_plan =
+            classify_value_snapshot_plan_with_resource_handles(&rc, &no_records(), &[], &[], &[])
+                .unwrap();
+        let weak_plan =
+            classify_value_snapshot_plan_with_resource_handles(&weak, &no_records(), &[], &[], &[])
+                .unwrap();
+
+        assert_eq!(rc_plan.root(), &StateFieldCloneKind::Rc);
+        assert_eq!(weak_plan.root(), &StateFieldCloneKind::Weak);
     }
 
     #[test]

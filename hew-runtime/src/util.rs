@@ -58,6 +58,17 @@ pub(crate) fn push_json_string(out: &mut String, s: &str) {
     out.push('"');
 }
 
+/// Extract a readable message from a panic payload.
+pub(crate) fn panic_payload_message(panic_payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic_payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
 /// Extension trait for [`Mutex`] that recovers from poisoned locks.
 pub(crate) trait MutexExt<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;

@@ -25,9 +25,9 @@ use std::time::Duration;
 ///   The pool thread keeps running `getaddrinfo` until it returns; its
 ///   result is discarded when the worker publishes it (no leak; see
 ///   `spawn_blocking_result` saturation note).
-/// - `Err(false)` — `getaddrinfo` itself errored, the pool was stopped, or no
-///   runtime is installed (fail closed: the entrypoint returns its empty/null
-///   sentinel rather than aborting across the ABI).
+/// - `Err(false)` — `getaddrinfo` itself errored, the pool was stopped, its
+///   worker panicked, or no runtime is installed (fail closed: the entrypoint
+///   returns its empty/null sentinel rather than aborting across the ABI).
 fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
     let host = format!("{host}:0");
     let deadline = if deadline_ms <= 0 {
@@ -63,9 +63,12 @@ fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
     match result {
         Ok(Ok(addrs)) => Ok(addrs),
         Err(BlockingPoolError::TimedOut) => Err(true),
-        Ok(Err(())) | Err(BlockingPoolError::PoolStopped | BlockingPoolError::NoRuntime) => {
-            Err(false)
-        }
+        Ok(Err(()))
+        | Err(
+            BlockingPoolError::PoolStopped
+            | BlockingPoolError::NoRuntime
+            | BlockingPoolError::WorkerPanicked,
+        ) => Err(false),
     }
 }
 

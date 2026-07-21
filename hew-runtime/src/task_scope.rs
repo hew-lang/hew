@@ -480,16 +480,6 @@ impl std::fmt::Debug for HewTask {
 // the enclosing task scope. No cross-thread sharing occurs.
 unsafe impl Send for HewTask {}
 
-fn panic_payload_message(panic_payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = panic_payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "non-string panic payload".to_string()
-    }
-}
-
 impl HewTask {
     /// Atomically load the current state with `Acquire` ordering.
     ///
@@ -558,7 +548,7 @@ impl HewTask {
                     unsafe { f(env_ptr) };
                 }));
                 if let Err(panic_payload) = result {
-                    let msg = panic_payload_message(panic_payload.as_ref());
+                    let msg = crate::util::panic_payload_message(panic_payload.as_ref());
                     let error_msg = format!("task_scope cancel_cleanup_fn panicked: {msg}");
                     crate::set_last_error(error_msg.clone());
                     #[cfg(test)]
@@ -597,7 +587,7 @@ fn reap_detached_scope_tasks(
         if let Err(panic_payload) = handle.join() {
             let error_msg = format!(
                 "task_scope detached worker panicked during teardown: {}",
-                panic_payload_message(panic_payload.as_ref())
+                crate::util::panic_payload_message(panic_payload.as_ref())
             );
             crate::set_last_error(error_msg.clone());
             // Background reapers have a separate thread-local error slot, so

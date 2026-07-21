@@ -581,6 +581,17 @@ fn should_fail_ticker_spawn() -> bool {
     FAIL_TICKER_SPAWN.with(std::cell::Cell::get)
 }
 
+fn report_ticker_join_result(join_result: std::thread::Result<()>) {
+    if let Err(panic_payload) = join_result {
+        let message = format!(
+            "hew timer ticker panicked during shutdown: {}",
+            crate::util::panic_payload_message(panic_payload.as_ref())
+        );
+        crate::set_last_error(message.clone());
+        eprintln!("hew: {message}");
+    }
+}
+
 /// Gracefully stop the ticker thread.
 ///
 /// Sets the stop flag, waits for the thread to join, then resets the flag
@@ -593,14 +604,16 @@ pub(crate) fn shutdown_ticker() {
     // sleeping until its next deadline (or indefinitely on an empty wheel).
     ticker_park_notify();
 
-    // Get the handle and join the thread if it exists
-    if let Some(handle_mutex) = TICKER_HANDLE.get() {
-        if let Ok(mut guard) = handle_mutex.lock() {
-            if let Some(handle) = guard.take() {
-                // Wait for the thread to finish
-                let _ = handle.join();
-            }
-        }
+    // Take the handle without holding its mutex while joining or reporting.
+    let handle = TICKER_HANDLE.get().and_then(|handle_mutex| {
+        handle_mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    });
+    if let Some(handle) = handle {
+        let join_result = handle.join();
+        report_ticker_join_result(join_result);
     }
 
     // Reset flags for potential re-initialisation
@@ -768,6 +781,43 @@ mod tests {
         // This should not panic or hang
         shutdown_ticker(); // Should be safe to call multiple times
         shutdown_ticker(); // Should be safe to call again
+    }
+
+    #[test]
+    fn ticker_shutdown_reports_worker_panic() {
+        let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::hew_clear_error();
+
+        let handle_mutex = TICKER_HANDLE.get_or_init(|| Mutex::new(None));
+        *handle_mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(std::thread::spawn(|| panic!("ticker intentional panic")));
+        TICKER_RUNNING.store(true, Ordering::SeqCst);
+
+        shutdown_ticker();
+
+        let error_ptr = crate::hew_last_error();
+        assert!(
+            !error_ptr.is_null(),
+            "joining a panicked ticker must record a diagnostic"
+        );
+        // SAFETY: shutdown_ticker populated this thread's last-error slot.
+        let error = unsafe {
+            CStr::from_ptr(error_ptr)
+                .to_str()
+                .expect("last error should be utf-8")
+        };
+        assert!(
+            error.contains("hew timer ticker panicked during shutdown"),
+            "unexpected last error: {error}"
+        );
+        assert!(
+            error.contains("ticker intentional panic"),
+            "panic payload must be included in the diagnostic: {error}"
+        );
     }
 
     #[test]

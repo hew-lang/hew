@@ -1257,7 +1257,11 @@ impl Builder {
                     }
                 }
                 let diag_len_before_value = self.diagnostics.len();
-                let value_place = self.lower_value(value);
+                let value_place = if self.reject_capture_env_let_escape(binding.id, value) {
+                    None
+                } else {
+                    self.lower_value(value)
+                };
                 // Cascade suppression: a `let` whose initializer failed to lower
                 // (`None`) AFTER emitting its own diagnostic poisons the binding,
                 // so a later `BindingRef` to it stays silent instead of stacking
@@ -1641,7 +1645,11 @@ impl Builder {
                 });
             }
             HirStmtKind::Return(Some(expr)) => {
-                let value_place = self.lower_value(expr);
+                let value_place = if self.reject_capture_env_whole_escape_expr(expr) {
+                    None
+                } else {
+                    self.lower_value(expr)
+                };
                 self.decide(expr);
                 self.mark_returned_binding_moved(expr);
                 self.statements.push(MirStatement::Return {
@@ -3357,6 +3365,9 @@ impl Builder {
                 // Lower each explicit field value to a Place, keyed by name.
                 let mut explicit: HashMap<String, Place> = HashMap::new();
                 for (fname, fexpr) in fields {
+                    if self.reject_capture_env_whole_escape_expr(fexpr) {
+                        return None;
+                    }
                     if let Some(place) = self.lower_value(fexpr) {
                         explicit.insert(fname.clone(), place);
                     }
@@ -4613,6 +4624,9 @@ impl Builder {
                 let receiver_place = self.lower_value(receiver)?;
                 let mut arg_places = vec![receiver_place];
                 for arg in args {
+                    if is_vec_element_store && self.reject_capture_env_whole_escape_expr(arg) {
+                        return None;
+                    }
                     arg_places.push(self.lower_value(arg)?);
                     if builtin_method_arg_is_move_ingress(*target_family) {
                         self.consume_moved_builtin_method_arg(arg);
@@ -5337,7 +5351,11 @@ impl Builder {
                 // dead cursor block for any lexically-following code. A `return`
                 // diverges, so this expression yields no value (`None`).
                 if let Some(expr_value) = value {
-                    let value_place = self.lower_value(expr_value);
+                    let value_place = if self.reject_capture_env_whole_escape_expr(expr_value) {
+                        None
+                    } else {
+                        self.lower_value(expr_value)
+                    };
                     self.decide(expr_value);
                     self.mark_returned_binding_moved(expr_value);
                     self.statements.push(MirStatement::Return {

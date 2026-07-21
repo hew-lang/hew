@@ -1287,6 +1287,12 @@ struct Builder {
     /// #2301 per-function pre-pass scratch: `BindingId`s that are the target of an
     /// `Assign` (`r = <rhs>`) anywhere in the body.
     pub(crate) prepass_reassigned_bindings: HashSet<BindingId>,
+    /// Let-bound aliases whose only parent-body use is a nested generator
+    /// capture. Generator construction semantically clones these values.
+    pub(crate) prepass_generator_capture_bindings: HashSet<BindingId>,
+    /// Ordinary parent-body binding references, excluding direct let-rebind
+    /// initializers and nested generator bodies.
+    pub(crate) prepass_binding_ref_uses: HashSet<BindingId>,
     /// Stack of active scope IDs in nesting order (outermost at index 0,
     /// innermost at the end). Pushed when entering a `Block` expression or
     /// `function_body`; popped on exit. Read by `emit_defers_for_return` to

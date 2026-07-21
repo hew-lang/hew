@@ -1381,6 +1381,13 @@ impl Builder {
         self.prepass_note_nonrebind_consume(expr);
         let ty = self.subst_ty(&expr.ty);
         self.harvest_vec_owned_element_key(&ty);
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } = &expr.kind
+        {
+            self.prepass_binding_ref_uses.insert(*id);
+        }
         match &expr.kind {
             HirExprKind::Binary { left, right, .. }
             | HirExprKind::IdentityCompare { left, right } => {
@@ -1643,6 +1650,10 @@ impl Builder {
                 for (_, value) in fields {
                     self.collect_vec_owned_element_keys_from_expr(value);
                 }
+            }
+            HirExprKind::GenBlock { captures, .. } => {
+                self.prepass_generator_capture_bindings
+                    .extend(captures.iter().map(|capture| capture.binding));
             }
             // Remaining variants either carry no owned-Vec sub-expression in
             // this slice's surface or are leaves; their own `.ty` was already

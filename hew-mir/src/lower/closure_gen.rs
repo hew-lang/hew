@@ -85,17 +85,45 @@ impl Builder {
     ) {
         self.diagnostics.push(MirDiagnostic {
             kind: MirDiagnosticKind::NotYetImplemented {
-                construct: format!("whole-value escape of captured generator value `{name}`"),
+                construct: format!("whole-value move of captured generator/closure value `{name}`"),
                 site,
             },
             note: format!(
-                "captured `{name}` has type `{}` and is an alias loaded from the generator \
-                 environment; moving that alias into a yielded/returned owner would double-drop \
-                 the environment's value. Clone it explicitly before the escape, or use it only \
+                "captured owned value `{name}` cannot be moved out of the generator/closure \
+                 environment; it has type `{}` and is borrowed into the environment, whose \
+                 storage remains the owner. Clone it explicitly before moving it, or use it only \
                  through borrowing methods/projections.",
                 ty.user_facing()
             ),
         });
+    }
+
+    pub(crate) fn reject_capture_env_whole_escape_expr(&mut self, expr: &HirExpr) -> bool {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(binding),
+        } = &expr.kind
+        else {
+            return false;
+        };
+        let Some(source) = self.capture_env_sources.get(binding).cloned() else {
+            return false;
+        };
+        if !self.capture_env_whole_escape_requires_clone(&source.ty) {
+            return false;
+        }
+        self.reject_capture_env_whole_escape(name, &source.ty, expr.site);
+        true
+    }
+
+    pub(crate) fn reject_capture_env_let_escape(
+        &mut self,
+        binding: BindingId,
+        value: &HirExpr,
+    ) -> bool {
+        let generator_clone_only = self.prepass_generator_capture_bindings.contains(&binding)
+            && !self.prepass_binding_ref_uses.contains(&binding);
+        !generator_clone_only && self.reject_capture_env_whole_escape_expr(value)
     }
 
     pub(crate) fn sanitize_symbol_component(input: &str) -> String {
@@ -2592,17 +2620,8 @@ impl Builder {
         // Lower the yielded value to a Place.  If the value is absent (bare
         // `yield;` — unit-typed generator), allocate a unit constant.
         let value_place = if let Some(val_expr) = value {
-            if let HirExprKind::BindingRef {
-                name,
-                resolved: ResolvedRef::Binding(binding),
-            } = &val_expr.kind
-            {
-                if let Some(source) = self.capture_env_sources.get(binding).cloned() {
-                    if self.capture_env_whole_escape_requires_clone(&source.ty) {
-                        self.reject_capture_env_whole_escape(name, &source.ty, val_expr.site);
-                        return None;
-                    }
-                }
+            if self.reject_capture_env_whole_escape_expr(val_expr) {
+                return None;
             }
             self.decide(val_expr);
             match self.lower_value(val_expr) {

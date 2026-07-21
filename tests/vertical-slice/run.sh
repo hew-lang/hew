@@ -2759,6 +2759,25 @@ expect_check_fail_error_count_no_cascade \
   "gen_capture_whole_value_escape" \
   "InitialisedBeforeUse" "UnresolvedPlace"
 
+# The same fail-closed wall applies to every other whole-value move shape, not
+# only `yield`: rebinding, storing into another owner, and returning from a
+# generator body all load aliases from the capture environment.
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_let_move.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_let_move"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_push.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_push"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_return.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_return"
+
 # Reject: a generator that reads BOTH an inadmissible (`#[opaque]`) parameter
 # AND an otherwise-admissible scalar parameter as free variables of its body.
 # Env-record synthesis is all-or-nothing: if any capture is inadmissible, the

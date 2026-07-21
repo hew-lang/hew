@@ -82,7 +82,6 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_lambda_actor_weak_send",
     "hew_lambda_body_alloc_reply_buf",
     "hew_lambda_drain_all",
-    "hew_rc_new",
     "hew_task_await_blocking",
     "hew_task_complete_threaded",
     "hew_task_completion_observe",
@@ -319,7 +318,7 @@ fn corpus_covers_every_family_or_pins_the_gap() {
     let mut uncovered = BTreeSet::new();
     for family in all_runtime_call_families() {
         let sym = family.c_symbol();
-        // Three renderings count as coverage:
+        // Four renderings count as coverage:
         //
         //  1. Quoted symbol (legacy Debug format):
         //     `callee: "hew_vec_len"`, `drop_fn: "hew_string_drop"`
@@ -339,6 +338,10 @@ fn corpus_covers_every_family_or_pins_the_gap() {
         //     Using ` {sym}(` or ` {sym} ` avoids substring false-positives
         //     even for short names — `abs` only appears preceded by a space
         //     and followed by `(` or ` ->` in the structured dump.
+        //
+        //  4. Typed Rc/Weak intrinsics and their elaborated drop kinds. These
+        //     deliberately carry ownership semantics instead of C symbols;
+        //     codegen selects the corresponding runtime family at the ABI edge.
         let quoted = format!("\"{sym}\"");
         let family_needle = format!("family:{family:?},")
             .split_whitespace()
@@ -355,6 +358,7 @@ fn corpus_covers_every_family_or_pins_the_gap() {
             && !haystack.contains(&release_ann)
             && !haystack.contains(&cow_heap_ann)
             && !haystack.contains(&call_rt_unquoted)
+            && !rc_intrinsic_covers(sym, &haystack)
         {
             uncovered.insert(sym);
         }
@@ -372,4 +376,24 @@ fn corpus_covers_every_family_or_pins_the_gap() {
         covered = all_runtime_call_families().len() - uncovered.len(),
         total = all_runtime_call_families().len(),
     );
+}
+
+fn rc_intrinsic_covers(symbol: &str, haystack: &str) -> bool {
+    let needle = match symbol {
+        "hew_rc_new" => "rc_intrinsic.New ",
+        "hew_rc_clone" => "rc_intrinsic.Clone ",
+        "hew_rc_downgrade" => "rc_intrinsic.Downgrade ",
+        "hew_rc_get" => "rc_intrinsic.GetCopy ",
+        "hew_rc_is_unique" => "rc_intrinsic.IsUnique ",
+        "hew_rc_set" => "rc_intrinsic.Set ",
+        "hew_rc_strong_count" => "rc_intrinsic.StrongCount ",
+        "hew_rc_weak_count" => "rc_intrinsic.WeakCount ",
+        "hew_weak_clone_rc" => "rc_intrinsic.WeakClone ",
+        "hew_weak_upgrade_rc" => "rc_intrinsic.WeakUpgrade ",
+        "hew_rc_drop" => "kind=rc_release",
+        "hew_weak_drop_rc" => "kind=weak_release",
+        _ => return false,
+    };
+
+    haystack.contains(needle)
 }

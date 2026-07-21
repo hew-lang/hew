@@ -107,6 +107,16 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(receiver, out);
             visit_expr(arg, out);
         }
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            if let Some(receiver) = receiver {
+                visit_expr(receiver, out);
+            }
+            if let Some(value) = value {
+                visit_expr(value, out);
+            }
+        }
         HirExprKind::If {
             condition,
             then_expr,

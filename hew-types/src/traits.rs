@@ -47,8 +47,6 @@ pub enum MarkerTrait {
     /// wraps raw in-memory ABI bytes in a CBOR envelope, and structural
     /// Hew-value encoding is a later slice.
     Serializable,
-    /// Contains no `Rc<T>` anywhere in its admissible structure
-    RcFree,
     /// Owns an operating-system or runtime resource whose drop closes it.
     /// Design contract D3 (@resource) in v0.5. Applies to Duplex, Stream, Sink.
     /// No consumer in slice 2; queried by drop-elaboration in slice 3.
@@ -74,7 +72,6 @@ impl std::fmt::Display for MarkerTrait {
             MarkerTrait::Decode => write!(f, "Decode"),
             MarkerTrait::Encode => write!(f, "Encode"),
             MarkerTrait::Serializable => write!(f, "Serializable"),
-            MarkerTrait::RcFree => write!(f, "RcFree"),
             MarkerTrait::Resource => write!(f, "Resource"),
         }
     }
@@ -101,7 +98,6 @@ impl MarkerTrait {
             "Decode" => Some(Self::Decode),
             "Encode" => Some(Self::Encode),
             "Serializable" => Some(Self::Serializable),
-            "RcFree" => Some(Self::RcFree),
             "Resource" => Some(Self::Resource),
             _ => None,
         }
@@ -155,8 +151,6 @@ pub struct TraitDef {
 pub struct TraitRegistry {
     /// Struct/enum definitions: name → field types
     type_fields: HashMap<String, Vec<Ty>>,
-    /// `RcFree` capability members: name → field and variant payload types
-    rc_free_members: HashMap<String, Vec<Ty>>,
     /// Explicit negative impls: types that DO NOT implement a trait
     negative_impls: HashMap<String, HashSet<MarkerTrait>>,
     /// Trait declarations with methods
@@ -220,13 +214,6 @@ pub struct TraitRegistry {
     type_params: HashMap<String, Vec<String>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RcFreeStatus {
-    RcFree,
-    ContainsRc,
-    Recursive(String),
-}
-
 impl TraitRegistry {
     /// Create a new empty trait registry.
     #[must_use]
@@ -245,7 +232,7 @@ impl TraitRegistry {
     ///
     /// Marker derivation for a `Ty::Named` keys every name-indexed table on the
     /// type's `name` string: `type_fields` (the structural Send/Copy/… member
-    /// set), `rc_free_members`, `serializable_members`, `negative_impls`, and
+    /// set), `serializable_members`, `negative_impls`, and
     /// the `records` / `actors` / `handle_types` / `drop_types` membership sets.
     /// The bare name is last-write-wins across modules: two imported packages
     /// that each export a `Reply` collide on the single `"Reply"` key, so the
@@ -265,9 +252,6 @@ impl TraitRegistry {
         }
         if let Some(fields) = self.type_fields.get(bare).cloned() {
             self.type_fields.insert(qualified.to_string(), fields);
-        }
-        if let Some(members) = self.rc_free_members.get(bare).cloned() {
-            self.rc_free_members.insert(qualified.to_string(), members);
         }
         if let Some(members) = self.serializable_members.get(bare).cloned() {
             self.serializable_members
@@ -312,21 +296,9 @@ impl TraitRegistry {
         self.records.insert(name);
     }
 
-    /// Register the structural members that participate in `RcFree`.
-    pub fn register_rcfree_members(&mut self, name: String, member_types: Vec<Ty>) {
-        self.rc_free_members.insert(name, member_types);
-    }
-
     /// Register a named type as part of the accepted `Serializable` subset.
     pub fn register_serializable_type(&mut self, name: String, member_types: Vec<Ty>) {
         self.serializable_members.insert(name, member_types);
-    }
-
-    /// Look up `RcFree` members by exact or module-qualified/unqualified name.
-    fn rc_free_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
-        self.rc_free_members
-            .get(name)
-            .or_else(|| self.rc_free_members.get(crate::short_name(name)))
     }
 
     /// Look up `Serializable` members by exact or module-qualified/unqualified name.
@@ -334,119 +306,6 @@ impl TraitRegistry {
         self.serializable_members
             .get(name)
             .or_else(|| self.serializable_members.get(crate::short_name(name)))
-    }
-
-    fn combine_rc_free_status<I>(&self, tys: I, visiting: &mut HashSet<String>) -> RcFreeStatus
-    where
-        I: IntoIterator<Item = Ty>,
-    {
-        let mut unknown = None;
-        for ty in tys {
-            match self.implements_rc_free(&ty, visiting) {
-                RcFreeStatus::RcFree => {}
-                RcFreeStatus::ContainsRc => return RcFreeStatus::ContainsRc,
-                RcFreeStatus::Recursive(name) => {
-                    if unknown.is_none() {
-                        unknown = Some(name);
-                    }
-                }
-            }
-        }
-        unknown.map_or(RcFreeStatus::RcFree, RcFreeStatus::Recursive)
-    }
-
-    fn implements_rc_free(&self, ty: &Ty, visiting: &mut HashSet<String>) -> RcFreeStatus {
-        match ty {
-            Ty::Named {
-                builtin: Some(BuiltinType::Rc),
-                args,
-                ..
-            } => {
-                if args.is_empty() {
-                    RcFreeStatus::RcFree
-                } else {
-                    RcFreeStatus::ContainsRc
-                }
-            }
-            // LocalPid<T>/RemotePid<T> are opaque identity references;
-            // their T parameter is phantom for rc-free structural checks.
-            Ty::Named {
-                builtin: Some(BuiltinType::LocalPid | BuiltinType::RemotePid),
-                ..
-            } => RcFreeStatus::RcFree,
-            // Heap-indirecting collections (`Vec`/`HashMap`/`HashSet`): the
-            // element type lives behind a heap allocation, so a recursive
-            // back-edge through one of these is FINITE in value size (the
-            // recursion terminates at the heap buffer, not at an infinite-size
-            // inline value). `Vec<RedisReply>` where
-            // `enum RedisReply { Array(Vec<RedisReply>); ... }` is therefore
-            // RcFree-admissible — the indirection is the witness that the value
-            // is representable. A `Recursive(name)` reported for a name that is
-            // CURRENTLY being visited is exactly such an indirection-broken
-            // back-edge → admit it as `RcFree`. A `Recursive(name)` for a name
-            // NOT on the active stack is a genuine cycle elsewhere and is
-            // preserved (fail-closed). `ContainsRc` is always preserved.
-            //
-            // This is the ONLY relaxation: a DIRECT value back-edge
-            // (`enum E { V(E) }`) never passes through a collection arm — it
-            // recurses through the general `Named` member walk below and stays
-            // `Recursive`, which keeps the infinite-size value cycle rejected
-            // (over-admitting it would unbound codegen layout recursion).
-            Ty::Named {
-                name,
-                args,
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
-            } => {
-                let mut worst = RcFreeStatus::RcFree;
-                for arg in args {
-                    match self.implements_rc_free(arg, visiting) {
-                        RcFreeStatus::RcFree => {}
-                        RcFreeStatus::ContainsRc => return RcFreeStatus::ContainsRc,
-                        RcFreeStatus::Recursive(rec_name) => {
-                            if visiting.contains(&rec_name) {
-                                // Indirection-broken back-edge: finite value
-                                // size, drop terminates at the heap buffer.
-                                // Admit (leave `worst` as RcFree).
-                            } else if matches!(worst, RcFreeStatus::RcFree) {
-                                // A genuine recursive cycle not broken by this
-                                // collection — preserve it (fail-closed).
-                                worst = RcFreeStatus::Recursive(rec_name);
-                            }
-                        }
-                    }
-                }
-                let _ = name;
-                worst
-            }
-            Ty::Named {
-                name,
-                args,
-                builtin: _,
-            } => {
-                match self.combine_rc_free_status(args.iter().cloned(), visiting) {
-                    RcFreeStatus::RcFree => {}
-                    outcome => return outcome,
-                }
-                if !visiting.insert(name.clone()) {
-                    return RcFreeStatus::Recursive(name.clone());
-                }
-                let result = self
-                    .rc_free_members_any(name)
-                    .map_or(RcFreeStatus::RcFree, |members| {
-                        self.combine_rc_free_status(members.iter().cloned(), visiting)
-                    });
-                visiting.remove(name);
-                result
-            }
-            Ty::Tuple(elems) => self.combine_rc_free_status(elems.iter().cloned(), visiting),
-            Ty::Array(inner, _) | Ty::Slice(inner) => self.implements_rc_free(inner, visiting),
-            _ => RcFreeStatus::RcFree,
-        }
-    }
-
-    pub(crate) fn rc_free_status(&self, ty: &Ty) -> RcFreeStatus {
-        let mut visiting = HashSet::new();
-        self.implements_rc_free(ty, &mut visiting)
     }
 
     fn has_encode_decode(&self, ty: &Ty) -> bool {
@@ -721,9 +580,6 @@ impl TraitRegistry {
     ) -> bool {
         if marker == MarkerTrait::Serializable {
             return self.is_serializable(ty);
-        }
-        if marker == MarkerTrait::RcFree {
-            return matches!(self.rc_free_status(ty), RcFreeStatus::RcFree);
         }
         if marker == MarkerTrait::Resource {
             // Only resource types are Resource; primitives are NOT.
@@ -1007,9 +863,10 @@ impl TraitRegistry {
                             .all(|a| self.implements_marker_guarded(a, marker, visiting)),
                     };
                 }
-                // Rc<T>: reference-counted, single-threaded — explicitly NOT Send or Sync.
-                // Supports Clone (inc ref-count) and Drop (dec ref-count); NOT Copy or Frozen.
-                if *builtin == Some(BuiltinType::Rc) {
+                // Rc<T>/Weak<T>: reference-counted, single-threaded — explicitly
+                // NOT Send or Sync. Both support Clone and Drop, but not Copy or
+                // Frozen.
+                if matches!(builtin, Some(BuiltinType::Rc | BuiltinType::Weak)) {
                     return matches!(marker, MarkerTrait::Clone | MarkerTrait::Drop);
                 }
                 // Recursion guard: a recursive type graph (e.g. an
@@ -1026,8 +883,6 @@ impl TraitRegistry {
                 // derived entirely from field types with two exceptions:
                 //   - `Resource` is always false: a record wrapping a resource field
                 //     is NOT itself an OS/runtime resource (no drop-close contract).
-                //   - `RcFree` is handled at the top of `implements_marker` before
-                //     this arm is reached.
                 // The two genuine exceptions (Resource, Num) are explicit; all
                 // other markers share the structural `field_derives(marker)` rule
                 // via the fallthrough.
@@ -1528,176 +1383,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rcfree_rejects_transitive_rc_through_registered_members() {
-        let mut registry = TraitRegistry::new();
-        registry.register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I32)]);
-        let holder = Ty::Named {
-            builtin: None,
-            name: "Holder".to_string(),
-            args: vec![],
-        };
-
-        assert!(!registry.implements_marker(&holder, MarkerTrait::RcFree));
-        assert!(
-            registry.implements_marker(&Ty::Tuple(vec![Ty::I32, Ty::Bool]), MarkerTrait::RcFree)
-        );
-    }
-
-    #[test]
-    fn local_pid_with_rc_bearing_actor_is_rc_free() {
-        let mut registry = TraitRegistry::new();
-        registry.register_rcfree_members("Worker".to_string(), vec![Ty::rc(Ty::I32)]);
-        let handle = Ty::local_pid(Ty::Named {
-            builtin: None,
-            name: "Worker".to_string(),
-            args: vec![],
-        });
-
-        assert_eq!(registry.rc_free_status(&handle), RcFreeStatus::RcFree);
-        assert!(registry.implements_marker(&handle, MarkerTrait::RcFree));
-    }
-
-    #[test]
-    fn local_pid_simple_is_rc_free() {
-        let mut registry = TraitRegistry::new();
-        registry.register_rcfree_members("SimpleActor".to_string(), vec![Ty::I32, Ty::Bool]);
-        let handle = Ty::local_pid(Ty::Named {
-            builtin: None,
-            name: "SimpleActor".to_string(),
-            args: vec![],
-        });
-
-        assert_eq!(registry.rc_free_status(&handle), RcFreeStatus::RcFree);
-        assert!(registry.implements_marker(&handle, MarkerTrait::RcFree));
-    }
-
-    #[test]
-    fn vec_rc_in_named_still_contains_rc() {
-        let registry = TraitRegistry::new();
-        let vec_rc = Ty::Named {
-            builtin: None,
-            name: "Vec".to_string(),
-            args: vec![Ty::rc(Ty::I32)],
-        };
-
-        assert_eq!(registry.rc_free_status(&vec_rc), RcFreeStatus::ContainsRc);
-        assert!(!registry.implements_marker(&vec_rc, MarkerTrait::RcFree));
-    }
-
-    #[test]
-    fn mutual_local_pid_cycle_is_rc_free_not_recursive() {
-        let mut registry = TraitRegistry::new();
-        let a = Ty::Named {
-            builtin: None,
-            name: "A".to_string(),
-            args: vec![],
-        };
-        let b = Ty::Named {
-            builtin: None,
-            name: "B".to_string(),
-            args: vec![],
-        };
-        registry.register_rcfree_members("A".to_string(), vec![Ty::local_pid(b.clone())]);
-        registry.register_rcfree_members("B".to_string(), vec![Ty::local_pid(a.clone())]);
-
-        let a_ref = Ty::local_pid(a);
-        let b_ref = Ty::local_pid(b);
-
-        assert_eq!(registry.rc_free_status(&a_ref), RcFreeStatus::RcFree);
-        assert_eq!(registry.rc_free_status(&b_ref), RcFreeStatus::RcFree);
-        assert!(registry.implements_marker(&a_ref, MarkerTrait::RcFree));
-        assert!(registry.implements_marker(&b_ref, MarkerTrait::RcFree));
-    }
-
-    #[test]
-    fn test_rcfree_rejects_recursive_named_types_without_proof() {
-        let mut registry = TraitRegistry::new();
-        let list = Ty::Named {
-            builtin: None,
-            name: "List".to_string(),
-            args: vec![],
-        };
-        registry.register_rcfree_members("List".to_string(), vec![Ty::option(list.clone())]);
-
-        assert_eq!(
-            registry.rc_free_status(&list),
-            RcFreeStatus::Recursive("List".to_string())
-        );
-        assert!(!registry.implements_marker(&list, MarkerTrait::RcFree));
-    }
-
-    #[test]
-    fn test_rcfree_rejects_mutually_recursive_named_types_without_proof() {
-        let mut registry = TraitRegistry::new();
-        let a = Ty::Named {
-            builtin: None,
-            name: "A".to_string(),
-            args: vec![],
-        };
-        let b = Ty::Named {
-            builtin: None,
-            name: "B".to_string(),
-            args: vec![],
-        };
-        registry.register_rcfree_members("A".to_string(), vec![b.clone()]);
-        registry.register_rcfree_members("B".to_string(), vec![a.clone()]);
-
-        assert_eq!(
-            registry.rc_free_status(&a),
-            RcFreeStatus::Recursive("A".to_string())
-        );
-        assert_eq!(
-            registry.rc_free_status(&b),
-            RcFreeStatus::Recursive("B".to_string())
-        );
-        assert!(!registry.implements_marker(&a, MarkerTrait::RcFree));
-        assert!(!registry.implements_marker(&b, MarkerTrait::RcFree));
-    }
-
-    #[test]
-    fn rcfree_admits_recursion_broken_by_vec_indirection() {
-        // W5.016 F4: `enum RedisReply { Array(Vec<RedisReply>); ... }` recurses
-        // through a `Vec` — the heap indirection makes the value finite-size, so
-        // it is RcFree-admissible (the recursive-cycle gate must NOT reject it).
-        let mut registry = TraitRegistry::new();
-        let reply = Ty::Named {
-            builtin: None,
-            name: "RedisReply".to_string(),
-            args: vec![],
-        };
-        let vec_of_reply = Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
-            args: vec![reply.clone()],
-        };
-        registry.register_rcfree_members("RedisReply".to_string(), vec![vec_of_reply]);
-
-        assert_eq!(registry.rc_free_status(&reply), RcFreeStatus::RcFree);
-        assert!(registry.implements_marker(&reply, MarkerTrait::RcFree));
-    }
-
-    #[test]
-    fn rcfree_rejects_direct_value_cycle_not_broken_by_indirection() {
-        // W5.016 F4 negative guard: `enum E { V(E) }` recurses by VALUE (no heap
-        // indirection) — infinite-size, MUST stay rejected. Over-admitting this
-        // would push an infinite-size value type to codegen (unbounded layout
-        // recursion / stack overflow).
-        let mut registry = TraitRegistry::new();
-        let e = Ty::Named {
-            builtin: None,
-            name: "E".to_string(),
-            args: vec![],
-        };
-        registry.register_rcfree_members("E".to_string(), vec![e.clone()]);
-
-        assert_eq!(
-            registry.rc_free_status(&e),
-            RcFreeStatus::Recursive("E".to_string())
-        );
-        assert!(!registry.implements_marker(&e, MarkerTrait::RcFree));
-    }
-
-    #[test]
     fn marker_derivation_terminates_on_vec_indirected_recursive_enum() {
         // W5.016 F4: the marker derivation must be total on a recursive type
         // graph reachable through a collection. Before the recursion guard, a
@@ -1719,19 +1404,6 @@ mod tests {
 
         // Terminates (no overflow) and a Vec-bearing enum is not Copy.
         assert!(!registry.implements_marker(&reply, MarkerTrait::Copy));
-    }
-
-    #[test]
-    fn test_rcfree_falls_back_to_unqualified_registered_name() {
-        let mut registry = TraitRegistry::new();
-        registry.register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I32)]);
-        let qualified_holder = Ty::Named {
-            builtin: None,
-            name: "widgets.Holder".to_string(),
-            args: vec![],
-        };
-
-        assert!(!registry.implements_marker(&qualified_holder, MarkerTrait::RcFree));
     }
 
     #[test]

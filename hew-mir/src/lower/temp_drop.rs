@@ -163,6 +163,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::IntCmp { .. }
         | Instr::IdentityCompare { .. }
         | Instr::CancellationTokenIsCancelled { .. }
+        | Instr::RcIntrinsic { .. }
         | Instr::GeneratorNext { .. }
         | Instr::WireCodec { .. }
         | Instr::Move { .. }

@@ -444,12 +444,12 @@ stable = [
   "hew_random_seed",
   "hew_random_shuffle_i64",
   "hew_rc_clone",
-  "hew_rc_count",
   "hew_rc_downgrade",
   "hew_rc_drop",
   "hew_rc_get",
   "hew_rc_is_unique",
   "hew_rc_new",
+  "hew_rc_set",
   "hew_rc_strong_count",
   "hew_rc_weak_count",
   "hew_read_file",
@@ -829,6 +829,7 @@ stable = [
   "hew_vec_swap",
   "hew_vec_truncate",
   "hew_vtable_dispatch_panic_on_oob",
+  "hew_weak_clone_rc",
   "hew_weak_drop_arc",
   "hew_weak_drop_rc",
   "hew_weak_upgrade_arc",
@@ -1558,3 +1559,12 @@ result = "none"
 params = ["borrow", "borrow", "consume"]
 release-symbol = ""
 discharge-depth = "none"
+
+# hew_weak_clone_rc retains the allocation header without retaining its
+# payload. Each returned weak owner requires one matching weak drop.
+[[ownership.contracts]]
+symbol = "hew_weak_clone_rc"
+result = "retained"
+params = ["borrow"]
+release-symbol = "hew_weak_drop_rc"
+discharge-depth = "shallow"

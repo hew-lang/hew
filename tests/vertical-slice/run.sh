@@ -738,14 +738,9 @@ run_accept_expect_status "array_repeat_collection_field_clone" 0
 run_accept_expect_stdout "for_in_block_wrapped_array_literal"
 run_accept_expect_stdout "for_in_block_wrapped_array_repeat"
 
-# Fundamentally non-clone array-repeat reject: a record with an `Rc` field has
-# no clone/drop thunk at all, so [r; N] must fail closed. Pins the non-clone
-# boundary independently of the collection-field narrowing above.
-# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/array_repeat_rc_field_element.hew" \
-    'array repeat requires the element type to be Clone' \
-    "array_repeat_rc_field_element"
+# An Rc-bearing record uses semantic field clone/drop synthesis. The source
+# plus three repeated slots produce exactly four strong owners.
+run_accept_expect_status "array_repeat_rc_field_element" 4
 
 run_accept_expect_status "map_literal_string_keys" 0
 run_accept_expect_status "map_literal_empty_annotated" 0
@@ -4712,3 +4707,45 @@ run_accept_expect_status "string_split_to_chars_empty" 0
 # input, trailing delimiters, and multi-byte separator / multi-byte value.
 # ---------------------------------------------------------------------------
 run_accept_expect_status "string_split_nonempty" 0
+
+# Single-actor reference counting: exact strong/weak ladders, Some/None
+# upgrade behavior, shared replacement visibility, recursive record back-edge
+# release, and a zero-sized payload.
+run_accept_expect_stdout "rc_weak_lifecycle"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/spawned_closure_weak_non_send_capture.hew" \
+  1 "spawned_closure_weak_non_send_capture"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/spawned_closure_weak_non_send_capture.hew" \
+  "spawned closure captures non-Send value 'weak'" \
+  "spawned_closure_weak_non_send_capture_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/duplex_weak_non_send.hew" \
+  1 "duplex_weak_non_send"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/duplex_weak_non_send.hew" \
+  "E_DUPLEX_NON_SEND" "duplex_weak_non_send_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/rc_new_cyclic_undefined.hew" \
+  1 "rc_new_cyclic_undefined"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/weak_new_undefined.hew" \
+  1 "weak_new_undefined"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/rc_get_non_copy.hew" \
+  1 "rc_get_non_copy"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/rc_use_after_move.hew" \
+  1 "rc_use_after_move"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/weak_use_after_move.hew" \
+  1 "weak_use_after_move"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/rc_set_replacement_use_after_move.hew" \
+  1 "rc_set_replacement_use_after_move"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/rc_set_type_mismatch.hew" \
+  1 "rc_set_type_mismatch"

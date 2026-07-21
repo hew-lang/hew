@@ -3,7 +3,6 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
-use crate::traits::RcFreeStatus;
 use crate::BuiltinType;
 
 pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
@@ -928,41 +927,6 @@ impl Checker {
         Ty::Error
     }
 
-    pub(super) fn reject_rc_collection_element(
-        &mut self,
-        container: &str,
-        elem_ty: &Ty,
-        span: &Span,
-    ) -> bool {
-        let resolved = self.subst.resolve(elem_ty);
-        match self.registry.rc_free_status(&resolved) {
-            RcFreeStatus::RcFree => true,
-            RcFreeStatus::ContainsRc => {
-                self.report_error(
-                    TypeErrorKind::UnsafeCollectionElement,
-                    span,
-                    format!(
-                        "`{container}` cannot hold `{}`; Rc<T> in collections is not yet \
-                         supported (runtime does not track Rc ownership for collection elements)",
-                        resolved.user_facing()
-                    ),
-                );
-                false
-            }
-            RcFreeStatus::Recursive(type_name) => {
-                self.report_error(
-                    TypeErrorKind::UnsafeCollectionElement,
-                    span,
-                    format!(
-                        "`{container}` cannot hold `{}`; RcFree could not be proven because `{type_name}` participates in a recursive type cycle",
-                        resolved.user_facing()
-                    ),
-                );
-                false
-            }
-        }
-    }
-
     fn is_supported_hashmap_key_type(&self, ty: &Ty) -> bool {
         // W4.001 Stage C3: legacy per-K allowlist retired. Admit any K that
         // implements both `Hash` and `Eq` markers — the resolver's
@@ -1284,25 +1248,13 @@ impl Checker {
         false
     }
 
-    fn reject_unsafe_hashmap_element_types(
-        &mut self,
-        key_ty: &Ty,
-        val_ty: &Ty,
-        span: &Span,
-    ) -> bool {
-        let key_ok = self.reject_rc_collection_element("HashMap", key_ty, span);
-        let val_ok = self.reject_rc_collection_element("HashMap", val_ty, span);
-        key_ok && val_ok
-    }
-
     pub(super) fn validate_hashmap_owned_element_types(
         &mut self,
         key_ty: &Ty,
         val_ty: &Ty,
         span: &Span,
     ) -> bool {
-        self.reject_unsafe_hashmap_element_types(key_ty, val_ty, span)
-            && self.validate_hashmap_key_value_types(key_ty, val_ty, span)
+        self.validate_hashmap_key_value_types(key_ty, val_ty, span)
     }
 
     pub(super) fn validate_hashmap_projection_element_types(
@@ -1465,9 +1417,6 @@ impl Checker {
         elem_ty: &Ty,
         span: &Span,
     ) -> bool {
-        if !self.reject_rc_collection_element("HashSet", elem_ty, span) {
-            return false;
-        }
         self.validate_hashset_element_type(elem_ty, span)
     }
 
@@ -1753,22 +1702,117 @@ impl Checker {
         self.validate_concrete_collection_type(ty, span, ConcreteCollectionKind::HashMap)
     }
 
-    fn rc_payload_drop_supported(&self, ty: &Ty) -> bool {
-        let resolved = self.subst.resolve(ty);
-        if matches!(resolved, Ty::Error) {
-            return true;
-        }
-        if matches!(resolved, Ty::Var(_)) {
-            return false;
-        }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the closed type-shape match keeps aggregate admission auditable in one place"
+    )]
+    fn rc_payload_clone_drop_supported(
+        &self,
+        ty: &Ty,
+        visiting: &mut HashSet<String>,
+        through_collection: bool,
+    ) -> bool {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         match &resolved {
-            Ty::String | Ty::Bytes => true,
+            Ty::Error | Ty::String | Ty::Bytes => true,
+            Ty::Var(_)
+            | Ty::AssocType { .. }
+            | Ty::Slice(_)
+            | Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::TraitObject { .. }
+            | Ty::CancellationToken
+            | Ty::Task(_)
+            | Ty::Borrow { .. }
+            | Ty::Pointer { .. } => false,
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.rc_payload_clone_drop_supported(elem, visiting, false)),
+            Ty::Array(elem, _) => self.rc_payload_clone_drop_supported(elem, visiting, false),
             Ty::Named {
-                builtin: Some(BuiltinType::Rc),
+                builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
                 args,
                 ..
-            } if args.len() == 1 => self.rc_payload_drop_supported(&args[0]),
-            Ty::Named { name, .. } if self.type_implements_trait(name, "Drop") => false,
+            } => args.len() == 1,
+            Ty::Named {
+                name,
+                args,
+                builtin: Some(builtin),
+            } => match builtin {
+                BuiltinType::Option | BuiltinType::Result => args
+                    .iter()
+                    .all(|arg| self.rc_payload_clone_drop_supported(arg, visiting, false)),
+                BuiltinType::Vec | BuiltinType::HashSet => args.first().is_some_and(|arg| {
+                    args.len() == 1 && self.rc_payload_clone_drop_supported(arg, visiting, true)
+                }),
+                BuiltinType::HashMap => {
+                    args.len() == 2
+                        && self.rc_payload_clone_drop_supported(&args[0], visiting, false)
+                        && self.rc_payload_clone_drop_supported(&args[1], visiting, true)
+                }
+                _ => {
+                    self.canonical_owned_handle_type_name(name).is_none()
+                        && !self.user_opaque_type_names.contains(name)
+                        && self
+                            .registry
+                            .implements_marker(&resolved, MarkerTrait::Copy)
+                }
+            },
+            Ty::Named {
+                name,
+                args,
+                builtin: None,
+            } => {
+                if self.canonical_owned_handle_type_name(name).is_some()
+                    || self.user_opaque_type_names.contains(name)
+                    || self.registry.is_resource(name)
+                    || self.registry.is_linear(name)
+                {
+                    return false;
+                }
+                let Some(type_def) = self.lookup_type_def(name) else {
+                    return self
+                        .registry
+                        .implements_marker(&resolved, MarkerTrait::Copy);
+                };
+                if !matches!(
+                    type_def.kind,
+                    TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
+                ) {
+                    return false;
+                }
+                let visit_key = type_def.name.clone();
+                if !visiting.insert(visit_key.clone()) {
+                    return through_collection;
+                }
+                let fields_ok = type_def.fields.values().all(|field| {
+                    let field =
+                        Self::instantiate_type_def_member(field, &type_def.type_params, args);
+                    self.rc_payload_clone_drop_supported(&field, visiting, false)
+                });
+                let variants_ok = fields_ok
+                    && type_def.variants.values().all(|variant| match variant {
+                        VariantDef::Unit => true,
+                        VariantDef::Tuple(fields) => fields.iter().all(|field| {
+                            let field = Self::instantiate_type_def_member(
+                                field,
+                                &type_def.type_params,
+                                args,
+                            );
+                            self.rc_payload_clone_drop_supported(&field, visiting, false)
+                        }),
+                        VariantDef::Struct(fields) => fields.iter().all(|(_, field)| {
+                            let field = Self::instantiate_type_def_member(
+                                field,
+                                &type_def.type_params,
+                                args,
+                            );
+                            self.rc_payload_clone_drop_supported(&field, visiting, false)
+                        }),
+                    });
+                visiting.remove(&visit_key);
+                variants_ok
+            }
             _ => self
                 .registry
                 .implements_marker(&resolved, MarkerTrait::Copy),
@@ -1777,7 +1821,29 @@ impl Checker {
 
     pub(super) fn validate_rc_payload_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
-        if self.rc_payload_drop_supported(&resolved) {
+        let unresolved_generic = matches!(&resolved, Ty::Var(_))
+            || matches!(
+                &resolved,
+                Ty::Named {
+                    name,
+                    args,
+                    builtin: None,
+                } if args.is_empty() && self.is_type_param_in_scope(name)
+            );
+        if unresolved_generic {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`Rc<{}>` is not currently supported; Rc only accepts Copy payloads \
+                     or concrete payloads with a proven aggregate clone/drop strategy; \
+                     unresolved generic payloads fail closed",
+                    resolved.user_facing()
+                ),
+            );
+            return false;
+        }
+        if self.rc_payload_clone_drop_supported(&resolved, &mut HashSet::new(), false) {
             return true;
         }
 
@@ -1785,10 +1851,10 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             span,
             format!(
-                "`Rc<{}>` is not currently supported; Rc only accepts Copy payloads, \
-                `string`, `bytes`, and nested `Rc` values because the current Rc \
-                drop path does not recursively drop owned contents or forward \
-                arbitrary user-defined drop impls",
+                "`Rc<{}>` is not supported because its payload has no complete \
+                 aggregate clone/drop strategy; use Copy values, strings, bytes, \
+                 Rc/Weak handles, supported collections, tuples, arrays, records, \
+                 or enums, and move opaque or affine resources outside the payload",
                 resolved.user_facing()
             ),
         );

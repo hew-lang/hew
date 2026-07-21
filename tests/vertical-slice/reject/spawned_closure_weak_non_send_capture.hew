@@ -1,0 +1,5 @@
+fn main() {
+    let rc = Rc::new(1);
+    let weak = rc.downgrade();
+    scope { (move || { let _ = weak; })(); };
+}

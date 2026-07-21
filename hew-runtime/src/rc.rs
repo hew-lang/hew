@@ -5,7 +5,8 @@
 //!
 //! Layout: `[HewRcInner header | data bytes...]`
 //! The returned pointer from `hew_rc_new` points to the **data region**
-//! (immediately after the header). All functions accept/return data pointers.
+//! (immediately after the header). Strong-reference functions accept data
+//! pointers; weak-reference functions accept header pointers.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -279,21 +280,73 @@ pub unsafe extern "C" fn hew_rc_get(ptr: *mut u8) -> *mut u8 {
     ptr
 }
 
-/// Get the strong reference count as `u32`. Convenience wrapper around
-/// [`hew_rc_strong_count`].
+/// Replace the payload shared by every strong alias.
+///
+/// The replacement is installed before the displaced payload is dropped. If
+/// that drop recursively replaces this allocation, the recursive replacement
+/// therefore wins.
+///
+/// # Panics
+///
+/// Panics when either pointer is null, the Rc has no live strong owner, the
+/// replacement is misaligned, either pointer range overflows, or the payload
+/// and replacement ranges overlap.
 ///
 /// # Safety
 ///
-/// `ptr` must have been returned by [`hew_rc_new`] or [`hew_rc_clone`].
+/// - `ptr` must be a live data pointer returned by [`hew_rc_new`] or
+///   [`hew_rc_clone`].
+/// - `replacement` must point to an initialized value with the exact size and
+///   alignment used to construct `ptr`.
+/// - The payload and replacement ranges must not overlap.
 #[no_mangle]
-pub unsafe extern "C" fn hew_rc_count(ptr: *mut u8) -> u32 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "C ABI convenience — counts should never exceed u32"
-    )]
-    // SAFETY: forwarded to hew_rc_strong_count with same preconditions.
-    let count = unsafe { hew_rc_strong_count(ptr) } as u32;
-    count
+pub unsafe extern "C" fn hew_rc_set(ptr: *mut u8, replacement: *mut u8) {
+    assert!(!ptr.is_null(), "Rc.set requires a non-null Rc data pointer");
+    assert!(
+        !replacement.is_null(),
+        "Rc.set requires a non-null replacement pointer"
+    );
+
+    // Snapshot every value needed after the swap. No reference into the
+    // allocation may remain live while the opaque payload callback runs.
+    let (data_size, data_align, drop_fn) = {
+        // SAFETY: caller guarantees ptr is a live Rc data pointer.
+        let header = unsafe { header_from_data(ptr) };
+        // SAFETY: the shared header remains live while strong > 0. This
+        // immutable borrow ends at the block boundary before the callback.
+        let inner = unsafe { &*header };
+        assert!(inner.strong > 0, "Rc.set requires a live strong reference");
+        (inner.data_size, inner.data_align, inner.drop_fn)
+    };
+
+    assert_eq!(
+        replacement.addr() % data_align,
+        0,
+        "Rc.set replacement is not aligned for the payload"
+    );
+    let payload_start = ptr.addr();
+    let replacement_start = replacement.addr();
+    let payload_end = payload_start
+        .checked_add(data_size)
+        .expect("Rc.set payload range overflow");
+    let replacement_end = replacement_start
+        .checked_add(data_size)
+        .expect("Rc.set replacement range overflow");
+    assert!(
+        data_size == 0 || payload_end <= replacement_start || replacement_end <= payload_start,
+        "Rc.set payload and replacement ranges overlap"
+    );
+
+    // SAFETY: the caller supplies two initialized, aligned, non-overlapping
+    // regions of data_size bytes. The allocation receives the replacement and
+    // the caller slot receives the displaced payload.
+    unsafe { ptr::swap_nonoverlapping(ptr, replacement, data_size) };
+
+    if let Some(drop_fn) = drop_fn {
+        // SAFETY: replacement now contains the initialized displaced payload.
+        // Nothing in this function touches the Rc allocation after this call.
+        unsafe { drop_fn(replacement) };
+    }
 }
 
 /// Returns 1 if this `Rc` is the only strong reference (refcount == 1),
@@ -325,6 +378,34 @@ pub unsafe extern "C" fn hew_rc_downgrade(ptr: *mut u8) -> *mut u8 {
     // SAFETY: header is valid.
     unsafe { (*header).weak += 1 };
     header.cast()
+}
+
+/// Clone a `Weak` reference. Returns the same header pointer.
+///
+/// # Panics
+///
+/// Panics when a non-null pointer does not represent a live explicit weak
+/// handle.
+///
+/// # Safety
+///
+/// `weak_ptr` must have been returned by [`hew_rc_downgrade`] or this function
+/// and must still represent a live explicit weak handle.
+#[no_mangle]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "weak_ptr is a header pointer allocated with align_of::<HewRcInner>()"
+)]
+pub unsafe extern "C" fn hew_weak_clone_rc(weak_ptr: *mut u8) -> *mut u8 {
+    if weak_ptr.is_null() {
+        return ptr::null_mut();
+    }
+    let header = weak_ptr.cast::<HewRcInner>();
+    // SAFETY: caller guarantees weak_ptr is a live Rc header pointer.
+    let inner = unsafe { &mut *header };
+    assert!(inner.weak > 0, "Weak<Rc> clone requires a live weak handle");
+    inner.weak += 1;
+    weak_ptr
 }
 
 /// Attempt to upgrade a `Weak` reference back to a strong `Rc`.
@@ -555,6 +636,216 @@ mod tests {
 
             // Drop weak — frees allocation
             hew_weak_drop_rc(weak);
+        }
+    }
+
+    #[test]
+    fn rc_weak_exact_release_ladder() {
+        // SAFETY: every handle is released exactly once in the asserted order.
+        unsafe {
+            let value = 17_i32;
+            let rc = hew_rc_new(
+                (&raw const value).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                None,
+            );
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (1, 0));
+            let rc2 = hew_rc_clone(rc);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (2, 0));
+            let weak = hew_rc_downgrade(rc);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (2, 1));
+            let weak2 = hew_weak_clone_rc(weak);
+            assert_eq!(weak2, weak);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (2, 2));
+            let rc3 = hew_weak_upgrade_rc(weak);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (3, 2));
+            hew_rc_drop(rc3);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (2, 2));
+            hew_rc_drop(rc2);
+            assert_eq!((hew_rc_strong_count(rc), hew_rc_weak_count(rc)), (1, 2));
+            hew_rc_drop(rc);
+
+            let header = weak.cast::<HewRcInner>();
+            assert_eq!(((*header).strong, (*header).weak), (0, 2));
+            assert!(hew_weak_upgrade_rc(weak).is_null());
+            hew_weak_drop_rc(weak2);
+            assert_eq!(((*header).strong, (*header).weak), (0, 1));
+            hew_weak_drop_rc(weak);
+        }
+    }
+
+    #[test]
+    fn rc_set_updates_every_alias_and_drops_displaced_payload() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop(_data: *mut u8) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // SAFETY: replacement has the allocation's exact type and alignment.
+        unsafe {
+            DROPS.store(0, Ordering::SeqCst);
+            let value = 5_i64;
+            let rc = hew_rc_new(
+                (&raw const value).cast(),
+                size_of::<i64>(),
+                align_of::<i64>(),
+                Some(count_drop),
+            );
+            let alias = hew_rc_clone(rc);
+            let mut replacement = 8_i64;
+            hew_rc_set(rc, (&raw mut replacement).cast());
+            assert_eq!(alias.cast::<i64>().read(), 8);
+            assert_eq!(replacement, 5);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+            hew_rc_drop(alias);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+            hew_rc_drop(rc);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn rc_set_recursive_replacement_wins() {
+        use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+        #[repr(C)]
+        struct Payload {
+            value: usize,
+        }
+
+        static RC: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
+        static DROP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn recursive_drop(data: *mut u8) {
+            // SAFETY: the callback receives an initialized Payload slot.
+            let value = unsafe { (*data.cast::<Payload>()).value };
+            DROP_SEQUENCE
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |sequence| {
+                    Some(sequence * 10 + value)
+                })
+                .unwrap();
+            if value == 1 {
+                let mut nested = Payload { value: 3 };
+                // SAFETY: RC is the live allocation currently executing set;
+                // nested has the allocation's exact layout.
+                unsafe { hew_rc_set(RC.load(Ordering::SeqCst), (&raw mut nested).cast()) };
+            }
+        }
+
+        // SAFETY: all pointers and replacement slots use Payload's layout.
+        unsafe {
+            DROP_SEQUENCE.store(0, Ordering::SeqCst);
+            let initial = Payload { value: 1 };
+            let rc = hew_rc_new(
+                (&raw const initial).cast(),
+                size_of::<Payload>(),
+                align_of::<Payload>(),
+                Some(recursive_drop),
+            );
+            RC.store(rc, Ordering::SeqCst);
+            let mut replacement = Payload { value: 2 };
+            hew_rc_set(rc, (&raw mut replacement).cast());
+            assert_eq!((*rc.cast::<Payload>()).value, 3);
+            assert_eq!(DROP_SEQUENCE.load(Ordering::SeqCst), 12);
+            hew_rc_drop(rc);
+            assert_eq!(DROP_SEQUENCE.load(Ordering::SeqCst), 123);
+            RC.store(ptr::null_mut(), Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn rc_set_drops_weak_back_edge_after_installing_replacement() {
+        use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+        #[repr(C)]
+        struct Payload {
+            weak: *mut u8,
+            value: usize,
+        }
+
+        static RC: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
+        static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn drop_payload(data: *mut u8) {
+            // SAFETY: callback receives an initialized Payload.
+            let payload = unsafe { &*data.cast::<Payload>() };
+            if !payload.weak.is_null() {
+                let rc = RC.load(Ordering::SeqCst);
+                // The replacement must already be visible through the Rc.
+                // SAFETY: the strong owner keeps rc and its payload live.
+                OBSERVED.store(unsafe { (*rc.cast::<Payload>()).value }, Ordering::SeqCst);
+                // SAFETY: the embedded pointer owns one explicit weak count.
+                unsafe { hew_weak_drop_rc(payload.weak) };
+            }
+        }
+
+        // SAFETY: all pointers and replacement slots use Payload's layout.
+        unsafe {
+            OBSERVED.store(0, Ordering::SeqCst);
+            let initial = Payload {
+                weak: ptr::null_mut(),
+                value: 1,
+            };
+            let rc = hew_rc_new(
+                (&raw const initial).cast(),
+                size_of::<Payload>(),
+                align_of::<Payload>(),
+                Some(drop_payload),
+            );
+            RC.store(rc, Ordering::SeqCst);
+            let retained_weak = hew_rc_downgrade(rc);
+            let payload_weak = hew_weak_clone_rc(retained_weak);
+            assert_eq!(hew_rc_weak_count(rc), 2);
+
+            let mut with_back_edge = Payload {
+                weak: payload_weak,
+                value: 2,
+            };
+            hew_rc_set(rc, (&raw mut with_back_edge).cast());
+            assert_eq!(hew_rc_weak_count(rc), 2);
+
+            let mut without_back_edge = Payload {
+                weak: ptr::null_mut(),
+                value: 3,
+            };
+            hew_rc_set(rc, (&raw mut without_back_edge).cast());
+            assert_eq!(OBSERVED.load(Ordering::SeqCst), 3);
+            assert_eq!(hew_rc_weak_count(rc), 1);
+
+            hew_rc_drop(rc);
+            assert!(hew_weak_upgrade_rc(retained_weak).is_null());
+            hew_weak_drop_rc(retained_weak);
+            RC.store(ptr::null_mut(), Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn rc_set_zero_sized_payload() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop(_data: *mut u8) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // SAFETY: the non-null replacement is a correctly aligned ZST slot.
+        unsafe {
+            DROPS.store(0, Ordering::SeqCst);
+            let initial = ();
+            let rc = hew_rc_new(
+                (&raw const initial).cast(),
+                0,
+                align_of::<()>(),
+                Some(count_drop),
+            );
+            let mut replacement = ();
+            hew_rc_set(rc, (&raw mut replacement).cast());
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+            hew_rc_drop(rc);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 2);
         }
     }
 

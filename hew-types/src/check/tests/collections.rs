@@ -985,12 +985,6 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
             is_indirect: false,
         },
     );
-    checker
-        .registry
-        .register_rcfree_members("Boxed".to_string(), vec![vec_i64]);
-    checker
-        .registry
-        .register_rcfree_members("Person".to_string(), vec![Ty::String]);
 
     let boxed = Ty::Named {
         name: "Boxed".to_string(),
@@ -1028,8 +1022,8 @@ fn array_repeat_collection_bearing_record_is_admitted() {
     // per-slot clone through the same `hew_vec_push_owned` deep copy-in. A
     // collection-bearing record `[Bag; N]` is therefore admitted exactly like
     // `Bag.push` -- each slot is an independent deep clone and the source drops
-    // once. A collection-free record `[Point; N]` also repeats; an `Rc`-field
-    // record stays fail-closed (asserted below).
+    // once. A collection-free record `[Point; N]` and an Rc-bearing record
+    // repeat through the same semantic clone path.
     let bag = check_source(
         r"
         type Bag { items: Vec<i64> }
@@ -1070,8 +1064,6 @@ fn array_repeat_collection_bearing_record_is_admitted() {
         point.errors
     );
 
-    // The surviving boundary: a record whose field is `Rc` (not RcFree) has no
-    // clone/drop thunk and stays fail-closed for `[x; N]`.
     let shared = check_source(
         r"
         type Shared { handle: Rc<i64> }
@@ -1083,12 +1075,12 @@ fn array_repeat_collection_bearing_record_is_admitted() {
         ",
     );
     assert!(
-        shared.errors.iter().any(|error| {
+        !shared.errors.iter().any(|error| {
             error
                 .message
                 .contains("array repeat requires the element type to be Clone")
         }),
-        "[Shared; N] array-repeat of an Rc-field record must stay fail-closed: {:#?}",
+        "[Shared; N] array-repeat must use the Rc field clone/drop thunks: {:#?}",
         shared.errors
     );
 }
@@ -1659,127 +1651,10 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
 }
 
 #[test]
-fn centralized_hashset_admissibility_rejects_nested_rc_elements() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.type_defs.insert(
-        "Holder".to_string(),
-        TypeDef {
-            kind: TypeDefKind::Struct,
-            name: "Holder".to_string(),
-            type_params: vec![],
-            bounds: HashMap::new(),
-            fields: HashMap::from([("value".to_string(), Ty::rc(Ty::I64))]),
-            variants: HashMap::new(),
-            methods: HashMap::new(),
-            doc_comment: None,
-            field_order: vec![],
-            is_indirect: false,
-        },
-    );
-    checker
-        .registry
-        .register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I64)]);
-
-    let holder_ty = Ty::Named {
-        builtin: None,
-        name: "Holder".to_string(),
-        args: vec![],
-    };
-    assert!(
-        !checker.validate_hashset_owned_element_type(&holder_ty, &(0..0)),
-        "HashSet element admissibility should fail closed for nested Rc payloads"
-    );
-    assert!(
-        checker
-            .errors
-            .iter()
-            .any(|err| err.kind == TypeErrorKind::UnsafeCollectionElement
-                && err.message.contains("HashSet")),
-        "expected centralized HashSet admissibility to report UnsafeCollectionElement, got: {:?}",
-        checker.errors
-    );
-}
-
-#[test]
-fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.type_defs.insert(
-        "MaybeHolder".to_string(),
-        TypeDef {
-            kind: TypeDefKind::Enum,
-            name: "MaybeHolder".to_string(),
-            type_params: vec![],
-            bounds: HashMap::new(),
-            fields: HashMap::new(),
-            variants: HashMap::from([(
-                "Some".to_string(),
-                VariantDef::Tuple(vec![Ty::rc(Ty::I64)]),
-            )]),
-            methods: HashMap::new(),
-            doc_comment: None,
-            field_order: vec![],
-            is_indirect: false,
-        },
-    );
-    checker
-        .registry
-        .register_rcfree_members("MaybeHolder".to_string(), vec![Ty::rc(Ty::I64)]);
-
-    let enum_ty = Ty::Named {
-        builtin: None,
-        name: "MaybeHolder".to_string(),
-        args: vec![],
-    };
-    assert!(!checker.validate_hashset_owned_element_type(&enum_ty, &(0..0)));
-}
-
-#[test]
-fn centralized_hashset_admissibility_rejects_recursive_rcfree_cycle() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let a_ty = Ty::Named {
-        builtin: None,
-        name: "A".to_string(),
-        args: vec![],
-    };
-    let b_ty = Ty::Named {
-        builtin: None,
-        name: "B".to_string(),
-        args: vec![],
-    };
-    checker
-        .registry
-        .register_rcfree_members("A".to_string(), vec![b_ty.clone()]);
-    checker
-        .registry
-        .register_rcfree_members("B".to_string(), vec![a_ty.clone()]);
-
-    assert!(
-        !checker.validate_hashset_owned_element_type(&a_ty, &(0..0)),
-        "HashSet element admissibility should fail closed for recursive RcFree cycles"
-    );
-    assert!(checker.errors.iter().any(|err| {
-        err.kind == TypeErrorKind::UnsafeCollectionElement
-            && err.message.contains("recursive type cycle")
-            && err.message.contains('A')
-    }));
-}
-
-#[test]
-fn centralized_hashset_admissibility_rejects_module_qualified_named_rc_payload() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .registry
-        .register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I64)]);
-
-    let holder_ty = Ty::Named {
-        builtin: None,
-        name: "widgets.Holder".to_string(),
-        args: vec![],
-    };
-    assert!(!checker.validate_hashset_owned_element_type(&holder_ty, &(0..0)));
-    assert!(checker.errors.iter().any(|err| {
-        err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("HashSet")
-    }));
+fn vec_owned_element_admits_rc_and_weak_handles() {
+    let checker = Checker::new(ModuleRegistry::new(vec![]));
+    assert!(checker.vec_owned_element_admissible(&Ty::rc(Ty::I64)));
+    assert!(checker.vec_owned_element_admissible(&Ty::weak(Ty::I64)));
 }
 
 #[test]
@@ -1892,7 +1767,7 @@ fn concrete_hashmap_validation_reaches_tuple_wrapped_hashmap() {
 }
 
 #[test]
-fn non_root_private_type_rcfree_is_registered_during_body_checking() {
+fn non_root_private_rc_record_is_admitted_during_body_checking() {
     let parsed = hew_parser::parse(
         r"
         type Holder {
@@ -1932,11 +1807,11 @@ fn non_root_private_type_rcfree_is_registered_during_body_checking() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
     assert!(
-        output
+        !output
             .errors
             .iter()
             .any(|err| err.kind == TypeErrorKind::UnsafeCollectionElement),
-        "expected non-root private type with transitive Rc to be rejected from Vec during body checking, got: {:?}",
+        "expected non-root private Rc record to use semantic Vec clone/drop, got: {:?}",
         output.errors
     );
 }
@@ -2095,7 +1970,7 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
 }
 
 #[test]
-fn actor_decl_registers_rcfree_members_for_collection_checks() {
+fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
     let parsed = hew_parser::parse(
         r"
         actor Worker {
@@ -2119,15 +1994,19 @@ fn actor_decl_registers_rcfree_members_for_collection_checks() {
         args: vec![],
     });
 
-    assert!(
-        checker.reject_rc_collection_element("HashSet", &local_pid_ty, &(0..0)),
-        "LocalPid<Worker> should pass RcFree collection admissibility even when Worker stores Rc"
-    );
+    let vec_ty = checker.make_vec_type(local_pid_ty, &(0..0));
+    assert!(matches!(
+        vec_ty,
+        Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            ..
+        }
+    ));
     assert!(
         !checker.errors.iter().any(|err| {
-            err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("HashSet")
+            err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("Vec")
         }),
-        "LocalPid<Worker> should not emit a HashSet UnsafeCollectionElement error, got: {:?}",
+        "LocalPid<Worker> should not inspect Worker state for Vec layout, got: {:?}",
         checker.errors
     );
 }

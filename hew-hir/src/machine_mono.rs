@@ -1120,6 +1120,51 @@ fn walk_expr(
     );
 
     match &expr.kind {
+        HirExprKind::RcIntrinsic {
+            payload_ty,
+            receiver,
+            value,
+            result_ty,
+            ..
+        } => {
+            visit_ty(
+                payload_ty,
+                &expr.span,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            visit_ty(
+                result_ty,
+                &expr.span,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            for operand in receiver.iter().chain(value.iter()) {
+                walk_expr(
+                    operand,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+        }
         HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }

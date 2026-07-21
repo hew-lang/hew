@@ -63,6 +63,7 @@ mod facts;
 mod machine_synth;
 mod ownership;
 mod pattern;
+mod rc_intrinsic;
 mod scope;
 mod split_consume;
 mod suspend_places;
@@ -101,17 +102,17 @@ use self::consts::{
 pub use self::drop_plan::drop_kind_for_test_only;
 #[cfg(not(test))]
 use self::drop_plan::{
-    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
-    builtin_method_arg_is_move_ingress, check_to_diagnostic, classify_closure_pair_rhs,
-    classify_dyn_trait_storage, cow_value_leaf_drop_symbol, describe_vec_element,
-    dyn_rebind_source_binding, elaborate, exit_block_id, field_override_uses_record_field_drop,
-    is_borrowing_call_abi, is_handle_borrowing_call_abi, note_payload_escape,
-    render_owned_handle_ty, resource_drop_fn, resource_needs_drop_flag,
-    resource_opaque_close_registry, stream_handle_drop_descriptor, ty_is_closure_pair,
-    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
-    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_nonowning_handle_leaf,
-    ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_drop_plan,
-    validate_field_drop_in_place, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
+    affine_release_needs_drop_flag, binder_read_is_borrow_safe_instr,
+    binder_read_is_borrow_safe_terminator, builtin_method_arg_is_move_ingress, check_to_diagnostic,
+    classify_closure_pair_rhs, classify_dyn_trait_storage, cow_value_leaf_drop_symbol,
+    describe_vec_element, dyn_rebind_source_binding, elaborate, exit_block_id,
+    field_override_uses_record_field_drop, is_borrowing_call_abi, is_handle_borrowing_call_abi,
+    note_payload_escape, render_owned_handle_ty, resource_drop_fn, resource_opaque_close_registry,
+    stream_handle_drop_descriptor, ty_is_closure_pair, ty_is_generator_handle,
+    ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
+    ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
+    ty_is_stream_handle, ty_is_vec, validate_drop_plan, validate_field_drop_in_place,
+    vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
 };
 pub(crate) use self::facts::*;
 #[cfg(not(test))]
@@ -1169,8 +1170,9 @@ struct Builder {
     /// `i64` `Place::Local` initialised to 0 at the binding's introduction
     /// and set to 1 at each `IntentKind::Consume` use site.
     ///
-    /// Populated ONLY for bindings that satisfy `resource_needs_drop_flag`
-    /// (a `DropKind::Resource` whose ritual is a `DropFnSpec::UserClose`).
+    /// Populated only for bindings that satisfy
+    /// `affine_release_needs_drop_flag`: Rc/Weak owners and user resources
+    /// whose ritual is a `DropFnSpec::UserClose`.
     /// A binding present here is KEPT in `owned_locals` across its consume
     /// (we do NOT call `mark_binding_moved` for it), so the per-exit
     /// `drops_for_exit` dataflow filter narrows the drop per control-flow
@@ -1180,7 +1182,7 @@ struct Builder {
     /// `mark_binding_moved` removal: fail-closed to no-double-close (it may
     /// leak on a not-consumed branch, the pre-#1933 posture, but never
     /// double-frees the non-idempotent close).
-    pub(crate) resource_drop_flags: HashMap<BindingId, Place>,
+    pub(crate) affine_release_flags: HashMap<BindingId, Place>,
     /// #2301 (extends #53): runtime drop-flags for an owned
     /// `var`-local that is BOTH genuinely consumed (`intent=Consume`, a
     /// move-out such as `let m = r`) on one control-flow path AND reassigned
@@ -1221,7 +1223,7 @@ struct Builder {
     /// moved path cannot be discriminated statically at a shared exit.
     ///
     /// A flagged binding is KEPT in `owned_locals` at its consume sites
-    /// (mirroring the #1933 `resource_drop_flags` discipline): the flag is an
+    /// (mirroring the affine release-flag discipline): the flag is an
     /// `i64` local zero-initialised at the binding's `let` (dominating every
     /// consume, including loop back-edges) and set to 1 at each consume-use.
     /// `build_lifo_drops` attaches it as the [`ElabDrop::guard`], so codegen
@@ -4751,8 +4753,8 @@ impl Builder {
                 // the close on `flag == 0`, so a param closed on one branch is
                 // not re-closed at the merge while one left live on another
                 // branch still drops exactly once. A no-op for a binding whose
-                // close is idempotent/refcounted (`resource_needs_drop_flag`).
-                self.maybe_alloc_resource_drop_flag(param.id, &owned_ty);
+                // close is idempotent/refcounted (`affine_release_needs_drop_flag`).
+                self.maybe_alloc_affine_release_flag(param.id, &owned_ty);
             }
             // #2732 — callee-side drop for a by-value heap-owning ENUM COMPOSITE
             // param (`Result<T, string>`, `Option<string>`, a user enum with an

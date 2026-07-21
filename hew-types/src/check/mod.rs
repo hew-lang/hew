@@ -62,10 +62,10 @@ pub use self::types::{
     ExecutionContextReader, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
     NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PatternPlan, PayloadBinding,
-    PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind, SpanKey, StackHint,
-    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
-    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind, RcIntrinsicOp,
+    SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef,
+    TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
+    WireCodecDirection, WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,

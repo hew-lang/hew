@@ -5,7 +5,8 @@ use std::{
 
 use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
 use hew_types::{
-    short_name, NumericWidth, ResolvedTy, TryConversionKind, WireCodecDirection, WireLayoutTable,
+    short_name, NumericWidth, RcIntrinsicOp, ResolvedTy, TryConversionKind, WireCodecDirection,
+    WireLayoutTable,
 };
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
@@ -1875,6 +1876,7 @@ fn ty_heap_ownership_inner(
         //   `hew_gen_coro_destroy` — heap-owning regardless of its generic
         //   arguments (`Generator<i64, ()>` owns its coro frame even though
         //   `i64` is bit-copy).
+        // - `Rc<T>` / `Weak<T>` owns a counted reference to an allocation.
         // - `Vec<T>` / `HashMap<K, V>` / `HashSet<T>` owns a heap buffer for
         //   ANY element type — `Vec<i64>` owns its `hew_vec_free`-released
         //   backing buffer. A record/enum/tuple field of such a type therefore
@@ -1895,7 +1897,9 @@ fn ty_heap_ownership_inner(
                     | hew_types::BuiltinType::AsyncGenerator
                     | hew_types::BuiltinType::Vec
                     | hew_types::BuiltinType::HashMap
-                    | hew_types::BuiltinType::HashSet,
+                    | hew_types::BuiltinType::HashSet
+                    | hew_types::BuiltinType::Rc
+                    | hew_types::BuiltinType::Weak,
                 ),
             ..
         } => HeapOwnership::HEAP,
@@ -4261,6 +4265,17 @@ pub enum Instr {
     /// The identity allowance set is the checker's sole responsibility; MIR
     /// and codegen never re-check which types are allowed.
     IdentityCompare { dest: Place, lhs: Place, rhs: Place },
+    /// Typed `Rc<T>`/`Weak<T>` ownership operation. Strong handles carry the
+    /// payload pointer while weak handles carry the allocation-header pointer;
+    /// codegen selects the ABI from `op` without reconstructing a method name.
+    RcIntrinsic {
+        dest: Place,
+        op: RcIntrinsicOp,
+        payload_ty: ResolvedTy,
+        receiver: Option<Place>,
+        value: Option<Place>,
+        result_ty: ResolvedTy,
+    },
     /// `dest = token.is_cancelled()`.
     ///
     /// Stage 4a carries the token value through MIR without lowering it to the
@@ -6027,6 +6042,10 @@ pub enum DropKind {
     /// no-op if `drop_fn` is `None`). The pre-M2 default — every
     /// owned `AffineResource` local lowers to this kind.
     Resource,
+    /// Release one strong `Rc<T>` owner through the payload-pointer ABI.
+    RcRelease,
+    /// Release one `Weak<T>` owner through the allocation-header-pointer ABI.
+    WeakRelease,
     /// `Duplex<S, R>` handle drop with close-both-directions. When
     /// the last surviving handle for this Duplex drops, both the
     /// S-direction and R-direction queues close. Codegen emits a

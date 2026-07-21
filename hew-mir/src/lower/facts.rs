@@ -9,6 +9,33 @@ use super::{
     ScanCtx, Strategy, ValueClass,
 };
 
+impl Builder {
+    pub(super) fn binding_ref_use_intent(&self, expr: &HirExpr) -> IntentKind {
+        if self.param_ownership.borrow_arg_sites.contains(&expr.site)
+            || self.bytes_local_share_sites.contains(&expr.site)
+            || self.string_local_share_sites.contains_key(&expr.site)
+        {
+            IntentKind::Read
+        } else {
+            expr.intent
+        }
+    }
+
+    pub(super) fn is_consumed_bound_local(&self, expr: &HirExpr) -> bool {
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            ..
+        } = &expr.kind
+        else {
+            return false;
+        };
+        self.binding_locals.contains_key(binding)
+            && !self.capture_env_sources.contains_key(binding)
+            && !self.funcupdate_param_ids.contains(binding)
+            && self.binding_ref_use_intent(expr) == IntentKind::Consume
+    }
+}
+
 /// Flow-insensitive prescan deciding, for every binding in `func`, whether a
 /// destructive `{ ..<binding>, f: new }` is a PROVEN unique owner of its heap
 /// fields — see the `Builder::funcupdate_base_proven` field and
@@ -425,6 +452,16 @@ fn collect_binding_defs_in_expr<'f>(
         } => {
             collect_binding_defs_in_expr(receiver, defs, let_ids);
             collect_binding_defs_in_expr(event, defs, let_ids);
+        }
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            if let Some(receiver) = receiver {
+                collect_binding_defs_in_expr(receiver, defs, let_ids);
+            }
+            if let Some(value) = value {
+                collect_binding_defs_in_expr(value, defs, let_ids);
+            }
         }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
@@ -1245,6 +1282,16 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         HirExprKind::MachineTakeEmits {
             receiver, event, ..
         } => scan_expr_for_consume(receiver, b_p, pc) || scan_expr_for_consume(event, b_p, pc),
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            receiver
+                .as_deref()
+                .is_some_and(|expr| scan_expr_for_consume(expr, b_p, pc))
+                || value
+                    .as_deref()
+                    .is_some_and(|expr| scan_expr_for_consume(expr, b_p, pc))
+        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
@@ -1589,6 +1636,16 @@ fn collect_borrow_arg_sites_in_expr(
         } => {
             go!(receiver);
             go!(event);
+        }
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            if let Some(receiver) = receiver {
+                go!(receiver);
+            }
+            if let Some(value) = value {
+                go!(value);
+            }
         }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
@@ -2079,6 +2136,16 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
         } => {
             collect_return_values_in_expr(receiver, out);
             collect_return_values_in_expr(event, out);
+        }
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            if let Some(receiver) = receiver {
+                collect_return_values_in_expr(receiver, out);
+            }
+            if let Some(value) = value {
+                collect_return_values_in_expr(value, out);
+            }
         }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }

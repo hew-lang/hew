@@ -1,0 +1,7 @@
+fn main() {
+    let rc = Rc::new(1);
+    let weak = rc.downgrade();
+    let moved = weak;
+    let _ = weak.upgrade();
+    let _ = moved;
+}

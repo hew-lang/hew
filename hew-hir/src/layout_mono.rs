@@ -540,6 +540,19 @@ fn walk_expr(
     disc.visit_ty(&expr.ty, &expr.span, subst, residual_domain);
 
     match &expr.kind {
+        HirExprKind::RcIntrinsic {
+            payload_ty,
+            receiver,
+            value,
+            result_ty,
+            ..
+        } => {
+            disc.visit_ty(payload_ty, &expr.span, subst, residual_domain);
+            disc.visit_ty(result_ty, &expr.span, subst, residual_domain);
+            for operand in receiver.iter().chain(value.iter()) {
+                walk_expr(operand, subst, residual_domain, disc);
+            }
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             walk_expr(callee, subst, residual_domain, disc);
             for a in args {

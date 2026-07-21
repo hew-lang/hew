@@ -1387,9 +1387,22 @@ impl Checker {
 
             if resolved_fn_name == "Rc::new" {
                 if let (Some(payload_ty), Some(arg)) = (applied_sig.params.first(), args.first()) {
-                    let (_, arg_span) = arg.expr();
-                    let resolved_payload = self.subst.resolve(payload_ty);
+                    let (arg_expr, arg_span) = arg.expr();
+                    let resolved_payload = self
+                        .subst
+                        .resolve(payload_ty)
+                        .materialize_literal_defaults();
                     self.validate_rc_payload_type(&resolved_payload, arg_span);
+                    self.reject_borrowed_parameter_consumption(arg_expr, arg_span, "Rc::new");
+                    if let Ok(payload_ty) = ResolvedTy::from_ty(&resolved_payload) {
+                        self.method_call_rewrites.insert(
+                            SpanKey::in_module(span, self.current_module_idx),
+                            MethodCallRewrite::RcIntrinsic {
+                                op: RcIntrinsicOp::New,
+                                payload_ty,
+                            },
+                        );
+                    }
                 }
             }
 

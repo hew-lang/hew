@@ -891,6 +891,13 @@ mod tests {
                     )]),
                 ),
                 (
+                    "WeakNode".to_string(),
+                    VariantDef::Tuple(vec![Ty::builtin_named(
+                        crate::BuiltinType::Weak,
+                        vec![named_type("Tree")],
+                    )]),
+                ),
+                (
                     "PtrNode".to_string(),
                     VariantDef::Tuple(vec![Ty::Pointer {
                         is_mutable: false,

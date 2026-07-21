@@ -1,0 +1,33 @@
+fn live() -> i64 {
+    let rc = Rc::new(7);
+    let alias = rc.clone();
+    let weak = rc.downgrade();
+    let _weak_alias = weak.clone();
+    let before = rc.strong_count() * 100 + rc.weak_count();
+    let uniqueness = if rc.is_unique() {
+        90
+    } else {
+        1
+    };
+    match weak.upgrade() {
+        Some(upgraded) => {
+            rc.set(9);
+            before + upgraded.strong_count() * 10 + alias.get() + uniqueness
+        },
+        None => 9000,
+    }
+}
+
+fn expired() -> Weak<i64> {
+    let rc = Rc::new(1);
+    rc.downgrade()
+}
+
+fn main() -> i64 {
+    let weak = expired();
+    let dead = match weak.upgrade() {
+        Some(_) => 9000,
+        None => 1,
+    };
+    live() + dead
+}

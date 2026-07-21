@@ -202,7 +202,12 @@ impl ValueClass {
             // and get a scope-exit drop.
             ResolvedTy::CancellationToken
             | ResolvedTy::Named {
-                builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                builtin: Some(
+                    BuiltinType::Generator
+                        | BuiltinType::AsyncGenerator
+                        | BuiltinType::Rc
+                        | BuiltinType::Weak,
+                ),
                 ..
             } => Self::AffineResource,
             // An extern-returned `&T` is a non-owning foreign boundary view:

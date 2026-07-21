@@ -446,6 +446,16 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_expr_for_suspend(receiver, found);
             walk_expr_for_suspend(arg, found);
         }
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            if let Some(receiver) = receiver {
+                walk_expr_for_suspend(receiver, found);
+            }
+            if let Some(value) = value {
+                walk_expr_for_suspend(value, found);
+            }
+        }
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. } => {

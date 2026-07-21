@@ -30,8 +30,8 @@ use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
     ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
     LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
-    NumericMethodLowering, OptionResultMethod, PatternKind, ResolvedTy, SpanKey, Ty, TyPattern,
-    TypeCheckOutput, WireCodecDirection,
+    NumericMethodLowering, OptionResultMethod, PatternKind, RcIntrinsicOp, ResolvedTy, SpanKey, Ty,
+    TyPattern, TypeCheckOutput, WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -4743,6 +4743,13 @@ fn collect_call_sites_in_expr(
     trait_out: &mut Vec<TraitMethodStaticSite>,
 ) {
     match &expr.kind {
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            for operand in receiver.iter().chain(value.iter()) {
+                collect_call_sites_in_expr(operand, out, trait_out);
+            }
+        }
         HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
             // Record the site if callee is a direct BindingRef name.
             if let HirExprKind::BindingRef { name, .. } = &callee.kind {
@@ -7974,6 +7981,15 @@ impl LowerCtx {
         abi_return_ty: &ResolvedTy,
     ) {
         match &mut expr.kind {
+            HirExprKind::RcIntrinsic {
+                receiver: rc_receiver,
+                value,
+                ..
+            } => {
+                for operand in rc_receiver.iter_mut().chain(value.iter_mut()) {
+                    self.wrap_var_self_explicit_expr_returns(operand, receiver, abi_return_ty);
+                }
+            }
             HirExprKind::Block(block)
             | HirExprKind::Scope { body: block }
             | HirExprKind::ForkBlock { body: block, .. } => {
@@ -14135,6 +14151,41 @@ impl LowerCtx {
             }
             Expr::Unary { op, operand } => self.lower_unary_expr(*op, operand, &span),
             Expr::Call { function, args, .. } => {
+                let rewrite_key = self.mk_key(&span);
+                if let Some(MethodCallRewrite::RcIntrinsic {
+                    op: RcIntrinsicOp::New,
+                    payload_ty,
+                }) = self.method_call_rewrites.get(&rewrite_key).cloned()
+                {
+                    let result_ty = self
+                        .resolved_expr_types
+                        .get(&rewrite_key)
+                        .cloned()
+                        .unwrap_or_else(|| ResolvedTy::Named {
+                            name: "Rc".to_string(),
+                            args: vec![payload_ty.clone()],
+                            builtin: Some(BuiltinType::Rc),
+                            is_opaque: false,
+                        });
+                    let value = args
+                        .first()
+                        .map(|arg| Box::new(self.lower_expr(arg.expr(), IntentKind::Consume)));
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                        ty: result_ty.clone(),
+                        intent,
+                        kind: HirExprKind::RcIntrinsic {
+                            op: RcIntrinsicOp::New,
+                            payload_ty,
+                            receiver: None,
+                            value,
+                            result_ty,
+                        },
+                        span,
+                    };
+                }
                 let mut args = self.lower_call_args(args);
                 if let Expr::Identifier(name) = &function.0 {
                     // Intercept payload-bearing variant constructors written
@@ -21750,6 +21801,30 @@ impl LowerCtx {
         }
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
+            Some(MethodCallRewrite::RcIntrinsic { op, payload_ty }) => {
+                let result_ty = self
+                    .resolved_expr_types
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(ResolvedTy::Unit);
+                let receiver = Some(Box::new(self.lower_expr(receiver, IntentKind::Read)));
+                let value = if op == RcIntrinsicOp::Set {
+                    args.first()
+                        .map(|arg| Box::new(self.lower_expr(arg.expr(), IntentKind::Consume)))
+                } else {
+                    None
+                };
+                (
+                    HirExprKind::RcIntrinsic {
+                        op,
+                        payload_ty,
+                        receiver,
+                        value,
+                        result_ty: result_ty.clone(),
+                    },
+                    result_ty,
+                )
+            }
             Some(MethodCallRewrite::BuiltinVecIntoIter { elem_ty }) => {
                 self.lower_builtin_vec_into_iter(receiver, elem_ty, span)
             }
@@ -25046,6 +25121,13 @@ fn collect_captures_walk(
     self_id: Option<BindingId>,
 ) {
     match &expr.kind {
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            for operand in receiver.iter().chain(value.iter()) {
+                collect_captures_walk(operand, param_ids, seen, captures, self_id);
+            }
+        }
         HirExprKind::BindingRef {
             name,
             resolved: ResolvedRef::Binding(id),
@@ -25370,6 +25452,13 @@ fn collect_general_closure_captures_walk(
     captures: &mut Vec<ClosureCaptureCandidate>,
 ) {
     match &expr.kind {
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            for operand in receiver.iter().chain(value.iter()) {
+                collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
+            }
+        }
         HirExprKind::BindingRef {
             name,
             resolved: ResolvedRef::Binding(id),
@@ -26153,6 +26242,13 @@ fn collect_hir_emitted_events_in_stmt(
 )]
 fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: &mut Vec<String>) {
     match &expr.kind {
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            for operand in receiver.iter().chain(value.iter()) {
+                collect_hir_emitted_events_walk(operand, event_names, out);
+            }
+        }
         HirExprKind::MachineEmit { event_idx, fields } => {
             if let Some(name) = event_names.get(*event_idx) {
                 out.push(name.clone());
@@ -28472,6 +28568,13 @@ fn scan_expr_for_call_shape(
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
     match &expr.kind {
+        HirExprKind::RcIntrinsic {
+            receiver, value, ..
+        } => {
+            for operand in receiver.iter().chain(value.iter()) {
+                scan_expr_for_call_shape(operand, callable, diagnostics);
+            }
+        }
         HirExprKind::Call { callee, args } => {
             // Site 4194 + 4236 predicates fire on the callee's resolution.
             // Recurse first so any nested invalid call inside `callee` or

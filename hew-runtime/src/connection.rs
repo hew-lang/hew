@@ -7474,9 +7474,7 @@ mod tests {
             reader_saw_close_tx.send(conn_id).ok();
         }));
 
-        ready_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("reader should signal ready");
+        ready_rx.recv().expect("reader should signal ready");
 
         // Drop the actor.  Defense-in-depth must:
         //  1. Set reader_stop = 1 (expected-stop path)
@@ -7489,7 +7487,7 @@ mod tests {
         // before (or during) the join.
         assert_eq!(
             reader_saw_close_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
+                .recv()
                 .expect("reader must exit after transport close"),
             99,
             "drop must close transport connection 99 to unblock the reader"
@@ -7507,15 +7505,37 @@ mod tests {
 
     #[test]
     fn connmgr_remove_releases_connections_lock_before_reader_wake() {
+        struct CloseState {
+            close_tx: std::sync::mpsc::Sender<()>,
+            mgr: std::sync::atomic::AtomicPtr<HewConnMgr>,
+            lock_result_tx: std::sync::mpsc::Sender<bool>,
+        }
+
         unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, _conn_id: c_int) {
-            // SAFETY: test installs a Sender<()> as the transport impl payload.
-            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<()>>()) };
-            tx.send(()).expect("close signal send should succeed");
+            // SAFETY: test installs a CloseState as the transport impl payload.
+            let state = unsafe { &*(impl_ptr.cast::<CloseState>()) };
+            let mgr = state.mgr.load(Ordering::Acquire);
+            let could_lock = !mgr.is_null()
+                // SAFETY: the manager remains live until removal and teardown complete.
+                && unsafe { (&*mgr).connections.try_access(|_| ()).is_some() };
+            state
+                .lock_result_tx
+                .send(could_lock)
+                .expect("close callback should report lock availability");
+            state
+                .close_tx
+                .send(())
+                .expect("close signal send should succeed");
         }
 
         let (close_tx, close_rx) = std::sync::mpsc::channel::<()>();
         let (lock_result_tx, lock_result_rx) = std::sync::mpsc::channel::<bool>();
-        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let close_impl = Box::into_raw(Box::new(CloseState {
+            close_tx,
+            mgr: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            lock_result_tx,
+        }))
+        .cast::<std::ffi::c_void>();
         let ops = Box::new(crate::transport::HewTransportOps {
             connect: None,
             listen: None,
@@ -7542,19 +7562,17 @@ mod tests {
             )
         };
         assert!(!mgr.is_null());
+        // SAFETY: close_impl points at the live CloseState allocated above.
+        unsafe {
+            (&*close_impl.cast::<CloseState>())
+                .mgr
+                .store(mgr, Ordering::Release);
+        }
 
         let mut actor = ConnectionActor::new(41);
         actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
-        let mgr_send = SendConnMgr(mgr);
         actor.reader_handle = Some(std::thread::spawn(move || {
-            let mgr = mgr_send;
             close_rx.recv().expect("reader should observe close");
-            // SAFETY: mgr points at the live manager under test until the outer
-            // remove call drops and joins this thread.
-            let could_lock = unsafe { (&*mgr.0).connections.try_access(|_| ()).is_some() };
-            lock_result_tx
-                .send(could_lock)
-                .expect("reader should report lock availability");
         }));
 
         // SAFETY: mgr is a live manager allocated by hew_connmgr_new above.
@@ -7564,8 +7582,8 @@ mod tests {
         assert_eq!(unsafe { hew_connmgr_remove(mgr, 41) }, 0);
         assert!(
             lock_result_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
-                .expect("reader should report whether the lock was released"),
+                .recv()
+                .expect("close callback should report whether the lock was released"),
             "hew_connmgr_remove should release the connections lock before closing the transport"
         );
         // SAFETY: mgr remains valid until the free call below.
@@ -7576,9 +7594,7 @@ mod tests {
         // SAFETY: transport_ptr and close_impl were allocated in this test and outlive the manager.
         unsafe {
             drop(Box::from_raw(transport_ptr));
-            drop(Box::from_raw(
-                close_impl.cast::<std::sync::mpsc::Sender<()>>(),
-            ));
+            drop(Box::from_raw(close_impl.cast::<CloseState>()));
         }
         drop(ops);
     }
@@ -7643,7 +7659,7 @@ mod tests {
         assert!(matches!(install, Err(ConnectionInstallError::Shutdown)));
         assert_eq!(
             lock_result_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
+                .recv()
                 .expect("reader should unblock and finish"),
             (52, true),
             "shutdown rejection should close transport after releasing the connections lock"
@@ -7800,9 +7816,8 @@ mod tests {
             done_tx.send(()).expect("free completion send");
         });
 
-        started_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("free thread should start");
+        started_rx.recv().expect("free thread should start");
+        // Deliberate negative-timing assertion: free must remain blocked on the reader lifecycle.
         assert!(
             done_rx
                 .recv_timeout(std::time::Duration::from_millis(100))
@@ -7812,7 +7827,7 @@ mod tests {
 
         drop(reader_guard);
         done_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
+            .recv()
             .expect("free should finish once reader lifecycle is idle");
         free_thread.join().expect("free thread panicked");
 
@@ -7925,7 +7940,7 @@ mod tests {
 
             assert_eq!(
                 close_rx
-                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .recv()
                     .expect("remove should close the old transport before cleanup"),
                 11
             );
@@ -7989,7 +8004,7 @@ mod tests {
                 .expect("reader release should succeed");
             assert_eq!(
                 remove_result_rx
-                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .recv()
                     .expect("remove should complete once the old reader exits"),
                 0
             );
@@ -8825,7 +8840,7 @@ mod tests {
             });
 
             suspect_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
+                .recv()
                 .expect("lost path should reach the membership callback");
 
             let (publish_done_tx, publish_done_rx) = std::sync::mpsc::channel::<()>();
@@ -8860,21 +8875,21 @@ mod tests {
             });
             assert_eq!(
                 close_rx
-                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .recv()
                     .expect("remove should close the test connection before publish resumes"),
                 22
             );
             release.wait();
 
             lost_done_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
+                .recv()
                 .expect("lost thread should finish once released");
             publish_done_rx
-                .recv_timeout(std::time::Duration::from_secs(1))
+                .recv()
                 .expect("publish thread should finish after the old lost transition");
             assert_eq!(
                 remove_done_rx
-                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .recv()
                     .expect("remove should finish after publication cleanup"),
                 0
             );

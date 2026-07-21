@@ -52,6 +52,8 @@ mod owned_string_temp_drop_canary;
 mod plain_vec_local_drop;
 #[path = "lowering_expr/polymorphic_mir_typeparam.rs"]
 mod polymorphic_mir_typeparam;
+#[path = "lowering_expr/rc_weak_lowering.rs"]
+mod rc_weak_lowering;
 #[path = "lowering_expr/regex_predicate_lowering.rs"]
 mod regex_predicate_lowering;
 #[path = "lowering_expr/runtime_abi_instr.rs"]

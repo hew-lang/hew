@@ -1397,16 +1397,48 @@ fn eval(e: Expr) -> i64 {
 - Non-atomic refcount (fast, single-threaded)
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
-- Current compiler support is fail-closed: `Rc<T>` currently accepts `T: Copy`, `string`, `bytes`, and nested `Rc` of supported payloads until recursive drop lowering exists
-- For collection admissibility, the checker currently enforces an internal `RcFree` boundary (current checker behaviour, not stable user-written trait syntax): a type is treated as RcFree only when its resolved structure contains no `Rc<_>` after recursively checking wrapper type arguments, tuples/arrays/slices, and registered named type/enum/actor members, including module-qualified and non-root private definitions seen during checking
-- `LocalPid<A>` participates in that structural check through its actor type argument: if actor `A` stores non-RcFree state, `LocalPid<A>` is also non-RcFree for collection checks
-- `HashMap` and `HashSet` reject non-RcFree key/value/element types during type checking; `Vec` rejects non-RcFree elements at collection method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
+- `Rc::new(value)` consumes `value`; `.clone()` creates another strong owner
+- `.get()` copies the payload and therefore requires `T: Copy`
+- `.set(value)` consumes and replaces the entire shared payload; every strong alias observes the replacement
+- `.downgrade()` creates a `Weak<T>`; `.strong_count()`, `.weak_count()`, and `.is_unique()` inspect the allocation
+- Supported payloads include scalars, `string`, `bytes`, `Rc`, `Weak`, tuples,
+  arrays, `Option`, `Result`, records, enums, and supported owned collections;
+  clone/drop synthesis recursively follows aggregate fields
+- `Vec<Rc<T>>`, `Vec<Weak<T>>`, and records containing these handles use
+  semantic field clone/drop operations; map and set shapes retain their own
+  independent key, value, `Eq`, `Hash`, and ABI restrictions
 
 ```hew
 let data: Rc<string> = Rc::new(expensive_computation());
 let alias = data.clone();  // refcount++, no data copy
 // data and alias share the same string
 ```
+
+**`Weak<T>` — non-owning cycle-breaking handle:**
+
+- `rc.downgrade()` is the only constructor; there is no empty `Weak::new()`
+- `weak.clone()` creates another weak owner
+- `weak.upgrade()` returns exactly `Some(Rc<T>)` while a strong owner exists,
+  and exactly `None` after the last strong owner is released
+- `Weak<T>` is affine and is neither `Send` nor `Sync`
+- A weak handle keeps the allocation header alive but does not keep its payload alive
+
+```hew
+type Node {
+    label: string,
+    parent: Option<Weak<Node>>,
+}
+
+fn main() {
+    let root = Rc::new(Node { label: "root", parent: None });
+    let weak = root.downgrade();
+    root.set(Node { label: "child", parent: Some(weak.clone()) });
+}
+```
+
+Strong `Rc` cycles leak because Hew does not run a tracing collector. Use weak
+back-edges to break cycles. `Rc::new_cyclic`, dereference/borrow access to an Rc
+payload, and cross-actor transfer are not supported in edition 2026.
 
 > See HEW-FUTURE.md §2.3 for the user-facing `Arc<T>` surface — targeted
 > for v0.7. The runtime contains internal atomic-refcount machinery, but
@@ -1451,7 +1483,8 @@ produces identical results with or without them.
 | No GC pauses      | No tracing GC; deterministic refcounting and scope-based drops |
 | No memory leaks\* | RAII ensures cleanup; cycles in `Rc` can leak (use weak refs)  |
 
-\*Reference cycles in `Rc<T>` can cause leaks. `Weak<T>` is the intended cycle-breaker but is **not yet implemented** — `Weak<T>` is not a registered builtin type, so `Weak::new(...)` is rejected during type-checking as an unknown type before it reaches HIR. Supervision trees naturally avoid cycles by keeping ownership parent-to-child only.
+\*Strong reference cycles in `Rc<T>` can leak. Use `Weak<T>` back-edges; there
+is deliberately no empty `Weak::new()` constructor.
 
 #### 3.7.8 Resource markers (`#[resource]` and `#[linear]`)
 
@@ -2286,7 +2319,9 @@ impl<T> Vec<T> {
 
 **Current `Vec<T>` element restrictions** — the type checker rejects element types that the vec lowering cannot handle:
 
-- Non-RcFree elements: `Vec<T>` operations reject element types that fail the internal RcFree boundary (for example direct `Rc<U>`, named wrappers/structs/enums that contain `Rc`, and `LocalPid<A>` when actor `A` stores `Rc` state); this remains enforced at method-call sites (`push`, `pop`, `get`, `remove`, `set`, `append`, `extend`, `map`, `filter`, `fold`) rather than as a bare annotation-level ban
+- Owned elements must have a concrete semantic clone/drop descriptor. Direct
+  `Rc<U>` and `Weak<U>` elements and records containing them are supported;
+  unresolved, opaque, linear, task, function, and closure shapes fail closed
 - Element types that structurally contain a fixed-size array (`[T; N]`) are rejected; flatten such data before storing in a Vec
 
 Commonly used string operations include `+`, `==`, `!=`, `.len()`,
@@ -2314,9 +2349,8 @@ let miss = m["absent"];  // Option<i64> — None
 the shipped runtime/codegen ABI currently supports only `HashMap<string, V>`
 where `V` is `string`, `bool`, `char`, any integer type, any float type, or
 `duration`. Other `HashMap<K, V>` pairs are rejected during type checking.
-Additionally, non-RcFree types in either the key or value position are rejected
-regardless of the ABI key/value check; this is structural, not just a direct
-`Rc<T>` ban.
+Key and value positions remain subject to their independent fixed-layout,
+semantic clone/drop, `Hash`, and `Eq` requirements.
 
 **Map literal syntax** — a `HashMap<K, V>` can be constructed inline with
 brace-colon syntax.  The parser disambiguates `{` as a map literal when the
@@ -2409,9 +2443,8 @@ Important current details:
   `HashSet<i64>` and `HashSet<string>` through the typed-layout runtime;
   unsupported `HashSet<T>` usages are rejected fail-closed during type
   checking, including nested annotations, function signatures, and `#[wire] enum`
-  payloads; collection element admissibility also requires the internal RcFree
-  boundary, so `HashSet<Rc<T>>`, named wrappers that contain `Rc`, and
-  `LocalPid<A>` handles to actors with `Rc` state are rejected
+  payloads; admission follows the HashSet ABI and its independent element,
+  `Hash`, and `Eq` requirements
 - `std::iter` exposes lazy adapters (`map`, `filter`, `take`, `skip`) over
   any `Iterator`, driven by terminal helpers (`fold`, `count`, `collect`,
   `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
@@ -4453,7 +4486,8 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 
 - Per-actor heaps for isolation (no shared memory between actors)
 - RAII with deterministic destruction (no garbage collector)
-- Internal `Rc<T>` for single-actor shared ownership (runtime-only; not user-nameable); cross-actor sharing is expressed with owned messages / actor state rather than a surfaced Hew `Arc<T>` syntax
+- User-facing `Rc<T>` and `Weak<T>` provide single-actor shared ownership and
+  cycle-breaking; neither can cross an actor boundary
 - Bulk deallocation on actor termination (entire heap freed)
 
 **I/O integration:**

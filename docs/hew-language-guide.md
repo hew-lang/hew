@@ -901,6 +901,51 @@ reference type. Writing `&x` is rejected with a diagnostic pointing you at
 `clone x`. The separate `&T` spelling is confined to foreign declarations; see
 [Appendix A](#appendix-a---ffi-boundary-types).
 
+### Shared ownership inside one actor with Rc and Weak
+
+`Rc<T>` gives multiple bindings ownership of one payload inside a single
+actor. Construct it with `Rc::new(value)` and create another strong owner with
+`.clone()`. Both handles are affine: assigning one without cloning moves it.
+Neither `Rc<T>` nor `Weak<T>` can be sent to another actor.
+
+```hew
+fn main() {
+    let value = Rc::new(7);
+    let alias = value.clone();
+    value.set(9);
+    println(alias.get());          // 9
+    println(value.strong_count()); // 2
+}
+```
+
+`.get()` requires a `Copy` payload. `.set(value)` works for supported aggregate
+payloads and replaces the whole shared value, consuming the replacement.
+
+Use `Weak<T>` for graph back-edges so the graph does not form a strong cycle:
+
+```hew
+type Node {
+    label: string,
+    parent: Option<Weak<Node>>,
+}
+
+fn main() {
+    let root = Rc::new(Node { label: "root", parent: None });
+    let weak = root.downgrade();
+    root.set(Node { label: "child", parent: Some(weak.clone()) });
+
+    match weak.upgrade() {
+        Some(owner) => println(owner.strong_count()),
+        None => println("payload already released"),
+    }
+}
+```
+
+`upgrade()` returns `Some` only while at least one strong owner exists. There
+is no `Weak::new()`; construction starts with `Option<Weak<T>>::None`, then uses
+`downgrade()` and `set()`. Strong `Rc` cycles leak. `Rc::new_cyclic`, direct
+deref/borrow access to the payload, and cross-actor transfer are not supported.
+
 ### Struct value param and returning a struct
 
 ```hew

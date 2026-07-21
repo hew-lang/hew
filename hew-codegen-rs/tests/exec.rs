@@ -54,5 +54,7 @@ mod vec_record_contains_exec;
 mod vec_record_index_exec;
 #[path = "exec/wasm_generator_exec.rs"]
 mod wasm_generator_exec;
+#[path = "exec/wasm_rc_weak_exec.rs"]
+mod wasm_rc_weak_exec;
 #[path = "exec/wasm_try_to_platform_width_exec.rs"]
 mod wasm_try_to_platform_width_exec;

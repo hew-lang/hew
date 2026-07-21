@@ -219,6 +219,16 @@ retries = 1                                                           # SHIM: se
 slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
+# These hew-runtime connection tests coordinate real OS threads through blocking
+# channel handshakes. They wait for protocol events rather than scheduler-sensitive
+# per-operation deadlines, while serialization keeps this real-thread class from
+# competing with the workspace-wide parallel run.
+filter = "binary(hew_runtime) and test(/^connection::tests::(conn_actor_drop_closes_transport_before_join|connmgr_remove_releases_connections_lock_before_reader_wake|install_connection_actor_shutdown_releases_lock_before_reader_wake|connmgr_free_waits_for_self_removed_reader_lifecycle|connmgr_remove_skips_stale_route_cleanup_after_replacement|connmgr_publish_skips_removed_connection_(while_establish_blocks|without_routing_table))$/)"
+test-group = "real-timing"
+# Single process-level deadlock backstop; the positive channel waits have no deadlines.
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.ci.overrides]]
 # The two-process remote-ask pair (echo, timeout) spawns a second OS process and
 # round-trips an ask over loopback TCP. These run in the real-timing group
 # (max-threads = 1) because their assertions irreducibly measure a real

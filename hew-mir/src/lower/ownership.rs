@@ -1,16 +1,17 @@
 use super::{
-    actor_name_from_handle_ty, base_local, binding_ref_target, callee_returns_fresh_owner,
-    machine_layout_name_matches, mangle_layout_key, monomorphic_user_record_key, named_type_marker,
-    resource_needs_drop_flag, ty_is_closure_pair, ty_is_heap_owning_enum_composite,
-    ty_is_local_collection_handle, user_record_layout_key, vec_iter_record_layout_key,
-    ActiveIterationOwner, BindingId, Builder, BuiltinType, ClosurePairIngress, CmpPred,
-    DecisionFact, Disposition, FieldLoadClass, HashMap, HashSet, HirBinding, HirBlock, HirExpr,
-    HirExprKind, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, OwnedLocalEntry, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
-    Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass,
-    ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
-    SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
-    SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_WHILE_LET_ITERATION_NAME,
+    actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
+    callee_returns_fresh_owner, machine_layout_name_matches, mangle_layout_key,
+    monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
+    ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
+    vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
+    ClosurePairIngress, CmpPred, DecisionFact, Disposition, FieldLoadClass, HashMap, HashSet,
+    HirBinding, HirBlock, HirExpr, HirExprKind, HirStmtKind, Instr, IntentKind, LayoutClass,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, OwnedLocalEntry, OwnershipCtx,
+    OwnershipDecision, Place, PlaceProvenance, Projection, ResolvedRef, ResolvedTy, ResourceMarker,
+    SiteId, Strategy, Terminator, ValueClass, ValueOwnership, ValueProvenance,
+    SYNTHETIC_CALL_SCRUTINEE_NAME, SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
+    SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
+    SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,12 +159,17 @@ impl Builder {
     /// today's leak-not-double-free posture because
     /// `derive_enum_composite_drop_allowed` still excludes the composite.
     pub(crate) fn call_scrutinee_owned_ty(&self, scrutinee: &HirExpr) -> Option<ResolvedTy> {
-        // Only the direct-call rvalue shape. A `BindingRef` scrutinee already
-        // owns its slot through its own `let`/param registration — a second
-        // owner over the same local would double-free — and every non-call
-        // rvalue keeps its pre-fix posture (fail-closed).
-        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
-            return None;
+        // Direct Hew calls and `Weak.upgrade` are the audited fresh enum
+        // producers. A `BindingRef` scrutinee already owns its slot through its
+        // own binding registration, so minting another owner would double-drop.
+        // Other rvalues keep the fail-closed posture.
+        let callee = match &scrutinee.kind {
+            HirExprKind::Call { callee, .. } => Some(callee.as_ref()),
+            HirExprKind::RcIntrinsic {
+                op: hew_types::RcIntrinsicOp::WeakUpgrade,
+                ..
+            } => None,
+            _ => return None,
         };
         // Recv-next / vec-string-iter-next scrutinees already carry their own
         // per-iteration release discipline (`Disposition::BodyEndReleased` on
@@ -172,8 +178,9 @@ impl Builder {
         // here would double-release the payload. (A generator `.next()`
         // scrutinee is `HirExprKind::GeneratorNext`, not `Call`, so the shape
         // gate above already excludes it.)
-        if Self::is_recv_next_scrutinee(scrutinee)
-            || self.is_vec_string_iter_next_scrutinee(scrutinee)
+        if callee.is_some()
+            && (Self::is_recv_next_scrutinee(scrutinee)
+                || self.is_vec_string_iter_next_scrutinee(scrutinee))
         {
             return None;
         }
@@ -185,11 +192,13 @@ impl Builder {
         // every member handed out through the return —
         // `derive_returned_aggregate_member_bindings`), so this caller holds
         // the single release obligation.
-        if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
-            if matches!(resolved, ResolvedRef::Builtin(_))
-                || crate::runtime_symbols::is_known_runtime_symbol(name)
-            {
-                return None;
+        if let Some(callee) = callee {
+            if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
+                if matches!(resolved, ResolvedRef::Builtin(_))
+                    || crate::runtime_symbols::is_known_runtime_symbol(name)
+                {
+                    return None;
+                }
             }
         }
         // Exactly the value class the `EnumInPlace` scope-exit machinery
@@ -405,8 +414,32 @@ impl Builder {
         scrutinee: &HirExpr,
     ) -> Result<crate::return_provenance::CallScrutineeAdmission, Box<MirDiagnostic>> {
         use crate::return_provenance::{is_typed_recv_callee, AliasBits, CallScrutineeAdmission};
-        // Structural Call-gate FIRST: only a direct `Call` rvalue can mint the
-        // from-call owner. A non-`Call` scrutinee (a `Block`/`If` synthetic
+        // `Weak.upgrade` always returns a fresh `Option<Rc<T>>` owner. Admit it
+        // before the general Call gate so a matched `Some` payload is released
+        // when the arm closes.
+        if matches!(
+            &scrutinee.kind,
+            HirExprKind::RcIntrinsic {
+                op: hew_types::RcIntrinsicOp::WeakUpgrade,
+                ..
+            }
+        ) {
+            let ty = self.subst_ty(&scrutinee.ty);
+            return Ok(
+                if ty_is_heap_owning_enum_composite(
+                    &ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                ) {
+                    CallScrutineeAdmission::Admit
+                } else {
+                    CallScrutineeAdmission::NotApplicable
+                },
+            );
+        }
+
+        // Structural Call-gate: only a direct `Call` rvalue can otherwise mint
+        // the from-call owner. A non-`Call` scrutinee (a `Block`/`If` synthetic
         // `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place, an
         // aggregate) is `NotApplicable` ON KIND — exactly `call_scrutinee_owned_ty`'s
         // early `None`, before any runtime-identity resolution can be consulted.
@@ -1354,6 +1387,16 @@ impl Builder {
                 self.collect_vec_owned_element_keys_from_expr(left);
                 self.collect_vec_owned_element_keys_from_expr(right);
             }
+            HirExprKind::RcIntrinsic {
+                receiver, value, ..
+            } => {
+                if let Some(receiver) = receiver {
+                    self.collect_vec_owned_element_keys_from_expr(receiver);
+                }
+                if let Some(value) = value {
+                    self.collect_vec_owned_element_keys_from_expr(value);
+                }
+            }
             HirExprKind::Unary { operand, .. } => {
                 self.collect_vec_owned_element_keys_from_expr(operand);
             }
@@ -1838,16 +1881,15 @@ impl Builder {
     /// Allocate (once) the path-sensitive drop-flag for a non-idempotent
     /// user `#[resource]` binding (#1933 / #1941). Called at the binding's
     /// introducing `let` after its backend `Place` is wired into
-    /// `binding_locals`. A no-op unless `resource_needs_drop_flag` holds, so
-    /// every non-resource binding and every idempotent / refcounted handle
-    /// (Duplex, lambda, half, `Runtime`-descriptor close) is untouched.
+    /// `binding_locals`. A no-op unless `affine_release_needs_drop_flag`
+    /// holds, so unrelated values and idempotent handles are untouched.
     ///
     /// The flag is a fresh `i64` local zero-initialised at this point so the
     /// initialisation dominates every later `Consume` use site and every
     /// scope-exit drop; codegen gates the close on `flag == 0`. Re-entrant:
     /// a rebind of the same binding id keeps the existing flag (the
     /// dominating zero-init already fired).
-    pub(crate) fn maybe_alloc_resource_drop_flag(
+    pub(crate) fn maybe_alloc_affine_release_flag(
         &mut self,
         binding_id: BindingId,
         ty: &ResolvedTy,
@@ -1855,10 +1897,10 @@ impl Builder {
         let Some(place) = self.binding_locals.get(&binding_id).copied() else {
             return;
         };
-        if !resource_needs_drop_flag(place, ty, &self.type_classes) {
+        if !affine_release_needs_drop_flag(place, ty, &self.type_classes) {
             return;
         }
-        if self.resource_drop_flags.contains_key(&binding_id) {
+        if self.affine_release_flags.contains_key(&binding_id) {
             return;
         }
         let flag = self.alloc_local(ResolvedTy::I64);
@@ -1866,7 +1908,7 @@ impl Builder {
             dest: flag,
             value: 0,
         });
-        self.resource_drop_flags.insert(binding_id, flag);
+        self.affine_release_flags.insert(binding_id, flag);
     }
     /// #2301 -- allocate a zero-init path-sensitive overwrite-release drop-flag
     /// for an owned `var`-local that the pre-pass saw both genuinely consumed

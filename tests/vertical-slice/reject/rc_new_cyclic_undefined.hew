@@ -1,0 +1,3 @@
+fn main() {
+    let _ = Rc::new_cyclic(1);
+}

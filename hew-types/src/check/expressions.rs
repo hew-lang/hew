@@ -929,9 +929,9 @@ impl Checker {
         // path and no longer materialises an aliasing temp). Gate on the single
         // authority: `string`/`bytes` always admit (push_str / push_bytes copy
         // independently); an owned record/enum admits exactly when it is
-        // RcFree-clonable via `vec_owned_element_admissible` — which admits a
-        // record/enum transitively holding a `Vec`/`HashMap`/`HashSet` field and
-        // keeps an `Rc`/closure-field element rejected. Anything else fails closed
+        // cloneable via `vec_owned_element_admissible` — which admits a
+        // record/enum transitively holding collections or Rc/Weak handles and
+        // keeps a closure-field element rejected. Anything else fails closed
         // with a clear diagnostic rather than a silent double-free.
         if !self.vec_element_has_copy_layout(&elem_ty) {
             let resolved_elem = self.subst.resolve(&elem_ty);
@@ -4378,15 +4378,12 @@ impl Checker {
         }
     }
 
-    /// Reject returning an `Rc<T>` parameter as a bare identifier without
-    /// `.clone()`.  Under borrow-on-call semantics the callee does not own its
-    /// Rc params — returning one aliases the caller's pointer, causing a
-    /// double-free when both the caller's local and the callee's return value
-    /// are dropped at their respective scope exits.  This is fail-closed: the
-    /// error fires even though the double-free is a codegen/runtime bug, because
-    /// no correct compilation is possible for this pattern today.
-    pub(super) fn warn_rc_param_return(&mut self, fd: &FnDecl) {
-        // Collect dangerous params: those with explicit Rc<_> type annotations.
+    /// Reject escaping a borrowed affine-handle parameter without `.clone()`.
+    /// Under borrow-on-call semantics the callee does not own its Rc/Weak
+    /// parameters, so returning or embedding one would mint an owner without
+    /// incrementing the matching reference count.
+    pub(super) fn warn_affine_param_escape(&mut self, fd: &FnDecl) {
+        // Collect dangerous params: those with explicit Rc<_>/Weak<_> types.
         //
         // NOTE: generic type params (e.g. `x: T`) are NOT flagged here because
         // the danger only materialises when `T` is instantiated with `Rc<U>` at
@@ -4402,7 +4399,7 @@ impl Checker {
                 if matches!(
                     ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Rc),
+                        builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
                         ..
                     }
                 ) {
@@ -4416,6 +4413,46 @@ impl Checker {
         }
         let mut scopes = vec![dangerous_params];
         self.scan_block_for_rc_param_return(&fd.body, &mut scopes);
+    }
+
+    /// Reject consuming a non-Copy by-value parameter into Rc-owned storage.
+    /// A parameter is a borrow at the Hew call boundary; only an explicit
+    /// clone or a freshly constructed value is an owned source.
+    pub(super) fn reject_borrowed_parameter_consumption(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        operation: &str,
+    ) {
+        let Expr::Identifier(name) = expr else {
+            return;
+        };
+        let Some(binding) = self.env.lookup_ref(name) else {
+            return;
+        };
+        let is_parameter = binding.def_span.is_none() && binding.shadow_span.is_some();
+        let ty = self.subst.resolve(&binding.ty);
+        if !is_parameter || self.registry.implements_marker(&ty, MarkerTrait::Copy) {
+            return;
+        }
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::BorrowedParamReturn,
+            span: span.clone(),
+            message: format!(
+                "`{operation}` cannot consume borrowed parameter `{name}` of type `{}`",
+                ty.user_facing()
+            ),
+            notes: vec![(
+                span.clone(),
+                "by-value function parameters are borrowed; the caller retains ownership"
+                    .to_string(),
+            )],
+            suggestions: vec![format!(
+                "use `{name}.clone()` to materialize an owned replacement"
+            )],
+            source_module: self.current_module.clone(),
+        });
     }
 
     /// If `expr` is a bare identifier matching one of the visible dangerous Rc
@@ -4447,6 +4484,9 @@ impl Checker {
             Expr::Call { function, args, .. }
                 if self.callee_is_aggregate_constructor(&function.0) =>
             {
+                if matches!(&function.0, Expr::Identifier(name) if name == "Rc::new") {
+                    return;
+                }
                 for arg in args {
                     let (e, s) = arg.expr();
                     self.check_expr_is_rc_param_return(e, s, scopes);
@@ -4608,9 +4648,9 @@ impl Checker {
         let (message, note, suggestion) = if name == source_param {
             (
                 format!(
-                    "returning Rc parameter `{name}` transfers a borrowed reference \
-                     without incrementing the refcount — this will cause a double-free \
-                     when both the caller's local and the return value are dropped"
+                    "returning affine handle parameter `{name}` transfers a borrowed \
+                     reference without cloning — both caller and callee result would \
+                     release the same handle"
                 ),
                 "function parameters are borrowed under call-boundary ownership; \
                  the caller retains ownership and drops at scope exit"
@@ -4664,6 +4704,9 @@ impl Checker {
             Expr::Call { function, args, .. }
                 if self.callee_is_aggregate_constructor(&function.0) =>
             {
+                if matches!(&function.0, Expr::Identifier(name) if name == "Rc::new") {
+                    return None;
+                }
                 for arg in args {
                     let (e, _) = arg.expr();
                     if let Some(hit) = self.dangerous_source_in_expr(e, scopes) {
@@ -7149,7 +7192,7 @@ impl Checker {
 
     /// Walk a function body and emit `StackHint` entries for every binding
     /// whose RHS resolves to a heap allocation class. Called from
-    /// `check_function_as` after `warn_rc_param_return`.
+    /// `check_function_as` after `warn_affine_param_escape`.
     pub(super) fn classify_stack_hints(&mut self, fd: &FnDecl) {
         // Ignore the function's parameter types and return type for hint
         // emission — the walker is binding-scoped, not signature-scoped.

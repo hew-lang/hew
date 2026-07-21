@@ -17,7 +17,7 @@ use crate::node::{
     HirBlock, HirExpr, HirExprKind, HirGenCaptureSource, HirItem, HirLiteral, HirMatchArmPredicate,
     HirModule, HirStmtKind,
 };
-use hew_types::{BuiltinType, ResolvedTy};
+use hew_types::{BuiltinType, RcIntrinsicOp, ResolvedTy};
 
 #[must_use]
 pub fn verify_hir(module: &HirModule) -> Vec<HirDiagnostic> {
@@ -231,6 +231,39 @@ impl Verifier {
         self.node(expr.node, expr.span.clone());
         self.site(expr.site, expr.span.clone());
         match &expr.kind {
+            HirExprKind::RcIntrinsic {
+                op,
+                receiver,
+                value,
+                result_ty,
+                ..
+            } => {
+                let operands_valid = match op {
+                    RcIntrinsicOp::New => receiver.is_none() && value.is_some(),
+                    RcIntrinsicOp::Set => receiver.is_some() && value.is_some(),
+                    RcIntrinsicOp::Clone
+                    | RcIntrinsicOp::GetCopy
+                    | RcIntrinsicOp::Downgrade
+                    | RcIntrinsicOp::StrongCount
+                    | RcIntrinsicOp::WeakCount
+                    | RcIntrinsicOp::IsUnique
+                    | RcIntrinsicOp::WeakClone
+                    | RcIntrinsicOp::WeakUpgrade => receiver.is_some() && value.is_none(),
+                };
+                if !operands_valid || &expr.ty != result_ty {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: format!("Rc/Weak intrinsic {op:?}"),
+                            reason: "operand shape or result type is inconsistent".to_string(),
+                        },
+                        expr.span.clone(),
+                        "typed Rc/Weak intrinsic failed HIR validation",
+                    ));
+                }
+                for operand in receiver.iter().chain(value.iter()) {
+                    self.expr(operand);
+                }
+            }
             HirExprKind::BindingRef { resolved, name } => {
                 if *resolved == ResolvedRef::Unresolved {
                     self.diagnostics.push(self.diagnostic(

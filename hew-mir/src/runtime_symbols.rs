@@ -628,8 +628,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    const RETIRED_RUNTIME_BACKED_SYMBOL_COUNT: usize = 160;
-    const RETIRED_RUNTIME_BACKED_SYMBOL_FINGERPRINT: u64 = 0x08d9_5439_2cdd_d544;
+    const RETIRED_RUNTIME_BACKED_SYMBOL_COUNT: usize = 171;
+    const RETIRED_RUNTIME_BACKED_SYMBOL_FINGERPRINT: u64 = 0xeaf4_4c52_474e_c1d8;
 
     fn symbol_fingerprint(symbols: &[&str]) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -994,11 +994,13 @@ mod tests {
                 "hew_hashset_free_layout",
                 "hew_lambda_actor_release",
                 "hew_lambda_actor_weak_drop",
+                "hew_rc_drop",
                 "hew_regex_free_capture",
                 "hew_reply_channel_free",
                 "hew_reply_payload_free",
                 "hew_task_free",
                 "hew_task_scope_destroy",
+                "hew_weak_drop_rc",
             ],
         );
         for symbol in release_symbols {

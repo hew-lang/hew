@@ -338,7 +338,13 @@ impl Builder {
             // drop_fn the elaborator emits matches what codegen constructs —
             // `dedup-semantic-boundary`).
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::HashMap | hew_types::BuiltinType::HashSet),
+                builtin:
+                    Some(
+                        hew_types::BuiltinType::HashMap
+                        | hew_types::BuiltinType::HashSet
+                        | hew_types::BuiltinType::Rc
+                        | hew_types::BuiltinType::Weak,
+                    ),
                 ..
             } => true,
             ResolvedTy::Named {
@@ -1610,8 +1616,8 @@ impl Builder {
                 // Place is wired into `binding_locals`. Zero-initialised here so
                 // the flag dominates every `Consume` use site and every
                 // scope-exit drop; set to 1 at each consume. A no-op for every
-                // other binding class (see `resource_needs_drop_flag`).
-                self.maybe_alloc_resource_drop_flag(binding.id, &binding_ty);
+                // other binding class (see `affine_release_needs_drop_flag`).
+                self.maybe_alloc_affine_release_flag(binding.id, &binding_ty);
                 self.maybe_alloc_overwrite_guard_flag(binding);
                 // #2418 — allocate the path-sensitive scope-exit drop-flag for
                 // an owned collection local the pre-pass saw consumed, so a
@@ -1763,31 +1769,6 @@ impl Builder {
                 self.register_discarded_call_result_owner(expr, place);
             }
         }
-    }
-
-    fn binding_ref_use_intent(&self, expr: &HirExpr) -> IntentKind {
-        if self.param_ownership.borrow_arg_sites.contains(&expr.site)
-            || self.bytes_local_share_sites.contains(&expr.site)
-            || self.string_local_share_sites.contains_key(&expr.site)
-        {
-            IntentKind::Read
-        } else {
-            expr.intent
-        }
-    }
-
-    fn is_consumed_bound_local(&self, expr: &HirExpr) -> bool {
-        let HirExprKind::BindingRef {
-            resolved: ResolvedRef::Binding(binding),
-            ..
-        } = &expr.kind
-        else {
-            return false;
-        };
-        self.binding_locals.contains_key(binding)
-            && !self.capture_env_sources.contains_key(binding)
-            && !self.funcupdate_param_ids.contains(binding)
-            && self.binding_ref_use_intent(expr) == IntentKind::Consume
     }
 
     #[allow(
@@ -2337,7 +2318,7 @@ impl Builder {
                         // move-checker and the per-exit `BindingState`. Every
                         // other consumed owned class keeps the legacy
                         // path-insensitive `owned_locals` removal.
-                        if let Some(flag) = self.resource_drop_flags.get(id).copied() {
+                        if let Some(flag) = self.affine_release_flags.get(id).copied() {
                             self.instructions.push(Instr::ConstI64 {
                                 dest: flag,
                                 value: 1,
@@ -2849,6 +2830,19 @@ impl Builder {
                     .push(Instr::CancellationTokenIsCancelled { dest, token });
                 Some(dest)
             }
+            HirExprKind::RcIntrinsic {
+                op,
+                payload_ty,
+                receiver,
+                value,
+                result_ty,
+            } => Some(self.lower_rc_intrinsic(
+                *op,
+                payload_ty,
+                receiver.as_deref(),
+                value.as_deref(),
+                result_ty,
+            )),
             HirExprKind::GeneratorNext { receiver, yield_ty } => {
                 let ctx = self.lower_value(receiver)?;
                 // `expr.ty` is the checker-authoritative `Option<yield_ty>`; the

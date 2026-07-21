@@ -439,6 +439,24 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::Literal(lit) => {
             writeln!(out, "{pad}  literal {lit:?}").expect("write to string");
         }
+        HirExprKind::RcIntrinsic {
+            op,
+            payload_ty,
+            receiver,
+            value,
+            result_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  rc-intrinsic {op:?} payload={} result={}",
+                payload_ty.user_facing(),
+                result_ty.user_facing()
+            )
+            .expect("write to string");
+            for operand in receiver.iter().chain(value.iter()) {
+                dump_expr(out, operand, indent + 4);
+            }
+        }
         HirExprKind::RegexLiteralRef {
             literal_id,
             pattern,

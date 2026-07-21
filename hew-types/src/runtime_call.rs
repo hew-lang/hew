@@ -390,8 +390,19 @@ pub enum RuntimeCallFamily {
     ObserveSeries,
     ObserveBarrier,
 
-    // --- Rc allocation for task-owned closure environments ------------------
+    // --- Rc/Weak ownership --------------------------------------------------
+    RcClone,
+    RcDowngrade,
+    RcDrop,
+    RcGet,
+    RcIsUnique,
     RcNew,
+    RcSet,
+    RcStrongCount,
+    RcWeakCount,
+    WeakCloneRc,
+    WeakDropRc,
+    WeakUpgradeRc,
 
     // --- RecvHalf<T> --------------------------------------------------------
     RecvHalfRecv,
@@ -738,7 +749,18 @@ impl RuntimeCallFamily {
             Self::ObserveSeries => "hew_observe_series",
             Self::ObserveBarrier => "hew_observe_barrier",
             // Rc
+            Self::RcClone => "hew_rc_clone",
+            Self::RcDowngrade => "hew_rc_downgrade",
+            Self::RcDrop => "hew_rc_drop",
+            Self::RcGet => "hew_rc_get",
+            Self::RcIsUnique => "hew_rc_is_unique",
             Self::RcNew => "hew_rc_new",
+            Self::RcSet => "hew_rc_set",
+            Self::RcStrongCount => "hew_rc_strong_count",
+            Self::RcWeakCount => "hew_rc_weak_count",
+            Self::WeakCloneRc => "hew_weak_clone_rc",
+            Self::WeakDropRc => "hew_weak_drop_rc",
+            Self::WeakUpgradeRc => "hew_weak_upgrade_rc",
             // RecvHalf
             Self::RecvHalfRecv => "hew_recv_half_recv",
             Self::RecvHalfTryRecv => "hew_recv_half_try_recv",
@@ -1031,7 +1053,18 @@ impl RuntimeCallFamily {
             "hew_observe_series" => Self::ObserveSeries,
             "hew_observe_barrier" => Self::ObserveBarrier,
             // Rc
+            "hew_rc_clone" => Self::RcClone,
+            "hew_rc_downgrade" => Self::RcDowngrade,
+            "hew_rc_drop" => Self::RcDrop,
+            "hew_rc_get" => Self::RcGet,
+            "hew_rc_is_unique" => Self::RcIsUnique,
             "hew_rc_new" => Self::RcNew,
+            "hew_rc_set" => Self::RcSet,
+            "hew_rc_strong_count" => Self::RcStrongCount,
+            "hew_rc_weak_count" => Self::RcWeakCount,
+            "hew_weak_clone_rc" => Self::WeakCloneRc,
+            "hew_weak_drop_rc" => Self::WeakDropRc,
+            "hew_weak_upgrade_rc" => Self::WeakUpgradeRc,
             // RecvHalf
             "hew_recv_half_recv" => Self::RecvHalfRecv,
             "hew_recv_half_try_recv" => Self::RecvHalfTryRecv,
@@ -1607,7 +1640,18 @@ impl RuntimeCallFamily {
             | F::ObserveScrape
             | F::ObserveSeries
             | F::ObserveBarrier
+            | F::RcClone
+            | F::RcDowngrade
+            | F::RcDrop
+            | F::RcGet
+            | F::RcIsUnique
             | F::RcNew
+            | F::RcSet
+            | F::RcStrongCount
+            | F::RcWeakCount
+            | F::WeakCloneRc
+            | F::WeakDropRc
+            | F::WeakUpgradeRc
             | F::RecvHalfRecv
             | F::RecvHalfTryRecv
             | F::RegexCapture

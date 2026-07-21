@@ -186,6 +186,10 @@ pub enum DropClass {
     /// `@resource` close-method dispatch (`close(consuming self)`), incl. the
     /// `CancellationToken` runtime handle. [`DropKind::Resource`].
     Resource,
+    /// Strong `Rc<T>` payload-pointer release.
+    RcRelease,
+    /// `Weak<T>` allocation-header-pointer release.
+    WeakRelease,
     /// A single copy-on-write heap leaf released by one runtime symbol
     /// ([`DropKind::CowHeap`]). `leaf` is never [`HeapLeaf::CancellationToken`]
     /// (that is an `@resource` close → [`DropClass::Resource`]); the constructor
@@ -975,6 +979,8 @@ impl TryFrom<DropKind> for DropClass {
     fn try_from(kind: DropKind) -> Result<Self, Self::Error> {
         Ok(match kind {
             DropKind::Resource => DropClass::Resource,
+            DropKind::RcRelease => DropClass::RcRelease,
+            DropKind::WeakRelease => DropClass::WeakRelease,
             DropKind::DuplexClose => DropClass::DuplexClose,
             DropKind::DuplexHalfClose(direction) => DropClass::DuplexHalfClose { direction },
             DropKind::LambdaActorRelease => DropClass::LambdaActorRelease,
@@ -1008,6 +1014,8 @@ impl DropClass {
     pub fn canonical_drop_kind(self) -> DropKind {
         match self {
             DropClass::Resource => DropKind::Resource,
+            DropClass::RcRelease => DropKind::RcRelease,
+            DropClass::WeakRelease => DropKind::WeakRelease,
             DropClass::CowHeapLeaf { leaf } => DropKind::CowHeap {
                 release: leaf.cow_heap_release(),
             },

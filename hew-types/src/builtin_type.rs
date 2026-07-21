@@ -19,6 +19,7 @@ pub enum BuiltinType {
     AsyncGenerator,
     Range,
     Rc,
+    Weak,
     Sender,
     Receiver,
     Stream,
@@ -170,6 +171,7 @@ builtin_types! {
     AsyncGenerator => "AsyncGenerator",
     Range => "Range",
     Rc => "Rc",
+    Weak => "Weak",
     Sender => "Sender",
     Receiver => "Receiver",
     Stream => "Stream",
@@ -307,6 +309,7 @@ impl BuiltinType {
             | Self::AsyncGenerator
             | Self::Range
             | Self::Rc
+            | Self::Weak
             | Self::Sender
             | Self::Receiver
             | Self::Stream

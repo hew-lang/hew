@@ -1393,8 +1393,30 @@ pub enum OptionResultMethod {
     ResultUnwrapOr,
 }
 
+/// Closed checker-owned identity for the `Rc<T>`/`Weak<T>` intrinsic surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RcIntrinsicOp {
+    New,
+    Clone,
+    GetCopy,
+    Set,
+    Downgrade,
+    StrongCount,
+    WeakCount,
+    IsUnique,
+    WeakClone,
+    WeakUpgrade,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodCallRewrite {
+    /// Typed Rc/Weak intrinsic selected by the checker. `payload_ty` is the
+    /// concrete `T` from the receiver or constructor result; downstream stages
+    /// must dispatch on `op`, never on a method or runtime-symbol string.
+    RcIntrinsic {
+        op: RcIntrinsicOp,
+        payload_ty: crate::resolved_ty::ResolvedTy,
+    },
     /// Rewrite a receiver-based method call to a runtime function and inject
     /// the receiver as the first argument.
     ///

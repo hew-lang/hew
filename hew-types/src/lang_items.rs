@@ -65,7 +65,6 @@ pub enum LangItem {
     MarkerDecode,
     MarkerEncode,
     MarkerSerializable,
-    MarkerRcFree,
     MarkerResource,
 }
 
@@ -107,7 +106,6 @@ impl LangItem {
             Self::MarkerDecode => "marker.decode",
             Self::MarkerEncode => "marker.encode",
             Self::MarkerSerializable => "marker.serializable",
-            Self::MarkerRcFree => "marker.rc_free",
             Self::MarkerResource => "marker.resource",
         }
     }

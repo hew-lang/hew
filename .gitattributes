@@ -2,3 +2,6 @@
 # This prevents CRLF issues when comparing test output on Windows
 *.expected text eol=lf
 *.hew text eol=lf
+# MIR goldens preserve the compiler's byte-exact dump, including its final
+# separator line.
+*.mir -blank-at-eof

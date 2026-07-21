@@ -76,6 +76,14 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::FloatDiv { lhs, rhs, .. }
         | Instr::FloatRem { lhs, rhs, .. } => vec![*lhs, *rhs],
         Instr::CancellationTokenIsCancelled { token, .. } => vec![*token],
+        Instr::RcIntrinsic {
+            op: hew_types::RcIntrinsicOp::New | hew_types::RcIntrinsicOp::Set,
+            value,
+            ..
+        } => {
+            value.iter().copied().collect()
+        }
+        Instr::RcIntrinsic { .. } => Vec::new(),
         // `.next()` borrows the generator handle — it does NOT alias it out.
         // The handle stays the sole owner of its heap companion pointer so its
         // scope-exit drop fires `hew_gen_coro_destroy` exactly once. Excluding
@@ -607,6 +615,7 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::IntCmp { .. }
         | Instr::IdentityCompare { .. }
         | Instr::CancellationTokenIsCancelled { .. }
+        | Instr::RcIntrinsic { .. }
         | Instr::GeneratorNext { .. }
         | Instr::WireCodec { .. }
         | Instr::BytesRetain { .. }

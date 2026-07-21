@@ -553,6 +553,15 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::FloatDiv { dest, lhs, rhs, .. }
         | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest]),
         Instr::CancellationTokenIsCancelled { dest, token } => (vec![*token], vec![*dest]),
+        Instr::RcIntrinsic {
+            dest,
+            receiver,
+            value,
+            ..
+        } => (
+            receiver.iter().chain(value.iter()).copied().collect(),
+            vec![*dest],
+        ),
         Instr::GeneratorNext { dest, ctx, .. } => (vec![*ctx], vec![*dest]),
         Instr::WireCodec { dest, operand, .. } => (vec![*operand], vec![*dest]),
         Instr::RecordCloneInplace { dest, src, .. } => (vec![*src], vec![*dest]),

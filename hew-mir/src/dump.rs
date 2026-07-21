@@ -673,6 +673,21 @@ fn render_instr(instr: &Instr) -> String {
             render_place(lhs),
             render_place(rhs)
         ),
+        Instr::RcIntrinsic {
+            dest,
+            op,
+            payload_ty,
+            receiver,
+            value,
+            result_ty,
+        } => format!(
+            "{} = rc_intrinsic.{op:?} payload_ty={} receiver={} value={} result_ty={}",
+            render_place(dest),
+            payload_ty.user_facing(),
+            receiver.map_or_else(|| "none".to_string(), |place| render_place(&place)),
+            value.map_or_else(|| "none".to_string(), |place| render_place(&place)),
+            result_ty.user_facing(),
+        ),
         Instr::CancellationTokenIsCancelled { dest, token } => format!(
             "{} = cancel_token_is_cancelled {}",
             render_place(dest),
@@ -1801,6 +1816,8 @@ fn render_drop_fn_spec(spec: &DropFnSpec) -> String {
 fn render_drop_kind(kind: DropKind) -> String {
     match kind {
         DropKind::Resource => "resource".to_string(),
+        DropKind::RcRelease => "rc_release".to_string(),
+        DropKind::WeakRelease => "weak_release".to_string(),
         DropKind::DuplexClose => "duplex_close".to_string(),
         DropKind::DuplexHalfClose(dir) => format!("duplex_half_close({})", render_direction(dir)),
         DropKind::LambdaActorRelease => "lambda_actor_release".to_string(),

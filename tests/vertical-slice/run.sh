@@ -476,6 +476,12 @@ run_accept_expect_stdout_contains \
     "std_encoding_wire_value_trait_import_run" \
     "canonical-value:42"
 
+# std::io's imported write wrapper must reach the runtime and emit the exact
+# requested bytes.
+run_accept_expect_stdout_contains \
+    "std_io_import_run" \
+    "stdlib-io:write"
+
 # Regression guard: a plain record with an Option<i64> field must compile and
 # run.  The MIR field classifier must NOT strip args from generic enum types
 # (Option, Result) even though their origin names appear in machine_layout_names.

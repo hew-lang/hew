@@ -67,6 +67,14 @@
 //!   poisoned allocator (the first reassignment must read the null-initialised
 //!   slot, not free uninitialised bytes; later ones must not double-free).
 //!
+//! - **Queued actor-message teardown**: a supervised actor acknowledges entry
+//!   into a parked handler before the fixture queues direct and packed
+//!   indirect-enum tells behind it. Stopping the supervisor therefore destroys
+//!   those messages from the mailbox without dispatching them. The macOS leak
+//!   slope proves that the registered message destructor recursively reclaims
+//!   every node, while the poisoned allocator catches double-free and
+//!   use-after-free failures on the same teardown path.
+//!
 //! ## Fixture-authoring rule (non-vacuous)
 //!
 //! Every fixture provably heap-allocates: an `indirect enum` value is ALWAYS a
@@ -370,6 +378,50 @@ fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
     )
 }
 
+/// Queue direct and packed indirect-enum messages behind a handler that is
+/// known to be parked, then stop the supervising actor tree. Receiving the
+/// ready signal proves `hold` has started before any payload tell is sent, and
+/// its long sleep keeps every payload queued until `supervisor_stop` destroys
+/// the mailbox. Each iteration contributes two depth-2 trees (14 heap nodes),
+/// so a missing message destructor produces a steep leak slope.
+fn actor_mailbox_teardown_source(frames: usize) -> String {
+    format!(
+        "import std::channel::channel;\n\
+         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+         fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
+         actor Sink {{\n\
+         \x20   receive fn hold(ready: channel.Sender<i64>) {{\n\
+         \x20       ready.send(1);\n\
+         \x20       sleep(10s);\n\
+         \x20   }}\n\
+         \x20   receive fn take(t: Tree) {{ let _ = sum(t); }}\n\
+         \x20   receive fn tagged(tag: i64, t: Tree) {{ let _ = tag + sum(t); }}\n\
+         }}\n\
+         supervisor App {{\n\
+         \x20   strategy: one_for_one;\n\
+         \x20   intensity: 3 within 60s;\n\
+         \x20   child sink: Sink;\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let sup = spawn App;\n\
+         \x20   let sink = sup.sink;\n\
+         \x20   let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   sink.hold(ready_tx);\n\
+         \x20   let started = match await ready_rx.recv() {{ Some(n) => n, None => 0, }};\n\
+         \x20   if started != 1 {{ print(\"BAD\"); return 1; }}\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       sink.take(Node(Node(Leaf(1), Leaf(2)), Node(Leaf(3), Leaf(4))));\n\
+         \x20       sink.tagged(i, Node(Node(Leaf(5), Leaf(6)), Node(Leaf(7), Leaf(8))));\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   supervisor_stop(sup);\n\
+         \x20   print(\"ok\");\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 /// F4 / #2208 — actor ASK-REPLY of an `indirect enum`, the ABI-boundary leg.
 ///
 /// An `indirect enum` return value is ABI-lowered to a bare heap-node POINTER
@@ -627,6 +679,31 @@ fn indirect_enum_tuple_of_inline_enum_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
         "tuple_of_inline_enum_df",
         &tuple_of_inline_enum_loop_source(50),
+        "ok",
+    );
+}
+
+/// Direct and packed indirect-enum tells queued behind a parked handler are
+/// destroyed from the mailbox when the supervisor stops. The leak count must
+/// remain flat as the number of queued recursive payloads grows; a missing or
+/// inline-layout message destructor leaks at least fourteen nodes per frame.
+#[test]
+fn indirect_enum_actor_mailbox_teardown_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "indirect_enum_actor_mailbox_teardown",
+        actor_mailbox_teardown_source,
+    );
+}
+
+/// The same queued-message teardown runs clean under the poisoned allocator.
+/// The exact sentinel proves `supervisor_stop` completed after draining the
+/// mailbox; an ABI mismatch, recursive double-free, or poisoned read aborts
+/// before it can print `ok`.
+#[test]
+fn indirect_enum_actor_mailbox_teardown_no_corruption_under_malloc_scribble() {
+    assert_exact_under_malloc_scribble(
+        "indirect_enum_actor_mailbox_teardown_df",
+        &actor_mailbox_teardown_source(50),
         "ok",
     );
 }

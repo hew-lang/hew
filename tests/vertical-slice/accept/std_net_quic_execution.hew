@@ -1,10 +1,17 @@
 import std::net::quic;
 
+import std::string;
+
 fn main() {
     let endpoint = quic.new_server("127.0.0.1:0");
     let observation = endpoint.observe();
-    if observation.local_addr == "" {
-        panic("QUIC endpoint has no local address");
+    let address_parts = string.split(observation.local_addr, ":");
+    if address_parts.len() != 2 {
+        panic("QUIC endpoint has a malformed local address");
+    }
+    let assigned_port = string.to_int(address_parts[1]).unwrap_or(0);
+    if assigned_port <= 0 {
+        panic("QUIC endpoint has no assigned port");
     }
     endpoint.close();
     println("quic:ok");

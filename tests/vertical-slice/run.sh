@@ -355,12 +355,7 @@ if [[ "${arith_status}" -ne 5 ]]; then
   exit 1
 fi
 
-"${HEW}" compile "${ROOT}/tests/vertical-slice/accept/hello_println.hew" >"${accept_output}" 2>&1
-hello_println_bin="${ROOT}/.tmp/compile-out/hello_println"
-hello_stdout="${ROOT}/.tmp/hello_println.stdout"
-trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${hello_stdout}"' EXIT
-"${hello_println_bin}" >"${hello_stdout}"
-diff -u "${ROOT}/tests/vertical-slice/accept/hello_println.expected" "${hello_stdout}"
+run_accept_expect_stdout "hello_println"
 
 run_accept_expect_status "assert" 0
 
@@ -452,8 +447,8 @@ run_accept_expect_stdout "std_net_mime_execution"
 # assigned port is usable, then close the listener without making a connection.
 run_accept_expect_stdout "std_net_websocket_execution"
 
-# QUIC proof: bind a loopback endpoint on an OS-assigned port, observe its
-# local address, then close it without depending on external transport.
+# QUIC proof: bind a loopback endpoint on an OS-assigned port, parse and verify
+# the positive assigned port, then close it without external transport.
 run_accept_expect_stdout "std_net_quic_execution"
 
 # std::concurrency's generic failure record must construct across the module

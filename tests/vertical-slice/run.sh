@@ -458,6 +458,12 @@ run_accept_expect_stdout_contains \
     "std_encoding_markdown_import_run" \
     "markdown:<p><strong>bold</strong></p>"
 
+# std::io::closable's imported trait and error enum must support a concrete
+# implementation, receiver dispatch, and exact variant matching.
+run_accept_expect_stdout_contains \
+    "std_io_closable_import_run" \
+    "closable:AlreadyClosed"
+
 # Regression guard: a plain record with an Option<i64> field must compile and
 # run.  The MIR field classifier must NOT strip args from generic enum types
 # (Option, Result) even though their origin names appear in machine_layout_names.

@@ -557,8 +557,8 @@ impl Builder {
         // #2301 -- run the same owned-Vec-key / consumed-and-reassigned-binding
         // pre-pass on the closure body that `function_body` runs for a
         // top-level function. `lower_closure_shim` builds a brand-new child
-        // `Builder` and lowers `body` directly via `lower_value` below; without
-        // this call, `prepass_consumed_bindings`/`prepass_reassigned_bindings`
+        // `Builder` and lowers `body` directly below; without this call,
+        // `prepass_consumed_bindings`/`prepass_reassigned_bindings`
         // stay empty for every closure-local binding, so
         // `maybe_alloc_overwrite_guard_flag` never fires inside a closure body
         // and a `var` consumed on one control-flow arm and overwritten on a
@@ -567,7 +567,7 @@ impl Builder {
         // release a byte-identical top-level function body would.
         builder.collect_expr_prepass_facts(body);
 
-        if let Some(src) = builder.lower_value(body) {
+        if let Some(src) = builder.lower_value_for_move(body) {
             builder.instructions.push(Instr::Move {
                 dest: Place::ReturnSlot,
                 src,
@@ -2036,7 +2036,7 @@ impl Builder {
         }
         // Lower the tail expression (the implicit return value of the block).
         if let Some(tail) = &body.tail {
-            if let Some(src) = body_builder.lower_value(tail) {
+            if let Some(src) = body_builder.lower_value_for_move(tail) {
                 body_builder.instructions.push(Instr::Move {
                     dest: Place::ReturnSlot,
                     src,

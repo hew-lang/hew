@@ -32,19 +32,27 @@ impl Builder {
 
     pub(crate) fn lower_direct_call_args(
         &mut self,
+        callee_symbol: &str,
         callee_item: Option<hew_hir::ItemId>,
         args: &[HirExpr],
     ) -> Option<Vec<Place>> {
+        // Supervisor bootstrap parameters own the spawned config snapshot even
+        // though the synthesized function has no source `ItemId`.
+        let move_all_args = self
+            .supervisor_layout_map
+            .values()
+            .any(|layout| layout.bootstrap_symbol == callee_symbol);
         args.iter()
             .enumerate()
             .map(|(index, arg)| {
-                let is_move = callee_item.is_some_and(|item| {
-                    self.param_ownership
-                        .call_param_consume
-                        .get(&(item, index))
-                        .copied()
-                        == Some(true)
-                });
+                let is_move = move_all_args
+                    || callee_item.is_some_and(|item| {
+                        self.param_ownership
+                            .call_param_consume
+                            .get(&(item, index))
+                            .copied()
+                            == Some(true)
+                    });
                 self.lower_method_arg_value(arg, is_move)
             })
             .collect()

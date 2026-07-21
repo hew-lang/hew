@@ -1239,7 +1239,7 @@ impl Builder {
         // args[0] = receiver (DuplexHandle — non-consuming borrow; no Move emitted).
         let recv_place = self.lower_value(&hir_args[0]);
         // args[1] = message value.
-        let msg_place = self.lower_value(&hir_args[1]);
+        let msg_place = self.lower_value_for_move(&hir_args[1]);
 
         let (Some(recv_place), Some(msg_place)) = (recv_place, msg_place) else {
             // Argument lowering failed; diagnostic already recorded.
@@ -1536,7 +1536,7 @@ impl Builder {
         // args[0] = SendHalf receiver (borrow; no Move emitted).
         let recv_place = self.lower_value(&hir_args[0]);
         // args[1] = message value.
-        let msg_place = self.lower_value(&hir_args[1]);
+        let msg_place = self.lower_value_for_move(&hir_args[1]);
         let (Some(recv_place), Some(msg_place)) = (recv_place, msg_place) else {
             return None;
         };
@@ -1753,7 +1753,7 @@ impl Builder {
     ) -> Option<Place> {
         match args {
             [] => Some(self.alloc_local(ResolvedTy::Unit)),
-            [arg] => self.lower_value(arg),
+            [arg] => self.lower_value_for_move(arg),
             _ => self.lower_packed_args_payload(args, site),
         }
     }
@@ -1794,7 +1794,7 @@ impl Builder {
         let mut field_places: Vec<Place> = Vec::with_capacity(args.len());
         let mut field_tys: Vec<ResolvedTy> = Vec::with_capacity(args.len());
         for arg in args {
-            let place = self.lower_value(arg)?;
+            let place = self.lower_value_for_move(arg)?;
             field_places.push(place);
             field_tys.push(self.subst_ty(&arg.ty));
         }
@@ -2132,7 +2132,7 @@ impl Builder {
         // never evaluation.
         let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len());
         for arg in args {
-            let place = self.lower_value(arg)?;
+            let place = self.lower_value_for_move(arg)?;
             let ty = self.subst_ty(&arg.ty);
             lowered.push((place, ty));
         }
@@ -2281,7 +2281,7 @@ impl Builder {
         let actor = self.lower_value(receiver)?;
         let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len() + 1);
         for arg in args {
-            let place = self.lower_value(arg)?;
+            let place = self.lower_value_for_move(arg)?;
             let ty = self.subst_ty(&arg.ty);
             lowered.push((place, ty));
         }
@@ -2454,7 +2454,7 @@ impl Builder {
         }
         let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len());
         for arg in args {
-            lowered.push((self.lower_value(arg)?, self.subst_ty(&arg.ty)));
+            lowered.push((self.lower_value_for_move(arg)?, self.subst_ty(&arg.ty)));
         }
         let value = match &lowered[..] {
             [] => self.alloc_local(ResolvedTy::Unit),
@@ -2651,7 +2651,7 @@ impl Builder {
         let msg_ty = self.subst_ty(&msg.ty);
         let info = self.remote_actor_method_info(&receiver.ty, &msg_ty, reply_ty, expr.site)?;
         let actor = self.lower_value(receiver)?;
-        let value = self.lower_value(msg)?;
+        let value = self.lower_value_for_move(msg)?;
         let timeout_ms = self.lower_value(timeout_ms)?;
         let result_dest = self.alloc_local(self.subst_ty(&expr.ty));
         let reply_dest = self.alloc_local(reply_ty.clone());
@@ -2954,7 +2954,7 @@ impl Builder {
                 });
                 return None;
             };
-            init_args.push(self.lower_value(arg)?);
+            init_args.push(self.lower_value_for_move(arg)?);
         }
         Some(init_args)
     }
@@ -2980,7 +2980,7 @@ impl Builder {
         let mut fields = Vec::new();
         for (idx, field_name) in layout.state_field_names.iter().enumerate() {
             let src = if let Some(arg) = explicit.get(field_name.as_str()) {
-                self.lower_value(arg).ok_or(())?
+                self.lower_value_for_move(arg).ok_or(())?
             } else if let Some(default) = layout
                 .state_field_defaults
                 .get(idx)
@@ -3034,7 +3034,7 @@ impl Builder {
             });
             return None;
         };
-        self.lower_value(arg)
+        self.lower_value_for_move(arg)
     }
 
     fn default_actor_state_field_value(

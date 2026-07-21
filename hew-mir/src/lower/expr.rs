@@ -7757,7 +7757,7 @@ impl Builder {
         // Lower each argument left-to-right.  If any fails to produce a
         // Place, fail the whole call — argument diagnostics already capture
         // the root cause.
-        let arg_places = self.lower_direct_call_args(callee_item, hir_args)?;
+        let arg_places = self.lower_direct_call_args(callee_symbol, callee_item, hir_args)?;
 
         // Allocate a destination local for the return value, unless the
         // callee is declared Unit-returning or divergent. Never-returning

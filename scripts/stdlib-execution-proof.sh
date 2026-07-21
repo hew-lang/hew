@@ -23,11 +23,9 @@ runner_fixture_declarations() {
             return 0
         }
 
-        /^[[:space:]]*#/ { next }
-
         awaiting_fixture {
-            if (/^[[:space:]]*$/) {
-                next
+            if (/^[[:space:]]*$/ || /^[[:space:]]*#/) {
+                exit 2
             }
             if (!emit_first_argument($0)) {
                 exit 2
@@ -36,13 +34,18 @@ runner_fixture_declarations() {
             next
         }
 
-        /^[[:space:]]*(run_accept_expect_(status|stdout|stdout_contains|trap|status_and_stdout|panic)|run_actor_bounds_trap_fixture)[[:space:]]/ {
+        /^[[:space:]]*(run_accept_expect_(status|stdout|stdout_contains|trap|status_and_stdout|panic)|run_actor_bounds_trap_fixture)([[:space:]]|$)/ {
             line = $0
             sub(/^[[:space:]]*[^[:space:]]+[[:space:]]*/, "", line)
             if (!emit_first_argument(line)) {
+                if (line != "\\") {
+                    exit 2
+                }
                 awaiting_fixture = 1
             }
         }
+
+        /^[[:space:]]*#/ { next }
 
         END {
             if (awaiting_fixture) {
@@ -67,11 +70,42 @@ mapped="${tmpdir}/mapped"
 runner_fixtures="${tmpdir}/runner-fixtures"
 touch "${mapped}"
 
-# Mutation teeth for the runner parser: comment-only mentions must never count
-# as execution, while both inline and continued declarations remain accepted.
+# Mutation teeth for the runner parser. Generated fixtures run under Bash as
+# well as through the parser so declaration evidence cannot diverge from what
+# the product runner actually executes.
 parser_fixture="${tmpdir}/runner-parser-fixture.sh"
 parser_expected="${tmpdir}/runner-parser-expected"
 parser_actual="${tmpdir}/runner-parser-actual"
+parser_executed="${tmpdir}/runner-parser-executed"
+
+parser_fixture_prelude() {
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'set -euo pipefail' \
+        'record_fixture() {' \
+        '    if [[ "$#" -lt 1 ]]; then' \
+        '        return 97' \
+        '    fi' \
+        "    printf '%s\\n' \"\$1\" >> \"\${PARSER_EXECUTED:?}\"" \
+        '}' \
+        'run_accept_expect_stdout() { record_fixture "$@"; }' \
+        'run_accept_expect_stdout_contains() { record_fixture "$@"; }'
+}
+
+assert_parser_fixture_rejected() {
+    local fixture="$1"
+    local label="$2"
+    if runner_fixture_declarations "${fixture}" > "${tmpdir}/${label}-parsed"; then
+        echo "internal error: declaration parser accepted ${label}" >&2
+        exit 1
+    fi
+    if PARSER_EXECUTED="${tmpdir}/${label}-executed" bash "${fixture}" >/dev/null 2>&1; then
+        echo "internal error: Bash executed invalid ${label}" >&2
+        exit 1
+    fi
+}
+
+parser_fixture_prelude > "${parser_fixture}"
 printf '%s\n' \
     '# run_accept_expect_stdout "comment_only"' \
     'run_accept_expect_stdout "inline_fixture"' \
@@ -79,13 +113,52 @@ printf '%s\n' \
     "    \"continued_fixture\" \\" \
     '    "stable output"' \
     '    # run_accept_expect_status "indented_comment_only" 0' \
-    > "${parser_fixture}"
+    >> "${parser_fixture}"
 printf '%s\n' "inline_fixture" "continued_fixture" > "${parser_expected}"
 runner_fixture_declarations "${parser_fixture}" > "${parser_actual}"
 if ! diff -u "${parser_expected}" "${parser_actual}"; then
     echo "internal error: vertical-slice declaration parser accepted a comment or lost a declaration" >&2
     exit 1
 fi
+PARSER_EXECUTED="${parser_executed}" bash "${parser_fixture}"
+if ! diff -u "${parser_expected}" "${parser_executed}"; then
+    echo "internal error: generated parser fixture did not execute as declared" >&2
+    exit 1
+fi
+
+parser_comment_interruption="${tmpdir}/runner-parser-comment-interruption.sh"
+parser_fixture_prelude > "${parser_comment_interruption}"
+printf '%s\n' \
+    "run_accept_expect_stdout_contains \\" \
+    '    # a comment terminates the continued helper command' \
+    "    \"detached_fixture\" \\" \
+    '    "stable output"' \
+    >> "${parser_comment_interruption}"
+assert_parser_fixture_rejected "${parser_comment_interruption}" "comment interruption"
+
+parser_blank_interruption="${tmpdir}/runner-parser-blank-interruption.sh"
+parser_fixture_prelude > "${parser_blank_interruption}"
+printf '%s\n' \
+    "run_accept_expect_stdout_contains \\" \
+    '' \
+    "    \"detached_fixture\" \\" \
+    '    "stable output"' \
+    >> "${parser_blank_interruption}"
+assert_parser_fixture_rejected "${parser_blank_interruption}" "blank interruption"
+
+parser_eof_interruption="${tmpdir}/runner-parser-eof-interruption.sh"
+parser_fixture_prelude > "${parser_eof_interruption}"
+printf '%s\n' "run_accept_expect_stdout_contains \\" >> "${parser_eof_interruption}"
+assert_parser_fixture_rejected "${parser_eof_interruption}" "EOF interruption"
+
+parser_missing_continuation="${tmpdir}/runner-parser-missing-continuation.sh"
+parser_fixture_prelude > "${parser_missing_continuation}"
+printf '%s\n' \
+    'run_accept_expect_stdout_contains' \
+    "    \"detached_fixture\" \\" \
+    '    "stable output"' \
+    >> "${parser_missing_continuation}"
+assert_parser_fixture_rejected "${parser_missing_continuation}" "missing continuation"
 
 runner_fixture_declarations "${RUNNER}" | sort -u > "${runner_fixtures}"
 awk -F'|' '

@@ -379,9 +379,9 @@ fn render_terminator(term: &Terminator) -> String {
             msg_type,
             value,
             next,
-            alias_mode,
+            arg_modes: _,
         } => format!(
-            "send {}[msg={msg_type}] {} alias={alias_mode:?} -> bb{next}",
+            "send {}[msg={msg_type}] {} alias=Copy -> bb{next}",
             render_place(actor),
             render_place(value)
         ),
@@ -389,6 +389,7 @@ fn render_terminator(term: &Terminator) -> String {
             actor,
             msg_type,
             value,
+            arg_modes: _,
             result_dest,
             reply_dest,
             error_dest,
@@ -1370,6 +1371,9 @@ fn render_mir_check(check: &MirCheck) -> String {
         MirCheck::ActorAskEscape { place, ask_site } => {
             format!("ActorAskEscape {} ask={:?}", render_place(place), ask_site)
         }
+        MirCheck::OutboundModeUnresolved { block } => {
+            format!("OutboundModeUnresolved bb{block}")
+        }
         MirCheck::DecisionMapTotal { offending_sites } => {
             format!("DecisionMapTotal [{} sites]", offending_sites.len())
         }
@@ -1523,6 +1527,9 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         } => format!("InitialisedBeforeUse {binding:?} {name} site={use_site:?}"),
         MirDiagnosticKind::DecisionMapTotal { offending_sites } => {
             format!("DecisionMapTotal [{} sites]", offending_sites.len())
+        }
+        MirDiagnosticKind::OutboundModeUnresolved { block } => {
+            format!("OutboundModeUnresolved bb{block}")
         }
         MirDiagnosticKind::MustConsume {
             binding,

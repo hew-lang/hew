@@ -3,11 +3,27 @@ use super::{
     is_unit_close_error_result, is_unit_send_error_result, method_name_from_id,
     recv_result_payload_ty, ActorLayout, ActorMethodInfo, Builder, BuiltinType, CmpPred,
     FieldOffset, FloatWidth, FungibleChildRef, HashMap, HirExpr, HirExprKind, Instr, MirDiagnostic,
-    MirDiagnosticKind, Place, ReleaseSymbolVerdict, ResolvedTy, RuntimeCallContext, SuspendKind,
-    Terminator, CHILD_LOOKUP_RESULT_TY_NAME, RECEIVE_GEN_STREAM_CAPACITY,
+    MirDiagnosticKind, PendingOutboundArg, PendingOutboundSite, Place, ReleaseSymbolVerdict,
+    ResolvedTy, RuntimeCallContext, SuspendKind, Terminator, CHILD_LOOKUP_RESULT_TY_NAME,
+    RECEIVE_GEN_STREAM_CAPACITY,
 };
 
 impl Builder {
+    fn record_pending_outbound_args(
+        &mut self,
+        block: u32,
+        args: impl IntoIterator<Item = (Place, ResolvedTy, hew_hir::SiteId)>,
+    ) {
+        let pending = PendingOutboundSite {
+            args: args
+                .into_iter()
+                .map(|(source, ty, site)| PendingOutboundArg { source, ty, site })
+                .collect(),
+        };
+        let replaced = self.pending_outbound_actor_args.insert(block, pending);
+        debug_assert!(replaced.is_none(), "one outbound operation per MIR block");
+    }
+
     pub(crate) fn actor_state_field_for_target(
         &self,
         expr: &HirExpr,
@@ -2163,17 +2179,24 @@ impl Builder {
             self.start_block(live_bb);
             if value.is_none() {
                 let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
-                    lowered.into_iter().unzip();
+                    lowered.iter().cloned().unzip();
                 value = Some(self.pack_actor_payload_from_places(field_places, field_tys));
             }
         }
         let value = value.expect("payload place is populated for every arity above");
+        self.record_pending_outbound_args(
+            self.current_block_id,
+            lowered
+                .iter()
+                .zip(args)
+                .map(|((place, ty), arg)| (*place, ty.clone(), arg.site)),
+        );
         self.finish_current_block(Terminator::Send {
             actor,
             msg_type: info.msg_type,
             value,
             next,
-            alias_mode: crate::model::SendAliasMode::Copy,
+            arg_modes: Vec::new(),
         });
         self.start_block(next);
         None
@@ -2253,20 +2276,24 @@ impl Builder {
             *place
         } else {
             let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
-                lowered.into_iter().unzip();
+                lowered.iter().cloned().unzip();
             self.pack_actor_payload_from_places(field_places, field_tys)
         };
 
         let next = self.alloc_block();
+        self.record_pending_outbound_args(
+            self.current_block_id,
+            lowered.iter().enumerate().map(|(idx, (place, ty))| {
+                let site = args.get(idx).map_or(expr.site, |arg| arg.site);
+                (*place, ty.clone(), site)
+            }),
+        );
         self.finish_current_block(Terminator::Send {
             actor,
             msg_type: info.msg_type,
             value,
             next,
-            // Args crossing into a stream-producer start message use the same
-            // fail-closed default as the zero/multi-arg `ActorSend` cases;
-            // per-arg alias classification for stream calls is a follow-on.
-            alias_mode: crate::model::SendAliasMode::Copy,
+            arg_modes: Vec::new(),
         });
         self.start_block(next);
         Some(stream)
@@ -2349,6 +2376,10 @@ impl Builder {
         (sink, stream)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ask lowering keeps blocking and suspendable carrier construction together so both share one outbound preparation record"
+    )]
     pub(crate) fn lower_actor_ask(
         &mut self,
         receiver: &HirExpr,
@@ -2402,7 +2433,19 @@ impl Builder {
         if let Some(child_ref) = self.fungible_child_ref_of(actor) {
             self.emit_child_get_into(child_ref.sup_place, child_ref.slot_index, actor);
         }
-        let value = self.lower_actor_payload(args, site)?;
+        let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len());
+        for arg in args {
+            lowered.push((self.lower_value(arg)?, self.subst_ty(&arg.ty)));
+        }
+        let value = match &lowered[..] {
+            [] => self.alloc_local(ResolvedTy::Unit),
+            [(place, _)] => *place,
+            _ => {
+                let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
+                    lowered.iter().cloned().unzip();
+                self.pack_actor_payload_from_places(field_places, field_tys)
+            }
+        };
         // `result_dest` holds `Result<R, AskError>` — the R-ASK unified return type.
         // Its type comes from the HIR expression's checker-assigned type, which is
         // `Result<reply_ty, AskError>` after the unification fix in the type checker.
@@ -2415,6 +2458,13 @@ impl Builder {
             is_opaque: false,
         });
         let next = self.alloc_block();
+        self.record_pending_outbound_args(
+            self.current_block_id,
+            lowered
+                .iter()
+                .zip(args)
+                .map(|((place, ty), arg)| (*place, ty.clone(), arg.site)),
+        );
         // Suspendable-caller flip (W6.010, E2/D-W2). A caller that carries the
         // execution context (an actor handler / closure / task entry) runs on
         // the scheduler as a coroutine and can PARK its continuation: emit the
@@ -2443,6 +2493,7 @@ impl Builder {
                 actor,
                 msg_type: info.msg_type,
                 value,
+                arg_modes: Vec::new(),
                 result_dest,
                 reply_dest,
                 error_dest,
@@ -2477,6 +2528,7 @@ impl Builder {
                 actor,
                 msg_type: info.msg_type,
                 value,
+                arg_modes: Vec::new(),
                 result_dest,
                 reply_dest,
                 error_dest,

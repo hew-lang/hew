@@ -121,6 +121,7 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::ProjectedPayloadMoveFromReadablePlace { .. }
         | hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. }
         | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
+        | hew_mir::MirDiagnosticKind::OutboundModeUnresolved { .. }
         | hew_mir::MirDiagnosticKind::MustConsume { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
@@ -552,6 +553,7 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         }
         hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. } => "InitialisedBeforeUse",
         hew_mir::MirDiagnosticKind::DecisionMapTotal { .. } => "DecisionMapTotal",
+        hew_mir::MirDiagnosticKind::OutboundModeUnresolved { .. } => "OutboundModeUnresolved",
         hew_mir::MirDiagnosticKind::MustConsume { .. } => "MustConsume",
         hew_mir::MirDiagnosticKind::UnknownType { .. } => "UnknownType",
         hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. } => {
@@ -660,7 +662,8 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { site, .. }
         | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { site, .. }
         | hew_mir::MirDiagnosticKind::ClosureCapturesDuplexHandle { site, .. } => Some(*site),
-        hew_mir::MirDiagnosticKind::UnknownType { .. }
+        hew_mir::MirDiagnosticKind::OutboundModeUnresolved { .. }
+        | hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
@@ -712,6 +715,9 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             "MIR decision map contains {} unresolved site decision(s)",
             offending_sites.len()
         ),
+        hew_mir::MirDiagnosticKind::OutboundModeUnresolved { block } => {
+            format!("actor outbound modes were not resolved for bb{block}")
+        }
         hew_mir::MirDiagnosticKind::MustConsume { name, ty, .. } => format!(
             "linear binding `{name}` of type `{}` must be consumed before this exit",
             ty.user_facing()
@@ -934,6 +940,9 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
                 .collect::<Vec<_>>()
                 .join(", ");
             notes.push(format!("offending sites: {sites}"));
+        }
+        hew_mir::MirDiagnosticKind::OutboundModeUnresolved { block } => {
+            notes.push(format!("outbound block: bb{block}"));
         }
         hew_mir::MirDiagnosticKind::MustConsume {
             binding, exit_site, ..

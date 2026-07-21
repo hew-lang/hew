@@ -22,38 +22,21 @@ pub enum BorrowKind {
     Mutable,
 }
 
-/// Transitional outbound ownership discriminant carried by [`Terminator::Send`].
+/// Resolved ownership mechanism for one actor-send argument.
 ///
-/// **Fail-closed default**: a missing or unresolved classification in
-/// the checker's side table MUST produce `Copy`. `Copy` is the safe
-/// fallback — it issues a deep-copy into the mailbox, which is always
-/// semantically correct even if sub-optimal. `Alias` is only safe when
-/// the move-checker has already invalidated the sender's binding.
-///
-/// LESSONS: `serializer-fail-closed` (P0) — every fallback / default
-/// path MUST be `Copy`. The `Default` impl below enforces this.
-///
-/// MIR's outbound preparation pass replaces this binary representation with
-/// resolved per-argument snapshot/transfer modes. The checker does not author
-/// mechanism choices.
+/// MIR authors this mode after CFG construction. There is deliberately no
+/// default or unresolved variant: checked MIR may contain only a complete
+/// per-argument decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SendAliasMode {
-    /// Sender and receiver are isolated: the runtime deep-copies the
-    /// payload into the mailbox. Always safe; the fail-closed default.
-    Copy,
-    /// Sender transfers ownership of a refcounted envelope to the
-    /// receiver. The move-checker has already invalidated the sender's
-    /// binding so no post-send observation is possible.
-    Alias,
-}
-
-impl Default for SendAliasMode {
-    /// Fail-closed: the default mode is `Copy` so any send site that
-    /// cannot be resolved by the checker falls back to the safe
-    /// deep-copy path rather than producing an unsound alias.
-    fn default() -> Self {
-        SendAliasMode::Copy
-    }
+    /// Inline value bits are copied into the prepared carrier.
+    SnapshotBitCopy,
+    /// A sendable refcounted leaf mints one receiver owner.
+    SnapshotRetain,
+    /// A mutable or recursively owned value is structurally cloned.
+    SnapshotMaterialize,
+    /// A proven-dead whole owner moves into the prepared carrier.
+    TransferLastUse,
 }
 
 /// Target pointer width threaded into MIR lowering so the `isize`/`usize`
@@ -2489,6 +2472,7 @@ pub enum SuspendKind {
         actor: Place,
         msg_type: i32,
         value: Place,
+        arg_modes: Vec<SendAliasMode>,
         result_dest: Place,
         reply_dest: Place,
         error_dest: Place,
@@ -3406,16 +3390,13 @@ pub enum Terminator {
     /// here so the escape check has a construction site to look for;
     /// the v0.5 integer spine never constructs it.
     ///
-    /// `alias_mode` is a temporary raw-MIR placeholder until outbound
-    /// preparation resolves per-argument snapshot/transfer modes.
     Send {
         actor: Place,
         msg_type: i32,
         value: Place,
         next: u32,
-        /// Alias-vs-copy decision from the checker's side table.
-        /// Defaults to `Copy` (fail-closed); see [`SendAliasMode`].
-        alias_mode: SendAliasMode,
+        /// One resolved mode per source argument, in handler parameter order.
+        arg_modes: Vec<SendAliasMode>,
     },
     /// Actor ask: send `value` to `actor` on a caller-owned reply
     /// channel and resume at `next` once the reply has been received.
@@ -3445,6 +3426,8 @@ pub enum Terminator {
         actor: Place,
         msg_type: i32,
         value: Place,
+        /// One resolved mode per source argument, in handler parameter order.
+        arg_modes: Vec<SendAliasMode>,
         /// `Result<R, AskError>` slot — the user-visible binding type after
         /// the R-ASK unification.  Codegen emits `Ok(reply_value)` on a
         /// successful reply (non-null pointer from `hew_actor_ask`) and
@@ -5562,6 +5545,9 @@ pub enum MirCheck {
     /// `Terminator::Ask` exists as the boundary shape, but actor-call
     /// lowering that constructs it isn't in the v0.5 integer spine.
     ActorAskEscape { place: Place, ask_site: SiteId },
+    /// A non-unit outbound payload reached checked MIR without one resolved
+    /// mode per source argument.
+    OutboundModeUnresolved { block: u32 },
     /// Structural invariant on the lowering: every value-producing
     /// `SiteId` must have a `DecisionFact` with a concrete `Strategy`
     /// (not `UnknownBlocked`). Violation indicates a lowering bug, not
@@ -6474,6 +6460,8 @@ pub enum MirDiagnosticKind {
     /// `Strategy::UnknownBlocked`. Surfaced from
     /// `MirCheck::DecisionMapTotal`.
     DecisionMapTotal { offending_sites: Vec<SiteId> },
+    /// Raw outbound actor arguments were not fully resolved before checked MIR.
+    OutboundModeUnresolved { block: u32 },
     /// A `@linear` binding reached an exit without being consumed via
     /// a declared consuming method. Symmetric to `UseAfterConsume`.
     /// Surfaced from `MirCheck::MustConsume`.

@@ -1090,6 +1090,7 @@ mod f1_suspending_escape_poison {
             actor: Place::Local(1),
             msg_type: 0,
             value,
+            arg_modes: vec![crate::model::SendAliasMode::SnapshotMaterialize],
             result_dest: Place::Local(4),
             reply_dest: Place::Local(5),
             error_dest: Place::Local(6),
@@ -1129,6 +1130,7 @@ mod f1_suspending_escape_poison {
             actor: Place::Local(1),
             msg_type: 0,
             value,
+            arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
             result_dest: Place::Local(4),
             reply_dest: Place::Local(5),
             error_dest: Place::Local(6),
@@ -1138,6 +1140,7 @@ mod f1_suspending_escape_poison {
             actor: Place::Local(1),
             msg_type: 0,
             value,
+            arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
             result_dest: Place::Local(4),
             reply_dest: Place::Local(5),
             error_dest: Place::Local(6),
@@ -1416,7 +1419,7 @@ mod f1_suspending_escape_poison {
                 msg_type: 0,
                 value: Place::Local(1),
                 next: 1,
-                alias_mode: crate::model::SendAliasMode::Copy,
+                arg_modes: vec![crate::model::SendAliasMode::SnapshotBitCopy],
             },
         };
         let allowed = derive_local_bytes_drop_allowed(

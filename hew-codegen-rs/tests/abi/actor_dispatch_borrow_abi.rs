@@ -805,7 +805,7 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
                     msg_type: 1,
                     value: Place::Local(0),
                     next: 1,
-                    alias_mode: hew_mir::SendAliasMode::Copy,
+                    arg_modes: vec![hew_mir::SendAliasMode::SnapshotBitCopy],
                 },
             },
             BasicBlock {

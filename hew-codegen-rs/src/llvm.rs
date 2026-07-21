@@ -25492,6 +25492,7 @@ fn dispatch_collapsed_suspend<'ctx>(
             actor,
             msg_type,
             value,
+            arg_modes: _,
             result_dest,
             reply_dest,
             error_dest,
@@ -27425,7 +27426,7 @@ fn lower_terminator<'ctx>(
             msg_type,
             value,
             next,
-            // `alias_mode` is deliberately UNCONSUMED by codegen during the
+            // `arg_modes` are deliberately UNCONSUMED by codegen during the
             // checker semantic cutover. MIR's outbound preparation pass
             // replaces this transitional binary mode with resolved
             // snapshot/transfer modes. Every send today lowers to
@@ -27435,7 +27436,7 @@ fn lower_terminator<'ctx>(
             // mechanism (string-only roots in `compute_borrow_taint`; bytes
             // never enter that branch). Consuming the mode without wiring
             // preparation would be a no-op or an unbalanced refcount.
-            alias_mode: _,
+            arg_modes: _,
         } => {
             let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
             let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
@@ -27561,6 +27562,7 @@ fn lower_terminator<'ctx>(
             actor,
             msg_type,
             value,
+            arg_modes: _,
             result_dest,
             reply_dest,
             error_dest,

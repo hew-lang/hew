@@ -46,7 +46,7 @@ fn send_status_pipeline() -> IrPipeline {
                 msg_type: 1,
                 value: Place::Local(1),
                 next: 1,
-                alias_mode: hew_mir::SendAliasMode::Copy,
+                arg_modes: vec![hew_mir::SendAliasMode::SnapshotBitCopy],
             },
         },
         BasicBlock {

@@ -36,9 +36,9 @@ use crate::model::{
     ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr,
     IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaCapture, MirCheck, MirConst,
     MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, PointerWidth,
-    ProjectedPayloadRejectReason, RawMirFunction, SelectArm, SelectArmKind, SourceOrigin,
-    SpawnEnvFieldOwnership, Strategy, SuspendKind, Terminator, ThirFunction, TraitObjectStorage,
-    TrapKind,
+    ProjectedPayloadRejectReason, RawMirFunction, RecordLayout, SelectArm, SelectArmKind,
+    SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership, Strategy, SuspendKind, Terminator,
+    ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::LayoutClass;
@@ -50,6 +50,7 @@ use crate::ownership::ReleaseSymbolVerdict;
 use crate::ownership::ValueOwnership;
 use crate::ownership::ValueProvenance;
 use crate::ownership::VecElementRelease;
+use crate::state_clone::StateFieldCloneKind as SnapshotFieldKind;
 
 mod actor;
 mod cfg_util;
@@ -317,6 +318,18 @@ struct ActorMethodInfo {
     return_ty: ResolvedTy,
 }
 
+#[derive(Debug, Clone)]
+struct PendingOutboundArg {
+    source: Place,
+    ty: ResolvedTy,
+    site: SiteId,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingOutboundSite {
+    args: Vec<PendingOutboundArg>,
+}
+
 #[derive(Debug, Default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -337,6 +350,10 @@ struct Builder {
     /// and the emitter agree on what each `SiteId` resolves to. Drained
     /// at the same cursor-move site as `statements`.
     pub(crate) instructions: Vec<Instr>,
+    /// Raw-only per-block actor-boundary arguments. Lowering records each
+    /// source independently before packing; the post-CFG outbound pass resolves
+    /// modes and clears this map before checked MIR is built.
+    pending_outbound_actor_args: HashMap<u32, PendingOutboundSite>,
     /// Completed basic blocks in construction order. Block id `0` is the
     /// function's entry block; subsequent ids are monotone in allocation
     /// order. The currently-being-built block (`current_block_id` /
@@ -3623,6 +3640,288 @@ pub fn bracket_actor_handler_blocks(blocks: &mut [BasicBlock]) {
     }
 }
 
+fn outbound_live_out(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+) -> HashMap<u32, HashSet<u32>> {
+    let mut live_in: HashMap<u32, HashSet<u32>> = blocks
+        .iter()
+        .map(|block| (block.id, HashSet::new()))
+        .collect();
+    let mut live_out = live_in.clone();
+
+    loop {
+        let mut changed = false;
+        for block in blocks.iter().rev() {
+            let out: HashSet<u32> = block
+                .successors()
+                .into_iter()
+                .filter_map(|succ| live_in.get(&succ))
+                .flat_map(|set| set.iter().copied())
+                .collect();
+            let mut live = out.clone();
+            for place in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
+                if let Some(local) = base_local(place) {
+                    live.insert(local);
+                }
+            }
+            for instr in block.instructions.iter().rev() {
+                let (reads, writes) = dataflow::instr_reads_writes(instr);
+                for place in writes {
+                    if let Some(local) = base_local(place) {
+                        live.remove(&local);
+                    }
+                }
+                for place in reads {
+                    if let Some(local) = base_local(place) {
+                        live.insert(local);
+                    }
+                }
+            }
+            if live_out.get(&block.id) != Some(&out) {
+                live_out.insert(block.id, out);
+                changed = true;
+            }
+            if live_in.get(&block.id) != Some(&live) {
+                live_in.insert(block.id, live);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    live_out
+}
+
+fn ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Named { args, builtin, .. } => {
+            matches!(builtin, Some(BuiltinType::Sender | BuiltinType::Receiver))
+                || args.iter().any(ty_contains_channel_handle)
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(ty_contains_channel_handle),
+        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => ty_contains_channel_handle(elem),
+        _ => false,
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exhaustive structural-kind match is the fail-closed outbound policy boundary"
+)]
+fn resolve_outbound_actor_modes(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
+    let projection_tainted = temp_drop::compute_projection_alias_taint(
+        blocks,
+        &builder.match_project_consumed_binder_locals,
+        &builder.locals,
+    );
+    let record_layouts: Vec<RecordLayout> = builder
+        .record_field_orders
+        .iter()
+        .map(|(name, fields)| RecordLayout {
+            name: name.clone(),
+            field_names: fields.iter().map(|(field, _)| field.clone()).collect(),
+            field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+        })
+        .chain(builder.closure_record_layouts.iter().cloned())
+        .collect();
+    let pending = std::mem::take(&mut builder.pending_outbound_actor_args);
+
+    for block in blocks.iter_mut() {
+        let Some(site) = pending.get(&block.id) else {
+            continue;
+        };
+        let mut local_counts: HashMap<u32, usize> = HashMap::new();
+        for arg in &site.args {
+            if let Some(local) = base_local(arg.source) {
+                *local_counts.entry(local).or_default() += 1;
+            }
+        }
+        let modes: Vec<SendAliasMode> = site
+            .args
+            .iter()
+            .map(|arg| {
+                let local = base_local(arg.source);
+                let transferable = matches!(arg.source, Place::Local(_))
+                    && local.is_some_and(|local| {
+                        !live_out
+                            .get(&block.id)
+                            .is_some_and(|live| live.contains(&local))
+                            && !projection_tainted.contains(&local)
+                            && local_counts.get(&local) == Some(&1)
+                    });
+
+                if ty_contains_channel_handle(&arg.ty) {
+                    return SendAliasMode::TransferLastUse;
+                }
+
+                match crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                    &arg.ty,
+                    &record_layouts,
+                    &builder.enum_layouts,
+                    &builder.opaque_handle_names,
+                    &builder.resource_opaque_close,
+                ) {
+                    Ok(plan) => match plan.root() {
+                        SnapshotFieldKind::BitCopy { .. } => SendAliasMode::SnapshotBitCopy,
+                        SnapshotFieldKind::String | SnapshotFieldKind::Bytes => {
+                            if transferable {
+                                SendAliasMode::TransferLastUse
+                            } else {
+                                SendAliasMode::SnapshotRetain
+                            }
+                        }
+                        SnapshotFieldKind::Rc | SnapshotFieldKind::Weak => {
+                            builder.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "actor send admitted cloneable non-Send payload `{}`",
+                                        arg.ty.user_facing()
+                                    ),
+                                    site: arg.site,
+                                },
+                                note: "Rc/Weak structural clone support never implies Send; checker/MIR authority drift must fail closed"
+                                    .to_string(),
+                            });
+                            SendAliasMode::SnapshotMaterialize
+                        }
+                        SnapshotFieldKind::Tuple { .. }
+                        | SnapshotFieldKind::Array { .. }
+                        | SnapshotFieldKind::Vec { .. }
+                        | SnapshotFieldKind::HashMap { .. }
+                        | SnapshotFieldKind::HashSet { .. }
+                        | SnapshotFieldKind::UserRecord { .. }
+                        | SnapshotFieldKind::Enum { .. } => {
+                            if transferable {
+                                SendAliasMode::TransferLastUse
+                            } else {
+                                SendAliasMode::SnapshotMaterialize
+                            }
+                        }
+                        SnapshotFieldKind::IoHandle { .. }
+                        | SnapshotFieldKind::OpaqueHandle { .. }
+                        | SnapshotFieldKind::ClosurePair
+                        | SnapshotFieldKind::Resource { .. } => {
+                            if transferable {
+                                SendAliasMode::TransferLastUse
+                            } else {
+                                builder.diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: format!(
+                                            "snapshot unavailable for actor-send payload `{}`",
+                                            arg.ty.user_facing()
+                                        ),
+                                        site: arg.site,
+                                    },
+                                    note: "the value has no structural clone path and is not proven last-use transferable"
+                                        .to_string(),
+                                });
+                                SendAliasMode::SnapshotMaterialize
+                            }
+                        }
+                    },
+                    Err(error) => {
+                        if transferable {
+                            SendAliasMode::TransferLastUse
+                        } else {
+                            builder.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "snapshot plan for actor-send payload `{}`",
+                                        arg.ty.user_facing()
+                                    ),
+                                    site: arg.site,
+                                },
+                                note: error.to_string(),
+                            });
+                            SendAliasMode::SnapshotMaterialize
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        match &mut block.terminator {
+            Terminator::Send { arg_modes, .. } | Terminator::Ask { arg_modes, .. } => {
+                *arg_modes = modes;
+            }
+            Terminator::Suspend { .. } => {
+                let Some(SuspendKind::Ask { arg_modes, .. }) =
+                    builder.suspend_kinds.get_mut(&block.id)
+                else {
+                    builder.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "pending outbound arguments on non-ask suspend".to_string(),
+                            site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                        },
+                        note: "outbound preparation facts and suspend carrier drifted".to_string(),
+                    });
+                    continue;
+                };
+                *arg_modes = modes;
+            }
+            _ => {
+                builder.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "pending outbound arguments without send/ask terminator"
+                            .to_string(),
+                        site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                    },
+                    note: "raw outbound facts must be discharged before checked MIR".to_string(),
+                });
+            }
+        }
+    }
+
+    for (block, site) in pending {
+        if !blocks.iter().any(|candidate| candidate.id == block) {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("pending outbound block bb{block} is missing"),
+                    site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                },
+                note: "raw outbound facts must be discharged before checked MIR".to_string(),
+            });
+        }
+    }
+}
+
+#[must_use]
+pub fn validate_outbound_actor_modes(raw: &RawMirFunction) -> Vec<MirCheck> {
+    let payload_requires_mode = |value: Place| {
+        base_local(value)
+            .and_then(|local| raw.locals.get(local as usize))
+            .is_none_or(|ty| !matches!(ty, ResolvedTy::Unit))
+    };
+    raw.blocks
+        .iter()
+        .filter_map(|block| {
+            let unresolved = match &block.terminator {
+                Terminator::Send {
+                    value, arg_modes, ..
+                }
+                | Terminator::Ask {
+                    value, arg_modes, ..
+                } => arg_modes.is_empty() && payload_requires_mode(*value),
+                Terminator::Suspend { .. } => {
+                    raw.suspend_kinds
+                        .get(&block.id)
+                        .is_some_and(|kind| match kind {
+                            SuspendKind::Ask {
+                                value, arg_modes, ..
+                            } => arg_modes.is_empty() && payload_requires_mode(*value),
+                            _ => false,
+                        })
+                }
+                _ => false,
+            };
+            unresolved.then_some(MirCheck::OutboundModeUnresolved { block: block.id })
+        })
+        .collect()
+}
+
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -3879,6 +4178,11 @@ pub(crate) fn lower_function(
     // (`load_locals` is empty whenever `current_actor_state_fields` was
     // never populated).
     classify_actor_state_load_modes(&mut blocks, &builder.suspend_kinds, &builder.locals);
+    resolve_outbound_actor_modes(&mut blocks, &mut builder);
+    debug_assert!(
+        builder.pending_outbound_actor_args.is_empty(),
+        "checked MIR cannot retain unresolved outbound actor arguments"
+    );
     // `CheckedMirFunction` mirrors `RawMirFunction.blocks` directly
     // (widened in Slice 2 from a single-block field to a vec). The
     // elaborator + check_function consume the block vec; legacy
@@ -3930,6 +4234,9 @@ pub(crate) fn lower_function(
     dataflow_result
         .checks
         .extend(crate::model::validate_context_markers(&raw));
+    dataflow_result
+        .checks
+        .extend(validate_outbound_actor_modes(&raw));
     let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
         .checks
         .iter()

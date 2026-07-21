@@ -15,8 +15,8 @@
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
-    terminator_source_places, GeneratorEnvFieldPlan, Instr, IrPipeline, MirDiagnosticKind, Place,
-    RawMirFunction, StateFieldCloneKind, Terminator,
+    terminator_source_places, DropKind, GeneratorEnvFieldPlan, Instr, IrPipeline,
+    MirDiagnosticKind, Place, RawMirFunction, StateFieldCloneKind, Terminator,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -548,6 +548,59 @@ fn gen_fn_owned_capture_carries_clone_plan_without_stack_env_drop() {
             .flat_map(|(_, plan)| &plan.drops)
             .all(|drop| drop.place != env.place),
         "the synthetic stack env shell must be consumed without a recursive drop"
+    );
+}
+
+#[test]
+fn anonymous_owned_capture_preserves_caller_source_drop() {
+    let pipeline = lower_checked(
+        r#"
+        record Capture { label: string }
+        fn main() {
+            let capture = Capture { label: "caller" };
+            let _g = gen { yield capture.label.len(); };
+            println(capture.label.len());
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "anonymous owned capture must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main MIR must exist");
+    let env = raw
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => Some(env),
+            _ => None,
+        })
+        .expect("anonymous generator must carry an env plan");
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("elaborated main must exist");
+    let drops: Vec<_> = elaborated
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .collect();
+    assert!(
+        drops.iter().any(|drop| {
+            matches!(&drop.ty, hew_types::ResolvedTy::Named { name, .. } if name == "Capture")
+                && matches!(drop.kind, DropKind::RecordInPlace)
+        }),
+        "the caller's original capture must retain its RecordInPlace drop"
+    );
+    assert!(
+        drops.iter().all(|drop| drop.place != env.place),
+        "the synthetic generator env shell must not receive a competing drop"
     );
 }
 

@@ -27601,13 +27601,10 @@ fn lower_terminator<'ctx>(
             //      live un-consumed yield in `out_value`).
             //   4. Store the companion pointer into the `Generator<Y, R>` slot.
             //
-            // The env (capture record) is passed by ADDRESS into the ramp's
-            // env param: the coro frame is single-owner (no body thread), so the
-            // body reads the caller's env record directly while constructing the
-            // frame — no deep-copy/thread-boundary protocol is needed. Captures
-            // are plain-copyable only (`gen_env_capture_admissible` fail-closes
-            // owned and opaque captures), so the body's env reads are read-only
-            // views and there is no per-field clone or env-field drop.
+            // The ramp receives the heap environment only after every owned
+            // field has been cloned successfully. Body field loads are aliases
+            // of that sole-owned snapshot; the runtime dispatches its typed
+            // reverse-order drop thunk before freeing the allocation.
             let body_function = fn_ctx.llvm_mod.get_function(body_fn).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Terminator::MakeGenerator: generator body fn `{body_fn}` was not \
@@ -27739,9 +27736,9 @@ fn lower_terminator<'ctx>(
             // env MUST be heap-owned, not the caller's stack record. Heap-copy the
             // env into a fresh block now (the caller's record is live HERE), store
             // its pointer in the companion (freed by `hew_gen_coro_destroy`), and
-            // pass THAT to the ramp. Captures are plain-copyable only
-            // (`gen_env_capture_admissible` rejects owned/opaque), so a flat
-            // memcpy + flat free is sound — no per-field clone or drop.
+            // pass THAT to the ramp. The memcpy is only a shallow seed:
+            // `emit_generator_env_owned_clones` replaces every owned field with
+            // an independent semantic clone before the ramp can observe it.
             let env_field_ptr = fn_ctx
                 .builder
                 .build_struct_gep(

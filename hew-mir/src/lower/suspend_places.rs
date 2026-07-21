@@ -1040,9 +1040,9 @@ pub(super) fn terminator_escape_places(
         | Terminator::Goto { .. }
         | Terminator::Branch { .. }
         | Terminator::Trap { .. } => Vec::new(),
-        // Only the synthetic env record shell escapes into the heap clone.
-        // Its source bindings were already read by RecordInit and remain live.
-        Terminator::MakeGenerator { env, .. } => env.iter().map(|plan| plan.place).collect(),
+        // No caller binding escapes: construction clones from the synthetic
+        // shell. The shell itself is projection-tainted to suppress its drop.
+        Terminator::MakeGenerator { .. } => Vec::new(),
         // Lambda-actor construction: body_fn and state_drop_fn are static
         // symbols and the `dest` handle slot is the WRITE — but the capture
         // env (when present) transfers into the actor's heap-boxed state,

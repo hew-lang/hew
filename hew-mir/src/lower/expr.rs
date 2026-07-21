@@ -2479,13 +2479,6 @@ impl Builder {
                     }
                 }
                 if let Some(source) = self.capture_env_sources.get(id).cloned() {
-                    let use_intent = self.binding_ref_use_intent(expr);
-                    let raw_owned_escape = use_intent == IntentKind::Consume
-                        && self.capture_env_whole_escape_requires_clone(&source.ty);
-                    if raw_owned_escape {
-                        self.reject_capture_env_whole_escape(name, &source.ty, expr.site);
-                        return None;
-                    }
                     let dest = self.alloc_local(source.ty.clone());
                     self.push_instr(Instr::ClosureEnvFieldLoad {
                         env: source.env,

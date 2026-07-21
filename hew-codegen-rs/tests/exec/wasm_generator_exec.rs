@@ -130,20 +130,44 @@ fn wasm_generator_teardown_runs_and_releases_frames() {
         &source_path,
         r#"import std::observe;
 
-gen fn rows() -> string {
-    yield "row-" + "data";
-    yield "done-" + "data";
+type Capture {
+    label: string,
+    values: Vec<i64>,
+}
+
+gen fn rows(c: Capture) -> i64 {
+    yield c.label.len() + c.values[0];
+    yield c.values[1];
+}
+
+fn complete(c: Capture) {
+    let g = rows(c);
+    loop {
+        match g.next() {
+            Some(v) => { if v <= 0 { panic("complete value"); } },
+            None => { break; },
+        }
+    }
+}
+
+fn suspended(c: Capture) {
+    let g = rows(c);
+    match g.next() {
+        Some(v) => { if v <= 0 { panic("suspended value"); } },
+        None => panic("suspended missing"),
+    }
+}
+
+fn never_resumed(c: Capture) {
+    let _g = rows(c);
 }
 
 fn main() {
-    {
-        let g = rows();
-        match g.next() {
-            Some(v) => println(v),
-            None => println("none"),
-        }
-    }
+    complete(Capture { label: "complete", values: [1, 2] });
+    suspended(Capture { label: "suspended", values: [3, 4] });
+    never_resumed(Capture { label: "never", values: [5, 6] });
     println(observe.read("coroutines.frame_bytes_live"));
+    println(observe.read("heap.live_bytes"));
 }
 "#,
     )
@@ -200,6 +224,6 @@ fn main() {
     );
     assert_eq!(
         String::from_utf8(run.stdout).expect("stdout utf8"),
-        "row-data\n0\n"
+        "0\n0\n"
     );
 }

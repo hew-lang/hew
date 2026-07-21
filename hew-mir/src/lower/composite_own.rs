@@ -20,6 +20,24 @@ use super::{
     FOR_ITER_CURSOR_NAME_PREFIX,
 };
 
+fn generator_env_snapshot_init_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
+    blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => base_local(env.place),
+            _ => None,
+        })
+        .collect()
+}
+
+fn initializes_generator_env_snapshot(instr: &Instr, env_locals: &HashSet<u32>) -> bool {
+    matches!(
+        instr,
+        Instr::RecordInit { dest, .. }
+            if base_local(*dest).is_some_and(|local| env_locals.contains(&local))
+    )
+}
+
 /// Prove retained string field-load destinations are predicate-only owners.
 ///
 /// Admission is intentionally exact: the load, equality comparison feeding
@@ -1241,6 +1259,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // projection reads (tag/payload) do not escape the composite — they feed
     // the payload-binder scan instead.
     let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let generator_env_inits = generator_env_snapshot_init_locals(blocks);
     let note_alias_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
             excluded.insert(root);
@@ -1263,6 +1282,9 @@ pub(super) fn derive_enum_composite_drop_allowed(
     };
     for block in blocks {
         for instr in &block.instructions {
+            if initializes_generator_env_snapshot(instr, &generator_env_inits) {
+                continue;
+            }
             // COPY-IN element store (`hew_vec_push_owned` / `hew_vec_set_owned`)
             // DEEP-CLONES its element operand: an owned enum-with-collection
             // value pushed WHOLE by value is cloned into the Vec slot and the
@@ -1730,6 +1752,7 @@ pub(super) fn derive_owned_record_drop_allowed(
         |l: u32| field_binders.contains(&l) || match_hop_binders.contains_key(&l);
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let generator_env_inits = generator_env_snapshot_init_locals(blocks);
 
     // Interior-alias exclusion (hard double-free): a record binding bound from an
     // ALIASING container getter — `let a = xs[i]` lowers to `hew_vec_get_owned`,
@@ -1798,6 +1821,9 @@ pub(super) fn derive_owned_record_drop_allowed(
         .collect();
     for block in blocks {
         for instr in &block.instructions {
+            if initializes_generator_env_snapshot(instr, &generator_env_inits) {
+                continue;
+            }
             if let Instr::Drop {
                 place,
                 drop_fn: Some(_),
@@ -1855,6 +1881,9 @@ pub(super) fn derive_owned_record_drop_allowed(
     };
     for block in blocks {
         for instr in &block.instructions {
+            if initializes_generator_env_snapshot(instr, &generator_env_inits) {
+                continue;
+            }
             // COPY-IN element store (`hew_vec_push_owned` / `hew_vec_set_owned`)
             // DEEP-CLONES its element operand: an owned record pushed WHOLE by
             // value is cloned into the Vec slot and the SOURCE keeps sole
@@ -2175,6 +2204,7 @@ pub(super) fn derive_local_collection_drop_allowed(
         propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let generator_env_inits = generator_env_snapshot_init_locals(blocks);
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
             excluded.insert(root);
@@ -2183,6 +2213,9 @@ pub(super) fn derive_local_collection_drop_allowed(
 
     for block in blocks {
         for instr in &block.instructions {
+            if initializes_generator_env_snapshot(instr, &generator_env_inits) {
+                continue;
+            }
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member — already folded into the alias set) from a
             // real escape (dest is a non-member local or the `ReturnSlot`, which
@@ -2553,6 +2586,7 @@ pub(super) fn derive_local_bytes_drop_allowed(
         propagate_whole_value_alias_roots(blocks, borrowed_param_locals.iter().copied());
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let generator_env_inits = generator_env_snapshot_init_locals(blocks);
     let mut pending_share_sites: Vec<(u32, usize, Place, Vec<BindingId>)> = Vec::new();
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
@@ -2575,6 +2609,9 @@ pub(super) fn derive_local_bytes_drop_allowed(
 
     for block in blocks {
         for (instr_index, instr) in block.instructions.iter().enumerate() {
+            if initializes_generator_env_snapshot(instr, &generator_env_inits) {
+                continue;
+            }
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member — already folded into the alias set) from a
             // real escape (dest is a non-member local or the `ReturnSlot`).
@@ -3018,6 +3055,7 @@ pub(super) fn derive_tuple_composite_drop_allowed(
     let is_escape_binder = |l: u32| elem_binders.contains(&l) || match_hop_binders.contains_key(&l);
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
+    let generator_env_inits = generator_env_snapshot_init_locals(blocks);
 
     // Interior-alias exclusion (hard double-free), tuple analogue of the record
     // seed: a tuple binding bound from an ALIASING container getter
@@ -3111,6 +3149,9 @@ pub(super) fn derive_tuple_composite_drop_allowed(
     // `string_field_load_producer_dest` and still seeds.
     for block in blocks {
         for instr in &block.instructions {
+            if initializes_generator_env_snapshot(instr, &generator_env_inits) {
+                continue;
+            }
             if let Instr::Drop {
                 place,
                 drop_fn: Some(_),
@@ -3167,6 +3208,9 @@ pub(super) fn derive_tuple_composite_drop_allowed(
     };
     for block in blocks {
         for instr in &block.instructions {
+            if initializes_generator_env_snapshot(instr, &generator_env_inits) {
+                continue;
+            }
             // Direct prover-exclusion rule for the no-temp field-addressed
             // drop, the tuple twin of `derive_owned_record_drop_allowed`'s: a
             // `FieldDropInPlace` whose base is an alias-set member is BOTH

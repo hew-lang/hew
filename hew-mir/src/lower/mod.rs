@@ -3707,8 +3707,21 @@ fn outbound_live_out(
 fn ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
     match ty {
         ResolvedTy::Named { args, builtin, .. } => {
-            matches!(builtin, Some(BuiltinType::Sender | BuiltinType::Receiver))
-                || args.iter().any(ty_contains_channel_handle)
+            matches!(
+                builtin,
+                Some(
+                    BuiltinType::Sender
+                        | BuiltinType::Receiver
+                        | BuiltinType::Stream
+                        | BuiltinType::Sink
+                        | BuiltinType::Duplex
+                        | BuiltinType::SendHalf
+                        | BuiltinType::RecvHalf
+                        | BuiltinType::Generator
+                        | BuiltinType::AsyncGenerator
+                        | BuiltinType::CancellationToken
+                )
+            ) || args.iter().any(ty_contains_channel_handle)
         }
         ResolvedTy::Tuple(elems) => elems.iter().any(ty_contains_channel_handle),
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => ty_contains_channel_handle(elem),

@@ -7801,28 +7801,6 @@ fn collect_record_clone_inplace_seeds(
                     seeds.push(record_name.clone());
                 }
             }
-            let cleanup_plan = match &block.terminator {
-                Terminator::Send { cleanup_plan, .. } | Terminator::Ask { cleanup_plan, .. } => {
-                    cleanup_plan.as_ref()
-                }
-                Terminator::Suspend { .. } => func.suspend_kinds.get(&block.id).and_then(|kind| {
-                    if let SuspendKind::Ask { cleanup_plan, .. } = kind {
-                        cleanup_plan.as_ref()
-                    } else {
-                        None
-                    }
-                }),
-                _ => None,
-            };
-            if let Some(hew_mir::StateFieldCloneKind::UserRecord { name }) =
-                cleanup_plan.map(hew_mir::state_clone::ValueSnapshotPlan::root)
-            {
-                if record_layouts.iter().any(|layout| layout.name == *name)
-                    && seen.insert(name.clone())
-                {
-                    seeds.push(name.clone());
-                }
-            }
         }
     }
     seeds
@@ -7874,28 +7852,6 @@ fn collect_enum_clone_inplace_seeds(
                 }
                 if seen.insert(enum_name.clone()) {
                     seeds.push(enum_name.clone());
-                }
-            }
-            let cleanup_plan = match &block.terminator {
-                Terminator::Send { cleanup_plan, .. } | Terminator::Ask { cleanup_plan, .. } => {
-                    cleanup_plan.as_ref()
-                }
-                Terminator::Suspend { .. } => func.suspend_kinds.get(&block.id).and_then(|kind| {
-                    if let SuspendKind::Ask { cleanup_plan, .. } = kind {
-                        cleanup_plan.as_ref()
-                    } else {
-                        None
-                    }
-                }),
-                _ => None,
-            };
-            if let Some(hew_mir::StateFieldCloneKind::Enum { name }) =
-                cleanup_plan.map(hew_mir::state_clone::ValueSnapshotPlan::root)
-            {
-                if enum_layouts.iter().any(|layout| layout.name == *name)
-                    && seen.insert(name.clone())
-                {
-                    seeds.push(name.clone());
                 }
             }
         }
@@ -18441,24 +18397,13 @@ fn lower_value_snapshot_clone_instr<'ctx>(
             let value = fn_ctx
                 .builder
                 .build_load(src_ty, src_ptr, "snapshot_bytes_source")
-                .llvm_ctx("snapshot bytes source load")?
-                .into_pointer_value();
-            let helper = get_or_declare_clone_helper(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &CloneHelper::RefcountBump {
-                    name: "hew_bytes_clone_ref",
-                },
-            );
-            fn_ctx
-                .builder
-                .build_call(helper, &[value.into()], "snapshot_bytes_retain")
-                .llvm_ctx("snapshot bytes retain")?;
+                .llvm_ctx("snapshot bytes source load")?;
             let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, value)
                 .llvm_ctx("snapshot bytes dest store")?;
+            retain_bytes_value(fn_ctx, dest, "snapshot_bytes")?;
             Ok(())
         }
         StateFieldCloneKind::Tuple { elems } => {
@@ -18586,14 +18531,13 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
     let ty = place_resolved_ty(fn_ctx, value)?;
     match plan.root() {
         StateFieldCloneKind::BitCopy { .. } => Ok(()),
+        StateFieldCloneKind::Bytes => emit_bytes_inplace_drop(fn_ctx, value),
         StateFieldCloneKind::String
-        | StateFieldCloneKind::Bytes
         | StateFieldCloneKind::Vec { .. }
         | StateFieldCloneKind::HashMap { .. }
         | StateFieldCloneKind::HashSet { .. } => {
             let symbol = match plan.root() {
                 StateFieldCloneKind::String => "hew_string_drop",
-                StateFieldCloneKind::Bytes => "hew_bytes_drop",
                 StateFieldCloneKind::Vec { .. }
                 | StateFieldCloneKind::HashMap { .. }
                 | StateFieldCloneKind::HashSet { .. } => collection_elem_clone_drop_syms(ty)
@@ -18630,8 +18574,18 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
                 .llvm_ctx("prepared carrier null store")?;
             Ok(())
         }
-        StateFieldCloneKind::UserRecord { .. } => emit_record_inplace_drop_call(fn_ctx, value, ty),
-        StateFieldCloneKind::Enum { .. } => emit_enum_inplace_drop_call(fn_ctx, value, ty),
+        StateFieldCloneKind::UserRecord { name } => {
+            let record_layouts = codegen_record_layouts(fn_ctx);
+            let witnesses = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+            ensure_record_drop_body(fn_ctx.ctx, fn_ctx.llvm_mod, name, &witnesses)?;
+            emit_record_inplace_drop_call(fn_ctx, value, ty)
+        }
+        StateFieldCloneKind::Enum { name } => {
+            let record_layouts = codegen_record_layouts(fn_ctx);
+            let witnesses = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+            ensure_enum_drop_body(fn_ctx.ctx, fn_ctx.llvm_mod, name, &witnesses)?;
+            emit_enum_inplace_drop_call(fn_ctx, value, ty)
+        }
         StateFieldCloneKind::Tuple { .. } => {
             let ResolvedTy::Tuple(elems) = ty else {
                 return Err(CodegenError::FailClosed(format!(
@@ -18657,14 +18611,64 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
         StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => Err(CodegenError::FailClosed(
             "prepared actor carrier drop contains Rc/Weak".into(),
         )),
-        StateFieldCloneKind::IoHandle { .. }
-        | StateFieldCloneKind::OpaqueHandle { .. }
-        | StateFieldCloneKind::ClosurePair
-        | StateFieldCloneKind::Resource { .. } => Err(CodegenError::FailClosed(format!(
-            "prepared carrier `{}` has unsupported cleanup kind {:?}",
-            ty.user_facing(),
-            plan.root()
-        ))),
+        StateFieldCloneKind::Resource { close_symbol, .. } => {
+            let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            let handle = fn_ctx
+                .builder
+                .build_load(slot_ty, slot, "prepared_resource_handle")
+                .llvm_ctx("prepared resource handle load")?;
+            let helper = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                close_symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(helper, &[handle.into()], "prepared_resource_close")
+                .llvm_ctx("prepared resource close")?;
+            fn_ctx
+                .builder
+                .build_store(
+                    slot,
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
+                )
+                .llvm_ctx("prepared resource null store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::IoHandle { .. } => {
+            let helper = drop_helper_for_kind(plan.root())?.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "prepared carrier `{}` has no IO-handle drop helper",
+                    ty.user_facing()
+                ))
+            })?;
+            let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            let handle = fn_ctx
+                .builder
+                .build_load(slot_ty, slot, "prepared_io_handle")
+                .llvm_ctx("prepared IO handle load")?;
+            let function = get_or_declare_drop_helper(fn_ctx.ctx, fn_ctx.llvm_mod, &helper);
+            fn_ctx
+                .builder
+                .build_call(function, &[handle.into()], "prepared_io_close")
+                .llvm_ctx("prepared IO close")?;
+            fn_ctx
+                .builder
+                .build_store(
+                    slot,
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
+                )
+                .llvm_ctx("prepared IO null store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::OpaqueHandle { .. } | StateFieldCloneKind::ClosurePair => {
+            Err(CodegenError::FailClosed(format!(
+                "prepared carrier `{}` has unsupported cleanup kind {:?}",
+                ty.user_facing(),
+                plan.root()
+            )))
+        }
     }
 }
 

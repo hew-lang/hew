@@ -1,5 +1,5 @@
 type Boxed {
-    payload: Vec<i64>,
+    payload: Vec<i64>;
 }
 
 actor Sink {

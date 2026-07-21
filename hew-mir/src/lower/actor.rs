@@ -2200,12 +2200,20 @@ impl Builder {
                 .zip(args)
                 .map(|((place, ty), arg)| (*place, ty.clone(), arg.site)),
         );
+        let raw_bitcopy_modes: Vec<_> = lowered
+            .iter()
+            .map(|(_, ty)| {
+                (!self.binding_seeds_drop_elaboration(ty))
+                    .then_some(crate::model::SendAliasMode::SnapshotBitCopy)
+            })
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
         self.finish_current_block(Terminator::Send {
             actor,
             msg_type: info.msg_type,
             value,
             next,
-            arg_modes: Vec::new(),
+            arg_modes: raw_bitcopy_modes,
             cleanup_plan: None,
         });
         self.start_block(next);

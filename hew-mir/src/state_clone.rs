@@ -1054,11 +1054,10 @@ fn classify_state_field_full_impl(
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            if kinds.iter().any(|kind| {
-                kind.contains_opaque_handle()
-                    || kind.contains_closure_pair()
-                    || kind.contains_resource()
-            }) {
+            if kinds
+                .iter()
+                .any(|kind| kind.contains_opaque_handle() || kind.contains_closure_pair())
+            {
                 return Err(ClassificationError::Unsupported {
                     rendered: format!("{ty:?}"),
                 });
@@ -1251,6 +1250,29 @@ fn classify_named(
     }
     if matches!(builtin, Some(hew_types::BuiltinType::Weak)) {
         return Ok(StateFieldCloneKind::Weak);
+    }
+    if matches!(builtin, Some(hew_types::BuiltinType::Sender)) {
+        return Ok(StateFieldCloneKind::Resource {
+            name: "Sender".to_string(),
+            close_symbol: "hew_channel_sender_close".to_string(),
+        });
+    }
+    if matches!(builtin, Some(hew_types::BuiltinType::Receiver)) {
+        return Ok(StateFieldCloneKind::Resource {
+            name: "Receiver".to_string(),
+            close_symbol: "hew_channel_receiver_close".to_string(),
+        });
+    }
+    if matches!(
+        builtin,
+        Some(
+            hew_types::BuiltinType::LocalPid
+                | hew_types::BuiltinType::RemotePid
+                | hew_types::BuiltinType::LambdaPid
+                | hew_types::BuiltinType::HewActor
+        )
+    ) {
+        return Ok(StateFieldCloneKind::BitCopy { size_bytes: 0 });
     }
 
     // Non-opaque user records/enums still shadow builtin names. Keep that

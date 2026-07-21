@@ -83,6 +83,7 @@ stable = [
   "hew_actor_send_wire",
   "hew_actor_set_budget",
   "hew_actor_set_hibernation",
+  "hew_actor_set_message_drop",
   "hew_actor_set_priority",
   "hew_actor_set_reductions",
   "hew_actor_set_state_clone",

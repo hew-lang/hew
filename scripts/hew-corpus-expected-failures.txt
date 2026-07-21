@@ -177,7 +177,6 @@ tests/corpus/v05-value-model/07_view_field_slice_alias.hew
 tests/corpus/v05-value-model/08_actor_send_transfer.hew
 
 # deferred-nyi: actor share send-mode semantics are not implemented yet
-tests/corpus/v05-value-model/09_actor_send_share.hew
 
 # stale-syntax: pre-v0.5 bare linear attribute and missing copy builtin surface
 tests/corpus/v05-value-model/10_actor_send_materialize.hew

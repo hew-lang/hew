@@ -3749,13 +3749,9 @@ fn outbound_record_layouts(builder: &Builder) -> Vec<RecordLayout> {
 fn resolve_outbound_actor_modes(
     blocks: &mut [BasicBlock],
     builder: &mut Builder,
+    projection_tainted: &HashSet<u32>,
 ) -> HashMap<u32, Vec<ResolvedOutboundArg>> {
     let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
-    let projection_tainted = temp_drop::compute_projection_alias_taint(
-        blocks,
-        &builder.match_project_consumed_binder_locals,
-        &builder.locals,
-    );
     let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_outbound_actor_args);
     let mut resolved = HashMap::new();
@@ -3940,6 +3936,7 @@ fn prepare_outbound_actor_payloads(
     blocks: &mut [BasicBlock],
     builder: &mut Builder,
     resolved: &HashMap<u32, Vec<ResolvedOutboundArg>>,
+    projection_tainted: &HashSet<u32>,
 ) {
     let record_layouts = outbound_record_layouts(builder);
     let mut edge_insertions: Vec<(u32, u32, Vec<Instr>, Vec<Instr>)> = Vec::new();
@@ -4016,11 +4013,17 @@ fn prepare_outbound_actor_payloads(
                         ty: arg.ty.clone(),
                         plan: plan.clone(),
                     });
-                    if !builder
-                        .binding_locals
-                        .values()
-                        .any(|place| *place == arg.source)
-                    {
+                    let source_is_fresh_whole_local = match arg.source {
+                        Place::Local(local) => {
+                            !projection_tainted.contains(&local)
+                                && !builder
+                                    .binding_locals
+                                    .values()
+                                    .any(|place| *place == arg.source)
+                        }
+                        _ => false,
+                    };
+                    if source_is_fresh_whole_local {
                         prep.push(Instr::ValueSnapshotDrop {
                             value: arg.source,
                             ty: arg.ty.clone(),
@@ -4439,8 +4442,19 @@ pub(crate) fn lower_function(
     // (`load_locals` is empty whenever `current_actor_state_fields` was
     // never populated).
     classify_actor_state_load_modes(&mut blocks, &builder.suspend_kinds, &builder.locals);
-    let resolved_outbound = resolve_outbound_actor_modes(&mut blocks, &mut builder);
-    prepare_outbound_actor_payloads(&mut blocks, &mut builder, &resolved_outbound);
+    let projection_tainted = temp_drop::compute_projection_alias_taint(
+        &blocks,
+        &builder.match_project_consumed_binder_locals,
+        &builder.locals,
+    );
+    let resolved_outbound =
+        resolve_outbound_actor_modes(&mut blocks, &mut builder, &projection_tainted);
+    prepare_outbound_actor_payloads(
+        &mut blocks,
+        &mut builder,
+        &resolved_outbound,
+        &projection_tainted,
+    );
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"

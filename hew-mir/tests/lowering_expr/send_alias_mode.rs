@@ -1,6 +1,7 @@
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
-    lower_hir_module, validate_outbound_actor_modes, Instr, MirCheck, SendAliasMode, Terminator,
+    lower_hir_module, validate_outbound_actor_modes, Instr, MirCheck, Place, SendAliasMode,
+    Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
@@ -132,6 +133,29 @@ fn loop_back_edge_and_projection_force_snapshot() {
                 )
             })),
         "projection snapshots must clone into a fresh destination"
+    );
+    let projection_sources: Vec<Place> = pipeline
+        .raw_mir
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::ValueSnapshotClone { src, .. } => Some(*src),
+            _ => None,
+        })
+        .collect();
+    assert!(!projection_sources.is_empty());
+    assert!(
+        !pipeline
+            .raw_mir
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::ValueSnapshotDrop { value, .. } if projection_sources.contains(value)
+            )),
+        "snapshot preparation must not drop the sender-owned projection source"
     );
 }
 

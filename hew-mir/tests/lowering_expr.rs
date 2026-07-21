@@ -18,6 +18,8 @@ mod cstring_container_domain_canary;
 mod elaborate;
 #[path = "lowering_expr/forawait_loopvar_release.rs"]
 mod forawait_loopvar_release;
+#[path = "lowering_expr/fresh_vec_projection_owner.rs"]
+mod fresh_vec_projection_owner;
 #[path = "lowering_expr/gen_block_mir_lowering.rs"]
 mod gen_block_mir_lowering;
 #[path = "lowering_expr/generic_record_layout_test.rs"]

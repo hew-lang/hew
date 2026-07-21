@@ -207,9 +207,10 @@ pub const HEW_CTX_OFFSET_TASK_SCOPE: usize = offset_of!(HewExecutionContext, tas
 pub const HEW_CTX_OFFSET_ARENA: usize = offset_of!(HewExecutionContext, arena);
 /// Byte offset of [`HewExecutionContext::trace`].
 pub const HEW_CTX_OFFSET_TRACE: usize = offset_of!(HewExecutionContext, trace);
+/// Byte offset of [`HewTraceContext::span_id`] within the trace context.
+pub const HEW_TRACE_OFFSET_SPAN_ID: usize = offset_of!(HewTraceContext, span_id);
 /// Byte offset of [`HewExecutionContext::trace.span_id`].
-pub const HEW_CTX_OFFSET_TRACE_SPAN: usize =
-    HEW_CTX_OFFSET_TRACE + offset_of!(HewTraceContext, span_id);
+pub const HEW_CTX_OFFSET_TRACE_SPAN: usize = HEW_CTX_OFFSET_TRACE + HEW_TRACE_OFFSET_SPAN_ID;
 /// Byte offset of [`HewExecutionContext::partition_policy`].
 pub const HEW_CTX_OFFSET_PARTITION_POLICY: usize =
     offset_of!(HewExecutionContext, partition_policy);

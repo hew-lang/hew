@@ -86,6 +86,11 @@ fn hew_ctx_offset_parity() {
         "codegen HEW_CTX_OFFSET_TRACE drifted from runtime"
     );
     assert_eq!(
+        llvm::HEW_TRACE_OFFSET_SPAN_ID,
+        hew_runtime::HEW_TRACE_OFFSET_SPAN_ID,
+        "codegen HEW_TRACE_OFFSET_SPAN_ID drifted from runtime"
+    );
+    assert_eq!(
         llvm::HEW_CTX_OFFSET_TRACE_SPAN,
         hew_runtime::HEW_CTX_OFFSET_TRACE_SPAN,
         "codegen HEW_CTX_OFFSET_TRACE_SPAN drifted from runtime"

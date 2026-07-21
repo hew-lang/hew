@@ -1,0 +1,26 @@
+// An owned actor-state field is cloned into the receive-generator environment.
+// Supervised child construction supplies the already-supported owned state.
+record Config { label: string }
+
+actor Reader {
+    var name: string;
+    receive gen fn stream() -> i64 {
+        yield name.len();
+    }
+}
+
+supervisor App(config: Config) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child r: Reader(name: config.label);
+}
+
+fn main() {
+    let cfg = Config { label: "hello" };
+    let sup = spawn App(config: cfg);
+    let r = sup.r;
+    for await v in r.stream() {
+        println(f"{v}");
+    }
+}

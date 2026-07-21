@@ -1,0 +1,13 @@
+// An owned string parameter is cloned into the generator environment. The
+// caller's original remains usable after the generator has completed.
+gen fn drain(s: string) -> i64 {
+    yield s.len();
+}
+
+fn main() {
+    let name = "hello";
+    for n in drain(name) {
+        println(n);
+    }
+    println(name.len());
+}

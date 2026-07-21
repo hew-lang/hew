@@ -1,0 +1,16 @@
+fn factory(label: string) -> fn() -> Generator<i64, ()> {
+    || {
+        let captured = label;
+        gen { yield captured.len(); }
+    }
+}
+
+fn main() {
+    let make = factory("nested");
+    for value in make() {
+        println(value);
+    }
+    for value in make() {
+        println(value);
+    }
+}

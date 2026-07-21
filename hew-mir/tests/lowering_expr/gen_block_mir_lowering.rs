@@ -15,8 +15,8 @@
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
-    terminator_source_places, GeneratorEnvFieldPlan, IrPipeline, MirDiagnosticKind, Place,
-    RawMirFunction, Terminator,
+    terminator_source_places, GeneratorEnvFieldPlan, Instr, IrPipeline, MirDiagnosticKind, Place,
+    RawMirFunction, StateFieldCloneKind, Terminator,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -500,6 +500,155 @@ fn gen_block_capturing_scalar_is_admitted() {
     );
     assert_eq!(env.fields, vec![GeneratorEnvFieldPlan::TrivialCopy]);
     assert_eq!(terminator_source_places(make_term, None), vec![env.place]);
+}
+
+#[test]
+fn gen_fn_owned_capture_carries_clone_plan_without_stack_env_drop() {
+    let pipeline = lower_checked(
+        r#"
+        gen fn lengths(label: string) -> i64 { yield label.len(); }
+        fn main() {
+            let label = "hello";
+            let g = lengths(label);
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "owned generator capture must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+    let shell = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "lengths")
+        .expect("generator shell must exist");
+    let env = shell
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => Some(env),
+            _ => None,
+        })
+        .expect("owned capture must carry an env plan");
+    assert!(matches!(
+        env.fields.as_slice(),
+        [GeneratorEnvFieldPlan::Owned(plan)]
+            if matches!(plan.root(), StateFieldCloneKind::String)
+    ));
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "lengths")
+        .expect("elaborated generator shell must exist");
+    assert!(
+        elaborated
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .all(|drop| drop.place != env.place),
+        "the synthetic stack env shell must be consumed without a recursive drop"
+    );
+}
+
+#[test]
+fn actor_state_owned_capture_carries_clone_plan() {
+    let pipeline = lower_checked(
+        r#"
+        record Config { label: string }
+        actor Labeler {
+            var label: string;
+            receive gen fn lengths() -> i64 { yield label.len(); }
+        }
+        supervisor App(config: Config) {
+            strategy: one_for_one;
+            intensity: 3 within 60s;
+            child labeler: Labeler(label: config.label);
+        }
+        fn main() {
+            let config = Config { label: "hello" };
+            let _app = spawn App(config: config);
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "actor-state owned capture must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+    let shell = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Labeler__recv__lengths")
+        .expect("receive gen fn shell must exist");
+    assert!(
+        shell.blocks.iter().any(|block| block
+            .instructions
+            .iter()
+            .any(|instr| matches!(instr, Instr::ActorStateFieldLoad { .. }))),
+        "actor-state capture must be snapshotted before generator construction"
+    );
+    let env = shell
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => Some(env),
+            _ => None,
+        })
+        .expect("actor-state owned capture must carry an env plan");
+    assert!(matches!(
+        env.fields.as_slice(),
+        [GeneratorEnvFieldPlan::Owned(plan)]
+            if matches!(plan.root(), StateFieldCloneKind::String)
+    ));
+}
+
+#[test]
+fn nested_generator_clones_owned_capture_loaded_from_closure_env() {
+    let pipeline = lower_checked(
+        r#"
+        fn factory(label: string) -> fn() -> Generator<i64, ()> {
+            || {
+                let captured = label;
+                gen { yield captured.len(); }
+            }
+        }
+        fn main() {
+            let make = factory("nested");
+            let _g = make();
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "nested generator closure-source capture must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+    let shim = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name.starts_with("__hew_closure_invoke_factory_"))
+        .expect("closure invoke shim must exist");
+    assert!(
+        shim.blocks.iter().any(|block| block
+            .instructions
+            .iter()
+            .any(|instr| matches!(instr, Instr::ClosureEnvFieldLoad { .. }))),
+        "closure shim must load the source capture through ClosureEnvFieldLoad"
+    );
+    let env = shim
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => Some(env),
+            _ => None,
+        })
+        .expect("nested generator must carry an env plan");
+    assert!(matches!(
+        env.fields.as_slice(),
+        [GeneratorEnvFieldPlan::Owned(plan)]
+            if matches!(plan.root(), StateFieldCloneKind::String)
+    ));
 }
 
 /// A `gen fn` whose parameter is a bare named-function reference (`fn(i64)->i64`,

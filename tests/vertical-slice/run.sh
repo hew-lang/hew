@@ -2746,17 +2746,17 @@ expect_check_fail_error_count_no_cascade \
   "gen_fn_capture_opaque_handle" \
   "InitialisedBeforeUse" "UnresolvedPlace"
 
-# Reject: a generator that captures an owned (non-BitCopy) value — specifically
-# a `string` — as a free variable must fail closed. Owned values hold heap state
-# with a unique owner; shallow-copying them across the generator body-thread
-# boundary aliases the caller's heap (double-free / UAF on teardown).
-#
-# Error count: exactly 1 — the root NotYetImplemented; the cascade secondaries
-# are suppressed by the same capture-poisoning path.
+# Owned clone-total parameters are snapshotted into the generator environment;
+# the caller's original remains live after generator teardown.
+run_accept_expect_stdout "gen_fn_capture_owned_value"
+run_accept_expect_stdout "gen_closure_env_owned_capture"
+
+# Raw aggregate loads from a generator env remain aliases. Whole-value escapes
+# must clone explicitly or fail closed rather than create a second owner.
 expect_check_fail_error_count_no_cascade \
-  "${ROOT}/tests/vertical-slice/reject/gen_fn_capture_owned_value.hew" \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_escape.hew" \
   1 \
-  "gen_fn_capture_owned_value" \
+  "gen_capture_whole_value_escape" \
   "InitialisedBeforeUse" "UnresolvedPlace"
 
 # Reject: a generator that reads BOTH an inadmissible (`#[opaque]`) parameter
@@ -2867,16 +2867,9 @@ grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
 run_accept_expect_status "receive_gen_fn_teardown_fault" 134
 grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
 
-# Reject: an actor state field of an owned (non-BitCopy) type read inside a
-# `receive gen fn` body fails closed with the SAME generator
-# capture-admissibility gate a standalone `gen fn` uses — never the
-# unknown-actor-handler NYI the dispatch bridge would otherwise mask it
-# behind.
-expect_check_fail_error_count_no_cascade \
-  "${ROOT}/tests/vertical-slice/reject/receive_gen_fn_owned_state_capture.hew" \
-  1 \
-  "receive_gen_fn_owned_state_capture" \
-  "unknown actor handler"
+# Owned actor-state fields are snapshotted through the same clone-total plan as
+# direct generator parameters.
+run_accept_expect_stdout "receive_gen_fn_owned_state_capture"
 
 # ---------------------------------------------------------------------------
 # Sink<T> / Stream<T> Wire-capability admissibility gate

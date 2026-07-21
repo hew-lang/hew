@@ -269,51 +269,19 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn target_dir(repo: &Path) -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || repo.join("target"),
-        |dir| {
-            let path = PathBuf::from(dir);
-            if path.is_absolute() {
-                path
-            } else {
-                repo.join(path)
-            }
-        },
-    )
-}
-
 fn hew_bin(repo: &Path) -> PathBuf {
-    target_dir(repo)
-        .join("debug")
-        .join(format!("hew{}", std::env::consts::EXE_SUFFIX))
+    ensure_codegen_artifacts(repo)
 }
 
-fn ensure_codegen_artifacts(repo: &Path) {
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
-        let hew = hew_bin(repo);
-        if !hew.is_file() {
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-            let output = Command::new(cargo)
-                .current_dir(repo)
-                .args(["build", "--quiet", "-p", "hew-cli"])
-                .output()
-                .expect("spawn cargo build -p hew-cli");
-            assert!(
-                output.status.success(),
-                "cargo build -p hew-cli failed\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(
-                hew.is_file(),
-                "codegen bootstrap succeeded but hew binary was not created at {}",
-                hew.display()
-            );
-        }
-        hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
-    });
+fn ensure_codegen_artifacts(_repo: &Path) -> PathBuf {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let hew = hew_testutil::ensure_hew_bin_built().expect("build hew compiler");
+            hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
+            hew
+        })
+        .clone()
 }
 
 fn compile_vertical_slice_ll(fixture_name: &str) -> String {

@@ -775,13 +775,8 @@ fn ensure_built_serialized(
 fn target_dir_and_profile() -> (PathBuf, String) {
     if let Ok(exe) = std::env::current_exe() {
         // <target>/<profile>/deps/<bin>
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            if let (Some(p), Some(t)) = (
-                profile_dir.file_name().and_then(|s| s.to_str()),
-                profile_dir.parent(),
-            ) {
-                return (t.to_path_buf(), p.to_string());
-            }
+        if let Some(authority) = target_dir_and_profile_from_exe(&exe) {
+            return authority;
         }
     }
     let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
@@ -802,6 +797,13 @@ fn target_dir_and_profile() -> (PathBuf, String) {
         }
         .to_string(),
     )
+}
+
+fn target_dir_and_profile_from_exe(exe: &Path) -> Option<(PathBuf, String)> {
+    let profile_dir = exe.parent()?.parent()?;
+    let profile = profile_dir.file_name()?.to_str()?.to_string();
+    let target_dir = profile_dir.parent()?.to_path_buf();
+    Some((target_dir, profile))
 }
 
 fn run_cargo_build_hew_lib(
@@ -849,6 +851,27 @@ fn run_cargo_build_hew_lib(
 mod hew_lib_bootstrap_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn target_authority_follows_normal_target_layout() {
+        let exe = Path::new("/workspace/target/debug/deps/e2e-test");
+        assert_eq!(
+            target_dir_and_profile_from_exe(exe),
+            Some((PathBuf::from("/workspace/target"), "debug".to_string()))
+        );
+    }
+
+    #[test]
+    fn target_authority_follows_alternate_target_layout() {
+        let exe = Path::new("/workspace/target/llvm-cov-target/debug/deps/e2e-test");
+        assert_eq!(
+            target_dir_and_profile_from_exe(exe),
+            Some((
+                PathBuf::from("/workspace/target/llvm-cov-target"),
+                "debug".to_string()
+            ))
+        );
+    }
 
     /// N threads race `ensure_built_serialized` on one tempdir; the injected
     /// build stub must run exactly once (`fd_lock` serializes the writers, the

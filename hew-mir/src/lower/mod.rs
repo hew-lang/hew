@@ -958,6 +958,14 @@ struct Builder {
     pub(crate) generated_functions: Vec<LoweredFunction>,
     pub(crate) closure_record_layouts: Vec<crate::model::RecordLayout>,
     pub(crate) capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
+    /// Whole-value loads from owned capture-env fields. Every `Instr::Move`
+    /// source is checked against this table at emission and again before a
+    /// block is sealed, so no result-position lowering path can move the
+    /// environment's still-owned alias into a second owning place.
+    capture_env_owned_loads: HashMap<Place, CaptureEnvOwnedLoad>,
+    /// Suppresses duplicate diagnostics if malformed lowering tries to move
+    /// the same captured load more than once; every such move is still dropped.
+    rejected_capture_env_owned_loads: std::collections::HashSet<Place>,
     /// Body-side set of capture bindings whose env field holds a WEAK
     /// lambda-actor handle (`CaptureKind::Weak` — the forward-bound self
     /// reference, §5.9 ratification 2). `lower_lambda_actor_call` consults
@@ -5084,6 +5092,13 @@ struct CaptureEnvSource {
     ty: ResolvedTy,
 }
 
+#[derive(Debug, Clone)]
+struct CaptureEnvOwnedLoad {
+    name: String,
+    ty: ResolvedTy,
+    site: SiteId,
+}
+
 impl Builder {
     /// Bundle this builder's module-scoped readiness tables for the
     /// codegen-readiness diagnostic gate.
@@ -5520,12 +5535,37 @@ impl Builder {
     /// is what threads the per-statement line table to codegen WITHOUT
     /// reshaping the `Instr` enum or its codegen match sites.
     pub(crate) fn push_instr(&mut self, instr: Instr) {
+        if self.reject_capture_env_owned_move_instr(&instr) {
+            return;
+        }
         if let Some(span) = self.current_span {
             let idx = u32::try_from(self.instructions.len()).unwrap_or(u32::MAX);
             self.instr_spans.insert((self.current_block_id, idx), span);
             self.note_scope_span(span);
         }
         self.instructions.push(instr);
+    }
+
+    fn reject_capture_env_owned_move_instr(&mut self, instr: &Instr) -> bool {
+        let Instr::Move { src, .. } = instr else {
+            return false;
+        };
+        let Some(load) = self.capture_env_owned_loads.get(src).cloned() else {
+            return false;
+        };
+        if self.rejected_capture_env_owned_loads.insert(*src) {
+            self.reject_capture_env_whole_escape(&load.name, &load.ty, load.site);
+        }
+        true
+    }
+
+    fn reject_buffered_capture_env_owned_moves(&mut self) {
+        let instructions = std::mem::take(&mut self.instructions);
+        for instr in instructions {
+            if !self.reject_capture_env_owned_move_instr(&instr) {
+                self.instructions.push(instr);
+            }
+        }
     }
 
     /// Seal the current basic block with `terminator` and move its
@@ -5548,6 +5588,10 @@ impl Builder {
     }
 
     pub(crate) fn finish_current_block(&mut self, terminator: Terminator) {
+        // Backstop direct buffer writes as well as `push_instr`: every block is
+        // swept before sealing, so a future result-position cannot bypass the
+        // guard by appending `Instr::Move` to `instructions` directly.
+        self.reject_buffered_capture_env_owned_moves();
         self.record_terminator_span();
         let block = BasicBlock {
             id: self.current_block_id,
@@ -5624,6 +5668,7 @@ impl Builder {
     /// during the function-body walk; Slice 2's `If` lowering is the
     /// first writer to produce a non-trivial CFG here.
     fn finalize_blocks(&mut self, terminator: Terminator) -> Vec<BasicBlock> {
+        self.reject_buffered_capture_env_owned_moves();
         let mut blocks = std::mem::take(&mut self.pending_blocks);
         // Drop a synthetic dead-end cursor (from an early-return seal)
         // when no producer has written into it — keeping the empty

@@ -1,0 +1,7 @@
+fn main() {
+    let items: Vec<i64> = Vec::new();
+    let c = true;
+    let _f = || {
+        if c { items } else { items }
+    };
+}

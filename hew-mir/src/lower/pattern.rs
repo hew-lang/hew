@@ -1689,7 +1689,7 @@ impl Builder {
             }
 
             // Arm body.
-            let value = self.lower_value(&arm.body);
+            let value = self.lower_value_for_move(&arm.body);
             if let Some(src) = value {
                 self.push_instr(Instr::Move {
                     dest: result_place,
@@ -2039,7 +2039,7 @@ impl Builder {
             self.mark_binding_moved(scrutinee_id);
         }
 
-        let value = self.lower_value(&arm.body);
+        let value = self.lower_value_for_move(&arm.body);
         for (binding, previous, keep_for_drop_elab) in overwritten_bindings.into_iter().rev() {
             if keep_for_drop_elab {
                 continue;
@@ -2504,7 +2504,7 @@ impl Builder {
             }
 
             // Arm body: produce the result and jump to the join.
-            if let Some(src) = self.lower_value(&arm.body) {
+            if let Some(src) = self.lower_value_for_move(&arm.body) {
                 self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
@@ -3111,7 +3111,7 @@ impl Builder {
                 }
             }
 
-            let value = self.lower_value(&arm.body);
+            let value = self.lower_value_for_move(&arm.body);
             if let Some(src) = value {
                 self.push_instr(Instr::Move {
                     dest: result_place,
@@ -4125,7 +4125,7 @@ impl Builder {
                 }
             }
 
-            let value = self.lower_value(&arm.body);
+            let value = self.lower_value_for_move(&arm.body);
 
             // Drain the entries this arm registered; break/continue inside the
             // body has already cloned-freed them on its edges.

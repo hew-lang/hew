@@ -2476,14 +2476,7 @@ impl Builder {
                         }
                     }
                 }
-                if let Some(source) = self.capture_env_sources.get(id).cloned() {
-                    let dest = self.alloc_local(source.ty.clone());
-                    self.push_instr(Instr::ClosureEnvFieldLoad {
-                        env: source.env,
-                        env_ty: source.env_ty,
-                        field_offset: source.field_offset,
-                        dest,
-                    });
+                if let Some(dest) = self.lower_capture_env_binding_ref(*id, name, expr.site) {
                     return Some(dest);
                 }
                 let place = self.binding_locals.get(id).copied();
@@ -3136,7 +3129,7 @@ impl Builder {
                 // may still mutate the source binding, but the block's
                 // observable value Place is untouched.
                 let result = if let Some(tail) = block.tail.as_ref() {
-                    if let Some(src) = self.lower_value(tail) {
+                    if let Some(src) = self.lower_value_for_move(tail) {
                         let secured = self.alloc_local(self.subst_ty(&tail.ty));
                         self.push_instr(Instr::Move { dest: secured, src });
                         Some(secured)
@@ -6656,7 +6649,7 @@ impl Builder {
 
         // Then arm.
         self.start_block(then_bb);
-        let then_value = self.lower_value(then_expr);
+        let then_value = self.lower_value_for_move(then_expr);
         if let Some(src) = then_value {
             self.push_instr(Instr::Move {
                 dest: result_place,
@@ -6674,7 +6667,7 @@ impl Builder {
         // for a one-armed `if c { return }`.
         self.start_block(else_bb);
         if let Some(else_expr) = else_expr {
-            let else_value = self.lower_value(else_expr);
+            let else_value = self.lower_value_for_move(else_expr);
             if let Some(src) = else_value {
                 self.push_instr(Instr::Move {
                     dest: result_place,

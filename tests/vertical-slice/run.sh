@@ -2759,10 +2759,11 @@ expect_check_fail_error_count_no_cascade \
   "gen_capture_whole_value_escape" \
   "InitialisedBeforeUse" "UnresolvedPlace"
 
-# Every whole-value move reaches the centralized MIR move-lowering boundary:
-# rebinding, aggregate/container storage, explicit and implicit return,
-# by-value function arguments, and tuple construction all reject aliases loaded
-# from the capture environment.
+# Every whole-value capture load is tagged and every MIR Move is checked before
+# emission and again before block sealing. Rebinding, aggregate/container
+# storage, explicit/implicit return, block tails, control-flow joins, by-value
+# function arguments, and tuple construction therefore all reject aliases
+# loaded from the capture environment.
 # shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_let_move.hew" \
@@ -2788,6 +2789,31 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/closure_capture_whole_value_tail.hew" \
   'captured owned value `items` cannot be moved out of the generator/closure environment' \
   "closure_capture_whole_value_tail"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/closure_capture_whole_value_braced_tail.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "closure_capture_whole_value_braced_tail"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/closure_capture_whole_value_match_arm.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "closure_capture_whole_value_match_arm"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_match_arm.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_match_arm"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/closure_capture_whole_value_if_else.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "closure_capture_whole_value_if_else"
+# shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_if_else.hew" \
+  'captured owned value `items` cannot be moved out of the generator/closure environment' \
+  "gen_capture_whole_value_if_else"
 # shellcheck disable=SC2016  # backticks match Hew diagnostic syntax
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/gen_capture_whole_value_fn_arg.hew" \

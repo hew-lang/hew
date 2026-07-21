@@ -568,7 +568,7 @@ impl Builder {
         builder.collect_expr_prepass_facts(body);
 
         if let Some(src) = builder.lower_value_for_move(body) {
-            builder.instructions.push(Instr::Move {
+            builder.push_instr(Instr::Move {
                 dest: Place::ReturnSlot,
                 src,
             });
@@ -1267,7 +1267,7 @@ impl Builder {
         //     unconditionally.
         if matches!(shape, crate::model::LambdaActorShape::Ask) {
             if let Some(src) = tail_place {
-                body_builder.instructions.push(Instr::Move {
+                body_builder.push_instr(Instr::Move {
                     dest: Place::ReturnSlot,
                     src,
                 });
@@ -2037,7 +2037,7 @@ impl Builder {
         // Lower the tail expression (the implicit return value of the block).
         if let Some(tail) = &body.tail {
             if let Some(src) = body_builder.lower_value_for_move(tail) {
-                body_builder.instructions.push(Instr::Move {
+                body_builder.push_instr(Instr::Move {
                     dest: Place::ReturnSlot,
                     src,
                 });

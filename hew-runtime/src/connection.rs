@@ -4340,10 +4340,24 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     {
         let _publication = publication_sync.lock_or_recover();
         publication_removed.store(true, Ordering::Release);
-        if !mgr.routing_table.is_null() {
-            let Some(peer_identity) = peer_identity else {
-                return -1;
-            };
+    }
+    // Publication may have filled in the identity after the initial lookup
+    // snapshot. Refresh it only after cancellation is serialized: an earlier
+    // publisher has now exposed its identity and route, while a later one must
+    // observe `publication_removed` and cannot add a route.
+    let peer_identity = peer_identity.or_else(|| {
+        mgr.connections.access(|connections| {
+            connections
+                .iter()
+                .find(|connection| {
+                    connection.conn_id == conn_id
+                        && connection.publication_token == publication_token
+                })
+                .and_then(|connection| connection.peer_identity)
+        })
+    });
+    if !mgr.routing_table.is_null() {
+        if let Some(peer_identity) = peer_identity {
             // SAFETY: routing_table is valid per manager contract.
             let _ = unsafe {
                 hew_routing_remove_route_if_conn(mgr.routing_table, peer_identity, conn_id)

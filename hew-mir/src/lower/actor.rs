@@ -1,15 +1,29 @@
-#[cfg(test)]
-use super::collapse_actor_send_aliasing_to_idx0;
 use super::{
     actor_name_from_handle_ty, actor_name_from_remote_pid_ty, is_self_expr,
     is_unit_close_error_result, is_unit_send_error_result, method_name_from_id,
-    recv_result_payload_ty, ActorLayout, ActorMethodInfo, Builder, BuiltinType, CmpPred,
-    FieldOffset, FloatWidth, FungibleChildRef, HashMap, HirExpr, HirExprKind, Instr, MirDiagnostic,
-    MirDiagnosticKind, Place, ReleaseSymbolVerdict, ResolvedTy, RuntimeCallContext, SuspendKind,
-    Terminator, CHILD_LOOKUP_RESULT_TY_NAME, RECEIVE_GEN_STREAM_CAPACITY,
+    recv_result_payload_ty, ty_contains_channel_handle, ActorLayout, ActorMethodInfo, Builder,
+    BuiltinType, CmpPred, FieldOffset, FloatWidth, FungibleChildRef, HashMap, HirExpr, HirExprKind,
+    Instr, MirDiagnostic, MirDiagnosticKind, PendingOutboundArg, PendingOutboundSite, Place,
+    ReleaseSymbolVerdict, ResolvedTy, RuntimeCallContext, SuspendKind, Terminator,
+    CHILD_LOOKUP_RESULT_TY_NAME, RECEIVE_GEN_STREAM_CAPACITY,
 };
 
 impl Builder {
+    fn record_pending_outbound_args(
+        &mut self,
+        block: u32,
+        args: impl IntoIterator<Item = (Place, ResolvedTy, hew_hir::SiteId)>,
+    ) {
+        let pending = PendingOutboundSite {
+            args: args
+                .into_iter()
+                .map(|(source, ty, site)| PendingOutboundArg { source, ty, site })
+                .collect(),
+        };
+        let replaced = self.pending_outbound_actor_args.insert(block, pending);
+        debug_assert!(replaced.is_none(), "one outbound operation per MIR block");
+    }
+
     pub(crate) fn actor_state_field_for_target(
         &self,
         expr: &HirExpr,
@@ -2111,6 +2125,7 @@ impl Builder {
         }
         let actor = self.lower_value(receiver)?;
         let child_ref = self.fungible_child_ref_of(actor);
+        let mut fungible_edges = None;
         // Argument evaluation stays HERE, in the pre-branch block: an argument
         // expression's effects are user-visible and must run whether or not a
         // fungible child is live — the liveness branch below decides DELIVERY,
@@ -2148,6 +2163,7 @@ impl Builder {
         // current cursor where the multi-arg pack (if any) is built and the Send
         // terminator is emitted with the freshly-resolved child pointer.
         if let Some(child_ref) = child_ref {
+            let prepare_block = self.current_block_id;
             let (live_bb, recover_bb) = self.emit_fungible_reresolve(child_ref, actor);
             // recover_bb: not-live → the Send is skipped, so nothing consumes
             // the already-evaluated argument values. Release each one exactly
@@ -2155,7 +2171,9 @@ impl Builder {
             // exclusive, so the release runs exactly once), then continue.
             self.start_block(recover_bb);
             for (place, ty) in &lowered {
-                self.emit_undelivered_send_payload_release(*place, ty, site)?;
+                if ty_contains_channel_handle(ty) {
+                    self.emit_undelivered_send_payload_release(*place, ty, site)?;
+                }
             }
             self.finish_current_block(Terminator::Goto { target: next });
             // live_bb: the freshly-resolved current child; the Send below
@@ -2163,37 +2181,40 @@ impl Builder {
             // edge only (pure MIR construction over the pre-branch argument
             // places — no user effect moves across the branch).
             self.start_block(live_bb);
+            fungible_edges = Some((prepare_block, recover_bb));
             if value.is_none() {
                 let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
-                    lowered.into_iter().unzip();
+                    lowered.iter().cloned().unzip();
                 value = Some(self.pack_actor_payload_from_places(field_places, field_tys));
             }
         }
         let value = value.expect("payload place is populated for every arity above");
-        // Determine alias mode: look up the first argument's span in the
-        // checker's `actor_send_aliasing` map.  Only an explicit `Alias`
-        // classification promotes the mode; every `Copy(reason)` variant and
-        // every absent entry defaults to `Copy` (fail-closed).
-        let alias_mode = if args.len() == 1 {
-            let key = hew_types::SpanKey::from(&args[0].span);
-            match self.actor_send_aliasing.get(&key).copied() {
-                Some(hew_types::ActorSendAliasing::Alias) => crate::model::SendAliasMode::Alias,
-                // All Copy(reason) variants and missing entries → Copy (fail-closed).
-                _ => crate::model::SendAliasMode::Copy,
-            }
-        } else {
-            // Zero-arg send and the multi-arg packed-record payload: the
-            // payload Place is unit / a fresh packed temp, never the first
-            // arg's binding, so the per-arg alias classification does not
-            // transfer — fail-closed Copy.
-            crate::model::SendAliasMode::Copy
-        };
+        if let Some(edges) = fungible_edges {
+            self.fungible_outbound_edges
+                .insert(self.current_block_id, edges);
+        }
+        self.record_pending_outbound_args(
+            self.current_block_id,
+            lowered
+                .iter()
+                .zip(args)
+                .map(|((place, ty), arg)| (*place, ty.clone(), arg.site)),
+        );
+        let raw_bitcopy_modes: Vec<_> = lowered
+            .iter()
+            .map(|(_, ty)| {
+                (!self.binding_seeds_drop_elaboration(ty))
+                    .then_some(crate::model::SendAliasMode::SnapshotBitCopy)
+            })
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
         self.finish_current_block(Terminator::Send {
             actor,
             msg_type: info.msg_type,
             value,
             next,
-            alias_mode,
+            arg_modes: raw_bitcopy_modes,
+            cleanup_plan: None,
         });
         self.start_block(next);
         None
@@ -2273,20 +2294,25 @@ impl Builder {
             *place
         } else {
             let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
-                lowered.into_iter().unzip();
+                lowered.iter().cloned().unzip();
             self.pack_actor_payload_from_places(field_places, field_tys)
         };
 
         let next = self.alloc_block();
+        self.record_pending_outbound_args(
+            self.current_block_id,
+            lowered.iter().enumerate().map(|(idx, (place, ty))| {
+                let site = args.get(idx).map_or(expr.site, |arg| arg.site);
+                (*place, ty.clone(), site)
+            }),
+        );
         self.finish_current_block(Terminator::Send {
             actor,
             msg_type: info.msg_type,
             value,
             next,
-            // Args crossing into a stream-producer start message use the same
-            // fail-closed default as the zero/multi-arg `ActorSend` cases;
-            // per-arg alias classification for stream calls is a follow-on.
-            alias_mode: crate::model::SendAliasMode::Copy,
+            arg_modes: Vec::new(),
+            cleanup_plan: None,
         });
         self.start_block(next);
         Some(stream)
@@ -2369,6 +2395,10 @@ impl Builder {
         (sink, stream)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ask lowering keeps blocking and suspendable carrier construction together so both share one outbound preparation record"
+    )]
     pub(crate) fn lower_actor_ask(
         &mut self,
         receiver: &HirExpr,
@@ -2422,7 +2452,19 @@ impl Builder {
         if let Some(child_ref) = self.fungible_child_ref_of(actor) {
             self.emit_child_get_into(child_ref.sup_place, child_ref.slot_index, actor);
         }
-        let value = self.lower_actor_payload(args, site)?;
+        let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len());
+        for arg in args {
+            lowered.push((self.lower_value(arg)?, self.subst_ty(&arg.ty)));
+        }
+        let value = match &lowered[..] {
+            [] => self.alloc_local(ResolvedTy::Unit),
+            [(place, _)] => *place,
+            _ => {
+                let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
+                    lowered.iter().cloned().unzip();
+                self.pack_actor_payload_from_places(field_places, field_tys)
+            }
+        };
         // `result_dest` holds `Result<R, AskError>` — the R-ASK unified return type.
         // Its type comes from the HIR expression's checker-assigned type, which is
         // `Result<reply_ty, AskError>` after the unification fix in the type checker.
@@ -2435,6 +2477,13 @@ impl Builder {
             is_opaque: false,
         });
         let next = self.alloc_block();
+        self.record_pending_outbound_args(
+            self.current_block_id,
+            lowered
+                .iter()
+                .zip(args)
+                .map(|((place, ty), arg)| (*place, ty.clone(), arg.site)),
+        );
         // Suspendable-caller flip (W6.010, E2/D-W2). A caller that carries the
         // execution context (an actor handler / closure / task entry) runs on
         // the scheduler as a coroutine and can PARK its continuation: emit the
@@ -2463,6 +2512,8 @@ impl Builder {
                 actor,
                 msg_type: info.msg_type,
                 value,
+                arg_modes: Vec::new(),
+                cleanup_plan: None,
                 result_dest,
                 reply_dest,
                 error_dest,
@@ -2497,6 +2548,8 @@ impl Builder {
                 actor,
                 msg_type: info.msg_type,
                 value,
+                arg_modes: Vec::new(),
+                cleanup_plan: None,
                 result_dest,
                 reply_dest,
                 error_dest,
@@ -3043,102 +3096,5 @@ impl Builder {
                 None
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod actor_send_aliasing_collapse {
-    //! Revision-2 regression: `actor_send_aliasing` is the one audited
-    //! checker-owned `SpanKey` fact consumed in MIR rather than during HIR body
-    //! lowering. MIR keys every send lookup at `SpanKey::from` (`module_idx` = 0),
-    //! but the checker stamps the map with per-module indices, so a send inside
-    //! a non-root (imported / file-import) actor or fn body would miss its fact
-    //! and silently fall back to the `Copy` deep-copy path. `collapse_*_to_idx0`
-    //! re-keys to idx 0, collision-safe.
-    use super::*;
-    use hew_types::{ActorSendAliasing, ActorSendCopyReason, SpanKey};
-
-    #[test]
-    fn non_root_alias_entry_is_found_at_idx0() {
-        let mut map = HashMap::new();
-        // Checker recorded an Alias send at byte 10..14 under non-root module 2.
-        map.insert(
-            SpanKey {
-                start: 10,
-                end: 14,
-                module_idx: 2,
-            },
-            ActorSendAliasing::Alias,
-        );
-        let collapsed = collapse_actor_send_aliasing_to_idx0(&map);
-        // MIR looks up at module_idx = 0 (SpanKey::from): the entry must resolve.
-        let key = SpanKey {
-            start: 10,
-            end: 14,
-            module_idx: 0,
-        };
-        assert_eq!(
-            collapsed.get(&key).copied(),
-            Some(ActorSendAliasing::Alias),
-            "non-root Alias send must be visible to MIR's idx-0 lookup"
-        );
-    }
-
-    #[test]
-    fn cross_module_byte_range_conflict_falls_back_to_copy() {
-        let mut map = HashMap::new();
-        // Two different files collide at byte range 4..8 with conflicting modes.
-        map.insert(
-            SpanKey {
-                start: 4,
-                end: 8,
-                module_idx: 1,
-            },
-            ActorSendAliasing::Alias,
-        );
-        map.insert(
-            SpanKey {
-                start: 4,
-                end: 8,
-                module_idx: 2,
-            },
-            ActorSendAliasing::Copy(ActorSendCopyReason::CopyType),
-        );
-        let collapsed = collapse_actor_send_aliasing_to_idx0(&map);
-        // Conflict → omit → idx-0 lookup misses → MIR defaults to safe Copy.
-        let key = SpanKey {
-            start: 4,
-            end: 8,
-            module_idx: 0,
-        };
-        assert!(
-            !collapsed.contains_key(&key),
-            "a cross-file conflict at one byte range must collapse to the Copy default"
-        );
-    }
-
-    #[test]
-    fn root_alias_entry_is_preserved() {
-        let mut map = HashMap::new();
-        map.insert(
-            SpanKey {
-                start: 2,
-                end: 5,
-                module_idx: 0,
-            },
-            ActorSendAliasing::Alias,
-        );
-        let collapsed = collapse_actor_send_aliasing_to_idx0(&map);
-        assert_eq!(
-            collapsed
-                .get(&SpanKey {
-                    start: 2,
-                    end: 5,
-                    module_idx: 0,
-                })
-                .copied(),
-            Some(ActorSendAliasing::Alias),
-            "root-level Alias sends must be unaffected by the collapse"
-        );
     }
 }

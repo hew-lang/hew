@@ -4261,6 +4261,37 @@ pub unsafe extern "C" fn hew_actor_set_state_drop(
     a.state_drop_fn = Some(state_drop_fn);
 }
 
+/// Register the typed queued-message destructor on a spawned actor.
+///
+/// # Safety
+///
+/// `actor` must be a live actor pointer or null. `message_drop_fn` must match
+/// every handler payload layout for the actor and remain valid for its lifetime.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_set_message_drop(
+    actor: *mut HewActor,
+    message_drop_fn: unsafe extern "C" fn(i32, *mut c_void, usize),
+) {
+    cabi_guard!(actor.is_null());
+    // SAFETY: caller guarantees `actor` is valid.
+    let mailbox_ptr = unsafe { (*actor).mailbox };
+    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: the actor owns a live native mailbox and the callback lifetime is
+    // guaranteed by the caller.
+    unsafe {
+        mailbox::hew_mailbox_set_message_drop_fn(mailbox_ptr.cast(), Some(message_drop_fn));
+    }
+    #[cfg(target_arch = "wasm32")]
+    // SAFETY: the actor owns a live WASM mailbox and the callback lifetime is
+    // guaranteed by the caller.
+    unsafe {
+        crate::mailbox_wasm::hew_mailbox_set_message_drop_fn(
+            mailbox_ptr.cast(),
+            Some(message_drop_fn),
+        );
+    }
+}
+
 /// Register the codegen-emitted deep-clone callback on a spawned actor.
 ///
 /// Symmetric to [`hew_actor_set_state_drop`]. Stored on the actor struct

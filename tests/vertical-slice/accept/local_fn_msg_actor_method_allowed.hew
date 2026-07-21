@@ -1,8 +1,8 @@
 // Typechecker-accept: local actor receive-method dispatch keeps the value
 // model. Function pointers are Send and may be sent locally even though they are
 // not Serializable for RemotePid<T>::send. End-to-end `hew check` still fails
-// closed at codegen-front until function-typed actor messages are outside the
-// cross-node serialization path.
+// closed at codegen-front until function-typed values are supported as actor
+// messages.
 fn inc(x: i64) -> i64 {
     x + 1
 }

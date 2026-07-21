@@ -365,7 +365,6 @@ fn unknown_named_type_still_fails_closed_with_d10() {
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
-        actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: vec![],
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],

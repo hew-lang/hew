@@ -78,10 +78,9 @@ compile-time error, not a runtime surprise.
 
 ## Snapshot on send
 
-Sending a value across an **actor boundary** is a **copy-on-write snapshot**, not
-a move. A `receive fn` method call or `.send()` on a lambda-actor handle gives
-the receiver an independent snapshot of the value, and the sender's binding
-**stays valid** — there is no use-of-moved-value error:
+Sending an ordinary value across an **actor boundary** is a logical snapshot,
+not a move. A `receive fn` method call gives the receiver an independent value,
+and the sender's binding **stays valid**:
 
 ```hew
 let greeting = "hello";
@@ -89,10 +88,17 @@ printer.print_message(greeting);
 println(greeting);   // still legal — send took a snapshot, greeting is yours
 ```
 
-Isolation is preserved by copy-on-write itself, not by invalidating the sender.
-The receiver and the sender each own a fork of the value: if either mutates its
-copy, the write forks the shared buffer, so neither can observe the other's
-changes. Actors never share memory, and a snapshot guarantees they never need to.
+MIR chooses the implementation per argument. Inline values are bit-copied,
+refcounted sendable leaves retain one receiver owner, and mutable collections or
+aggregates are structurally materialized before the mailbox copies the carrier
+bytes. A proven last use may transfer the existing owner instead, but that is an
+optimization: uncertain branches, loop back-edges, aliases, and projections
+always snapshot.
+
+Cloneability is separate from sendability. `Rc<T>` and `Weak<T>` have local
+clone/drop support but remain non-`Send`, including when nested in records,
+tuples, or enums. Single-owner channel handles remain transfer-only lifecycle
+values rather than adopting ordinary snapshot semantics.
 
 This makes fan-out natural — send the same value to many workers in a loop with
 no ceremony:

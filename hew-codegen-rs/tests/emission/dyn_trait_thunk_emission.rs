@@ -147,7 +147,6 @@ fn pipeline_with(raw_mir: Vec<RawMirFunction>, registry: Vec<DynVtableInstance>)
         dyn_vtable_registry: registry,
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
-        actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],

@@ -67,6 +67,7 @@ pub(crate) struct SuspendingAskEmit {
     pub(crate) actor: Place,
     pub(crate) msg_type: i32,
     pub(crate) value: Place,
+    pub(crate) cleanup_plan: Option<hew_mir::state_clone::ValueSnapshotPlan>,
     pub(crate) result_dest: Place,
     pub(crate) reply_dest: Place,
     pub(crate) error_dest: Place,
@@ -4959,6 +4960,9 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
     // channel and bind Err(AskError) without suspending (no worker to free —
     // we never parked). ──────────────────────────────────────────────────────
     fn_ctx.builder.position_at_end(send_err_bb);
+    if let Some(plan) = &term.cleanup_plan {
+        crate::llvm::emit_prepared_carrier_drop(fn_ctx, term.value, plan)?;
+    }
     let ch_free = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -6584,22 +6588,17 @@ pub(crate) fn emit_spawn_actor(
             }
             _ => (ptr_ty.const_null(), 0),
         };
-        let message_drop_fn = match overflow_policy {
-            Some(hew_parser::ast::OverflowPolicy::Coalesce { .. }) => {
-                let drop_name = crate::thunks::message_drop_fn_name(actor_name);
-                fn_ctx
-                    .llvm_mod
-                    .get_function(&drop_name)
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(format!(
-                            "spawn `{actor_name}` requires message drop callback `{drop_name}`"
-                        ))
-                    })?
-                    .as_global_value()
-                    .as_pointer_value()
-            }
-            _ => ptr_ty.const_null(),
-        };
+        let drop_name = crate::thunks::message_drop_fn_name(actor_name);
+        let message_drop_fn = fn_ctx
+            .llvm_mod
+            .get_function(&drop_name)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "spawn `{actor_name}` requires message drop callback `{drop_name}`"
+                ))
+            })?
+            .as_global_value()
+            .as_pointer_value();
         let opts_ty = fn_ctx.ctx.struct_type(
             &[
                 ptr_ty.into(), // init_state
@@ -6693,6 +6692,7 @@ pub(crate) fn emit_spawn_actor(
             ))
         })?;
     emit_actor_state_clone_drop_registration(fn_ctx, actor_name, spawned, actor_layout)?;
+    crate::llvm::emit_actor_message_drop_registration(fn_ctx, actor_name, spawned)?;
 
     emit_actor_spawn_lifecycle(fn_ctx, actor_name, spawned, init_args)?;
     emit_periodic_handler_arming(fn_ctx, actor_name, spawned, actor_layout)?;
@@ -7723,22 +7723,17 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         }
         _ => (ptr_ty.const_null(), 0),
     };
-    let message_drop_fn = match child.overflow_policy.as_ref() {
-        Some(hew_parser::ast::OverflowPolicy::Coalesce { .. }) => {
-            let drop_name = crate::thunks::message_drop_fn_name(&child.actor_name);
-            llvm_mod
-                .get_function(&drop_name)
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "supervised child `{}` requires message drop callback `{drop_name}`",
-                        child.actor_name
-                    ))
-                })?
-                .as_global_value()
-                .as_pointer_value()
-        }
-        _ => ptr_ty.const_null(),
-    };
+    let drop_name = crate::thunks::message_drop_fn_name(&child.actor_name);
+    let message_drop_fn = llvm_mod
+        .get_function(&drop_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "supervised child `{}` requires message drop callback `{drop_name}`",
+                child.actor_name
+            ))
+        })?
+        .as_global_value()
+        .as_pointer_value();
 
     // ── Init-closure (config) path vs literal-template path ─────────────
     //

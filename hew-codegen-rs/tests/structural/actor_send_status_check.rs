@@ -46,7 +46,8 @@ fn send_status_pipeline() -> IrPipeline {
                 msg_type: 1,
                 value: Place::Local(1),
                 next: 1,
-                alias_mode: hew_mir::SendAliasMode::Copy,
+                arg_modes: vec![hew_mir::SendAliasMode::SnapshotBitCopy],
+                cleanup_plan: None,
             },
         },
         BasicBlock {
@@ -126,7 +127,6 @@ fn send_status_pipeline() -> IrPipeline {
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
-        actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],

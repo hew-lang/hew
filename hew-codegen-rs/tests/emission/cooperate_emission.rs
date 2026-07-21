@@ -104,7 +104,6 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
-        actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],

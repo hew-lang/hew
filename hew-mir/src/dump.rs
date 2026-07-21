@@ -379,9 +379,10 @@ fn render_terminator(term: &Terminator) -> String {
             msg_type,
             value,
             next,
-            alias_mode,
+            arg_modes: _,
+            cleanup_plan: _,
         } => format!(
-            "send {}[msg={msg_type}] {} alias={alias_mode:?} -> bb{next}",
+            "send {}[msg={msg_type}] {} alias=Copy -> bb{next}",
             render_place(actor),
             render_place(value)
         ),
@@ -389,6 +390,8 @@ fn render_terminator(term: &Terminator) -> String {
             actor,
             msg_type,
             value,
+            arg_modes: _,
+            cleanup_plan: _,
             result_dest,
             reply_dest,
             error_dest,
@@ -736,6 +739,24 @@ fn render_instr(instr: &Instr) -> String {
             render_place(dest),
             render_place(src),
             enum_name
+        ),
+        Instr::ValueSnapshotClone {
+            dest,
+            src,
+            ty,
+            plan,
+        } => format!(
+            "{} = snapshot_clone {} ty={} plan={:?}",
+            render_place(dest),
+            render_place(src),
+            ty.user_facing(),
+            plan.root()
+        ),
+        Instr::ValueSnapshotDrop { value, ty, plan } => format!(
+            "snapshot_drop {} ty={} plan={:?}",
+            render_place(value),
+            ty.user_facing(),
+            plan.root()
         ),
 
         // Data movement
@@ -1370,6 +1391,9 @@ fn render_mir_check(check: &MirCheck) -> String {
         MirCheck::ActorAskEscape { place, ask_site } => {
             format!("ActorAskEscape {} ask={:?}", render_place(place), ask_site)
         }
+        MirCheck::OutboundModeUnresolved { block } => {
+            format!("OutboundModeUnresolved bb{block}")
+        }
         MirCheck::DecisionMapTotal { offending_sites } => {
             format!("DecisionMapTotal [{} sites]", offending_sites.len())
         }
@@ -1523,6 +1547,9 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         } => format!("InitialisedBeforeUse {binding:?} {name} site={use_site:?}"),
         MirDiagnosticKind::DecisionMapTotal { offending_sites } => {
             format!("DecisionMapTotal [{} sites]", offending_sites.len())
+        }
+        MirDiagnosticKind::OutboundModeUnresolved { block } => {
+            format!("OutboundModeUnresolved bb{block}")
         }
         MirDiagnosticKind::MustConsume {
             binding,
@@ -1951,7 +1978,6 @@ mod tests {
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
             hashset_lowering_facts: vec![],
-            actor_send_aliasing: std::collections::HashMap::new(),
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
             resource_record_close: vec![],

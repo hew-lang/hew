@@ -29,7 +29,7 @@ use hew_mir::{
     BasicBlock, EnumLayout, FunctionCallConv, Instr, IrPipeline, MachineVariantLayout, Place,
     RawMirFunction, Terminator,
 };
-use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
 fn pipeline_from_source(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -713,7 +713,6 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],
         hashset_lowering_facts: vec![],
-        actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
@@ -762,127 +761,70 @@ fn receive_handler_move_into_owned_aggregate_retains_under_live_borrow() {
     );
 }
 
-/// FUNC-REVIEW FOLLOWUP (A625) — positive IR assertion for the re-send sink.
-///
-/// The re-send retain (`Terminator::Send` payload, lowered at the
-/// `send_payload` borrow-gate) was implemented but never asserted in IR. A
-/// borrowed `String` view re-sent to another actor must take its OWN owner via
-/// a `borrow_mode`-gated `hew_string_clone` into a scratch slot before the send
-/// — otherwise the new envelope the runtime builds would release a buffer the
-/// original envelope still owns. Hand-assembled so the `Terminator::Send` is
-/// exercised directly without the actor-method-call lowering surface.
-fn relay_resend_recv_pipeline() -> IrPipeline {
-    // `LocalPid<Unit>` is the canonical actor-dispatch-local handle — the
-    // unit inner type is irrelevant for the ABI shape (it only determines
-    // the message-type layout, not the handle alloca).
-    let actor_ty =
-        ResolvedTy::named_builtin("LocalPid", BuiltinType::LocalPid, vec![ResolvedTy::Unit]);
-    // Receive handler `Relay.forward(s: string)`:
-    //   local 0: string      // borrowed receive param (taint root)
-    //   local 1: LocalPid    // canonical actor-local handle (the re-send target)
-    // Block 0: EnterContext; Send { actor: ActorHandle(1), value: Local(0) }
-    // Block 1: ExitContext; Return
-    let handler = RawMirFunction {
-        source_origin: hew_mir::SourceOrigin::SynthesizedActorHandler {
-            kind: hew_mir::ActorHandlerKind::Receive,
-            actor_layout_key: "Relay".to_string(),
-        },
-        name: "Relay__recv__forward".to_string(),
-        return_ty: ResolvedTy::Unit,
-        call_conv: FunctionCallConv::ActorHandler,
-        params: vec![ResolvedTy::String],
-        locals: vec![ResolvedTy::String, actor_ty], // local 0: string (taint root), local 1: LocalPid
-        local_names: Vec::new(),
-        local_scopes: Vec::new(),
-        local_decl_bytes: Vec::new(),
-        scope_table: Vec::new(),
-        blocks: vec![
-            BasicBlock {
-                id: 0,
-                statements: Vec::new(),
-                instructions: vec![Instr::EnterContext],
-                terminator: Terminator::Send {
-                    actor: Place::ActorHandle(1),
-                    msg_type: 1,
-                    value: Place::Local(0),
-                    next: 1,
-                    alias_mode: hew_mir::SendAliasMode::Copy,
-                },
-            },
-            BasicBlock {
-                id: 1,
-                statements: Vec::new(),
-                instructions: vec![Instr::ExitContext],
-                terminator: Terminator::Return,
-            },
-        ],
-        decisions: Vec::new(),
-        intrinsic_id: None,
-        await_deadline_ns: std::collections::HashMap::new(),
-        suspend_kinds: std::collections::HashMap::new(),
-
-        lambda_actor_user_param_locals: Vec::new(),
-        span: None,
-        instr_spans: ::std::collections::BTreeMap::new(),
-    };
-    IrPipeline {
-        thir: Vec::new(),
-        raw_mir: vec![handler],
-        checked_mir: Vec::new(),
-        elaborated_mir: Vec::new(),
-        capabilities: hew_mir::ModuleCapabilities::EMPTY,
-        diagnostics: Vec::new(),
-        wire_layouts: std::sync::Arc::default(),
-        opaque_handle_names: vec![],
-        record_layouts: Vec::new(),
-        actor_layouts: Vec::new(),
-        supervisor_layouts: Vec::new(),
-        machine_layouts: Vec::new(),
-        enum_layouts: vec![],
-        regex_literals: vec![],
-        user_consts: Vec::new(),
-        extern_decls: vec![],
-        dyn_vtable_registry: vec![],
-        hashmap_lowering_facts: vec![],
-        hashset_lowering_facts: vec![],
-        actor_send_aliasing: std::collections::HashMap::new(),
-        polymorphic_mir: Vec::new(),
-        user_clone_record_seeds: vec![],
-        lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+#[test]
+fn receive_handler_resend_materializes_snapshot_owner() {
+    let source = r#"
+actor Consumer {
+    var last: string;
+    receive fn take(value: string) {
+        last = value;
     }
 }
 
-#[test]
-fn receive_handler_resend_emits_borrow_gated_retain() {
-    let ll = emit_ll_text(&relay_resend_recv_pipeline(), "relay_resend");
+actor Relay {
+    var consumer: LocalPid<Consumer>;
+    var last: string;
+    receive fn forward(value: string) {
+        consumer.take(value);
+        last = value;
+    }
+}
+
+fn main() -> i64 {
+    0
+}
+"#;
+    let ll = emit_ll_text(&pipeline_from_source(source), "relay_resend");
     let body = define_body(&ll, "Relay__recv__forward").join("\n");
 
+    // Snapshot-send resolves the still-live receive parameter as
+    // `SnapshotRetain` and lowers its `ValueSnapshotClone` unconditionally.
+    // That fresh owner replaces the old borrow_mode branch+merge retain.
+    let clone_pos = body
+        .find("%snapshot_string = call ptr @hew_string_clone")
+        .unwrap_or_else(|| {
+            panic!("a re-sent borrowed view must materialize an owned snapshot; Body:\n{body}")
+        });
+    let carrier_store = body
+        .lines()
+        .find(|line| {
+            line.trim_start()
+                .starts_with("store ptr %snapshot_string, ptr %local_")
+        })
+        .unwrap_or_else(|| {
+            panic!("the snapshot owner must be stored in a fresh send carrier; Body:\n{body}")
+        });
+    let carrier = carrier_store
+        .split(", ptr ")
+        .nth(1)
+        .and_then(|tail| tail.split(',').next())
+        .expect("snapshot carrier store shape");
+    let send_line = body
+        .lines()
+        .find(|line| line.contains("@hew_actor_send_by_id"))
+        .unwrap_or_else(|| panic!("the handler must still emit the actor send; Body:\n{body}"));
+    let send_pos = body.find(send_line).expect("send line is in body");
     assert!(
-        body.contains("send_payload_borrow_clone") && body.contains("send_payload_borrow_merge"),
-        "a re-sent borrowed view must lower its retain through a real \
-         borrow_mode branch+merge; Body:\n{body}"
+        clone_pos < send_pos && send_line.contains(&format!("ptr {carrier},")),
+        "the owned snapshot carrier must feed the actor send; carrier={carrier}; Body:\n{body}"
     );
     assert!(
-        body.contains("call ptr @hew_string_clone"),
-        "the re-send sink must retain the borrowed view via hew_string_clone; \
-         Body:\n{body}"
+        body.contains("field_store_borrow_clone") && body.contains("field_store_borrow_merge"),
+        "the borrowed source used after the send must independently take ownership \
+         when stored in Relay state; Body:\n{body}"
     );
-    assert!(
-        body.contains("icmp ne i32 %2"),
-        "the re-send retain must be gated on the trailing borrow_mode i32 \
-         (param %2); Body:\n{body}"
-    );
-    // Sanity: the actual send is still emitted (the retain feeds the send).
-    assert!(
-        body.contains("@hew_actor_send_by_id"),
-        "the handler must still emit the actor send; Body:\n{body}"
-    );
-    // A handled retain sink must not also arm the fail-closed entry trap.
     assert!(
         !body.contains("borrow_escape_trap"),
-        "a retained re-send sink must NOT also arm the fail-closed entry trap; \
-         Body:\n{body}"
+        "the snapshot send and retained state store are both handled borrow sinks; Body:\n{body}"
     );
 }

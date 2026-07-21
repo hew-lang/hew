@@ -103,6 +103,18 @@ wasm_no_mangle! {
     }
 }
 
+unsafe fn consume_dropped_incoming(
+    mb: &HewMailboxWasm,
+    msg_type: i32,
+    data: *const c_void,
+    data_size: usize,
+) {
+    if let Some(drop_fn) = mb.message_drop_fn {
+        // SAFETY: caller guarantees the payload is valid for this send call.
+        unsafe { drop_fn(msg_type, data.cast_mut(), data_size) };
+    }
+}
+
 #[cfg(test)]
 fn fail_mailbox_alloc_on_nth(n: usize) -> MailboxAllocFailureGuard {
     FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| slot.set(n));
@@ -721,6 +733,8 @@ unsafe fn send_user_message_inner(
     if mb.capacity > 0 && mb.count >= mb.capacity {
         match mb.overflow {
             HewOverflowPolicy::Block | HewOverflowPolicy::DropNew => {
+                // SAFETY: caller guarantees `data` is valid for this send.
+                unsafe { consume_dropped_incoming(mb, msg_type, data, size) };
                 return SendOutcome::Dropped;
             }
             HewOverflowPolicy::Fail => {
@@ -795,6 +809,8 @@ unsafe fn send_user_message_inner(
 
                 match normalize_coalesce_fallback(mb.coalesce_fallback) {
                     HewOverflowPolicy::Block | HewOverflowPolicy::DropNew => {
+                        // SAFETY: caller guarantees `data` is valid for this send.
+                        unsafe { consume_dropped_incoming(mb, msg_type, data, size) };
                         return SendOutcome::Dropped;
                     }
                     HewOverflowPolicy::Fail => {
@@ -1377,7 +1393,7 @@ wasm_no_mangle! {
         // Drain user queue.
         while let Some(node) = mailbox.user_queue.pop_front() {
             // SAFETY: Each node was allocated by `msg_node_alloc`.
-            unsafe { msg_node_free(node) };
+            unsafe { msg_node_free_with_message_drop(node, mailbox.message_drop_fn) };
         }
 
         // Drain system queue.

@@ -1,181 +1,194 @@
-//! Tests for `SendAliasMode` threading through MIR lowering (P5.1).
-//!
-//! Covers:
-//!   - `SendAliasMode::default() == SendAliasMode::Copy` (fail-closed invariant)
-//!   - `Terminator::Send` carries an `alias_mode` field
-//!   - `lower_hir_module` (backward-compat wrapper) stamps all sends `Copy`
-//!   - `lower_hir_module_with_facts` propagates an `Alias` classification
-//!   - Missing-entry default: absent entry → `Copy` (fail-closed)
-
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
-    lower_hir_module, lower_hir_module_with_facts, PointerWidth, SendAliasMode, Terminator,
+    lower_hir_module, validate_outbound_actor_modes, Instr, MirCheck, Place, SendAliasMode,
+    Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::{ActorSendAliasing, Checker};
+use hew_types::Checker;
 
-/// Minimal Hew source with one fire-and-forget actor send.
-const SEND_SOURCE: &str = r"
-actor Sink {
-    receive fn accept(v: i64) {}
-}
-
-fn main() {
-    let sink = spawn Sink();
-    sink.accept(42);
-}
-";
-
-fn lower_checked_with_tco(source: &str) -> (hew_hir::LowerOutput, hew_types::TypeCheckOutput) {
+fn lower(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tco = checker.check_program(&parsed.program);
-    assert!(tco.errors.is_empty(), "type errors: {:?}", tco.errors);
+    assert!(tco.errors.is_empty(), "{:?}", tco.errors);
     let hir = lower_program(
         &parsed.program,
         &tco,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let pipeline = lower_hir_module(&hir.module);
     assert!(
-        hir.diagnostics.is_empty(),
-        "HIR diagnostics: {:?}",
-        hir.diagnostics
+        pipeline.diagnostics.is_empty(),
+        "{:?}",
+        pipeline.diagnostics
     );
-    (hir, tco)
+    pipeline
 }
 
-/// Collect all `Terminator::Send` from all function bodies in the pipeline.
-fn collect_send_terminators(pipeline: &hew_mir::IrPipeline) -> Vec<SendAliasMode> {
+fn send_modes(pipeline: &hew_mir::IrPipeline) -> Vec<Vec<SendAliasMode>> {
     pipeline
-        .raw_mir
+        .checked_mir
         .iter()
-        .flat_map(|f| &f.blocks)
-        .filter_map(|block| {
-            if let Terminator::Send { alias_mode, .. } = &block.terminator {
-                Some(*alias_mode)
-            } else {
-                None
-            }
+        .flat_map(|function| &function.blocks)
+        .filter_map(|block| match &block.terminator {
+            Terminator::Send { arg_modes, .. } => Some(arg_modes.clone()),
+            _ => None,
         })
         .collect()
 }
 
-// ── Invariant: default is Copy ──────────────────────────────────────────────
-
 #[test]
-fn send_alias_mode_default_is_copy() {
-    assert_eq!(
-        SendAliasMode::default(),
-        SendAliasMode::Copy,
-        "SendAliasMode::default() must be Copy (fail-closed)"
+fn snapshot_send_resolves_every_argument_independently() {
+    let pipeline = lower(
+        r#"
+        type Boxed {
+            payload: Vec<i64>,
+        }
+
+        actor Sink {
+            receive fn take(n: i64, text: string, boxed: Boxed, last: string) {}
+        }
+
+        fn main() {
+            let sink = spawn Sink;
+            let n = 1;
+            let text = "shared";
+            let boxed = Boxed { payload: [2, 3] };
+            let last = "last";
+            sink.take(n, text, boxed, last);
+            println(text);
+            boxed.payload.push(4);
+        }
+        "#,
+    );
+    assert!(
+        send_modes(&pipeline).iter().any(|modes| {
+            modes
+                == &[
+                    SendAliasMode::SnapshotBitCopy,
+                    SendAliasMode::SnapshotRetain,
+                    SendAliasMode::SnapshotMaterialize,
+                    SendAliasMode::TransferLastUse,
+                ]
+        }),
+        "{:#?}",
+        send_modes(&pipeline)
+    );
+    assert!(
+        pipeline
+            .raw_mir
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .any(|block| block
+                .instructions
+                .iter()
+                .any(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))),
+        "last-use transfer must neutralize the sender slot"
     );
 }
 
-// ── Backward-compat wrapper stamps all sends Copy ───────────────────────────
-
 #[test]
-fn lower_hir_module_all_sends_copy() {
-    let (hir, _tco) = lower_checked_with_tco(SEND_SOURCE);
-    let pipeline = lower_hir_module(&hir.module);
-    assert!(
-        pipeline.diagnostics.is_empty(),
-        "MIR diagnostics: {:?}",
-        pipeline.diagnostics
-    );
-    let modes = collect_send_terminators(&pipeline);
-    assert!(
-        !modes.is_empty(),
-        "expected at least one Terminator::Send in the pipeline"
-    );
-    for mode in &modes {
-        assert_eq!(
-            *mode,
-            SendAliasMode::Copy,
-            "lower_hir_module must stamp every Send as Copy (fail-closed wrapper)"
-        );
-    }
-}
+fn loop_back_edge_and_projection_force_snapshot() {
+    let pipeline = lower(
+        r"
+        type Boxed {
+            payload: Vec<i64>,
+        }
 
-// ── Missing-entry default: empty map → Copy ─────────────────────────────────
+        actor Sink {
+            receive fn take(value: Vec<i64>) {}
+        }
 
-#[test]
-fn lower_hir_module_with_facts_empty_map_gives_copy() {
-    let (hir, _tco) = lower_checked_with_tco(SEND_SOURCE);
-    let pipeline = lower_hir_module_with_facts(
-        &hir.module,
-        &std::collections::HashMap::new(),
-        PointerWidth::Bits64,
+        fn main() {
+            let sink = spawn Sink;
+            let boxed = Boxed { payload: [1] };
+            var i = 0;
+            while i < 3 {
+                sink.take(boxed.payload);
+                i = i + 1;
+            }
+            boxed.payload.push(9);
+        }
+        ",
+    );
+    let modes = send_modes(&pipeline);
+    assert!(
+        modes
+            .iter()
+            .any(|modes| modes == &[SendAliasMode::SnapshotMaterialize]),
+        "{modes:#?}"
     );
     assert!(
-        pipeline.diagnostics.is_empty(),
-        "MIR diagnostics: {:?}",
-        pipeline.diagnostics
+        pipeline
+            .raw_mir
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .any(|block| block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::ValueSnapshotClone { dest, src, .. } if dest != src
+                )
+            })),
+        "projection snapshots must clone into a fresh destination"
     );
-    let modes = collect_send_terminators(&pipeline);
-    assert!(!modes.is_empty(), "expected at least one Terminator::Send");
-    for mode in &modes {
-        assert_eq!(
-            *mode,
-            SendAliasMode::Copy,
-            "absent entry must default to Copy (fail-closed)"
-        );
-    }
-}
-
-// ── Alias classification is propagated ──────────────────────────────────────
-//
-// Build the real checker-produced `actor_send_aliasing` map, then override
-// every `Copy` entry with `Alias` so we can verify the lowering picks it up.
-// We don't fabricate span keys from thin air — we drive them from the same
-// map the checker produced, which guarantees the keys match the arg spans
-// that `lower_actor_send` will look up.
-
-#[test]
-fn lower_hir_module_with_facts_alias_entry_propagates() {
-    let (hir, tco) = lower_checked_with_tco(SEND_SOURCE);
-
-    // Construct an overridden map: same keys, every entry set to Alias.
-    let aliased_map: std::collections::HashMap<hew_types::SpanKey, ActorSendAliasing> = tco
-        .actor_send_aliasing
-        .keys()
-        .map(|k| (k.clone(), ActorSendAliasing::Alias))
+    let projection_sources: Vec<Place> = pipeline
+        .raw_mir
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::ValueSnapshotClone { src, .. } => Some(*src),
+            _ => None,
+        })
         .collect();
-
-    // Only run this assertion if the checker actually produced entries.
-    // (If the source has no sends, the test is trivially correct but uninformative.)
-    if aliased_map.is_empty() {
-        // Fall back: still verify the pipeline compiles cleanly.
-        let pipeline = lower_hir_module_with_facts(&hir.module, &aliased_map, PointerWidth::Bits64);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "{:?}",
-            pipeline.diagnostics
-        );
-        return;
-    }
-
-    let pipeline = lower_hir_module_with_facts(&hir.module, &aliased_map, PointerWidth::Bits64);
+    assert!(!projection_sources.is_empty());
     assert!(
-        pipeline.diagnostics.is_empty(),
-        "MIR diagnostics: {:?}",
-        pipeline.diagnostics
+        !pipeline
+            .raw_mir
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::ValueSnapshotDrop { value, .. } if projection_sources.contains(value)
+            )),
+        "snapshot preparation must not drop the sender-owned projection source"
     );
-    let modes = collect_send_terminators(&pipeline);
-    assert!(
-        !modes.is_empty(),
-        "expected at least one Terminator::Send with alias entries"
+}
+
+#[test]
+fn checked_mir_rejects_unresolved_outbound_modes() {
+    let pipeline = lower(
+        r#"
+        actor Sink {
+            receive fn take(value: string) {}
+        }
+
+        fn main() {
+            let sink = spawn Sink;
+            sink.take("payload");
+        }
+        "#,
     );
-    for mode in &modes {
-        assert_eq!(
-            *mode,
-            SendAliasMode::Alias,
-            "Alias classification must be stamped onto the Send terminator"
-        );
+    let mut raw = pipeline
+        .raw_mir
+        .into_iter()
+        .find(|function| {
+            function
+                .blocks
+                .iter()
+                .any(|block| matches!(block.terminator, Terminator::Send { .. }))
+        })
+        .expect("fixture must lower one send");
+    for block in &mut raw.blocks {
+        if let Terminator::Send { arg_modes, .. } = &mut block.terminator {
+            arg_modes.clear();
+        }
     }
+    assert!(validate_outbound_actor_modes(&raw)
+        .iter()
+        .any(|check| matches!(check, MirCheck::OutboundModeUnresolved { .. })));
 }

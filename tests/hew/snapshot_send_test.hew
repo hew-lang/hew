@@ -1,0 +1,40 @@
+type Boxed {
+    payload: Vec<i64>;
+}
+
+actor Sink {
+    var observed: i64;
+
+    receive fn take(value: Boxed, tag: i64) {
+        value.payload.push(tag);
+        observed = value.payload[0] * 10000 + value.payload[1] * 100 + value.payload[2];
+    }
+
+    receive fn read() -> i64 {
+        observed
+    }
+}
+
+fn main() -> i64 {
+    let a = spawn Sink(observed: -1);
+    let b = spawn Sink(observed: -1);
+    let value = Boxed { payload: [1, 2] };
+    a.take(value, 7);
+    b.take(value, 8);
+    value.payload.push(9);
+    let av = match await a.read() {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    let bv = match await b.read() {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    let sender = value.payload[0] * 10000 + value.payload[1] * 100 + value.payload[2];
+    if av == 10207 && bv == 10208 && sender == 10209 {
+        println("snapshot-ok");
+        0
+    } else {
+        panic("snapshot isolation failed");
+    }
+}

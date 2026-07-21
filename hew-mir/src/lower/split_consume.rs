@@ -478,6 +478,8 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::WireCodec { dest, operand, .. } => vec![*dest, *operand],
         Instr::RecordCloneInplace { dest, src, .. } => vec![*dest, *src],
         Instr::EnumCloneInplace { dest, src, .. } => vec![*dest, *src],
+        Instr::ValueSnapshotClone { dest, src, .. } => vec![*dest, *src],
+        Instr::ValueSnapshotDrop { value, .. } => vec![*value],
         Instr::IntArithChecked {
             dest,
             lhs,
@@ -1347,7 +1349,6 @@ mod slice3_invariants {
                 &HashMap::new(),
                 &HashMap::new(),
                 None,
-                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 PointerWidth::Bits64,

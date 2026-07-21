@@ -1,0 +1,18 @@
+type Boxed {
+    payload: Vec<i64>;
+}
+
+actor Sink {
+    receive fn take(n: i64, text: string, boxed: Boxed, last: string) {}
+}
+
+fn main() {
+    let sink = spawn Sink;
+    let n = 1;
+    let text = "shared";
+    let boxed = Boxed { payload: [2, 3] };
+    let last = "last";
+    sink.take(n, text, boxed, last);
+    println(text);
+    boxed.payload.push(4);
+}

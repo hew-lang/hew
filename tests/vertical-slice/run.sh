@@ -3477,7 +3477,7 @@ expect_check_fail_contains \
     "remote_pid_old_verb_reject"
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew" \
-  "wire CBOR serialize: unsupported value type Function" \
+  "function-typed values are not supported as actor messages yet" \
   "local_fn_msg_actor_method_allowed"
 
 # ---------------------------------------------------------------------------

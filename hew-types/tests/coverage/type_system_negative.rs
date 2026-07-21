@@ -841,12 +841,10 @@ fn invalid_operation_string_plus_int() {
     );
 }
 
-// ── 9. UseAfterMove — send non-Copy value to actor twice ───────────
-// The checker marks non-Copy values as moved at actor message boundaries.
-// A struct with a `string` field is non-Copy, triggering move semantics.
+// ── 9. Snapshot send — send non-Copy value to actor twice ───────────
 
 #[test]
-fn use_after_move_send_to_actor_twice() {
+fn snapshot_send_to_actor_twice_is_valid() {
     let output = typecheck(
         r#"
         type Payload { data: string; }
@@ -862,14 +860,7 @@ fn use_after_move_send_to_actor_twice() {
         }
     "#,
     );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::UseAfterMove),
-        "Expected UseAfterMove, got errors: {:?}",
-        output.errors
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 // ── 11. YieldOutsideGenerator — yield in a regular function ─────────

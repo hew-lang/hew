@@ -66,6 +66,11 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                    the emitter must never receive an undecided value-class site"
                 .to_string(),
         }),
+        MirCheck::OutboundModeUnresolved { block } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::OutboundModeUnresolved { block: *block },
+            note: "every non-unit send/ask payload must carry resolved per-argument modes before checked MIR"
+                .to_string(),
+        }),
         MirCheck::MustConsume {
             binding,
             name,
@@ -4089,7 +4094,8 @@ pub(super) fn enumerate_exits(
                 msg_type: _,
                 value: _,
                 next,
-                alias_mode: _,
+                arg_modes: _,
+                cleanup_plan: _,
             } => (
                 // `actor` is a Place; the ExitPath::Send slot carries
                 // the callee name. Spine has no Send construction
@@ -4106,6 +4112,8 @@ pub(super) fn enumerate_exits(
                 actor,
                 msg_type: _,
                 value: _,
+                arg_modes: _,
+                cleanup_plan: _,
                 result_dest: _,
                 reply_dest: _,
                 error_dest: _,

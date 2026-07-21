@@ -22,44 +22,21 @@ pub enum BorrowKind {
     Mutable,
 }
 
-/// Binary alias-vs-copy discriminant carried by [`Terminator::Send`].
+/// Resolved ownership mechanism for one actor-send argument.
 ///
-/// Codegen uses this in Phase P5.2 to branch between the legacy
-/// deep-copy mailbox path (`Copy`) and the refcounted alias envelope
-/// path (`Alias`). The field is populated by MIR lowering from the
-/// checker's `actor_send_aliasing` side table.
-///
-/// **Fail-closed default**: a missing or unresolved classification in
-/// the checker's side table MUST produce `Copy`. `Copy` is the safe
-/// fallback — it issues a deep-copy into the mailbox, which is always
-/// semantically correct even if sub-optimal. `Alias` is only safe when
-/// the move-checker has already invalidated the sender's binding.
-///
-/// LESSONS: `serializer-fail-closed` (P0) — every fallback / default
-/// path MUST be `Copy`. The `Default` impl below enforces this.
-///
-/// `alias-byte-copy-not-semantic-clone` / `copy ⊥ sendable` (P0):
-/// this discriminant is derived SOLELY from the checker's
-/// `actor_send_aliasing` classification, never from a `Copy`-marker
-/// or `implements_marker(Copy)` check.
+/// MIR authors this mode after CFG construction. There is deliberately no
+/// default or unresolved variant: checked MIR may contain only a complete
+/// per-argument decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SendAliasMode {
-    /// Sender and receiver are isolated: the runtime deep-copies the
-    /// payload into the mailbox. Always safe; the fail-closed default.
-    Copy,
-    /// Sender transfers ownership of a refcounted envelope to the
-    /// receiver. The move-checker has already invalidated the sender's
-    /// binding so no post-send observation is possible.
-    Alias,
-}
-
-impl Default for SendAliasMode {
-    /// Fail-closed: the default mode is `Copy` so any send site that
-    /// cannot be resolved by the checker falls back to the safe
-    /// deep-copy path rather than producing an unsound alias.
-    fn default() -> Self {
-        SendAliasMode::Copy
-    }
+    /// Inline value bits are copied into the prepared carrier.
+    SnapshotBitCopy,
+    /// A sendable refcounted leaf mints one receiver owner.
+    SnapshotRetain,
+    /// A mutable or recursively owned value is structurally cloned.
+    SnapshotMaterialize,
+    /// A proven-dead whole owner moves into the prepared carrier.
+    TransferLastUse,
 }
 
 /// Target pointer width threaded into MIR lowering so the `isize`/`usize`
@@ -262,24 +239,6 @@ pub struct IrPipeline {
     /// pipeline finalization fails closed on any remaining `Pending`
     /// element layout fact.
     pub hashset_lowering_facts: Vec<hew_types::HashSetLoweringFact>,
-    /// Checker-authored alias-vs-copy decision per actor send site.
-    ///
-    /// Keyed by the source span of each actor-send argument expression
-    /// (the same `SpanKey` the checker inserts during
-    /// `enforce_actor_boundary_send`). Populated by
-    /// `lower_hir_module_with_facts` from `TypeCheckOutput::actor_send_aliasing`
-    /// so codegen (Phase P5.2) can branch on the decision without
-    /// re-examining the AST.
-    ///
-    /// This field mirrors the checker's map for codegen's future use.
-    /// MIR lowering itself reads from the map it was called with (via
-    /// `lower_hir_module_with_facts`) and stamps each
-    /// `Terminator::Send.alias_mode` at construction time.
-    ///
-    /// LESSONS: `serializer-fail-closed` (P0) — a missing entry maps
-    /// to `SendAliasMode::Copy`; `Alias` is ONLY set on explicit
-    /// `ActorSendAliasing::Alias` entries.
-    pub actor_send_aliasing: HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     /// Polymorphic (un-monomorphised) MIR for every generic origin function
     /// in the module (W5.007a). One entry per generic `HirFn` whose body is
     /// lowered against `ResolvedTy::TypeParam` operands instead of being
@@ -482,24 +441,6 @@ impl IrPipeline {
         self.hashset_lowering_facts = tco.hashset_layout_facts.values().cloned().collect();
         self.user_clone_record_seeds
             .clone_from(&tco.user_clone_record_seeds);
-    }
-
-    /// Store the checker's `actor_send_aliasing` side table in the pipeline
-    /// for codegen (Phase P5.2) to consume.
-    ///
-    /// This is called by driver glue (`hew-cli`) alongside
-    /// `attach_lowering_facts`. It mirrors — for codegen's future reference —
-    /// the same map that was passed to `lower_hir_module_with_facts` so that
-    /// the decisions stamped on each `Terminator::Send.alias_mode` during
-    /// lowering are also available as a flat lookup table.
-    ///
-    /// Calling this after `lower_hir_module_with_facts` is idempotent: the
-    /// `alias_mode` values on existing terminators are already correct; this
-    /// method just makes the raw map accessible on the pipeline struct for
-    /// diagnostic / `--explain-cow` rendering.
-    pub fn attach_actor_send_aliasing(&mut self, tco: &hew_types::TypeCheckOutput) {
-        self.actor_send_aliasing
-            .clone_from(&tco.actor_send_aliasing);
     }
 }
 
@@ -2531,6 +2472,8 @@ pub enum SuspendKind {
         actor: Place,
         msg_type: i32,
         value: Place,
+        arg_modes: Vec<SendAliasMode>,
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
         result_dest: Place,
         reply_dest: Place,
         error_dest: Place,
@@ -3448,20 +3391,16 @@ pub enum Terminator {
     /// here so the escape check has a construction site to look for;
     /// the v0.5 integer spine never constructs it.
     ///
-    /// `alias_mode` is the binary alias-vs-copy discriminant derived
-    /// from the checker's `actor_send_aliasing` side table. It is
-    /// populated by `lower_actor_send` at MIR construction time and
-    /// consumed by codegen (Phase P5.2) to select the send path.
-    /// **Fail-closed default is `Copy`**: a site with no checker entry
-    /// always uses the safe deep-copy path.
     Send {
         actor: Place,
         msg_type: i32,
         value: Place,
         next: u32,
-        /// Alias-vs-copy decision from the checker's side table.
-        /// Defaults to `Copy` (fail-closed); see [`SendAliasMode`].
-        alias_mode: SendAliasMode,
+        /// One resolved mode per source argument, in handler parameter order.
+        arg_modes: Vec<SendAliasMode>,
+        /// Whole prepared-carrier drop witness used only when transport retains
+        /// caller ownership on an error edge.
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
     },
     /// Actor ask: send `value` to `actor` on a caller-owned reply
     /// channel and resume at `next` once the reply has been received.
@@ -3491,6 +3430,9 @@ pub enum Terminator {
         actor: Place,
         msg_type: i32,
         value: Place,
+        /// One resolved mode per source argument, in handler parameter order.
+        arg_modes: Vec<SendAliasMode>,
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
         /// `Result<R, AskError>` slot — the user-visible binding type after
         /// the R-ASK unification.  Codegen emits `Ok(reply_value)` on a
         /// successful reply (non-null pointer from `hew_actor_ask`) and
@@ -4363,6 +4305,21 @@ pub enum Instr {
         dest: Place,
         src: Place,
         enum_name: String,
+    },
+    /// Clone one outbound actor argument into a fresh prepared owner using the
+    /// shared structural snapshot plan.
+    ValueSnapshotClone {
+        dest: Place,
+        src: Place,
+        ty: ResolvedTy,
+        plan: crate::state_clone::ValueSnapshotPlan,
+    },
+    /// Drop one prepared outbound owner on an edge where transport never
+    /// accepted it.
+    ValueSnapshotDrop {
+        value: Place,
+        ty: ResolvedTy,
+        plan: crate::state_clone::ValueSnapshotPlan,
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
@@ -5608,6 +5565,9 @@ pub enum MirCheck {
     /// `Terminator::Ask` exists as the boundary shape, but actor-call
     /// lowering that constructs it isn't in the v0.5 integer spine.
     ActorAskEscape { place: Place, ask_site: SiteId },
+    /// A non-unit outbound payload reached checked MIR without one resolved
+    /// mode per source argument.
+    OutboundModeUnresolved { block: u32 },
     /// Structural invariant on the lowering: every value-producing
     /// `SiteId` must have a `DecisionFact` with a concrete `Strategy`
     /// (not `UnknownBlocked`). Violation indicates a lowering bug, not
@@ -6520,6 +6480,8 @@ pub enum MirDiagnosticKind {
     /// `Strategy::UnknownBlocked`. Surfaced from
     /// `MirCheck::DecisionMapTotal`.
     DecisionMapTotal { offending_sites: Vec<SiteId> },
+    /// Raw outbound actor arguments were not fully resolved before checked MIR.
+    OutboundModeUnresolved { block: u32 },
     /// A `@linear` binding reached an exit without being consumed via
     /// a declared consuming method. Symmetric to `UseAfterConsume`.
     /// Surfaced from `MirCheck::MustConsume`.

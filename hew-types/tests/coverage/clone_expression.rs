@@ -98,13 +98,11 @@ fn clone_on_unsupported_scalar_fails_closed() {
 }
 
 #[test]
-fn use_after_move_suggests_clone() {
-    // Sending a non-Copy Vec into an actor consumes it; using it afterwards is
-    // a use-after-move whose suggestion should steer the author to `clone`.
+fn actor_send_snapshot_does_not_suggest_clone() {
     let source = r"
         actor Sink {
             let id: i64;
-            receive fn take(v: Vec<i64>) -> i64 { v.len() }
+            receive fn take(v: Vec<i64>) {}
         }
         fn main() {
             let xs: Vec<i64> = Vec::new();
@@ -115,19 +113,5 @@ fn use_after_move_suggests_clone() {
         }
     ";
     let output = typecheck(source);
-    let moved = output
-        .errors
-        .iter()
-        .find(|e| e.kind == TypeErrorKind::UseAfterMove)
-        .unwrap_or_else(|| {
-            panic!(
-                "expected a UseAfterMove error for the consumed Vec, got: {:?}",
-                output.errors
-            )
-        });
-    assert!(
-        moved.suggestions.iter().any(|s| s.contains("clone xs")),
-        "use-after-move suggestion should point at `clone xs`, got: {:?}",
-        moved.suggestions
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }

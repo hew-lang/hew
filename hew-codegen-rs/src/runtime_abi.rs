@@ -5226,6 +5226,9 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_actor_set_state_drop" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_actor_set_message_drop" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // ── Regex literal substrate (codegen-emitted, not user-callable) ──────
         //
         // hew_regex_compile(pattern: *const c_char) -> *mut HewRegex

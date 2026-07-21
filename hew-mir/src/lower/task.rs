@@ -841,7 +841,6 @@ impl Builder {
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
-            actor_send_aliasing: self.actor_send_aliasing.clone(),
             pointer_width: self.pointer_width,
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,

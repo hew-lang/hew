@@ -4569,6 +4569,28 @@ pub(crate) fn emit_actor_state_clone_drop_registration<'ctx>(
     Ok(())
 }
 
+pub(crate) fn emit_actor_message_drop_registration<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+    spawned: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let symbol = crate::thunks::message_drop_fn_name(actor_name);
+    let drop_fn = fn_ctx.llvm_mod.get_function(&symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "spawn `{actor_name}` requires emitted message drop callback `{symbol}`"
+        ))
+    })?;
+    fn_ctx.call_runtime_void(
+        "hew_actor_set_message_drop",
+        &[
+            spawned.into(),
+            drop_fn.as_global_value().as_pointer_value().into(),
+        ],
+        "hew_actor_set_message_drop_call",
+        "hew_actor_set_message_drop call",
+    )
+}
+
 /// Maps a declared `overflow <policy>;` clause to the runtime's
 /// `HewOverflowPolicy` `#[repr(i32)]` encoding
 /// (`hew-runtime/src/internal/types.rs`: `Block = 0, DropNew = 1,
@@ -7761,7 +7783,15 @@ fn collect_record_clone_inplace_seeds(
     for func in raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
-                let Instr::RecordCloneInplace { record_name, .. } = instr else {
+                let record_name = match instr {
+                    Instr::RecordCloneInplace { record_name, .. } => Some(record_name),
+                    Instr::ValueSnapshotClone { plan, .. } => match plan.root() {
+                        hew_mir::StateFieldCloneKind::UserRecord { name } => Some(name),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let Some(record_name) = record_name else {
                     continue;
                 };
                 if !record_layouts.iter().any(|rl| rl.name == *record_name) {
@@ -7806,7 +7836,15 @@ fn collect_enum_clone_inplace_seeds(
     for func in raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
-                let Instr::EnumCloneInplace { enum_name, .. } = instr else {
+                let enum_name = match instr {
+                    Instr::EnumCloneInplace { enum_name, .. } => Some(enum_name),
+                    Instr::ValueSnapshotClone { plan, .. } => match plan.root() {
+                        hew_mir::StateFieldCloneKind::Enum { name } => Some(name),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let Some(enum_name) = enum_name else {
                     continue;
                 };
                 if !enum_layouts.iter().any(|el| el.name == *enum_name) {
@@ -13261,6 +13299,17 @@ fn lower_instruction(
         } => {
             lower_enum_clone_inplace_instr(fn_ctx, *dest, *src, enum_name)?;
         }
+        Instr::ValueSnapshotClone {
+            dest,
+            src,
+            ty,
+            plan,
+        } => {
+            lower_value_snapshot_clone_instr(fn_ctx, *dest, *src, ty, plan)?;
+        }
+        Instr::ValueSnapshotDrop { value, plan, .. } => {
+            emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+        }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
         }
@@ -18239,6 +18288,414 @@ fn emit_state_field_old_value_release(
     Ok(())
 }
 
+fn trap_on_null_snapshot_clone<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: PointerValue<'ctx>,
+    label: &str,
+) -> CodegenResult<()> {
+    let is_null = fn_ctx
+        .builder
+        .build_is_null(value, &format!("{label}_is_null"))
+        .llvm_ctx_with(|| format!("{label} null check"))?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed(format!("{label}: missing parent function")))?;
+    let ok_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_ok"));
+    let trap_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_trap"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_null, trap_bb, ok_bb)
+        .llvm_ctx_with(|| format!("{label} null branch"))?;
+    fn_ctx.builder.position_at_end(trap_bb);
+    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap_fn, &[], "trap")
+        .llvm_ctx_with(|| format!("{label} trap"))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    fn_ctx.builder.position_at_end(ok_bb);
+    Ok(())
+}
+
+fn lower_allocating_snapshot_clone<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    src: Place,
+    symbol: &'static str,
+    label: &str,
+) -> CodegenResult<()> {
+    let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+    let source = fn_ctx
+        .builder
+        .build_load(src_ty, src_ptr, &format!("{label}_source"))
+        .llvm_ctx_with(|| format!("{label} source load"))?
+        .into_pointer_value();
+    let helper = get_or_declare_clone_helper(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &CloneHelper::Allocating { name: symbol },
+    );
+    let cloned = fn_ctx
+        .builder
+        .build_call(helper, &[source.into()], label)
+        .llvm_ctx_with(|| format!("{label} clone call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{label} returned void")))?
+        .into_pointer_value();
+    trap_on_null_snapshot_clone(fn_ctx, cloned, label)?;
+    let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, cloned)
+        .llvm_ctx_with(|| format!("{label} dest store"))?;
+    Ok(())
+}
+
+fn lower_value_snapshot_clone_instr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    src: Place,
+    ty: &ResolvedTy,
+    plan: &hew_mir::state_clone::ValueSnapshotPlan,
+) -> CodegenResult<()> {
+    match plan.root() {
+        StateFieldCloneKind::BitCopy { .. } => {
+            let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+            let value = fn_ctx
+                .builder
+                .build_load(src_ty, src_ptr, "snapshot_bitcopy_load")
+                .llvm_ctx("snapshot bitcopy load")?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, value)
+                .llvm_ctx("snapshot bitcopy store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::String => lower_allocating_snapshot_clone(
+            fn_ctx,
+            dest,
+            src,
+            "hew_string_clone",
+            "snapshot_string",
+        ),
+        StateFieldCloneKind::Bytes => {
+            let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+            let value = fn_ctx
+                .builder
+                .build_load(src_ty, src_ptr, "snapshot_bytes_source")
+                .llvm_ctx("snapshot bytes source load")?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, value)
+                .llvm_ctx("snapshot bytes dest store")?;
+            retain_bytes_value(fn_ctx, dest, "snapshot_bytes")?;
+            Ok(())
+        }
+        StateFieldCloneKind::Tuple { elems } => {
+            let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+            let BasicTypeEnum::StructType(tuple_ty) = src_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "snapshot tuple `{}` has non-struct LLVM type {src_ty:?}",
+                    ty.user_facing()
+                )));
+            };
+            let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+            let key = state_kind_tuple_key(elems);
+            let record_layouts = codegen_record_layouts(fn_ctx);
+            let witnesses = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+            emit_tuple_kind_inplace_thunk_bodies(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &key,
+                tuple_ty,
+                elems,
+                &witnesses,
+            )?;
+            let size = fn_ctx.target_data.get_abi_size(&tuple_ty);
+            let align = fn_ctx.target_data.get_abi_alignment(&tuple_ty);
+            fn_ctx
+                .builder
+                .build_memcpy(
+                    dest_ptr,
+                    align,
+                    src_ptr,
+                    align,
+                    fn_ctx.ctx.i64_type().const_int(size, false),
+                )
+                .llvm_ctx("snapshot tuple memcpy")?;
+            let helper = get_or_declare_tuple_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key);
+            let rc = fn_ctx
+                .builder
+                .build_call(
+                    helper,
+                    &[src_ptr.into(), dest_ptr.into()],
+                    "snapshot_tuple_clone",
+                )
+                .llvm_ctx("snapshot tuple clone call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("snapshot tuple clone returned void".into())
+                })?
+                .into_int_value();
+            let failed = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    rc,
+                    fn_ctx.ctx.i32_type().const_zero(),
+                    "snapshot_tuple_failed",
+                )
+                .llvm_ctx("snapshot tuple result check")?;
+            let parent = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|block| block.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("snapshot tuple missing parent function".into())
+                })?;
+            let ok_bb = fn_ctx.ctx.append_basic_block(parent, "snapshot_tuple_ok");
+            let trap_bb = fn_ctx.ctx.append_basic_block(parent, "snapshot_tuple_trap");
+            fn_ctx
+                .builder
+                .build_conditional_branch(failed, trap_bb, ok_bb)
+                .llvm_ctx("snapshot tuple branch")?;
+            fn_ctx.builder.position_at_end(trap_bb);
+            let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+                .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
+                .get_declaration(fn_ctx.llvm_mod, &[])
+                .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
+            fn_ctx
+                .builder
+                .build_call(trap_fn, &[], "trap")
+                .llvm_ctx("snapshot tuple trap")?;
+            fn_ctx
+                .builder
+                .build_unreachable()
+                .llvm_ctx("snapshot tuple unreachable")?;
+            fn_ctx.builder.position_at_end(ok_bb);
+            Ok(())
+        }
+        StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. } => {
+            let Some((clone_symbol, _)) = collection_elem_clone_drop_syms(ty) else {
+                return Err(CodegenError::FailClosed(format!(
+                    "snapshot collection `{}` has no canonical clone helper",
+                    ty.user_facing()
+                )));
+            };
+            lower_allocating_snapshot_clone(fn_ctx, dest, src, clone_symbol, "snapshot_collection")
+        }
+        StateFieldCloneKind::UserRecord { name } => {
+            lower_record_clone_inplace_instr(fn_ctx, dest, src, name)
+        }
+        StateFieldCloneKind::Enum { name } => {
+            lower_enum_clone_inplace_instr(fn_ctx, dest, src, name)
+        }
+        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => Err(CodegenError::FailClosed(
+            "successful actor snapshot plan contains Rc/Weak".into(),
+        )),
+        StateFieldCloneKind::Array { .. }
+        | StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::Resource { .. } => Err(CodegenError::FailClosed(format!(
+            "snapshot clone for `{}` reached unsupported direct kind {:?}",
+            ty.user_facing(),
+            plan.root()
+        ))),
+    }
+}
+
+pub(crate) fn emit_prepared_carrier_drop<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: Place,
+    plan: &hew_mir::state_clone::ValueSnapshotPlan,
+) -> CodegenResult<()> {
+    let ty = place_resolved_ty(fn_ctx, value)?;
+    match plan.root() {
+        StateFieldCloneKind::BitCopy { .. } => Ok(()),
+        StateFieldCloneKind::Bytes => emit_bytes_inplace_drop(fn_ctx, value),
+        StateFieldCloneKind::String
+        | StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. } => {
+            let symbol = match plan.root() {
+                StateFieldCloneKind::String => "hew_string_drop",
+                StateFieldCloneKind::Vec { .. }
+                | StateFieldCloneKind::HashMap { .. }
+                | StateFieldCloneKind::HashSet { .. } => collection_elem_clone_drop_syms(ty)
+                    .map(|(_, drop)| drop)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "prepared carrier `{}` has no collection drop helper",
+                            ty.user_facing()
+                        ))
+                    })?,
+                _ => unreachable!("outer match limits leaf kinds"),
+            };
+            let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            let handle = fn_ctx
+                .builder
+                .build_load(slot_ty, slot, "prepared_carrier_handle")
+                .llvm_ctx("prepared carrier handle load")?
+                .into_pointer_value();
+            let helper = get_or_declare_drop_helper(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &DropHelper { name: symbol },
+            );
+            fn_ctx
+                .builder
+                .build_call(helper, &[handle.into()], "prepared_carrier_drop")
+                .llvm_ctx("prepared carrier drop call")?;
+            fn_ctx
+                .builder
+                .build_store(
+                    slot,
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
+                )
+                .llvm_ctx("prepared carrier null store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::UserRecord { name } => {
+            let record_layouts = codegen_record_layouts(fn_ctx);
+            let witnesses = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+            ensure_record_drop_body(fn_ctx.ctx, fn_ctx.llvm_mod, name, &witnesses)?;
+            emit_record_inplace_drop_call(fn_ctx, value, ty)
+        }
+        StateFieldCloneKind::Enum { name } => {
+            let record_layouts = codegen_record_layouts(fn_ctx);
+            let witnesses = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
+            ensure_enum_drop_body(fn_ctx.ctx, fn_ctx.llvm_mod, name, &witnesses)?;
+            emit_enum_inplace_drop_call(fn_ctx, value, ty)
+        }
+        StateFieldCloneKind::Tuple { .. } => {
+            let ResolvedTy::Tuple(elems) = ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "prepared tuple carrier has non-tuple type {ty:?}"
+                )));
+            };
+            let tuple_key = crate::thunks::tuple_thunk_key(elems);
+            let tuple_llvm_ty =
+                resolve_ty(fn_ctx.ctx, fn_ctx.target_data, ty, fn_ctx.record_layouts)?;
+            emit_tuple_drop_inplace_body_only(fn_ctx, &tuple_key, elems, tuple_llvm_ty)?;
+            let helper = get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &tuple_key);
+            let (slot, _) = place_pointer(fn_ctx, value)?;
+            fn_ctx
+                .builder
+                .build_call(helper, &[slot.into()], "prepared_tuple_drop")
+                .llvm_ctx("prepared tuple drop")?;
+            Ok(())
+        }
+        StateFieldCloneKind::Array { .. } => {
+            let (slot, _) = place_pointer(fn_ctx, value)?;
+            emit_aggregate_recursive_drop(fn_ctx, slot, ty, 0, "prepared_array_drop")
+        }
+        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => Err(CodegenError::FailClosed(
+            "prepared actor carrier drop contains Rc/Weak".into(),
+        )),
+        StateFieldCloneKind::Resource { close_symbol, .. } => {
+            let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            let handle = fn_ctx
+                .builder
+                .build_load(slot_ty, slot, "prepared_resource_handle")
+                .llvm_ctx("prepared resource handle load")?;
+            let helper = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                close_symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(helper, &[handle.into()], "prepared_resource_close")
+                .llvm_ctx("prepared resource close")?;
+            fn_ctx
+                .builder
+                .build_store(
+                    slot,
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
+                )
+                .llvm_ctx("prepared resource null store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::IoHandle { .. } => {
+            let helper = drop_helper_for_kind(plan.root())?.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "prepared carrier `{}` has no IO-handle drop helper",
+                    ty.user_facing()
+                ))
+            })?;
+            let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            let handle = fn_ctx
+                .builder
+                .build_load(slot_ty, slot, "prepared_io_handle")
+                .llvm_ctx("prepared IO handle load")?;
+            let function = get_or_declare_drop_helper(fn_ctx.ctx, fn_ctx.llvm_mod, &helper);
+            fn_ctx
+                .builder
+                .build_call(function, &[handle.into()], "prepared_io_close")
+                .llvm_ctx("prepared IO close")?;
+            fn_ctx
+                .builder
+                .build_store(
+                    slot,
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
+                )
+                .llvm_ctx("prepared IO null store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::ClosurePair
+            if matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }) =>
+        {
+            Err(CodegenError::FailClosed(format!(
+                "function-typed values are not supported as actor messages yet \
+                 (payload type `{}`)",
+                ty.user_facing()
+            )))
+        }
+        StateFieldCloneKind::OpaqueHandle { .. } | StateFieldCloneKind::ClosurePair => {
+            Err(CodegenError::FailClosed(format!(
+                "prepared carrier `{}` has unsupported cleanup kind {:?}",
+                ty.user_facing(),
+                plan.root()
+            )))
+        }
+    }
+}
+
+fn validate_prepared_outbound_modes(
+    fn_ctx: &FnCtx<'_, '_>,
+    value: Place,
+    modes: &[hew_mir::SendAliasMode],
+) -> CodegenResult<()> {
+    let ty = place_resolved_ty(fn_ctx, value)?;
+    if modes.is_empty() && !matches!(ty, ResolvedTy::Unit) {
+        return Err(CodegenError::FailClosed(format!(
+            "prepared outbound payload `{}` has no resolved argument modes",
+            ty.user_facing()
+        )));
+    }
+    Ok(())
+}
+
 /// Byte size of the heap env box's leading free-thunk slot. The thunk
 /// Lower `Instr::RecordCloneInplace { dest, src, record_name }` to:
 ///   1. `memcpy(dest_ptr, src_ptr, abi_sizeof(Record))` — replicates BitCopy
@@ -20570,38 +21027,6 @@ fn has_unhandled_borrow_escape(func: &RawMirFunction, tainted: &HashSet<u32>) ->
         }
     }
     false
-}
-
-/// Emit an `alloca` in the entry block of the current function, regardless of
-/// where the builder is presently positioned.
-///
-/// A re-send escape (`Terminator::Send`) materialises its retained payload into
-/// a scratch slot mid-block; if that `alloca` were emitted in place it could sit
-/// inside a loop and grow the stack on every iteration. Hoisting it to the entry
-/// block (the standard LLVM idiom — alloca at function entry) makes it a single
-/// fixed slot that dominates every use, leaving the builder's current insert
-/// position untouched.
-fn build_entry_alloca<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    ty: BasicTypeEnum<'ctx>,
-    name: &str,
-) -> CodegenResult<PointerValue<'ctx>> {
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm(format!("{name}: entry alloca has no parent function"))
-        })?;
-    let entry = parent
-        .get_first_basic_block()
-        .ok_or_else(|| CodegenError::Llvm(format!("{name}: parent function has no entry block")))?;
-    let tmp = fn_ctx.ctx.create_builder();
-    match entry.get_first_instruction() {
-        Some(first) => tmp.position_before(&first),
-        None => tmp.position_at_end(entry),
-    }
-    tmp.build_alloca(ty, name).llvm_ctx("entry alloca")
 }
 
 /// Resolve the `@llvm.lifetime.start.p0` / `@llvm.lifetime.end.p0` intrinsic
@@ -25492,23 +25917,29 @@ fn dispatch_collapsed_suspend<'ctx>(
             actor,
             msg_type,
             value,
+            arg_modes,
+            cleanup_plan,
             result_dest,
             reply_dest,
             error_dest,
-        } => crate::suspend::emit_suspending_ask_terminator(
-            fn_ctx,
-            crate::suspend::SuspendingAskEmit {
-                actor: *actor,
-                msg_type: *msg_type,
-                value: *value,
-                result_dest: *result_dest,
-                reply_dest: *reply_dest,
-                error_dest: *error_dest,
-                resume,
-                cleanup,
-                deadline_ns: await_deadlines.get(&block_id).copied(),
-            },
-        ),
+        } => {
+            validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
+            crate::suspend::emit_suspending_ask_terminator(
+                fn_ctx,
+                crate::suspend::SuspendingAskEmit {
+                    actor: *actor,
+                    msg_type: *msg_type,
+                    value: *value,
+                    cleanup_plan: cleanup_plan.clone(),
+                    result_dest: *result_dest,
+                    reply_dest: *reply_dest,
+                    error_dest: *error_dest,
+                    resume,
+                    cleanup,
+                    deadline_ns: await_deadlines.get(&block_id).copied(),
+                },
+            )
+        }
         SuspendKind::Read {
             conn,
             result_dest,
@@ -27425,61 +27856,14 @@ fn lower_terminator<'ctx>(
             msg_type,
             value,
             next,
-            // `alias_mode` is deliberately UNCONSUMED by codegen today. It is
-            // the checker-authoritative alias-vs-copy classification stamped
-            // by MIR lowering (P5.1 threading; contract pinned by
-            // `hew-mir/tests/send_alias_mode.rs`), reserved for the
-            // retain-on-share send spine (P5.2) — which will retain the
-            // payload's heap reference on an `Alias` send instead of the
-            // plain mailbox memcpy below. Every send today lowers to
-            // `hew_actor_send_by_id` regardless of this field: the only
-            // payload special-case is the `send_gated_string` borrow retain
-            // below, which rides the SEPARATE `borrow_mode`/`borrow_tainted`
-            // mechanism (string-only roots in `compute_borrow_taint`; bytes
-            // never enter that branch). `--explain-cow` renders from the
-            // checker's `actor_send_aliasing` map (`hew-cli/src/explain_cow.rs`),
-            // not from this field, so ignoring it here changes no diagnostic
-            // output. Consuming it without wiring the retain would either be
-            // a no-op or an unbalanced refcount — bind it `_` until P5.2
-            // lands (LESSONS: checker-authority / codegen-abi-authority).
-            alias_mode: _,
+            arg_modes,
+            cleanup_plan,
         } => {
+            validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
             let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_send receiver")?;
             let actor_id = load_actor_id(fn_ctx, actor_ptr)?;
-            // P5-RX Stage 2a (A625): a borrowed-String receive view that
-            // escapes into a re-send must take its OWN owner — the new envelope
-            // the runtime builds from this payload releases its buffer, which
-            // would double-free the original envelope-owned buffer. Under
-            // `borrow_mode != 0` retain via `hew_string_clone` into a scratch
-            // slot and send that; under `borrow_mode == 0` (copy mode) send the
-            // handler's private handle exactly as before.
-            let send_gated_string = matches!(
-                fn_ctx.borrow_mode.zip(place_base_local(value)),
-                Some((_, base)) if fn_ctx.borrow_tainted.contains(&base)
-            );
-            let (payload_ptr, payload_size) = if send_gated_string {
-                let borrow_mode = fn_ctx
-                    .borrow_mode
-                    .expect("send_gated_string implies borrow_mode is Some");
-                let (src_ptr, src_ty) = place_pointer(fn_ctx, *value)?;
-                let handle = fn_ctx
-                    .builder
-                    .build_load(src_ty, src_ptr, "actor_send_payload_load")
-                    .llvm_ctx("actor send payload load")?;
-                let owner =
-                    emit_borrow_gated_string_clone(fn_ctx, borrow_mode, handle, "send_payload")?;
-                let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-                let scratch =
-                    build_entry_alloca(fn_ctx, ptr_ty.into(), "actor_send_payload_scratch")?;
-                fn_ctx
-                    .builder
-                    .build_store(scratch, owner)
-                    .llvm_ctx("actor send scratch store")?;
-                let size = ptr_ty.size_of();
-                (scratch, size)
-            } else {
-                actor_payload_ptr_size(fn_ctx, *value, "actor_send_payload")?
-            };
+            let (payload_ptr, payload_size) =
+                actor_payload_ptr_size(fn_ctx, *value, "actor_send_payload")?;
             let send = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -27562,17 +27946,23 @@ fn lower_terminator<'ctx>(
                 .llvm_ctx("send status branch")?;
 
             fn_ctx.builder.position_at_end(send_fail_bb);
+            if let Some(plan) = cleanup_plan {
+                emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+            }
             emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED as u64, "actor_send_fail")?;
         }
         Terminator::Ask {
             actor,
             msg_type,
             value,
+            arg_modes,
+            cleanup_plan,
             result_dest,
             reply_dest,
             error_dest,
             next,
         } => {
+            validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
             let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_ask receiver")?;
             let (payload_ptr, payload_size) =
                 actor_payload_ptr_size(fn_ctx, *value, "actor_ask_payload")?;
@@ -27655,6 +28045,9 @@ fn lower_terminator<'ctx>(
             // Err path: call hew_actor_ask_take_last_error → store tag into
             // error_dest → emit Result::Err(error_dest).
             fn_ctx.builder.position_at_end(err_bb);
+            if let Some(plan) = cleanup_plan {
+                emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+            }
             let err_fn = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -31020,25 +31413,25 @@ fn build_module_for_target<'ctx>(
                 actor,
                 &record_layouts,
             )?;
-            let msg_drop_witnesses = DropSynthWitnesses {
-                enum_layouts: &pipeline.enum_layouts,
-                machine_layouts: &machine_layouts,
-                target_data: &target_data,
-                record_layouts: &pipeline.record_layouts,
-                record_structs: &record_layouts,
-                resource_record_close: &pipeline.resource_record_close,
-            };
-            crate::thunks::emit_actor_message_drop_fn(
-                ctx,
-                &llvm_mod,
-                &target_data,
-                actor,
-                &record_layouts,
-                &pipeline.record_layouts,
-                &pipeline.enum_layouts,
-                &msg_drop_witnesses,
-            )?;
         }
+        let msg_drop_witnesses = DropSynthWitnesses {
+            enum_layouts: &pipeline.enum_layouts,
+            machine_layouts: &machine_layouts,
+            target_data: &target_data,
+            record_layouts: &pipeline.record_layouts,
+            record_structs: &record_layouts,
+            resource_record_close: &pipeline.resource_record_close,
+        };
+        crate::thunks::emit_actor_message_drop_fn(
+            ctx,
+            &llvm_mod,
+            &target_data,
+            actor,
+            &record_layouts,
+            &pipeline.record_layouts,
+            &pipeline.enum_layouts,
+            &msg_drop_witnesses,
+        )?;
         if !actor.on_stop_symbols.is_empty() {
             crate::thunks::emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }

@@ -437,6 +437,7 @@ bb0:                                              ; preds = %entry
   %hew_actor_spawn_call = call ptr @hew_actor_spawn(ptr %local_0, i32 ptrtoint (ptr getelementptr (%Adder, ptr null, i32 1) to i32), ptr @__hew_actor_dispatch_Adder)
   call void @hew_actor_set_state_drop(ptr %hew_actor_spawn_call, ptr @__hew_state_drop_Adder)
   call void @hew_actor_set_state_clone(ptr %hew_actor_spawn_call, ptr @__hew_state_clone_Adder)
+  call void @hew_actor_set_message_drop(ptr %hew_actor_spawn_call, ptr @__hew_message_drop_Adder)
   store ptr %hew_actor_spawn_call, ptr %local_2, align 4
   store i64 100, ptr %local_3, align 8
   %"actor_send receiver" = load ptr, ptr %local_2, align 4
@@ -1270,6 +1271,51 @@ declare void @hew_actor_exit_unhandled(i32)
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
 declare void @llvm.trap() #0
 
+define internal void @__hew_message_drop_Adder(i32 %0, ptr %1, i32 %2) {
+entry:
+  switch i32 %0, label %unknown_msg_type [
+    i32 1995638644, label %msg_1995638644
+    i32 311929158, label %msg_311929158
+  ]
+
+unknown_msg_type:                                 ; preds = %entry
+  ret void
+
+msg_1995638644:                                   ; preds = %entry
+  call void @__hew_message_drop_Adder_1995638644(ptr %1)
+  ret void
+
+msg_311929158:                                    ; preds = %entry
+  call void @__hew_message_drop_Adder_311929158(ptr %1)
+  ret void
+}
+
+define internal void @__hew_message_drop_Adder_1995638644(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
+
+define internal void @__hew_message_drop_Adder_311929158(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
+
 define internal i32 @__hew_record_clone_inplace_CrashInfo(ptr %0, ptr %1) {
 entry:
   br label %step_0_clone
@@ -1394,6 +1440,8 @@ declare ptr @hew_actor_spawn(ptr, i32, ptr)
 declare void @hew_actor_set_state_drop(ptr, ptr)
 
 declare void @hew_actor_set_state_clone(ptr, ptr)
+
+declare void @hew_actor_set_message_drop(ptr, ptr)
 
 declare i32 @hew_actor_send_by_id(i64, ptr, i32, ptr, i32)
 

@@ -75,6 +75,15 @@ fn snapshot_send_materializes_independent_record_carriers() {
     assert!(ll.contains("call ptr @hew_vec_clone_owned"), "{ll}");
     assert_eq!(ll.matches("call i32 @hew_actor_send_by_id").count(), 2);
     assert!(
+        ll.contains("define internal void @__hew_message_drop_Sink"),
+        "{ll}"
+    );
+    assert_eq!(
+        ll.matches("call void @hew_actor_set_message_drop").count(),
+        2,
+        "direct spawns must register the typed message drop callback:\n{ll}"
+    );
+    assert!(
         ll.contains("call void @__hew_record_drop_inplace___hew_packed_args_main_0(ptr %local_10)"),
         "{ll}"
     );

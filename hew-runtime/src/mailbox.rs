@@ -913,7 +913,7 @@ impl MpscQueue {
     ///
     /// No concurrent access may occur. All nodes must have been allocated
     /// by `msg_node_alloc` (or `alloc_sentinel`).
-    unsafe fn drain_and_free(&self) {
+    unsafe fn drain_and_free(&self, message_drop_fn: Option<HewMessageDropFn>) {
         loop {
             // SAFETY: caller guarantees exclusive teardown access, so dequeue
             // may consume until the queue is empty.
@@ -925,7 +925,7 @@ impl MpscQueue {
             // ask/reply channels are retired and their waiters unblocked with
             // an empty reply before the memory is freed.
             // SAFETY: dequeue transferred exclusive ownership of `node`.
-            unsafe { hew_msg_node_free(node) };
+            unsafe { hew_msg_node_free_with_message_drop(node, message_drop_fn) };
         }
         // Free the stable stub sentinel last.
         // SAFETY: the stub was heap-allocated at queue creation and is still
@@ -1110,7 +1110,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
     };
     let Some(sys_queue) = MpscQueue::new() else {
         // SAFETY: user_fast was just successfully created and has no enqueued nodes yet.
-        unsafe { user_fast.drain_and_free() };
+        unsafe { user_fast.drain_and_free(None) };
         return ptr::null_mut();
     };
 
@@ -1147,7 +1147,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
     };
     let Some(sys_queue) = MpscQueue::new() else {
         // SAFETY: user_fast was just successfully created and has no enqueued nodes yet.
-        unsafe { user_fast.drain_and_free() };
+        unsafe { user_fast.drain_and_free(None) };
         return ptr::null_mut();
     };
 
@@ -1190,7 +1190,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
     };
     let Some(sys_queue) = MpscQueue::new() else {
         // SAFETY: user_fast was just successfully created and has no enqueued nodes yet.
-        unsafe { user_fast.drain_and_free() };
+        unsafe { user_fast.drain_and_free(None) };
         return ptr::null_mut();
     };
 
@@ -1233,7 +1233,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
     };
     let Some(sys_queue) = MpscQueue::new() else {
         // SAFETY: user_fast was just successfully created and has no enqueued nodes yet.
-        unsafe { user_fast.drain_and_free() };
+        unsafe { user_fast.drain_and_free(None) };
         return ptr::null_mut();
     };
 
@@ -1381,6 +1381,20 @@ pub unsafe extern "C" fn hew_mailbox_set_message_drop_fn(
     unsafe { (*mb).message_drop_fn = drop_fn };
 }
 
+unsafe fn consume_dropped_incoming(
+    mb: &HewMailbox,
+    msg_type: i32,
+    data: *const c_void,
+    data_size: usize,
+) {
+    if let Some(drop_fn) = mb.message_drop_fn {
+        // SAFETY: send_with_overflow's caller guarantees the payload bytes are
+        // valid for the duration of the call. DropNew reports success, so the
+        // runtime must discharge the prepared owner before returning.
+        unsafe { drop_fn(msg_type, data.cast_mut(), data_size) };
+    }
+}
+
 // ── Send (producer side) ────────────────────────────────────────────────
 
 /// Outcome of an overflow-policy-aware send into the user queue.
@@ -1457,7 +1471,11 @@ unsafe fn send_with_overflow(
     if mb.capacity > 0 && !mb.use_slow_path {
         if !try_reserve_fast_path_capacity(mb) {
             return match mb.overflow {
-                HewOverflowPolicy::DropNew => SendOutcome::Dropped,
+                HewOverflowPolicy::DropNew => {
+                    // SAFETY: caller guarantees `data` is valid for this send.
+                    unsafe { consume_dropped_incoming(mb, msg_type, data, data_size) };
+                    SendOutcome::Dropped
+                }
                 HewOverflowPolicy::Fail => SendOutcome::Failed,
                 HewOverflowPolicy::Block
                 | HewOverflowPolicy::DropOld
@@ -1485,7 +1503,11 @@ unsafe fn send_with_overflow(
         let cur = mb.count.load(Ordering::Acquire);
         if cur >= mb.capacity {
             match mb.overflow {
-                HewOverflowPolicy::DropNew => return SendOutcome::Dropped,
+                HewOverflowPolicy::DropNew => {
+                    // SAFETY: caller guarantees `data` is valid for this send.
+                    unsafe { consume_dropped_incoming(mb, msg_type, data, data_size) };
+                    return SendOutcome::Dropped;
+                }
                 HewOverflowPolicy::Fail => return SendOutcome::Failed,
                 HewOverflowPolicy::Block => {
                     // Non-blocking callers (try_send) must not wait.
@@ -1565,7 +1587,11 @@ unsafe fn send_with_overflow(
                     }
                     // No matching key — use configured fallback policy.
                     match normalize_coalesce_fallback(mb.coalesce_fallback) {
-                        HewOverflowPolicy::DropNew => return SendOutcome::Dropped,
+                        HewOverflowPolicy::DropNew => {
+                            // SAFETY: caller guarantees `data` is valid for this send.
+                            unsafe { consume_dropped_incoming(mb, msg_type, data, data_size) };
+                            return SendOutcome::Dropped;
+                        }
                         HewOverflowPolicy::Fail => return SendOutcome::Failed,
                         HewOverflowPolicy::Block => {
                             // Non-blocking callers must not wait.
@@ -2532,17 +2558,17 @@ pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
         let mut q = mailbox.slow_path.lock_or_recover();
         while let Some(node) = q.user_queue.pop_front() {
             // SAFETY: Each node was allocated by `msg_node_alloc`.
-            unsafe { hew_msg_node_free(node) };
+            unsafe { hew_msg_node_free_with_message_drop(node, mailbox.message_drop_fn) };
         }
     }
 
     // Drain lock-free user queue (sentinel + any remaining nodes).
     // SAFETY: No concurrent access — mailbox is exclusively owned.
-    unsafe { mailbox.user_fast.drain_and_free() };
+    unsafe { mailbox.user_fast.drain_and_free(mailbox.message_drop_fn) };
 
     // Drain lock-free system queue (sentinel + any remaining nodes).
     // SAFETY: No concurrent access — mailbox is exclusively owned.
-    unsafe { mailbox.sys_queue.drain_and_free() };
+    unsafe { mailbox.sys_queue.drain_and_free(None) };
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -2998,6 +3024,48 @@ mod tests {
             assert_eq!(MESSAGE_DROP_COUNT.load(Ordering::SeqCst), 1);
             hew_msg_node_free(node);
             assert_eq!(MESSAGE_DROP_COUNT.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn message_drop_consumes_drop_new_payload_exactly_once() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        MESSAGE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: test owns the mailbox and both stack payloads for each
+        // synchronous send call.
+        unsafe {
+            let mb = hew_mailbox_new_bounded(1);
+            assert!(!mb.is_null());
+            hew_mailbox_set_message_drop_fn(mb, Some(message_test_drop_glue));
+            let first: i32 = 1;
+            let second: i32 = 2;
+            assert!(matches!(
+                send_with_overflow(
+                    &*mb,
+                    7,
+                    (&raw const first).cast(),
+                    size_of::<i32>(),
+                    false,
+                    false,
+                    ptr::null_mut(),
+                ),
+                SendOutcome::Enqueued
+            ));
+            assert!(matches!(
+                send_with_overflow(
+                    &*mb,
+                    7,
+                    (&raw const second).cast(),
+                    size_of::<i32>(),
+                    false,
+                    false,
+                    ptr::null_mut(),
+                ),
+                SendOutcome::Dropped
+            ));
+            assert_eq!(MESSAGE_DROP_COUNT.load(Ordering::SeqCst), 1);
+            hew_mailbox_free(mb);
+            assert_eq!(MESSAGE_DROP_COUNT.load(Ordering::SeqCst), 2);
         }
     }
 
@@ -3721,7 +3789,7 @@ mod tests {
 
             let q = Arc::try_unwrap(q).expect("queue still shared after producers joined");
             // SAFETY: queue is exclusively owned and should contain only the stub.
-            unsafe { q.drain_and_free() };
+            unsafe { q.drain_and_free(None) };
         }
     }
 

@@ -4569,6 +4569,28 @@ pub(crate) fn emit_actor_state_clone_drop_registration<'ctx>(
     Ok(())
 }
 
+pub(crate) fn emit_actor_message_drop_registration<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+    spawned: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let symbol = crate::thunks::message_drop_fn_name(actor_name);
+    let drop_fn = fn_ctx.llvm_mod.get_function(&symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "spawn `{actor_name}` requires emitted message drop callback `{symbol}`"
+        ))
+    })?;
+    fn_ctx.call_runtime_void(
+        "hew_actor_set_message_drop",
+        &[
+            spawned.into(),
+            drop_fn.as_global_value().as_pointer_value().into(),
+        ],
+        "hew_actor_set_message_drop_call",
+        "hew_actor_set_message_drop call",
+    )
+}
+
 /// Maps a declared `overflow <policy>;` clause to the runtime's
 /// `HewOverflowPolicy` `#[repr(i32)]` encoding
 /// (`hew-runtime/src/internal/types.rs`: `Block = 0, DropNew = 1,
@@ -31432,25 +31454,25 @@ fn build_module_for_target<'ctx>(
                 actor,
                 &record_layouts,
             )?;
-            let msg_drop_witnesses = DropSynthWitnesses {
-                enum_layouts: &pipeline.enum_layouts,
-                machine_layouts: &machine_layouts,
-                target_data: &target_data,
-                record_layouts: &pipeline.record_layouts,
-                record_structs: &record_layouts,
-                resource_record_close: &pipeline.resource_record_close,
-            };
-            crate::thunks::emit_actor_message_drop_fn(
-                ctx,
-                &llvm_mod,
-                &target_data,
-                actor,
-                &record_layouts,
-                &pipeline.record_layouts,
-                &pipeline.enum_layouts,
-                &msg_drop_witnesses,
-            )?;
         }
+        let msg_drop_witnesses = DropSynthWitnesses {
+            enum_layouts: &pipeline.enum_layouts,
+            machine_layouts: &machine_layouts,
+            target_data: &target_data,
+            record_layouts: &pipeline.record_layouts,
+            record_structs: &record_layouts,
+            resource_record_close: &pipeline.resource_record_close,
+        };
+        crate::thunks::emit_actor_message_drop_fn(
+            ctx,
+            &llvm_mod,
+            &target_data,
+            actor,
+            &record_layouts,
+            &pipeline.record_layouts,
+            &pipeline.enum_layouts,
+            &msg_drop_witnesses,
+        )?;
         if !actor.on_stop_symbols.is_empty() {
             crate::thunks::emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }

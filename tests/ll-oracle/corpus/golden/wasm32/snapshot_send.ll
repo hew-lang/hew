@@ -591,6 +591,7 @@ bb0:                                              ; preds = %after_cooperate
   %hew_actor_spawn_call = call ptr @hew_actor_spawn(ptr %local_0, i32 ptrtoint (ptr getelementptr (%Sink, ptr null, i32 1) to i32), ptr @__hew_actor_dispatch_Sink)
   call void @hew_actor_set_state_drop(ptr %hew_actor_spawn_call, ptr @__hew_state_drop_Sink)
   call void @hew_actor_set_state_clone(ptr %hew_actor_spawn_call, ptr @__hew_state_clone_Sink)
+  call void @hew_actor_set_message_drop(ptr %hew_actor_spawn_call, ptr @__hew_message_drop_Sink)
   store ptr %hew_actor_spawn_call, ptr %local_2, align 4
   store i64 -1, ptr %local_4, align 8
   %field_0_init_ptr1 = getelementptr inbounds nuw %Sink, ptr %local_3, i32 0, i32 0
@@ -625,6 +626,7 @@ bb0:                                              ; preds = %after_cooperate
   %hew_actor_spawn_call17 = call ptr @hew_actor_spawn(ptr %local_3, i32 ptrtoint (ptr getelementptr (%Sink, ptr null, i32 1) to i32), ptr @__hew_actor_dispatch_Sink)
   call void @hew_actor_set_state_drop(ptr %hew_actor_spawn_call17, ptr @__hew_state_drop_Sink)
   call void @hew_actor_set_state_clone(ptr %hew_actor_spawn_call17, ptr @__hew_state_clone_Sink)
+  call void @hew_actor_set_message_drop(ptr %hew_actor_spawn_call17, ptr @__hew_message_drop_Sink)
   store ptr %hew_actor_spawn_call17, ptr %local_5, align 4
   %hew_vec_new_i64_call = call ptr @hew_vec_new_i64()
   store ptr %hew_vec_new_i64_call, ptr %local_6, align 4
@@ -1436,6 +1438,53 @@ declare void @hew_actor_exit_unhandled(i32)
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
 declare void @llvm.trap() #0
 
+define internal void @__hew_message_drop_Sink(i32 %0, ptr %1, i32 %2) {
+entry:
+  switch i32 %0, label %unknown_msg_type [
+    i32 1476289385, label %msg_1476289385
+  ]
+
+unknown_msg_type:                                 ; preds = %entry
+  ret void
+
+msg_1476289385:                                   ; preds = %entry
+  call void @__hew_message_drop_Sink_1476289385(ptr %1)
+  ret void
+}
+
+define internal void @__hew_message_drop_Sink_1476289385(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  %drop_f0_ptr = getelementptr inbounds nuw { %Boxed, i64 }, ptr %0, i32 0, i32 0
+  call void @__hew_record_drop_inplace_Boxed(ptr %drop_f0_ptr)
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
+
+define internal void @__hew_record_drop_inplace_Boxed(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  %drop_f0_ptr = getelementptr inbounds nuw %Boxed, ptr %0, i32 0, i32 0
+  %drop_f0 = load ptr, ptr %drop_f0_ptr, align 4
+  call void @hew_vec_free_owned(ptr %drop_f0)
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
+
+declare void @hew_vec_free_owned(ptr)
+
 define internal i32 @__hew_record_clone_inplace_Boxed(ptr %0, ptr %1) {
 entry:
   br label %step_0_clone
@@ -1464,24 +1513,6 @@ step_0_clone:                                     ; preds = %entry
 }
 
 declare ptr @hew_vec_clone_owned(ptr)
-
-define internal void @__hew_record_drop_inplace_Boxed(ptr %0) {
-entry:
-  %rec_int = ptrtoint ptr %0 to i64
-  %rec_is_null = icmp eq i64 %rec_int, 0
-  br i1 %rec_is_null, label %done, label %do_drop
-
-do_drop:                                          ; preds = %entry
-  %drop_f0_ptr = getelementptr inbounds nuw %Boxed, ptr %0, i32 0, i32 0
-  %drop_f0 = load ptr, ptr %drop_f0_ptr, align 4
-  call void @hew_vec_free_owned(ptr %drop_f0)
-  br label %done
-
-done:                                             ; preds = %do_drop, %entry
-  ret void
-}
-
-declare void @hew_vec_free_owned(ptr)
 
 define internal i32 @__hew_record_clone_inplace___hew_packed_args_main_0(ptr %0, ptr %1) {
 entry:
@@ -1754,6 +1785,8 @@ declare ptr @hew_actor_spawn(ptr, i32, ptr)
 declare void @hew_actor_set_state_drop(ptr, ptr)
 
 declare void @hew_actor_set_state_clone(ptr, ptr)
+
+declare void @hew_actor_set_message_drop(ptr, ptr)
 
 declare ptr @hew_vec_new_i64()
 

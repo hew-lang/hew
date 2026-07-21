@@ -12,12 +12,13 @@ use super::{
     unresolved_fn_sig_reason, user_record_layout_key, vec_iter_let_cursor_owns_handle,
     vec_iter_ty_drop_safe, ActorStateLoadMode, BinaryOp, BindingId, Builder, BuiltinType,
     ChildKind, ClosurePairRhs, CmpPred, Disposition, FailClosedReason, FieldOffset, FloatWidth,
-    HashMap, HashSet, HirExpr, HirExprKind, HirLiteral, HirStmtKind, HirVarSelfMethodTarget, Instr,
-    IntArithOp, IntSignedness, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    NumericMethodFamily, Place, ProjectedPayloadOrigin, ProjectedPayloadRejectReason,
-    ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, RuntimeCallContext, SiteId, SuspendKind,
-    Terminator, TrapKind, UnaryOp, ValueClass, VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX,
-    SENTINEL_RECV_GEN_COMPANION_BINDING, SYNTHETIC_TEMP_ARG_NAME,
+    FreshVecGetCloneProjectionBase, HashMap, HashSet, HirExpr, HirExprKind, HirLiteral,
+    HirStmtKind, HirVarSelfMethodTarget, Instr, IntArithOp, IntSignedness, IntentKind,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, NumericMethodFamily, Place,
+    ProjectedPayloadOrigin, ProjectedPayloadRejectReason, ReleaseSymbolVerdict, ResolvedRef,
+    ResolvedTy, RuntimeCallContext, SiteId, SuspendKind, Terminator, TrapKind, UnaryOp, ValueClass,
+    VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX, SENTINEL_RECV_GEN_COMPANION_BINDING,
+    SYNTHETIC_TEMP_ARG_NAME,
 };
 #[cfg(test)]
 use super::{FieldLoadClass, PlaceProvenance, Projection, ValueProvenance};
@@ -4037,6 +4038,7 @@ impl Builder {
                 };
                 self.mark_owned_string_record_field_site(object);
                 let record_place = self.lower_value(object)?;
+                self.register_fresh_vec_get_clone_projection_base_owner(object, record_place);
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.push_instr(Instr::RecordFieldLoad {
                     record: record_place,
@@ -6915,6 +6917,9 @@ impl Builder {
         };
 
         let result_place = self.alloc_local(elem_ty.clone());
+        let Place::Local(result_local) = result_place else {
+            unreachable!("alloc_local always returns a local place");
+        };
         if clone_owned_value {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
@@ -6925,6 +6930,12 @@ impl Builder {
                 next,
             });
             self.start_block(next);
+            self.fresh_vec_get_clone_projection_bases
+                .push(FreshVecGetCloneProjectionBase {
+                    local: result_local,
+                    ty: elem_ty.clone(),
+                    site,
+                });
         } else {
             self.push_instr(Instr::CallRuntimeAbi(
                 crate::model::RuntimeCall::new(

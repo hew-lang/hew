@@ -11,7 +11,7 @@ use super::{
     SiteId, Strategy, Terminator, ValueClass, ValueOwnership, ValueProvenance,
     SYNTHETIC_CALL_SCRUTINEE_NAME, SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
     SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
-    SYNTHETIC_WHILE_LET_ITERATION_NAME,
+    SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME, SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +105,49 @@ impl Builder {
         self.record_binding_scope(binding);
         self.register_owned_local(binding, name.to_string(), ty);
         binding
+    }
+
+    /// Registers the ordinary scope-exit owner for a fresh composite cloned by
+    /// `Vec` indexing and immediately used as a record-projection base.
+    pub(crate) fn register_fresh_vec_get_clone_projection_base_owner(
+        &mut self,
+        object: &HirExpr,
+        record_place: Place,
+    ) {
+        if !matches!(object.kind, HirExprKind::Index { .. }) {
+            return;
+        }
+        let Place::Local(local) = record_place else {
+            return;
+        };
+        let object_ty = self.subst_ty(&object.ty);
+        let Some(fact_index) = self
+            .fresh_vec_get_clone_projection_bases
+            .iter()
+            .position(|fact| fact.local == local && fact.ty == object_ty)
+        else {
+            return;
+        };
+        if self.parameter_locals.contains(&local)
+            || self
+                .binding_locals
+                .values()
+                .any(|place| *place == record_place)
+            || !crate::model::ty_owns_heap_mir(
+                &object_ty,
+                &self.record_field_orders,
+                &self.enum_layouts,
+            )
+        {
+            return;
+        }
+        let fact = self.fresh_vec_get_clone_projection_bases.remove(fact_index);
+        self.register_synthetic_owned_local(
+            SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
+            fact.site,
+            fact.local,
+            fact.ty,
+        );
     }
     /// Register a `let`-bound field projection whose result is a byte-copy
     /// interior ALIAS of the still-live owner named by `provenance` — the

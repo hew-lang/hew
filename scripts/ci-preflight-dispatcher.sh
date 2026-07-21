@@ -80,7 +80,7 @@ CI_REQUIRED_CHECKS=(
     "Cargo clippy (ci.yml: cargo clippy --workspace --tests -- -D warnings)	make lint"
     "verify-ffi (ci.yml: make verify-ffi)	make lint"
     "runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)	make lint"
-    "FreeBSD workflow contract (ci.yml: make freebsd-workflow-contract-check)	make freebsd-workflow-contract-check"
+    "FreeBSD workflow contract (ci.yml required Clippy & format job)	make freebsd-workflow-contract-check"
     "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"
     "playground-check (release-gate.yml: make playground-check)	make playground-check"
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"

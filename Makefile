@@ -1079,8 +1079,9 @@ lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity
 	cargo clippy --workspace --tests -- -D warnings
 
 # Keep nightly FreeBSD coverage and both release-gate legs on one exact
-# nextest/provisioning contract. This target is also called by the required
-# docs/scripts CI gate and the scripts-config local preflight profile.
+# nextest/provisioning contract. The required Clippy & format job runs this
+# unconditionally; the docs/scripts job and scripts-config preflight also run it
+# for fast feedback on the files most likely to change the contract.
 freebsd-workflow-contract-check:
 	python3 scripts/tests/test_freebsd_workflow_contract.py
 

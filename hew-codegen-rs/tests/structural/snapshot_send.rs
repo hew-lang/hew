@@ -92,3 +92,40 @@ fn snapshot_send_materializes_independent_record_carriers() {
         "{ll}"
     );
 }
+
+#[test]
+fn indirect_enum_actor_messages_use_the_pointer_value_abi() {
+    let ll = emit_ll(
+        r"
+        indirect enum Tree {
+            Leaf(i64);
+            Node(Tree, Tree);
+        }
+
+        actor Sink {
+            receive fn take(value: Tree) {}
+            receive fn tagged(tag: i64, value: Tree) {}
+        }
+
+        fn main() {
+            let sink = spawn Sink;
+            sink.take(Node(Leaf(1), Leaf(2)));
+            sink.tagged(10, Node(Leaf(3), Leaf(4)));
+        }
+        ",
+    );
+
+    assert!(
+        ll.contains("define internal ptr @__hew_actor_dispatch_Sink"),
+        "{ll}"
+    );
+    assert!(ll.contains("load ptr, ptr %payload_src_ptr"), "{ll}");
+    assert!(
+        ll.contains("call void @__hew_indirect_enum_free_Tree(ptr"),
+        "{ll}"
+    );
+    assert!(
+        !ll.contains("load %Tree, ptr %payload_src_ptr"),
+        "actor dispatch must not load an inline Tree from mailbox storage:\n{ll}"
+    );
+}

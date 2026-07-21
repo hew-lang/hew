@@ -5004,8 +5004,15 @@ fn build_harness<'ctx>(
     let mut record_layouts: RecordLayoutMap<'ctx> =
         crate::layout::predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
             .expect("named-layout predeclaration must succeed");
-    crate::layout::fill_record_layout_bodies(ctx, record_fixtures, &record_layouts, &target_data)
-        .expect("record-layout body fill must succeed");
+    crate::layout::fill_record_layout_bodies(
+        ctx,
+        record_fixtures,
+        &record_layouts,
+        &target_data,
+        enum_fixtures,
+        &HashSet::new(),
+    )
+    .expect("record-layout body fill must succeed");
     let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
     crate::layout::register_enum_layouts(
         ctx,
@@ -6788,8 +6795,15 @@ fn record_field_of_enum_type_resolves_via_predeclared_opaque() {
     // Now fill the record body. `resolve_ty` on the `CrashKind` field
     // must find the predeclared opaque in `map` rather than fall
     // through to `primitive_to_llvm`'s D10 arm.
-    crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map, &target_data)
-        .expect("record body-fill must resolve enum-typed field via predeclared opaque");
+    crate::layout::fill_record_layout_bodies(
+        &ctx,
+        &record_fixtures,
+        &map,
+        &target_data,
+        &enum_fixtures,
+        &HashSet::new(),
+    )
+    .expect("record body-fill must resolve enum-typed field via predeclared opaque");
     assert!(
         map.contains_key("CrashKind"),
         "predeclare must register enum outer struct name"
@@ -6848,8 +6862,15 @@ fn record_field_of_machine_type_resolves_via_predeclared_opaque() {
         "predeclare must register <Name>Event companion"
     );
     let target_data = host_target_data();
-    crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map, &target_data)
-        .expect("record body-fill must resolve machine-typed field via predeclared opaque");
+    crate::layout::fill_record_layout_bodies(
+        &ctx,
+        &record_fixtures,
+        &map,
+        &target_data,
+        &[],
+        &HashSet::new(),
+    )
+    .expect("record body-fill must resolve machine-typed field via predeclared opaque");
 }
 
 #[test]
@@ -6873,8 +6894,15 @@ fn unknown_named_type_still_trips_d10_sentinel() {
     let map = crate::layout::predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
         .expect("predeclare must succeed");
     let target_data = host_target_data();
-    let err = crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map, &target_data)
-        .expect_err("record body-fill must fail-closed on unknown Named type");
+    let err = crate::layout::fill_record_layout_bodies(
+        &ctx,
+        &record_fixtures,
+        &map,
+        &target_data,
+        &[],
+        &HashSet::new(),
+    )
+    .expect_err("record body-fill must fail-closed on unknown Named type");
     match err {
         CodegenError::FailClosed(msg) => {
             assert!(
@@ -10376,6 +10404,7 @@ fn dispatch_trampoline_fails_closed_on_uncarried_predicate() {
         &[None],
         &fn_symbols,
         &record_layouts,
+        &[],
     );
     assert!(
         result.is_err(),

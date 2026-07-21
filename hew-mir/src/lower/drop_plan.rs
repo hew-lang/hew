@@ -1660,8 +1660,9 @@ pub(super) fn drop_kind_for(
             }
         }
         // A `Generator<Y, R>` / `AsyncGenerator<Y>` owned local holds the heap
-        // companion `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started,
-        // i8 pending, Y out }` (shared `Place::Local` storage, discriminated by
+        // companion `{ ptr handle, ptr env, ptr env_drop_thunk,
+        // ptr out_drop_thunk, i8 started, i8 pending, Y out }` (shared
+        // `Place::Local` storage, discriminated by
         // the builtin type). Its sole release is `hew_gen_coro_destroy`, which
         // destroys the coro frame (running its `cleanup` outline over every value
         // the body still owns), typed-drops an un-consumed pending out-value via

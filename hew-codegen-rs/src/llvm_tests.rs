@@ -3389,6 +3389,11 @@ fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
              got IR:\n{ir}"
     );
     assert!(
+        ir.contains("gen_companion_env_drop_thunk_ptr")
+            && ir.contains("store ptr null, ptr %gen_companion_env_drop_thunk_ptr"),
+        "MakeGenerator must plant the Stage 3 null env-drop thunk field; got IR:\n{ir}"
+    );
+    assert!(
         m.verify().is_ok(),
         "module with MakeGenerator must pass LLVM verify:\n{ir}"
     );

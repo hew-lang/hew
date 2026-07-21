@@ -407,23 +407,25 @@ bb0:                                              ; preds = %entry
   %field_0_init_ptr = getelementptr inbounds nuw %__hew_gen_env_batches_0, ptr %local_2, i32 0, i32 0
   %field_0_init_src = load i64, ptr %local_0, align 8
   store i64 %field_0_init_src, ptr %field_0_init_ptr, align 8
-  %gen_companion_alloc = call ptr @hew_cont_frame_alloc(i64 ptrtoint (ptr getelementptr ({ ptr, ptr, ptr, i8, i8, ptr }, ptr null, i32 1) to i64))
-  %gen_companion_started_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 3
+  %gen_companion_alloc = call ptr @hew_cont_frame_alloc(i64 ptrtoint (ptr getelementptr ({ ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr null, i32 1) to i64))
+  %gen_companion_env_drop_thunk_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 2
+  store ptr null, ptr %gen_companion_env_drop_thunk_ptr, align 8
+  %gen_companion_started_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 4
   store i8 0, ptr %gen_companion_started_ptr, align 1
-  %gen_companion_out_drop_thunk_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 2
+  %gen_companion_out_drop_thunk_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 3
   store ptr @__hew_gen_out_drop___hew_gen_body_batches_0, ptr %gen_companion_out_drop_thunk_ptr, align 8
-  %gen_companion_env_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 1
-  %gen_companion_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 5
+  %gen_companion_env_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 1
+  %gen_companion_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 6
   %gen_env_alloc = call ptr @hew_cont_frame_alloc(i64 ptrtoint (ptr getelementptr (%__hew_gen_env_batches_0, ptr null, i32 1) to i64))
   call void @llvm.memcpy.p0.p0.i64(ptr align 1 %gen_env_alloc, ptr align 1 %local_2, i64 ptrtoint (ptr getelementptr (%__hew_gen_env_batches_0, ptr null, i32 1) to i64), i1 false)
   store ptr %gen_env_alloc, ptr %gen_companion_env_ptr, align 8
   %gen_body_ramp_call = call ptr @__hew_gen_body_batches_0(ptr %gen_companion_out_ptr, ptr %gen_env_alloc)
-  %gen_companion_handle_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 0
+  %gen_companion_handle_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 0
   store ptr %gen_body_ramp_call, ptr %gen_companion_handle_ptr, align 8
   %gen_companion_ramp_done = call i1 @hew_cont_done(ptr %gen_body_ramp_call)
   %gen_companion_pending_bit = icmp eq i1 %gen_companion_ramp_done, false
   %gen_companion_pending_i8 = zext i1 %gen_companion_pending_bit to i8
-  %gen_companion_pending_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 4
+  %gen_companion_pending_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_companion_alloc, i32 0, i32 5
   store i8 %gen_companion_pending_i8, ptr %gen_companion_pending_ptr, align 1
   store ptr %gen_companion_alloc, ptr %local_1, align 8
   br label %bb1
@@ -642,10 +644,10 @@ bb1:                                              ; preds = %bb0
 
 bb2:                                              ; preds = %after_cooperate7, %bb1
   %gen_next_companion = load ptr, ptr %local_4, align 8
-  %gen_next_handle_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 0
+  %gen_next_handle_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 0
   %gen_next_handle = load ptr, ptr %gen_next_handle_ptr, align 8
-  %gen_next_pending_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 4
-  %gen_next_started_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 3
+  %gen_next_pending_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 5
+  %gen_next_started_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 4
   %gen_next_started = load i8, ptr %gen_next_started_ptr, align 1
   %gen_next_started_set = icmp ne i8 %gen_next_started, 0
   %machine_tag_ptr = getelementptr inbounds nuw %"Option$$Vec$lHeapRow$g", ptr %local_6, i32 0, i32 0
@@ -746,7 +748,7 @@ gen_next_none:                                    ; preds = %gen_next_check_done
   br label %gen_next_cont
 
 gen_next_some:                                    ; preds = %gen_next_check_done
-  %gen_next_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 5
+  %gen_next_out_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %gen_next_companion, i32 0, i32 6
   %gen_next_value = load ptr, ptr %gen_next_out_ptr, align 8
   store i8 0, ptr %machine_tag_ptr, align 1
   store ptr %gen_next_value, ptr %machine_variant_field_ptr, align 8
@@ -1837,7 +1839,7 @@ declare ptr @hew_cont_frame_alloc(i64)
 
 define internal void @__hew_gen_out_drop___hew_gen_body_batches_0(ptr %0) {
 entry:
-  %gen_out_drop_value_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, i8, i8, ptr }, ptr %0, i32 0, i32 5
+  %gen_out_drop_value_ptr = getelementptr inbounds nuw { ptr, ptr, ptr, ptr, i8, i8, ptr }, ptr %0, i32 0, i32 6
   %gen_out_drop_hew_vec_free_owned_hdl = load ptr, ptr %gen_out_drop_value_ptr, align 8
   call void @hew_vec_free_owned(ptr %gen_out_drop_hew_vec_free_owned_hdl)
   store ptr null, ptr %gen_out_drop_value_ptr, align 8

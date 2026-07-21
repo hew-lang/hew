@@ -13020,8 +13020,9 @@ fn lower_instruction(
         } => {
             // Generator consumption on the `llvm.coro.*` continuation substrate.
             // The `Generator<Y, R>` slot points at the heap companion
-            // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending,
-            // Y out_value }`; construction (`MakeGenerator`) already ran the body
+            // `{ ptr handle, ptr env, ptr env_drop_thunk, ptr out_drop_thunk,
+            // i8 started, i8 pending, Y out_value }`; construction
+            // (`MakeGenerator`) already ran the body
             // to its FIRST yield, so the first value sits in `companion.out_value`
             // with `started == 0` and `pending == 1`.
             //
@@ -13078,7 +13079,7 @@ fn lower_instruction(
                 .build_load(ptr_ty, handle_ptr, "gen_next_handle")
                 .llvm_ctx("gen next handle load")?
                 .into_pointer_value();
-            // The `pending` flag (field 4): set to 0 once a value is consumed (or
+            // The `pending` flag (field 5): set to 0 once a value is consumed (or
             // the body is done) so the scope-exit destroy does not double-drop a
             // value the consumer now owns.
             let pending_ptr = fn_ctx
@@ -13092,7 +13093,7 @@ fn lower_instruction(
                 .map_err(|e| {
                     CodegenError::FailClosed(format!("gen next pending GEP failed: {e:?}"))
                 })?;
-            // The `started` gate (field 3).
+            // The `started` gate (field 4).
             let started_ptr = fn_ctx
                 .builder
                 .build_struct_gep(
@@ -22397,8 +22398,9 @@ fn resolved_ty_cow_heap_release(
         } => Some(CowHeapRelease::HashSet),
         // A `Generator<Y, R>` / `AsyncGenerator<Y>` value releases via
         // `hew_gen_coro_destroy`: the value is the heap companion
-        // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending,
-        // Y out }`; destroy runs the coro frame's `cleanup` outline (dropping
+        // `{ ptr handle, ptr env, ptr env_drop_thunk, ptr out_drop_thunk,
+        // i8 started, i8 pending, Y out }`; destroy runs the coro frame's
+        // `cleanup` outline (dropping
         // every value the body still owns — mid-iteration suspended values,
         // cross-yield-live owned locals), typed-drops an un-consumed pending
         // out-value via the planted thunk, then frees the companion. Single
@@ -25645,19 +25647,21 @@ pub(crate) fn emit_enum_variant_literal(
 
 /// The companion struct field ordinals — kept in lock-step with the runtime
 /// `hew_gen_coro_destroy` byte-offset reads (`hew-runtime/src/cont.rs`). The
-/// three leading `ptr` fields (handle, env, out-drop thunk) and the two trailing
+/// four leading `ptr` fields (handle, env, env-drop thunk, out-drop thunk) and the two trailing
 /// `i8` flags (started, pending) sit at fixed offsets the runtime computes from
 /// the target pointer width; only `Y out_value` has a `Y`-dependent offset, and
 /// the runtime never touches it directly (it dispatches through the thunk).
 const GEN_COMPANION_HANDLE_FIELD: u32 = 0;
 const GEN_COMPANION_ENV_FIELD: u32 = 1;
-const GEN_COMPANION_OUT_DROP_THUNK_FIELD: u32 = 2;
-const GEN_COMPANION_STARTED_FIELD: u32 = 3;
-const GEN_COMPANION_PENDING_FIELD: u32 = 4;
-const GEN_COMPANION_OUT_VALUE_FIELD: u32 = 5;
+const GEN_COMPANION_ENV_DROP_THUNK_FIELD: u32 = 2;
+const GEN_COMPANION_OUT_DROP_THUNK_FIELD: u32 = 3;
+const GEN_COMPANION_STARTED_FIELD: u32 = 4;
+const GEN_COMPANION_PENDING_FIELD: u32 = 5;
+const GEN_COMPANION_OUT_VALUE_FIELD: u32 = 6;
 
 /// The yield type `Y` and the coro-companion struct
-/// `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending, Y out }`
+/// `{ ptr handle, ptr env, ptr env_drop_thunk, ptr out_drop_thunk,
+///    i8 started, i8 pending, Y out }`
 /// for a `Generator<Y, R>` / `AsyncGenerator<Y>` place.
 ///
 /// A generator value on the coro substrate is a heap **companion** the
@@ -25668,24 +25672,27 @@ const GEN_COMPANION_OUT_VALUE_FIELD: u32 = 5;
 ///   capture-free generator). The body reads its free variables through this
 ///   pointer; it is heap-owned (not the caller's stack record) so it stays valid
 ///   across every suspend, when the constructing frame has long returned.
-/// - field 2 `out_drop_thunk` — `ptr` to the per-`Y` `void(ptr companion)` typed
+/// - field 2 `env_drop_thunk` — `ptr` to the per-environment `void(ptr env)`
+///   payload-drop thunk, or null when the environment has no owned fields.
+/// - field 3 `out_drop_thunk` — `ptr` to the per-`Y` `void(ptr companion)` typed
 ///   out-drop thunk, or null when `Y` is `BitCopy` (nothing to drop). The runtime
 ///   destroy calls it (passing this companion) IFF `pending != 0`; the thunk GEPs
 ///   to `out_value` and runs the typed drop for `Y` exactly once.
-/// - field 3 `started` — `i8` lazy-resume gate (0 until the first value is
+/// - field 4 `started` — `i8` lazy-resume gate (0 until the first value is
 ///   consumed; see below),
-/// - field 4 `pending` — `i8` un-consumed-yield flag. 1 while `out_value` holds
+/// - field 5 `pending` — `i8` un-consumed-yield flag. 1 while `out_value` holds
 ///   an owned value the consumer has not yet moved out (a `yield` is a MOVE, so
 ///   the companion is that value's sole owner until a `.next()` reads it); 0 once
 ///   consumed, or when the body completed without leaving a value pending. The
 ///   runtime destroy drops `out_value` only when this is non-zero — dropping a
 ///   consumed (`pending == 0`) value would double-free the consumer's copy.
-/// - field 5 `out_value` — `Y`, the value channel the body publishes each
+/// - field 6 `out_value` — `Y`, the value channel the body publishes each
 ///   yield into and the consumer reads.
 ///
-/// `handle`, `env`, and `out_drop_thunk` are the first three `ptr` fields
-/// (offsets 0, `ptr_width`, `2*ptr_width`) and `started` / `pending` follow at
-/// `3*ptr_width` / `3*ptr_width+1`, so the runtime `hew_gen_coro_destroy` reads
+/// `handle`, `env`, `env_drop_thunk`, and `out_drop_thunk` are the first four
+/// `ptr` fields (offsets 0 through `3*ptr_width`) and `started` / `pending`
+/// follow at `4*ptr_width` / `4*ptr_width+1`, so the runtime
+/// `hew_gen_coro_destroy` reads
 /// them all at fixed offsets without knowing `Y`. Only `out_value`'s offset
 /// depends on `Y`, and the runtime never reads it directly.
 ///
@@ -25747,14 +25754,16 @@ fn generator_coro_companion_ty<'ctx>(
     };
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let i8_ty = fn_ctx.ctx.i8_type();
-    // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending, Y out }`.
-    // The three `ptr` fields lead so the runtime destroy reads them (and the two
+    // `{ ptr handle, ptr env, ptr env_drop_thunk, ptr out_drop_thunk,
+    //    i8 started, i8 pending, Y out }`.
+    // The four `ptr` fields lead so the runtime destroy reads them (and the two
     // trailing flag bytes) at pointer-width-derived offsets without knowing `Y`.
     // Unpacked (natural alignment) so the out-value's load/store honour `Y`'s
-    // alignment; the two `i8` flags pack immediately after the three pointers
-    // (offsets `3*ptr_width`, `3*ptr_width+1`), matching the runtime's reads.
+    // alignment; the two `i8` flags pack immediately after the four pointers
+    // (offsets `4*ptr_width`, `4*ptr_width+1`), matching the runtime's reads.
     let companion = fn_ctx.ctx.struct_type(
         &[
+            ptr_ty.into(),
             ptr_ty.into(),
             ptr_ty.into(),
             ptr_ty.into(),
@@ -27242,7 +27251,8 @@ fn lower_terminator<'ctx>(
             // Construction shape (mirrors the proven `coro_emission_exec`
             // driver):
             //   1. Heap-allocate the companion `{ ptr handle, ptr env,
-            //      ptr out_drop_thunk, i8 started, i8 pending, Y out_value }` via
+            //      ptr env_drop_thunk, ptr out_drop_thunk, i8 started,
+            //      i8 pending, Y out_value }` via
             //      `hew_cont_frame_alloc` — the `Generator<Y, R>` value points at
             //      it. Plant the per-`Y` out-drop thunk (null for BitCopy `Y`).
             //   2. Call `__hew_gen_body(&companion.out_value, env_ptr?)`. The
@@ -27291,8 +27301,9 @@ fn lower_terminator<'ctx>(
             }
 
             // ── 1. Heap-allocate the companion via `hew_cont_frame_alloc`. ──
-            // The companion `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started,
-            // i8 pending, Y out_value }` is allocated through the SAME
+            // The companion `{ ptr handle, ptr env, ptr env_drop_thunk,
+            // ptr out_drop_thunk, i8 started, i8 pending, Y out_value }` is
+            // allocated through the SAME
             // size-headered allocator the coro frame uses, so its scope-exit drop
             // (`hew_gen_coro_destroy` → `hew_cont_frame_free`) is symmetric without
             // separate size bookkeeping. `hew_cont_frame_alloc` 16-byte-aligns
@@ -27312,7 +27323,27 @@ fn lower_terminator<'ctx>(
                 "gen companion hew_cont_frame_alloc call",
             )?;
 
-            // ── 2. Init the `started` gate (field 3) to 0: the consumer's first
+            // ── 2. Plant a null env-drop thunk (field 2). Stage 4 replaces
+            // this with the typed payload-drop thunk for owned environments.
+            let env_drop_thunk_ptr = fn_ctx
+                .builder
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_ENV_DROP_THUNK_FIELD,
+                    "gen_companion_env_drop_thunk_ptr",
+                )
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!(
+                        "gen companion env-drop-thunk GEP failed: {e:?}"
+                    ))
+                })?;
+            fn_ctx
+                .builder
+                .build_store(env_drop_thunk_ptr, ptr_ty.const_null())
+                .llvm_ctx("gen companion env-drop-thunk null store")?;
+
+            // ── 2a. Init the `started` gate (field 4) to 0: the consumer's first
             // `.next()` reads the pre-positioned first value WITHOUT resuming.
             let started_ptr = fn_ctx
                 .builder
@@ -27330,7 +27361,7 @@ fn lower_terminator<'ctx>(
                 .build_store(started_ptr, fn_ctx.ctx.i8_type().const_zero())
                 .llvm_ctx("gen companion started init")?;
 
-            // ── 2b. Plant the per-`Y` typed out-drop thunk (field 2). Null only
+            // ── 2b. Plant the per-`Y` typed out-drop thunk (field 3). Null only
             // when `Y` has neither heap ownership nor a captured closure env box
             // for the slot-drop path to release. The runtime destroy calls it
             // (passing this companion) IFF `pending != 0`, so a generator dropped
@@ -27489,7 +27520,7 @@ fn lower_terminator<'ctx>(
                 .build_store(handle_ptr, gen_handle)
                 .llvm_ctx("gen companion handle store")?;
 
-            // ── 3b. Init the `pending` flag (field 4). The ramp pre-ran the body
+            // ── 3b. Init the `pending` flag (field 5). The ramp pre-ran the body
             // to its first `yield` (or to completion). If the body suspended at a
             // yield (`!hew_cont_done(handle)`), the value it published into
             // `out_value` is a live, un-consumed owned value the companion now
@@ -31969,8 +32000,9 @@ fn build_module_for_target<'ctx>(
 /// cleanup then produces the target-correct wasm table call while preserving the
 /// native single-owner drop contract:
 ///
-/// - `hew_gen_coro_destroy(companion)` destroys the frame, frees the heap env,
-///   typed-drops an unconsumed pending `out_value`, and frees the companion.
+/// - `hew_gen_coro_destroy(companion)` destroys the frame, typed-drops and frees
+///   the heap env, typed-drops an unconsumed pending `out_value`, and frees the
+///   companion.
 fn emit_wasm_coro_runtime_overrides<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -31990,6 +32022,8 @@ fn emit_wasm_coro_runtime_overrides<'ctx>(
     let builder = ctx.create_builder();
     let entry = ctx.append_basic_block(destroy_fn, "entry");
     let do_destroy = ctx.append_basic_block(destroy_fn, "do_destroy");
+    let env_drop_invoke = ctx.append_basic_block(destroy_fn, "env_drop_invoke");
+    let env_free = ctx.append_basic_block(destroy_fn, "env_free");
     let pending_check = ctx.append_basic_block(destroy_fn, "pending_check");
     let thunk_call = ctx.append_basic_block(destroy_fn, "out_drop_call");
     let free_companion = ctx.append_basic_block(destroy_fn, "free_companion");
@@ -32051,6 +32085,41 @@ fn emit_wasm_coro_runtime_overrides<'ctx>(
         .build_load(ptr_ty, env_slot, "gen_destroy_env")
         .llvm_ctx("wasm gen destroy env load")?
         .into_pointer_value();
+    let env_thunk_slot = unsafe {
+        builder.build_in_bounds_gep(
+            i8_ty,
+            companion,
+            &[i64_ty.const_int(ptr_width * 2, false)],
+            "gen_destroy_env_thunk_slot",
+        )
+    }
+    .llvm_ctx("wasm gen destroy env thunk slot gep")?;
+    let env_thunk = builder
+        .build_load(ptr_ty, env_thunk_slot, "gen_destroy_env_thunk")
+        .llvm_ctx("wasm gen destroy env thunk load")?
+        .into_pointer_value();
+    let env_thunk_is_null = builder
+        .build_is_null(env_thunk, "gen_destroy_env_thunk_null")
+        .llvm_ctx("wasm gen destroy env thunk null check")?;
+    builder
+        .build_conditional_branch(env_thunk_is_null, env_free, env_drop_invoke)
+        .llvm_ctx("wasm gen destroy env thunk branch")?;
+
+    builder.position_at_end(env_drop_invoke);
+    let env_thunk_ty = void_ty.fn_type(&[ptr_ty.into()], false);
+    builder
+        .build_indirect_call(
+            env_thunk_ty,
+            env_thunk,
+            &[env.into()],
+            "gen_destroy_env_drop",
+        )
+        .llvm_ctx("wasm gen destroy env-drop thunk call")?;
+    builder
+        .build_unconditional_branch(env_free)
+        .llvm_ctx("wasm gen destroy env drop -> free")?;
+
+    builder.position_at_end(env_free);
     let frame_free = llvm_mod
         .get_function("hew_cont_frame_free")
         .unwrap_or_else(|| {
@@ -32069,7 +32138,7 @@ fn emit_wasm_coro_runtime_overrides<'ctx>(
 
     builder.position_at_end(pending_check);
     let pending_offset = ptr_width
-        .checked_mul(3)
+        .checked_mul(4)
         .and_then(|base| base.checked_add(1))
         .ok_or_else(|| {
             CodegenError::FailClosed("generator companion pending offset overflow".into())
@@ -32104,7 +32173,7 @@ fn emit_wasm_coro_runtime_overrides<'ctx>(
         builder.build_in_bounds_gep(
             i8_ty,
             companion,
-            &[i64_ty.const_int(ptr_width * 2, false)],
+            &[i64_ty.const_int(ptr_width * 3, false)],
             "gen_destroy_thunk_slot",
         )
     }

@@ -1,0 +1,11 @@
+import std::net::quic;
+
+fn main() {
+    let endpoint = quic.new_server("127.0.0.1:0");
+    let observation = endpoint.observe();
+    if observation.local_addr == "" {
+        panic("QUIC endpoint has no local address");
+    }
+    endpoint.close();
+    println("quic:ok");
+}

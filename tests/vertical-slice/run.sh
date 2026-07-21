@@ -440,6 +440,22 @@ run_accept_expect_stdout_contains \
     "=== Imported Bench ===" \
     "  noop  1 iters  avg "
 
+# DNS proof: resolve only the local host and assert both public resolution
+# surfaces produce a value before normalising platform address ordering.
+run_accept_expect_stdout "std_net_dns_execution"
+
+# MIME proof: execute extension/path classification and the text classifier
+# through the public module surface with exact stable output.
+run_accept_expect_stdout "std_net_mime_execution"
+
+# WebSocket proof: bind a loopback listener on an OS-assigned port, verify the
+# assigned port is usable, then close the listener without making a connection.
+run_accept_expect_stdout "std_net_websocket_execution"
+
+# QUIC proof: bind a loopback endpoint on an OS-assigned port, observe its
+# local address, then close it without depending on external transport.
+run_accept_expect_stdout "std_net_quic_execution"
+
 # std::concurrency's generic failure record must construct across the module
 # boundary and preserve every exact field value at runtime.
 run_accept_expect_stdout_contains \
@@ -2062,6 +2078,16 @@ fi
 # uninit-handle, the ask null-deref decode, the small-msg stack
 # over-read, or the run-time wrapper leak. The runnable surface now
 # pins all four of those.
+
+# The legacy low-level constructor has no valid body/state runtime ABI. It
+# must fail closed with the supported actor-literal construction syntax.
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/lambda_actor_constructor.hew" \
+  1 \
+  "lambda actor constructor"
+grep -qF \
+  "\`LambdaActorHandle::new\` is not a public constructor; use \`actor |params| { body }\` to create a lambda actor" \
+  "${reject_output}"
 
 # Accept: send-shaped lambda actor call dispatch — exercises spawn,
 # `hew_lambda_actor_new`, env-less body synthesis, tell-send, and the

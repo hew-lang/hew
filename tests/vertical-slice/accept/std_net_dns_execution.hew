@@ -1,0 +1,10 @@
+import std::net::dns;
+
+fn main() {
+    let addrs = dns.resolve("localhost");
+    let first = dns.lookup_host("localhost");
+    if addrs.len() == 0 || first == "" {
+        panic("localhost resolution failed");
+    }
+    println("dns:ok");
+}

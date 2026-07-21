@@ -464,6 +464,12 @@ run_accept_expect_stdout_contains \
     "std_io_closable_import_run" \
     "closable:AlreadyClosed"
 
+# std::machines::toggle must construct its imported state and execute both
+# cross-module event transitions with exact state names.
+run_accept_expect_stdout_contains \
+    "std_machines_toggle_import_run" \
+    "toggle:Off:On:Off"
+
 # Regression guard: a plain record with an Option<i64> field must compile and
 # run.  The MIR field classifier must NOT strip args from generic enum types
 # (Option, Result) even though their origin names appear in machine_layout_names.

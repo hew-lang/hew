@@ -10494,6 +10494,58 @@ fn lower_neutralize_payload_slot(fn_ctx: &FnCtx<'_, '_>, place: Place) -> Codege
     Ok(())
 }
 
+/// Zero one root-relative aggregate projection whose ownership transferred
+/// through raw record/tuple field loads. The destination already contains the
+/// field bits; clearing the original terminal slot makes the carrier's later
+/// structural drop partial and exact at any supported projection depth.
+fn lower_aggregate_projection_neutralize(
+    fn_ctx: &FnCtx<'_, '_>,
+    root: Place,
+    fields: &[u32],
+) -> CodegenResult<()> {
+    if fields.is_empty() {
+        return Err(CodegenError::FailClosed(
+            "AggregateProjectionNeutralize requires a non-empty field path".into(),
+        ));
+    }
+    let (mut field_ptr, mut field_ty) = place_pointer(fn_ctx, root)?;
+    for (depth, idx) in fields.iter().copied().enumerate() {
+        let BasicTypeEnum::StructType(struct_ty) = field_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "AggregateProjectionNeutralize path depth {depth} reached non-struct slot type: {field_ty:?}"
+            )));
+        };
+        field_ty = struct_ty.get_field_type_at_index(idx).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "AggregateProjectionNeutralize field offset {idx} at path depth {depth} is out of bounds"
+            ))
+        })?;
+        field_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                struct_ty,
+                field_ptr,
+                idx,
+                &format!("carrier_path_d{depth}_f{idx}_ptr"),
+            )
+            .llvm_ctx("AggregateProjectionNeutralize gep")?;
+    }
+    let zero: BasicValueEnum = match field_ty {
+        BasicTypeEnum::PointerType(t) => t.const_null().into(),
+        BasicTypeEnum::IntType(t) => t.const_zero().into(),
+        BasicTypeEnum::FloatType(t) => t.const_zero().into(),
+        BasicTypeEnum::StructType(t) => t.const_zero().into(),
+        BasicTypeEnum::ArrayType(t) => t.const_zero().into(),
+        BasicTypeEnum::VectorType(t) => t.const_zero().into(),
+        BasicTypeEnum::ScalableVectorType(t) => t.const_zero().into(),
+    };
+    fn_ctx
+        .builder
+        .build_store(field_ptr, zero)
+        .llvm_ctx("AggregateProjectionNeutralize store")?;
+    Ok(())
+}
+
 /// NEUTRALISE step for one owned heap-leaf slot of the OLD value: null the
 /// slot iff its pointer matches ANY collected new-leaf slot (branch-free
 /// compare chain + `select`). A null old leaf trivially "matches" a null
@@ -13368,11 +13420,17 @@ fn lower_instruction(
             src,
             ty,
             plan,
+            boundary,
         } => {
-            lower_value_snapshot_clone_instr(fn_ctx, *dest, *src, ty, plan)?;
+            lower_value_snapshot_clone_instr(fn_ctx, *dest, *src, ty, plan, *boundary)?;
         }
-        Instr::ValueSnapshotDrop { value, plan, .. } => {
-            emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+        Instr::ValueSnapshotDrop {
+            value,
+            plan,
+            boundary,
+            ..
+        } => {
+            emit_prepared_carrier_drop(fn_ctx, *value, plan, *boundary)?;
         }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
@@ -15159,6 +15217,10 @@ fn lower_instruction(
         }
         Instr::NeutralizePayloadSlot { place } => {
             lower_neutralize_payload_slot(fn_ctx, *place)?;
+            let _ = ctx;
+        }
+        Instr::AggregateProjectionNeutralize { root, fields } => {
+            lower_aggregate_projection_neutralize(fn_ctx, *root, fields)?;
             let _ = ctx;
         }
         Instr::TupleFieldLoad {
@@ -18434,6 +18496,7 @@ fn lower_value_snapshot_clone_instr<'ctx>(
     src: Place,
     ty: &ResolvedTy,
     plan: &hew_mir::state_clone::ValueSnapshotPlan,
+    boundary: hew_mir::PreparedCarrierBoundary,
 ) -> CodegenResult<()> {
     match plan.root() {
         StateFieldCloneKind::BitCopy { .. } => {
@@ -18572,9 +18635,19 @@ fn lower_value_snapshot_clone_instr<'ctx>(
         StateFieldCloneKind::Enum { name } => {
             lower_enum_clone_inplace_instr(fn_ctx, dest, src, name)
         }
-        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => Err(CodegenError::FailClosed(
-            "successful actor snapshot plan contains Rc/Weak".into(),
-        )),
+        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+            if boundary == hew_mir::PreparedCarrierBoundary::Actor {
+                return Err(CodegenError::FailClosed(
+                    "successful actor snapshot plan contains Rc/Weak".into(),
+                ));
+            }
+            let symbol = match plan.root() {
+                StateFieldCloneKind::Rc => "hew_rc_clone",
+                StateFieldCloneKind::Weak => "hew_weak_clone_rc",
+                _ => unreachable!("outer match limits Rc/Weak roots"),
+            };
+            lower_allocating_snapshot_clone(fn_ctx, dest, src, symbol, "local_call_rc")
+        }
         StateFieldCloneKind::Array { .. }
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::OpaqueHandle { .. }
@@ -18591,6 +18664,7 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     value: Place,
     plan: &hew_mir::state_clone::ValueSnapshotPlan,
+    boundary: hew_mir::PreparedCarrierBoundary,
 ) -> CodegenResult<()> {
     let ty = place_resolved_ty(fn_ctx, value)?;
     match plan.root() {
@@ -18672,9 +18746,41 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
             let (slot, _) = place_pointer(fn_ctx, value)?;
             emit_aggregate_recursive_drop(fn_ctx, slot, ty, 0, "prepared_array_drop")
         }
-        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => Err(CodegenError::FailClosed(
-            "prepared actor carrier drop contains Rc/Weak".into(),
-        )),
+        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+            if boundary == hew_mir::PreparedCarrierBoundary::Actor {
+                return Err(CodegenError::FailClosed(
+                    "prepared actor carrier drop contains Rc/Weak".into(),
+                ));
+            }
+            let symbol = match plan.root() {
+                StateFieldCloneKind::Rc => "hew_rc_drop",
+                StateFieldCloneKind::Weak => "hew_weak_drop_rc",
+                _ => unreachable!("outer match limits Rc/Weak roots"),
+            };
+            let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            let handle = fn_ctx
+                .builder
+                .build_load(slot_ty, slot, "local_call_rc_handle")
+                .llvm_ctx("local call Rc/Weak handle load")?
+                .into_pointer_value();
+            let helper = get_or_declare_drop_helper(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &DropHelper { name: symbol },
+            );
+            fn_ctx
+                .builder
+                .build_call(helper, &[handle.into()], "local_call_rc_drop")
+                .llvm_ctx("local call Rc/Weak drop")?;
+            fn_ctx
+                .builder
+                .build_store(
+                    slot,
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
+                )
+                .llvm_ctx("local call Rc/Weak null store")?;
+            Ok(())
+        }
         StateFieldCloneKind::Resource { close_symbol, .. } => {
             let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
             let handle = fn_ctx
@@ -28325,7 +28431,12 @@ fn lower_terminator<'ctx>(
 
             fn_ctx.builder.position_at_end(send_fail_bb);
             if let Some(plan) = cleanup_plan {
-                emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+                emit_prepared_carrier_drop(
+                    fn_ctx,
+                    *value,
+                    plan,
+                    hew_mir::PreparedCarrierBoundary::Actor,
+                )?;
             }
             emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED as u64, "actor_send_fail")?;
         }
@@ -28424,7 +28535,12 @@ fn lower_terminator<'ctx>(
             // error_dest → emit Result::Err(error_dest).
             fn_ctx.builder.position_at_end(err_bb);
             if let Some(plan) = cleanup_plan {
-                emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+                emit_prepared_carrier_drop(
+                    fn_ctx,
+                    *value,
+                    plan,
+                    hew_mir::PreparedCarrierBoundary::Actor,
+                )?;
             }
             let err_fn = intern_runtime_decl(
                 fn_ctx.ctx,

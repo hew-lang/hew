@@ -198,6 +198,7 @@ fn Sender::send(Sender, string) -> () [conv=default]
     call hew_channel_send_layout(_0, _1) [builtin=ChannelSendLayout] -> bb1
   bb1:
     stmt: eval site=SiteId(60) ty=()
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
 
 fn Sender::clone(Sender) -> Sender [conv=default]

@@ -14,6 +14,7 @@ fn record_tail(Packet) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(0)) ty=i64
     ret = move _1
+    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     return
   bb2:
     stmt: bind BindingId(1) tag site=SiteId(2) ty=string
@@ -32,6 +33,7 @@ fn record_tail(Packet) -> i64 [conv=default]
     _6 ovf=_7 = add.checked.s _4 _5
     branch _7 ? bb5 : bb6
   bb5:
+    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     trap(IntegerOverflow)
   bb6:
     _1 = move _6
@@ -57,6 +59,7 @@ fn record_nontail(Packet) -> i64 [conv=default]
     stmt: return site=Some(SiteId(18)) ty=i64
     _8 = move _1
     ret = move _8
+    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     return
   bb2:
     stmt: bind BindingId(4) tag site=SiteId(11) ty=string
@@ -75,6 +78,7 @@ fn record_nontail(Packet) -> i64 [conv=default]
     _6 ovf=_7 = add.checked.s _4 _5
     branch _7 ? bb5 : bb6
   bb5:
+    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     trap(IntegerOverflow)
   bb6:
     _1 = move _6
@@ -96,6 +100,7 @@ fn tuple_tail((string, string)) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(19)) ty=i64
     ret = move _1
+    snapshot_drop _0 ty=(string, string) plan=Tuple { elems: [String, String] } boundary=LocalCall
     return
   bb2:
     stmt: bind BindingId(8) left site=SiteId(21) ty=string
@@ -114,6 +119,7 @@ fn tuple_tail((string, string)) -> i64 [conv=default]
     _6 ovf=_7 = add.checked.s _4 _5
     branch _7 ? bb5 : bb6
   bb5:
+    snapshot_drop _0 ty=(string, string) plan=Tuple { elems: [String, String] } boundary=LocalCall
     trap(IntegerOverflow)
   bb6:
     _1 = move _6
@@ -139,6 +145,7 @@ fn tuple_nontail((string, string)) -> i64 [conv=default]
     stmt: return site=Some(SiteId(37)) ty=i64
     _8 = move _1
     ret = move _8
+    snapshot_drop _0 ty=(string, string) plan=Tuple { elems: [String, String] } boundary=LocalCall
     return
   bb2:
     stmt: bind BindingId(11) left site=SiteId(30) ty=string
@@ -157,6 +164,7 @@ fn tuple_nontail((string, string)) -> i64 [conv=default]
     _6 ovf=_7 = add.checked.s _4 _5
     branch _7 ? bb5 : bb6
   bb5:
+    snapshot_drop _0 ty=(string, string) plan=Tuple { elems: [String, String] } boundary=LocalCall
     trap(IntegerOverflow)
   bb6:
     _1 = move _6
@@ -287,6 +295,10 @@ fn main() -> i64 [conv=default]
     _82: i64
     _83: i64
     _84: i64
+    _85: Packet
+    _86: Packet
+    _87: (string, string)
+    _88: (string, string)
   bb0:
     _0 = string_lit "r"
     _1 = string_lit "t"
@@ -295,7 +307,9 @@ fn main() -> i64 [conv=default]
     _4 = string_lit "b"
     _5 = call_rt hew_string_concat(_3, _4)
     _6 = record_init Packet { .0=_2, .1=_5 }
-    _7 = call record_tail(_6) -> bb1
+    _85 = move _6
+    neutralize_payload _6
+    _7 = call record_tail(_85) -> bb1
   bb1:
     stmt: bind BindingId(16) a site=SiteId(44) ty=i64
     _8 = move _7
@@ -306,7 +320,9 @@ fn main() -> i64 [conv=default]
     _13 = string_lit "d"
     _14 = call_rt hew_string_concat(_12, _13)
     _15 = record_init Packet { .0=_11, .1=_14 }
-    _16 = call record_nontail(_15) -> bb2
+    _86 = move _15
+    neutralize_payload _15
+    _16 = call record_nontail(_86) -> bb2
   bb2:
     stmt: bind BindingId(17) b site=SiteId(53) ty=i64
     _17 = move _16
@@ -317,7 +333,9 @@ fn main() -> i64 [conv=default]
     _22 = string_lit "f"
     _23 = call_rt hew_string_concat(_21, _22)
     _24 = tuple (_20, _23)
-    _25 = call tuple_tail(_24) -> bb3
+    _87 = move _24
+    neutralize_payload _24
+    _25 = call tuple_tail(_87) -> bb3
   bb3:
     stmt: bind BindingId(18) c site=SiteId(62) ty=i64
     _26 = move _25
@@ -328,7 +346,9 @@ fn main() -> i64 [conv=default]
     _31 = string_lit "h"
     _32 = call_rt hew_string_concat(_30, _31)
     _33 = tuple (_29, _32)
-    _34 = call tuple_nontail(_33) -> bb4
+    _88 = move _33
+    neutralize_payload _33
+    _34 = call tuple_nontail(_88) -> bb4
   bb4:
     stmt: bind BindingId(19) d site=SiteId(71) ty=i64
     stmt: bind BindingId(20) packet site=SiteId(80) ty=Packet

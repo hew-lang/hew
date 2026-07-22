@@ -666,6 +666,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         // The neutralize references the scrutinee's payload slot (keeping the
         // base local live through the null store) and defines no new SSA value.
         Instr::NeutralizePayloadSlot { place } => (vec![*place], vec![]),
+        Instr::AggregateProjectionNeutralize { root, .. } => (vec![*root], vec![]),
         // Closure-env write-back (#1′): reads the env pointer (to GEP into it)
         // and the stored value. The env stays Live — only the field bytes are
         // overwritten through the pointer, opaque to the MIR lattice — so the

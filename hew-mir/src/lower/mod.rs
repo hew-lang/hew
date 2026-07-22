@@ -346,6 +346,32 @@ struct PendingOutboundSite {
     args: Vec<PendingOutboundArg>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingOwnedCallArg {
+    index: usize,
+    source: Place,
+    ty: ResolvedTy,
+    site: SiteId,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingOwnedCallSite {
+    args: Vec<PendingOwnedCallArg>,
+}
+
+#[derive(Debug, Clone)]
+enum OwnedCarrierNeutralizeTarget {
+    Whole(Place),
+    Projection { root: Place, fields: Vec<u32> },
+}
+
+#[derive(Debug, Clone)]
+struct OwnedCarrierParam {
+    value: Place,
+    ty: ResolvedTy,
+    plan: crate::state_clone::ValueSnapshotPlan,
+}
+
 #[derive(Debug, Default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -370,6 +396,17 @@ struct Builder {
     /// source independently before packing; the post-CFG outbound pass resolves
     /// modes and clears this map before checked MIR is built.
     pending_outbound_actor_args: HashMap<u32, PendingOutboundSite>,
+    /// Direct-call arguments whose callee body is proven to carry the value
+    /// into an owning sink. Resolved after CFG construction so liveness and
+    /// projection taint choose snapshot versus last-use transfer.
+    pending_owned_call_args: HashMap<u32, PendingOwnedCallSite>,
+    /// Callee-side parameters admitted by the same carrier summary. Every
+    /// terminal path receives the inverse snapshot drop.
+    owned_carrier_params: Vec<OwnedCarrierParam>,
+    owned_carrier_param_ids: HashSet<BindingId>,
+    /// Raw byte-copy sources that must be neutralized if their loaded value is
+    /// moved onward by the callee.
+    owned_carrier_neutralize: HashMap<Place, OwnedCarrierNeutralizeTarget>,
     /// Send block -> (pre-liveness-branch preparation block, recover block) for
     /// fungible child tells.
     fungible_outbound_edges: HashMap<u32, (u32, u32)>,
@@ -3570,6 +3607,12 @@ pub(crate) struct ParamOwnershipFacts {
     /// BORROW param is `false`; a param absent from the map is treated as BORROW
     /// (fail-safe: the caller keeps and drops it, no callee double-free).
     call_param_consume: HashMap<(hew_hir::ItemId, usize), bool>,
+    /// A separate caller/callee contract for parameters whose body carries the
+    /// value into an owning sink. Callers prepare an independent owner (or
+    /// transfer a proven dead whole local); callees install the inverse
+    /// structural drop. Method receiver slot zero is excluded so an `Arena`
+    /// value receiver retains its established borrowed-self semantics.
+    call_param_owned_carrier: HashMap<(hew_hir::ItemId, usize), bool>,
 }
 
 /// Shared context for the consume-detection and borrow-site walkers. Bundles
@@ -3581,6 +3624,10 @@ pub(crate) struct ParamOwnershipFacts {
 struct ScanCtx<'a> {
     consume: &'a HashMap<(hew_hir::ItemId, usize), bool>,
     methods: &'a HashSet<hew_hir::ItemId>,
+    /// Whether consume-intent projections count as owning carriers of their
+    /// root parameter. This is enabled only for the deep call-carrier summary,
+    /// never for the legacy borrow/consume table.
+    owned_projection_sinks: bool,
     /// The subset of `methods` whose PARAM 0 is a by-value `self` receiver of a
     /// NON-resource type (`collect_borrow_receiver_methods`). Shape A of #2753:
     /// the borrow-site collector records such a receiver's `SiteId` so the
@@ -3773,6 +3820,168 @@ fn outbound_record_layouts(builder: &Builder) -> Vec<RecordLayout> {
         })
         .chain(builder.closure_record_layouts.iter().cloned())
         .collect()
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the post-CFG carrier boundary keeps classification, liveness, transfer, and fail-closed diagnostics together"
+)]
+fn prepare_owned_call_carriers(
+    blocks: &mut [BasicBlock],
+    builder: &mut Builder,
+    projection_tainted: &HashSet<u32>,
+) {
+    let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
+    let record_layouts = outbound_record_layouts(builder);
+    let pending = std::mem::take(&mut builder.pending_owned_call_args);
+
+    for block in blocks.iter_mut() {
+        let Some(site) = pending.get(&block.id) else {
+            continue;
+        };
+        let Terminator::Call { args, .. } = &mut block.terminator else {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "owned call-carrier facts without call terminator".to_string(),
+                    site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                },
+                note: "raw call-carrier facts must be discharged before checked MIR".to_string(),
+            });
+            continue;
+        };
+        let mut local_counts: HashMap<u32, usize> = HashMap::new();
+        for source in args.iter().copied() {
+            if let Some(local) = base_local(source) {
+                *local_counts.entry(local).or_default() += 1;
+            }
+        }
+
+        for arg in &site.args {
+            let plan = match crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                &arg.ty,
+                &record_layouts,
+                &builder.enum_layouts,
+                &builder.opaque_handle_names,
+                &builder.resource_opaque_close,
+            ) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    builder.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "owned call-carrier plan for `{}`",
+                                arg.ty.user_facing()
+                            ),
+                            site: arg.site,
+                        },
+                        note: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            if matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
+                continue;
+            }
+            let local = base_local(arg.source);
+            let transferable = matches!(arg.source, Place::Local(_))
+                && local.is_some_and(|local| {
+                    !live_out
+                        .get(&block.id)
+                        .is_some_and(|live| live.contains(&local))
+                        && !projection_tainted.contains(&local)
+                        && local_counts.get(&local) == Some(&1)
+                });
+            if transferable {
+                let dest = builder.alloc_local(arg.ty.clone());
+                block.instructions.push(Instr::Move {
+                    dest,
+                    src: arg.source,
+                });
+                block
+                    .instructions
+                    .push(Instr::NeutralizePayloadSlot { place: arg.source });
+                if let Some(slot) = args.get_mut(arg.index) {
+                    *slot = dest;
+                }
+                continue;
+            }
+            match plan.is_clone_total(
+                &record_layouts,
+                &builder.enum_layouts,
+                &builder.opaque_handle_names,
+                &builder.resource_opaque_close,
+            ) {
+                Ok(true) => {
+                    let dest = builder.alloc_local(arg.ty.clone());
+                    block.instructions.push(Instr::ValueSnapshotClone {
+                        dest,
+                        src: arg.source,
+                        ty: arg.ty.clone(),
+                        plan,
+                        boundary: crate::model::PreparedCarrierBoundary::LocalCall,
+                    });
+                    if let Some(slot) = args.get_mut(arg.index) {
+                        *slot = dest;
+                    }
+                }
+                Ok(false) => builder.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "live owned call-carrier `{}`",
+                            arg.ty.user_facing()
+                        ),
+                        site: arg.site,
+                    },
+                    note: "the value has no total structural clone and is not a proven unique whole-local last use"
+                        .to_string(),
+                }),
+                Err(error) => builder.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "owned call-carrier clone-total proof for `{}`",
+                            arg.ty.user_facing()
+                        ),
+                        site: arg.site,
+                    },
+                    note: error.to_string(),
+                }),
+            }
+        }
+    }
+
+    for (block, site) in pending {
+        if !blocks.iter().any(|candidate| candidate.id == block) {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("pending owned call-carrier block bb{block} is missing"),
+                    site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                },
+                note: "raw call-carrier facts must be discharged before checked MIR".to_string(),
+            });
+        }
+    }
+}
+
+fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &Builder) {
+    if builder.owned_carrier_params.is_empty() {
+        return;
+    }
+    for block in blocks {
+        if !matches!(
+            block.terminator,
+            Terminator::Return | Terminator::Trap { .. }
+        ) {
+            continue;
+        }
+        for param in builder.owned_carrier_params.iter().rev() {
+            block.instructions.push(Instr::ValueSnapshotDrop {
+                value: param.value,
+                ty: param.ty.clone(),
+                plan: param.plan.clone(),
+                boundary: crate::model::PreparedCarrierBoundary::LocalCall,
+            });
+        }
+    }
 }
 
 #[allow(
@@ -4021,6 +4230,7 @@ fn prepare_outbound_actor_payloads(
                                 value: dest,
                                 ty: arg.ty.clone(),
                                 plan,
+                                boundary: crate::model::PreparedCarrierBoundary::Actor,
                             });
                         }
                     }
@@ -4045,6 +4255,7 @@ fn prepare_outbound_actor_payloads(
                         src: arg.source,
                         ty: arg.ty.clone(),
                         plan: plan.clone(),
+                        boundary: crate::model::PreparedCarrierBoundary::Actor,
                     });
                     let source_is_fresh_whole_local = match arg.source {
                         Place::Local(local) => {
@@ -4061,12 +4272,14 @@ fn prepare_outbound_actor_payloads(
                             value: arg.source,
                             ty: arg.ty.clone(),
                             plan: plan.clone(),
+                            boundary: crate::model::PreparedCarrierBoundary::Actor,
                         });
                     }
                     recover_drops.push(Instr::ValueSnapshotDrop {
                         value: dest,
                         ty: arg.ty.clone(),
                         plan,
+                        boundary: crate::model::PreparedCarrierBoundary::Actor,
                     });
                     prepared.push(dest);
                 }
@@ -4359,6 +4572,7 @@ pub(crate) fn lower_function(
     // when `If` (and later `Match` / loops) split the CFG. The order is
     // monotone in block id.
     let mut blocks = builder.finalize_blocks(Terminator::Return);
+    append_owned_carrier_param_drops(&mut blocks, &builder);
     if call_conv.carries_execution_context() {
         // `bracket_actor_handler_blocks` splices `EnterContext` at index 0 of
         // the entry block when it is not already present. That shifts the
@@ -4480,6 +4694,7 @@ pub(crate) fn lower_function(
         &builder.match_project_consumed_binder_locals,
         &builder.locals,
     );
+    prepare_owned_call_carriers(&mut blocks, &mut builder, &projection_tainted);
     let resolved_outbound =
         resolve_outbound_actor_modes(&mut blocks, &mut builder, &projection_tainted);
     prepare_outbound_actor_payloads(
@@ -4491,6 +4706,10 @@ pub(crate) fn lower_function(
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"
+    );
+    debug_assert!(
+        builder.pending_owned_call_args.is_empty(),
+        "checked MIR cannot retain unresolved owned call-carrier arguments"
     );
     // `CheckedMirFunction` mirrors `RawMirFunction.blocks` directly
     // (widened in Slice 2 from a single-block field to a vec). The
@@ -5248,13 +5467,19 @@ impl Builder {
                 .get(&(func.id, i))
                 .copied()
                 == Some(true);
-            if matches!(self.subst_ty(&param.ty), ResolvedTy::Bytes) && !param_is_consumed {
+            let param_is_owned_carrier =
+                self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed);
+            if matches!(self.subst_ty(&param.ty), ResolvedTy::Bytes)
+                && !param_is_consumed
+                && !param_is_owned_carrier
+            {
                 if let Place::Local(local) = slot {
                     self.borrowed_bytes_param_locals.insert(local);
                 }
             }
             if matches!(self.subst_ty(&param.ty), ResolvedTy::String)
                 && !param_is_consumed
+                && !param_is_owned_carrier
                 && self.current_function_call_conv != crate::model::FunctionCallConv::ActorHandler
             {
                 if let Place::Local(local) = slot {
@@ -5315,6 +5540,7 @@ impl Builder {
             // release. `!param_is_consumed` keeps the resource path (already
             // registered above) from double-registering.
             if !param_is_consumed
+                && !param_is_owned_carrier
                 && self
                     .param_ownership
                     .call_param_consume

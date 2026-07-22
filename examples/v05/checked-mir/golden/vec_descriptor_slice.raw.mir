@@ -21,6 +21,7 @@ fn checked_mir_colour_tag(CheckedMirColour) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(0)) ty=i64
     ret = move _1
+    snapshot_drop _0 ty=CheckedMirColour plan=Enum { name: "CheckedMirColour" } boundary=LocalCall
     return
   bb2:
     _9 = const.i64 1
@@ -35,6 +36,7 @@ fn checked_mir_colour_tag(CheckedMirColour) -> i64 [conv=default]
     _1 = move _11
     goto bb1
   bb5:
+    snapshot_drop _0 ty=CheckedMirColour plan=Enum { name: "CheckedMirColour" } boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb6:
     _5 = const.i64 1
@@ -87,6 +89,7 @@ fn main() -> () [conv=default]
     _37: bool
     _38: CheckedMirPoint
     _39: i64
+    _40: CheckedMirColour
   bb0:
     _0 = call Vec::new() -> bb1
   bb1:
@@ -134,7 +137,9 @@ fn main() -> () [conv=default]
     trap(IndexOutOfBounds)
   bb9:
     _18 = call_rt hew_vec_get_layout(_14, _15)
-    _19 = call checked_mir_colour_tag(_18) -> bb10
+    _40 = move _18
+    neutralize_payload _18
+    _19 = call checked_mir_colour_tag(_40) -> bb10
   bb10:
     call println_i64(_19) -> bb11
   bb11:

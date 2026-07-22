@@ -18,7 +18,7 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WholeParamEmbedClass {
     None,
-    RetainBackedStringOnly,
+    IndependentlyOwnedOnly,
     UnsupportedBorrowAlias,
 }
 
@@ -28,8 +28,8 @@ impl WholeParamEmbedClass {
             (Self::UnsupportedBorrowAlias, _) | (_, Self::UnsupportedBorrowAlias) => {
                 Self::UnsupportedBorrowAlias
             }
-            (Self::RetainBackedStringOnly, _) | (_, Self::RetainBackedStringOnly) => {
-                Self::RetainBackedStringOnly
+            (Self::IndependentlyOwnedOnly, _) | (_, Self::IndependentlyOwnedOnly) => {
+                Self::IndependentlyOwnedOnly
             }
             (Self::None, Self::None) => Self::None,
         }
@@ -385,11 +385,12 @@ impl Builder {
         let class = Self::classify_whole_param_embeds(
             arg,
             &self.funcupdate_param_ids,
+            &self.owned_carrier_param_ids,
             &|ty| self.subst_ty(ty),
             true,
             &|ty| crate::model::ty_owns_heap_mir(ty, &self.record_field_orders, &self.enum_layouts),
         );
-        if class != WholeParamEmbedClass::RetainBackedStringOnly {
+        if class != WholeParamEmbedClass::IndependentlyOwnedOnly {
             return None;
         }
         let ty = self.subst_ty(&arg.ty);
@@ -2554,14 +2555,24 @@ impl Builder {
             // the destructive/MOVE-owner route. Reject both embed classes here.
             // A nested `..base` is checked too.
             HirExprKind::StructInit { .. } => {
-                Self::classify_whole_param_embeds(expr, params, &ResolvedTy::clone, false, &|_| {
-                    false
-                }) == WholeParamEmbedClass::None
+                Self::classify_whole_param_embeds(
+                    expr,
+                    params,
+                    &HashSet::new(),
+                    &ResolvedTy::clone,
+                    false,
+                    &|_| false,
+                ) == WholeParamEmbedClass::None
             }
             HirExprKind::TupleLiteral { .. } | HirExprKind::MachineVariantCtor { .. } => {
-                Self::classify_whole_param_embeds(expr, params, &ResolvedTy::clone, false, &|_| {
-                    false
-                }) == WholeParamEmbedClass::None
+                Self::classify_whole_param_embeds(
+                    expr,
+                    params,
+                    &HashSet::new(),
+                    &ResolvedTy::clone,
+                    false,
+                    &|_| false,
+                ) == WholeParamEmbedClass::None
             }
             // A projection is materialised iff its object chain is.
             HirExprKind::FieldAccess { object, .. } => {
@@ -2588,6 +2599,7 @@ impl Builder {
     fn classify_whole_param_embeds(
         expr: &HirExpr,
         params: &HashSet<BindingId>,
+        owned_carrier_params: &HashSet<BindingId>,
         resolve_ty: &impl Fn(&ResolvedTy) -> ResolvedTy,
         reject_unproven_owned_leaves: bool,
         owns_heap: &impl Fn(&ResolvedTy) -> bool,
@@ -2597,8 +2609,10 @@ impl Builder {
                 resolved: ResolvedRef::Binding(id),
                 ..
             } if params.contains(id) => {
-                if matches!(resolve_ty(&expr.ty), ResolvedTy::String) {
-                    WholeParamEmbedClass::RetainBackedStringOnly
+                if matches!(resolve_ty(&expr.ty), ResolvedTy::String)
+                    || owned_carrier_params.contains(id)
+                {
+                    WholeParamEmbedClass::IndependentlyOwnedOnly
                 } else {
                     WholeParamEmbedClass::UnsupportedBorrowAlias
                 }
@@ -2609,6 +2623,7 @@ impl Builder {
                     Self::classify_whole_param_embeds(
                         value,
                         params,
+                        owned_carrier_params,
                         resolve_ty,
                         reject_unproven_owned_leaves,
                         owns_heap,
@@ -2618,6 +2633,7 @@ impl Builder {
                     Self::classify_whole_param_embeds(
                         value,
                         params,
+                        owned_carrier_params,
                         resolve_ty,
                         reject_unproven_owned_leaves,
                         owns_heap,
@@ -2630,6 +2646,7 @@ impl Builder {
                     Self::classify_whole_param_embeds(
                         value,
                         params,
+                        owned_carrier_params,
                         resolve_ty,
                         reject_unproven_owned_leaves,
                         owns_heap,
@@ -2643,16 +2660,49 @@ impl Builder {
                     Self::classify_whole_param_embeds(
                         value,
                         params,
+                        owned_carrier_params,
                         resolve_ty,
                         reject_unproven_owned_leaves,
                         owns_heap,
                     )
                 })
                 .fold(WholeParamEmbedClass::None, WholeParamEmbedClass::merge),
+            HirExprKind::FieldAccess { object, .. }
+            | HirExprKind::Index {
+                container: object, ..
+            }
+            | HirExprKind::Slice {
+                container: object, ..
+            } if Self::projection_root_binding(object)
+                .is_some_and(|id| owned_carrier_params.contains(&id)) =>
+            {
+                WholeParamEmbedClass::IndependentlyOwnedOnly
+            }
+            HirExprKind::TupleIndex { tuple, .. }
+                if Self::projection_root_binding(tuple)
+                    .is_some_and(|id| owned_carrier_params.contains(&id)) =>
+            {
+                WholeParamEmbedClass::IndependentlyOwnedOnly
+            }
             _ if reject_unproven_owned_leaves && owns_heap(&resolve_ty(&expr.ty)) => {
                 WholeParamEmbedClass::UnsupportedBorrowAlias
             }
             _ => WholeParamEmbedClass::None,
+        }
+    }
+
+    fn projection_root_binding(expr: &HirExpr) -> Option<BindingId> {
+        match &expr.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => Some(*id),
+            HirExprKind::FieldAccess { object, .. } => Self::projection_root_binding(object),
+            HirExprKind::TupleIndex { tuple, .. } => Self::projection_root_binding(tuple),
+            HirExprKind::Index { container, .. } | HirExprKind::Slice { container, .. } => {
+                Self::projection_root_binding(container)
+            }
+            _ => None,
         }
     }
     /// Emit a `MirStatement::Use(Consume)` for a managed-type binding that is

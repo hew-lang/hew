@@ -4044,6 +4044,8 @@ impl Builder {
                     field_offset,
                     dest,
                 });
+                let field_ty = self.subst_ty(&expr.ty);
+                self.note_carrier_projection(record_place, field_offset.0, dest, &field_ty);
                 Some(dest)
             }
             HirExprKind::Scope { body } => Some(self.lower_task_scope(body)),
@@ -4167,6 +4169,8 @@ impl Builder {
                     field_index,
                     dest,
                 });
+                let field_ty = self.subst_ty(&expr.ty);
+                self.note_carrier_projection(inner_place, field_index, dest, &field_ty);
                 Some(dest)
             }
             HirExprKind::Index { container, index } => {
@@ -7857,6 +7861,7 @@ impl Builder {
             self.proven_borrow_call_args
                 .insert(self.current_block_id, proven_borrow_args);
         }
+        self.note_owned_call_site(callee_item, hir_args, &arg_places);
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
             builtin,

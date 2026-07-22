@@ -147,9 +147,9 @@ fn metrics$counter -> Counter
     call[bb6 panic -> bb7] ->
       (none)
     goto[bb7->bb3] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb7] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
 
 fn metrics$try_counter -> Result<Counter, MetricsError>
   statements:
@@ -201,9 +201,9 @@ fn metrics$gauge -> Gauge
     call[bb6 panic -> bb7] ->
       (none)
     goto[bb7->bb3] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb7] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
 
 fn metrics$try_gauge -> Result<Gauge, MetricsError>
   statements:
@@ -255,9 +255,9 @@ fn metrics$histogram -> Histogram
     call[bb6 panic -> bb7] ->
       (none)
     goto[bb7->bb3] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb7] ->
-      drop _11 ty=string kind=cow_heap(hew_string_drop)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
 
 fn metrics$try_histogram -> Result<Histogram, MetricsError>
   statements:

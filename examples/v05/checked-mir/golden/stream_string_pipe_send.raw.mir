@@ -386,6 +386,7 @@ fn fs$io_error_message(IoError) -> string [conv=default]
   bb1:
     stmt: return site=Some(SiteId(106)) ty=string
     ret = move _1
+    snapshot_drop _0 ty=IoError plan=Enum { name: "IoError" } boundary=LocalCall
     return
   bb2:
     stmt: bind BindingId(10) code site=SiteId(108) ty=i64
@@ -424,6 +425,7 @@ fn fs$io_error_message(IoError) -> string [conv=default]
     _46 = string_lit "Other("
     _47 = call to_string_i64(_45) -> bb29
   bb8:
+    snapshot_drop _0 ty=IoError plan=Enum { name: "IoError" } boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb9:
     _5 = const.i64 1
@@ -627,9 +629,9 @@ fn fs$read(string) -> string [conv=default]
     _16: string
     _17: string
     _18: string
-    _19: i64
-    _20: fs.IoError
-    _21: string
+    _19: string
+    _20: i64
+    _21: fs.IoError
     _22: string
     _23: string
     _24: string
@@ -639,8 +641,10 @@ fn fs$read(string) -> string [conv=default]
     _28: string
     _29: string
     _30: string
-    _31: !
-    _32: string
+    _31: string
+    _32: !
+    _33: string
+    _34: fs.IoError
   bb0:
     stmt: use BindingId(18) path site=SiteId(199) ty=string intent=Read
     _1 = call hew_file_read(_0) -> bb1
@@ -663,8 +667,9 @@ fn fs$read(string) -> string [conv=default]
     stmt: eval site=SiteId(256) ty=()
     stmt: use BindingId(19) contents site=SiteId(257) ty=string intent=Read
     stmt: return site=Some(SiteId(197)) ty=string
-    _32 = move _2
-    ret = move _32
+    _33 = move _2
+    ret = move _33
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb6:
     stmt: bind BindingId(21) detail site=SiteId(206) ty=string
@@ -678,57 +683,61 @@ fn fs$read(string) -> string [conv=default]
   bb8:
     stmt: use BindingId(18) path site=SiteId(218) ty=string intent=Read
     _14 = string_lit "fs.read failed for `"
-    _15 = call string::fmt(_0) -> bb11
+    _15 = move _0
+    neutralize_payload _0
+    _16 = call string::fmt(_15) -> bb11
   bb9:
     stmt: use BindingId(18) path site=SiteId(241) ty=string intent=Read
-    _24 = string_lit "fs.read failed for `"
-    _25 = call string::fmt(_0) -> bb19
+    _25 = string_lit "fs.read failed for `"
+    _26 = call string::fmt(_0) -> bb19
   bb10:
-    _31 = move _10
-    _5 = move _31
+    _32 = move _10
+    _5 = move _32
     goto bb5
   bb11:
-    _16 = call string_concat(_14, _15) -> bb12
+    _17 = call string_concat(_14, _16) -> bb12
   bb12:
-    drop _15 ty=string fn=release(hew_string_drop)
-    _17 = string_lit "`: "
-    _18 = call string_concat(_16, _17) -> bb13
+    drop _16 ty=string fn=release(hew_string_drop)
+    _18 = string_lit "`: "
+    _19 = call string_concat(_17, _18) -> bb13
   bb13:
     stmt: use BindingId(20) errno site=SiteId(225) ty=i32 intent=Read
-    drop _16 ty=string fn=release(hew_string_drop)
-    _19 = cast _4 i32 -> i64
-    _20 = call fs$io_error_from_errno(_19) -> bb14
+    drop _17 ty=string fn=release(hew_string_drop)
+    _20 = cast _4 i32 -> i64
+    _21 = call fs$io_error_from_errno(_20) -> bb14
   bb14:
-    _21 = call fs$io_error_message(_20) -> bb15
+    _34 = move _21
+    neutralize_payload _21
+    _22 = call fs$io_error_message(_34) -> bb15
   bb15:
-    _22 = call string::fmt(_21) -> bb16
+    _23 = call string::fmt(_22) -> bb16
   bb16:
-    _23 = call string_concat(_18, _22) -> bb17
+    _24 = call string_concat(_19, _23) -> bb17
   bb17:
     stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(216) ty=string
-    drop _22 ty=string fn=release(hew_string_drop)
-    drop _18 ty=string fn=release(hew_string_drop)
-    call panic(_23) -> bb18
+    drop _23 ty=string fn=release(hew_string_drop)
+    drop _19 ty=string fn=release(hew_string_drop)
+    call panic(_24) -> bb18
   bb18:
     stmt: eval site=SiteId(215) ty=!
     goto bb10
   bb19:
-    _26 = call string_concat(_24, _25) -> bb20
+    _27 = call string_concat(_25, _26) -> bb20
   bb20:
-    drop _25 ty=string fn=release(hew_string_drop)
-    _27 = string_lit "`: "
-    _28 = call string_concat(_26, _27) -> bb21
+    drop _26 ty=string fn=release(hew_string_drop)
+    _28 = string_lit "`: "
+    _29 = call string_concat(_27, _28) -> bb21
   bb21:
     stmt: use BindingId(21) detail site=SiteId(245) ty=string intent=Read
-    drop _26 ty=string fn=release(hew_string_drop)
-    _29 = call string::fmt(_9) -> bb22
+    drop _27 ty=string fn=release(hew_string_drop)
+    _30 = call string::fmt(_9) -> bb22
   bb22:
-    _30 = call string_concat(_28, _29) -> bb23
+    _31 = call string_concat(_29, _30) -> bb23
   bb23:
     stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(239) ty=string
+    drop _30 ty=string fn=release(hew_string_drop)
     drop _29 ty=string fn=release(hew_string_drop)
-    drop _28 ty=string fn=release(hew_string_drop)
-    call panic(_30) -> bb24
+    call panic(_31) -> bb24
   bb24:
     stmt: eval site=SiteId(238) ty=!
     goto bb10
@@ -786,6 +795,7 @@ fn fs$try_read(string) -> Result<string, IoError> [conv=default]
     stmt: return site=Some(SiteId(258)) ty=Result<string, fs.IoError>
     _29 = move _3
     ret = move _29
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb6:
     stmt: bind BindingId(24) contents site=SiteId(267) ty=string
@@ -853,6 +863,8 @@ fn fs$write(string, string) -> i64 [conv=default]
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_write(string, string) -> Result<i64, IoError> [conv=default]
@@ -880,6 +892,8 @@ fn fs$try_write(string, string) -> Result<i64, IoError> [conv=default]
   bb2:
     stmt: return site=Some(SiteId(301)) ty=Result<i64, fs.IoError>
     ret = move _2
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb3:
     _5 = const.i64 0
@@ -890,6 +904,8 @@ fn fs$try_write(string, string) -> Result<i64, IoError> [conv=default]
     mtag10 = move _11
     _12 = call fs$last_io_error() -> bb7
   bb5:
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
@@ -919,6 +935,8 @@ fn fs$append(string, string) -> i64 [conv=default]
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_append(string, string) -> Result<i64, IoError> [conv=default]
@@ -946,6 +964,8 @@ fn fs$try_append(string, string) -> Result<i64, IoError> [conv=default]
   bb2:
     stmt: return site=Some(SiteId(318)) ty=Result<i64, fs.IoError>
     ret = move _2
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb3:
     _5 = const.i64 0
@@ -956,6 +976,8 @@ fn fs$try_append(string, string) -> Result<i64, IoError> [conv=default]
     mtag10 = move _11
     _12 = call fs$last_io_error() -> bb7
   bb5:
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
@@ -981,6 +1003,7 @@ fn fs$exists(string) -> bool [conv=default]
     stmt: return site=Some(SiteId(329)) ty=bool
     _2 = move _1
     ret = move _2
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$delete(string) -> i64 [conv=default]
@@ -997,6 +1020,7 @@ fn fs$delete(string) -> i64 [conv=default]
     _2 = cast _1 i32 -> i64
     _3 = move _2
     ret = move _3
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_delete(string) -> Result<i64, IoError> [conv=default]
@@ -1022,6 +1046,7 @@ fn fs$try_delete(string) -> Result<i64, IoError> [conv=default]
   bb2:
     stmt: return site=Some(SiteId(338)) ty=Result<i64, fs.IoError>
     ret = move _1
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb3:
     _4 = const.i64 0
@@ -1032,6 +1057,7 @@ fn fs$try_delete(string) -> Result<i64, IoError> [conv=default]
     mtag9 = move _10
     _11 = call fs$last_io_error() -> bb7
   bb5:
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb6:
     _7 = const.i64 0
@@ -1057,6 +1083,7 @@ fn fs$size(string) -> i64 [conv=default]
     stmt: return site=Some(SiteId(348)) ty=i64
     _2 = move _1
     ret = move _2
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$read_bytes(string) -> bytes [conv=default]
@@ -1071,6 +1098,7 @@ fn fs$read_bytes(string) -> bytes [conv=default]
     stmt: return site=Some(SiteId(352)) ty=bytes
     _2 = move _1
     ret = move _2
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_read_bytes(string) -> Result<bytes, IoError> [conv=default]
@@ -1129,6 +1157,7 @@ fn fs$try_read_bytes(string) -> Result<bytes, IoError> [conv=default]
     stmt: return site=Some(SiteId(356)) ty=Result<bytes, fs.IoError>
     _20 = move _8
     ret = move _20
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb7:
     stmt: eval site=SiteId(370) ty=string
@@ -1161,6 +1190,8 @@ fn fs$write_bytes(string, bytes) -> i64 [conv=default]
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
+    snapshot_drop _1 ty=bytes plan=Bytes boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_write_bytes(string, bytes) -> Result<i64, IoError> [conv=default]
@@ -1188,6 +1219,8 @@ fn fs$try_write_bytes(string, bytes) -> Result<i64, IoError> [conv=default]
   bb2:
     stmt: return site=Some(SiteId(387)) ty=Result<i64, fs.IoError>
     ret = move _2
+    snapshot_drop _1 ty=bytes plan=Bytes boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb3:
     _5 = const.i64 0
@@ -1198,6 +1231,8 @@ fn fs$try_write_bytes(string, bytes) -> Result<i64, IoError> [conv=default]
     mtag10 = move _11
     _12 = call fs$last_io_error() -> bb7
   bb5:
+    snapshot_drop _1 ty=bytes plan=Bytes boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
@@ -1225,6 +1260,7 @@ fn fs$mkdir(string) -> i64 [conv=default]
     _2 = cast _1 i32 -> i64
     _3 = move _2
     ret = move _3
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_mkdir(string) -> Result<i64, IoError> [conv=default]
@@ -1250,6 +1286,7 @@ fn fs$try_mkdir(string) -> Result<i64, IoError> [conv=default]
   bb2:
     stmt: return site=Some(SiteId(403)) ty=Result<i64, fs.IoError>
     ret = move _1
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb3:
     _4 = const.i64 0
@@ -1260,6 +1297,7 @@ fn fs$try_mkdir(string) -> Result<i64, IoError> [conv=default]
     mtag9 = move _10
     _11 = call fs$last_io_error() -> bb7
   bb5:
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb6:
     _7 = const.i64 0
@@ -1287,6 +1325,7 @@ fn fs$mkdir_all(string) -> i64 [conv=default]
     _2 = cast _1 i32 -> i64
     _3 = move _2
     ret = move _3
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_mkdir_all(string) -> Result<i64, IoError> [conv=default]
@@ -1312,6 +1351,7 @@ fn fs$try_mkdir_all(string) -> Result<i64, IoError> [conv=default]
   bb2:
     stmt: return site=Some(SiteId(418)) ty=Result<i64, fs.IoError>
     ret = move _1
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb3:
     _4 = const.i64 0
@@ -1322,6 +1362,7 @@ fn fs$try_mkdir_all(string) -> Result<i64, IoError> [conv=default]
     mtag9 = move _10
     _11 = call fs$last_io_error() -> bb7
   bb5:
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb6:
     _7 = const.i64 0
@@ -1347,6 +1388,7 @@ fn fs$list_dir(string) -> Vec<string> [conv=default]
     stmt: return site=Some(SiteId(428)) ty=Vec<string>
     _2 = move _1
     ret = move _2
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_list_dir(string) -> Result<Vec<string>, IoError> [conv=default]
@@ -1415,6 +1457,7 @@ fn fs$try_list_dir(string) -> Result<Vec<string>, IoError> [conv=default]
     stmt: return site=Some(SiteId(432)) ty=Result<Vec<string>, fs.IoError>
     _20 = move _9
     ret = move _20
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb8:
     mvar15.1.0 = move _18
@@ -1438,6 +1481,8 @@ fn fs$rename(string, string) -> i64 [conv=default]
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_rename(string, string) -> Result<i64, IoError> [conv=default]
@@ -1465,6 +1510,8 @@ fn fs$try_rename(string, string) -> Result<i64, IoError> [conv=default]
   bb2:
     stmt: return site=Some(SiteId(463)) ty=Result<i64, fs.IoError>
     ret = move _2
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb3:
     _5 = const.i64 0
@@ -1475,6 +1522,8 @@ fn fs$try_rename(string, string) -> Result<i64, IoError> [conv=default]
     mtag10 = move _11
     _12 = call fs$last_io_error() -> bb7
   bb5:
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
@@ -1504,6 +1553,8 @@ fn fs$copy(string, string) -> i64 [conv=default]
     _3 = cast _2 i32 -> i64
     _4 = move _3
     ret = move _4
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn fs$try_copy(string, string) -> Result<i64, IoError> [conv=default]
@@ -1531,6 +1582,8 @@ fn fs$try_copy(string, string) -> Result<i64, IoError> [conv=default]
   bb2:
     stmt: return site=Some(SiteId(480)) ty=Result<i64, fs.IoError>
     ret = move _2
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb3:
     _5 = const.i64 0
@@ -1541,6 +1594,8 @@ fn fs$try_copy(string, string) -> Result<i64, IoError> [conv=default]
     mtag10 = move _11
     _12 = call fs$last_io_error() -> bb7
   bb5:
+    snapshot_drop _1 ty=string plan=String boundary=LocalCall
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
@@ -1566,6 +1621,7 @@ fn fs$is_dir(string) -> bool [conv=default]
     stmt: return site=Some(SiteId(491)) ty=bool
     _2 = move _1
     ret = move _2
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn stream$pipe(i64) -> (Sink<string>, Stream<string>) [conv=default]
@@ -1980,6 +2036,7 @@ fn stream$from_file(string) -> Result<Stream<string>, string> [conv=default]
     stmt: return site=Some(SiteId(613)) ty=Result<Stream<string>, string>
     _12 = move _3
     ret = move _12
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb6:
     mvar8.1.0 = move _10
@@ -2034,6 +2091,7 @@ fn stream$try_from_file(string) -> Result<Stream<string>, fs.IoError> [conv=defa
     stmt: return site=Some(SiteId(628)) ty=Result<Stream<string>, fs.IoError>
     _19 = move _3
     ret = move _19
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb6:
     stmt: bind BindingId(86) kind site=SiteId(640) ty=i64
@@ -2101,6 +2159,7 @@ fn stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
     stmt: return site=Some(SiteId(653)) ty=Result<Sink<string>, string>
     _12 = move _3
     ret = move _12
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb6:
     mvar8.1.0 = move _10
@@ -2155,6 +2214,7 @@ fn stream$try_to_file(string) -> Result<Sink<string>, fs.IoError> [conv=default]
     stmt: return site=Some(SiteId(668)) ty=Result<Sink<string>, fs.IoError>
     _19 = move _3
     ret = move _19
+    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb6:
     stmt: bind BindingId(92) kind site=SiteId(680) ty=i64

@@ -767,6 +767,7 @@ fn compute_call_param_consumption(
     methods: &HashSet<hew_hir::ItemId>,
     receiver_methods: &HashSet<hew_hir::ItemId>,
     resource_param_consume: &HashMap<(hew_hir::ItemId, usize), bool>,
+    owned_projection_sinks: bool,
 ) -> HashMap<(hew_hir::ItemId, usize), bool> {
     // Seed every parameter as BORROW, except explicit `consume` parameters and
     // resource parameters the RAII table already classified CONSUME. The
@@ -795,6 +796,7 @@ fn compute_call_param_consumption(
                         consume: &consume,
                         methods,
                         receiver_methods,
+                        owned_projection_sinks,
                     };
                     param_consumed_in_body(&f.body, param.id, &cx)
                 };
@@ -916,6 +918,7 @@ pub(super) fn compute_param_ownership(
                         consume: &param_consume,
                         methods: &methods,
                         receiver_methods: &receiver_methods,
+                        owned_projection_sinks: false,
                     };
                     param_consumed_in_body(&f.body, param.id, &cx)
                 };
@@ -930,7 +933,16 @@ pub(super) fn compute_param_ownership(
         }
     }
     let call_param_consume =
-        compute_call_param_consumption(fns, &methods, &receiver_methods, &param_consume);
+        compute_call_param_consumption(fns, &methods, &receiver_methods, &param_consume, false);
+    let mut call_param_owned_carrier =
+        compute_call_param_consumption(fns, &methods, &receiver_methods, &param_consume, true);
+    // A by-value method receiver is governed by the receiver's accurate
+    // read/consume intent, not the ordinary free-call carrier contract. In
+    // particular, `Arena<T>::insert(self, value)` mutates through borrowed
+    // `self`; only `value` crosses into owned storage.
+    for method in &methods {
+        call_param_owned_carrier.remove(&(*method, 0));
+    }
     // With the verdict final, collect every free-call argument `SiteId` whose
     // target parameter is a resource BORROW. The arg's `Use` is then emitted
     // `Read` instead of the HIR-over-stamped `Consume`, so the caller keeps the
@@ -954,6 +966,7 @@ pub(super) fn compute_param_ownership(
             consume: &param_consume,
             methods: &methods,
             receiver_methods: &receiver_methods,
+            owned_projection_sinks: false,
         },
     );
     let proven_borrow_arg_sites = collect_module_borrow_arg_sites(
@@ -962,6 +975,7 @@ pub(super) fn compute_param_ownership(
             consume: &call_param_consume,
             methods: &methods,
             receiver_methods: &receiver_methods,
+            owned_projection_sinks: false,
         },
     );
     ParamOwnershipFacts {
@@ -969,6 +983,7 @@ pub(super) fn compute_param_ownership(
         borrow_arg_sites,
         proven_borrow_arg_sites,
         call_param_consume,
+        call_param_owned_carrier,
     }
 }
 /// True when `expr` is a bare reference to binding `b_p`.
@@ -993,6 +1008,23 @@ fn projection_base_consumes(base: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) ->
         false
     } else {
         scan_expr_for_consume(base, b_p, pc)
+    }
+}
+
+/// True when a projection chain is rooted directly in parameter `b_p`.
+/// Wrappers that compute a new value are deliberately excluded: only a place
+/// projection can be neutralized by the callee-side carrier machinery.
+fn projection_is_rooted_in(expr: &HirExpr, b_p: BindingId) -> bool {
+    if is_binding_ref(expr, b_p) {
+        return true;
+    }
+    match &expr.kind {
+        HirExprKind::FieldAccess { object, .. } => projection_is_rooted_in(object, b_p),
+        HirExprKind::TupleIndex { tuple, .. } => projection_is_rooted_in(tuple, b_p),
+        HirExprKind::Index { container, .. } | HirExprKind::Slice { container, .. } => {
+            projection_is_rooted_in(container, b_p)
+        }
+        _ => false,
     }
 }
 /// Does any use of resource parameter `b_p` in `block` CONSUME it under the
@@ -1216,14 +1248,24 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
                     .is_some_and(|e| scan_expr_for_consume(e, b_p, pc))
         }
         HirExprKind::StructInit { fields, base, .. } => {
-            fields
-                .iter()
-                .any(|(_, v)| scan_expr_for_consume(v, b_p, pc))
-                || base
-                    .as_deref()
-                    .is_some_and(|b| scan_expr_for_consume(b, b_p, pc))
+            fields.iter().any(|(_, v)| {
+                (pc.owned_projection_sinks
+                    && !is_binding_ref(v, b_p)
+                    && projection_is_rooted_in(v, b_p))
+                    || scan_expr_for_consume(v, b_p, pc)
+            }) || base.as_deref().is_some_and(|b| {
+                (pc.owned_projection_sinks
+                    && !is_binding_ref(b, b_p)
+                    && projection_is_rooted_in(b, b_p))
+                    || scan_expr_for_consume(b, b_p, pc)
+            })
         }
-        HirExprKind::FieldAccess { object, .. } => projection_base_consumes(object, b_p, pc),
+        HirExprKind::FieldAccess { object, .. } => {
+            (pc.owned_projection_sinks
+                && expr.intent == IntentKind::Consume
+                && projection_is_rooted_in(object, b_p))
+                || projection_base_consumes(object, b_p, pc)
+        }
         HirExprKind::ScopeDeadline { duration, body } => {
             scan_expr_for_consume(duration, b_p, pc) || scan_block_for_consume(body, b_p, pc)
         }
@@ -1255,9 +1297,18 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
                     .iter()
                     .any(|a| scan_expr_for_consume(a, b_p, pc))
         }),
-        HirExprKind::TupleIndex { tuple, .. } => projection_base_consumes(tuple, b_p, pc),
+        HirExprKind::TupleIndex { tuple, .. } => {
+            (pc.owned_projection_sinks
+                && expr.intent == IntentKind::Consume
+                && projection_is_rooted_in(tuple, b_p))
+                || projection_base_consumes(tuple, b_p, pc)
+        }
         HirExprKind::Index { container, index } => {
-            projection_base_consumes(container, b_p, pc) || scan_expr_for_consume(index, b_p, pc)
+            (pc.owned_projection_sinks
+                && expr.intent == IntentKind::Consume
+                && projection_is_rooted_in(container, b_p))
+                || projection_base_consumes(container, b_p, pc)
+                || scan_expr_for_consume(index, b_p, pc)
         }
         HirExprKind::Slice {
             container,
@@ -1265,7 +1316,10 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
             end,
             ..
         } => {
-            projection_base_consumes(container, b_p, pc)
+            (pc.owned_projection_sinks
+                && expr.intent == IntentKind::Consume
+                && projection_is_rooted_in(container, b_p))
+                || projection_base_consumes(container, b_p, pc)
                 || start
                     .as_deref()
                     .is_some_and(|s| scan_expr_for_consume(s, b_p, pc))

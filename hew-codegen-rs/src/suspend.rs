@@ -4961,7 +4961,12 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
     // we never parked). ──────────────────────────────────────────────────────
     fn_ctx.builder.position_at_end(send_err_bb);
     if let Some(plan) = &term.cleanup_plan {
-        crate::llvm::emit_prepared_carrier_drop(fn_ctx, term.value, plan)?;
+        crate::llvm::emit_prepared_carrier_drop(
+            fn_ctx,
+            term.value,
+            plan,
+            hew_mir::PreparedCarrierBoundary::Actor,
+        )?;
     }
     let ch_free = intern_runtime_decl(
         fn_ctx.ctx,

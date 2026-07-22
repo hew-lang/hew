@@ -51,7 +51,8 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // operand `Place` — the source is the implicit context arg.
         | Instr::ActorStateFieldLoad { .. }
         // A payload-slot neutralize stores a constant null — no source operand.
-        | Instr::NeutralizePayloadSlot { .. } => Vec::new(),
+        | Instr::NeutralizePayloadSlot { .. }
+        | Instr::AggregateProjectionNeutralize { .. } => Vec::new(),
         // Binary arithmetic / comparison: both operands are sources, the
         // dest (and any overflow-flag dest) is a write.
         Instr::IntAdd { lhs, rhs, .. }
@@ -657,7 +658,8 @@ pub(super) fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::ValueSnapshotDrop { .. }
         // A payload-slot neutralize nulls the scrutinee's transferred slot; it
         // does not hand any local out of the body.
-        | Instr::NeutralizePayloadSlot { .. } => false,
+        | Instr::NeutralizePayloadSlot { .. }
+        | Instr::AggregateProjectionNeutralize { .. } => false,
     }
 }
 /// True when a terminator transfers ownership of `local` out of the body: a

@@ -39,6 +39,17 @@ pub enum SendAliasMode {
     TransferLastUse,
 }
 
+/// Ownership boundary consuming a prepared whole-value carrier.
+///
+/// Actor transport and ordinary local calls share structural clone/drop
+/// execution, but they do not share sendability: `Rc`/`Weak` are valid local
+/// carriers and are deliberately rejected at an actor boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PreparedCarrierBoundary {
+    Actor,
+    LocalCall,
+}
+
 /// Target pointer width threaded into MIR lowering so the `isize`/`usize`
 /// trap-guard constants (signed-MIN/-1 for `/` `%`, shift-out-of-range bound
 /// for `<<` `>>`) are emitted at the width the target actually uses.
@@ -4324,6 +4335,7 @@ pub enum Instr {
         src: Place,
         ty: ResolvedTy,
         plan: crate::state_clone::ValueSnapshotPlan,
+        boundary: PreparedCarrierBoundary,
     },
     /// Drop one prepared outbound owner on an edge where transport never
     /// accepted it.
@@ -4331,6 +4343,7 @@ pub enum Instr {
         value: Place,
         ty: ResolvedTy,
         plan: crate::state_clone::ValueSnapshotPlan,
+        boundary: PreparedCarrierBoundary,
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
@@ -4352,6 +4365,11 @@ pub enum Instr {
     /// (`emit_overwrite_neutralize_*`), so every release symbol the scrutinee's
     /// drop later calls is a null-tolerant no-op.
     NeutralizePayloadSlot { place: Place },
+    /// Neutralize one root-relative aggregate projection after its byte-copied
+    /// value has transferred into a new owner. The path traverses inline record
+    /// and tuple fields from `root`; clearing only the terminal slot leaves the
+    /// carrier's later structural drop responsible for every unmoved sibling.
+    AggregateProjectionNeutralize { root: Place, fields: Vec<u32> },
     /// Increment the refcount of a `bytes` value before a genuine co-owner is
     /// minted. This marker is emitted only by the MIR bytes ownership prover;
     /// codegen must not infer the retain from the LLVM storage type.

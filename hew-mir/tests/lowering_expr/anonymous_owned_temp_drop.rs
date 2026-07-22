@@ -106,14 +106,18 @@ fn assert_record_param_embed_mints(p: &IrPipeline) {
         ("pushParam", "hew_vec_push_owned", "hew_vec_push_owned_move"),
         ("setParam", "hew_vec_set_owned", "hew_vec_set_owned_move"),
     ] {
-        assert_eq!(string_retain_count(p, fn_name), 1);
+        assert_eq!(
+            string_retain_count(p, fn_name),
+            0,
+            "{fn_name} transfers the prepared carrier without another retain"
+        );
         assert_eq!(call_count(p, fn_name, copy_symbol), 1);
         assert_eq!(call_count(p, fn_name, move_symbol), 0);
         assert_eq!(synthetic_binds(p, fn_name, "__hew_copy_in_param_temp"), 1);
         assert_eq!(
             record_drops(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
             1,
-            "{fn_name} must drop the retained source-temp share exactly once"
+            "{fn_name} must drop the prepared source-temp carrier exactly once"
         );
     }
 }
@@ -131,35 +135,44 @@ fn assert_tuple_param_embed_mints(p: &IrPipeline) {
             "hew_vec_set_owned_move",
         ),
     ] {
-        assert_eq!(string_retain_count(p, fn_name), 1);
+        assert_eq!(
+            string_retain_count(p, fn_name),
+            0,
+            "{fn_name} transfers the prepared carrier without another retain"
+        );
         assert_eq!(call_count(p, fn_name, copy_symbol), 1);
         assert_eq!(call_count(p, fn_name, move_symbol), 0);
         assert_eq!(synthetic_binds(p, fn_name, "__hew_copy_in_param_temp"), 1);
         assert_eq!(
             tuple_drops(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
             1,
-            "{fn_name} must drop the retained tuple source-temp share exactly once"
+            "{fn_name} must drop the prepared tuple source-temp carrier exactly once"
         );
     }
 }
 
-fn assert_unsupported_param_embeds_fail_closed(p: &IrPipeline) {
-    assert_eq!(call_count(p, "unsupported", "hew_vec_push_owned"), 1);
+fn assert_deep_param_embeds_use_prepared_carriers(p: &IrPipeline) {
     for fn_name in ["unsupported", "unsupportedProjection"] {
         assert_eq!(
             synthetic_binds(p, fn_name, "__hew_copy_in_param_temp"),
-            0,
-            "{fn_name} must not mint an owner for an unretained parameter alias"
+            1,
+            "{fn_name} must mint one owner for its prepared carrier aggregate"
         );
-        assert!(
-            record_drops(p, fn_name, |_| true).is_empty(),
-            "{fn_name} must not drop a caller-owned parameter alias"
+        assert_eq!(
+            call_count(p, fn_name, "hew_vec_push_owned"),
+            1,
+            "{fn_name} keeps COPY-IN with one balancing source-temp owner"
+        );
+        assert_eq!(
+            record_drops(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
+            1,
+            "{fn_name} must release the prepared source temp exactly once"
         );
     }
 }
 
 #[test]
-fn vec_copy_in_string_param_temps_own_only_their_retained_share() {
+fn vec_copy_in_param_temps_own_only_their_prepared_carriers() {
     let p = pipeline_with_tc(
         r#"
 type Holder { items: Vec<string> }
@@ -224,7 +237,7 @@ fn unsupportedProjection(p: string, h: Holder) {
         0,
         "a no-parameter fresh owner must stay on MOVE-IN"
     );
-    assert_unsupported_param_embeds_fail_closed(&p);
+    assert_deep_param_embeds_use_prepared_carriers(&p);
 }
 
 #[test]

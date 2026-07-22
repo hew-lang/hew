@@ -417,9 +417,9 @@ fn regex$new -> Pattern
     call[bb7 panic -> bb8] ->
       (none)
     goto[bb8->bb5] ->
-      drop _12 ty=string kind=cow_heap(hew_string_drop)
+      drop _13 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb8] ->
-      drop _12 ty=string kind=cow_heap(hew_string_drop)
+      drop _13 ty=string kind=cow_heap(hew_string_drop)
 
 fn i8::fmt -> string
   statements:

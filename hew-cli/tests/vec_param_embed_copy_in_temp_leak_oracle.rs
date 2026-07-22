@@ -1,10 +1,10 @@
-//! Retain-backed string parameter embeds in anonymous Vec COPY-IN source temps.
+//! Prepared parameter carriers embedded in anonymous Vec COPY-IN source temps.
 //!
-//! A whole by-value parameter remains caller-owned. Aggregate lowering retains
-//! an embedded `string`, however, so the anonymous source temp owns one separate
-//! share that must be dropped after `hew_vec_{push,set}_owned` clones it into the
-//! Vec. These oracles pin flat leak slopes and prove that the caller's parameter
-//! remains readable and naturally droppable under the poisoned allocator.
+//! A whole by-value parameter remains caller-owned. Direct calls prepare an
+//! independent carrier when a callee moves a deep-owned projection into a sink;
+//! the callee then neutralizes that moved leaf and drops every remaining sibling.
+//! These oracles pin flat leak slopes and prove that caller values remain readable
+//! and naturally droppable under the poisoned allocator.
 
 #![cfg(unix)]
 
@@ -205,6 +205,99 @@ fn main() -> i64 {
 }
 "#;
 
+const MIXED_PARAM_TEMPLATE: &str = r#"
+type Holder { items: Vec<string> }
+type MixedWrap { s: string, items: Vec<string> }
+
+fn pushMixed(p: string, h: Holder) -> i64 {
+    let v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { s: p, items: h.items });
+    v.len()
+}
+
+fn main() -> i64 {
+    for i in 0..$FRAMES {
+        let p = f"item-{i}";
+        let h = Holder { items: [f"deep-{i}"] };
+        if pushMixed(p, h) != 1 { return 81; }
+        if p.len() < 6 { return 82; }
+        if h.items.len() != 1 { return 83; }
+    }
+    0
+}
+"#;
+
+const NESTED_RECORD_PARAM_TEMPLATE: &str = r#"
+type Inner { items: Vec<string>, inner_keep: string }
+type Holder { mid: Inner, outer_keep: string }
+type MixedWrap { marker: string, items: Vec<string> }
+
+fn pushNested(h: Holder) -> i64 {
+    let v: Vec<MixedWrap> = [];
+    v.push(MixedWrap {
+        marker: "sink-marker".to_upper(),
+        items: h.mid.items,
+    });
+    v.len()
+}
+
+fn main() -> i64 {
+    for i in 0..$FRAMES {
+        let h = Holder {
+            mid: Inner {
+                items: [f"nested-{i}"],
+                inner_keep: f"inner-{i}",
+            },
+            outer_keep: f"outer-{i}",
+        };
+        if pushNested(h) != 1 { return 91; }
+        if h.mid.items.len() != 1 { return 92; }
+        if h.mid.inner_keep.len() < 7 { return 93; }
+        if h.outer_keep.len() < 7 { return 94; }
+    }
+    0
+}
+"#;
+
+const TUPLE_PROJECTION_PARAM_TEMPLATE: &str = r#"
+type MixedWrap { marker: string, items: Vec<string> }
+
+fn pushTupleProjection(h: (Vec<string>, string)) -> i64 {
+    let v: Vec<MixedWrap> = [];
+    v.push(MixedWrap {
+        marker: "tuple-marker".to_upper(),
+        items: h.0,
+    });
+    v.len()
+}
+
+fn main() -> i64 {
+    for i in 0..$FRAMES {
+        let h = ([f"tuple-{i}"], f"keep-{i}");
+        if pushTupleProjection(h) != 1 { return 101; }
+        if h.0.len() != 1 { return 102; }
+        if h.1.len() < 6 { return 103; }
+    }
+    0
+}
+"#;
+
+const PROJECTION_NEUTRALIZE_MIR_SOURCE: &str = r#"
+type Inner { items: Vec<string>, keep: string }
+type Holder { mid: Inner, keep: string }
+type MixedWrap { marker: string, items: Vec<string> }
+
+fn nested(h: Holder) {
+    let v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { marker: "nested".to_upper(), items: h.mid.items });
+}
+
+fn tupled(h: (Vec<string>, string)) {
+    let v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { marker: "tuple".to_upper(), items: h.0 });
+}
+"#;
+
 const NON_STRING_PARAM_SOURCE: &str = r"
 type Holder { items: Vec<string> }
 type Wrap { f: Option<Holder> }
@@ -247,6 +340,18 @@ fn tuple_source(frames: usize) -> String {
 
 fn arena_source(frames: usize) -> String {
     with_frames(ARENA_TEMPLATE, frames)
+}
+
+fn mixed_param_source(frames: usize) -> String {
+    with_frames(MIXED_PARAM_TEMPLATE, frames)
+}
+
+fn nested_record_param_source(frames: usize) -> String {
+    with_frames(NESTED_RECORD_PARAM_TEMPLATE, frames)
+}
+
+fn tuple_projection_param_source(frames: usize) -> String {
+    with_frames(TUPLE_PROJECTION_PARAM_TEMPLATE, frames)
 }
 
 fn assert_source_succeeds_under_scribble(shape_name: &str, source_fn: fn(usize) -> String) {
@@ -323,6 +428,58 @@ fn arena_insert_remove_param_embed_has_flat_leak_slope() {
 }
 
 #[test]
+fn mixed_parameter_projection_embed_has_flat_leak_slope() {
+    assert_clean_slope("vec_param_embed_mixed", mixed_param_source);
+}
+
+#[test]
+fn nested_record_projection_embed_has_flat_leak_slope() {
+    assert_clean_slope("vec_param_embed_nested_record", nested_record_param_source);
+}
+
+#[test]
+fn tuple_projection_embed_has_flat_leak_slope() {
+    assert_clean_slope(
+        "vec_param_embed_tuple_projection",
+        tuple_projection_param_source,
+    );
+}
+
+#[test]
+fn nested_and_tuple_projection_moves_neutralize_the_original_carrier_slots() {
+    let mir = dump_checked_mir(
+        PROJECTION_NEUTRALIZE_MIR_SOURCE,
+        "projection_neutralize_depth",
+    );
+    let nested = mir
+        .split("fn nested")
+        .nth(1)
+        .and_then(|section| section.split("fn tupled").next())
+        .expect("nested MIR section");
+    let tupled = mir.split("fn tupled").nth(1).expect("tuple MIR section");
+    assert!(
+        nested.contains("aggregate_projection_neutralize _0 fields=[0, 0]"),
+        "a two-hop record projection must clear the original carrier leaf; removing second-hop provenance must fail this tooth:\n{nested}"
+    );
+    assert!(
+        tupled.contains("aggregate_projection_neutralize _0 fields=[0]"),
+        "a tuple projection must clear the original carrier leaf; removing TupleIndex propagation must fail this tooth:\n{tupled}"
+    );
+    for section in [nested, tupled] {
+        assert_eq!(
+            section.matches("aggregate_projection_neutralize").count(),
+            1,
+            "each moved leaf has exactly one neutralization authority:\n{section}"
+        );
+        assert_eq!(
+            section.matches("snapshot_drop _0").count(),
+            1,
+            "each carrier keeps one terminal sibling drop after its moved leaf is cleared:\n{section}"
+        );
+    }
+}
+
+#[test]
 fn caller_parameter_survives_push_set_and_natural_drop() {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -375,12 +532,16 @@ fn mixed_parameter_projection_survives_store_and_natural_drop() {
 }
 
 #[test]
-fn non_string_param_embed_never_mints_a_temp_owner() {
+fn non_string_param_embed_uses_owned_carrier_temp() {
     let mir = dump_checked_mir(NON_STRING_PARAM_SOURCE, "non_string_param_embed");
     assert!(mir.contains("call hew_vec_push_owned("));
     assert!(!mir.contains("hew_vec_push_owned_move"));
     assert!(
-        !mir.contains("__hew_copy_in_param_temp"),
-        "an unretained Holder parameter or projection is a borrowed alias and must never gain a temp owner:\n{mir}"
+        mir.contains("__hew_copy_in_param_temp"),
+        "a caller-prepared Holder carrier makes the copy-in temp an independent owner:\n{mir}"
+    );
+    assert!(
+        mir.contains("snapshot_drop _0 ty=Holder") && mir.contains("boundary=LocalCall"),
+        "the same carrier fact must install the callee's inverse Holder cleanup:\n{mir}"
     );
 }

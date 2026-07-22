@@ -62,6 +62,7 @@ def assert_scripts_config_profile(result: subprocess.CompletedProcess[str]) -> N
     assert "make playground-check" not in result.stdout
     assert "  - cargo fmt --all -- --check" in result.stdout
     assert "  - make freebsd-workflow-contract-check" in result.stdout
+    assert "  - make test-release-workflow-contract" in result.stdout
     assert "  - make test-rust" in result.stdout
     assert "  - make doc-ratchet-selftest" in result.stdout
     assert "make test-codegen" not in result.stdout

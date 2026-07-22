@@ -29,6 +29,47 @@ fn closure_pid_send_compile_and_exit_code() {
 }
 
 #[test]
+fn indirect_enum_actor_message_definition_compiles() {
+    let repo = repo_root();
+    ensure_codegen_artifacts(&repo);
+    let emit_dir = tempfile::Builder::new()
+        .prefix("hew-indirect-enum-actor-definition-")
+        .tempdir()
+        .expect("create actor definition emit directory");
+    let mut command = Command::new(hew_bin(&repo));
+    command.current_dir(&repo).args([
+        "compile",
+        "--emit-dir",
+        emit_dir.path().to_str().expect("emit directory is UTF-8"),
+        "tests/vertical-slice/accept/indirect_enum_actor_message_definition.hew",
+    ]);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        "indirect-enum actor definition compile",
+        Duration::from_secs(30),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        output.status.success(),
+        "indirect-enum actor definition compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn indirect_enum_actor_messages_run_with_single_and_packed_payloads() {
+    let output = compile_and_run_actor_fixture_output("indirect_enum_actor_message");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1513");
+}
+
+#[test]
+fn indirect_enum_actor_requests_run_across_every_local_carrier() {
+    let output = compile_and_run_actor_fixture_output("indirect_enum_actor_message_requests");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "13,27,41,55,69,83");
+}
+
+#[test]
 fn network_deadline_arbiters_emit_typed_cancelled_branch() {
     for (fixture, prefix) in [
         ("await_accept_deadline_timeout", "suspending_accept"),
@@ -413,4 +454,56 @@ fn compile_and_run_actor_fixture(fixture_name: &str, expected_exit_code: i32) {
 
     let status = run_bounded(&binary, 30);
     assert_eq!(status.code(), Some(expected_exit_code));
+}
+
+fn compile_and_run_actor_fixture_output(fixture_name: &str) -> std::process::Output {
+    let repo = repo_root();
+    ensure_codegen_artifacts(&repo);
+
+    let emit_dir = tempfile::Builder::new()
+        .prefix(&format!("hew-actor-e2e-{fixture_name}-"))
+        .tempdir()
+        .expect("create actor fixture emit dir");
+    let compile = Command::new(hew_bin(&repo))
+        .current_dir(&repo)
+        .args([
+            "compile",
+            "--emit-dir",
+            emit_dir
+                .path()
+                .to_str()
+                .expect("emit dir path is valid UTF-8"),
+            &format!("examples/v05/{fixture_name}.hew"),
+        ])
+        .output()
+        .expect("run built hew compile");
+    assert!(
+        compile.status.success(),
+        "hew compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&compile.stdout);
+    let binary = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("native: "))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!("hew compile stdout did not contain a `native:` line:\n{stdout}")
+        });
+    let mut command = Command::new(binary);
+    command.env("MallocScribble", "1");
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        format!("actor fixture {fixture_name}"),
+        Duration::from_secs(30),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        output.status.success(),
+        "actor fixture {fixture_name} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
 }

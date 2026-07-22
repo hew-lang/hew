@@ -3023,6 +3023,50 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
+        // Stable supervisor identity capture. The runtime returns one target
+        // word; the MIR carrier stores it as i64 on the native-only supervisor
+        // substrate.
+        F::SupervisorDirectId => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_supervisor_direct_id: expected 1 arg, got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_supervisor_direct_id: producer must supply an i64 dest".into(),
+                )
+            })?;
+            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_direct_id sup")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let token = fn_ctx
+                .builder
+                .build_call(fv, &[sup_ptr.into()], "hew_supervisor_direct_id_call")
+                .llvm_ctx("hew_supervisor_direct_id call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_supervisor_direct_id returned void".into())
+                })?
+                .into_int_value();
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            if dest_ty != i64_ty.into() {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_supervisor_direct_id dest must be i64, got {dest_ty:?}"
+                )));
+            }
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, token)
+                .llvm_ctx("supervisor_direct_id store")?;
+        }
+
         // ── supervisor child-slot lookup (S3) ────────────────────────────────
         //
         // hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32)
@@ -3057,12 +3101,16 @@ pub(crate) fn lower_call_runtime_abi(
         // ChildLookupResult` — and identical struct-return handling. The only
         // difference is the runtime symbol, which `symbol` (derived from the
         // call's family) already carries, so both families ride this one arm.
-        F::SupervisorChildGet | F::SupervisorNestedGet | F::SupervisorPoolChildGet => {
+        F::SupervisorChildGet
+        | F::LocalPidSupervisorChildGet
+        | F::SupervisorNestedGet
+        | F::SupervisorPoolChildGet => {
             // child_get/nested_get take 2 args (sup, key); pool_child_get takes 3
             // (sup, pool_key, index). All three return the same ChildLookupResult
             // aggregate, so the ABI handling below is shared; only the arg list
             // and the declared param types differ.
             let is_pool = matches!(call.family(), F::SupervisorPoolChildGet);
+            let is_stable_role = matches!(call.family(), F::LocalPidSupervisorChildGet);
             let expected_args = if is_pool { 3 } else { 2 };
             if args.len() != expected_args {
                 return Err(CodegenError::FailClosed(format!(
@@ -3077,8 +3125,14 @@ pub(crate) fn lower_call_runtime_abi(
                 ))
             })?;
 
-            // arg0: supervisor handle — ptr-typed (ActorHandle or actor-derived ptr).
-            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_child_get sup")?;
+            // arg0 is either the legacy raw supervisor pointer or the stable
+            // target-word identity used by fungible request roles.
+            let sup_ptr = (!is_stable_role)
+                .then(|| load_duplex_handle(fn_ctx, args[0], "supervisor_child_get sup"))
+                .transpose()?;
+            let supervisor_token = is_stable_role
+                .then(|| load_int_arg(fn_ctx, args[0], i64_ty, "supervisor role token"))
+                .transpose()?;
 
             // arg1: slot/pool key — i64 in MIR (ConstI64); truncate to i32.
             let key_i64 = load_int_arg(fn_ctx, args[1], i64_ty, "supervisor_child_get key_i64")?;
@@ -3135,15 +3189,20 @@ pub(crate) fn lower_call_runtime_abi(
             );
             let triple = fn_ctx.llvm_mod.get_triple();
             let triple_str = triple.as_str().to_string_lossy();
+            let first_param_ty: inkwell::types::BasicMetadataTypeEnum = if is_stable_role {
+                i64_ty.into()
+            } else {
+                ptr_ty.into()
+            };
             let param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> = if is_pool {
                 // Third param is the member index, passed as the full i64 —
                 // not truncated to i32 like the supervisor/pool key — so the
                 // runtime can bounds-check the caller's real index before any
                 // narrowing cast (hew-lang/hew#2244). Must match
                 // `hew_supervisor_pool_child_get`'s `index: u64` ABI param.
-                vec![ptr_ty.into(), i32_ty.into(), i64_ty.into()]
+                vec![first_param_ty, i32_ty.into(), i64_ty.into()]
             } else {
-                vec![ptr_ty.into(), i32_ty.into()]
+                vec![first_param_ty, i32_ty.into()]
             };
             let (fv, return_abi) = crate::abi_class::declare_aggregate_return(
                 fn_ctx.ctx,
@@ -3155,9 +3214,14 @@ pub(crate) fn lower_call_runtime_abi(
                 &param_tys,
             )?;
             // Argument list for the register-pair (no sret) path.
+            let first_arg: inkwell::values::BasicMetadataValueEnum = if is_stable_role {
+                supervisor_token.expect("stable role token loaded").into()
+            } else {
+                sup_ptr.expect("raw supervisor pointer loaded").into()
+            };
             let call_args: Vec<inkwell::values::BasicMetadataValueEnum> = match index_i64 {
-                Some(idx) => vec![sup_ptr.into(), key_i32.into(), idx.into()],
-                None => vec![sup_ptr.into(), key_i32.into()],
+                Some(idx) => vec![first_arg, key_i32.into(), idx.into()],
+                None => vec![first_arg, key_i32.into()],
             };
             let (tag_i64, handle_i64) = match return_abi {
                 crate::abi_class::AggregateReturnAbi::RegisterPair { carrier } => {
@@ -3223,12 +3287,12 @@ pub(crate) fn lower_call_runtime_abi(
                         match index_i64 {
                             Some(idx) => vec![
                                 result_slot.into(),
-                                sup_ptr.into(),
+                                first_arg,
                                 key_i32.into(),
                                 idx.into(),
                             ],
                             None => {
-                                vec![result_slot.into(), sup_ptr.into(), key_i32.into()]
+                                vec![result_slot.into(), first_arg, key_i32.into()]
                             }
                         };
                     fn_ctx
@@ -3877,6 +3941,17 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_actor_ask_with_channel" => i32_ty.fn_type(
             &[
                 ptr_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                size_ty.into(),
+                ptr_ty.into(),
+            ],
+            false,
+        ),
+        // Stable actor-token twin used by fungible supervisor-child roles.
+        "hew_local_pid_ask_with_channel" => i32_ty.fn_type(
+            &[
+                i64_ty.into(),
                 i32_ty.into(),
                 ptr_ty.into(),
                 size_ty.into(),
@@ -4976,6 +5051,8 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // the supervisor and all its children. Void return; the Hew builtin
         // `supervisor_stop(sup)` discards the result.
         "hew_supervisor_stop" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_supervisor_direct_id(sup) -> stable target-word identity.
+        "hew_supervisor_direct_id" => i64_ty.fn_type(&[ptr_ty.into()], false),
         // hew_supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32)
         // -> void (`hew-runtime/src/supervisor.rs`). The contextless
         // `await_restart` path: blocks the calling thread until the child slot is
@@ -5012,6 +5089,12 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_supervisor_child_get" => {
             let result_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
             result_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false)
+        }
+        // Stable supervisor-token lookup. The result's second word encodes the
+        // current child LocalPid token instead of an allocation pointer.
+        "hew_local_pid_supervisor_child_get" => {
+            let result_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
+            result_ty.fn_type(&[i64_ty.into(), i32_ty.into()], false)
         }
         // hew_supervisor_pool_add_slot(sup: *mut HewSupervisor, name: *const c_char,
         //     strategy: c_int, max_members: usize) -> c_int

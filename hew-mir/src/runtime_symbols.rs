@@ -628,8 +628,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    const RETIRED_RUNTIME_BACKED_SYMBOL_COUNT: usize = 171;
-    const RETIRED_RUNTIME_BACKED_SYMBOL_FINGERPRINT: u64 = 0xeaf4_4c52_474e_c1d8;
+    const RETIRED_RUNTIME_BACKED_SYMBOL_COUNT: usize = 173;
+    const RETIRED_RUNTIME_BACKED_SYMBOL_FINGERPRINT: u64 = 0x7b5c_1320_52aa_01e8;
 
     fn symbol_fingerprint(symbols: &[&str]) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;

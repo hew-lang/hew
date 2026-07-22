@@ -55,6 +55,76 @@ runner_fixture_declarations() {
     ' "$1"
 }
 
+validate_manifest_import_rows() {
+    local manifest="$1"
+    local root="$2"
+    local authority="${3:-exact}"
+    local module fixture command exercise pairs
+    local failures=0
+
+    if [[ "${authority}" == "substring-mutant" ]]; then
+        while IFS=$'\t' read -r module fixture command exercise; do
+            [[ -z "${module}" || "${module}" == \#* || "${module}" == "std::builtins" ]] && continue
+            if [[ ! -f "${root}/${fixture}" ]]; then
+                echo "missing proof fixture for ${module}: ${fixture}" >&2
+                failures=1
+            elif ! grep -qF "import ${module}" "${root}/${fixture}"; then
+                echo "proof fixture does not import ${module}: ${fixture}" >&2
+                failures=1
+            fi
+        done < "${manifest}"
+        [[ "${failures}" -eq 0 ]]
+        return
+    fi
+    if [[ "${authority}" != "exact" ]]; then
+        echo "internal error: unknown import authority: ${authority}" >&2
+        return 2
+    fi
+
+    pairs="$(mktemp "${tmpdir}/manifest-import-pairs.XXXXXX")"
+    while IFS=$'\t' read -r module fixture command exercise; do
+        [[ -z "${module}" || "${module}" == \#* || "${module}" == "std::builtins" ]] && continue
+        if [[ ! -f "${root}/${fixture}" ]]; then
+            echo "missing proof fixture for ${module}: ${fixture}" >&2
+            failures=1
+            continue
+        fi
+        printf '%s\t%s\n' "${module}" "${root}/${fixture}" >> "${pairs}"
+    done < "${manifest}"
+    if [[ "${failures}" -ne 0 ]]; then
+        return 1
+    fi
+
+    (
+        cd "${ROOT}"
+        cargo run --locked --quiet -p hew-parser \
+            --example stdlib_import_authority -- "${pairs}"
+    )
+}
+
+assert_production_import_validation_wired() {
+    local matches
+    matches="$(awk '
+        /^# BEGIN parser-backed production import validation$/ {
+            inside = 1
+            next
+        }
+        /^# END parser-backed production import validation$/ {
+            inside = 0
+        }
+        inside && $0 == "if ! validate_manifest_import_rows \"${MANIFEST}\" \"${ROOT}\" \"exact\"; then" {
+            matches++
+        }
+        END {
+            print matches + 0
+        }
+    ' "${BASH_SOURCE[0]}")"
+    if [[ "${matches}" -ne 1 ]]; then
+        echo "internal error: parser-backed production import validation is not wired exactly once" >&2
+        exit 1
+    fi
+}
+
 if [[ "${1:-}" != "--check" || $# -ne 1 ]]; then
     echo "usage: scripts/stdlib-execution-proof.sh --check" >&2
     exit 2
@@ -163,6 +233,42 @@ printf '%s\n' \
     >> "${parser_missing_continuation}"
 assert_parser_fixture_rejected "${parser_missing_continuation}" "missing continuation"
 
+# Mutation teeth for active import evidence. Both the production manifest and
+# this miniature use validate_manifest_import_rows, so a production-only
+# reversion is caught by the structural wiring assertion below.
+assert_production_import_validation_wired
+
+mini_root="${tmpdir}/manifest-import-miniature"
+mini_manifest="${mini_root}/scripts/stdlib-execution-proofs.tsv"
+mini_fixture="tests/hew/import_probe.hew"
+mkdir -p "${mini_root}/scripts" "${mini_root}/tests/hew"
+printf '%s\t%s\t%s\t%s\n' \
+    'std::net::dns' "${mini_fixture}" 'make test-hew-ratchet' 'dns.query' \
+    > "${mini_manifest}"
+
+run_manifest_import_miniature_suite() {
+    local authority="$1"
+
+    printf '%s\n' 'import std::net::dns;' > "${mini_root}/${mini_fixture}"
+    validate_manifest_import_rows "${mini_manifest}" "${mini_root}" "${authority}" \
+        >/dev/null 2>&1 || return 1
+
+    printf '%s\n' '// import std::net::dns;' > "${mini_root}/${mini_fixture}"
+    if validate_manifest_import_rows "${mini_manifest}" "${mini_root}" "${authority}" \
+        >/dev/null 2>&1; then
+        return 1
+    fi
+}
+
+if ! run_manifest_import_miniature_suite "exact"; then
+    echo "internal error: parser-backed manifest import miniature suite failed" >&2
+    exit 1
+fi
+if run_manifest_import_miniature_suite "substring-mutant"; then
+    echo "internal error: historical substring production mutant survived" >&2
+    exit 1
+fi
+
 runner_fixture_declarations "${RUNNER}" | sort -u > "${runner_fixtures}"
 awk -F'|' '
     /^\| \[`/ {
@@ -178,6 +284,11 @@ awk -F'|' '
 ' "${INDEX}" | sort -u > "${indexed}"
 
 failures=0
+# BEGIN parser-backed production import validation
+if ! validate_manifest_import_rows "${MANIFEST}" "${ROOT}" "exact"; then
+    failures=1
+fi
+# END parser-backed production import validation
 while IFS=$'\t' read -r module fixture command exercise; do
     [[ -z "${module}" || "${module}" == \#* ]] && continue
     if [[ -z "${fixture}" || -z "${command}" || -z "${exercise}" ]]; then
@@ -198,11 +309,6 @@ while IFS=$'\t' read -r module fixture command exercise; do
         echo "missing proof fixture for ${module}: ${fixture}" >&2
         failures=1
         continue
-    fi
-    if [[ "${module}" != "std::builtins" ]] \
-        && ! grep -qF "import ${module}" "${ROOT}/${fixture}"; then
-        echo "proof fixture does not import ${module}: ${fixture}" >&2
-        failures=1
     fi
     case "${command}" in
         "make test-hew-ratchet")

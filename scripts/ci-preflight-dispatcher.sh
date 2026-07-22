@@ -34,6 +34,7 @@ command_timeout_floor() {
         "make test-hew-ratchet") echo 600 ;;
         "make test-o2-differential") echo 1200 ;;
         "make o2-differential-selftest") echo 30 ;;
+        "make doc-ratchet-selftest") echo 45 ;;
         "make test-stdlib-ratchet") echo 45 ;;
         "make test-doc-examples") echo 45 ;;
         "make sandbox-parity") echo 150 ;;
@@ -85,6 +86,7 @@ CI_REQUIRED_CHECKS=(
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
     "O2 differential-exec parity gate (ci.yml: make test-o2-differential)	make test-o2-differential"
     "O2-differential gate self-test (ci.yml: make o2-differential-selftest)	make o2-differential-selftest"
+    "Doc-ratchet membership self-test (ci.yml: make doc-ratchet-selftest)	make doc-ratchet-selftest"
     "Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)	make test-stdlib-ratchet"
     "Vertical slice oracle (ci.yml: make test-vertical-slice)	make test-vertical-slice"
     "Package-import oracle (ci.yml: make test-pkg-import)	make test-pkg-import"
@@ -671,6 +673,7 @@ case "$LANE" in
         add_command "cargo fmt --all -- --check"
         add_command "make test-rust"
         add_command "make o2-differential-selftest"
+        add_command "make doc-ratchet-selftest"
         ;;
     grammar)
         add_command "cargo fmt --all -- --check"
@@ -797,6 +800,7 @@ case "$LANE" in
         add_command "make o2-differential-selftest"
         add_command "make test-stdlib-ratchet"
         add_command "make test-doc-examples"
+        add_command "make doc-ratchet-selftest"
         add_command "make sandbox-parity"
         add_command "make checked-mir-verify"
         add_command "make ll-diff"

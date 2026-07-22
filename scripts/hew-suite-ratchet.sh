@@ -37,6 +37,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/line-set.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/line-set.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-suite-expected-failures.txt"
 # HEW_BIN is overridable for parser tests (point it at a stub that replays
 # captured runner output); production callers use the default.
@@ -128,8 +131,16 @@ RAW_OUTPUT=$("$HEW_BIN" test "$TESTS_DIR" 2>&1) || true
 CLEAN_OUTPUT="$(printf '%s\n' "$RAW_OUTPUT" | sed $'s/\x1b\\[[0-9;]*m//g')"
 
 # Fail closed if the runner produced no summary line: a runner crash or an
-# output-format change must never read as success.
-if ! printf '%s\n' "$CLEAN_OUTPUT" | grep -q "^test result:"; then
+# output-format change must never read as success. Keep this loop local so an
+# early match cannot SIGPIPE an upstream producer under pipefail.
+has_test_summary=0
+while IFS= read -r line; do
+    if [[ "$line" == "test result:"* ]]; then
+        has_test_summary=1
+        break
+    fi
+done <<< "$CLEAN_OUTPUT"
+if (( has_test_summary == 0 )); then
     echo "error: no 'test result:' summary in hew test output; refusing to ratchet" >&2
     printf '%s\n' "$RAW_OUTPUT"
     exit 1
@@ -167,7 +178,7 @@ summary_failed="$(printf '%s\n' "$CLEAN_OUTPUT" | sed -n 's/^test result:.*[^0-9
 [[ -z "$summary_failed" ]] && summary_failed=0
 parsed_failed=0
 if [[ -n "$ACTUAL_STR" ]]; then
-    parsed_failed="$(printf '%s' "$ACTUAL_STR" | grep -c .)"
+    parsed_failed="$(line_set_count "$ACTUAL_STR")"
 fi
 if [[ "$parsed_failed" -ne "$summary_failed" ]]; then
     echo "error: parsed $parsed_failed FAILED line(s) but runner summary reports $summary_failed failed; refusing to ratchet" >&2
@@ -184,19 +195,19 @@ fi
 # Count entries.
 count_expected=0
 if [[ -n "$EXPECTED_STR" ]]; then
-    count_expected="$(printf '%s' "$EXPECTED_STR" | grep -c .)"
+    count_expected="$(line_set_count "$EXPECTED_STR")"
 fi
 
 count_actual=0
 if [[ -n "$ACTUAL_STR" ]]; then
-    count_actual="$(printf '%s' "$ACTUAL_STR" | grep -c .)"
+    count_actual="$(line_set_count "$ACTUAL_STR")"
 fi
 
 # Find unexpected failures (in actual but not in expected).
 unexpected_failures=""
 while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    if ! printf '%s\n' "$EXPECTED_STR" | grep -qxF "$name"; then
+    if ! line_set_contains "$EXPECTED_STR" "$name"; then
         unexpected_failures="${unexpected_failures}${name}"$'\n'
     fi
 done <<< "$ACTUAL_STR"
@@ -205,7 +216,7 @@ done <<< "$ACTUAL_STR"
 unexpected_passes=""
 while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    if ! printf '%s\n' "$ACTUAL_STR" | grep -qxF "$name"; then
+    if ! line_set_contains "$ACTUAL_STR" "$name"; then
         unexpected_passes="${unexpected_passes}${name}"$'\n'
     fi
 done <<< "$EXPECTED_STR"
@@ -216,10 +227,10 @@ echo "Actual failures:   $count_actual"
 echo ""
 
 count_unexpected_fail=0
-[[ -n "$unexpected_failures" ]] && count_unexpected_fail="$(printf '%s' "$unexpected_failures" | grep -c .)"
+[[ -n "$unexpected_failures" ]] && count_unexpected_fail="$(line_set_count "$unexpected_failures")"
 
 count_unexpected_pass=0
-[[ -n "$unexpected_passes" ]] && count_unexpected_pass="$(printf '%s' "$unexpected_passes" | grep -c .)"
+[[ -n "$unexpected_passes" ]] && count_unexpected_pass="$(line_set_count "$unexpected_passes")"
 
 if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 ]]; then
     if [[ $count_actual -eq 0 ]]; then

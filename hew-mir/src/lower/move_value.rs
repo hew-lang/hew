@@ -281,6 +281,24 @@ impl Builder {
                         .copied()
                         == Some(true)
                 });
+                if is_move && target_is_owned_carrier {
+                    if self.reject_capture_env_whole_escape_expr(arg) {
+                        return None;
+                    }
+                    let value = self.lower_value(arg)?;
+                    // A whole carrier parameter can be read by more than one
+                    // freeing callee. Preserve its source until the post-CFG
+                    // carrier pass can use liveness to choose snapshot or
+                    // last-use transfer. Projection carriers still transfer
+                    // eagerly so their root-relative slot is neutralized once.
+                    if matches!(
+                        self.owned_carrier_neutralize.get(&value),
+                        Some(OwnedCarrierNeutralizeTarget::Whole(_))
+                    ) {
+                        return Some(value);
+                    }
+                    return Some(self.transfer_owned_carrier_value(arg, value));
+                }
                 if !is_move || target_is_owned_carrier {
                     return self.lower_method_arg_value(arg, is_move);
                 }

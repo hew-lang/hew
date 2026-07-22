@@ -56,6 +56,33 @@ fn main() -> i64 {
 }
 "#;
 
+const REPEATED_OWNED_PARAM_READ_SOURCE: &str = r#"
+type SavedKey { value: string }
+
+fn borrowThenFree(key: string) -> i64 {
+    let saved: Vec<SavedKey> = [];
+    saved.push(SavedKey { value: key });
+    saved.len()
+}
+
+fn inspectTwice(key: string) -> i64 {
+    let first = borrowThenFree(key);
+    let second = borrowThenFree(key);
+    first + second + key.len()
+}
+
+fn main() -> i64 {
+    let key = "carrier-guard".to_upper();
+    print(inspectTwice(key));
+    print("|");
+    print(key);
+    0
+}
+"#;
+
+const TEMPLATE_IF_RANGE_SOURCE: &str =
+    include_str!("../../tests/vertical-slice/accept/template_oracle_03_if_range.hew");
+
 const BOUND_FIRST_TEMPLATE: &str = r#"
 type Wrap { f: Option<string> }
 
@@ -1084,4 +1111,79 @@ fn callable_storage_return_and_capture_stay_fail_closed_on_both_targets() {
             );
         }
     }
+}
+
+#[test]
+fn repeated_owned_parameter_reads_prepare_two_independent_call_carriers() {
+    let mir = dump_checked_mir(
+        REPEATED_OWNED_PARAM_READ_SOURCE,
+        "repeated_owned_param_reads",
+    );
+    let inspect_twice = mir
+        .split("fn inspectTwice")
+        .nth(1)
+        .and_then(|section| section.split("fn main").next())
+        .expect("inspectTwice checked MIR section");
+    assert_eq!(
+        inspect_twice.matches("snapshot_clone _0 ty=string").count(),
+        2,
+        "both borrowing helpers free their parameter carrier, so each live read must receive an independent snapshot:\n{inspect_twice}"
+    );
+    assert_eq!(
+        inspect_twice.matches("neutralize_payload _0").count(),
+        0,
+        "neither borrowing call may transfer and clear the still-live source parameter:\n{inspect_twice}"
+    );
+}
+
+#[test]
+fn repeated_owned_parameter_reads_survive_native_cleanup() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("repeated-owned-param-reads-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        REPEATED_OWNED_PARAM_READ_SOURCE,
+        dir.path(),
+        "repeated_owned_param_reads",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "two carrier calls must not clone a neutralized string parameter:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "15|CARRIER-GUARD",
+        "the original caller and both helper calls must observe the same live string:\n{}",
+        describe_output(&output)
+    );
+}
+
+#[test]
+fn template_if_range_survives_owned_key_carrier_reuse() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("template-if-range-carrier-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        TEMPLATE_IF_RANGE_SOURCE,
+        dir.path(),
+        "template_oracle_03_if_range",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "template range rendering must not clone a neutralized lookup key:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[red][blue]\n",
+        "the nested if/range oracle must render both list elements:\n{}",
+        describe_output(&output)
+    );
 }

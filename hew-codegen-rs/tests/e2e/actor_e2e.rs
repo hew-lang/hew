@@ -278,7 +278,7 @@ fn ensure_codegen_artifacts(_repo: &Path) -> PathBuf {
     BUILT
         .get_or_init(|| {
             let hew = hew_testutil::ensure_hew_bin_built().expect("build hew compiler");
-            hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
+            hew_testutil::ensure_hew_lib_built().expect("build Hew runtime archive");
             hew
         })
         .clone()

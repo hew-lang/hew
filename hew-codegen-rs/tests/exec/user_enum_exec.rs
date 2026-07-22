@@ -23,11 +23,11 @@ fn ensure_codegen_artifacts() -> (PathBuf, PathBuf) {
     BUILT
         .get_or_init(|| {
             let hew = hew_testutil::ensure_hew_bin_built().expect("build hew compiler");
-            let libhew = hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
+            let libhew = hew_testutil::ensure_hew_lib_built().expect("build Hew runtime archive");
             assert_eq!(
                 hew.parent(),
                 libhew.parent(),
-                "hew and libhew.a must share one target/profile authority"
+                "hew and the Hew runtime archive must share one target/profile authority"
             );
             (hew, libhew)
         })

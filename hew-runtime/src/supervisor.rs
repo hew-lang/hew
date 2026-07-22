@@ -808,6 +808,10 @@ unsafe fn close_supervisor_access(
     sup: *mut HewSupervisor,
     timeout: Duration,
 ) -> Option<ClosedSupervisorAccess> {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.replace(false)) {
+        return None;
+    }
     // SAFETY: callers provide a live allocation created by `hew_supervisor_new`.
     let supervisor = unsafe { &*sup };
     if supervisor.runtime.is_null() {
@@ -1609,6 +1613,7 @@ fn defer_stop_child_supervisor(child_sup: *mut HewSupervisor) {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 thread_local! {
     static FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN: Cell<bool> = const { Cell::new(false) };
+    static FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1719,6 +1724,10 @@ unsafe fn stop_supervisor_owned(
     let Some(access) = (unsafe { close_supervisor_access(sup, SUPERVISOR_PIN_DRAIN_TIMEOUT) })
     else {
         set_last_error("supervisor handle pins did not drain before reclamation");
+        // SAFETY: access closure failed closed, so this owner still holds a
+        // live allocation. Restore top-level ownership before its teardown
+        // lease can release the runtime-cleanup barrier.
+        unsafe { return_supervisor_to_runtime_cleanup(sup) };
         return;
     };
     request_supervisor_shutdown(sup);
@@ -3636,6 +3645,38 @@ mod tests {
             crate::lifetime::local_handles::current_supervisor_counts_for_test(),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn owned_stop_returns_root_to_cleanup_when_access_close_fails() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this test owns the fresh top-level supervisor.
+        let sup = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1) };
+        assert!(!sup.is_null());
+        // Mirror the deferred/token handoff: canonical cleanup ownership is
+        // removed only after teardown admission and the exact owner claim.
+        // SAFETY: `sup` remains live through this fail-closed handoff.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        // SAFETY: `sup` is a live supervisor in the current runtime.
+        let teardown = unsafe { begin_supervisor_teardown(sup) }.expect("teardown lease");
+        assert!(claim_supervisor_teardown(sup));
+        // SAFETY: the teardown owner now holds the allocation exclusively.
+        unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
+
+        FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.set(true));
+        // SAFETY: the exact teardown owner retains the live allocation.
+        unsafe { stop_supervisor_owned(sup, &teardown) };
+
+        assert!(
+            crate::shutdown::is_supervisor_registered_for_test(sup),
+            "failed access close must return the top-level allocation to cleanup"
+        );
+        // The handoff remains claimed until canonical post-worker cleanup so a
+        // racing worker cannot become a second destructor.
+        // SAFETY: the restored root keeps `sup` live until cleanup below.
+        assert!(unsafe { (*sup).teardown_claimed.load(Ordering::Acquire) });
+        drop(teardown);
+        crate::scheduler::hew_runtime_cleanup();
     }
 
     #[test]

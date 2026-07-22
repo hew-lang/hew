@@ -1119,6 +1119,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn shutdown_rejects_publication_that_reaches_gate_after_close() {
         let handles = std::sync::Arc::new(LocalHandles::new());

@@ -157,6 +157,10 @@ mod tests {
                 "user.name=Hew Tests",
                 "-c",
                 "user.email=tests@hew.dev",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=.git/disabled-hooks",
                 "commit",
                 "--quiet",
                 "--allow-empty",
@@ -167,7 +171,10 @@ mod tests {
 
         let clean = read_git_metadata(dir.path());
         assert!(!clean.hash.is_empty());
-        assert!(clean.hash.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert!(clean
+            .hash
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, 'a'..='f')));
         assert_eq!(clean.dirty, "false");
 
         fs::write(dir.path().join("mutation"), "dirty\n").expect("write mutation");

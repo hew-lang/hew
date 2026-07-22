@@ -1890,16 +1890,19 @@ fn format_version(
     git_dirty: Option<&str>,
 ) -> String {
     let git = match (git_hash, git_dirty) {
-        (Some("unknown"), _) | (_, Some("unknown")) => Some("git-unavailable".to_string()),
-        (Some(hash), Some("true")) if !hash.is_empty() => Some(format!("{hash}-dirty")),
-        (Some(hash), _) if !hash.is_empty() => Some(hash.to_string()),
-        _ => None,
+        (Some(hash), Some("true")) if is_lower_hex(hash) => format!("{hash}-dirty"),
+        (Some(hash), Some("false")) if is_lower_hex(hash) => hash.to_string(),
+        _ => "git-unavailable".to_string(),
     };
 
-    match git {
-        Some(git) => format!("hew {version} ({profile}, {git})"),
-        None => format!("hew {version} ({profile})"),
-    }
+    format!("hew {version} ({profile}, {git})")
+}
+
+fn is_lower_hex(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, 'a'..='f'))
 }
 
 // ---------------------------------------------------------------------------
@@ -2005,13 +2008,27 @@ mod version_tests {
 
     #[test]
     fn version_formats_unavailable_git_metadata_as_one_state() {
-        assert_eq!(
-            format_version("0.6.0-rc1", "debug", Some("unknown"), Some("unknown")),
-            "hew 0.6.0-rc1 (debug, git-unavailable)"
-        );
-        assert_eq!(
-            format_version("0.6.0-rc1", "debug", Some("a1b2c3d"), Some("unknown")),
-            "hew 0.6.0-rc1 (debug, git-unavailable)"
-        );
+        for (hash, dirty) in [
+            (None, None),
+            (Some("a1b2c3d"), None),
+            (None, Some("false")),
+            (None, Some("true")),
+            (Some(""), Some("false")),
+            (Some(""), Some("true")),
+            (Some("unknown"), Some("unknown")),
+            (Some("unknown"), Some("false")),
+            (Some("a1b2c3d"), Some("unknown")),
+            (Some("a1b2c3d"), Some("maybe")),
+            (Some("a1b2c3d"), Some("TRUE")),
+            (Some("not-a-hash"), Some("false")),
+            (Some("A1B2C3D"), Some("false")),
+            (Some("A1B2C3D"), Some("true")),
+        ] {
+            assert_eq!(
+                format_version("0.6.0-rc1", "debug", hash, dirty),
+                "hew 0.6.0-rc1 (debug, git-unavailable)",
+                "hash={hash:?}, dirty={dirty:?}"
+            );
+        }
     }
 }

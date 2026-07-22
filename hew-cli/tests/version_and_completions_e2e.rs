@@ -26,7 +26,10 @@ fn assert_version_shape(stdout: &str) {
         if git != "git-unavailable" {
             let git = git.strip_suffix("-dirty").unwrap_or(git);
             assert!(
-                !git.is_empty() && git.chars().all(|ch| ch.is_ascii_hexdigit()),
+                !git.is_empty()
+                    && git
+                        .chars()
+                        .all(|ch| ch.is_ascii_digit() || matches!(ch, 'a'..='f')),
                 "stdout: {stdout}"
             );
         }
@@ -59,6 +62,8 @@ fn version_shape_rejects_malformed_git_metadata() {
         "git-unavailable-dirty",
         "not-a-hash",
         "a1b2c3d-unknown",
+        "A1B2C3D",
+        "A1B2C3D-dirty",
     ] {
         let output = format!("hew {} (debug, {detail})\n", env!("CARGO_PKG_VERSION"));
         assert!(

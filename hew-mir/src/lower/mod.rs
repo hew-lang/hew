@@ -341,9 +341,24 @@ struct ResolvedOutboundArg {
     mode: SendAliasMode,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum PendingOutboundTarget {
+    #[default]
+    Direct,
+    SelectArm(usize),
+    JoinBranch(usize),
+}
+
 #[derive(Debug, Clone, Default)]
 struct PendingOutboundSite {
+    target: PendingOutboundTarget,
     args: Vec<PendingOutboundArg>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedOutboundSite {
+    target: PendingOutboundTarget,
+    args: Vec<ResolvedOutboundArg>,
 }
 
 #[derive(Debug, Default)]
@@ -369,7 +384,7 @@ struct Builder {
     /// Raw-only per-block actor-boundary arguments. Lowering records each
     /// source independently before packing; the post-CFG outbound pass resolves
     /// modes and clears this map before checked MIR is built.
-    pending_outbound_actor_args: HashMap<u32, PendingOutboundSite>,
+    pending_outbound_actor_args: HashMap<u32, Vec<PendingOutboundSite>>,
     /// Send block -> (pre-liveness-branch preparation block, recover block) for
     /// fungible child tells.
     fungible_outbound_edges: HashMap<u32, (u32, u32)>,
@@ -3783,26 +3798,27 @@ fn resolve_outbound_actor_modes(
     blocks: &mut [BasicBlock],
     builder: &mut Builder,
     projection_tainted: &HashSet<u32>,
-) -> HashMap<u32, Vec<ResolvedOutboundArg>> {
+) -> HashMap<u32, Vec<ResolvedOutboundSite>> {
     let live_out = outbound_live_out(blocks, &builder.suspend_kinds);
     let record_layouts = outbound_record_layouts(builder);
     let pending = std::mem::take(&mut builder.pending_outbound_actor_args);
     let mut resolved = HashMap::new();
 
     for block in blocks.iter_mut() {
-        let Some(site) = pending.get(&block.id) else {
+        let Some(sites) = pending.get(&block.id) else {
             continue;
         };
         let mut local_counts: HashMap<u32, usize> = HashMap::new();
-        for arg in &site.args {
-            if let Some(local) = base_local(arg.source) {
-                *local_counts.entry(local).or_default() += 1;
+        for site in sites {
+            for arg in &site.args {
+                if let Some(local) = base_local(arg.source) {
+                    *local_counts.entry(local).or_default() += 1;
+                }
             }
         }
-        let modes: Vec<SendAliasMode> = site
-            .args
-            .iter()
-            .map(|arg| {
+        let mut resolved_sites = Vec::with_capacity(sites.len());
+        for site in sites {
+            let modes: Vec<SendAliasMode> = site.args.iter().map(|arg| {
                 let local = base_local(arg.source);
                 let transferable = matches!(arg.source, Place::Local(_))
                     && local.is_some_and(|local| {
@@ -3900,11 +3916,9 @@ fn resolve_outbound_actor_modes(
                         }
                     }
                 }
-            })
-            .collect();
-        resolved.insert(
-            block.id,
-            site.args
+            }).collect();
+            let resolved_args = site
+                .args
                 .iter()
                 .zip(modes.iter().copied())
                 .map(|(arg, mode)| ResolvedOutboundArg {
@@ -3912,47 +3926,61 @@ fn resolve_outbound_actor_modes(
                     ty: arg.ty.clone(),
                     mode,
                 })
-                .collect(),
-        );
+                .collect();
+            resolved_sites.push(ResolvedOutboundSite {
+                target: site.target,
+                args: resolved_args,
+            });
 
-        match &mut block.terminator {
-            Terminator::Send { arg_modes, .. } | Terminator::Ask { arg_modes, .. } => {
-                *arg_modes = modes;
-            }
-            Terminator::Suspend { .. } => {
-                let Some(SuspendKind::Ask { arg_modes, .. }) =
-                    builder.suspend_kinds.get_mut(&block.id)
-                else {
-                    builder.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: "pending outbound arguments on non-ask suspend".to_string(),
-                            site: site.args.first().map_or(SiteId(0), |arg| arg.site),
-                        },
-                        note: "outbound preparation facts and suspend carrier drifted".to_string(),
-                    });
-                    continue;
-                };
-                *arg_modes = modes;
-            }
-            _ => {
-                builder.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "pending outbound arguments without send/ask terminator"
-                            .to_string(),
-                        site: site.args.first().map_or(SiteId(0), |arg| arg.site),
-                    },
-                    note: "raw outbound facts must be discharged before checked MIR".to_string(),
-                });
+            if matches!(site.target, PendingOutboundTarget::Direct) {
+                match &mut block.terminator {
+                    Terminator::Send { arg_modes, .. } | Terminator::Ask { arg_modes, .. } => {
+                        *arg_modes = modes;
+                    }
+                    Terminator::Suspend { .. } => {
+                        let Some(SuspendKind::Ask { arg_modes, .. }) =
+                            builder.suspend_kinds.get_mut(&block.id)
+                        else {
+                            builder.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: "pending outbound arguments on non-ask suspend"
+                                        .to_string(),
+                                    site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                                },
+                                note: "outbound preparation facts and suspend carrier drifted"
+                                    .to_string(),
+                            });
+                            continue;
+                        };
+                        *arg_modes = modes;
+                    }
+                    _ => {
+                        builder.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct:
+                                    "pending direct outbound arguments without send/ask terminator"
+                                        .to_string(),
+                                site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                            },
+                            note: "raw outbound facts must be discharged before checked MIR"
+                                .to_string(),
+                        });
+                    }
+                }
             }
         }
+        resolved.insert(block.id, resolved_sites);
     }
 
-    for (block, site) in pending {
+    for (block, sites) in pending {
         if !blocks.iter().any(|candidate| candidate.id == block) {
             builder.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("pending outbound block bb{block} is missing"),
-                    site: site.args.first().map_or(SiteId(0), |arg| arg.site),
+                    site: sites
+                        .first()
+                        .and_then(|site| site.args.first())
+                        .map_or(SiteId(0), |arg| arg.site),
                 },
                 note: "raw outbound facts must be discharged before checked MIR".to_string(),
             });
@@ -3968,192 +3996,236 @@ fn resolve_outbound_actor_modes(
 fn prepare_outbound_actor_payloads(
     blocks: &mut [BasicBlock],
     builder: &mut Builder,
-    resolved: &HashMap<u32, Vec<ResolvedOutboundArg>>,
+    resolved: &HashMap<u32, Vec<ResolvedOutboundSite>>,
     projection_tainted: &HashSet<u32>,
 ) {
     let record_layouts = outbound_record_layouts(builder);
     let mut edge_insertions: Vec<(u32, u32, Vec<Instr>, Vec<Instr>)> = Vec::new();
     for block in blocks.iter_mut() {
-        let Some(args) = resolved.get(&block.id) else {
+        let Some(sites) = resolved.get(&block.id) else {
             continue;
         };
-        let payload = match &block.terminator {
-            Terminator::Send { value, .. } | Terminator::Ask { value, .. } => *value,
-            Terminator::Suspend { .. } => {
-                let Some(SuspendKind::Ask { value, .. }) = builder.suspend_kinds.get(&block.id)
-                else {
-                    continue;
-                };
-                *value
-            }
-            _ => continue,
-        };
-
-        let mut prep = Vec::new();
-        let mut recover_drops = Vec::new();
-        let mut prepared = Vec::with_capacity(args.len());
-        let fungible_edges = builder
-            .fungible_outbound_edges
-            .get(&block.id)
-            .copied()
-            .filter(|_| args.iter().all(|arg| !ty_contains_channel_handle(&arg.ty)));
-        for arg in args {
-            match arg.mode {
-                SendAliasMode::SnapshotBitCopy => prepared.push(arg.source),
-                SendAliasMode::TransferLastUse => {
-                    let dest = builder.alloc_local(arg.ty.clone());
-                    prep.push(Instr::Move {
-                        dest,
-                        src: arg.source,
-                    });
-                    prep.push(Instr::NeutralizePayloadSlot { place: arg.source });
-                    if let Ok(plan) =
-                        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
-                            &arg.ty,
-                            &record_layouts,
-                            &builder.enum_layouts,
-                            &builder.opaque_handle_names,
-                            &builder.resource_opaque_close,
-                        )
-                    {
-                        if !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
-                            recover_drops.push(Instr::ValueSnapshotDrop {
-                                value: dest,
-                                ty: arg.ty.clone(),
-                                plan,
-                            });
-                        }
+        for site in sites {
+            let args = &site.args;
+            let payload = match site.target {
+                PendingOutboundTarget::Direct => match &block.terminator {
+                    Terminator::Send { value, .. } | Terminator::Ask { value, .. } => *value,
+                    Terminator::Suspend { .. } => {
+                        let Some(SuspendKind::Ask { value, .. }) =
+                            builder.suspend_kinds.get(&block.id)
+                        else {
+                            continue;
+                        };
+                        *value
                     }
-                    prepared.push(dest);
-                }
-                SendAliasMode::SnapshotRetain | SendAliasMode::SnapshotMaterialize => {
-                    let Ok(plan) =
-                        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
-                            &arg.ty,
-                            &record_layouts,
-                            &builder.enum_layouts,
-                            &builder.opaque_handle_names,
-                            &builder.resource_opaque_close,
-                        )
-                    else {
-                        prepared.push(arg.source);
-                        continue;
-                    };
-                    let dest = builder.alloc_local(arg.ty.clone());
-                    prep.push(Instr::ValueSnapshotClone {
-                        dest,
-                        src: arg.source,
-                        ty: arg.ty.clone(),
-                        plan: plan.clone(),
-                    });
-                    let source_is_fresh_whole_local = match arg.source {
-                        Place::Local(local) => {
-                            !projection_tainted.contains(&local)
-                                && !builder
-                                    .binding_locals
-                                    .values()
-                                    .any(|place| *place == arg.source)
+                    _ => continue,
+                },
+                PendingOutboundTarget::SelectArm(index) => match &block.terminator {
+                    Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
+                        let Some(SelectArmKind::ActorAsk { value, .. }) =
+                            arms.get(index).map(|arm| &arm.kind)
+                        else {
+                            continue;
+                        };
+                        *value
+                    }
+                    _ => continue,
+                },
+                PendingOutboundTarget::JoinBranch(index) => match &block.terminator {
+                    Terminator::Join { branches, .. } => {
+                        let Some(branch) = branches.get(index) else {
+                            continue;
+                        };
+                        branch.value
+                    }
+                    _ => continue,
+                },
+            };
+
+            let mut prep = Vec::new();
+            let mut recover_drops = Vec::new();
+            let mut prepared = Vec::with_capacity(args.len());
+            let fungible_edges = matches!(site.target, PendingOutboundTarget::Direct)
+                .then(|| builder.fungible_outbound_edges.get(&block.id).copied())
+                .flatten()
+                .filter(|_| args.iter().all(|arg| !ty_contains_channel_handle(&arg.ty)));
+            for arg in args {
+                match arg.mode {
+                    SendAliasMode::SnapshotBitCopy => prepared.push(arg.source),
+                    SendAliasMode::TransferLastUse => {
+                        let dest = builder.alloc_local(arg.ty.clone());
+                        prep.push(Instr::Move {
+                            dest,
+                            src: arg.source,
+                        });
+                        prep.push(Instr::NeutralizePayloadSlot { place: arg.source });
+                        if let Ok(plan) =
+                            crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                                &arg.ty,
+                                &record_layouts,
+                                &builder.enum_layouts,
+                                &builder.opaque_handle_names,
+                                &builder.resource_opaque_close,
+                            )
+                        {
+                            if !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
+                                recover_drops.push(Instr::ValueSnapshotDrop {
+                                    value: dest,
+                                    ty: arg.ty.clone(),
+                                    plan,
+                                });
+                            }
                         }
-                        _ => false,
-                    };
-                    if source_is_fresh_whole_local {
-                        prep.push(Instr::ValueSnapshotDrop {
-                            value: arg.source,
+                        prepared.push(dest);
+                    }
+                    SendAliasMode::SnapshotRetain | SendAliasMode::SnapshotMaterialize => {
+                        let Ok(plan) =
+                            crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                                &arg.ty,
+                                &record_layouts,
+                                &builder.enum_layouts,
+                                &builder.opaque_handle_names,
+                                &builder.resource_opaque_close,
+                            )
+                        else {
+                            prepared.push(arg.source);
+                            continue;
+                        };
+                        let dest = builder.alloc_local(arg.ty.clone());
+                        prep.push(Instr::ValueSnapshotClone {
+                            dest,
+                            src: arg.source,
                             ty: arg.ty.clone(),
                             plan: plan.clone(),
                         });
+                        let source_is_fresh_whole_local = match arg.source {
+                            Place::Local(local) => {
+                                !projection_tainted.contains(&local)
+                                    && !builder
+                                        .binding_locals
+                                        .values()
+                                        .any(|place| *place == arg.source)
+                            }
+                            _ => false,
+                        };
+                        if source_is_fresh_whole_local {
+                            prep.push(Instr::ValueSnapshotDrop {
+                                value: arg.source,
+                                ty: arg.ty.clone(),
+                                plan: plan.clone(),
+                            });
+                        }
+                        recover_drops.push(Instr::ValueSnapshotDrop {
+                            value: dest,
+                            ty: arg.ty.clone(),
+                            plan,
+                        });
+                        prepared.push(dest);
                     }
-                    recover_drops.push(Instr::ValueSnapshotDrop {
-                        value: dest,
-                        ty: arg.ty.clone(),
-                        plan,
-                    });
-                    prepared.push(dest);
                 }
             }
-        }
 
-        let insert_at = if prepared.len() > 1 {
-            block
-                .instructions
-                .iter()
-                .position(
-                    |instr| matches!(instr, Instr::RecordInit { dest, .. } if *dest == payload),
-                )
-                .unwrap_or(block.instructions.len())
-        } else {
-            block.instructions.len()
-        };
-        if fungible_edges.is_none() {
-            for (offset, instr) in prep.iter().cloned().enumerate() {
-                let at = insert_at + offset;
-                cfg_util::shift_instr_spans_on_insert(
-                    &mut builder.instr_spans,
-                    block.id,
-                    u32::try_from(at).unwrap_or(u32::MAX),
-                );
-                block.instructions.insert(at, instr);
+            let insert_at = if prepared.len() > 1 {
+                block
+                    .instructions
+                    .iter()
+                    .position(
+                        |instr| matches!(instr, Instr::RecordInit { dest, .. } if *dest == payload),
+                    )
+                    .unwrap_or(block.instructions.len())
+            } else {
+                block.instructions.len()
+            };
+            if fungible_edges.is_none() {
+                for (offset, instr) in prep.iter().cloned().enumerate() {
+                    let at = insert_at + offset;
+                    cfg_util::shift_instr_spans_on_insert(
+                        &mut builder.instr_spans,
+                        block.id,
+                        u32::try_from(at).unwrap_or(u32::MAX),
+                    );
+                    block.instructions.insert(at, instr);
+                }
             }
-        }
 
-        let prepared_payload = match prepared.as_slice() {
-            [] => payload,
-            [single] => *single,
-            _ => {
-                let Some(Instr::RecordInit { fields, .. }) = block.instructions.iter_mut().find(
+            let prepared_payload = match prepared.as_slice() {
+                [] => payload,
+                [single] => *single,
+                _ => {
+                    let Some(Instr::RecordInit { fields, .. }) = block.instructions.iter_mut().find(
                     |instr| matches!(instr, Instr::RecordInit { dest, .. } if *dest == payload),
                 ) else {
                     continue;
                 };
-                for ((_, field), prepared) in fields.iter_mut().zip(&prepared) {
-                    *field = *prepared;
+                    for ((_, field), prepared) in fields.iter_mut().zip(&prepared) {
+                        *field = *prepared;
+                    }
+                    payload
                 }
-                payload
-            }
-        };
-        let cleanup_plan = base_local(prepared_payload)
-            .and_then(|local| builder.locals.get(local as usize))
-            .and_then(|ty| {
-                crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
-                    ty,
-                    &record_layouts,
-                    &builder.enum_layouts,
-                    &builder.opaque_handle_names,
-                    &builder.resource_opaque_close,
-                )
-                .ok()
-            })
-            .filter(|plan| !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }));
+            };
+            let cleanup_plan = base_local(prepared_payload)
+                .and_then(|local| builder.locals.get(local as usize))
+                .and_then(|ty| {
+                    crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                        ty,
+                        &record_layouts,
+                        &builder.enum_layouts,
+                        &builder.opaque_handle_names,
+                        &builder.resource_opaque_close,
+                    )
+                    .ok()
+                })
+                .filter(|plan| !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }));
 
-        match &mut block.terminator {
-            Terminator::Send {
-                value,
-                cleanup_plan: carrier_cleanup,
-                ..
-            }
-            | Terminator::Ask {
-                value,
-                cleanup_plan: carrier_cleanup,
-                ..
-            } => {
-                *value = prepared_payload;
-                *carrier_cleanup = cleanup_plan;
-            }
-            Terminator::Suspend { .. } => {
-                if let Some(SuspendKind::Ask {
-                    value,
-                    cleanup_plan: carrier_cleanup,
-                    ..
-                }) = builder.suspend_kinds.get_mut(&block.id)
-                {
-                    *value = prepared_payload;
-                    *carrier_cleanup = cleanup_plan;
+            match site.target {
+                PendingOutboundTarget::Direct => match &mut block.terminator {
+                    Terminator::Send {
+                        value,
+                        cleanup_plan: carrier_cleanup,
+                        ..
+                    }
+                    | Terminator::Ask {
+                        value,
+                        cleanup_plan: carrier_cleanup,
+                        ..
+                    } => {
+                        *value = prepared_payload;
+                        *carrier_cleanup = cleanup_plan;
+                    }
+                    Terminator::Suspend { .. } => {
+                        if let Some(SuspendKind::Ask {
+                            value,
+                            cleanup_plan: carrier_cleanup,
+                            ..
+                        }) = builder.suspend_kinds.get_mut(&block.id)
+                        {
+                            *value = prepared_payload;
+                            *carrier_cleanup = cleanup_plan;
+                        }
+                    }
+                    _ => {}
+                },
+                PendingOutboundTarget::SelectArm(index) => match &mut block.terminator {
+                    Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
+                        if let Some(SelectArmKind::ActorAsk { value, .. }) =
+                            arms.get_mut(index).map(|arm| &mut arm.kind)
+                        {
+                            *value = prepared_payload;
+                        }
+                    }
+                    _ => {}
+                },
+                PendingOutboundTarget::JoinBranch(index) => {
+                    if let Terminator::Join { branches, .. } = &mut block.terminator {
+                        if let Some(branch) = branches.get_mut(index) {
+                            branch.value = prepared_payload;
+                        }
+                    }
                 }
             }
-            _ => {}
-        }
-        if let Some((prepare_block, recover_block)) = fungible_edges {
-            edge_insertions.push((prepare_block, recover_block, prep, recover_drops));
+            if let Some((prepare_block, recover_block)) = fungible_edges {
+                edge_insertions.push((prepare_block, recover_block, prep, recover_drops));
+            }
         }
     }
 
@@ -5366,6 +5438,18 @@ impl Builder {
             {
                 let owned_ty = self.subst_ty(&param.ty);
                 if self.is_owned_aggregate_record_ty(&owned_ty) {
+                    self.register_owned_local(param.id, param.name.clone(), owned_ty);
+                    self.binding_scope.insert(param.id, func.body.scope);
+                }
+            }
+            // The mailbox copy transfers ownership of a top-level indirect-enum
+            // node to an actor handler. Ordinary free-function parameters remain
+            // caller-owned borrows and are deliberately excluded here.
+            if !param_is_consumed
+                && self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler
+            {
+                let owned_ty = self.subst_ty(&param.ty);
+                if crate::lower::drop_plan::ty_is_indirect_enum(&owned_ty, &self.enum_layouts) {
                     self.register_owned_local(param.id, param.name.clone(), owned_ty);
                     self.binding_scope.insert(param.id, func.body.scope);
                 }

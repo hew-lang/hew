@@ -14,14 +14,26 @@ impl Builder {
         block: u32,
         args: impl IntoIterator<Item = (Place, ResolvedTy, hew_hir::SiteId)>,
     ) {
+        self.record_pending_actor_request_args(block, super::PendingOutboundTarget::Direct, args);
+    }
+
+    pub(crate) fn record_pending_actor_request_args(
+        &mut self,
+        block: u32,
+        target: super::PendingOutboundTarget,
+        args: impl IntoIterator<Item = (Place, ResolvedTy, hew_hir::SiteId)>,
+    ) {
         let pending = PendingOutboundSite {
+            target,
             args: args
                 .into_iter()
                 .map(|(source, ty, site)| PendingOutboundArg { source, ty, site })
                 .collect(),
         };
-        let replaced = self.pending_outbound_actor_args.insert(block, pending);
-        debug_assert!(replaced.is_none(), "one outbound operation per MIR block");
+        self.pending_outbound_actor_args
+            .entry(block)
+            .or_default()
+            .push(pending);
     }
 
     pub(crate) fn actor_state_field_for_target(
@@ -1746,18 +1758,6 @@ impl Builder {
         dest
     }
 
-    pub(crate) fn lower_actor_payload(
-        &mut self,
-        args: &[hew_hir::HirExpr],
-        site: hew_hir::SiteId,
-    ) -> Option<Place> {
-        match args {
-            [] => Some(self.alloc_local(ResolvedTy::Unit)),
-            [arg] => self.lower_value_for_move(arg),
-            _ => self.lower_packed_args_payload(args, site),
-        }
-    }
-
     /// Pack a multi-argument actor payload into a synthetic anonymous-record
     /// Place — the single shared payload mechanism for every multi-arg actor
     /// send shape (tell, ask, select arm, join branch, and the lambda-actor
@@ -1809,7 +1809,7 @@ impl Builder {
     /// building the packed temp — whose bytes the `Send` alone consumes — on
     /// the delivery edge only. Pure MIR construction: no user effect runs
     /// here, so the emission point is free to move across control flow.
-    fn pack_actor_payload_from_places(
+    pub(crate) fn pack_actor_payload_from_places(
         &mut self,
         field_places: Vec<Place>,
         field_tys: Vec<ResolvedTy>,

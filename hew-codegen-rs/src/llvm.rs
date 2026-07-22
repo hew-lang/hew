@@ -30825,8 +30825,13 @@ fn lower_function<'ctx>(
     // vector this stage does not retain (call/composite/ask/...)? If so we emit
     // a runtime `borrow_mode != 0` entry trap below (fail-closed without
     // breaking copy-mode compilation). Computed before the FnCtx move.
-    let borrow_escape_trap =
-        borrow_mode.is_some() && has_unhandled_borrow_escape(func, &borrow_tainted);
+    let has_indirect_enum_message_param = is_recv_handler
+        && func.params.iter().any(|ty| {
+            matches!(ty, ResolvedTy::Named { name, .. }
+                if crate::layout::is_indirect_enum(name, enum_layouts))
+        });
+    let borrow_escape_trap = borrow_mode.is_some()
+        && (has_unhandled_borrow_escape(func, &borrow_tainted) || has_indirect_enum_message_param);
 
     // Emit the implicit actor-drain epilogue only for the native program entry
     // point of an actor-using program WITHOUT supervisors.
@@ -31403,8 +31408,8 @@ fn build_module<'ctx>(
     build_module_for_target(ctx, pipeline, name, None, None)
 }
 
-/// Return the anonymous multi-field record layouts carried by declared actor
-/// sends. Their fields cross the same value ABI as single message arguments;
+/// Return the anonymous multi-field record layouts carried by local actor
+/// messages. Their fields cross the same value ABI as single message arguments;
 /// user records and all other embedded layouts retain their inline form.
 fn actor_message_value_record_names(pipeline: &IrPipeline) -> CodegenResult<HashSet<String>> {
     let records: HashMap<&str, &RecordLayout> = pipeline
@@ -31415,27 +31420,52 @@ fn actor_message_value_record_names(pipeline: &IrPipeline) -> CodegenResult<Hash
     let mut names = HashSet::new();
 
     for function in &pipeline.raw_mir {
-        for block in &function.blocks {
-            let Terminator::Send {
-                value: Place::Local(local),
-                ..
-            } = &block.terminator
-            else {
-                continue;
+        let mut record_payload = |value: Place| -> CodegenResult<()> {
+            let Place::Local(local) = value else {
+                return Ok(());
             };
-            let local_index = usize::try_from(*local).map_err(|_| {
+            let local_index = usize::try_from(local).map_err(|_| {
                 CodegenError::FailClosed(format!(
                     "actor message local index {local} does not fit usize"
                 ))
             })?;
             let Some(ResolvedTy::Named { name, .. }) = function.locals.get(local_index) else {
-                continue;
+                return Ok(());
             };
             let Some(layout) = records.get(name.as_str()) else {
-                continue;
+                return Ok(());
             };
             if layout.field_names.is_empty() && layout.field_tys.len() > 1 {
                 names.insert(name.clone());
+            }
+            Ok(())
+        };
+
+        for block in &function.blocks {
+            match &block.terminator {
+                Terminator::Send { value, .. } | Terminator::Ask { value, .. } => {
+                    record_payload(*value)?;
+                }
+                Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
+                    for arm in arms {
+                        if let hew_mir::SelectArmKind::ActorAsk { value, .. } = &arm.kind {
+                            record_payload(*value)?;
+                        }
+                    }
+                }
+                Terminator::Join { branches, .. } => {
+                    for branch in branches {
+                        record_payload(branch.value)?;
+                    }
+                }
+                Terminator::Suspend { .. } => {
+                    if let Some(SuspendKind::Ask { value, .. }) =
+                        function.suspend_kinds.get(&block.id)
+                    {
+                        record_payload(*value)?;
+                    }
+                }
+                _ => {}
             }
         }
     }

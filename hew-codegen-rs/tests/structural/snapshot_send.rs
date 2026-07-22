@@ -5,6 +5,10 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn emit_ll(source: &str) -> String {
+    emit_ll_for_target(source, None)
+}
+
+fn emit_ll_for_target(source: &str, target_triple: Option<&'static str>) -> String {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -32,7 +36,7 @@ fn emit_ll(source: &str) -> String {
             out_dir: &out,
             native: false,
             wasm: false,
-            target_triple: None,
+            target_triple,
             debug: false,
             opt_level: hew_codegen_rs::OptLevel::O0,
             source_path: None,
@@ -128,4 +132,32 @@ fn indirect_enum_actor_messages_use_the_pointer_value_abi() {
         !ll.contains("load %Tree, ptr %payload_src_ptr"),
         "actor dispatch must not load an inline Tree from mailbox storage:\n{ll}"
     );
+}
+
+#[test]
+fn indirect_enum_local_request_carriers_use_pointer_fields_on_native_and_wasm() {
+    let source = include_str!("../../../examples/v05/indirect_enum_actor_message_requests.hew");
+
+    for (target, ll) in [
+        ("native", emit_ll_for_target(source, None)),
+        (
+            "wasm32",
+            emit_ll_for_target(source, Some("wasm32-unknown-unknown")),
+        ),
+    ] {
+        let pointer_carriers = ll
+            .lines()
+            .filter(|line| {
+                line.starts_with("%__hew_packed_args_") && line.ends_with("= type { i64, ptr }")
+            })
+            .count();
+        assert_eq!(
+            pointer_carriers, 8,
+            "{target}: every Ask, suspended Ask, Select ActorAsk, suspended Select, and Join producer must give its unique carrier an i64-plus-pointer body:\n{ll}"
+        );
+        assert!(
+            !ll.contains("= type { i64, %Tree }"),
+            "{target}: no local actor-request carrier may embed an inline Tree:\n{ll}"
+        );
+    }
 }

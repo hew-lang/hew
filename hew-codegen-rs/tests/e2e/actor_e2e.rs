@@ -64,6 +64,12 @@ fn indirect_enum_actor_messages_run_with_single_and_packed_payloads() {
 }
 
 #[test]
+fn indirect_enum_actor_requests_run_across_every_local_carrier() {
+    let output = compile_and_run_actor_fixture_output("indirect_enum_actor_message_requests");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "13,27,41,55,69,83");
+}
+
+#[test]
 fn network_deadline_arbiters_emit_typed_cancelled_branch() {
     for (fixture, prefix) in [
         ("await_accept_deadline_timeout", "suspending_accept"),

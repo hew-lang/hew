@@ -34,11 +34,9 @@ fn main() -> i64 [conv=default]
     _4: i64
     _5: i64
     _6: i64
-    _7: i64
+    _7: duration
     _8: i64
-    _9: duration
-    _10: i64
-    _11: i64
+    _9: i64
   bb0:
     stmt: bind BindingId(2) fast site=SiteId(5) ty=LocalPid<FastWorker>
     stmt: bind BindingId(3) slow site=SiteId(6) ty=LocalPid<SlowWorker>
@@ -47,31 +45,29 @@ fn main() -> i64 [conv=default]
     actor0 = spawn_actor FastWorker cycle_capable=false
     actor1 = spawn_actor SlowWorker cycle_capable=false
     _3 = const.i64 42
-    _4 = const.i64 42
-    _6 = const.i64 99
-    _7 = const.i64 99
-    _9 = const.duration 100000000ns
-    select [[actor_ask actor0::compute[msg=726692763](_3) val=_4 bind=_5->bb1], [actor_ask actor1::compute[msg=1733789141](_6) val=_7 bind=_8->bb2], [after_timer(_9)->bb3]] -> bb4
+    _5 = const.i64 99
+    _7 = const.duration 100000000ns
+    select [[actor_ask actor0::compute[msg=726692763](_3) val=_3 bind=_4->bb1], [actor_ask actor1::compute[msg=1733789141](_5) val=_5 bind=_6->bb2], [after_timer(_7)->bb3]] -> bb4
   bb1:
     stmt: bind BindingId(4) reply site=SiteId(10) ty=i64
     stmt: use BindingId(4) reply site=SiteId(10) ty=i64 intent=Read
-    _2 = move _5
+    _2 = move _4
     goto bb4
   bb2:
     stmt: bind BindingId(5) reply site=SiteId(13) ty=i64
     stmt: use BindingId(5) reply site=SiteId(13) ty=i64 intent=Read
-    _2 = move _8
+    _2 = move _6
     goto bb4
   bb3:
-    _10 = const.i64 0
-    _2 = move _10
+    _8 = const.i64 0
+    _2 = move _8
     goto bb4
   bb4:
     stmt: bind BindingId(6) winner site=SiteId(7) ty=i64
     stmt: use BindingId(6) winner site=SiteId(16) ty=i64 intent=Read
     stmt: return site=Some(SiteId(16)) ty=i64
-    _11 = move _2
-    ret = move _11
+    _9 = move _2
+    ret = move _9
     return
 
 fn i8::fmt(i8) -> string [conv=default]

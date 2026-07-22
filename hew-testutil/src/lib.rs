@@ -1,6 +1,7 @@
 //! Shared integration-test helpers.
 
 use fd_lock::RwLock;
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
@@ -800,7 +801,11 @@ fn target_dir_and_profile() -> (PathBuf, String) {
 }
 
 fn target_dir_and_profile_from_exe(exe: &Path) -> Option<(PathBuf, String)> {
-    let profile_dir = exe.parent()?.parent()?;
+    let deps_dir = exe.parent()?;
+    if deps_dir.file_name()? != OsStr::new("deps") {
+        return None;
+    }
+    let profile_dir = deps_dir.parent()?;
     let profile = profile_dir.file_name()?.to_str()?.to_string();
     let target_dir = profile_dir.parent()?.to_path_buf();
     Some((target_dir, profile))
@@ -854,35 +859,53 @@ mod hew_lib_bootstrap_tests {
 
     #[test]
     fn target_authority_follows_normal_target_layout() {
-        let exe = Path::new("/workspace/target/debug/deps/e2e-test");
+        let target = PathBuf::from("workspace").join("target");
+        let exe = target.join("debug").join("deps").join("e2e-test");
         assert_eq!(
-            target_dir_and_profile_from_exe(exe),
-            Some((PathBuf::from("/workspace/target"), "debug".to_string()))
+            target_dir_and_profile_from_exe(&exe),
+            Some((target, "debug".to_string()))
         );
     }
 
     #[test]
     fn target_authority_follows_alternate_target_layout() {
-        let exe = Path::new("/workspace/target/llvm-cov-target/debug/deps/e2e-test");
+        let target = PathBuf::from("workspace")
+            .join("target")
+            .join("llvm-cov-target");
+        let exe = target.join("debug").join("deps").join("e2e-test");
         assert_eq!(
-            target_dir_and_profile_from_exe(exe),
-            Some((
-                PathBuf::from("/workspace/target/llvm-cov-target"),
-                "debug".to_string()
-            ))
+            target_dir_and_profile_from_exe(&exe),
+            Some((target, "debug".to_string()))
         );
     }
 
     #[test]
     fn target_authority_preserves_non_debug_profile() {
-        let exe = Path::new("/workspace/target/release-lib/deps/e2e-test");
+        let target = PathBuf::from("workspace").join("target");
+        let exe = target.join("release-lib").join("deps").join("e2e-test");
         assert_eq!(
-            target_dir_and_profile_from_exe(exe),
-            Some((
-                PathBuf::from("/workspace/target"),
-                "release-lib".to_string()
-            ))
+            target_dir_and_profile_from_exe(&exe),
+            Some((target, "release-lib".to_string()))
         );
+    }
+
+    #[test]
+    fn target_authority_rejects_layout_without_deps_component() {
+        let exe = PathBuf::from("workspace")
+            .join("target")
+            .join("debug")
+            .join("e2e-test");
+        assert_eq!(target_dir_and_profile_from_exe(&exe), None);
+    }
+
+    #[test]
+    fn target_authority_rejects_layout_with_wrong_immediate_parent() {
+        let exe = PathBuf::from("workspace")
+            .join("target")
+            .join("debug")
+            .join("artifacts")
+            .join("e2e-test");
+        assert_eq!(target_dir_and_profile_from_exe(&exe), None);
     }
 
     /// N threads race `ensure_built_serialized` on one tempdir; the injected

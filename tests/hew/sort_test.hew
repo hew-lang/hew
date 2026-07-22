@@ -91,6 +91,62 @@ fn test_sort_ints_negative_values() {
     testing.assert_eq(out[3], 3);
 }
 
+#[test]
+fn test_sort_ints_comparison_bound_1024_reverse() {
+    let v: Vec<i64> = Vec::new();
+    for i in 0 .. 1024 {
+        v.push(1023 - i);
+    }
+
+    let (out, comparisons) = sort.sort_ints_counted(v);
+
+    // n * ceil(log2(n)) is a deterministic upper bound for the production
+    // merge core. Selection sort performs 523,776 comparisons here.
+    testing.assert_true(comparisons <= 1024 * 10);
+    testing.assert_eq(out.len(), 1024);
+    for i in 0 .. 1024 {
+        testing.assert_eq(out[i], i);
+        testing.assert_eq(v[i], 1023 - i);
+    }
+}
+
+#[test]
+fn test_sort_ints_non_power_of_two_permutation_and_equal_values() {
+    let v: Vec<i64> = Vec::new();
+    for i in 0 .. 17 {
+        v.push((i * 7) % 5);
+    }
+    let out = sort.sort_ints(v);
+
+    testing.assert_eq(out.len(), 17);
+    for i in 1 .. out.len() {
+        testing.assert_true(out[i - 1] <= out[i]);
+    }
+    var input_sum = 0;
+    var output_sum = 0;
+    var input_squares = 0;
+    var output_squares = 0;
+    for i in 0 .. 17 {
+        input_sum = input_sum + v[i];
+        output_sum = output_sum + out[i];
+        input_squares = input_squares + v[i] * v[i];
+        output_squares = output_squares + out[i] * out[i];
+        testing.assert_eq(v[i], (i * 7) % 5);
+    }
+    testing.assert_eq(output_sum, input_sum);
+    testing.assert_eq(output_squares, input_squares);
+
+    let equal: Vec<i64> = Vec::new();
+    for _i in 0 .. 33 {
+        equal.push(7);
+    }
+    let equal_out = sort.sort_ints(equal);
+    for i in 0 .. 33 {
+        testing.assert_eq(equal_out[i], 7);
+        testing.assert_eq(equal[i], 7);
+    }
+}
+
 // ── sort_strings ──────────────────────────────────────────────────────
 
 #[test]
@@ -142,6 +198,48 @@ fn test_sort_strings_duplicate_entries() {
     testing.assert_eq_str(out[0], "a");
     testing.assert_eq_str(out[1], "b");
     testing.assert_eq_str(out[2], "b");
+}
+
+#[test]
+fn test_sort_strings_comparison_bound_256_duplicate_reverse() {
+    let v: Vec<string> = Vec::new();
+    for i in 0 .. 256 {
+        let key = match i % 8 {
+            0 => "hotel",
+            1 => "golf",
+            2 => "foxtrot",
+            3 => "echo",
+            4 => "delta",
+            5 => "charlie",
+            6 => "bravo",
+            _ => "alpha",
+        };
+        v.push(key);
+    }
+
+    let (out, comparisons) = sort.sort_strings_counted(v);
+
+    // n * ceil(log2(n)) is a deterministic upper bound for the production
+    // merge core. Selection sort performs 32,640 comparisons here.
+    testing.assert_true(comparisons <= 256 * 8);
+    testing.assert_eq(out.len(), 256);
+    for i in 1 .. 256 {
+        testing.assert_true(out[i - 1] <= out[i]);
+    }
+    for i in 0 .. 32 {
+        testing.assert_eq_str(out[i], "alpha");
+        testing.assert_eq_str(out[32 + i], "bravo");
+        testing.assert_eq_str(out[64 + i], "charlie");
+        testing.assert_eq_str(out[96 + i], "delta");
+        testing.assert_eq_str(out[128 + i], "echo");
+        testing.assert_eq_str(out[160 + i], "foxtrot");
+        testing.assert_eq_str(out[192 + i], "golf");
+        testing.assert_eq_str(out[224 + i], "hotel");
+    }
+    testing.assert_eq_str(v[0], "hotel");
+    testing.assert_eq_str(v[7], "alpha");
+    testing.assert_eq_str(v[248], "hotel");
+    testing.assert_eq_str(v[255], "alpha");
 }
 
 // ── sort_floats ───────────────────────────────────────────────────────

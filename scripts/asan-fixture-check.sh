@@ -391,6 +391,10 @@ FRESH_VEC_INDEX_PROJECTION_SRC="${ROOT}/tests/vertical-slice/accept/fresh_vec_in
 # Rc/Weak graph lifecycle: two record replacements, an embedded Weak back-edge,
 # exact upgrade teardown, and final strong/weak releases must stay LSan-clean.
 RC_WEAK_SRC="${ROOT}/tests/vertical-slice/accept/rc_weak_lifecycle.hew"
+# Iterative string merge sort repeatedly overwrites owned-string scratch and
+# output slots. Every retained owner must release exactly once at pass and
+# scope teardown; LSan catches missed releases and ASan catches underflow.
+SORT_STRINGS_MERGE_SRC="${ROOT}/tests/vertical-slice/accept/sort_strings_merge_asan.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -454,6 +458,9 @@ compile_asan_fixture "fresh Vec index projection" "${FRESH_VEC_INDEX_PROJECTION_
 
 RC_WEAK_BIN="${WORK_DIR}/rc_weak_lifecycle"
 compile_asan_fixture "Rc/Weak graph replacement lifecycle" "${RC_WEAK_SRC}" "${RC_WEAK_BIN}"
+
+SORT_STRINGS_MERGE_BIN="${WORK_DIR}/sort_strings_merge_asan"
+compile_asan_fixture "iterative string merge ownership" "${SORT_STRINGS_MERGE_SRC}" "${SORT_STRINGS_MERGE_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -609,6 +616,12 @@ else
 fi
 
 if run_asan_fixture "Rc/Weak graph replacement lifecycle" "${RC_WEAK_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "iterative string merge ownership" "${SORT_STRINGS_MERGE_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

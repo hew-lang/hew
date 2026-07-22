@@ -1,0 +1,35 @@
+// Iterative string-merge ownership authority for the Linux ASan/LSan gate.
+// Each pass overwrites every scratch/output slot with retained string owners;
+// teardown must release both buffers exactly once. Repetition gives leak and
+// double-free failures enough signal to remain deterministic under ASan.
+import std::sort;
+
+fn key(i: i64) -> string {
+    match i % 8 {
+        0 => "hotel",
+        1 => "golf",
+        2 => "foxtrot",
+        3 => "echo",
+        4 => "delta",
+        5 => "charlie",
+        6 => "bravo",
+        _ => "alpha",
+    }
+}
+
+fn main() -> i64 {
+    for round in 0 .. 64 {
+        let input: Vec<string> = Vec::new();
+        for i in 0 .. 64 {
+            input.push(key(i + round));
+        }
+        let out = sort.sort_strings(input);
+        for i in 1 .. 64 {
+            if out[i - 1] > out[i] { return 70; }
+        }
+        for i in 0 .. 64 {
+            if input[i] != key(i + round) { return 71; }
+        }
+    }
+    0
+}

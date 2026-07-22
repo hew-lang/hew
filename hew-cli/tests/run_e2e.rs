@@ -5751,7 +5751,12 @@ fn tree_sum(tree: Tree) -> i64 {
 
 actor Worker {
     receive fn score(tag: i64, tree: Tree) -> i64 { tag + tree_sum(tree) }
-    receive fn boom() { panic("restart"); }
+    receive fn boom() {
+        // Keep the crash beyond the 250 ms contextless-await grace while
+        // remaining well inside the restart barrier's bounded timeout.
+        sleep(500ms);
+        panic("restart");
+    }
 }
 
 supervisor App {
@@ -5760,11 +5765,20 @@ supervisor App {
     child worker: Worker;
 }
 
+extern "C" {
+    fn hew_supervisor_wait_restart(sup: LocalPid<App>, target: i64, timeout_ms: i64) -> i64;
+}
+
 fn main() -> i64 {
     let sup = spawn App;
     let worker = sup.worker;
     worker.boom();
-    let _ = await_restart sup.worker;
+    let restarted = unsafe {
+        hew_supervisor_wait_restart(sup, 1, 5000)
+    };
+    if restarted == 0 {
+        return 1;
+    }
     let (a, b) = join {
         worker.score(11, Node(Leaf(1), Leaf(2))),
         worker.score(22, Node(Leaf(3), Leaf(4))),

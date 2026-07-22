@@ -2471,7 +2471,7 @@ fn main() {
 }
 ```
 
-`sort_ints` / `sort_strings` / `sort_floats` return new sorted Vecs (ascending); `reverse_ints` / `reverse_strings` / `reverse_floats` return new reversed Vecs. The original is never modified.
+`sort_ints` / `sort_strings` / `sort_floats` return new sorted Vecs (ascending); `reverse_ints` / `reverse_strings` / `reverse_floats` return new reversed Vecs. The original is never modified. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
 
 ### std::random — pseudo-random number generation
 

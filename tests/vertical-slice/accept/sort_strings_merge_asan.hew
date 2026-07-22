@@ -25,10 +25,14 @@ fn main() -> i64 {
         }
         let out = sort.sort_strings(input);
         for i in 1 .. 64 {
-            if out[i - 1] > out[i] { return 70; }
+            let previous = out[i - 1];
+            let current = out[i];
+            if previous > current { return 70; }
         }
         for i in 0 .. 64 {
-            if input[i] != key(i + round) { return 71; }
+            let input_value = input[i];
+            let expected = key(i + round);
+            if input_value != expected { return 71; }
         }
     }
     0

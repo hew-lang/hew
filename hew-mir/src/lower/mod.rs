@@ -4207,10 +4207,14 @@ fn prepare_outbound_actor_payloads(
                 },
                 PendingOutboundTarget::SelectArm(index) => match &mut block.terminator {
                     Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
-                        if let Some(SelectArmKind::ActorAsk { value, .. }) =
-                            arms.get_mut(index).map(|arm| &mut arm.kind)
+                        if let Some(SelectArmKind::ActorAsk {
+                            value,
+                            cleanup_plan: carrier_cleanup,
+                            ..
+                        }) = arms.get_mut(index).map(|arm| &mut arm.kind)
                         {
                             *value = prepared_payload;
+                            *carrier_cleanup = cleanup_plan;
                         }
                     }
                     _ => {}
@@ -4219,6 +4223,7 @@ fn prepare_outbound_actor_payloads(
                     if let Terminator::Join { branches, .. } = &mut block.terminator {
                         if let Some(branch) = branches.get_mut(index) {
                             branch.value = prepared_payload;
+                            branch.cleanup_plan = cleanup_plan;
                         }
                     }
                 }

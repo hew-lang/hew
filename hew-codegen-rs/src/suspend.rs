@@ -9912,6 +9912,7 @@ fn emit_select_arm_setup<'ctx>(
                 actor,
                 msg_type,
                 value,
+                cleanup_plan: _,
                 ..
             } => {
                 // #1739: register R's destructor on this arm's channel BEFORE
@@ -10159,6 +10160,14 @@ fn emit_select_arm_setup<'ctx>(
                 .llvm_ctx("select setup recoverable br")?;
 
             fn_ctx.builder.position_at_end(setup_recover_bb);
+            if let SelectArmKind::ActorAsk {
+                value,
+                cleanup_plan: Some(plan),
+                ..
+            } = &arms[arm_idx].kind
+            {
+                crate::llvm::emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+            }
             // Release the caller-side reference the runtime kept on send failure
             // (`KeepCreatorRef`): `hew_reply_channel_free` runs the channel's
             // attached await-cancel teardown too, dropping this arm's ref on the
@@ -11133,6 +11142,9 @@ pub(crate) fn emit_join_terminator<'ctx>(
         // successfully submitted), then free the failing channel `i`
         // (no cancel — no ask was submitted), then trap.
         fn_ctx.builder.position_at_end(setup_fail_bb);
+        if let Some(plan) = &branch.cleanup_plan {
+            crate::llvm::emit_prepared_carrier_drop(fn_ctx, branch.value, plan)?;
+        }
         for j in 0..i {
             let cleanup_slot = slot_ptr(j)?;
             let cleanup_ch = fn_ctx

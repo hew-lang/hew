@@ -3663,6 +3663,10 @@ pub enum SelectArmKind {
         args: Vec<Place>,
         msg_type: i32,
         value: Place,
+        /// Releases the prepared request payload when enqueue fails before
+        /// ownership crosses into the mailbox. Successful submission transfers
+        /// the payload and must not run this plan.
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
     },
     /// `await <task>` — task completion.
     TaskAwait { task: Place },
@@ -3698,6 +3702,10 @@ pub struct JoinBranch {
     /// Packed-payload place (one ptr + size threaded through
     /// `hew_actor_ask_with_channel`), built via `lower_actor_payload`.
     pub value: Place,
+    /// Releases this branch's prepared payload if its ask fails to enqueue.
+    /// Earlier successfully submitted branches already belong to their
+    /// mailboxes and are deliberately excluded from this plan.
+    pub cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
     /// Reply slot — codegen writes `hew_reply_wait`'s result here, then
     /// composes it into the `result` tuple at this branch's index.
     pub reply_dest: Place,

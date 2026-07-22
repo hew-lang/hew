@@ -27,13 +27,15 @@ fn emit_ll_for_target(source: &str, target_triple: Option<&'static str>) -> Stri
         "{:#?}",
         pipeline.diagnostics
     );
-    let out = std::env::temp_dir().join("hew-snapshot-send-structural");
-    std::fs::create_dir_all(&out).expect("create output directory");
+    let out = tempfile::Builder::new()
+        .prefix("hew-snapshot-send-structural-")
+        .tempdir()
+        .expect("create output directory");
     let artefacts = emit_module(
         &pipeline,
         &EmitOptions {
             module_name: "snapshot_send",
-            out_dir: &out,
+            out_dir: out.path(),
             native: false,
             wasm: false,
             target_triple,
@@ -45,6 +47,27 @@ fn emit_ll_for_target(source: &str, target_triple: Option<&'static str>) -> Stri
     .expect("emit snapshot-send module");
     let ll_path: &Path = artefacts.ll_path.as_deref().expect("LLVM path");
     std::fs::read_to_string(ll_path).expect("read LLVM")
+}
+
+fn llvm_block<'a>(ll: &'a str, label: &str) -> &'a str {
+    let marker = format!("{label}:");
+    let start = ll
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing LLVM block `{label}`:\n{ll}"));
+    let rest = &ll[start..];
+    let end = rest
+        .lines()
+        .skip(1)
+        .scan(marker.len() + 1, |offset, line| {
+            let line_start = *offset;
+            *offset += line.len() + 1;
+            Some((line_start, line))
+        })
+        .find_map(|(offset, line)| {
+            (!line.starts_with(char::is_whitespace) && line.contains(':')).then_some(offset)
+        })
+        .unwrap_or(rest.len());
+    &rest[..end]
 }
 
 #[test]
@@ -158,6 +181,82 @@ fn indirect_enum_local_request_carriers_use_pointer_fields_on_native_and_wasm() 
         assert!(
             !ll.contains("= type { i64, %Tree }"),
             "{target}: no local actor-request carrier may embed an inline Tree:\n{ll}"
+        );
+    }
+}
+
+#[test]
+fn failed_select_and_join_requests_drop_the_unsubmitted_indirect_payload() {
+    let ll = emit_ll(
+        r"
+        indirect enum Tree {
+            Leaf(i64);
+            Node(Tree, Tree);
+        }
+
+        actor Worker {
+            receive fn score(tag: i64, tree: Tree) -> i64 { tag }
+        }
+
+        supervisor App {
+            strategy: one_for_one;
+            intensity: 3 within 60s;
+            child worker: Worker;
+        }
+
+        fn main() -> i64 {
+            let sup = spawn App;
+            let worker = sup.worker;
+            supervisor_stop(sup);
+            let selected = select {
+                reply from worker.score(1, Node(Leaf(2), Leaf(3))) => reply,
+                after 1ms => 0,
+            };
+            let (left, right) = join {
+                worker.score(4, Node(Leaf(5), Leaf(6))),
+                worker.score(7, Node(Leaf(8), Leaf(9))),
+            };
+            selected + left + right
+        }
+        ",
+    );
+
+    let select_recover = llvm_block(&ll, "select_setup_recover_0");
+    let select_drop = select_recover
+        .find("call void @__hew_record_drop_inplace_")
+        .unwrap_or_else(|| {
+            panic!(
+                "the recoverable select enqueue failure must drop its prepared owning carrier:\n\
+                 {select_recover}"
+            )
+        });
+    let select_channel_free = select_recover
+        .find("call void @hew_reply_channel_free")
+        .expect("select recovery must release its reply channel");
+    assert!(
+        select_drop < select_channel_free,
+        "select recovery must drop the unsubmitted payload before releasing its channel:\n\
+         {select_recover}"
+    );
+
+    for branch in 0..2 {
+        let label = format!("join_setup_fail_{branch}");
+        let join_fail = llvm_block(&ll, &label);
+        let join_drop = join_fail
+            .find("call void @__hew_record_drop_inplace_")
+            .unwrap_or_else(|| {
+                panic!(
+                    "join branch {branch} enqueue failure must drop its prepared owning carrier:\n\
+                     {join_fail}"
+                )
+            });
+        let join_channel_free = join_fail
+            .find("call void @hew_reply_channel_free")
+            .expect("join failure must release at least the failing reply channel");
+        assert!(
+            join_drop < join_channel_free,
+            "join branch {branch} must drop only its unsubmitted payload before channel cleanup:\n\
+             {join_fail}"
         );
     }
 }

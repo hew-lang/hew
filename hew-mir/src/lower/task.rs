@@ -1486,6 +1486,7 @@ impl Builder {
                             args: arg_places,
                             msg_type: info.msg_type,
                             value: payload_place,
+                            cleanup_plan: None,
                         },
                         Some(reply_dest),
                     )
@@ -1814,6 +1815,7 @@ impl Builder {
                 args: arg_places,
                 msg_type: info.msg_type,
                 value: payload_place,
+                cleanup_plan: None,
                 reply_dest,
                 reply_ty: info.return_ty.clone(),
             });

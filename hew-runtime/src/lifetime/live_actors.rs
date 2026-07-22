@@ -334,21 +334,58 @@ pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
 /// operation are visible to the freer before it reclaims the allocation.
 // live on not(wasm32); dead on wasm32.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-struct SendPinGuard(*mut HewActor);
+pub(crate) struct ActorPin(*mut HewActor);
 
 // SAFETY: `HewActor` is `Send`; the guard only touches the atomic
 // `send_pin_count` field.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-unsafe impl Send for SendPinGuard {}
+unsafe impl Send for ActorPin {}
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-impl Drop for SendPinGuard {
+impl Drop for ActorPin {
     fn drop(&mut self) {
         // SAFETY: the pointer was validated-live when the pin was taken.
         // The free path defers the free until `send_pin_count` reaches 0,
         // so the allocation remains valid until this drop runs.
         unsafe { (*self.0).send_pin_count.fetch_sub(1, Ordering::Release) };
     }
+}
+
+impl ActorPin {
+    /// Borrow the pinned actor allocation.
+    #[must_use]
+    pub(crate) fn actor(&self) -> &HewActor {
+        // SAFETY: construction increments `send_pin_count` while the actor is
+        // tracked; the free path cannot reclaim it until this guard drops.
+        unsafe { &*self.0 }
+    }
+
+    /// Return the pinned actor pointer for existing internal operations.
+    #[must_use]
+    pub(crate) fn as_ptr(&self) -> *mut HewActor {
+        self.0
+    }
+}
+
+/// Resolve one `ActorId` and hold its existing liveness/send pin until drop.
+///
+/// The live-actor lock is released before this function returns. Callers may
+/// compose multiple pins, but must release them before reply waits, callbacks,
+/// or user work. Existing mailbox submission keeps its pin only for that
+/// submission operation.
+pub(crate) fn pin_actor_by_id(actor_id: u64) -> Option<ActorPin> {
+    let ptr = with_live_actors_opt(|map| {
+        let ptr = map
+            .as_ref()
+            .and_then(|m| m.get(&actor_id).map(|p| p.0))
+            .filter(|p| !p.is_null())?;
+        // SAFETY: the pointer is tracked under the liveness lock. Incrementing
+        // before releasing the lock is mutually exclusive with untracking.
+        unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
+        Some(ptr)
+    })
+    .flatten()?;
+    Some(ActorPin(ptr))
 }
 
 /// Look up an actor by ID and, if live, call `f` with its raw pointer while
@@ -391,36 +428,8 @@ pub(crate) fn with_actor_send_by_id<R>(
     actor_id: u64,
     f: impl FnOnce(*mut HewActor) -> R,
 ) -> Option<R> {
-    // Phase 1: validate liveness and take a send pin — all under LIVE_ACTORS.
-    // Incrementing send_pin_count here (before releasing the lock) makes the
-    // pin-increment and the freer's map-removal mutually exclusive: both
-    // operations run under LIVE_ACTORS, so either this fetch_add completes
-    // before the freer's untrack_actor (freer will then spin until the pin
-    // drops before finalizing), or the freer's untrack_actor completes first
-    // (this map lookup returns None → we return None without taking a pin).
-    // The allocation cannot be freed while the pin is held.
-    let ptr = with_live_actors_opt(|map| {
-        let ptr = map
-            .as_ref()
-            .and_then(|m| m.get(&actor_id).map(|p| p.0))
-            .filter(|p| !p.is_null())?;
-        // SAFETY: `ptr` is tracked-live under the registry lock.  The
-        // fetch_add runs before the lock is released and before any
-        // concurrent untrack_actor (which also runs under the lock), so the
-        // two are mutually exclusive — the freer cannot remove the map entry
-        // while we are incrementing the pin, and we cannot increment the pin
-        // after the freer has removed the map entry (the map.get above would
-        // return None first).
-        unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
-        Some(ptr)
-    })
-    .flatten()?;
-
-    // Phase 2: LIVE_ACTORS is released; call `f` with the pinned pointer.
-    // `_pin` drops after `f` returns: decrements send_pin_count with Release
-    // ordering, paired with the free path's Acquire load.
-    let _pin = SendPinGuard(ptr);
-    Some(f(ptr))
+    let pin = pin_actor_by_id(actor_id)?;
+    Some(f(pin.as_ptr()))
 }
 
 /// Resolve the per-actor-TYPE dispatch function pointer for a live actor id,

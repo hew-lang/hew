@@ -146,6 +146,105 @@ fn run_free_post_latch_hook(actor: *mut HewActor) {
     }
 }
 
+// ── Stable-registration retirement rendezvous hooks (test-only) ──────────
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[derive(Clone)]
+struct RegistrationRetirementHook {
+    actor_id: u64,
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static FREE_PRE_LATCH_REGISTRATION_HOOK: Mutex<Option<RegistrationRetirementHook>> =
+    Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static FREE_POST_RETIRE_REGISTRATION_HOOK: Mutex<Option<RegistrationRetirementHook>> =
+    Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) struct RegistrationRetirementHookGuard {
+    slot: &'static Mutex<Option<RegistrationRetirementHook>>,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for RegistrationRetirementHookGuard {
+    fn drop(&mut self) {
+        *self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn install_registration_retirement_hook(
+    slot: &'static Mutex<Option<RegistrationRetirementHook>>,
+    actor_id: u64,
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) -> RegistrationRetirementHookGuard {
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RegistrationRetirementHook {
+        actor_id,
+        entered,
+        release,
+    });
+    RegistrationRetirementHookGuard { slot }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn install_free_pre_latch_registration_hook_for_test(
+    actor_id: u64,
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) -> RegistrationRetirementHookGuard {
+    install_registration_retirement_hook(
+        &FREE_PRE_LATCH_REGISTRATION_HOOK,
+        actor_id,
+        entered,
+        release,
+    )
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn install_free_post_retire_registration_hook_for_test(
+    actor_id: u64,
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) -> RegistrationRetirementHookGuard {
+    install_registration_retirement_hook(
+        &FREE_POST_RETIRE_REGISTRATION_HOOK,
+        actor_id,
+        entered,
+        release,
+    )
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn run_registration_retirement_hook(
+    slot: &'static Mutex<Option<RegistrationRetirementHook>>,
+    actor_id: u64,
+) {
+    let hook = {
+        let mut guard = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.as_ref().is_some_and(|hook| hook.actor_id == actor_id) {
+            guard.take()
+        } else {
+            None
+        }
+    };
+    if let Some(hook) = hook {
+        hook.entered.wait();
+        hook.release.wait();
+    }
+}
+
 // ── cleanup_all_actors post-prepare rendezvous hook (test-only) ───────────
 //
 // Fires inside `cleanup_all_actors` for each actor, AFTER
@@ -1399,10 +1498,10 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
     0
 }
 
-/// Run the canonical pre-untrack cleanup ordering for a quiescent actor.
+/// Quiesce actor-owned wake producers before retiring a quiescent actor.
 ///
-/// Cancels periodic timers and (on native targets) removes link/monitor
-/// entries plus named-node bindings. Used by all four teardown paths
+/// Cancels periodic timers and (on native targets) detaches reactor and
+/// named-node bindings. Used by all four teardown paths
 /// (`hew_actor_free`, `drain_actors`, `cleanup_all_actors`, and the WASM
 /// `actor_free_wasm_impl`) so that the ordering invariant is identical
 /// regardless of how an actor is being torn down.
@@ -1414,10 +1513,9 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
 ///
 /// # Safety
 ///
-/// `actor` must be valid and quiescent. Callers that run while the
-/// scheduler is still live must invoke this *before* untracking the actor
-/// from `LIVE_ACTORS` so that any in-flight timer callback or signal
-/// propagation observes the actor as live and bails out cooperatively.
+/// `actor` must be valid and quiescent. Callers that run while the scheduler
+/// is still live must invoke this *before* untracking the actor from
+/// `LIVE_ACTORS` so an in-flight reactor delivery can be drained safely.
 /// Callers that run after the runtime has been shut down (such as
 /// `cleanup_all_actors`) may call this whether or not the actor is still
 /// tracked, because no concurrent dispatch is possible.
@@ -1433,8 +1531,6 @@ unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
         // delivered to a freed actor. Keyed by the actor's address, matching
         // the snapshot the reactor stored at attach time.
         crate::reactor::reactor_detach_actor(actor as usize);
-        crate::link::remove_all_links_for_actor(actor_id, actor);
-        crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
         // SAFETY: caller guarantees `actor` is valid; `unregister_actor_names`
         // does not require LIVE_ACTORS membership, only the actor id.
         unsafe { crate::hew_node::unregister_actor_names(actor_id) };
@@ -1450,6 +1546,31 @@ unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
         unsafe { crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor) };
         crate::parse_error_slot::clear_all_for_actor(actor_id);
     }
+}
+
+/// Remove semantic relationships after actor retirement and pin drain.
+///
+/// Stable-handle link/monitor operations pin every participating actor before
+/// mutating these registries. Removing the actor from `LIVE_ACTORS` prevents
+/// new operations from taking a pin; waiting for the existing pins to drain
+/// establishes the single retirement linearization. This final scrub must run
+/// only after that wait, otherwise an already-pinned operation can resume after
+/// the scrub and reinsert a retired `ActorId`.
+///
+/// # Safety
+///
+/// `actor` must remain allocated, must no longer be tracked in `LIVE_ACTORS`,
+/// and its `send_pin_count` must be zero.
+unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // SAFETY: the caller guarantees the allocation remains valid.
+        let actor_id = unsafe { (*actor).id };
+        crate::link::remove_all_links_for_actor(actor_id, actor);
+        crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = actor;
 }
 
 /// Outcome of [`decide_finalize_by_latch`] — the canonical "is it safe to
@@ -1597,11 +1718,9 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // SAFETY: actor is valid (from LIVE_ACTORS); scheduler is shut down.
         let a = unsafe { &*actor };
 
-        // Cancel periodic timers, drop link/monitor entries, and unregister
-        // named-node bindings BEFORE running terminate or freeing the
-        // allocation. This matches the canonical ordering used by
-        // `hew_actor_free` and `drain_actors`, preventing dangling registry
-        // entries on shutdown.
+        // Quiesce timers and other actor-owned wake producers before the
+        // wake-proof decision. Relationship registries are scrubbed only after
+        // the already-completed global retirement and pin drain below.
         // SAFETY: actor is quiescent (scheduler is shut down) and the helper
         // tolerates already-untracked actors when no concurrent dispatch is
         // possible.
@@ -1647,7 +1766,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // cannot block to destroy the parked frame (workers are joined), so it
         // leaks-not-frees — the correct fail-closed shutdown behaviour.
         let finalize_state = match decide_finalize_by_latch(a) {
-            FinalizeDecision::Finalize(state) => state,
+            FinalizeDecision::Finalize(state) => Some(state),
             FinalizeDecision::Skip => {
                 eprintln!(
                     "hew: runtime error: actor {:#x} was non-quiescent at \
@@ -1656,7 +1775,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
                      point); actor leaked to avoid UAF",
                     a.id
                 );
-                continue;
+                None
             }
         };
 
@@ -1668,11 +1787,6 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // before finalizing.
         // SAFETY: LIVE_ACTORS is not held here; no deadlock risk.
         {
-            debug_assert_eq!(
-                a.send_pin_count.load(Ordering::Acquire),
-                0,
-                "send_pin_count should be 0 in cleanup_all_actors (all workers joined)"
-            );
             let pin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut pinned = false;
             loop {
@@ -1694,9 +1808,24 @@ pub(crate) unsafe fn cleanup_all_actors() {
                 std::thread::yield_now();
             }
             if pinned {
+                // Do not scrub while a pin is outstanding: it may be a
+                // relationship operation that has not inserted yet. The
+                // allocation and any semantic entries remain leaked together
+                // rather than claiming a false post-retirement cleanup.
                 continue;
             }
         }
+
+        // ActorId retirement is now visible and every operation that pinned
+        // before it has completed. This is the final semantic-registry scrub:
+        // no stable-handle link/monitor operation can reinsert this identity.
+        // SAFETY: drain_all_for_cleanup retired the actor and the loop above
+        // proved that every ActorPin has dropped.
+        unsafe { scrub_actor_relationships_after_pin_drain(actor) };
+
+        let Some(finalize_state) = finalize_state else {
+            continue;
+        };
 
         // Run terminate for actors that never reached a terminal state (still
         // IDLE at process exit; `Finalize(Idle)`). Skip crashed actors — their
@@ -3276,6 +3405,56 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     HewError::ErrActorStopped as i32
 }
 
+/// Resolve the exact actor incarnation behind a stable local handle.
+///
+/// # Safety
+/// `out_actor_id` must be a valid writable pointer when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_local_pid_actor_id(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    out_actor_id: *mut u64,
+) -> i32 {
+    if out_actor_id.is_null() {
+        return HewError::ErrActorStopped as i32;
+    }
+    let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
+        return HewError::ErrActorStopped as i32;
+    };
+    let Some(pin) = live_actors::pin_actor_by_id(actor_id) else {
+        return HewError::ErrActorStopped as i32;
+    };
+    // SAFETY: the caller supplied a writable out pointer; write only on success.
+    unsafe { *out_actor_id = pin.actor().id };
+    HewError::Ok as i32
+}
+
+/// Send through a stable local actor identity.
+///
+/// # Safety
+/// `data` must be readable for `size` bytes, or null when `size` is zero.
+#[no_mangle]
+pub unsafe extern "C" fn hew_local_pid_send(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> i32 {
+    let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
+        return HewError::ErrActorStopped as i32;
+    };
+    live_actors::with_actor_send_by_id(actor_id, |actor| {
+        #[cfg(not(target_arch = "wasm32"))]
+        // SAFETY: the actor is pinned and data follows this function's contract.
+        return unsafe { actor_send_result_internal(actor, msg_type, data, size) };
+        #[cfg(target_arch = "wasm32")]
+        // SAFETY: the actor is pinned and data follows this function's contract.
+        unsafe {
+            hew_actor_try_send(actor, msg_type, data, size)
+        }
+    })
+    .unwrap_or(HewError::ErrActorStopped as i32)
+}
+
 /// Try to send a message, returning an error code on failure.
 ///
 /// Returns `0` on success, or a negative error code (see [`HewError`]).
@@ -3582,10 +3761,9 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     // not — can enqueue the actor. Only then is untrack+free safe.
     //
     //   1. Wait (bounded) until `actor_state` is quiescent (Idle/Stopped/Crashed).
-    //   2. Run the pre-untrack cleanup, including `reactor_detach_actor` and the
-    //      link/monitor scrub. `reactor_detach_actor` waits out an in-flight
-    //      reactor delivery; the link/monitor scrub stops *new* propagation but
-    //      not an already-snapshotted one.
+    //   2. Quiesce pre-retirement producers. `reactor_detach_actor` waits out an
+    //      in-flight reactor delivery; relationship cleanup is deferred until
+    //      retirement has prevented new pins and all admitted pins have drained.
     //   3. Re-load `actor_state` after cleanup, then *latch*:
     //        - `Idle`    → `CAS Idle->Stopped`. Success ⇒ wake-proof; free under
     //                      `Stopped`. Loss ⇒ a waker won the race (now
@@ -3689,15 +3867,20 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         #[cfg(all(test, not(target_arch = "wasm32")))]
         run_free_pre_detach_hook(actor);
 
-        // Step 2: cancel periodic timers, detach reactor registrations, and
-        // remove links/monitors BEFORE untracking, so any in-flight timer
-        // callback or propagation that checks LIVE_ACTORS still sees this actor
-        // as live and bails out cooperatively. `reactor_detach_actor` may wait
-        // out an in-flight delivery that re-wakes the actor (see above); this
-        // call is idempotent across retries (cancel/remove-all + empty-registry
-        // scrub).
+        // Step 2: cancel periodic timers and detach reactor registrations before
+        // untracking. `reactor_detach_actor` may wait out an in-flight delivery
+        // that re-wakes the actor (see above); this call is idempotent across
+        // retries. Link/monitor cleanup must wait until after retirement and pin
+        // drain so an admitted stable-handle registration cannot reinsert state.
         // SAFETY: the wait loop proved the actor was quiescent and still tracked.
         unsafe { prepare_quiescent_actor_for_cleanup(actor) };
+
+        // Deterministic proof hook: a stable-handle registration has acquired
+        // all pins but has not mutated its relationship table. The test lets it
+        // register while this actor is still live and Idle, then teardown must
+        // retire, drain, and remove that late entry in the final scrub.
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        run_registration_retirement_hook(&FREE_PRE_LATCH_REGISTRATION_HOOK, a.id);
 
         // Step 3: re-load after cleanup, then latch the actor out of `Idle`.
         //
@@ -3770,6 +3953,12 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         return -1;
     }
 
+    // Deterministic watcher-retirement proof hook: the actor is retired, but a
+    // previously admitted monitor operation still holds its pin and may insert
+    // watcher-owned state before the pin drain and final scrub below.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    run_registration_retirement_hook(&FREE_POST_RETIRE_REGISTRATION_HOOK, a.id);
+
     // After untrack_actor the map entry is removed: any subsequent
     // `with_actor_send_by_id` for this actor gets `None` from the map
     // lookup, so no new send pins can be taken.  Drain any in-flight pins
@@ -3787,11 +3976,19 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
             break;
         }
         if std::time::Instant::now() >= drain_deadline {
+            // An outstanding pin may still insert a relationship, so no final
+            // scrub is safe on this fail-closed allocation leak.
             crate::set_last_error("hew_actor_free: send pins did not drain after timeout");
             return -2;
         }
         std::thread::yield_now();
     }
+
+    // Actor retirement prevents new pins; the drain above waited out every
+    // stable-handle operation that began before retirement. Scrub only now so
+    // no paused registration can reinsert this ActorId afterward.
+    // SAFETY: actor is untracked, allocated, and has no remaining pins.
+    unsafe { scrub_actor_relationships_after_pin_drain(actor) };
 
     // SAFETY: actor is quiescent (re-verified after detach), no longer tracked,
     // all send pins drained, and not being dispatched.
@@ -3896,6 +4093,8 @@ unsafe fn drain_quiesced_actor(
                 break;
             }
             if std::time::Instant::now() >= deadline {
+                // An outstanding pin may still insert a relationship, so no
+                // final scrub is safe on this fail-closed allocation leak.
                 crate::set_last_error(
                     "drain_quiesced_actor: send pins did not drain after timeout",
                 );
@@ -3904,6 +4103,9 @@ unsafe fn drain_quiesced_actor(
             }
             std::thread::yield_now();
         }
+        // SAFETY: take_actor_by_id retired the actor and the loop above proved
+        // every operation pinned before retirement has completed.
+        unsafe { scrub_actor_relationships_after_pin_drain(actor) };
         // SAFETY: the actor is quiescent, prepared for cleanup, wake-proofed,
         // no longer tracked, and all send pins have drained.
         unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
@@ -5014,7 +5216,7 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
 #[cfg(any(target_arch = "wasm32", test))]
 const HEW_WASM_ASK_TICK_ACTIVATIONS: i32 = 1;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 #[inline]
 fn is_terminal(state: i32) -> bool {
     state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32
@@ -5135,6 +5337,64 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
     }
 
     result
+}
+
+/// Send a synchronous request through a stable local actor identity.
+///
+/// # Safety
+/// `data` must be readable for `size` bytes, or null when `size` is zero.
+#[no_mangle]
+pub unsafe extern "C" fn hew_local_pid_ask(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> *mut c_void {
+    let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
+        return actor_ask_null(AskError::OrphanedAsk);
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: the resolved ActorId is pinned by the by-ID ask send phase.
+    return unsafe { hew_actor_ask_by_id(actor_id, msg_type, data, size) };
+    #[cfg(target_arch = "wasm32")]
+    // SAFETY: the helper pins only while submitting, then retains ActorId only.
+    unsafe {
+        actor_ask_wasm_by_id_impl(actor_id, msg_type, data, size, None)
+    }
+}
+
+/// Submit an ask with a caller-owned reply channel through a stable identity.
+///
+/// # Safety
+/// `data` and `ch` must satisfy [`hew_actor_ask_with_channel`]'s contract.
+#[no_mangle]
+pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    ch: *mut c_void,
+) -> i32 {
+    let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
+        return HewError::ErrActorStopped as i32;
+    };
+    live_actors::with_actor_send_by_id(actor_id, |actor| {
+        #[cfg(not(target_arch = "wasm32"))]
+        // SAFETY: actor is pinned; channel and data follow this function's contract.
+        return unsafe {
+            submit_ask_with_reply_channel(
+                ch.cast(),
+                AskReplyChannelFailureCleanup::KeepCreatorRef,
+                |ch| actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()),
+            )
+        };
+        #[cfg(target_arch = "wasm32")]
+        // SAFETY: actor is pinned; channel and data follow this function's contract.
+        unsafe {
+            ask_with_channel_wasm_internal(actor, msg_type, data, size, ch)
+        }
+    })
+    .unwrap_or(HewError::ErrActorStopped as i32)
 }
 
 // Thread-local storage for the reply size from the last `hew_actor_ask_by_id`.
@@ -5921,8 +6181,50 @@ pub(crate) unsafe fn ask_with_channel_wasm_internal(
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn actor_ask_wasm_impl(
-    actor: *mut HewActor,
+#[derive(Clone, Copy)]
+enum WasmAskTarget {
+    Pointer(*mut HewActor),
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "ActorId ask targets are WASM-only")
+    )]
+    ActorId(u64),
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl WasmAskTarget {
+    unsafe fn send(self, msg_type: i32, data: *mut c_void, size: usize, ch: *mut c_void) -> i32 {
+        match self {
+            // SAFETY: inherited from the raw-pointer ask caller.
+            Self::Pointer(actor) => unsafe {
+                ask_with_channel_wasm_internal(actor, msg_type, data, size, ch)
+            },
+            Self::ActorId(actor_id) => live_actors::with_actor_send_by_id(actor_id, |actor| {
+                // SAFETY: liveness lookup pins actor for the complete send.
+                unsafe { ask_with_channel_wasm_internal(actor, msg_type, data, size, ch) }
+            })
+            .unwrap_or(HewError::ErrActorStopped as i32),
+        }
+    }
+
+    fn terminal_state(self) -> Option<i32> {
+        match self {
+            Self::Pointer(actor) => {
+                if actor.is_null() {
+                    return None;
+                }
+                // SAFETY: inherited from the raw-pointer ask caller.
+                Some(unsafe { (*actor).actor_state.load(Ordering::Acquire) })
+            }
+            Self::ActorId(actor_id) => live_actors::pin_actor_by_id(actor_id)
+                .map(|pin| pin.actor().actor_state.load(Ordering::Acquire)),
+        }
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+unsafe fn actor_ask_wasm_target_impl(
+    target: WasmAskTarget,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
@@ -5932,13 +6234,10 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
 
     let ch = reply_channel_wasm::hew_reply_channel_new();
 
-    // SAFETY: ch is a live reply channel and `actor`/`data` follow the
-    // same preconditions as this shared ask implementation.
-    let send_result =
-        unsafe { ask_with_channel_wasm_internal(actor, msg_type, data, size, ch.cast()) };
+    // SAFETY: ch is live; target and data inherit this helper's contract.
+    let send_result = unsafe { target.send(msg_type, data, size, ch.cast()) };
     if send_result != HewError::Ok as i32 {
-        // SAFETY: ch was created by hew_reply_channel_new and the failed send
-        // already released the queued sender-side retain.
+        // SAFETY: ch was created above; failed send released its sender retain.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
         return actor_ask_null(send_err_to_ask_err(send_result));
     }
@@ -5949,18 +6248,17 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
     });
 
     loop {
-        // SAFETY: ch stays live until we release the caller-side reference below.
+        // SAFETY: ch stays live until the caller-side release below.
         if unsafe { reply_channel_wasm::reply_ready(ch) } {
             break;
         }
 
         if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
-            // Timeout: mark the channel as cancelled so any later replier or
-            // queued-message cleanup releases the sender-side reference.
-            // SAFETY: ch is still live while we release our caller-side ref.
-            unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
-            // SAFETY: release the caller-side reference after recording cancellation.
-            unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+            // SAFETY: ch remains live through cancellation and release.
+            unsafe {
+                reply_channel_wasm::hew_reply_channel_cancel(ch);
+                reply_channel_wasm::hew_reply_channel_free(ch);
+            }
             return actor_ask_null(AskError::Timeout);
         }
 
@@ -5968,36 +6266,26 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
         let remaining = unsafe { crate::bridge::hew_wasm_tick(HEW_WASM_ASK_TICK_ACTIVATIONS) };
 
         if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
-            // The tick may have run a blocking dispatch (for example, the
-            // current WASM sleep shim). Treat replies that materialize after
-            // the deadline as timed out and free any buffered payload.
-            // SAFETY: ch remains live until we release the caller-side ref below.
-            unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
-            // SAFETY: release the caller-side reference after recording cancellation.
-            unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+            // SAFETY: ch remains live through cancellation and release.
+            unsafe {
+                reply_channel_wasm::hew_reply_channel_cancel(ch);
+                reply_channel_wasm::hew_reply_channel_free(ch);
+            }
             return actor_ask_null(AskError::Timeout);
         }
 
-        // SAFETY: ch stays live until we release the caller-side reference below.
+        // SAFETY: ch stays live until the caller-side release below.
         if unsafe { reply_channel_wasm::reply_ready(ch) } {
             break;
         }
 
         if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
-            // Both run queue and sleep queue are empty.  Cancel the channel
-            // for both bounded and unbounded asks so any later replier skips
-            // allocating reply data.
-            // SAFETY: ch remains live until the caller-side reference is released below.
-            unsafe { reply_channel_wasm::hew_reply_channel_cancel(ch) };
-            // SAFETY: release the caller-side reference before returning without a reply.
-            unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-            // Distinguish between a stopped actor (orphaned ask) and genuinely
-            // no runnable work (the actor is alive but idle with nothing to run).
-            // SAFETY: actor is valid for the duration of this call (caller guarantee).
-            let actor_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-            if actor_state == HewActorState::Stopped as i32
-                || actor_state == HewActorState::Crashed as i32
-            {
+            // SAFETY: ch remains live through cancellation and release.
+            unsafe {
+                reply_channel_wasm::hew_reply_channel_cancel(ch);
+                reply_channel_wasm::hew_reply_channel_free(ch);
+            }
+            if target.terminal_state().is_none_or(is_terminal) {
                 return actor_ask_null(AskError::OrphanedAsk);
             }
             return actor_ask_null(AskError::NoRunnableWork);
@@ -6006,30 +6294,61 @@ pub(crate) unsafe fn actor_ask_wasm_impl(
 
     // SAFETY: ch is a valid reply channel pointer created above.
     let reply = unsafe { reply_channel_wasm::reply_take(ch) };
-
     if reply.is_null() {
-        // Distinguish an orphaned ask (mailbox teardown retired the channel via
-        // `retire_reply_channel`) from a legitimate null reply deposited by the
-        // handler.  `retire_reply_channel` sets `orphaned = true` before calling
-        // `hew_reply`; a handler that explicitly replies null does NOT set it.
-        // This is the sole discriminant — actor terminal state is intentionally
-        // NOT used here because a handler can legitimately call
-        //   hew_reply(ch, NULL, 0); hew_actor_self_stop();
-        // in the same dispatch, producing a null reply with a terminal actor.
-        // SAFETY: ch is still live — we release it immediately below.
+        // SAFETY: ch remains live until the release immediately below.
         let is_orphaned = unsafe { reply_channel_wasm::reply_is_orphaned(ch) };
-        // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
+        // SAFETY: release the caller-side channel reference.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
         if is_orphaned {
             return actor_ask_null(AskError::OrphanedAsk);
         }
         actor_ask_clear();
     } else {
-        // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
+        // SAFETY: release the caller-side channel reference.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
         actor_ask_clear();
     }
     reply
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn actor_ask_wasm_impl(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    timeout_ms: Option<i32>,
+) -> *mut c_void {
+    // SAFETY: preserves the raw-pointer ask contract.
+    unsafe {
+        actor_ask_wasm_target_impl(
+            WasmAskTarget::Pointer(actor),
+            msg_type,
+            data,
+            size,
+            timeout_ms,
+        )
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn actor_ask_wasm_by_id_impl(
+    actor_id: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    timeout_ms: Option<i32>,
+) -> *mut c_void {
+    // SAFETY: ActorId resolution pins only during send/state probes.
+    unsafe {
+        actor_ask_wasm_target_impl(
+            WasmAskTarget::ActorId(actor_id),
+            msg_type,
+            data,
+            size,
+            timeout_ms,
+        )
+    }
 }
 
 /// Send a message with a caller-provided reply channel (WASM).
@@ -6339,9 +6658,8 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
         return -2;
     }
 
-    // Cancel periodic timers, drop link/monitor entries, and unregister
-    // named-node bindings BEFORE untracking. This prevents dangling
-    // link/monitor entries on WASM so DOWN signals cannot target a freed actor.
+    // Quiesce actor-owned producers before untracking. Relationship cleanup is
+    // performed after retirement and pin drain for native/WASM ordering parity.
     // SAFETY: the wait loop above ensures the actor is quiescent and not dispatching.
     unsafe { prepare_quiescent_actor_for_cleanup(actor) };
 
@@ -6373,6 +6691,9 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
         0,
         "send_pin_count must be 0 before finalize in actor_free_wasm_impl"
     );
+
+    // SAFETY: the actor is retired and WASM has no concurrent pins.
+    unsafe { scrub_actor_relationships_after_pin_drain(actor) };
 
     // SAFETY: actor is quiescent, wake-proofed, no longer tracked, and not
     // being dispatched.
@@ -6560,6 +6881,150 @@ mod tests {
     }
 
     #[test]
+    fn local_pid_operations_resolve_stable_actor_identity() {
+        let _guard = crate::runtime_test_guard();
+        let runtime = NativeSchedulerGuard::new();
+        // SAFETY: runtime guard installs the owning authority; empty state is valid.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn returned a live actor.
+        let (expected_id, token) = unsafe { ((*actor).id, (*actor).local_pid_id) };
+
+        let mut resolved_id = 0;
+        assert_eq!(
+            unsafe {
+                // SAFETY: resolved_id is writable for the call.
+                hew_local_pid_actor_id(token, &raw mut resolved_id)
+            },
+            0
+        );
+        assert_eq!(resolved_id, expected_id);
+        // SAFETY: a null payload with size zero is readable by contract.
+        assert_eq!(
+            unsafe {
+                // SAFETY: a null payload with size zero is readable by contract.
+                hew_local_pid_send(token, 17, ptr::null_mut(), 0)
+            },
+            HewError::Ok as i32
+        );
+
+        assert!(wait_for_condition(
+            std::time::Duration::from_secs(1),
+            || {
+                // SAFETY: actor remains live until the free immediately below.
+                (unsafe { (*actor).actor_state.load(Ordering::Acquire) })
+                    == HewActorState::Idle as i32
+            }
+        ));
+        // SAFETY: scheduler drained the message and actor is idle.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+        assert_eq!(
+            // SAFETY: resolved_id is writable for the call.
+            unsafe { hew_local_pid_actor_id(token, &raw mut resolved_id) },
+            HewError::ErrActorStopped as i32
+        );
+        // SAFETY: a null payload with size zero is readable by contract.
+        assert_eq!(
+            unsafe {
+                // SAFETY: a null payload with size zero is readable by contract.
+                hew_local_pid_send(token, 17, ptr::null_mut(), 0)
+            },
+            HewError::ErrActorStopped as i32
+        );
+        drop(runtime);
+    }
+
+    #[test]
+    fn local_pid_ask_uses_actor_identity_and_clears_error_slot() {
+        let _guard = crate::runtime_test_guard();
+        let runtime = NativeSchedulerGuard::new();
+        // SAFETY: null state and the reply dispatch form a valid actor spawn.
+        let actor =
+            unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(native_reply_once_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor is live until teardown below.
+        let token = unsafe { (*actor).local_pid_id };
+
+        LAST_ACTOR_ASK_ERROR.with(|slot| slot.set(AskError::Timeout as i32));
+        // SAFETY: a null payload with size zero is readable by contract.
+        let reply = unsafe { hew_local_pid_ask(token, 1, ptr::null_mut(), 0) };
+        assert!(!reply.is_null());
+        // SAFETY: successful replies are malloc-allocated.
+        unsafe { libc::free(reply) };
+        assert_eq!(hew_actor_ask_take_last_error(), AskError::None as i32);
+
+        // SAFETY: ask completed and actor is idle.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+        drop(runtime);
+    }
+
+    #[test]
+    fn local_pid_ask_with_channel_failure_preserves_caller_reference() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null state and valid dispatch form a valid actor spawn.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor is live until teardown below.
+        let token = unsafe { (*actor).local_pid_id };
+        // SAFETY: actor is live; close makes subsequent asks fail closed.
+        unsafe { hew_actor_close(actor) };
+
+        let before = reply_channel::active_channel_count();
+        let ch = reply_channel::hew_reply_channel_new();
+        assert_eq!(reply_channel::active_channel_count(), before + 1);
+        // SAFETY: ch is caller-owned and payload is empty.
+        let status =
+            unsafe { hew_local_pid_ask_with_channel(token, 1, ptr::null_mut(), 0, ch.cast()) };
+        assert_eq!(status, HewError::ErrActorStopped as i32);
+        assert_eq!(
+            reply_channel::active_channel_count(),
+            before + 1,
+            "failed token ask must preserve the caller-owned channel reference"
+        );
+
+        // SAFETY: release the preserved caller ref, then free the closed actor.
+        unsafe {
+            reply_channel::hew_reply_channel_free(ch);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        assert_eq!(reply_channel::active_channel_count(), before);
+    }
+
+    #[test]
+    fn actor_identity_pin_blocks_reclamation_until_guard_drop() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: empty state and no-op dispatch form a valid actor spawn.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor remains allocated while the pin is held.
+        let actor_id = unsafe { (*actor).id };
+        let pin = live_actors::pin_actor_by_id(actor_id).expect("live actor pin");
+
+        let free_started = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let free_started_thread = std::sync::Arc::clone(&free_started);
+        let free_done = std::sync::Arc::new(AtomicBool::new(false));
+        let free_done_thread = std::sync::Arc::clone(&free_done);
+        let actor_addr = actor as usize;
+        let free = std::thread::spawn(move || {
+            free_started_thread.wait();
+            // SAFETY: the actor remains pinned until the main thread releases it.
+            let status = unsafe { hew_actor_free(actor_addr as *mut HewActor) };
+            free_done_thread.store(true, Ordering::Release);
+            status
+        });
+
+        free_started.wait();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        assert!(
+            !free_done.load(Ordering::Acquire),
+            "actor free must wait for the identity pin"
+        );
+        drop(pin);
+        assert_eq!(free.join().expect("free thread"), 0);
+        assert!(free_done.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn actor_cleanup_drains_every_direct_identity() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: runtime guard installs the authority and both spawns use
@@ -6606,6 +7071,8 @@ mod tests {
             crate::lifetime::local_handles::current_counts_for_test(),
             (0, 0)
         );
+        // SAFETY: the actor is retired and has no pins.
+        unsafe { scrub_actor_relationships_after_pin_drain(actor) };
         // SAFETY: actor is wake-proof, untracked, unpinned, and test-owned.
         unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
     }
@@ -11940,6 +12407,35 @@ mod wasm_tests {
                 crate::lifetime::local_handles::current_counts_for_test(),
                 (0, 0)
             );
+        }
+    }
+
+    #[test]
+    fn wasm_local_pid_ask_pins_only_for_send_and_resolves_reply() {
+        let _guard = crate::runtime_test_guard();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(reply_once_dispatch));
+            assert!(!actor.is_null());
+            let token = (*actor).local_pid_id;
+
+            let reply = hew_local_pid_ask(token, 1, ptr::null_mut(), 0);
+            assert!(!reply.is_null());
+            assert_eq!(*reply.cast::<i32>(), 21);
+            libc::free(reply);
+            assert_eq!(hew_actor_ask_take_last_error(), AskError::None as i32);
+
+            assert_eq!(hew_actor_free(actor), 0);
+            let stale_reply = hew_local_pid_ask(token, 1, ptr::null_mut(), 0);
+            assert!(stale_reply.is_null());
+            assert_eq!(
+                hew_actor_ask_take_last_error(),
+                AskError::OrphanedAsk as i32
+            );
+
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
         }
     }
 }

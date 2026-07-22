@@ -19,6 +19,8 @@ use std::sync::{Mutex, PoisonError};
 
 use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
+use crate::lifetime::live_actors::pin_actor_by_id;
+use crate::lifetime::local_handles::{resolve_current_actor, HewLocalPidId};
 use crate::lifetime::poison_safe::PoisonSafeRw;
 use crate::mailbox;
 use crate::node_identity::{Location, NodeId};
@@ -963,6 +965,90 @@ pub unsafe extern "C" fn hew_actor_monitor(
     0
 }
 
+/// Create a monitor between two stable local actor identities.
+///
+/// Returns the same one-based monitor status vocabulary as
+/// [`hew_actor_monitor`]. Missing, foreign-runtime, or retired handles report
+/// `INVALID_TARGET` (`2`).
+///
+/// # Safety
+/// `out_monitor_id` must be writable when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_local_pid_monitor(
+    watcher: HewLocalPidId,
+    target: HewLocalPidId,
+    out_monitor_id: *mut u64,
+) -> i32 {
+    const INVALID_TARGET: i32 = 2;
+
+    let (Some(watcher_id), Some(target_id)) = (
+        resolve_current_actor(watcher),
+        resolve_current_actor(target),
+    ) else {
+        return INVALID_TARGET;
+    };
+    let Some(watcher_pin) = pin_actor_by_id(watcher_id) else {
+        return INVALID_TARGET;
+    };
+    if watcher_id == target_id {
+        #[cfg(test)]
+        run_local_pid_monitor_registration_hook();
+        // SAFETY: the one allocation is pinned and the out pointer follows
+        // this function's contract.
+        return unsafe {
+            hew_actor_monitor(watcher_pin.as_ptr(), watcher_pin.as_ptr(), out_monitor_id)
+        };
+    }
+    let Some(target_pin) = pin_actor_by_id(target_id) else {
+        return INVALID_TARGET;
+    };
+    #[cfg(test)]
+    run_local_pid_monitor_registration_hook();
+    // SAFETY: both allocations stay pinned for the complete registration.
+    unsafe { hew_actor_monitor(watcher_pin.as_ptr(), target_pin.as_ptr(), out_monitor_id) }
+}
+
+#[cfg(test)]
+type LocalPidMonitorRegistrationHook = Option<(Arc<Barrier>, Arc<Barrier>)>;
+
+#[cfg(test)]
+static LOCAL_PID_MONITOR_REGISTRATION_HOOK: LazyLock<Mutex<LocalPidMonitorRegistrationHook>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+fn run_local_pid_monitor_registration_hook() {
+    let hook = LOCAL_PID_MONITOR_REGISTRATION_HOOK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    if let Some((entered, release)) = hook {
+        entered.wait();
+        release.wait();
+    }
+}
+
+#[cfg(test)]
+struct LocalPidMonitorRegistrationHookGuard;
+
+#[cfg(test)]
+impl LocalPidMonitorRegistrationHookGuard {
+    fn install(entered: Arc<Barrier>, release: Arc<Barrier>) -> Self {
+        *LOCAL_PID_MONITOR_REGISTRATION_HOOK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((entered, release));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for LocalPidMonitorRegistrationHookGuard {
+    fn drop(&mut self) {
+        *LOCAL_PID_MONITOR_REGISTRATION_HOOK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}
+
 /// Rust convenience wrapper around the explicit status/out-id monitor ABI.
 ///
 /// # Safety
@@ -1271,6 +1357,29 @@ pub(crate) fn has_monitors_for_actor(actor_id: u64, _actor_addr: *mut HewActor) 
         })
 }
 
+/// Returns true if any monitor index still contains `ref_id`.
+#[cfg(test)]
+fn has_monitor_ref_in_any_index(ref_id: u64) -> bool {
+    let state = monitor_state();
+    if state
+        .observations
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains_key(&ref_id)
+    {
+        return true;
+    }
+    state.table.iter().any(|shard| {
+        shard.read_access(|shard| {
+            shard.ref_to_monitor.contains_key(&ref_id)
+                || shard
+                    .monitors
+                    .values()
+                    .any(|entries| entries.iter().any(|entry| entry.ref_id == ref_id))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1293,6 +1402,172 @@ mod tests {
         let status = unsafe { hew_actor_monitor(watcher, target, &raw mut monitor_id) };
         assert_eq!(status, 0);
         monitor_id
+    }
+
+    #[test]
+    fn local_pid_monitor_resolves_both_actor_identities_and_rejects_stale_target() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: empty state and no-op dispatch form valid actor spawns.
+        let watcher =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: same contract as watcher.
+        let target =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!watcher.is_null() && !target.is_null());
+        // SAFETY: both actors remain live through monitor registration.
+        let (watcher_id, watcher_token, target_id, target_token) = unsafe {
+            (
+                (*watcher).id,
+                (*watcher).local_pid_id,
+                (*target).id,
+                (*target).local_pid_id,
+            )
+        };
+
+        let mut monitor_id = 0;
+        assert_eq!(
+            unsafe {
+                // SAFETY: out pointer is writable and both tokens resolve live actors.
+                hew_local_pid_monitor(watcher_token, target_token, &raw mut monitor_id)
+            },
+            0
+        );
+        assert_ne!(monitor_id, 0);
+        assert!(has_monitors_for_actor(watcher_id, watcher));
+        assert!(has_monitors_for_actor(target_id, target));
+        hew_actor_demonitor(monitor_id);
+        assert!(!has_monitors_for_actor(watcher_id, watcher));
+        assert!(!has_monitors_for_actor(target_id, target));
+
+        let mut self_monitor_id = 0;
+        assert_eq!(
+            unsafe {
+                // SAFETY: out pointer is writable; one live token supplies both roles.
+                hew_local_pid_monitor(watcher_token, watcher_token, &raw mut self_monitor_id)
+            },
+            0
+        );
+        hew_actor_demonitor(self_monitor_id);
+        assert!(!has_monitors_for_actor(watcher_id, watcher));
+
+        // SAFETY: target is idle and no monitor remains.
+        assert_eq!(unsafe { crate::actor::hew_actor_free(target) }, 0);
+        let mut unchanged = u64::MAX;
+        assert_eq!(
+            unsafe {
+                // SAFETY: out pointer is writable; stale target fails before write.
+                hew_local_pid_monitor(watcher_token, target_token, &raw mut unchanged)
+            },
+            2
+        );
+        assert_eq!(unchanged, u64::MAX);
+
+        // SAFETY: watcher remains idle and owned by this test.
+        assert_eq!(unsafe { crate::actor::hew_actor_free(watcher) }, 0);
+    }
+
+    fn local_pid_monitor_registration_race(free_watcher: bool) {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: empty state and no-op dispatch form valid actor spawns.
+        let watcher =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: same contract as watcher.
+        let target =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!watcher.is_null() && !target.is_null());
+        // SAFETY: both fresh actors are live.
+        let (watcher_id, watcher_token, target_id, target_token) = unsafe {
+            (
+                (*watcher).id,
+                (*watcher).local_pid_id,
+                (*target).id,
+                (*target).local_pid_id,
+            )
+        };
+
+        let registration_entered = Arc::new(Barrier::new(2));
+        let registration_release = Arc::new(Barrier::new(2));
+        let _registration_hook = LocalPidMonitorRegistrationHookGuard::install(
+            registration_entered.clone(),
+            registration_release.clone(),
+        );
+        let free_entered = Arc::new(Barrier::new(2));
+        let free_release = Arc::new(Barrier::new(2));
+        let _free_hook = if free_watcher {
+            crate::actor::install_free_post_retire_registration_hook_for_test(
+                watcher_id,
+                free_entered.clone(),
+                free_release.clone(),
+            )
+        } else {
+            crate::actor::install_free_pre_latch_registration_hook_for_test(
+                target_id,
+                free_entered.clone(),
+                free_release.clone(),
+            )
+        };
+        let registration = std::thread::spawn(move || {
+            let mut monitor_id = 0;
+            // SAFETY: the out pointer is thread-local and writable.
+            let status =
+                unsafe { hew_local_pid_monitor(watcher_token, target_token, &raw mut monitor_id) };
+            (status, monitor_id)
+        });
+        registration_entered.wait();
+
+        let retired_ptr = if free_watcher { watcher } else { target };
+        let retired_id = if free_watcher { watcher_id } else { target_id };
+        let retired_addr = retired_ptr as usize;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let free = std::thread::spawn(move || {
+            // SAFETY: the spawned actor remains allocated until its pins drain.
+            let rc = unsafe { crate::actor::hew_actor_free(retired_addr as *mut HewActor) };
+            done_tx.send(rc).expect("free completion receiver");
+        });
+        free_entered.wait();
+        assert_eq!(
+            crate::lifetime::live_actors::is_actor_live_with_id(retired_id, retired_ptr),
+            !free_watcher,
+            "watcher test pauses after retirement; target test pauses before latch"
+        );
+        assert!(
+            matches!(
+                done_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "free must await the pinned registration before its final scrub"
+        );
+
+        registration_release.wait();
+        let (status, monitor_id) = registration.join().expect("monitor registration thread");
+        assert_eq!(status, 0);
+        assert_ne!(monitor_id, 0);
+        assert!(has_monitor_ref_in_any_index(monitor_id));
+        assert!(has_monitors_for_actor(watcher_id, watcher));
+        assert!(has_monitors_for_actor(target_id, target));
+
+        free_release.wait();
+        free.join().expect("free thread");
+        assert_eq!(done_rx.recv().expect("free result"), 0);
+
+        assert!(!has_monitors_for_actor(watcher_id, std::ptr::null_mut()));
+        assert!(!has_monitors_for_actor(target_id, std::ptr::null_mut()));
+        assert!(!has_monitor_ref_in_any_index(monitor_id));
+        hew_actor_demonitor(monitor_id);
+
+        let survivor = if free_watcher { target } else { watcher };
+        // SAFETY: survivor is still allocated, live, and quiescent/terminal.
+        assert_eq!(unsafe { crate::actor::hew_actor_free(survivor) }, 0);
+    }
+
+    #[test]
+    fn target_free_waits_for_pinned_local_monitor_then_scrubs_registry() {
+        local_pid_monitor_registration_race(false);
+    }
+
+    #[test]
+    fn watcher_free_waits_for_pinned_local_monitor_then_scrubs_registry() {
+        local_pid_monitor_registration_race(true);
     }
 
     fn create_test_actor(id: u64) -> HewActor {

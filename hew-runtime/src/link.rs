@@ -16,6 +16,8 @@ use std::sync::{Arc, Barrier, Mutex};
 
 use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
+use crate::lifetime::live_actors::pin_actor_by_id;
+use crate::lifetime::local_handles::{resolve_current_actor, HewLocalPidId};
 use crate::lifetime::PoisonSafeRw;
 use crate::mailbox;
 use crate::supervisor::SYS_MSG_EXIT;
@@ -26,17 +28,14 @@ const LINK_SHARDS: usize = 16;
 /// Entry in the link table mapping `actor_id` -> linked actors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LinkedActorEntry {
-    /// Actor ID for O(1) liveness lookup in propagation paths.
+    /// Stable actor incarnation identity used for liveness lookup.
     linked_actor_id: u64,
-    /// Linked actor address retained for pointer confirmation.
-    linked_actor: usize,
 }
 
 /// Entry in the link table mapping `actor_id` -> linked actors.
 #[derive(Debug)]
 struct LinkShard {
     /// Maps `actor_id` to Vec of actors linked to that actor.
-    /// Using usize instead of *mut `HewActor` for thread safety.
     links: HashMap<u64, Vec<LinkedActorEntry>>,
     /// Tracks actors whose terminal EXIT propagation has already completed.
     terminal_exits: HashMap<u64, i32>,
@@ -48,8 +47,6 @@ struct LinkShard {
 /// The runtime's poison-recovery discipline is to continue operating with
 /// conservatively recovered state rather than cascading a poisoning failure,
 /// consistent with the rationale documented in `poison_safe.rs`.
-/// We use usize to store actor pointers to make it Send+Sync safe.
-/// The runtime guarantees actors remain valid while linked.
 // native-only: LINK_TABLE state does not exist in the single-threaded WASM model
 static LINK_TABLE: LazyLock<[PoisonSafeRw<LinkShard>; LINK_SHARDS]> = LazyLock::new(|| {
     std::array::from_fn(|_| {
@@ -98,8 +95,8 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
             let b_terminal_reason = terminal_exit_reason(shard, id_b, actor_b);
 
             if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                add_link_locked(shard, id_a, id_b, b);
-                add_link_locked(shard, id_b, id_a, a);
+                add_link_locked(shard, id_a, id_b);
+                add_link_locked(shard, id_b, id_a);
             }
 
             (a_terminal_reason, b_terminal_reason)
@@ -110,8 +107,8 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
                 let b_terminal_reason = terminal_exit_reason(shard_b, id_b, actor_b);
 
                 if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                    add_link_locked(shard_a, id_a, id_b, b);
-                    add_link_locked(shard_b, id_b, id_a, a);
+                    add_link_locked(shard_a, id_a, id_b);
+                    add_link_locked(shard_b, id_b, id_a);
                 }
 
                 (a_terminal_reason, b_terminal_reason)
@@ -123,8 +120,8 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
                 let b_terminal_reason = terminal_exit_reason(shard_b, id_b, actor_b);
 
                 if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                    add_link_locked(shard_a, id_a, id_b, b);
-                    add_link_locked(shard_b, id_b, id_a, a);
+                    add_link_locked(shard_a, id_a, id_b);
+                    add_link_locked(shard_b, id_b, id_a);
                 }
 
                 (a_terminal_reason, b_terminal_reason)
@@ -133,9 +130,9 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
     };
 
     if let (Some(reason), None) = (a_terminal_reason, b_terminal_reason) {
-        send_exit_signal(id_b, b, id_a, reason);
+        send_exit_signal(id_b, id_a, reason);
     } else if let (None, Some(reason)) = (a_terminal_reason, b_terminal_reason) {
-        send_exit_signal(id_a, a, id_b, reason);
+        send_exit_signal(id_a, id_b, reason);
     }
 }
 
@@ -159,18 +156,98 @@ pub unsafe extern "C" fn hew_actor_unlink(a: *mut HewActor, b: *mut HewActor) {
     let id_b = actor_b.id;
 
     // Remove bidirectional links: A -/-> B and B -/-> A
-    remove_link(id_a, b);
-    remove_link(id_b, a);
+    remove_link(id_a, id_b);
+    remove_link(id_b, id_a);
 }
 
-fn add_link_locked(shard: &mut LinkShard, from_id: u64, to_actor_id: u64, to_actor: *mut HewActor) {
+/// Create a bidirectional link between two stable local actor identities.
+#[no_mangle]
+pub extern "C" fn hew_local_pid_link(a: HewLocalPidId, b: HewLocalPidId) {
+    let (Some(id_a), Some(id_b)) = (resolve_current_actor(a), resolve_current_actor(b)) else {
+        return;
+    };
+    if id_a == id_b {
+        return;
+    }
+    let Some(pin_a) = pin_actor_by_id(id_a) else {
+        return;
+    };
+    let Some(pin_b) = pin_actor_by_id(id_b) else {
+        return;
+    };
+    #[cfg(test)]
+    run_local_pid_link_registration_hook();
+    // SAFETY: both actor allocations stay pinned for the complete operation.
+    unsafe { hew_actor_link(pin_a.as_ptr(), pin_b.as_ptr()) };
+}
+
+#[cfg(test)]
+type LocalPidLinkRegistrationHook = Option<(Arc<Barrier>, Arc<Barrier>)>;
+
+#[cfg(test)]
+static LOCAL_PID_LINK_REGISTRATION_HOOK: LazyLock<Mutex<LocalPidLinkRegistrationHook>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+fn run_local_pid_link_registration_hook() {
+    let hook = LOCAL_PID_LINK_REGISTRATION_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some((entered, release)) = hook {
+        entered.wait();
+        release.wait();
+    }
+}
+
+#[cfg(test)]
+struct LocalPidLinkRegistrationHookGuard;
+
+#[cfg(test)]
+impl LocalPidLinkRegistrationHookGuard {
+    fn install(entered: Arc<Barrier>, release: Arc<Barrier>) -> Self {
+        *LOCAL_PID_LINK_REGISTRATION_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((entered, release));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for LocalPidLinkRegistrationHookGuard {
+    fn drop(&mut self) {
+        *LOCAL_PID_LINK_REGISTRATION_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+/// Remove a bidirectional link between two stable local actor identities.
+#[no_mangle]
+pub extern "C" fn hew_local_pid_unlink(a: HewLocalPidId, b: HewLocalPidId) {
+    let (Some(id_a), Some(id_b)) = (resolve_current_actor(a), resolve_current_actor(b)) else {
+        return;
+    };
+    if id_a == id_b {
+        return;
+    }
+    let Some(pin_a) = pin_actor_by_id(id_a) else {
+        return;
+    };
+    let Some(pin_b) = pin_actor_by_id(id_b) else {
+        return;
+    };
+    // SAFETY: both actor allocations stay pinned for the complete operation.
+    unsafe { hew_actor_unlink(pin_a.as_ptr(), pin_b.as_ptr()) };
+}
+
+fn add_link_locked(shard: &mut LinkShard, from_id: u64, to_actor_id: u64) {
     shard
         .links
         .entry(from_id)
         .or_default()
         .push(LinkedActorEntry {
             linked_actor_id: to_actor_id,
-            linked_actor: to_actor as usize,
         });
 }
 
@@ -188,17 +265,14 @@ fn terminal_exit_reason(shard: &LinkShard, actor_id: u64, actor: &HewActor) -> O
     }
 }
 
-fn send_exit_signal(
-    linked_actor_id: u64,
-    linked_actor: *mut HewActor,
-    crashed_actor_id: u64,
-    reason: i32,
-) {
-    if linked_actor.is_null() {
+fn send_exit_signal(linked_actor_id: u64, crashed_actor_id: u64, reason: i32) {
+    let Some(linked_actor_pin) = pin_actor_by_id(linked_actor_id) else {
         return;
-    }
+    };
+    let linked_actor = linked_actor_pin.as_ptr();
 
-    crate::actor::with_live_actor_by_id(linked_actor_id, linked_actor, |linked_actor_ref| {
+    {
+        let linked_actor_ref = linked_actor_pin.actor();
         let mailbox = linked_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
         if !mailbox.is_null() {
             let exit_data = ExitMessage {
@@ -213,7 +287,7 @@ fn send_exit_signal(
             let data_ptr = (&raw const exit_data).cast::<c_void>();
             let data_size = std::mem::size_of::<ExitMessage>();
 
-            // SAFETY: LIVE_ACTORS keeps the linked actor and mailbox live.
+            // SAFETY: the ActorId pin keeps the linked actor and mailbox live.
             unsafe {
                 mailbox::hew_mailbox_send_sys(
                     mailbox,
@@ -245,16 +319,15 @@ fn send_exit_signal(
 
         #[cfg(test)]
         run_propagate_exit_hook();
-    });
+    }
 }
 
 /// Remove a unidirectional link: `from_id` -/-> `to_actor`.
-fn remove_link(from_id: u64, to_actor: *mut HewActor) {
+fn remove_link(from_id: u64, to_actor_id: u64) {
     let shard_index = get_shard_index(from_id);
     LINK_TABLE[shard_index].access(|shard| {
         if let Some(linked_actors) = shard.links.get_mut(&from_id) {
-            let target_addr = to_actor as usize;
-            linked_actors.retain(|entry| entry.linked_actor != target_addr);
+            linked_actors.retain(|entry| entry.linked_actor_id != to_actor_id);
             if linked_actors.is_empty() {
                 shard.links.remove(&from_id);
             }
@@ -280,16 +353,11 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
 
     // Send EXIT messages to all linked actors.
     for linked_actor_entry in linked_actors {
-        if linked_actor_entry.linked_actor == 0 {
-            continue;
-        }
-
-        let linked_actor = linked_actor_entry.linked_actor as *mut HewActor;
         let linked_id = linked_actor_entry.linked_actor_id;
 
         // Remove the reverse link: linked_actor -/-> crashing_actor
         remove_link_by_target(linked_id, actor_id);
-        send_exit_signal(linked_id, linked_actor, actor_id, reason);
+        send_exit_signal(linked_id, actor_id, reason);
     }
 }
 
@@ -304,9 +372,8 @@ pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
 /// This is the cross-node mirror of [`send_exit_signal`]: when a remote linked
 /// peer reaches a terminal state, a `CrashLinked` link must synthesize a
 /// `SYS_MSG_EXIT` into the LOCAL linked actor's MAILBOX and crash it — the OTP
-/// fail-together semantic. Unlike the local link table (keyed by `*mut HewActor`
-/// pointers), the cross-node entry stores only the local actor id, so we resolve
-/// the live pointer by id before reusing the same EXIT-synthesis path.
+/// fail-together semantic. Local and cross-node link state stores actor
+/// identities only, so delivery resolves and pins the live allocation by id.
 ///
 /// `crashed_remote_serial` is the dead remote peer's serial (carried into the
 /// `ExitMessage` for the typed `#[on(exit)]` consumer). `reason` is the terminal
@@ -331,14 +398,14 @@ pub(crate) fn deliver_cross_node_link_exit(
     }
     // Resolve the live local actor by id; if it is already terminal/freed, there
     // is nothing to crash (idempotent / fail-closed — no fabricated EXIT).
-    let Some(actor_ptr) = crate::lifetime::live_actors::get_actor_ptr_by_id(local_actor_id) else {
+    if crate::lifetime::live_actors::get_actor_ptr_by_id(local_actor_id).is_none() {
         return false;
-    };
+    }
     // Reuse the proven local EXIT-synthesis path (same SYS_MSG_EXIT + CrashKind
     // projection + Idle→Runnable wake), so supervision / exit-trapping behaves
-    // identically to a local link EXIT. `with_live_actor_by_id` inside
-    // `send_exit_signal` re-validates liveness under the registry lock.
-    send_exit_signal(local_actor_id, actor_ptr, crashed_remote_serial, reason);
+    // identically to a local link EXIT. `send_exit_signal` re-validates and pins
+    // liveness before dereferencing the allocation.
+    send_exit_signal(local_actor_id, crashed_remote_serial, reason);
     true
 }
 
@@ -393,12 +460,7 @@ fn remove_link_by_target(from_id: u64, target_id: u64) {
     let shard_index = get_shard_index(from_id);
     LINK_TABLE[shard_index].access(|shard| {
         if let Some(linked_actors) = shard.links.get_mut(&from_id) {
-            linked_actors.retain(|entry| {
-                if entry.linked_actor == 0 {
-                    return false;
-                }
-                entry.linked_actor_id != target_id
-            });
+            linked_actors.retain(|entry| entry.linked_actor_id != target_id);
 
             if linked_actors.is_empty() {
                 shard.links.remove(&from_id);
@@ -407,14 +469,12 @@ fn remove_link_by_target(from_id: u64, target_id: u64) {
     });
 }
 
-/// Remove all link entries for a given actor (by ID) and purge its address
+/// Remove all link entries for a given actor (by ID) and purge its identity
 /// from every other actor's link list across all shards.
 ///
-/// Called from `hew_actor_free` before deallocation to prevent link
-/// propagation from dereferencing freed memory.
-pub(crate) fn remove_all_links_for_actor(actor_id: u64, actor_addr: *mut HewActor) {
-    let actor_usize = actor_addr as usize;
-
+/// Called from `hew_actor_free` before deallocation to remove stale semantic
+/// relationships without retaining allocation addresses.
+pub(crate) fn remove_all_links_for_actor(actor_id: u64, _actor_addr: *mut HewActor) {
     // Remove the actor's own link-list entry from its shard.
     let own_shard = get_shard_index(actor_id);
     LINK_TABLE[own_shard].access(|shard| {
@@ -422,13 +482,13 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, actor_addr: *mut HewActo
         shard.links.remove(&actor_id);
     });
 
-    // Scan all shards and remove this actor's address from other actors'
+    // Scan all shards and remove this actor's identity from other actors'
     // link lists. This is O(shards × entries) but actors rarely have many
     // links, and this only runs at free time.
     for shard_rw in LINK_TABLE.iter() {
         shard_rw.access(|shard| {
             shard.links.retain(|_id, linked_actors| {
-                linked_actors.retain(|entry| entry.linked_actor != actor_usize);
+                linked_actors.retain(|entry| entry.linked_actor_id != actor_id);
                 !linked_actors.is_empty()
             });
         });
@@ -516,10 +576,9 @@ pub extern "C" fn hew_link_probe_terminal_state(actor_id: i64) -> i64 {
         .map_or(LINK_PROBE_NOT_TERMINAL, |&reason| i64::from(reason))
 }
 
-/// Returns true if any link entries reference the given actor address.
+/// Returns true if any link entries reference the given actor identity.
 #[cfg(test)]
-pub(crate) fn has_links_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> bool {
-    let actor_usize = actor_addr as usize;
+pub(crate) fn has_links_for_actor(actor_id: u64, _actor_addr: *mut HewActor) -> bool {
     let own_shard = get_shard_index(actor_id);
     if LINK_TABLE[own_shard].read_access(|shard| shard.links.contains_key(&actor_id)) {
         return true;
@@ -530,7 +589,7 @@ pub(crate) fn has_links_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> b
             shard
                 .links
                 .values()
-                .any(|linked| linked.iter().any(|entry| entry.linked_actor == actor_usize))
+                .any(|linked| linked.iter().any(|entry| entry.linked_actor_id == actor_id))
         });
         if hit {
             return true;
@@ -623,7 +682,6 @@ mod tests {
                 .get(&100)
                 .is_some_and(|v| v.contains(&LinkedActorEntry {
                     linked_actor_id: 200,
-                    linked_actor: b_ptr as usize,
                 })));
         });
         LINK_TABLE[shard_b].read_access(|table_b| {
@@ -632,7 +690,6 @@ mod tests {
                 .get(&200)
                 .is_some_and(|v| v.contains(&LinkedActorEntry {
                     linked_actor_id: 100,
-                    linked_actor: a_ptr as usize,
                 })));
         });
 
@@ -647,14 +704,128 @@ mod tests {
             assert!(!table_a
                 .links
                 .get(&100)
-                .is_some_and(|v| v.iter().any(|entry| entry.linked_actor == b_ptr as usize)));
+                .is_some_and(|v| v.iter().any(|entry| entry.linked_actor_id == 200)));
         });
         LINK_TABLE[shard_b].read_access(|table_b| {
             assert!(!table_b
                 .links
                 .get(&200)
-                .is_some_and(|v| v.iter().any(|entry| entry.linked_actor == a_ptr as usize)));
+                .is_some_and(|v| v.iter().any(|entry| entry.linked_actor_id == 100)));
         });
+    }
+
+    #[test]
+    fn local_pid_link_persists_actor_ids_and_unlinks_by_identity() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: empty state and the no-op dispatch form valid actor spawns.
+        let actor_a =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: same contract as actor_a.
+        let actor_b =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor_a.is_null() && !actor_b.is_null());
+        // SAFETY: both actors remain live through unlink and free.
+        let (id_a, token_a, id_b, token_b) = unsafe {
+            (
+                (*actor_a).id,
+                (*actor_a).local_pid_id,
+                (*actor_b).id,
+                (*actor_b).local_pid_id,
+            )
+        };
+
+        hew_local_pid_link(token_a, token_a);
+        assert!(!has_links_for_actor(id_a, actor_a));
+        hew_local_pid_link(token_a, token_b);
+        assert!(has_links_for_actor(id_a, actor_a));
+        assert!(has_links_for_actor(id_b, actor_b));
+        let shard_a = get_shard_index(id_a);
+        LINK_TABLE[shard_a].read_access(|shard| {
+            assert!(shard.links.get(&id_a).is_some_and(|entries| {
+                entries
+                    == &[LinkedActorEntry {
+                        linked_actor_id: id_b,
+                    }]
+            }));
+        });
+
+        hew_local_pid_unlink(token_a, token_b);
+        assert!(!has_links_for_actor(id_a, actor_a));
+        assert!(!has_links_for_actor(id_b, actor_b));
+
+        // SAFETY: both actors are idle and no longer linked.
+        unsafe {
+            assert_eq!(crate::actor::hew_actor_free(actor_a), 0);
+            assert_eq!(crate::actor::hew_actor_free(actor_b), 0);
+        }
+    }
+
+    #[test]
+    fn free_drains_pinned_local_link_before_final_registry_scrub() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: empty state and the no-op dispatch form valid actor spawns.
+        let actor_a =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: same contract as actor_a.
+        let actor_b =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor_a.is_null() && !actor_b.is_null());
+        // SAFETY: both fresh actors are live.
+        let (id_a, token_a, id_b, token_b) = unsafe {
+            (
+                (*actor_a).id,
+                (*actor_a).local_pid_id,
+                (*actor_b).id,
+                (*actor_b).local_pid_id,
+            )
+        };
+
+        let registration_entered = Arc::new(Barrier::new(2));
+        let registration_release = Arc::new(Barrier::new(2));
+        let _registration_hook = LocalPidLinkRegistrationHookGuard::install(
+            registration_entered.clone(),
+            registration_release.clone(),
+        );
+        let free_entered = Arc::new(Barrier::new(2));
+        let free_release = Arc::new(Barrier::new(2));
+        let _free_hook = crate::actor::install_free_pre_latch_registration_hook_for_test(
+            id_b,
+            free_entered.clone(),
+            free_release.clone(),
+        );
+        let registration = std::thread::spawn(move || hew_local_pid_link(token_a, token_b));
+        registration_entered.wait();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let actor_b_addr = actor_b as usize;
+        let free = std::thread::spawn(move || {
+            // SAFETY: actor_b remains allocated until its pins drain.
+            let rc = unsafe { crate::actor::hew_actor_free(actor_b_addr as *mut HewActor) };
+            done_tx.send(rc).expect("free completion receiver");
+        });
+        free_entered.wait();
+        assert!(
+            matches!(
+                done_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "free must not complete before the pinned registration"
+        );
+
+        registration_release.wait();
+        registration.join().expect("link registration thread");
+        assert!(has_links_for_actor(id_a, actor_a));
+        assert!(has_links_for_actor(id_b, actor_b));
+
+        free_release.wait();
+        free.join().expect("free thread");
+        assert_eq!(done_rx.recv().expect("free result"), 0);
+
+        assert!(!has_links_for_actor(id_a, std::ptr::null_mut()));
+        assert!(!has_links_for_actor(id_b, std::ptr::null_mut()));
+
+        // SAFETY: actor_a remains idle, live, and unlinked.
+        assert_eq!(unsafe { crate::actor::hew_actor_free(actor_a) }, 0);
     }
 
     #[test]
@@ -743,7 +914,7 @@ mod tests {
                     || !b_links
                         .unwrap()
                         .iter()
-                        .any(|entry| entry.linked_actor == a_ptr as usize),
+                        .any(|entry| entry.linked_actor_id == 30_100),
                 "actor B's link list should no longer reference actor A"
             );
         });
@@ -831,8 +1002,8 @@ mod tests {
             entered.wait();
 
             // The EXIT message has now been delivered: `propagate` is parked
-            // in the hook still holding the LIVE_ACTORS lock, so the
-            // `hew_mailbox_send_sys` call already completed. Verify delivery
+            // in the hook still holding the linked actor's liveness pin, so
+            // `hew_mailbox_send_sys` already completed. Verify delivery
             // from the main thread *before* spawning the free thread. The
             // thread spawn below is a happens-before edge, so this read +
             // node free is ordered ahead of the free thread's later mailbox
@@ -881,7 +1052,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             assert!(
                 !free_done.load(std::sync::atomic::Ordering::Acquire),
-                "hew_actor_free must wait until propagate_exit_to_links releases LIVE_ACTORS"
+                "hew_actor_free must wait until propagate_exit_to_links releases its actor pin"
             );
 
             release.wait();

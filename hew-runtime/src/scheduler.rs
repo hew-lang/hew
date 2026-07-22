@@ -664,6 +664,18 @@ pub extern "C" fn hew_runtime_cleanup() {
     // before taking the root list for canonical destruction.
     crate::lifetime::live_actors::drain_deferred_teardown_threads();
 
+    // Close the shared publication gate before supervisor reclamation, then
+    // retire every direct supervisor route and wait for already-pinned handle
+    // operations. A timeout is fail-closed: keep the runtime and allocations
+    // installed rather than freeing memory beneath a live dereference.
+    crate::lifetime::local_handles::begin_current_shutdown();
+    if !crate::lifetime::local_handles::close_current_supervisors_for_cleanup(
+        std::time::Duration::from_secs(30),
+    ) {
+        set_last_error("runtime cleanup: supervisor handle pins did not drain");
+        return;
+    }
+
     // Free any registered top-level supervisors — this drops their child
     // specs (names + init_state) via the InternalChildSpec Drop impl.
     // Workers are already joined so we cannot send stop messages; we just
@@ -673,6 +685,8 @@ pub extern "C" fn hew_runtime_cleanup() {
 
     // SAFETY: All workers have been joined by hew_sched_shutdown.
     unsafe { actor::cleanup_all_actors() };
+
+    crate::lifetime::local_handles::assert_current_supervisors_empty();
 
     // Clear the name registry so no dangling pointers remain.
     crate::registry::hew_registry_clear();

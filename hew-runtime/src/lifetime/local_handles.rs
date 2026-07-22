@@ -5,7 +5,11 @@ use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
 use std::sync::{Condvar, Mutex, PoisonError};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
 use crate::lifetime::PoisonSafe;
 use crate::runtime_id::RuntimeId;
@@ -68,6 +72,11 @@ pub(crate) enum Route {
         runtime_id: RuntimeId,
         actor_id: u64,
     },
+    #[cfg(not(target_arch = "wasm32"))]
+    Supervisor {
+        runtime_id: RuntimeId,
+        control_id: HewLocalPidId,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -75,6 +84,8 @@ pub(crate) enum LocalHandleError {
     Exhausted,
     ShuttingDown,
     ActorAlreadyRegistered,
+    #[cfg(not(target_arch = "wasm32"))]
+    SupervisorAlreadyRegistered,
     IdentityCollision,
     PublicationAlreadyUsed,
 }
@@ -90,6 +101,147 @@ pub(crate) enum RetireActorResult {
 struct LocalHandleState {
     routes: HashMap<HewLocalPidId, Route>,
     actor_tokens: HashMap<u64, HewLocalPidId>,
+    #[cfg(not(target_arch = "wasm32"))]
+    controls: HashMap<HewLocalPidId, Arc<SupervisorControl>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    supervisor_tokens: HashMap<usize, HewLocalPidId>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const SUPERVISOR_CLOSING_BIT: usize = 1usize << (usize::BITS - 1);
+#[cfg(not(target_arch = "wasm32"))]
+const SUPERVISOR_PIN_MASK: usize = !SUPERVISOR_CLOSING_BIT;
+
+/// Stable liveness authority for one supervisor allocation.
+///
+/// The high state bit closes admission; the remaining bits count operations
+/// that may dereference the allocation. Reclamation starts only after the
+/// direct route is retired and this count drains to zero.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct SupervisorControl {
+    supervisor_addr: usize,
+    direct_id: HewLocalPidId,
+    runtime_id: RuntimeId,
+    access_state: AtomicUsize,
+    drain_mutex: Mutex<()>,
+    drained: Condvar,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SupervisorControl {
+    fn new(
+        supervisor: *mut crate::supervisor::HewSupervisor,
+        direct_id: HewLocalPidId,
+        runtime_id: RuntimeId,
+    ) -> Self {
+        Self {
+            supervisor_addr: supervisor as usize,
+            direct_id,
+            runtime_id,
+            access_state: AtomicUsize::new(0),
+            drain_mutex: Mutex::new(()),
+            drained: Condvar::new(),
+        }
+    }
+
+    pub(crate) fn supervisor(&self) -> *mut crate::supervisor::HewSupervisor {
+        self.supervisor_addr as *mut crate::supervisor::HewSupervisor
+    }
+
+    pub(crate) fn direct_id(&self) -> HewLocalPidId {
+        self.direct_id
+    }
+
+    pub(crate) fn runtime_id(&self) -> RuntimeId {
+        self.runtime_id
+    }
+
+    pub(crate) fn try_pin(self: &Arc<Self>) -> Option<SupervisorPin> {
+        let mut state = self.access_state.load(Ordering::Acquire);
+        loop {
+            if state & SUPERVISOR_CLOSING_BIT != 0
+                || state & SUPERVISOR_PIN_MASK == SUPERVISOR_PIN_MASK
+            {
+                return None;
+            }
+            match self.access_state.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(SupervisorPin(Arc::clone(self))),
+                Err(observed) => state = observed,
+            }
+        }
+    }
+
+    /// Close new admission. Returns true only to the linearization winner.
+    pub(crate) fn begin_close(&self) -> bool {
+        self.access_state
+            .fetch_or(SUPERVISOR_CLOSING_BIT, Ordering::AcqRel)
+            & SUPERVISOR_CLOSING_BIT
+            == 0
+    }
+
+    pub(crate) fn wait_for_pins(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now().checked_add(timeout);
+        let mut guard = self
+            .drain_mutex
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if self.access_state.load(Ordering::Acquire) & SUPERVISOR_PIN_MASK == 0 {
+                return true;
+            }
+            let Some(deadline) = deadline else {
+                return false;
+            };
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next, result) = self
+                .drained
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(PoisonError::into_inner);
+            guard = next;
+            if result.timed_out()
+                && self.access_state.load(Ordering::Acquire) & SUPERVISOR_PIN_MASK != 0
+            {
+                return false;
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct SupervisorPin(Arc<SupervisorControl>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SupervisorPin {
+    pub(crate) fn supervisor(&self) -> *mut crate::supervisor::HewSupervisor {
+        self.0.supervisor()
+    }
+
+    pub(crate) fn control(&self) -> Arc<SupervisorControl> {
+        Arc::clone(&self.0)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for SupervisorPin {
+    fn drop(&mut self) {
+        let previous = self.0.access_state.fetch_sub(1, Ordering::AcqRel);
+        debug_assert_ne!(previous & SUPERVISOR_PIN_MASK, 0);
+        if previous & SUPERVISOR_CLOSING_BIT != 0 && previous & SUPERVISOR_PIN_MASK == 1 {
+            let _guard = self
+                .0
+                .drain_mutex
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            self.0.drained.notify_all();
+        }
+    }
 }
 
 /// Runtime-owned semantic route authority for local handle values.
@@ -121,15 +273,15 @@ type AdmissionHook = Option<(
     std::sync::Arc<std::sync::Barrier>,
 )>;
 
-/// In-flight publication lease. Shutdown waits for every lease to drop before
-/// draining live actors, so no actor can be observed between route reservation
-/// and liveness publication.
-pub(crate) struct ActorPublication<'a> {
+/// In-flight handle-publication lease. Shutdown waits for every lease to drop
+/// before draining actors or supervisors, so neither kind can be published
+/// across the cleanup admission boundary.
+pub(crate) struct LocalHandlePublication<'a> {
     handles: &'a LocalHandles,
     registered: Cell<bool>,
 }
 
-impl Drop for ActorPublication<'_> {
+impl Drop for LocalHandlePublication<'_> {
     fn drop(&mut self) {
         let mut state = self
             .handles
@@ -140,7 +292,7 @@ impl Drop for ActorPublication<'_> {
         state.in_flight = state
             .in_flight
             .checked_sub(1)
-            .expect("actor publication count underflow");
+            .expect("local handle publication count underflow");
         if state.in_flight == 0 {
             self.handles.publication_gate.idle.notify_all();
         }
@@ -165,7 +317,7 @@ impl LocalHandles {
         }
     }
 
-    pub(crate) fn begin_publication(&self) -> Result<ActorPublication<'_>, LocalHandleError> {
+    pub(crate) fn begin_publication(&self) -> Result<LocalHandlePublication<'_>, LocalHandleError> {
         #[cfg(test)]
         self.run_admission_hook();
         let mut state = self
@@ -180,7 +332,7 @@ impl LocalHandles {
             .in_flight
             .checked_add(1)
             .ok_or(LocalHandleError::Exhausted)?;
-        Ok(ActorPublication {
+        Ok(LocalHandlePublication {
             handles: self,
             registered: Cell::new(false),
         })
@@ -266,6 +418,36 @@ impl LocalHandles {
                 }
             }
             state.actor_tokens.insert(actor_id, token);
+            Ok(token)
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn register_supervisor_reserved(
+        &self,
+        runtime_id: RuntimeId,
+        supervisor: *mut crate::supervisor::HewSupervisor,
+    ) -> Result<HewLocalPidId, LocalHandleError> {
+        let supervisor_addr = supervisor as usize;
+        self.state.access(|state| {
+            if state.supervisor_tokens.contains_key(&supervisor_addr) {
+                return Err(LocalHandleError::SupervisorAlreadyRegistered);
+            }
+            let token = allocate().ok_or(LocalHandleError::Exhausted)?;
+            let control = Arc::new(SupervisorControl::new(supervisor, token, runtime_id));
+            match state.routes.entry(token) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Route::Supervisor {
+                        runtime_id,
+                        control_id: token,
+                    });
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(LocalHandleError::IdentityCollision);
+                }
+            }
+            state.controls.insert(token, control);
+            state.supervisor_tokens.insert(supervisor_addr, token);
             Ok(token)
         })
     }
@@ -367,9 +549,95 @@ impl LocalHandles {
     pub(crate) fn actor_route_count(&self) -> usize {
         self.state.access(|state| state.actor_tokens.len())
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pin_supervisor(
+        &self,
+        runtime_id: RuntimeId,
+        token: HewLocalPidId,
+    ) -> Option<SupervisorPin> {
+        let control = self.state.access(|state| match state.routes.get(&token) {
+            Some(Route::Supervisor {
+                runtime_id: owner,
+                control_id,
+            }) if *owner == runtime_id && *control_id == token => {
+                state.controls.get(control_id).cloned()
+            }
+            _ => None,
+        })?;
+        control.try_pin()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn supervisor_control_for_raw(
+        &self,
+        token: HewLocalPidId,
+        supervisor: *mut crate::supervisor::HewSupervisor,
+    ) -> Option<Arc<SupervisorControl>> {
+        self.state.access(|state| {
+            let control = state.controls.get(&token)?;
+            (control.supervisor() == supervisor).then(|| Arc::clone(control))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn retire_supervisor_route(&self, control: &SupervisorControl) {
+        self.state.access(|state| {
+            if matches!(
+                state.routes.get(&control.direct_id()),
+                Some(Route::Supervisor { runtime_id, control_id })
+                    if *runtime_id == control.runtime_id()
+                        && *control_id == control.direct_id()
+            ) {
+                state.routes.remove(&control.direct_id());
+            }
+            if state.supervisor_tokens.get(&control.supervisor_addr) == Some(&control.direct_id()) {
+                state.supervisor_tokens.remove(&control.supervisor_addr);
+            }
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn remove_supervisor_control(&self, control: &SupervisorControl) {
+        self.state.access(|state| {
+            let matches = state
+                .controls
+                .get(&control.direct_id())
+                .is_some_and(|stored| std::ptr::eq(stored.as_ref(), control));
+            if matches {
+                state.controls.remove(&control.direct_id());
+            }
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn close_supervisors_for_cleanup(&self, timeout: Duration) -> bool {
+        let controls = self
+            .state
+            .access(|state| state.controls.values().cloned().collect::<Vec<_>>());
+        for control in &controls {
+            control.begin_close();
+            self.retire_supervisor_route(control);
+        }
+        controls
+            .iter()
+            .all(|control| control.wait_for_pins(timeout))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supervisor_counts(&self) -> (usize, usize) {
+        self.state.access(|state| {
+            let routes = state
+                .routes
+                .values()
+                .filter(|route| matches!(route, Route::Supervisor { .. }))
+                .count();
+            (routes, state.controls.len())
+        })
+    }
 }
 
-impl ActorPublication<'_> {
+impl LocalHandlePublication<'_> {
     pub(crate) fn register_actor(
         &self,
         runtime_id: RuntimeId,
@@ -379,6 +647,19 @@ impl ActorPublication<'_> {
             return Err(LocalHandleError::PublicationAlreadyUsed);
         }
         self.handles.register_actor_reserved(runtime_id, actor_id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn register_supervisor(
+        &self,
+        runtime_id: RuntimeId,
+        supervisor: *mut crate::supervisor::HewSupervisor,
+    ) -> Result<HewLocalPidId, LocalHandleError> {
+        if self.registered.replace(true) {
+            return Err(LocalHandleError::PublicationAlreadyUsed);
+        }
+        self.handles
+            .register_supervisor_reserved(runtime_id, supervisor)
     }
 
     pub(crate) fn retire_actor(&self, token: HewLocalPidId, actor_id: u64) -> RetireActorResult {
@@ -402,7 +683,7 @@ fn current_handles() -> Option<&'static LocalHandles> {
 /// Start one actor publication in the current runtime authority.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn begin_current_actor_publication(
-) -> Result<ActorPublication<'static>, LocalHandleError> {
+) -> Result<LocalHandlePublication<'static>, LocalHandleError> {
     current_handles()
         .ok_or(LocalHandleError::ShuttingDown)?
         .begin_publication()
@@ -412,7 +693,14 @@ pub(crate) fn begin_current_actor_publication(
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn begin_actor_publication_in(
     handles: &LocalHandles,
-) -> Result<ActorPublication<'_>, LocalHandleError> {
+) -> Result<LocalHandlePublication<'_>, LocalHandleError> {
+    handles.begin_publication()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn begin_supervisor_publication_in(
+    handles: &LocalHandles,
+) -> Result<LocalHandlePublication<'_>, LocalHandleError> {
     handles.begin_publication()
 }
 
@@ -447,6 +735,21 @@ pub(crate) fn begin_current_shutdown() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn close_current_supervisors_for_cleanup(timeout: Duration) -> bool {
+    current_handles().is_none_or(|handles| handles.close_supervisors_for_cleanup(timeout))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn assert_current_supervisors_empty() {
+    let counts = current_handles().map_or((0, 0), LocalHandles::supervisor_counts);
+    assert_eq!(
+        counts,
+        (0, 0),
+        "local supervisor routes or controls survived runtime cleanup"
+    );
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn finish_current_shutdown() {
     if let Some(handles) = current_handles() {
@@ -457,6 +760,32 @@ pub(crate) fn finish_current_shutdown() {
 #[cfg(test)]
 pub(crate) fn current_counts_for_test() -> (usize, usize) {
     current_handles().map_or((0, 0), LocalHandles::counts)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn current_supervisor_counts_for_test() -> (usize, usize) {
+    current_handles().map_or((0, 0), LocalHandles::supervisor_counts)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorPin> {
+    let runtime = crate::runtime::rt_current_opt()?;
+    runtime
+        .local_handles
+        .pin_supervisor(runtime.runtime_id(), token)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn close_current_supervisor(control: &SupervisorControl) -> bool {
+    let Some(runtime) = crate::runtime::rt_current_opt() else {
+        return false;
+    };
+    if runtime.runtime_id() != control.runtime_id() {
+        return false;
+    }
+    let won_close = control.begin_close();
+    runtime.local_handles.retire_supervisor_route(control);
+    won_close
 }
 
 /// Resolve a direct actor route in the current runtime authority.

@@ -141,6 +141,8 @@ pub struct HewActor {
     // never read/written here — it exists purely to preserve the layout
     // parity this module asserts.
     pub gen_sink: AtomicPtr<c_void>,
+    // Stable target-word local-handle identity; mirrors the canonical tail.
+    pub local_pid_id: crate::lifetime::local_handles::HewLocalPidId,
 }
 
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
@@ -205,6 +207,7 @@ const _: () = {
     assert!(offset_of!(W, runtime) == offset_of!(N, runtime));
     assert!(offset_of!(W, send_pin_count) == offset_of!(N, send_pin_count));
     assert!(offset_of!(W, gen_sink) == offset_of!(N, gen_sink));
+    assert!(offset_of!(W, local_pid_id) == offset_of!(N, local_pid_id));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -722,6 +725,10 @@ pub extern "C" fn hew_sched_init() -> c_int {
         RUN_QUEUE = Some(VecDeque::new());
         INITIALIZED = true;
     }
+    // A new scheduler session owns a fresh cleanup opportunity. The actor
+    // handle registry itself is reopened only after the preceding cleanup has
+    // drained every route; process-wide token allocation is never reset.
+    WASM_CLEANUP_RAN.store(false, Ordering::Release);
     // Register the tracing reset hook so session_reset() clears trace events
     // on WASM just as it does on the native path.  Without this the hook list
     // stays empty and session_reset() in hew_sched_shutdown is a no-op.
@@ -2176,6 +2183,18 @@ mod tests {
 
     use crate::internal::types::HewError;
 
+    #[test]
+    fn local_pid_tail_preserves_canonical_actor_layout() {
+        assert_eq!(
+            std::mem::offset_of!(HewActor, local_pid_id),
+            std::mem::offset_of!(crate::actor::HewActor, local_pid_id)
+        );
+        assert_eq!(
+            std::mem::size_of::<HewActor>(),
+            std::mem::size_of::<crate::actor::HewActor>()
+        );
+    }
+
     /// Build a minimal `HewActor` with sensible defaults.
     fn stub_actor() -> HewActor {
         HewActor {
@@ -2216,6 +2235,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         }
     }
 
@@ -5237,6 +5257,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

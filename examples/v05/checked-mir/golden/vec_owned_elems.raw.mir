@@ -342,6 +342,7 @@ fn main() -> () [conv=default]
   bb50:
     _92 = call hew_vec_get_clone(_88, _89) -> bb51
   bb51:
+    stmt: bind BindingId(4294967231) __hew_vec_get_clone_projection_base site=SiteId(110) ty=Tag
     _93 = _92.field[1]
     call println_i64(_93) -> bb52
   bb52:

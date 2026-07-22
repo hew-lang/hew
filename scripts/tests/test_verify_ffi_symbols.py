@@ -28,6 +28,18 @@ C_UNWIND_MACHINE_EMIT_EXPORTS = {
     "hew_machine_emit_step_exit_keep",
     "hew_machine_emit_take",
 }
+LOCAL_PID_STABLE_EXPORTS = {
+    "hew_local_pid_actor_id",
+    "hew_local_pid_ask",
+    "hew_local_pid_ask_with_channel",
+    "hew_local_pid_link",
+    "hew_local_pid_monitor",
+    "hew_local_pid_send",
+    "hew_local_pid_supervisor_is_running",
+    "hew_local_pid_supervisor_stop",
+    "hew_local_pid_unlink",
+    "hew_supervisor_direct_id",
+}
 
 spec = importlib.util.spec_from_file_location("verify_ffi_symbols", SCRIPT)
 verify_ffi_symbols = importlib.util.module_from_spec(spec)
@@ -162,6 +174,16 @@ def test_c_unwind_machine_emit_exports_are_classified() -> None:
     assert "hew_machine_emit_step_exit" in classification["internal"]
 
 
+def test_local_pid_runtime_surface_is_jit_stable() -> None:
+    runtime_exports = verify_ffi_symbols.extract_runtime_exports()
+    classification = verify_ffi_symbols.load_jit_symbol_classification()
+
+    assert LOCAL_PID_STABLE_EXPORTS <= runtime_exports
+    assert LOCAL_PID_STABLE_EXPORTS <= classification["stable"]
+    assert not (LOCAL_PID_STABLE_EXPORTS & classification["codegen-stable"])
+    assert not (LOCAL_PID_STABLE_EXPORTS & classification["internal"])
+
+
 _TESTS = [
     test_classify_stable_outputs_sorted_names_only,
     test_classify_internal_outputs_sorted_names_only,
@@ -170,6 +192,7 @@ _TESTS = [
     test_validate_rejects_missing_stable_stdlib_export,
     test_io_runtime_exports_are_jit_stable,
     test_c_unwind_machine_emit_exports_are_classified,
+    test_local_pid_runtime_surface_is_jit_stable,
 ]
 
 if __name__ == "__main__":

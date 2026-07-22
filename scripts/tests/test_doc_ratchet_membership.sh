@@ -3,12 +3,50 @@
 
 set -euo pipefail
 
+LEGACY_HANDSHAKE_TIMEOUT_SECONDS=2
+LEGACY_HANDSHAKE_TIMEOUT_STATUS=125
+LEGACY_HANDSHAKE_POLL_SECONDS=0.01
+
+legacy_large_set_producer() {
+    local pipe_closed_marker="$1"
+    local deadline=$(( SECONDS + LEGACY_HANDSHAKE_TIMEOUT_SECONDS ))
+
+    printf '%s\n' "present"
+    while [[ ! -e "$pipe_closed_marker" ]]; do
+        if (( SECONDS >= deadline )); then
+            return "$LEGACY_HANDSHAKE_TIMEOUT_STATUS"
+        fi
+        sleep "$LEGACY_HANDSHAKE_POLL_SECONDS"
+    done
+    printf '%s\n' "${LARGE_SET#*$'\n'}"
+}
+
+# Internal child mode for the watchdog-backed missing-marker tooth below.
+if [[ "${1:-}" == "--probe-legacy-handshake-timeout" ]]; then
+    probe_root="$(mktemp -d "${TMPDIR:-/tmp}/hew-doc-ratchet-timeout.XXXXXX")"
+    probe_status=0
+    unset LARGE_SET 2>/dev/null || true
+    legacy_large_set_producer "$probe_root/never-created" >/dev/null \
+        || probe_status=$?
+    rmdir "$probe_root"
+    exit "$probe_status"
+fi
+
+if [[ $# -ne 0 ]]; then
+    echo "error: unexpected argument: $1" >&2
+    exit 64
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS="$REPO_ROOT/scripts/extract-doc-fences.sh"
 
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
+
+# shellcheck source=scripts/lib/timeout.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/timeout.sh"
 
 PASSES=0
 FAILURES=0
@@ -131,13 +169,6 @@ else
     fail "membership regression set does not exceed the pipe-capacity bound"
 fi
 LEGACY_PIPE_CLOSED="$TMP_ROOT/legacy-pipe-closed"
-legacy_large_set_producer() {
-    printf '%s\n' "present"
-    while [[ ! -e "$LEGACY_PIPE_CLOSED" ]]; do
-        :
-    done
-    printf '%s\n' "${LARGE_SET#*$'\n'}"
-}
 legacy_early_exit_consumer() {
     grep -qxF "present"
     exec 0<&-
@@ -145,12 +176,39 @@ legacy_early_exit_consumer() {
 }
 
 legacy_status=0
-legacy_large_set_producer 2>/dev/null | legacy_early_exit_consumer || legacy_status=$?
-if [[ "$legacy_status" -ne 0 ]]; then
-    pass "legacy producer-to-grep membership fails on a present large-set entry"
-else
-    fail "legacy producer-to-grep membership did not reproduce SIGPIPE"
-fi
+legacy_large_set_producer "$LEGACY_PIPE_CLOSED" 2>/dev/null \
+    | legacy_early_exit_consumer || legacy_status=$?
+case "$legacy_status" in
+    0)
+        fail "legacy producer-to-grep membership did not reproduce SIGPIPE"
+        ;;
+    "$LEGACY_HANDSHAKE_TIMEOUT_STATUS")
+        fail "legacy producer handshake timed out before consumer pipe closure"
+        ;;
+    *)
+        pass "legacy producer-to-grep membership fails on a present large-set entry"
+        ;;
+esac
+
+# Exercise the absent-marker path in a separate process group. The producer's
+# dedicated status must win before the outer watchdog; removing or bypassing
+# the internal deadline therefore fails quickly instead of hanging this gate.
+timeout_probe_status=0
+timeout_probe_budget=$(( LEGACY_HANDSHAKE_TIMEOUT_SECONDS + 3 ))
+run_with_timeout "$timeout_probe_budget" "$BASH" "${BASH_SOURCE[0]}" \
+    --probe-legacy-handshake-timeout >/dev/null 2>&1 \
+    || timeout_probe_status=$?
+case "$timeout_probe_status" in
+    "$LEGACY_HANDSHAKE_TIMEOUT_STATUS")
+        pass "missing-marker handshake reports its dedicated timeout status"
+        ;;
+    124|137)
+        fail "missing-marker handshake exceeded its external watchdog"
+        ;;
+    *)
+        fail "missing-marker handshake returned unexpected status $timeout_probe_status"
+        ;;
+esac
 
 if line_set_contains "$LARGE_SET" "present"; then
     pass "exact membership keeps a present large-set entry present"

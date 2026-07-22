@@ -34,7 +34,7 @@ runner_fixture_declarations() {
             next
         }
 
-        /^[[:space:]]*(run_accept_expect_(status|stdout|stdout_contains|trap|status_and_stdout|panic)|run_actor_bounds_trap_fixture)([[:space:]]|$)/ {
+        /^(run_accept_expect_(status|stdout|stdout_contains|trap|status_and_stdout|panic)|run_actor_bounds_trap_fixture)([[:space:]]|$)/ {
             line = $0
             sub(/^[[:space:]]*[^[:space:]]+[[:space:]]*/, "", line)
             if (!emit_first_argument(line)) {
@@ -108,6 +108,9 @@ assert_parser_fixture_rejected() {
 parser_fixture_prelude > "${parser_fixture}"
 printf '%s\n' \
     '# run_accept_expect_stdout "comment_only"' \
+    'helper_body_decoy() {' \
+    '    run_accept_expect_stdout "helper_body_literal"' \
+    '}' \
     'run_accept_expect_stdout "inline_fixture"' \
     "run_accept_expect_stdout_contains \\" \
     "    \"continued_fixture\" \\" \

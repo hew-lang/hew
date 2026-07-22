@@ -1313,6 +1313,7 @@ mod tests {
                 runtime: ptr::null(),
                 send_pin_count: std::sync::atomic::AtomicU32::new(0),
                 gen_sink: AtomicPtr::new(ptr::null_mut()),
+                local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             })
         }
 
@@ -1327,7 +1328,7 @@ mod tests {
         let mut actor = caller_actor(0x00C0_FFEE);
         let actor_ptr: *mut HewActor = &raw mut *actor;
         // SAFETY: `actor` outlives the registry tracking (untracked before drop).
-        unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) };
+        assert!(unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) });
 
         // ── Case 1: the reply LOSES the arbiter (timer already won). ──────────
         // SAFETY: this test owns the channel + registration for the whole case.

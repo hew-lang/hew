@@ -26,7 +26,9 @@
 //! 16-shard `LiveActors` reduces hot-path contention.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
@@ -43,6 +45,42 @@ pub(crate) struct ActorPtr(pub(crate) *mut HewActor);
 
 // SAFETY: see doc on ActorPtr above.
 unsafe impl Send for ActorPtr {}
+
+fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
+    // SAFETY: callers invoke this only after successful removal from the live
+    // map and retain allocation ownership until finalization.
+    let token = unsafe { (*actor).local_pid_id };
+    if token == crate::lifetime::local_handles::HewLocalPidId::INVALID {
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // SAFETY: production spawn stamps the owning runtime before route
+        // registration. A valid token therefore implies a valid owner stamp.
+        let owner = unsafe { (*actor).runtime };
+        assert!(
+            !owner.is_null(),
+            "tracked actor with a local handle has no owning runtime"
+        );
+        // SAFETY: RuntimeInner owns and outlives every tracked actor.
+        let handles = unsafe { &(*owner).local_handles };
+        let retired = crate::lifetime::local_handles::retire_actor_in(handles, token, actor_id);
+        assert_ne!(
+            retired,
+            crate::lifetime::local_handles::RetireActorResult::Mismatch,
+            "live actor route retirement lost exact authority"
+        );
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let retired = crate::lifetime::local_handles::retire_current_actor(token, actor_id);
+        assert_ne!(
+            retired,
+            crate::lifetime::local_handles::RetireActorResult::Mismatch,
+            "live actor route retirement lost exact authority"
+        );
+    }
+}
 
 /// Runtime-owned actor-liveness state.
 ///
@@ -140,17 +178,29 @@ fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R)
 
 /// Register an actor in the live tracking map.
 ///
+/// Returns `false` without changing the existing entry when the `ActorId` is
+/// already live. Publication callers must treat that collision as spawn
+/// failure and roll back only their own route reservation.
+///
 /// # Safety
 ///
 /// `actor` must be a valid, fully initialised `HewActor` pointer whose
 /// `id` field is already set.
-pub(crate) unsafe fn track_actor(actor: *mut HewActor) {
+pub(crate) unsafe fn track_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and initialised.
     let id = unsafe { (*actor).id };
-    with_live_actors(|map| {
-        map.get_or_insert_with(HashMap::new)
-            .insert(id, ActorPtr(actor));
-    });
+    with_live_actors(|map| match map.get_or_insert_with(HashMap::new).entry(id) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(ActorPtr(actor));
+            true
+        }
+        std::collections::hash_map::Entry::Occupied(_) => false,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn actor_count_for_test() -> usize {
+    with_live_actors_opt(|map| map.as_ref().map_or(0, HashMap::len)).unwrap_or(0)
 }
 
 /// Remove an actor from the live tracking map.
@@ -161,7 +211,7 @@ pub(crate) unsafe fn track_actor(actor: *mut HewActor) {
 pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and not yet freed.
     let id = unsafe { (*actor).id };
-    with_live_actors_opt(|map| {
+    let removed = with_live_actors_opt(|map| {
         if let Some(m) = map.as_mut() {
             if let std::collections::hash_map::Entry::Occupied(entry) = m.entry(id) {
                 if entry.get().0 == actor {
@@ -172,14 +222,18 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
         }
         false
     })
-    .unwrap_or(false)
+    .unwrap_or(false);
+    if removed {
+        retire_actor_route(actor, id);
+    }
+    removed
 }
 
 /// Remove and return the actor tracked under `actor_id` if it still matches `expected`.
 // live on not(wasm32) — drain_quiesced_actor; dead on wasm32; caller actor.rs:2716
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option<*mut HewActor> {
-    with_live_actors_opt(|map| {
+    let actor = with_live_actors_opt(|map| {
         let tracked = map.as_mut()?.remove(&actor_id)?;
         if tracked.0 == expected {
             Some(tracked.0)
@@ -189,7 +243,11 @@ pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option
             None
         }
     })
-    .flatten()
+    .flatten();
+    if let Some(actor) = actor {
+        retire_actor_route(actor, actor_id);
+    }
+    actor
 }
 
 /// Check whether an actor pointer is still live.
@@ -276,21 +334,58 @@ pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
 /// operation are visible to the freer before it reclaims the allocation.
 // live on not(wasm32); dead on wasm32.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-struct SendPinGuard(*mut HewActor);
+pub(crate) struct ActorPin(*mut HewActor);
 
 // SAFETY: `HewActor` is `Send`; the guard only touches the atomic
 // `send_pin_count` field.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-unsafe impl Send for SendPinGuard {}
+unsafe impl Send for ActorPin {}
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-impl Drop for SendPinGuard {
+impl Drop for ActorPin {
     fn drop(&mut self) {
         // SAFETY: the pointer was validated-live when the pin was taken.
         // The free path defers the free until `send_pin_count` reaches 0,
         // so the allocation remains valid until this drop runs.
         unsafe { (*self.0).send_pin_count.fetch_sub(1, Ordering::Release) };
     }
+}
+
+impl ActorPin {
+    /// Borrow the pinned actor allocation.
+    #[must_use]
+    pub(crate) fn actor(&self) -> &HewActor {
+        // SAFETY: construction increments `send_pin_count` while the actor is
+        // tracked; the free path cannot reclaim it until this guard drops.
+        unsafe { &*self.0 }
+    }
+
+    /// Return the pinned actor pointer for existing internal operations.
+    #[must_use]
+    pub(crate) fn as_ptr(&self) -> *mut HewActor {
+        self.0
+    }
+}
+
+/// Resolve one `ActorId` and hold its existing liveness/send pin until drop.
+///
+/// The live-actor lock is released before this function returns. Callers may
+/// compose multiple pins, but must release them before reply waits, callbacks,
+/// or user work. Existing mailbox submission keeps its pin only for that
+/// submission operation.
+pub(crate) fn pin_actor_by_id(actor_id: u64) -> Option<ActorPin> {
+    let ptr = with_live_actors_opt(|map| {
+        let ptr = map
+            .as_ref()
+            .and_then(|m| m.get(&actor_id).map(|p| p.0))
+            .filter(|p| !p.is_null())?;
+        // SAFETY: the pointer is tracked under the liveness lock. Incrementing
+        // before releasing the lock is mutually exclusive with untracking.
+        unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
+        Some(ptr)
+    })
+    .flatten()?;
+    Some(ActorPin(ptr))
 }
 
 /// Look up an actor by ID and, if live, call `f` with its raw pointer while
@@ -333,36 +428,8 @@ pub(crate) fn with_actor_send_by_id<R>(
     actor_id: u64,
     f: impl FnOnce(*mut HewActor) -> R,
 ) -> Option<R> {
-    // Phase 1: validate liveness and take a send pin — all under LIVE_ACTORS.
-    // Incrementing send_pin_count here (before releasing the lock) makes the
-    // pin-increment and the freer's map-removal mutually exclusive: both
-    // operations run under LIVE_ACTORS, so either this fetch_add completes
-    // before the freer's untrack_actor (freer will then spin until the pin
-    // drops before finalizing), or the freer's untrack_actor completes first
-    // (this map lookup returns None → we return None without taking a pin).
-    // The allocation cannot be freed while the pin is held.
-    let ptr = with_live_actors_opt(|map| {
-        let ptr = map
-            .as_ref()
-            .and_then(|m| m.get(&actor_id).map(|p| p.0))
-            .filter(|p| !p.is_null())?;
-        // SAFETY: `ptr` is tracked-live under the registry lock.  The
-        // fetch_add runs before the lock is released and before any
-        // concurrent untrack_actor (which also runs under the lock), so the
-        // two are mutually exclusive — the freer cannot remove the map entry
-        // while we are incrementing the pin, and we cannot increment the pin
-        // after the freer has removed the map entry (the map.get above would
-        // return None first).
-        unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
-        Some(ptr)
-    })
-    .flatten()?;
-
-    // Phase 2: LIVE_ACTORS is released; call `f` with the pinned pointer.
-    // `_pin` drops after `f` returns: decrements send_pin_count with Release
-    // ordering, paired with the free path's Acquire load.
-    let _pin = SendPinGuard(ptr);
-    Some(f(ptr))
+    let pin = pin_actor_by_id(actor_id)?;
+    Some(f(pin.as_ptr()))
 }
 
 /// Resolve the per-actor-TYPE dispatch function pointer for a live actor id,
@@ -433,11 +500,21 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
 /// Returns the drained map so the caller can free each actor.
 /// Called by `actor::cleanup_all_actors` after worker threads have stopped.
 pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
-    with_live_actors_opt(|map| match map.as_mut() {
+    let drained = with_live_actors_opt(|map| match map.as_mut() {
         Some(m) => std::mem::take(m),
         None => HashMap::new(),
     })
-    .unwrap_or_default()
+    .unwrap_or_default();
+    // The LIVE_ACTORS lock is released before route retirement. Resolvers that
+    // copied an ActorId first must still acquire a send pin; with the liveness
+    // entry gone they fail closed, while already-held pins are drained by the
+    // cleanup caller before allocation reclamation.
+    for (&actor_id, ActorPtr(actor)) in &drained {
+        if !actor.is_null() {
+            retire_actor_route(*actor, actor_id);
+        }
+    }
+    drained
 }
 
 // ── Deferred teardown threads ───────────────────────────────────────────────

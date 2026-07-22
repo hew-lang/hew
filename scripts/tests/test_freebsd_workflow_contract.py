@@ -68,6 +68,24 @@ EXPECTED_PKG_PHASES = (
     EXPECTED_PKG_UPDATE,
     EXPECTED_PKG_INSTALL,
 )
+NIGHTLY_TOOL_PACKAGES = (
+    "llvm22",
+    "rust",
+    "cmake",
+    "ninja",
+    "git",
+    "gmake",
+    "pkgconf",
+    "libffi",
+    "libxml2",
+    "wasmtime",
+)
+EXPECTED_NIGHTLY_PKG_INSTALL = (*PKG_INSTALL_PREFIX, *NIGHTLY_TOOL_PACKAGES)
+EXPECTED_NIGHTLY_PKG_PHASES = (
+    EXPECTED_PKG_BOOTSTRAP,
+    EXPECTED_PKG_UPDATE,
+    EXPECTED_NIGHTLY_PKG_INSTALL,
+)
 EXPECTED_WASM_LD_LINK = (
     "ln",
     "-sf",
@@ -90,10 +108,28 @@ EXPECTED_WASM_LD_PROBE = (
     "wasm-ld",
     "--version",
 )
+EXPECTED_GIT_SAFE_DIRECTORY = (
+    "git",
+    "config",
+    "--global",
+    "--add",
+    "safe.directory",
+    "$(pwd)",
+)
+EXPECTED_EXACT_REF_CHECK = (
+    "test",
+    "$(git rev-parse HEAD)",
+    "=",
+    "$GITHUB_SHA",
+)
+EXPECTED_LLVM_ENV = ("export", "LLVM_SYS_221_PREFIX=/usr/local/llvm22")
+EXPECTED_GNU_MAKE_ENV = ("export", "MAKE=gmake")
+EXPECTED_VERTICAL_SLICE_GATE = ("gmake", "test-vertical-slice")
+EXPECTED_HEW_RATCHET_GATE = ("gmake", "test-hew-ratchet")
 WASI_TOOL_COMMANDS = (
     EXPECTED_PKG_UPDATE,
     EXPECTED_PKG_BOOTSTRAP,
-    EXPECTED_PKG_INSTALL,
+    EXPECTED_NIGHTLY_PKG_INSTALL,
     EXPECTED_WASM_LD_LINK,
     EXPECTED_WASMTIME_PROBE,
     EXPECTED_WASM_LD_PROBE,
@@ -242,7 +278,9 @@ def _active_shell_commands(block: str) -> list[tuple[str, ...]]:
 
 
 def _rewrite_pkg_commands(
-    step: str, replacements: dict[int, tuple[str, ...] | None]
+    step: str,
+    replacements: dict[int, tuple[str, ...] | None],
+    expected_phases: tuple[tuple[str, ...], ...] = EXPECTED_PKG_PHASES,
 ) -> str:
     lines = step.splitlines(keepends=True)
     pkg_lines: list[int] = []
@@ -255,7 +293,7 @@ def _rewrite_pkg_commands(
         if command[:1] in (("pkg",), ("/usr/sbin/pkg",)):
             pkg_lines.append(index)
             pkg_commands.append(command)
-    assert pkg_commands == list(EXPECTED_PKG_PHASES)
+    assert pkg_commands == list(expected_phases)
     assert set(replacements) <= set(range(len(pkg_lines)))
 
     for command_index, replacement in replacements.items():
@@ -270,17 +308,28 @@ def _rewrite_pkg_commands(
     return "".join(lines)
 
 
-def _assert_wasi_tool_setup(workflow: str, job_name: str, step_name: str) -> None:
+def _expected_pkg_phases(job_name: str) -> tuple[tuple[str, ...], ...]:
+    if job_name == "build-and-test":
+        return EXPECTED_NIGHTLY_PKG_PHASES
+    return EXPECTED_PKG_PHASES
+
+
+def _assert_wasi_tool_setup(
+    workflow: str,
+    job_name: str,
+    step_name: str,
+) -> None:
     step = _step_block(_job_block(workflow, job_name), step_name)
     prepare_commands = _active_shell_commands(_literal_block(step, "prepare"))
     run_commands = _active_shell_commands(_literal_block(step, "run"))
+    expected_phases = _expected_pkg_phases(job_name)
 
     pkg_commands = [
         command
         for command in prepare_commands
         if command[:1] in (("pkg",), ("/usr/sbin/pkg",))
     ]
-    assert pkg_commands == list(EXPECTED_PKG_PHASES), (
+    assert pkg_commands == list(expected_phases), (
         f"{job_name} must bootstrap pkg through the base utility from FreeBSD, "
         "refresh only that named repository, then install "
         f"the exact tool set without an automatic update; got {pkg_commands!r}"
@@ -346,6 +395,34 @@ def _assert_exact_nextest(workflow: str, job_name: str) -> None:
     _assert_command_list(_nextest_commands(_job_block(workflow, job_name)), job_name)
 
 
+def _assert_nightly_compiled_hew_authority(workflow: str) -> None:
+    job_name = "build-and-test"
+    step_name = "Build and test on FreeBSD"
+    step = _step_block(_job_block(workflow, job_name), step_name)
+    commands = _active_shell_commands(_literal_block(step, "run"))
+    required = (
+        EXPECTED_GIT_SAFE_DIRECTORY,
+        EXPECTED_EXACT_REF_CHECK,
+        EXPECTED_LLVM_ENV,
+        EXPECTED_GNU_MAKE_ENV,
+        EXPECTED_NEXTEST_COMMAND,
+        EXPECTED_VERTICAL_SLICE_GATE,
+        EXPECTED_HEW_RATCHET_GATE,
+    )
+    for command in required:
+        assert commands.count(command) == 1, (
+            "FreeBSD nightly must contain exactly one active command "
+            f"{command!r}; got {commands.count(command)}"
+        )
+
+    indexes = [commands.index(command) for command in required]
+    assert indexes == sorted(indexes), (
+        "FreeBSD nightly must authenticate its checkout, establish the LLVM "
+        "and GNU make environment, run canonical nextest, then run vertical "
+        f"slice before the Hew ratchet; got indexes {indexes!r}"
+    )
+
+
 def _assert_rejected(check: Callable[[], None]) -> None:
     try:
         check()
@@ -358,6 +435,62 @@ def test_freebsd_nextest_command_is_exact() -> None:
     _assert_exact_nextest(WORKFLOW.read_text(), "build-and-test")
 
 
+def test_freebsd_nightly_runs_authenticated_compiled_hew_gates() -> None:
+    _assert_nightly_compiled_hew_authority(WORKFLOW.read_text())
+
+
+def test_nightly_compiled_hew_commands_cannot_be_commented_out() -> None:
+    workflow = WORKFLOW.read_text()
+    job_name = "build-and-test"
+    step_name = "Build and test on FreeBSD"
+    step = _step_block(_job_block(workflow, job_name), step_name)
+    for command_text in (
+        'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+        "export LLVM_SYS_221_PREFIX=/usr/local/llvm22",
+        "export MAKE=gmake",
+        "gmake test-vertical-slice",
+        "gmake test-hew-ratchet",
+    ):
+        assert step.count(command_text) == 1
+        mutated_step = step.replace(command_text, f"# {command_text}", 1)
+        mutated = workflow.replace(step, mutated_step, 1)
+        assert command_text in mutated, (
+            "comment mutation must preserve the required raw command text"
+        )
+        _assert_rejected(
+            lambda mutated=mutated: _assert_nightly_compiled_hew_authority(mutated)
+        )
+
+
+def test_nightly_compiled_hew_gate_order_cannot_drift() -> None:
+    workflow = WORKFLOW.read_text()
+    job_name = "build-and-test"
+    step_name = "Build and test on FreeBSD"
+    step = _step_block(_job_block(workflow, job_name), step_name)
+    vertical = " ".join(EXPECTED_VERTICAL_SLICE_GATE)
+    ratchet = " ".join(EXPECTED_HEW_RATCHET_GATE)
+    assert step.count(vertical) == 1
+    assert step.count(ratchet) == 1
+    mutated_step = step.replace(vertical, "__vertical_gate__", 1)
+    mutated_step = mutated_step.replace(ratchet, vertical, 1)
+    mutated_step = mutated_step.replace("__vertical_gate__", ratchet, 1)
+    mutated = workflow.replace(step, mutated_step, 1)
+    _assert_rejected(lambda: _assert_nightly_compiled_hew_authority(mutated))
+
+
+def test_nightly_compiled_hew_gates_cannot_be_reduced_to_nextest() -> None:
+    workflow = WORKFLOW.read_text()
+    job_name = "build-and-test"
+    step_name = "Build and test on FreeBSD"
+    step = _step_block(_job_block(workflow, job_name), step_name)
+    replacement = "cargo nextest run --workspace --profile ci --no-fail-fast"
+    mutated_step = step.replace(
+        " ".join(EXPECTED_VERTICAL_SLICE_GATE), replacement, 1
+    ).replace(" ".join(EXPECTED_HEW_RATCHET_GATE), replacement, 1)
+    mutated = workflow.replace(step, mutated_step, 1)
+    _assert_rejected(lambda: _assert_nightly_compiled_hew_authority(mutated))
+
+
 def test_both_release_gate_freebsd_commands_are_exact() -> None:
     release_gate = RELEASE_GATE.read_text()
     _assert_exact_nextest(release_gate, "gate-freebsd-x86_64")
@@ -366,7 +499,9 @@ def test_both_release_gate_freebsd_commands_are_exact() -> None:
 
 def test_all_freebsd_jobs_provision_and_probe_wasi_tools() -> None:
     _assert_wasi_tool_setup(
-        WORKFLOW.read_text(), "build-and-test", "Build and test on FreeBSD"
+        WORKFLOW.read_text(),
+        "build-and-test",
+        "Build and test on FreeBSD",
     )
     release_gate = RELEASE_GATE.read_text()
     _assert_wasi_tool_setup(
@@ -443,7 +578,7 @@ def test_commented_nightly_tool_commands_are_rejected() -> None:
     step = _step_block(_job_block(workflow, job_name), step_name)
     for command in WASI_TOOL_COMMANDS:
         command_text = " ".join(command)
-        expected_count = EXPECTED_PKG_PHASES.count(command) or 1
+        expected_count = EXPECTED_NIGHTLY_PKG_PHASES.count(command) or 1
         assert step.count(command_text) == expected_count
         mutated_step = step.replace(command_text, f"# {command_text}", 1)
         mutated = workflow.replace(step, mutated_step, 1)
@@ -501,7 +636,8 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
     ):
         job = _job_block(workflow, job_name)
         step = _step_block(job, step_name)
-        for command_index, command in enumerate(EXPECTED_PKG_PHASES):
+        expected_phases = _expected_pkg_phases(job_name)
+        for command_index, command in enumerate(expected_phases):
             command_text = " ".join(command)
             replacements = [
                 command_text.replace(" -r FreeBSD", "", 1),
@@ -520,6 +656,7 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
                 mutated_step = _rewrite_pkg_commands(
                     step,
                     {command_index: tuple(shlex.split(replacement))},
+                    expected_phases,
                 )
                 mutated_job = job.replace(step, mutated_step, 1)
                 mutated = workflow.replace(job, mutated_job, 1)
@@ -530,8 +667,8 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
                     )
                     if active[:1] in (("pkg",), ("/usr/sbin/pkg",))
                 ]
-                assert len(mutated_commands) == len(EXPECTED_PKG_PHASES)
-                for other_index, expected in enumerate(EXPECTED_PKG_PHASES):
+                assert len(mutated_commands) == len(expected_phases)
+                for other_index, expected in enumerate(expected_phases):
                     if other_index != command_index:
                         assert mutated_commands[other_index] == expected, (
                             "every opposite package phase must remain intact in "
@@ -545,19 +682,6 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
 
 
 def test_pkg_bootstrap_phases_cannot_be_removed_reordered_or_merged() -> None:
-    dynamic_self_install = (*PKG_INSTALL_PREFIX, "pkg")
-    combined_install = (*PKG_INSTALL_PREFIX, "pkg", *FREEBSD_TOOL_PACKAGES)
-    mutations: tuple[dict[int, tuple[str, ...] | None], ...] = (
-        {0: None},
-        {1: None},
-        {2: None},
-        {0: EXPECTED_PKG_UPDATE, 1: EXPECTED_PKG_BOOTSTRAP},
-        {1: EXPECTED_PKG_INSTALL, 2: EXPECTED_PKG_UPDATE},
-        {0: EXPECTED_PKG_INSTALL, 2: EXPECTED_PKG_BOOTSTRAP},
-        {0: dynamic_self_install},
-        {0: combined_install, 2: None},
-        {0: None, 2: combined_install},
-    )
     for workflow, job_name, step_name in (
         (WORKFLOW.read_text(), "build-and-test", "Build and test on FreeBSD"),
         (
@@ -571,10 +695,25 @@ def test_pkg_bootstrap_phases_cannot_be_removed_reordered_or_merged() -> None:
             "Build and test on FreeBSD aarch64",
         ),
     ):
+        expected_phases = _expected_pkg_phases(job_name)
+        expected_install = expected_phases[2]
+        dynamic_self_install = (*PKG_INSTALL_PREFIX, "pkg")
+        combined_install = (*PKG_INSTALL_PREFIX, "pkg", *expected_install[3:])
+        mutations: tuple[dict[int, tuple[str, ...] | None], ...] = (
+            {0: None},
+            {1: None},
+            {2: None},
+            {0: EXPECTED_PKG_UPDATE, 1: EXPECTED_PKG_BOOTSTRAP},
+            {1: expected_install, 2: EXPECTED_PKG_UPDATE},
+            {0: expected_install, 2: EXPECTED_PKG_BOOTSTRAP},
+            {0: dynamic_self_install},
+            {0: combined_install, 2: None},
+            {0: None, 2: combined_install},
+        )
         job = _job_block(workflow, job_name)
         step = _step_block(job, step_name)
         for replacements in mutations:
-            mutated_step = _rewrite_pkg_commands(step, replacements)
+            mutated_step = _rewrite_pkg_commands(step, replacements, expected_phases)
             mutated_job = job.replace(step, mutated_step, 1)
             mutated = workflow.replace(job, mutated_job, 1)
             _assert_rejected(
@@ -654,7 +793,7 @@ def test_nested_fake_literal_blocks_cannot_mask_folded_fields() -> None:
         step = _step_block(job, step_name)
         _, child_indent = _with_mapping(step)
         for key, commands in (
-            ("prepare", (EXPECTED_PKG_INSTALL,)),
+            ("prepare", (_expected_pkg_phases(job_name)[2],)),
             (
                 "run",
                 (
@@ -711,7 +850,7 @@ def test_explicit_indent_leading_character_decoys_are_rejected() -> None:
         step = _step_block(job, step_name)
         _, child_indent = _with_mapping(step)
         for key, commands in (
-            ("prepare", (EXPECTED_PKG_INSTALL,)),
+            ("prepare", (_expected_pkg_phases(job_name)[2],)),
             (
                 "run",
                 (
@@ -767,7 +906,7 @@ def test_implicit_indent_leading_character_decoys_are_rejected() -> None:
         step = _step_block(job, step_name)
         _, child_indent = _with_mapping(step)
         for key, commands in (
-            ("prepare", (EXPECTED_PKG_INSTALL,)),
+            ("prepare", (_expected_pkg_phases(job_name)[2],)),
             (
                 "run",
                 (
@@ -821,6 +960,10 @@ def test_implicit_indent_leading_character_decoys_are_rejected() -> None:
 
 _TESTS = (
     test_freebsd_nextest_command_is_exact,
+    test_freebsd_nightly_runs_authenticated_compiled_hew_gates,
+    test_nightly_compiled_hew_commands_cannot_be_commented_out,
+    test_nightly_compiled_hew_gate_order_cannot_drift,
+    test_nightly_compiled_hew_gates_cannot_be_reduced_to_nextest,
     test_both_release_gate_freebsd_commands_are_exact,
     test_all_freebsd_jobs_provision_and_probe_wasi_tools,
     test_required_clippy_job_runs_contract_unconditionally,

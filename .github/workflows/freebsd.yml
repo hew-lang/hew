@@ -41,12 +41,16 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git pkgconf libffi libxml2 wasmtime
+            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git gmake pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
 
+            git config --global --add safe.directory "$(pwd)"
+            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            export MAKE=gmake
             /usr/local/llvm22/bin/llvm-config --version
 
             # The wasm codegen tests link with wasm-ld from the pkg LLVM tree.
@@ -85,3 +89,9 @@ jobs:
               --exclude hew-wasm --exclude hew-cabi \
               -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast
+
+            # The authenticated exact checkout must also prove compiled Hew,
+            # including loopback network and resource surfaces. Workspace
+            # nextest alone does not execute these language-level gates.
+            gmake test-vertical-slice
+            gmake test-hew-ratchet

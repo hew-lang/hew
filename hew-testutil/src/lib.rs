@@ -626,11 +626,8 @@ fn abandoned_capture_marker(name: &str) -> Vec<u8> {
 /// `cargo build -p hew-lib` fails or cannot be spawned, or if the expected
 /// static-library artifact is missing after a successful build.
 pub fn ensure_hew_lib_built() -> Result<PathBuf, String> {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")) // = <repo>/hew-testutil
-        .parent()
-        .ok_or("hew-testutil must live under the workspace root")?
-        .to_path_buf();
-    let (target_dir, profile) = target_dir_and_profile();
+    let repo_root = workspace_root()?;
+    let (target_dir, profile) = target_dir_and_profile(&repo_root);
     let lib_path = target_dir.join(&profile).join(hew_lib_name());
     ensure_built_serialized(&target_dir, &profile, &lib_path, |td, prof| {
         run_cargo_build_hew_lib(&repo_root, td, prof)
@@ -665,16 +662,22 @@ fn hew_lib_name() -> &'static str {
 /// `cargo build -p hew-cli --bin hew` fails or cannot be spawned, or if the
 /// expected binary artifact is missing after a successful build.
 pub fn ensure_hew_bin_built() -> Result<PathBuf, String> {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")) // = <repo>/hew-testutil
-        .parent()
-        .ok_or("hew-testutil must live under the workspace root")?
-        .to_path_buf();
-    let (target_dir, profile) = target_dir_and_profile();
+    let repo_root = workspace_root()?;
+    let (target_dir, profile) = target_dir_and_profile(&repo_root);
     let bin_path = target_dir.join(&profile).join(hew_bin_name());
     ensure_built_serialized(&target_dir, &profile, &bin_path, |td, prof| {
         run_cargo_build_hew_bin(&repo_root, td, prof)
     })?;
     Ok(bin_path)
+}
+
+fn workspace_root() -> Result<PathBuf, String> {
+    Ok(
+        Path::new(env!("CARGO_MANIFEST_DIR")) // = <repo>/hew-testutil
+            .parent()
+            .ok_or("hew-testutil must live under the workspace root")?
+            .to_path_buf(),
+    )
 }
 
 fn hew_bin_name() -> &'static str {
@@ -773,30 +776,41 @@ fn ensure_built_serialized(
         .map_err(|e| format!("write stamp {}: {e}", stamp_path.display()))
 }
 
-fn target_dir_and_profile() -> (PathBuf, String) {
-    if let Ok(exe) = std::env::current_exe() {
-        // <target>/<profile>/deps/<bin>
-        if let Some(authority) = target_dir_and_profile_from_exe(&exe) {
-            return authority;
-        }
+fn target_dir_and_profile(workspace_root: &Path) -> (PathBuf, String) {
+    let current_exe = std::env::current_exe().ok();
+    let cargo_target_dir = std::env::var_os("CARGO_TARGET_DIR");
+    target_dir_and_profile_from_sources(
+        current_exe.as_deref(),
+        cargo_target_dir.as_deref(),
+        workspace_root,
+        cfg!(debug_assertions),
+    )
+}
+
+fn target_dir_and_profile_from_sources(
+    current_exe: Option<&Path>,
+    cargo_target_dir: Option<&OsStr>,
+    workspace_root: &Path,
+    debug_assertions: bool,
+) -> (PathBuf, String) {
+    // <target>/<profile>/deps/<bin>
+    if let Some(authority) = current_exe.and_then(target_dir_and_profile_from_exe) {
+        return authority;
     }
-    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .join("target")
+    let target = cargo_target_dir.map_or_else(
+        || workspace_root.join("target"),
+        |configured| {
+            let configured = Path::new(configured);
+            if configured.is_absolute() {
+                configured.to_path_buf()
+            } else {
+                workspace_root.join(configured)
+            }
         },
-        PathBuf::from,
     );
     (
         target,
-        if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        }
-        .to_string(),
+        if debug_assertions { "debug" } else { "release" }.to_string(),
     )
 }
 
@@ -906,6 +920,90 @@ mod hew_lib_bootstrap_tests {
             .join("artifacts")
             .join("e2e-test");
         assert_eq!(target_dir_and_profile_from_exe(&exe), None);
+    }
+
+    #[test]
+    fn malformed_exe_fallback_anchors_relative_target_for_all_artifacts() {
+        const CHILD_MARKER: &str = "HEW_TESTUTIL_RELATIVE_TARGET_CHILD";
+        const WORKSPACE_ROOT: &str = "HEW_TESTUTIL_WORKSPACE_ROOT";
+
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let workspace_root = PathBuf::from(
+                std::env::var_os(WORKSPACE_ROOT).expect("child workspace root must be set"),
+            );
+            let alternate_cwd = std::env::current_dir().expect("read child working directory");
+            let malformed_exe = alternate_cwd.join("bin").join("e2e-test");
+            let configured_target = Path::new("coverage-target");
+
+            let (target_dir, profile) = target_dir_and_profile_from_sources(
+                Some(&malformed_exe),
+                std::env::var_os("CARGO_TARGET_DIR").as_deref(),
+                &workspace_root,
+                false,
+            );
+
+            assert_eq!(target_dir, workspace_root.join(configured_target));
+            assert_ne!(target_dir, alternate_cwd.join(configured_target));
+            assert_eq!(profile, "release");
+            assert_eq!(
+                target_dir.join(&profile).join(hew_bin_name()),
+                workspace_root
+                    .join(configured_target)
+                    .join("release")
+                    .join(hew_bin_name())
+            );
+            assert_eq!(
+                target_dir.join(&profile).join(hew_lib_name()),
+                workspace_root
+                    .join(configured_target)
+                    .join("release")
+                    .join(hew_lib_name())
+            );
+            return;
+        }
+
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let alternate_cwd = temp.path().join("alternate-caller");
+        fs::create_dir_all(&workspace_root).expect("create workspace root");
+        fs::create_dir_all(&alternate_cwd).expect("create alternate working directory");
+
+        let output = Command::new(std::env::current_exe().expect("resolve test executable"))
+            .args([
+                "--exact",
+                "hew_lib_bootstrap_tests::malformed_exe_fallback_anchors_relative_target_for_all_artifacts",
+                "--nocapture",
+            ])
+            .current_dir(&alternate_cwd)
+            .env(CHILD_MARKER, "1")
+            .env(WORKSPACE_ROOT, &workspace_root)
+            .env("CARGO_TARGET_DIR", "coverage-target")
+            .output()
+            .expect("run target-authority child from alternate working directory");
+        assert!(
+            output.status.success(),
+            "alternate-CWD target-authority child failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn malformed_exe_fallback_preserves_absolute_target() {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let absolute_target = temp.path().join("absolute-target");
+        let malformed_exe = temp.path().join("e2e-test");
+
+        let (target_dir, profile) = target_dir_and_profile_from_sources(
+            Some(&malformed_exe),
+            Some(absolute_target.as_os_str()),
+            &workspace_root,
+            true,
+        );
+
+        assert_eq!(target_dir, absolute_target);
+        assert_eq!(profile, "debug");
     }
 
     /// N threads race `ensure_built_serialized` on one tempdir; the injected

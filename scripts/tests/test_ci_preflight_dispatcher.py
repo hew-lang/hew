@@ -45,12 +45,23 @@ def run_dispatcher_help() -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_ci_required() -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(SCRIPT), "--ci-required"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def assert_scripts_config_profile(result: subprocess.CompletedProcess[str]) -> None:
     assert result.returncode == 0, result.stderr
     assert "Selected profile: scripts-config" in result.stdout
     assert "make lint" not in result.stdout
     assert "make playground-check" not in result.stdout
     assert "  - cargo fmt --all -- --check" in result.stdout
+    assert "  - make freebsd-workflow-contract-check" in result.stdout
     assert "  - make test-rust" in result.stdout
     assert "  - make doc-ratchet-selftest" in result.stdout
     assert "make test-codegen" not in result.stdout
@@ -86,6 +97,16 @@ def test_dot_cargo_config_routes_to_scripts_config_profile() -> None:
 
 def test_rust_toolchain_routes_to_scripts_config_profile() -> None:
     assert_scripts_config_profile(run_dispatcher("rust-toolchain.toml"))
+
+
+def test_ci_required_names_freebsd_authoritative_job() -> None:
+    result = run_ci_required()
+    assert result.returncode == 0, result.stderr
+    expected = (
+        "FreeBSD workflow contract (ci.yml required Clippy & format job)\t"
+        "make freebsd-workflow-contract-check"
+    )
+    assert result.stdout.splitlines().count(expected) == 1, result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +679,7 @@ _TESTS = [
     test_cargo_lock_routes_to_scripts_config_profile,
     test_dot_cargo_config_routes_to_scripts_config_profile,
     test_rust_toolchain_routes_to_scripts_config_profile,
+    test_ci_required_names_freebsd_authoritative_job,
     # Slice 1 instrumentation tests
     test_dry_run_shows_budget_annotation_narrow_lane,
     test_dry_run_shows_budget_annotation_fallback_lane,

@@ -115,6 +115,8 @@ jobs:
               - 'docs/**'
             scripts:
               - 'scripts/**'
+              - '.github/workflows/freebsd.yml'
+              - '.github/workflows/release-gate.yml'
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lightweight docs/scripts coverage — required signal for narrow PRs.
@@ -158,6 +160,13 @@ jobs:
 
       # <<< CI-PARITY-STEPS
 
+      # Redundant fast feedback for workflow/script-only changes. The
+      # unconditional copy in the required Clippy & format job below is the
+      # authoritative merge-blocking path.
+      - name: Verify FreeBSD workflow contract
+        if: needs.changes.outputs.scripts == 'true'
+        run: make freebsd-workflow-contract-check
+
   # ─────────────────────────────────────────────────────────────────────────
   # Lint — fast feedback on code quality (always runs, ~1.5 min)
   # Produces SARIF output for GitHub Code Scanning inline annotations.
@@ -189,6 +198,14 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      # >>> CI-PARITY-STEPS
+      # This job is an active required status check on main. Keep the workflow
+      # contract here unconditionally so nightly/release-gate drift cannot merge
+      # even when the lightweight docs/scripts job is skipped or not required.
+      - name: Verify FreeBSD workflow contract
+        run: make freebsd-workflow-contract-check
+      # <<< CI-PARITY-STEPS
 
       # Format-check std/ and examples/ .hew sources with the in-tree hew
       # formatter. The hew-fmt-check target builds the debug hew binary first;

@@ -208,13 +208,25 @@ impl Builder {
         Some(self.transfer_owned_carrier_value(expr, value))
     }
 
-    fn transfer_owned_carrier_value(&mut self, expr: &HirExpr, value: Place) -> Place {
+    /// Transfer one carrier-tracked place into an owning sink. Whole carriers
+    /// move through a fresh local before their original slot is neutralized;
+    /// projection carriers neutralize the root-relative field in place.
+    ///
+    /// Closure-env lowering also uses this funnel: an escaping `OwnsMoved`
+    /// capture is an ownership boundary just like a consuming expression, and
+    /// must discharge the parameter slot before the callee's terminal carrier
+    /// drop runs.
+    pub(crate) fn transfer_owned_carrier_place(
+        &mut self,
+        value: Place,
+        ty: &hew_types::ResolvedTy,
+    ) -> Place {
         let Some(target) = self.owned_carrier_neutralize.remove(&value) else {
             return value;
         };
         match target {
             OwnedCarrierNeutralizeTarget::Whole(source) => {
-                let dest = self.alloc_local(self.subst_ty(&expr.ty));
+                let dest = self.alloc_local(ty.clone());
                 self.push_instr(Instr::Move { dest, src: value });
                 self.push_instr(Instr::NeutralizePayloadSlot { place: source });
                 dest
@@ -225,6 +237,11 @@ impl Builder {
                 value
             }
         }
+    }
+
+    fn transfer_owned_carrier_value(&mut self, expr: &HirExpr, value: Place) -> Place {
+        let ty = self.subst_ty(&expr.ty);
+        self.transfer_owned_carrier_place(value, &ty)
     }
 
     pub(crate) fn lower_let_value(&mut self, binding: BindingId, value: &HirExpr) -> Option<Place> {

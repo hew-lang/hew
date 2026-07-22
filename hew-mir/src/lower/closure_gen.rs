@@ -381,6 +381,17 @@ impl Builder {
                     });
                 }
             }
+            // `ClosureEnvInit` copies the source bytes into the environment.
+            // When those bytes came from an owned call-carrier parameter, the
+            // environment becomes the sole owner and the original parameter
+            // slot must be neutralized before the unconditional terminal
+            // carrier drop. Ordinary bindings are not carrier-tracked, so the
+            // transfer funnel leaves their source place unchanged.
+            let src = if ownership == ClosureEnvFieldOwnership::OwnsMoved {
+                self.transfer_owned_carrier_place(src, &field_ty)
+            } else {
+                src
+            };
             field_pairs.push(ClosureEnvFieldInit {
                 field_offset: offset,
                 src,

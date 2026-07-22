@@ -1,7 +1,7 @@
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
     lower_hir_module, ClosureEnvAllocation, ClosureEnvFieldOwnership, DropFnSpec, DropKind, Instr,
-    IrPipeline, MirDiagnosticKind,
+    IrPipeline, MirDiagnosticKind, Place,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -133,6 +133,94 @@ fn make_label(n: i64) -> fn() -> i64 {
                 && field.source_binding.is_some()
         }),
         "heap string capture must own a moved source binding: {env_fields:?}"
+    );
+}
+
+#[test]
+fn owned_carrier_parameter_capture_transfers_before_terminal_drop() {
+    let pl = pipeline_with_tc(
+        r#"
+type Holder {
+    left: string;
+    right: string;
+}
+
+fn make_reader(h: Holder, n: i64) -> fn() -> i64 {
+    || h.left.len() + h.right.len() + n
+}
+
+fn run_once() -> i64 {
+    let h = Holder {
+        left: "left-payload".to_upper(),
+        right: "right-payload".to_upper(),
+    };
+    let f = make_reader(h, 1);
+    f()
+}
+"#,
+    );
+    assert!(
+        pl.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        pl.diagnostics
+    );
+
+    let make_reader = raw_fn(&pl, "make_reader");
+    let instructions: Vec<_> = make_reader
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .collect();
+    let (env_init_index, env_source) = instructions
+        .iter()
+        .enumerate()
+        .find_map(|(index, instr)| match instr {
+            Instr::ClosureEnvInit { fields, .. } => fields
+                .iter()
+                .find(|field| {
+                    field.source_is_parameter
+                        && field.ownership == ClosureEnvFieldOwnership::OwnsMoved
+                })
+                .map(|field| (index, field.src)),
+            _ => None,
+        })
+        .expect("owned parameter capture manifest");
+
+    let parameter = Place::Local(0);
+    assert_ne!(
+        env_source, parameter,
+        "the heap env must receive the transferred owner, not alias the parameter slot"
+    );
+    let move_index = instructions
+        .iter()
+        .position(|instr| {
+            matches!(instr, Instr::Move { dest, src } if *dest == env_source && *src == parameter)
+        })
+        .expect("carrier parameter move into the env source");
+    let neutralize_indices: Vec<_> = instructions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, instr)| {
+            matches!(instr, Instr::NeutralizePayloadSlot { place } if *place == parameter)
+                .then_some(index)
+        })
+        .collect();
+    assert_eq!(
+        neutralize_indices.len(),
+        1,
+        "the captured carrier parameter must be neutralized exactly once"
+    );
+    let terminal_drop_index = instructions
+        .iter()
+        .position(
+            |instr| matches!(instr, Instr::ValueSnapshotDrop { value, .. } if *value == parameter),
+        )
+        .expect("terminal owned-carrier parameter drop");
+    assert!(
+        move_index < neutralize_indices[0]
+            && neutralize_indices[0] < env_init_index
+            && env_init_index < terminal_drop_index,
+        "the owner must move and neutralize before env initialization, while the terminal drop remains"
     );
 }
 

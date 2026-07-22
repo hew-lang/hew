@@ -35,6 +35,22 @@ assert_contains() {
     fi
 }
 
+assert_production_membership_wiring() {
+    # These are literal source contracts; variable expansion would weaken the
+    # assertion by substituting the self-test's current values.
+    # shellcheck disable=SC2016
+    local expected_lookup='    if ! line_set_contains "$EXPECTED_STR" "$name"; then'
+    # shellcheck disable=SC2016
+    local actual_lookup='    if ! line_set_contains "$ACTUAL_STR" "$name"; then'
+
+    if grep -Fqx "$expected_lookup" "$HARNESS" \
+        && grep -Fqx "$actual_lookup" "$HARNESS"; then
+        pass "production ratchet uses exact membership for both set comparisons"
+    else
+        fail "production ratchet bypasses exact membership wiring"
+    fi
+}
+
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hew-doc-ratchet-test.XXXXXX")"
 cleanup() {
     rm -rf "$TMP_ROOT"
@@ -98,12 +114,38 @@ else
     fail "discovery harness failed with status $HARNESS_STATUS"
 fi
 
-# Reproduce the old false-absence mechanism deterministically. The producer is
-# much larger than a pipe buffer and the present needle is first, so grep -q
-# exits early and the producer receives SIGPIPE under pipefail.
+# Keep the regression tooth attached to the production ratchet. A large helper
+# test alone would remain green if either production lookup were restored to a
+# producer-to-grep pipeline, so require both call sites explicitly.
+assert_production_membership_wiring
+
+# Reproduce the old false-absence mechanism deterministically. The set is much
+# larger than a pipe buffer and the present needle is first. The consumer closes
+# its pipe after grep's early match, records that closure, and only then lets the
+# producer write the remaining set and receive SIGPIPE under pipefail.
 LARGE_SET="$(awk 'BEGIN { print "present"; for (i = 0; i < 200000; i++) printf "filler-%06d\\n", i }')"
+LARGE_SET_MIN_BYTES=$(( 2 * 1024 * 1024 ))
+if (( ${#LARGE_SET} > LARGE_SET_MIN_BYTES )); then
+    pass "membership regression set exceeds a 2 MiB pipe-capacity bound"
+else
+    fail "membership regression set does not exceed the pipe-capacity bound"
+fi
+LEGACY_PIPE_CLOSED="$TMP_ROOT/legacy-pipe-closed"
+legacy_large_set_producer() {
+    printf '%s\n' "present"
+    while [[ ! -e "$LEGACY_PIPE_CLOSED" ]]; do
+        :
+    done
+    printf '%s\n' "${LARGE_SET#*$'\n'}"
+}
+legacy_early_exit_consumer() {
+    grep -qxF "present"
+    exec 0<&-
+    : > "$LEGACY_PIPE_CLOSED"
+}
+
 legacy_status=0
-printf '%s\n' "$LARGE_SET" 2>/dev/null | grep -qxF "present" || legacy_status=$?
+legacy_large_set_producer 2>/dev/null | legacy_early_exit_consumer || legacy_status=$?
 if [[ "$legacy_status" -ne 0 ]]; then
     pass "legacy producer-to-grep membership fails on a present large-set entry"
 else

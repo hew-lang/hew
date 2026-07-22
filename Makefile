@@ -935,9 +935,10 @@ test-surface-examples: hew runtime stdlib
 test-doc-examples: hew
 	@scripts/extract-doc-fences.sh
 
-# Exercise the doc-ratchet harness without building Hew. The fake compiler
-# drives matching and mutated failure sets through the same production script.
+# Exercise pipe-safe membership wiring across every shell ratchet, then drive
+# matching and mutated doc-failure sets through the production harness.
 doc-ratchet-selftest:
+	@scripts/tests/test_ratchet_membership_wiring.sh
 	@scripts/tests/test_doc_ratchet_membership.sh
 
 # Release sanitizer gate validator self-test.

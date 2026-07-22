@@ -385,6 +385,9 @@ VEC_ELEM_STORE_TEMP_SRC="${ROOT}/tests/vertical-slice/accept/vec_elem_store_owne
 # insert/remove cycle. An over-eager mint drops the caller's parameter; a missed
 # temp drop leaks once per store. ASan/LSan catches both directions.
 VEC_PARAM_EMBED_TEMP_SRC="${ROOT}/tests/vertical-slice/accept/vec_param_embed_copy_in_temp_no_leak.hew"
+# Direct field projection from a fresh Vec-owned record index. The anonymous
+# clone base must receive exactly one scope-exit release before the next loop.
+FRESH_VEC_INDEX_PROJECTION_SRC="${ROOT}/tests/vertical-slice/accept/fresh_vec_index_projection_drop.hew"
 # Rc/Weak graph lifecycle: two record replacements, an embedded Weak back-edge,
 # exact upgrade teardown, and final strong/weak releases must stay LSan-clean.
 RC_WEAK_SRC="${ROOT}/tests/vertical-slice/accept/rc_weak_lifecycle.hew"
@@ -445,6 +448,9 @@ compile_asan_fixture "owned-Vec element-store temp (push/set move-in)" "${VEC_EL
 
 VEC_PARAM_EMBED_TEMP_BIN="${WORK_DIR}/vec_param_embed_copy_in_temp_no_leak"
 compile_asan_fixture "owned-Vec retained param-embed temp (push/set/Arena)" "${VEC_PARAM_EMBED_TEMP_SRC}" "${VEC_PARAM_EMBED_TEMP_BIN}"
+
+FRESH_VEC_INDEX_PROJECTION_BIN="${WORK_DIR}/fresh_vec_index_projection_drop"
+compile_asan_fixture "fresh Vec index projection" "${FRESH_VEC_INDEX_PROJECTION_SRC}" "${FRESH_VEC_INDEX_PROJECTION_BIN}"
 
 RC_WEAK_BIN="${WORK_DIR}/rc_weak_lifecycle"
 compile_asan_fixture "Rc/Weak graph replacement lifecycle" "${RC_WEAK_SRC}" "${RC_WEAK_BIN}"
@@ -591,6 +597,12 @@ else
 fi
 
 if run_asan_fixture "owned-Vec retained param-embed temp (push/set/Arena)" "${VEC_PARAM_EMBED_TEMP_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "fresh Vec index projection" "${FRESH_VEC_INDEX_PROJECTION_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

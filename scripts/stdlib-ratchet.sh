@@ -27,6 +27,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/line-set.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/line-set.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/stdlib-expected-failures.txt"
 HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
 STDLIB_DIR="$REPO_ROOT/std"
@@ -115,19 +118,19 @@ fi
 # Count entries.
 count_expected=0
 if [[ -n "$EXPECTED_STR" ]]; then
-    count_expected="$(printf '%s' "$EXPECTED_STR" | grep -c .)"
+    count_expected="$(line_set_count "$EXPECTED_STR")"
 fi
 
 count_actual=0
 if [[ -n "$ACTUAL_STR" ]]; then
-    count_actual="$(printf '%s' "$ACTUAL_STR" | grep -c .)"
+    count_actual="$(line_set_count "$ACTUAL_STR")"
 fi
 
 # Find unexpected failures (in actual but not in expected).
 unexpected_failures=""
 while IFS= read -r path; do
     [[ -z "$path" ]] && continue
-    if ! printf '%s\n' "$EXPECTED_STR" | grep -qxF "$path"; then
+    if ! line_set_contains "$EXPECTED_STR" "$path"; then
         unexpected_failures="${unexpected_failures}${path}"$'\n'
     fi
 done <<< "$ACTUAL_STR"
@@ -136,7 +139,7 @@ done <<< "$ACTUAL_STR"
 unexpected_passes=""
 while IFS= read -r path; do
     [[ -z "$path" ]] && continue
-    if ! printf '%s\n' "$ACTUAL_STR" | grep -qxF "$path"; then
+    if ! line_set_contains "$ACTUAL_STR" "$path"; then
         unexpected_passes="${unexpected_passes}${path}"$'\n'
     fi
 done <<< "$EXPECTED_STR"
@@ -148,10 +151,10 @@ echo "Actual failures:   $count_actual"
 echo ""
 
 count_unexpected_fail=0
-[[ -n "$unexpected_failures" ]] && count_unexpected_fail="$(printf '%s' "$unexpected_failures" | grep -c .)"
+[[ -n "$unexpected_failures" ]] && count_unexpected_fail="$(line_set_count "$unexpected_failures")"
 
 count_unexpected_pass=0
-[[ -n "$unexpected_passes" ]] && count_unexpected_pass="$(printf '%s' "$unexpected_passes" | grep -c .)"
+[[ -n "$unexpected_passes" ]] && count_unexpected_pass="$(line_set_count "$unexpected_passes")"
 
 if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 ]]; then
     if [[ $count_actual -eq 0 ]]; then

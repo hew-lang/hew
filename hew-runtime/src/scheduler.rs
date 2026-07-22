@@ -664,6 +664,27 @@ pub extern "C" fn hew_runtime_cleanup() {
     // before taking the root list for canonical destruction.
     crate::lifetime::live_actors::drain_deferred_teardown_threads();
 
+    // Close the shared publication gate before supervisor reclamation, then
+    // close destructor-owner admission, retire every direct supervisor route,
+    // and wait for already-pinned handle operations. Existing destructor owners
+    // then drain before cleanup can touch roots, actors, or runtime storage. A
+    // timeout is fail-closed: keep the runtime and allocations installed rather
+    // than freeing memory beneath a live dereference or destructor.
+    crate::lifetime::local_handles::begin_current_shutdown();
+    crate::lifetime::local_handles::close_current_supervisor_teardown_admission();
+    if !crate::lifetime::local_handles::close_current_supervisors_for_cleanup(
+        std::time::Duration::from_secs(30),
+    ) {
+        set_last_error("runtime cleanup: supervisor handle pins did not drain");
+        return;
+    }
+    if !crate::lifetime::local_handles::wait_for_current_supervisor_teardowns(
+        std::time::Duration::from_secs(30),
+    ) {
+        set_last_error("runtime cleanup: supervisor destructor owners did not drain");
+        return;
+    }
+
     // Free any registered top-level supervisors — this drops their child
     // specs (names + init_state) via the InternalChildSpec Drop impl.
     // Workers are already joined so we cannot send stop messages; we just
@@ -673,6 +694,8 @@ pub extern "C" fn hew_runtime_cleanup() {
 
     // SAFETY: All workers have been joined by hew_sched_shutdown.
     unsafe { actor::cleanup_all_actors() };
+
+    crate::lifetime::local_handles::assert_current_supervisors_empty();
 
     // Clear the name registry so no dangling pointers remain.
     crate::registry::hew_registry_clear();
@@ -3173,6 +3196,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         }
     }
 
@@ -3198,7 +3222,7 @@ mod tests {
             // `Drop` reconstitutes the `Box` to free it exactly once.
             let ptr: *mut HewActor = Box::into_raw(Box::new(actor));
             // SAFETY: `ptr` is a freshly-boxed, fully-initialised actor.
-            unsafe { crate::lifetime::live_actors::track_actor(ptr) };
+            assert!(unsafe { crate::lifetime::live_actors::track_actor(ptr) });
             Self { ptr }
         }
 
@@ -4020,6 +4044,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -4248,7 +4273,7 @@ mod tests {
         actor.id = GAP_ID.fetch_add(1, Ordering::Relaxed);
         let actor_ptr: *mut HewActor = Box::into_raw(Box::new(actor));
         // SAFETY: freshly-boxed, fully-initialised actor.
-        unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) };
+        assert!(unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) });
 
         // Freer thread: wait for the gap trap, then race `hew_actor_free` against
         // the worker's settle. `hew_actor_free` must block on `dispatch_active`.
@@ -5512,6 +5537,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

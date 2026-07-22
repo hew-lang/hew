@@ -446,6 +446,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         }
     }
 
@@ -458,7 +459,7 @@ mod tests {
         fn install(actor: HewActor) -> Self {
             let ptr = Box::into_raw(Box::new(actor));
             // SAFETY: `ptr` is a freshly-boxed, fully-initialised actor.
-            unsafe { crate::lifetime::live_actors::track_actor(ptr) };
+            assert!(unsafe { crate::lifetime::live_actors::track_actor(ptr) });
             Self { ptr }
         }
 
@@ -627,6 +628,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         });
 
         // Fill the mailbox to capacity (capacity = 1).

@@ -1,0 +1,24 @@
+// A direct field projection from a Vec-owned record index clones the record,
+// reads its field, and releases the anonymous clone on each loop iteration.
+record Holder {
+    items: Vec<string>
+}
+
+fn frame() -> i64 {
+    let values: Vec<Holder> = Vec::new();
+    values.push(Holder { items: ["left", "right"] });
+    values[0].items.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 32 {
+        total = total + frame();
+        i = i + 1;
+    }
+    if total != 64 {
+        return 73;
+    }
+    0
+}

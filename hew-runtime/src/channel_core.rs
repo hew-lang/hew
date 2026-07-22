@@ -103,6 +103,12 @@ pub struct ChannelCore {
     /// callers (`main`, free fns) that run on a foreign thread with no parkable
     /// continuation. Suspending callers never touch this; they use slots.
     cv: Condvar,
+    /// One-shot test rendezvous immediately before a foreign waiter enters
+    /// `cv.wait`. Taking the probe while `inner` is held makes the test edge
+    /// deterministic: the closer cannot publish its terminal predicate until
+    /// the waiter atomically releases `inner` and parks.
+    #[cfg(test)]
+    wait_probe: Mutex<Option<std::sync::Arc<std::sync::Barrier>>>,
 }
 
 // SAFETY: every field of `Inner` is accessed only under `inner`'s lock. The raw
@@ -137,6 +143,28 @@ impl ChannelCore {
                 elem_layout: None,
             }),
             cv: Condvar::new(),
+            #[cfg(test)]
+            wait_probe: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn install_wait_probe(&self, probe: std::sync::Arc<std::sync::Barrier>) {
+        *self
+            .wait_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(probe);
+    }
+
+    #[cfg(test)]
+    fn rendezvous_before_wait(&self) {
+        let probe = self
+            .wait_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(probe) = probe {
+            probe.wait();
         }
     }
 
@@ -322,6 +350,8 @@ impl ChannelCore {
                     item = None;
                     break;
                 }
+                #[cfg(test)]
+                self.rendezvous_before_wait();
                 inner = self
                     .cv
                     .wait(inner)
@@ -353,9 +383,9 @@ impl ChannelCore {
         self.pop()
     }
 
-    /// Block until the channel is readable (an item is queued or the sink
-    /// closed) WITHOUT consuming, or until `cancelled` is observed. Returns
-    /// `true` when readable, `false` when cancelled. Used by the `select{}`
+    /// Block until the channel is readable (an item is queued or the sink has
+    /// closed/faulted) WITHOUT consuming, or until `cancelled` is observed.
+    /// Returns `true` when readable, `false` when cancelled. Used by the `select{}`
     /// channel-recv arm's poll thread: the winner edge pops the item itself via
     /// the non-blocking `try_recv`, so this never consumes (a losing arm leaves
     /// its item queued for the next consumer). Foreign-thread blocking only —
@@ -368,9 +398,11 @@ impl ChannelCore {
             if cancelled.load(std::sync::atomic::Ordering::Acquire) {
                 return false;
             }
-            if !inner.queue.is_empty() || inner.sink_closed {
+            if !inner.queue.is_empty() || inner.sink_closed || inner.sink_fault {
                 return true;
             }
+            #[cfg(test)]
+            self.rendezvous_before_wait();
             inner = self
                 .cv
                 .wait(inner)
@@ -438,12 +470,12 @@ impl ChannelCore {
         let consumer_wake;
         {
             let mut inner = self.locked();
-            if inner.stream_closed || inner.sink_closed {
-                // Consumer gone (mpsc-disconnect), or the producer already
-                // signalled EOF (`close_sink`): fail closed — the send is a
-                // no-op, never an enqueue past EOF, and never a park. A
-                // discarded owned envelope is released via the stamped
-                // witness, outside the lock.
+            if inner.stream_closed || inner.sink_closed || inner.sink_fault {
+                // Consumer gone (mpsc-disconnect), producer already signalled
+                // EOF (`close_sink`), or the core faulted: fail closed — the
+                // send is a no-op, never an enqueue past the terminal edge, and
+                // never a park. A discarded owned envelope is released via the
+                // stamped witness, outside the lock.
                 let layout = inner.elem_layout;
                 drop(inner);
                 Self::drop_envelope(layout.as_ref(), item);
@@ -473,15 +505,17 @@ impl ChannelCore {
     }
 
     /// Blocking producer send (default callers). Parks the FOREIGN thread on the
-    /// condvar until the ring has space; a silent discard if the consumer is gone.
+    /// condvar until the ring has space; silently discards after any terminal
+    /// close or producer fault.
     pub fn blocking_send(&self, item: Vec<u8>) {
         let consumer_wake;
         {
             let mut inner = self.locked();
             loop {
-                if inner.stream_closed {
-                    // Consumer gone: the silent discard releases an owned
-                    // envelope via the stamped witness, outside the lock.
+                if inner.stream_closed || inner.sink_closed || inner.sink_fault {
+                    // The channel reached a terminal state: the silent discard
+                    // releases an owned envelope via the stamped witness,
+                    // outside the lock.
                     let layout = inner.elem_layout;
                     drop(inner);
                     Self::drop_envelope(layout.as_ref(), item);
@@ -492,6 +526,8 @@ impl ChannelCore {
                     consumer_wake = inner.consumer.take();
                     break;
                 }
+                #[cfg(test)]
+                self.rendezvous_before_wait();
                 inner = self
                     .cv
                     .wait(inner)
@@ -510,9 +546,9 @@ impl ChannelCore {
         let consumer_wake;
         {
             let mut inner = self.locked();
-            if inner.stream_closed || inner.sink_closed {
+            if inner.stream_closed || inner.sink_closed || inner.sink_fault {
                 // Release an owned envelope via the stamped witness outside the
-                // lock, and report that no consumer can accept the item.
+                // lock, and report the terminal channel cannot accept the item.
                 let layout = inner.elem_layout;
                 drop(inner);
                 Self::drop_envelope(layout.as_ref(), item);
@@ -617,15 +653,23 @@ impl ChannelCore {
     /// clean EOF. Distinct from [`Self::close_sink`] — set only by the
     /// runtime's actor-teardown paths, never by a normal producer close.
     /// Wakes a parked consumer so it observes the fault immediately rather
-    /// than hanging until some other event arrives. Idempotent: a second
-    /// call (e.g. both the crash path and a later free path reach an
-    /// already-faulted core) leaves the FIRST recorded `actor_id`.
+    /// than hanging until some other event arrives. The fault is terminal for
+    /// the whole core: every parked producer envelope is dropped without
+    /// delivery and every producer waiter is resolved. Hew sinks are affine,
+    /// but the runtime core also defends against shared FFI callers so a
+    /// core-wide fault cannot strand a non-faulting continuation.
+    /// Idempotent: a second call (e.g. both the crash path and a later free path
+    /// reach an already-faulted core) leaves the FIRST recorded `actor_id`.
     ///
-    /// Does not touch `sink_closed`/`stream_closed` or the queue — items
-    /// already queued before the fault still drain normally; the fault
-    /// applies only once the queue empties (see `pop`/`blocking_recv`).
+    /// Does not touch `sink_closed`/`stream_closed` or the queue — items already
+    /// queued before the fault still drain normally. Only producer-held items
+    /// that had not entered the queue are discarded; the fault applies once
+    /// the pre-fault queue empties (see `pop`/`blocking_recv`).
     pub fn fault_close(&self, actor_id: u64) {
         let consumer_wake;
+        let mut producer_wakes = Vec::new();
+        let mut discarded = Vec::new();
+        let layout;
         {
             let mut inner = self.locked();
             if !inner.sink_fault {
@@ -633,12 +677,34 @@ impl ChannelCore {
                 inner.fault_actor_id = Some(actor_id);
             }
             consumer_wake = inner.consumer.take();
+            layout = inner.elem_layout;
+            while let Some(mut producer) = inner.producers.pop_front() {
+                if let Some(item) = producer.item.take() {
+                    discarded.push(item);
+                }
+                producer_wakes.push(producer);
+            }
         }
+        // `sink_fault` is now a stable terminal predicate. Notify foreign
+        // condvar waiters before scheduler callbacks or recursive element-drop
+        // thunks: either may be slow or re-enter unrelated runtime machinery,
+        // but cannot strand a waiter behind an already-published terminal
+        // state.
+        self.cv.notify_all();
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
         }
-        self.cv.notify_all();
+        for producer in producer_wakes {
+            // SAFETY: removed under the lock; the core owns the producer slot's
+            // in-flight ref. A stale faulting actor is rejected by
+            // `enqueue_resume`; any distinct live producer reaches its unit
+            // send continuation instead of remaining parked forever.
+            unsafe { Self::wake(producer) };
+        }
+        for item in discarded {
+            Self::drop_envelope(layout.as_ref(), item);
+        }
     }
 
     /// Fail closed on an empty-and-faulted read: never a silent EOF.
@@ -653,7 +719,7 @@ impl ChannelCore {
     /// Pop one parked producer (if any) and re-enqueue its item, returning the
     /// waiter to wake. Caller holds the lock.
     fn drain_one_producer(inner: &mut Inner) -> Option<Waiter> {
-        if inner.queue.len() >= inner.capacity {
+        if inner.sink_fault || inner.queue.len() >= inner.capacity {
             return None;
         }
         let mut w = inner.producers.pop_front()?;
@@ -701,7 +767,10 @@ impl Drop for ChannelCore {
 )]
 mod tests {
     use super::*;
-    use crate::read_slot::{hew_read_slot_new, hew_read_slot_status};
+    use crate::read_slot::{
+        hew_read_slot_new, hew_read_slot_status, install_read_slot_free_probe_for_test,
+        new_read_slot_free_probe_for_test, read_slot_free_probe_count, read_slot_refs_for_test,
+    };
 
     #[test]
     fn fifo_push_pop_without_parking() {
@@ -854,6 +923,124 @@ mod tests {
         unsafe { hew_read_slot_free(slot) };
     }
 
+    #[test]
+    fn fault_close_resolves_paused_parked_producer_before_queue_drain() {
+        use std::panic::AssertUnwindSafe;
+        use std::sync::{Arc, Barrier};
+
+        let core = Arc::new(ChannelCore::new(1));
+        assert_eq!(core.try_send(b"queued".to_vec()), TrySendResult::Accepted);
+
+        let slot = hew_read_slot_new();
+        let probe = new_read_slot_free_probe_for_test();
+        unsafe { install_read_slot_free_probe_for_test(slot, &probe) };
+
+        let producer_parked = Arc::new(Barrier::new(2));
+        let release_producer = Arc::new(Barrier::new(2));
+        let producer_core = Arc::clone(&core);
+        let producer_parked_peer = Arc::clone(&producer_parked);
+        let release_producer_peer = Arc::clone(&release_producer);
+        // `AtomicPtr` is a provenance-preserving `Send` carrier; raw pointers
+        // themselves deliberately do not implement `Send`.
+        let slot_for_producer = std::sync::atomic::AtomicPtr::new(slot);
+        let producer = std::thread::spawn(move || {
+            let slot = slot_for_producer.load(std::sync::atomic::Ordering::Relaxed);
+            let rc =
+                unsafe { producer_core.await_send(std::ptr::null_mut(), slot, b"parked".to_vec()) };
+            producer_parked_peer.wait();
+            release_producer_peer.wait();
+            rc
+        });
+
+        // Force the fault to land after the producer published its parked
+        // envelope but before that producer is allowed to make progress.
+        producer_parked.wait();
+        core.fault_close(41);
+
+        let queued = core.pop();
+        let terminal = std::panic::catch_unwind(AssertUnwindSafe(|| core.pop()));
+        let slot_status = unsafe { hew_read_slot_status(slot) };
+        let slot_refs = unsafe { read_slot_refs_for_test(slot) };
+
+        release_producer.wait();
+        assert_eq!(
+            producer.join().expect("producer thread"),
+            STREAM_AWAIT_SUSPEND
+        );
+        assert_eq!(queued, Some(b"queued".to_vec()));
+        assert!(terminal.is_err(), "parked item must not drain after fault");
+        assert_eq!(slot_status, ReadStatus::Data as i32);
+        assert_eq!(slot_refs, 1, "fault close must release the core slot ref");
+
+        unsafe { hew_read_slot_free(slot) };
+        assert_eq!(read_slot_free_probe_count(&probe), 1);
+    }
+
+    #[test]
+    fn fault_close_parked_producer_invariant_repeats() {
+        for actor_id in 1..=512 {
+            let core = ChannelCore::new(1);
+            assert_eq!(core.try_send(b"queued".to_vec()), TrySendResult::Accepted);
+            let slot = hew_read_slot_new();
+            let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, b"parked".to_vec()) };
+            assert_eq!(rc, STREAM_AWAIT_SUSPEND);
+
+            core.fault_close(actor_id);
+            assert_eq!(core.pop(), Some(b"queued".to_vec()));
+            assert_eq!(
+                unsafe { hew_read_slot_status(slot) },
+                ReadStatus::Data as i32
+            );
+            assert_eq!(unsafe { read_slot_refs_for_test(slot) }, 1);
+            {
+                let inner = core.locked();
+                assert!(inner.sink_fault);
+                assert!(inner.queue.is_empty());
+                assert!(inner.producers.is_empty());
+            }
+            unsafe { hew_read_slot_free(slot) };
+        }
+    }
+
+    #[test]
+    fn fault_close_resolves_every_mixed_producer_waiter_without_delivery() {
+        let core = ChannelCore::new(1);
+        assert_eq!(core.try_send(b"queued".to_vec()), TrySendResult::Accepted);
+        let first_slot = hew_read_slot_new();
+        let second_slot = hew_read_slot_new();
+        assert_eq!(
+            unsafe { core.await_send(std::ptr::null_mut(), first_slot, b"first-parked".to_vec()) },
+            STREAM_AWAIT_SUSPEND
+        );
+        assert_eq!(
+            unsafe {
+                core.await_send(std::ptr::null_mut(), second_slot, b"second-parked".to_vec())
+            },
+            STREAM_AWAIT_SUSPEND
+        );
+
+        // A `Sink<T>` is affine in safe Hew, so a receive-gen core normally
+        // has only its pump as producer. The core is nevertheless an FFI
+        // boundary: resolve every published waiter so an aliased foreign
+        // caller cannot remain parked behind a core-wide producer fault.
+        core.fault_close(44);
+        for slot in [first_slot, second_slot] {
+            assert_eq!(
+                unsafe { hew_read_slot_status(slot) },
+                ReadStatus::Data as i32
+            );
+            assert_eq!(unsafe { read_slot_refs_for_test(slot) }, 1);
+        }
+        assert_eq!(core.pop(), Some(b"queued".to_vec()));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.pop())).is_err(),
+            "neither cancelled producer envelope may enter the queue"
+        );
+
+        unsafe { hew_read_slot_free(first_slot) };
+        unsafe { hew_read_slot_free(second_slot) };
+    }
+
     // ── Element-witness drop discipline (generic element width) ─────────────
 
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -864,6 +1051,214 @@ mod tests {
     static OWNED_TEST_LOCK: StdMutex<()> = StdMutex::new(());
     static OWNED_CLONES: AtomicUsize = AtomicUsize::new(0);
     static OWNED_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    struct BlockingDropGate {
+        entered: bool,
+        release: bool,
+    }
+
+    static BLOCKING_DROP_GATE: (StdMutex<BlockingDropGate>, std::sync::Condvar) = (
+        StdMutex::new(BlockingDropGate {
+            entered: false,
+            release: false,
+        }),
+        std::sync::Condvar::new(),
+    );
+    static BLOCKING_DROP_QUEUED: AtomicUsize = AtomicUsize::new(0);
+    static BLOCKING_DROP_PARKED: AtomicUsize = AtomicUsize::new(0);
+    static BLOCKING_DROP_FOREIGN: AtomicUsize = AtomicUsize::new(0);
+
+    fn reset_blocking_drop_probe() {
+        let (lock, _) = &BLOCKING_DROP_GATE;
+        let mut gate = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate.entered = false;
+        gate.release = false;
+        BLOCKING_DROP_QUEUED.store(0, Ordering::SeqCst);
+        BLOCKING_DROP_PARKED.store(0, Ordering::SeqCst);
+        BLOCKING_DROP_FOREIGN.store(0, Ordering::SeqCst);
+    }
+
+    fn wait_for_blocking_drop_entry() -> bool {
+        let (lock, cv) = &BLOCKING_DROP_GATE;
+        let gate = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (gate, _) = cv
+            .wait_timeout_while(gate, std::time::Duration::from_secs(2), |gate| {
+                !gate.entered
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate.entered
+    }
+
+    fn release_blocking_drop() {
+        let (lock, cv) = &BLOCKING_DROP_GATE;
+        let mut gate = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate.release = true;
+        cv.notify_all();
+    }
+
+    unsafe extern "C" fn blocking_elem_drop(slot: *mut core::ffi::c_void) {
+        let tag = unsafe { std::ptr::read_unaligned(slot.cast::<u64>()) };
+        match tag {
+            1 => &BLOCKING_DROP_QUEUED,
+            2 => {
+                let (lock, cv) = &BLOCKING_DROP_GATE;
+                let mut gate = lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                gate.entered = true;
+                cv.notify_all();
+                while !gate.release {
+                    gate = cv
+                        .wait(gate)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                &BLOCKING_DROP_PARKED
+            }
+            3 => &BLOCKING_DROP_FOREIGN,
+            _ => panic!("unexpected blocking-drop tag {tag}"),
+        }
+        .fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn blocking_elem_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: size_of::<u64>(),
+            align: align_of::<u64>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(blocking_elem_drop),
+        }
+    }
+
+    fn blocking_envelope(tag: u64) -> Vec<u8> {
+        tag.to_ne_bytes().to_vec()
+    }
+
+    #[test]
+    fn fault_close_notifies_blocking_sender_before_parked_drop_completes() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_blocking_drop_probe();
+
+        let core = std::sync::Arc::new(ChannelCore::new(1));
+        core.stamp_elem_layout(&blocking_elem_layout());
+        assert_eq!(core.try_send(blocking_envelope(1)), TrySendResult::Accepted);
+        let slot = hew_read_slot_new();
+        assert_eq!(
+            unsafe { core.await_send(std::ptr::null_mut(), slot, blocking_envelope(2),) },
+            STREAM_AWAIT_SUSPEND
+        );
+
+        let wait_probe = std::sync::Arc::new(std::sync::Barrier::new(2));
+        core.install_wait_probe(std::sync::Arc::clone(&wait_probe));
+        let (sender_done_tx, sender_done_rx) = std::sync::mpsc::channel();
+        let sender_core = std::sync::Arc::clone(&core);
+        let sender = std::thread::spawn(move || {
+            sender_core.blocking_send(blocking_envelope(3));
+            sender_done_tx.send(()).expect("sender completion receiver");
+        });
+        wait_probe.wait();
+
+        let fault_core = std::sync::Arc::clone(&core);
+        let fault = std::thread::spawn(move || fault_core.fault_close(45));
+        let drop_entered = wait_for_blocking_drop_entry();
+        let sender_before_release = sender_done_rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        // Always release the thunk before asserting so a regressing ordering
+        // fails cleanly instead of leaving the fault thread stranded.
+        release_blocking_drop();
+        fault.join().expect("fault close thread");
+        sender.join().expect("blocking sender thread");
+
+        assert!(drop_entered, "parked envelope drop thunk must run");
+        assert!(
+            sender_before_release.is_ok(),
+            "terminal blocking sender must wake before parked drop completes"
+        );
+        assert_eq!(BLOCKING_DROP_PARKED.load(Ordering::SeqCst), 1);
+        assert_eq!(BLOCKING_DROP_FOREIGN.load(Ordering::SeqCst), 1);
+        assert_eq!(BLOCKING_DROP_QUEUED.load(Ordering::SeqCst), 0);
+
+        let mut queued = core.pop().expect("pre-fault queued envelope");
+        assert_eq!(
+            u64::from_ne_bytes(queued.as_slice().try_into().expect("u64 envelope")),
+            1,
+            "pre-fault queue order must remain intact"
+        );
+        unsafe { blocking_elem_drop(queued.as_mut_ptr().cast()) };
+        assert_eq!(BLOCKING_DROP_QUEUED.load(Ordering::SeqCst), 1);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.pop())).is_err(),
+            "empty faulted channel must remain terminal"
+        );
+        assert_eq!(unsafe { read_slot_refs_for_test(slot) }, 1);
+        unsafe { hew_read_slot_free(slot) };
+        drop(core);
+        assert_eq!(BLOCKING_DROP_QUEUED.load(Ordering::SeqCst), 1);
+        assert_eq!(BLOCKING_DROP_PARKED.load(Ordering::SeqCst), 1);
+        assert_eq!(BLOCKING_DROP_FOREIGN.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fault_close_notifies_blocking_receiver_of_terminal_state() {
+        let core = std::sync::Arc::new(ChannelCore::new(1));
+        let wait_probe = std::sync::Arc::new(std::sync::Barrier::new(2));
+        core.install_wait_probe(std::sync::Arc::clone(&wait_probe));
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let receiver_core = std::sync::Arc::clone(&core);
+        let receiver = std::thread::spawn(move || {
+            let terminal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                receiver_core.blocking_recv()
+            }))
+            .is_err();
+            done_tx
+                .send(terminal)
+                .expect("receiver completion receiver");
+        });
+        wait_probe.wait();
+
+        core.fault_close(46);
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("blocking receiver completion"),
+            "blocking receiver must observe the terminal fault"
+        );
+        receiver.join().expect("blocking receiver thread");
+    }
+
+    #[test]
+    fn fault_close_notifies_wait_ready_of_terminal_state() {
+        let core = std::sync::Arc::new(ChannelCore::new(1));
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wait_probe = std::sync::Arc::new(std::sync::Barrier::new(2));
+        core.install_wait_probe(std::sync::Arc::clone(&wait_probe));
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let ready_core = std::sync::Arc::clone(&core);
+        let ready_cancelled = std::sync::Arc::clone(&cancelled);
+        let ready = std::thread::spawn(move || {
+            done_tx
+                .send(ready_core.wait_ready(&ready_cancelled))
+                .expect("wait-ready completion receiver");
+        });
+        wait_probe.wait();
+
+        core.fault_close(47);
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("wait-ready completion"),
+            "wait-ready must report a terminal channel as readable"
+        );
+        ready.join().expect("wait-ready thread");
+    }
 
     /// Mock heap-owning element: a tag plus one malloc'd 8-byte buffer. The
     /// clone thunk duplicates the buffer; the drop thunk frees it. Leaks and
@@ -975,6 +1370,90 @@ mod tests {
         // Core drop releases the still-queued first envelope.
         drop(core);
         assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 2);
+    }
+
+    #[test]
+    fn fault_close_drops_only_parked_owned_envelopes() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let drops_before = OWNED_DROPS.load(Ordering::SeqCst);
+        let core = ChannelCore::new(1);
+        core.stamp_elem_layout(&owned_elem_layout());
+        assert_eq!(core.try_send(owned_envelope(1)), TrySendResult::Accepted);
+        let slot = hew_read_slot_new();
+        let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, owned_envelope(2)) };
+        assert_eq!(rc, STREAM_AWAIT_SUSPEND);
+
+        core.fault_close(42);
+        assert_eq!(
+            OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            1,
+            "fault close must drop the parked envelope exactly once"
+        );
+
+        let mut queued = core.pop().expect("pre-fault queued envelope");
+        assert_eq!(
+            OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            1,
+            "queued envelope remains owned by the consumer"
+        );
+        unsafe { owned_elem_drop(queued.as_mut_ptr().cast()) };
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 2);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.pop())).is_err(),
+            "the empty faulted channel must remain terminal"
+        );
+
+        unsafe { hew_read_slot_free(slot) };
+        drop(core);
+        assert_eq!(
+            OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            2,
+            "faulted parked and consumed queued envelopes each drop once"
+        );
+    }
+
+    #[test]
+    fn sends_after_fault_are_terminal_and_drop_owned_envelopes() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let drops_before = OWNED_DROPS.load(Ordering::SeqCst);
+        let core = ChannelCore::new(2);
+        core.stamp_elem_layout(&owned_elem_layout());
+        core.fault_close(43);
+
+        assert_eq!(
+            core.try_send(owned_envelope(1)),
+            TrySendResult::Closed,
+            "try_send must reject a faulted producer"
+        );
+        core.blocking_send(owned_envelope(2));
+        let slot = hew_read_slot_new();
+        let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, owned_envelope(3)) };
+        assert_eq!(
+            rc, STREAM_AWAIT_READY,
+            "await_send must not park after fault"
+        );
+        assert_eq!(
+            unsafe { hew_read_slot_status(slot) },
+            ReadStatus::Pending as i32,
+            "a rejected send never registers its slot"
+        );
+        assert_eq!(
+            OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            3,
+            "every post-fault envelope must drop exactly once"
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.pop())).is_err(),
+            "post-fault sends must not repopulate the queue"
+        );
+
+        unsafe { hew_read_slot_free(slot) };
+        drop(core);
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 3);
     }
 
     #[test]

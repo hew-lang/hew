@@ -46,6 +46,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/line-set.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/line-set.sh"
+
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/doc-test-expected-failures.txt"
 OUTDIR="$REPO_ROOT/.tmp/doc-fences"
 HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
@@ -205,15 +209,15 @@ while IFS= read -r line; do
     fields="${fields#"${fields%%[! ]*}"}" # ltrim
     fields="${fields%"${fields##*[! ]}"}" # rtrim
     [[ -z "$fields" ]] && continue
-    set -- $fields
-    if [[ $# -ne 2 ]]; then
+    name=""
+    recorded_cksum=""
+    extra_field=""
+    read -r name recorded_cksum extra_field <<< "$fields"
+    if [[ -z "$name" || -z "$recorded_cksum" || -n "$extra_field" ]]; then
         echo "error: expected-failures entry must be: <fence-id> <cksum>" >&2
         echo "       bad entry: $line" >&2
         exit 1
     fi
-    name="$1"
-    recorded_cksum="$2"
-    [[ -z "$name" ]] && continue
     if [[ ! "$recorded_cksum" =~ ^[0-9]+$ ]]; then
         echo "error: expected-failures checksum must be decimal cksum output" >&2
         echo "       bad entry: $line" >&2
@@ -257,11 +261,8 @@ echo "    Total fences: $total_fences"
 
 # ── Ratchet ────────────────────────────────────────────────────────────────────
 
-count_expected=0
-[[ -n "$EXPECTED_STR" ]] && count_expected="$(printf '%s' "$EXPECTED_STR" | grep -c .)"
-
-count_actual=0
-[[ -n "$ACTUAL_STR" ]] && count_actual="$(printf '%s' "$ACTUAL_STR" | grep -c .)"
+count_expected="$(line_set_count "$EXPECTED_STR")"
+count_actual="$(line_set_count "$ACTUAL_STR")"
 
 echo ""
 echo "==> Doc-test ratchet"
@@ -272,7 +273,7 @@ echo "    Actual failures:   $count_actual"
 unexpected_failures=""
 while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    if ! printf '%s\n' "$EXPECTED_STR" | grep -qxF "$name"; then
+    if ! line_set_contains "$EXPECTED_STR" "$name"; then
         unexpected_failures="${unexpected_failures}${name}"$'\n'
     fi
 done <<< "$ACTUAL_STR"
@@ -281,7 +282,7 @@ done <<< "$ACTUAL_STR"
 unexpected_passes=""
 while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    if ! printf '%s\n' "$ACTUAL_STR" | grep -qxF "$name"; then
+    if ! line_set_contains "$ACTUAL_STR" "$name"; then
         unexpected_passes="${unexpected_passes}${name}"$'\n'
     fi
 done <<< "$EXPECTED_STR"
@@ -291,9 +292,7 @@ done <<< "$EXPECTED_STR"
 stale_metadata=""
 while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
-    set -- $entry
-    name="$1"
-    recorded_cksum="$2"
+    read -r name recorded_cksum <<< "$entry"
     outfile="$OUTDIR/${name}.hew"
     [[ -f "$outfile" ]] || continue
     actual_cksum="$(cksum "$outfile" | awk '{print $1}')"
@@ -302,14 +301,9 @@ while IFS= read -r entry; do
     fi
 done <<< "$EXPECTED_CKSUM_STR"
 
-count_unexpected_fail=0
-[[ -n "$unexpected_failures" ]] && count_unexpected_fail="$(printf '%s' "$unexpected_failures" | grep -c .)"
-
-count_unexpected_pass=0
-[[ -n "$unexpected_passes" ]] && count_unexpected_pass="$(printf '%s' "$unexpected_passes" | grep -c .)"
-
-count_stale_metadata=0
-[[ -n "$stale_metadata" ]] && count_stale_metadata="$(printf '%s' "$stale_metadata" | grep -c .)"
+count_unexpected_fail="$(line_set_count "$unexpected_failures")"
+count_unexpected_pass="$(line_set_count "$unexpected_passes")"
+count_stale_metadata="$(line_set_count "$stale_metadata")"
 
 if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 && $count_stale_metadata -eq 0 ]]; then
     if [[ $count_actual -eq 0 ]]; then
@@ -361,10 +355,7 @@ if [[ $count_stale_metadata -gt 0 ]]; then
     echo "RATCHET FAIL: $count_stale_metadata stale expected-failure metadata entr$( [[ $count_stale_metadata -eq 1 ]] && echo "y" || echo "ies" ):"
     while IFS= read -r entry; do
         [[ -z "$entry" ]] && continue
-        set -- $entry
-        name="$1"
-        recorded_cksum="$2"
-        actual_cksum="$3"
+        read -r name recorded_cksum actual_cksum <<< "$entry"
         echo "  STALE METADATA: $name content changed since label was written (recorded=$recorded_cksum actual=$actual_cksum) — re-verify and update the label"
     done <<< "$stale_metadata"
     echo ""

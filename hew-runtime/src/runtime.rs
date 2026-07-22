@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
 use crate::hew_node::NodeSlot;
 use crate::lifetime::live_actors::LiveActors;
+use crate::lifetime::local_handles::LocalHandles;
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::registry::ShardedRegistry;
 use crate::scheduler::Scheduler;
@@ -65,6 +66,10 @@ pub(crate) struct RuntimeInner {
     /// Live-actor liveness registry + deferred-teardown join handles. Was the
     /// `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` globals.
     pub(crate) live_actors: LiveActors,
+    /// Stable semantic routes for process-local actor/supervisor handles.
+    /// Routes contain IDs only; raw allocation liveness remains owned by
+    /// `live_actors` and the supervisor controls.
+    pub(crate) local_handles: LocalHandles,
     /// Name registry mapping actor names to pointers (256 `RwLock` shards). Was
     /// the `REGISTRY` global. Swept by `hew_registry_clear` during cleanup while
     /// the runtime is still installed, then dropped with the runtime.
@@ -125,6 +130,7 @@ impl RuntimeInner {
             id: RuntimeId::DEFAULT,
             scheduler,
             live_actors: LiveActors::new(),
+            local_handles: LocalHandles::new(),
             registry: ShardedRegistry::new(),
             shutdown_phase: AtomicI32::new(crate::shutdown::PHASE_RUNNING),
             supervisor_roots: PoisonSafe::new(Vec::new()),

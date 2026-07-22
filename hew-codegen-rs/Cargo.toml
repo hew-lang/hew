@@ -10,9 +10,6 @@ readme = "../README.md"
 keywords = ["hew", "compiler", "llvm", "codegen", "wasm"]
 categories = ["compilers"]
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
-
 [dependencies]
 hew-hir = { path = "../hew-hir" }
 hew-mir = { path = "../hew-mir" }

@@ -779,6 +779,37 @@ fn should_fail_arena_alloc() -> bool {
     })
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static NEXT_SPAWN_ACTOR_ID_OVERRIDE: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn override_next_spawn_actor_id(actor_id: u64) {
+    NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(|slot| slot.set(Some(actor_id)));
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+type SpawnPublicationHook = Option<(
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+)>;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static SPAWN_PUBLICATION_HOOK: Mutex<SpawnPublicationHook> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn run_spawn_publication_hook() {
+    let hook = SPAWN_PUBLICATION_HOOK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    if let Some((entered, release)) = hook {
+        entered.wait();
+        release.wait();
+    }
+}
+
 /// Derive the current actor's ID from an execution context pointer.
 ///
 /// Returns -1 when the context is null or carries no actor.
@@ -1177,6 +1208,11 @@ pub struct HewActor {
     /// **ABI note**: appended at the very end of `HewActor`, after
     /// `send_pin_count`, so no previously-mirrored offset moves.
     pub gen_sink: AtomicPtr<c_void>,
+
+    /// Stable process-local identity exposed to Hew values after the atomic
+    /// compiler cutover. Appended at the tail so the codegen-mirrored `id` and
+    /// `state` offsets and every established prefix offset remain unchanged.
+    pub local_pid_id: crate::lifetime::local_handles::HewLocalPidId,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -1543,6 +1579,10 @@ pub(crate) unsafe fn cleanup_all_actors() {
     #[cfg(not(target_arch = "wasm32"))]
     live_actors::drain_deferred_teardown_threads();
 
+    // Close the publication gate and wait for every spawn that reserved a
+    // route to either publish a fully initialised actor or roll back. No actor
+    // in LIVE_ACTORS can therefore carry an invalid or uncommitted token.
+    crate::lifetime::local_handles::begin_current_shutdown();
     let actors = live_actors::drain_all_for_cleanup();
     // After drain_all_for_cleanup LIVE_ACTORS is empty: any subsequent
     // `with_actor_send_by_id` for these actors returns None (map lookup
@@ -1666,6 +1706,9 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // out of Idle, or already terminal), and all send pins have drained.
         unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
     }
+    crate::lifetime::local_handles::assert_current_actor_routes_empty();
+    #[cfg(target_arch = "wasm32")]
+    crate::lifetime::local_handles::finish_current_shutdown();
 }
 
 /// Free an actor's resources without untracking, optionally suppressing the
@@ -2300,6 +2343,10 @@ unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_voi
 fn next_spawn_actor_identity() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        #[cfg(test)]
+        if let Some(actor_id) = NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(Cell::take) {
+            return actor_id;
+        }
         crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed))
     }
 
@@ -2374,25 +2421,96 @@ fn build_spawned_actor(
         runtime: ptr::null(),
         send_pin_count: AtomicU32::new(0),
         gen_sink: AtomicPtr::new(ptr::null_mut()),
+        local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) {
+unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) -> bool {
+    // SAFETY: same caller guarantee; `runtime_id` is initialized before track.
+    let runtime_id = unsafe { (*raw).runtime_id };
+    // SAFETY: native spawn stamps this non-null owner from the same runtime
+    // read as `runtime_id`; the owner outlives actor construction and routes.
+    let owner = unsafe { &*(*raw).runtime };
+    let publication =
+        match crate::lifetime::local_handles::begin_actor_publication_in(&owner.local_handles) {
+            Ok(publication) => publication,
+            Err(error) => {
+                crate::set_last_error(format!(
+                    "hew_actor_spawn: local handle publication failed: {error:?}"
+                ));
+                return false;
+            }
+        };
+    let token = match publication.register_actor(runtime_id, actor_id) {
+        Ok(token) => token,
+        Err(error) => {
+            crate::set_last_error(format!(
+                "hew_actor_spawn: local handle allocation failed: {error:?}"
+            ));
+            return false;
+        }
+    };
+    // Initialise the complete semantic identity before publishing liveness.
+    // SAFETY: raw is owned by this unpublished spawn and fully initialised.
+    unsafe { (*raw).local_pid_id = token };
+    #[cfg(test)]
+    run_spawn_publication_hook();
     // SAFETY: caller guarantees raw is valid and fully initialised.
-    unsafe { live_actors::track_actor(raw) };
+    if !unsafe { live_actors::track_actor(raw) } {
+        let retired = publication.retire_actor(token, actor_id);
+        debug_assert_eq!(
+            retired,
+            crate::lifetime::local_handles::RetireActorResult::Retired
+        );
+        crate::set_last_error(format!(
+            "hew_actor_spawn: actor identity collision: {actor_id}"
+        ));
+        return false;
+    }
     #[cfg(feature = "profiler")]
     // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
     unsafe {
         crate::profiler::actor_registry::register(raw);
     };
     crate::tracing::hew_trace_lifecycle(actor_id, crate::tracing::SPAN_SPAWN);
+    true
 }
 
 #[cfg(target_arch = "wasm32")]
-unsafe fn finalize_spawned_actor(raw: *mut HewActor, _actor_id: u64) {
+unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) -> bool {
+    let publication = match crate::lifetime::local_handles::begin_current_actor_publication() {
+        Ok(publication) => publication,
+        Err(error) => {
+            crate::set_last_error(format!(
+                "hew_actor_spawn: local handle publication failed: {error:?}"
+            ));
+            return false;
+        }
+    };
+    let token = match publication.register_actor(crate::runtime_id::RuntimeId::DEFAULT, actor_id) {
+        Ok(token) => token,
+        Err(error) => {
+            crate::set_last_error(format!(
+                "hew_actor_spawn: local handle allocation failed: {error:?}"
+            ));
+            return false;
+        }
+    };
+    unsafe { (*raw).local_pid_id = token };
     // SAFETY: caller guarantees raw is valid and fully initialised.
-    unsafe { live_actors::track_actor(raw) };
+    if !unsafe { live_actors::track_actor(raw) } {
+        let retired = publication.retire_actor(token, actor_id);
+        debug_assert_eq!(
+            retired,
+            crate::lifetime::local_handles::RetireActorResult::Retired
+        );
+        crate::set_last_error(format!(
+            "hew_actor_spawn: actor identity collision: {actor_id}"
+        ));
+        return false;
+    }
+    true
 }
 
 /// Allocate the per-actor arena for a native spawn.
@@ -2458,7 +2576,12 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     let raw = Box::into_raw(actor);
     register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
-    unsafe { finalize_spawned_actor(raw, actor_id) };
+    if !unsafe { finalize_spawned_actor(raw, actor_id) } {
+        // SAFETY: registration failed after liveness was rolled back; no caller
+        // or scheduler can observe `raw`.
+        unsafe { free_actor_resources_with_options(raw, false) };
+        return ptr::null_mut();
+    }
     raw
 }
 
@@ -2507,7 +2630,12 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     let raw = Box::into_raw(actor);
     register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
-    unsafe { finalize_spawned_actor(raw, actor_id) };
+    if !unsafe { finalize_spawned_actor(raw, actor_id) } {
+        // SAFETY: registration failed after liveness was rolled back; no caller
+        // or scheduler can observe `raw`.
+        unsafe { free_actor_resources_with_options(raw, false) };
+        return ptr::null_mut();
+    }
     raw
 }
 
@@ -6264,6 +6392,28 @@ mod tests {
     use super::*;
     use crate::execution_context::TestExecutionContext;
 
+    struct SpawnPublicationHookGuard;
+
+    impl SpawnPublicationHookGuard {
+        fn install(
+            entered: std::sync::Arc<std::sync::Barrier>,
+            release: std::sync::Arc<std::sync::Barrier>,
+        ) -> Self {
+            *SPAWN_PUBLICATION_HOOK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some((entered, release));
+            Self
+        }
+    }
+
+    impl Drop for SpawnPublicationHookGuard {
+        fn drop(&mut self) {
+            *SPAWN_PUBLICATION_HOOK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = None;
+        }
+    }
+
     static LAST_NATIVE_ASK_REPLY_CHANNEL: AtomicPtr<reply_channel::HewReplyChannel> =
         AtomicPtr::new(ptr::null_mut());
     static SEND_BY_ID_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
@@ -6281,6 +6431,184 @@ mod tests {
     /// `Running → Idle → Stopped` instead of `Running → Crashed`, and drain
     /// returns `Drained` instead of `Incomplete { crashed }`.
     static DRAIN_TRAP_ON_STOP_RELEASE: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn spawned_actor_direct_identity_retires_before_reclamation() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: runtime guard installs the owning liveness/handle authority;
+        // null state with zero size and the test dispatch satisfy spawn.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn returned a live actor.
+        let (actor_id, token) = unsafe { ((*actor).id, (*actor).local_pid_id) };
+        assert_ne!(
+            token,
+            crate::lifetime::local_handles::HewLocalPidId::INVALID
+        );
+        assert_eq!(
+            crate::lifetime::local_handles::resolve_current_actor(token),
+            Some(actor_id)
+        );
+        assert_eq!(
+            crate::lifetime::local_handles::current_counts_for_test(),
+            (1, 1)
+        );
+
+        // SAFETY: actor is live, idle, and not used after successful free.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+        assert_eq!(
+            crate::lifetime::local_handles::resolve_current_actor(token),
+            None
+        );
+        assert_eq!(
+            crate::lifetime::local_handles::current_counts_for_test(),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn duplicate_spawn_identity_preserves_original_liveness_and_route() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: runtime guard installs the owning authority; empty state is valid.
+        let original = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!original.is_null());
+        // SAFETY: original is live until the final free below.
+        let (actor_id, token) = unsafe { ((*original).id, (*original).local_pid_id) };
+
+        override_next_spawn_actor_id(actor_id);
+        // SAFETY: the injected identity collision is handled before publication.
+        let duplicate = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(duplicate.is_null());
+        assert_eq!(live_actors::get_actor_ptr_by_id(actor_id), Some(original));
+        assert_eq!(
+            crate::lifetime::local_handles::resolve_current_actor(token),
+            Some(actor_id)
+        );
+        assert_eq!(
+            crate::lifetime::local_handles::current_counts_for_test(),
+            (1, 1)
+        );
+
+        // SAFETY: original remains the tracked, idle allocation.
+        assert_eq!(unsafe { hew_actor_free(original) }, 0);
+    }
+
+    #[test]
+    fn route_exhaustion_rolls_back_spawn_ownership_and_publication() {
+        let _guard = crate::runtime_test_guard();
+        crate::runtime::rt_current()
+            .local_handles
+            .fail_next_registration_for_test();
+        let mut state = 37_u64;
+        // SAFETY: state is readable for its exact size; injected exhaustion is
+        // expected to release both copies, the mailbox, arena, and actor box.
+        let actor = unsafe {
+            hew_actor_spawn(
+                (&raw mut state).cast(),
+                std::mem::size_of::<u64>(),
+                Some(noop_dispatch),
+            )
+        };
+        assert!(actor.is_null());
+        assert_eq!(live_actors::actor_count_for_test(), 0);
+        assert_eq!(
+            crate::lifetime::local_handles::current_counts_for_test(),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn cleanup_waits_for_atomic_actor_publication() {
+        let _guard = crate::runtime_test_guard();
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let _hook = SpawnPublicationHookGuard::install(
+            std::sync::Arc::clone(&entered),
+            std::sync::Arc::clone(&release),
+        );
+
+        let spawn = std::thread::spawn(|| {
+            // SAFETY: the installed runtime is process-visible and empty state is valid.
+            unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) as usize }
+        });
+        entered.wait();
+        assert_eq!(live_actors::actor_count_for_test(), 0);
+        assert_eq!(
+            crate::lifetime::local_handles::current_counts_for_test(),
+            (1, 1),
+            "route reservation precedes liveness publication"
+        );
+
+        let cleanup_done = std::sync::Arc::new(AtomicBool::new(false));
+        let cleanup_done_thread = std::sync::Arc::clone(&cleanup_done);
+        let cleanup = std::thread::spawn(move || {
+            // SAFETY: scheduler workers are absent under runtime_test_guard.
+            unsafe { cleanup_all_actors() };
+            cleanup_done_thread.store(true, Ordering::Release);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        assert!(!cleanup_done.load(Ordering::Acquire));
+
+        release.wait();
+        assert_ne!(spawn.join().expect("spawn thread"), 0);
+        cleanup.join().expect("cleanup thread");
+        assert_eq!(live_actors::actor_count_for_test(), 0);
+        assert_eq!(
+            crate::lifetime::local_handles::current_counts_for_test(),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn actor_cleanup_drains_every_direct_identity() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: runtime guard installs the authority and both spawns use
+        // empty test state.
+        let first = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: same runtime and empty-state preconditions as the first spawn.
+        let second = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!first.is_null() && !second.is_null());
+        assert_eq!(
+            crate::lifetime::local_handles::current_counts_for_test(),
+            (2, 2)
+        );
+
+        // SAFETY: no scheduler workers or dispatches exist under the test guard.
+        unsafe { cleanup_all_actors() };
+        assert_eq!(
+            crate::lifetime::local_handles::current_counts_for_test(),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn take_by_actor_id_retires_exact_direct_identity() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: runtime guard installs the authority; empty state satisfies spawn.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn returned a live actor.
+        let (actor_id, token) = unsafe { ((*actor).id, (*actor).local_pid_id) };
+        // SAFETY: the fresh actor is idle and has no external registrations.
+        unsafe { prepare_quiescent_actor_for_cleanup(actor) };
+        // SAFETY: actor remains live through the latch decision.
+        let finalize_state = match decide_finalize_by_latch(unsafe { &*actor }) {
+            FinalizeDecision::Finalize(state) => state,
+            FinalizeDecision::Skip => panic!("fresh idle actor must be finalizable"),
+        };
+
+        assert_eq!(live_actors::take_actor_by_id(actor_id, actor), Some(actor));
+        assert_eq!(
+            crate::lifetime::local_handles::resolve_current_actor(token),
+            None
+        );
+        assert_eq!(
+            crate::lifetime::local_handles::current_counts_for_test(),
+            (0, 0)
+        );
+        // SAFETY: actor is wake-proof, untracked, unpinned, and test-owned.
+        unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
+    }
 
     /// With no execution context installed, the diagnostic accessor
     /// `hew_actor_current_id` writes `EXECUTION_CONTEXT_NOT_INSTALLED` into the
@@ -6652,6 +6980,7 @@ mod tests {
                 runtime: ptr::null(),
                 send_pin_count: AtomicU32::new(0),
                 gen_sink: AtomicPtr::new(ptr::null_mut()),
+                local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             }));
             (actor, mailbox)
         }
@@ -6697,9 +7026,10 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
-        unsafe { live_actors::track_actor(actor) };
+        assert!(unsafe { live_actors::track_actor(actor) });
         actor
     }
 
@@ -10722,9 +11052,10 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
-        unsafe { live_actors::track_actor(actor) };
+        assert!(unsafe { live_actors::track_actor(actor) });
 
         // Zero the thread-local witness immediately before the call under test.
         // Without this, a prior test on the same worker thread that freed an
@@ -11561,6 +11892,54 @@ mod wasm_tests {
             crate::scheduler_wasm::hew_runtime_cleanup();
 
             assert_eq!(crate::reply_channel_wasm::active_channel_count(), 0);
+        }
+    }
+
+    #[test]
+    fn wasm_cleanup_reopens_handle_registry_for_next_session_without_reuse() {
+        let _guard = crate::runtime_test_guard();
+
+        unsafe {
+            crate::scheduler_wasm::hew_sched_init();
+            let first = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!first.is_null());
+            let (first_id, first_token) = ((*first).id, (*first).local_pid_id);
+            assert_eq!(
+                crate::lifetime::local_handles::resolve_current_actor(first_token),
+                Some(first_id)
+            );
+
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+            assert_eq!(
+                crate::lifetime::local_handles::current_counts_for_test(),
+                (0, 0)
+            );
+            assert_eq!(
+                crate::lifetime::local_handles::resolve_current_actor(first_token),
+                None
+            );
+
+            crate::scheduler_wasm::hew_sched_init();
+            let second = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!second.is_null());
+            let (second_id, second_token) = ((*second).id, (*second).local_pid_id);
+            assert_ne!(second_token, first_token);
+            assert_eq!(
+                crate::lifetime::local_handles::resolve_current_actor(first_token),
+                None
+            );
+            assert_eq!(
+                crate::lifetime::local_handles::resolve_current_actor(second_token),
+                Some(second_id)
+            );
+
+            crate::scheduler_wasm::hew_sched_shutdown();
+            crate::scheduler_wasm::hew_runtime_cleanup();
+            assert_eq!(
+                crate::lifetime::local_handles::current_counts_for_test(),
+                (0, 0)
+            );
         }
     }
 }

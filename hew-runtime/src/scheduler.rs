@@ -3173,6 +3173,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         }
     }
 
@@ -3198,7 +3199,7 @@ mod tests {
             // `Drop` reconstitutes the `Box` to free it exactly once.
             let ptr: *mut HewActor = Box::into_raw(Box::new(actor));
             // SAFETY: `ptr` is a freshly-boxed, fully-initialised actor.
-            unsafe { crate::lifetime::live_actors::track_actor(ptr) };
+            assert!(unsafe { crate::lifetime::live_actors::track_actor(ptr) });
             Self { ptr }
         }
 
@@ -4020,6 +4021,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -4248,7 +4250,7 @@ mod tests {
         actor.id = GAP_ID.fetch_add(1, Ordering::Relaxed);
         let actor_ptr: *mut HewActor = Box::into_raw(Box::new(actor));
         // SAFETY: freshly-boxed, fully-initialised actor.
-        unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) };
+        assert!(unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) });
 
         // Freer thread: wait for the gap trap, then race `hew_actor_free` against
         // the worker's settle. `hew_actor_free` must block on `dispatch_active`.
@@ -5512,6 +5514,7 @@ mod tests {
             runtime: ptr::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

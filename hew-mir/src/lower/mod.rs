@@ -352,6 +352,7 @@ struct PendingOwnedCallArg {
     source: Place,
     ty: ResolvedTy,
     site: SiteId,
+    source_is_prepared_owner: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -407,6 +408,10 @@ struct Builder {
     /// Raw byte-copy sources that must be neutralized if their loaded value is
     /// moved onward by the callee.
     owned_carrier_neutralize: HashMap<Place, OwnedCarrierNeutralizeTarget>,
+    /// Locals whose original carrier slot has already been neutralized. These
+    /// are sole owners, not projection aliases, so a later consuming direct
+    /// call transfers them exactly once instead of preparing another clone.
+    prepared_owned_call_sources: HashSet<Place>,
     /// Send block -> (pre-liveness-branch preparation block, recover block) for
     /// fungible child tells.
     fungible_outbound_edges: HashMap<u32, (u32, u32)>,
@@ -3883,6 +3888,34 @@ fn prepare_owned_call_carriers(
                 continue;
             }
             let local = base_local(arg.source);
+            if arg.source_is_prepared_owner {
+                let unique_terminal_use = matches!(arg.source, Place::Local(_))
+                    && local.is_some_and(|local| {
+                        !live_out
+                            .get(&block.id)
+                            .is_some_and(|live| live.contains(&local))
+                            && local_counts.get(&local) == Some(&1)
+                    })
+                    && args.get(arg.index) == Some(&arg.source);
+                if !unique_terminal_use {
+                    builder.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "non-unique prepared owned call-carrier `{}`",
+                                arg.ty.user_facing()
+                            ),
+                            site: arg.site,
+                        },
+                        note: "a carrier projection whose source slot is already neutralized must have exactly one dead-after-call direct consumer"
+                            .to_string(),
+                    });
+                }
+                // The callee's consume/carrier contract owns this value now.
+                // Its original root-relative slot was already neutralized by
+                // lower_value_for_move, so another Move/clone would either leak
+                // this sole owner or create a second release authority.
+                continue;
+            }
             let transferable = matches!(arg.source, Place::Local(_))
                 && local.is_some_and(|local| {
                     !live_out
@@ -5781,6 +5814,11 @@ impl Builder {
     pub(crate) fn push_instr(&mut self, instr: Instr) {
         if self.reject_capture_env_owned_move_instr(&instr) {
             return;
+        }
+        if let Instr::Move { dest, src } = &instr {
+            if self.prepared_owned_call_sources.remove(src) {
+                self.prepared_owned_call_sources.insert(*dest);
+            }
         }
         if let Some(span) = self.current_span {
             let idx = u32::try_from(self.instructions.len()).unwrap_or(u32::MAX);

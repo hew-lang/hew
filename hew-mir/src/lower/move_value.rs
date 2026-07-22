@@ -77,11 +77,17 @@ impl Builder {
                     source,
                     ty: owned_ty,
                     site: arg.site,
+                    source_is_prepared_owner: self.prepared_owned_call_sources.contains(&source),
                 })
             })
             .collect();
         if args.is_empty() {
             return;
+        }
+        for arg in &args {
+            if arg.source_is_prepared_owner {
+                self.prepared_owned_call_sources.remove(&arg.source);
+            }
         }
         let replaced = self
             .pending_owned_call_args
@@ -202,6 +208,7 @@ impl Builder {
             }
             OwnedCarrierNeutralizeTarget::Projection { root, fields } => {
                 self.push_instr(Instr::AggregateProjectionNeutralize { root, fields });
+                self.prepared_owned_call_sources.insert(value);
                 Some(value)
             }
         }

@@ -298,6 +298,41 @@ fn tupled(h: (Vec<string>, string)) {
 }
 "#;
 
+const RESOURCE_PROJECTION_DIRECT_CONSUME_TEMPLATE: &str = r#"
+#[resource]
+type Token { payload: string }
+
+impl Token {
+    fn close(self) {
+        let sink: Vec<string> = [];
+        sink.push(self.payload);
+    }
+}
+
+type Holder { token: Token, keep: string }
+
+fn consumeToken(consume token: Token) {}
+
+fn maybeConsume(h: Holder, take: bool) {
+    if take {
+        consumeToken(h.token);
+    }
+}
+
+fn main() -> i64 {
+    for i in 0..$FRAMES {
+        let h = Holder {
+            token: Token { payload: f"payload-{i}" },
+            keep: f"keep-{i}",
+        };
+        maybeConsume(h, true);
+        if h.token.payload.len() < 9 { return 111; }
+        if h.keep.len() < 6 { return 112; }
+    }
+    0
+}
+"#;
+
 const NON_STRING_PARAM_SOURCE: &str = r"
 type Holder { items: Vec<string> }
 type Wrap { f: Option<Holder> }
@@ -354,6 +389,10 @@ fn tuple_projection_param_source(frames: usize) -> String {
     with_frames(TUPLE_PROJECTION_PARAM_TEMPLATE, frames)
 }
 
+fn resource_projection_direct_consume_source(frames: usize) -> String {
+    with_frames(RESOURCE_PROJECTION_DIRECT_CONSUME_TEMPLATE, frames)
+}
+
 fn assert_source_succeeds_under_scribble(shape_name: &str, source_fn: fn(usize) -> String) {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -374,7 +413,7 @@ fn assert_clean_slope(shape_name: &str, source_fn: fn(usize) -> String) {
     assert_frame_slope_below_tolerance(shape_name, source_fn);
 }
 
-fn dump_checked_mir(source: &str, name: &str) -> String {
+fn dump_mir(source: &str, name: &str, stage: &str) -> String {
     let dir = tempfile::Builder::new()
         .prefix("vec-param-embed-mir-")
         .tempdir()
@@ -382,17 +421,25 @@ fn dump_checked_mir(source: &str, name: &str) -> String {
     let source_path = dir.path().join(format!("{name}.hew"));
     std::fs::write(&source_path, source).expect("write Hew source");
     let output = Command::new(hew_binary())
-        .args(["compile", "--dump-mir", "checked"])
+        .args(["compile", "--dump-mir", stage])
         .arg(&source_path)
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile --dump-mir checked");
+        .expect("invoke hew compile --dump-mir");
     assert!(
         output.status.success(),
-        "checked MIR dump failed:\n{}",
+        "{stage} MIR dump failed:\n{}",
         describe_output(&output)
     );
-    String::from_utf8(output.stdout).expect("checked MIR is UTF-8")
+    String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
+}
+
+fn dump_checked_mir(source: &str, name: &str) -> String {
+    dump_mir(source, name, "checked")
+}
+
+fn dump_elaborated_mir(source: &str, name: &str) -> String {
+    dump_mir(source, name, "elab")
 }
 
 #[test]
@@ -442,6 +489,70 @@ fn tuple_projection_embed_has_flat_leak_slope() {
     assert_clean_slope(
         "vec_param_embed_tuple_projection",
         tuple_projection_param_source,
+    );
+}
+
+#[test]
+fn resource_projection_direct_consume_preserves_the_poisoned_caller() {
+    assert_source_succeeds_under_scribble(
+        "resource_projection_direct_consume",
+        resource_projection_direct_consume_source,
+    );
+}
+
+#[test]
+fn resource_projection_direct_consume_has_flat_leak_slope() {
+    assert_clean_slope(
+        "resource_projection_direct_consume",
+        resource_projection_direct_consume_source,
+    );
+}
+
+#[test]
+fn prepared_resource_projection_transfers_once_into_direct_consume() {
+    let source = resource_projection_direct_consume_source(1);
+    let checked = dump_checked_mir(&source, "resource_projection_direct_consume");
+    let maybe_consume = checked
+        .split("fn maybeConsume")
+        .nth(1)
+        .and_then(|section| section.split("fn main").next())
+        .expect("maybeConsume checked MIR section");
+    assert_eq!(
+        maybe_consume
+            .matches("aggregate_projection_neutralize _0 fields=[0]")
+            .count(),
+        1,
+        "the prepared Holder carrier must transfer its Token leaf exactly once; removing projection authority must fail this tooth:\n{maybe_consume}"
+    );
+    assert_eq!(
+        maybe_consume.matches("snapshot_clone").count(),
+        0,
+        "an already-prepared Token owner must transfer into the consuming callee without a second clone; removing prepared-owner propagation must fail this tooth:\n{maybe_consume}"
+    );
+    assert!(
+        maybe_consume.contains("call consumeToken(_3)"),
+        "the transferred projection local must be the consuming call argument:\n{maybe_consume}"
+    );
+    assert_eq!(
+        maybe_consume
+            .matches("snapshot_drop _0 ty=Holder")
+            .count(),
+        1,
+        "the partially neutralized carrier must retain exactly one terminal sibling cleanup:\n{maybe_consume}"
+    );
+
+    let elaborated = dump_elaborated_mir(&source, "resource_projection_direct_consume");
+    let consume_token = elaborated
+        .split("fn consumeToken")
+        .nth(1)
+        .and_then(|section| section.split("fn maybeConsume").next())
+        .expect("consumeToken elaborated MIR section");
+    assert_eq!(
+        consume_token
+            .matches("drop _0 ty=Token kind=record_in_place")
+            .count(),
+        1,
+        "the consuming callee must keep the transferred Token's one disposal authority:\n{consume_token}"
     );
 }
 

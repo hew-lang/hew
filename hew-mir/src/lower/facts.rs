@@ -1120,10 +1120,18 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         //  * the callee is a FREE function and slot `j`'s target parameter is
         //    classified BORROW in `pc`.
         // Every other arg form recurses (and a bare ref to a Consume/unresolved
-        // target bottoms out at the leaf rule → consume). The callee slot is
-        // scanned so a parameter used AS the callee (an indirect call) consumes.
+        // target bottoms out at the leaf rule → consume). Invoking a callable
+        // parameter, including through one of its place projections, only reads
+        // the callable pair: `CallClosure` does not store or take ownership of
+        // its environment. Wrappers that compute a new callee remain outside
+        // this place-root proof and recurse fail-closed.
         HirExprKind::Call { callee, args } => {
-            if scan_expr_for_consume(callee, b_p, pc) {
+            let borrows_callable_param = matches!(
+                &callee.ty,
+                ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+            ) && callee.intent == IntentKind::Read
+                && projection_is_rooted_in(callee, b_p);
+            if !borrows_callable_param && scan_expr_for_consume(callee, b_p, pc) {
                 return true;
             }
             let callee_item = callee_item_id(callee);

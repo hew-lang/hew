@@ -349,6 +349,56 @@ fn pushMixed(p: string, h: Holder) {
 }
 ";
 
+const REUSABLE_CALLABLE_PARAM_SOURCE: &str = r"
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn main() {
+    let double = |x: i64| x * 2;
+    println(apply(double, 21));
+    println(apply(double, 2));
+}
+";
+
+const STORED_CALLABLE_PARAM_SOURCE: &str = r"
+type CallableBox { f: fn(i64) -> i64 }
+
+fn store(f: fn(i64) -> i64) -> CallableBox {
+    CallableBox { f: f }
+}
+
+fn main() {
+    let double = |x: i64| x * 2;
+    let _boxed = store(double);
+    println(double(2));
+}
+";
+
+const RETURNED_CALLABLE_PARAM_SOURCE: &str = r"
+fn carry(f: fn(i64) -> i64) -> fn(i64) -> i64 {
+    f
+}
+
+fn main() {
+    let double = |x: i64| x * 2;
+    let _copy = carry(double);
+    println(double(2));
+}
+";
+
+const CAPTURED_CALLABLE_PARAM_SOURCE: &str = r"
+fn carry(f: fn(i64) -> i64) -> fn(i64) -> i64 {
+    |x| f(x)
+}
+
+fn main() {
+    let double = |x: i64| x * 2;
+    let _copy = carry(double);
+    println(double(2));
+}
+";
+
 fn with_frames(template: &str, frames: usize) -> String {
     template.replace("$FRAMES", &frames.to_string())
 }
@@ -440,6 +490,28 @@ fn dump_checked_mir(source: &str, name: &str) -> String {
 
 fn dump_elaborated_mir(source: &str, name: &str) -> String {
     dump_mir(source, name, "elab")
+}
+
+fn compile_callable_source(source: &str, name: &str, target: Option<&str>) -> std::process::Output {
+    let dir = tempfile::Builder::new()
+        .prefix("owned-callable-param-")
+        .tempdir()
+        .expect("tempdir");
+    let source_path = dir.path().join(format!("{name}.hew"));
+    let emit_dir = dir.path().join("emit");
+    std::fs::create_dir(&emit_dir).expect("create emit dir");
+    std::fs::write(&source_path, source).expect("write Hew source");
+    let mut command = Command::new(hew_binary());
+    command.arg("compile").arg(&source_path);
+    if let Some(target) = target {
+        command.args(["--target", target]);
+    }
+    command
+        .arg("--emit-dir")
+        .arg(&emit_dir)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile")
 }
 
 #[test]
@@ -655,4 +727,47 @@ fn non_string_param_embed_uses_owned_carrier_temp() {
         mir.contains("snapshot_drop _0 ty=Holder") && mir.contains("boundary=LocalCall"),
         "the same carrier fact must install the callee's inverse Holder cleanup:\n{mir}"
     );
+}
+
+#[test]
+fn reusable_callable_parameter_invocation_compiles_native_and_wasm() {
+    require_codegen();
+    for (target_name, target) in [("native", None), ("wasm32", Some("wasm32-unknown-unknown"))] {
+        let output = compile_callable_source(
+            REUSABLE_CALLABLE_PARAM_SOURCE,
+            "reusable_callable_param",
+            target,
+        );
+        assert!(
+            output.status.success(),
+            "invoking a reusable callable parameter only borrows its pair ({target_name}):\n{}",
+            describe_output(&output)
+        );
+    }
+}
+
+#[test]
+fn callable_storage_return_and_capture_stay_fail_closed_on_both_targets() {
+    require_codegen();
+    for (shape, source) in [
+        ("stored", STORED_CALLABLE_PARAM_SOURCE),
+        ("returned", RETURNED_CALLABLE_PARAM_SOURCE),
+        ("captured", CAPTURED_CALLABLE_PARAM_SOURCE),
+    ] {
+        for (target_name, target) in [("native", None), ("wasm32", Some("wasm32-unknown-unknown"))]
+        {
+            let output = compile_callable_source(source, shape, target);
+            assert!(
+                !output.status.success(),
+                "a callable parameter moved into an owning {shape} sink must not be relaxed ({target_name}):\n{}",
+                describe_output(&output)
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("live owned call-carrier `fn(i64) -> i64`"),
+                "the {shape} mutation must retain the owned-carrier rejection ({target_name}):\n{}",
+                describe_output(&output)
+            );
+        }
+    }
 }

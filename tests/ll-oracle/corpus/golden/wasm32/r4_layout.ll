@@ -368,6 +368,7 @@ bb0:                                              ; preds = %after_cooperate
 bb1:                                              ; preds = %after_cooperate15, %after_cooperate10, %after_cooperate5
   %move_load = load i64, ptr %local_1, align 8
   store i64 %move_load, ptr %return_slot, align 8
+  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
@@ -396,6 +397,7 @@ bb4:                                              ; preds = %bb7
   br i1 %hew_cooperate_is_cancel13, label %cancel_exit14, label %after_cooperate15
 
 bb5:                                              ; preds = %bb7
+  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
   call void @hew_trap_with_code(i32 208)
   call void @llvm.trap()
   unreachable
@@ -496,6 +498,7 @@ entry:
   %local_43 = alloca i64, align 8
   %local_44 = alloca i64, align 8
   %local_45 = alloca i64, align 8
+  %local_46 = alloca %Color, align 8
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
@@ -655,52 +658,55 @@ bb13:                                             ; preds = %hashmap_get_some, %
   %cond_nz26 = icmp ne i8 %cond_load25, 0
   br i1 %cond_nz26, label %bb15, label %bb18
 
-bb14:                                             ; preds = %after_cooperate65, %after_cooperate59
+bb14:                                             ; preds = %after_cooperate66, %after_cooperate60
   store i64 1, ptr %local_43, align 8
   %machine_tag_ptr27 = getelementptr inbounds nuw %Color, ptr %local_42, i32 0, i32 0
   %move_iN_load_wide = load i64, ptr %local_43, align 8
   %move_iN_trunc = trunc i64 %move_iN_load_wide to i8
   store i8 %move_iN_trunc, ptr %machine_tag_ptr27, align 1
-  %call_arg28 = load %Color, ptr %local_42, align 1
-  %call_result29 = call i64 @color_code(%Color %call_arg28)
-  store i64 %call_result29, ptr %local_44, align 8
+  %move_load28 = load %Color, ptr %local_42, align 1
+  store %Color %move_load28, ptr %local_46, align 1
+  store %Color zeroinitializer, ptr %local_42, align 1
+  %call_arg29 = load %Color, ptr %local_46, align 1
+  %call_result30 = call i64 @color_code(%Color %call_arg29)
+  store i64 %call_result30, ptr %local_44, align 8
   br label %bb23
 
 bb15:                                             ; preds = %bb13
-  %machine_payload_ptr30 = getelementptr inbounds nuw %"Option$$Point", ptr %local_30, i32 0, i32 1
-  %machine_variant_field_ptr31 = getelementptr inbounds nuw { %Point }, ptr %machine_payload_ptr30, i32 0, i32 0
-  %move_load32 = load %Point, ptr %machine_variant_field_ptr31, align 8
-  store %Point %move_load32, ptr %local_36, align 8
-  %field_0_load_ptr33 = getelementptr inbounds nuw %Point, ptr %local_36, i32 0, i32 0
-  %field_0_load34 = load i64, ptr %field_0_load_ptr33, align 8
-  store i64 %field_0_load34, ptr %local_37, align 8
-  %field_1_load_ptr35 = getelementptr inbounds nuw %Point, ptr %local_36, i32 0, i32 1
-  %field_1_load36 = load i64, ptr %field_1_load_ptr35, align 8
-  store i64 %field_1_load36, ptr %local_38, align 8
-  %checked_lhs37 = load i64, ptr %local_37, align 8
-  %checked_rhs38 = load i64, ptr %local_38, align 8
-  %with_overflow39 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs37, i64 %checked_rhs38)
-  %checked_result40 = extractvalue { i64, i1 } %with_overflow39, 0
-  %checked_overflow41 = extractvalue { i64, i1 } %with_overflow39, 1
-  %checked_overflow_widen42 = zext i1 %checked_overflow41 to i8
-  store i64 %checked_result40, ptr %local_39, align 8
-  store i8 %checked_overflow_widen42, ptr %local_40, align 1
-  %cond_load43 = load i8, ptr %local_40, align 1
-  %cond_nz44 = icmp ne i8 %cond_load43, 0
-  br i1 %cond_nz44, label %bb19, label %bb20
+  %machine_payload_ptr31 = getelementptr inbounds nuw %"Option$$Point", ptr %local_30, i32 0, i32 1
+  %machine_variant_field_ptr32 = getelementptr inbounds nuw { %Point }, ptr %machine_payload_ptr31, i32 0, i32 0
+  %move_load33 = load %Point, ptr %machine_variant_field_ptr32, align 8
+  store %Point %move_load33, ptr %local_36, align 8
+  %field_0_load_ptr34 = getelementptr inbounds nuw %Point, ptr %local_36, i32 0, i32 0
+  %field_0_load35 = load i64, ptr %field_0_load_ptr34, align 8
+  store i64 %field_0_load35, ptr %local_37, align 8
+  %field_1_load_ptr36 = getelementptr inbounds nuw %Point, ptr %local_36, i32 0, i32 1
+  %field_1_load37 = load i64, ptr %field_1_load_ptr36, align 8
+  store i64 %field_1_load37, ptr %local_38, align 8
+  %checked_lhs38 = load i64, ptr %local_37, align 8
+  %checked_rhs39 = load i64, ptr %local_38, align 8
+  %with_overflow40 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs38, i64 %checked_rhs39)
+  %checked_result41 = extractvalue { i64, i1 } %with_overflow40, 0
+  %checked_overflow42 = extractvalue { i64, i1 } %with_overflow40, 1
+  %checked_overflow_widen43 = zext i1 %checked_overflow42 to i8
+  store i64 %checked_result41, ptr %local_39, align 8
+  store i8 %checked_overflow_widen43, ptr %local_40, align 1
+  %cond_load44 = load i8, ptr %local_40, align 1
+  %cond_nz45 = icmp ne i8 %cond_load44, 0
+  br i1 %cond_nz45, label %bb19, label %bb20
 
 bb16:                                             ; preds = %bb18
   store i64 -1, ptr %local_41, align 8
-  %print_arg45 = load i64, ptr %local_41, align 8
-  call void @hew_print_value(i8 1, i64 %print_arg45, i1 true)
+  %print_arg46 = load i64, ptr %local_41, align 8
+  call void @hew_print_value(i8 1, i64 %print_arg46, i1 true)
   br label %bb22
 
 bb17:                                             ; preds = %bb18
   %"hew_hashmap_free_layout drop" = load ptr, ptr %local_23, align 4
   call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop")
   store ptr null, ptr %local_23, align 4
-  %"hew_vec_free drop46" = load ptr, ptr %local_9, align 4
-  call void @hew_vec_free(ptr %"hew_vec_free drop46")
+  %"hew_vec_free drop47" = load ptr, ptr %local_9, align 4
+  call void @hew_vec_free(ptr %"hew_vec_free drop47")
   store ptr null, ptr %local_9, align 4
   call void @hew_trap_with_code(i32 208)
   call void @llvm.trap()
@@ -708,55 +714,55 @@ bb17:                                             ; preds = %bb18
 
 bb18:                                             ; preds = %bb13
   store i64 1, ptr %local_34, align 8
-  %cmp_lhs47 = load i64, ptr %local_31, align 8
-  %cmp_rhs48 = load i64, ptr %local_34, align 8
-  %cmp_bit49 = icmp eq i64 %cmp_lhs47, %cmp_rhs48
-  %cmp_zext50 = zext i1 %cmp_bit49 to i8
-  store i8 %cmp_zext50, ptr %local_35, align 1
-  %cond_load51 = load i8, ptr %local_35, align 1
-  %cond_nz52 = icmp ne i8 %cond_load51, 0
-  br i1 %cond_nz52, label %bb16, label %bb17
+  %cmp_lhs48 = load i64, ptr %local_31, align 8
+  %cmp_rhs49 = load i64, ptr %local_34, align 8
+  %cmp_bit50 = icmp eq i64 %cmp_lhs48, %cmp_rhs49
+  %cmp_zext51 = zext i1 %cmp_bit50 to i8
+  store i8 %cmp_zext51, ptr %local_35, align 1
+  %cond_load52 = load i8, ptr %local_35, align 1
+  %cond_nz53 = icmp ne i8 %cond_load52, 0
+  br i1 %cond_nz53, label %bb16, label %bb17
 
 bb19:                                             ; preds = %bb15
-  %"hew_hashmap_free_layout drop53" = load ptr, ptr %local_23, align 4
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop53")
+  %"hew_hashmap_free_layout drop54" = load ptr, ptr %local_23, align 4
+  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop54")
   store ptr null, ptr %local_23, align 4
-  %"hew_vec_free drop54" = load ptr, ptr %local_9, align 4
-  call void @hew_vec_free(ptr %"hew_vec_free drop54")
+  %"hew_vec_free drop55" = load ptr, ptr %local_9, align 4
+  call void @hew_vec_free(ptr %"hew_vec_free drop55")
   store ptr null, ptr %local_9, align 4
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
 bb20:                                             ; preds = %bb15
-  %print_arg55 = load i64, ptr %local_39, align 8
-  call void @hew_print_value(i8 1, i64 %print_arg55, i1 true)
+  %print_arg56 = load i64, ptr %local_39, align 8
+  call void @hew_print_value(i8 1, i64 %print_arg56, i1 true)
   br label %bb21
 
 bb21:                                             ; preds = %bb20
-  %hew_actor_cooperate56 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel57 = icmp eq i32 %hew_actor_cooperate56, 2
-  br i1 %hew_cooperate_is_cancel57, label %cancel_exit58, label %after_cooperate59
+  %hew_actor_cooperate57 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel58 = icmp eq i32 %hew_actor_cooperate57, 2
+  br i1 %hew_cooperate_is_cancel58, label %cancel_exit59, label %after_cooperate60
 
 bb22:                                             ; preds = %bb16
-  %hew_actor_cooperate62 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel63 = icmp eq i32 %hew_actor_cooperate62, 2
-  br i1 %hew_cooperate_is_cancel63, label %cancel_exit64, label %after_cooperate65
+  %hew_actor_cooperate63 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel64 = icmp eq i32 %hew_actor_cooperate63, 2
+  br i1 %hew_cooperate_is_cancel64, label %cancel_exit65, label %after_cooperate66
 
 bb23:                                             ; preds = %bb14
-  %print_arg68 = load i64, ptr %local_44, align 8
-  call void @hew_print_value(i8 1, i64 %print_arg68, i1 true)
+  %print_arg69 = load i64, ptr %local_44, align 8
+  call void @hew_print_value(i8 1, i64 %print_arg69, i1 true)
   br label %bb24
 
 bb24:                                             ; preds = %bb23
   store i64 0, ptr %local_45, align 8
-  %move_load69 = load i64, ptr %local_45, align 8
-  store i64 %move_load69, ptr %return_slot, align 8
-  %"hew_hashmap_free_layout drop70" = load ptr, ptr %local_23, align 4
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop70")
+  %move_load70 = load i64, ptr %local_45, align 8
+  store i64 %move_load70, ptr %return_slot, align 8
+  %"hew_hashmap_free_layout drop71" = load ptr, ptr %local_23, align 4
+  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop71")
   store ptr null, ptr %local_23, align 4
-  %"hew_vec_free drop71" = load ptr, ptr %local_9, align 4
-  call void @hew_vec_free(ptr %"hew_vec_free drop71")
+  %"hew_vec_free drop72" = load ptr, ptr %local_9, align 4
+  call void @hew_vec_free(ptr %"hew_vec_free drop72")
   store ptr null, ptr %local_9, align 4
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
@@ -785,28 +791,28 @@ hashmap_get_some:                                 ; preds = %bb12
   store i8 0, ptr %machine_tag_ptr19, align 1
   br label %bb13
 
-cancel_exit58:                                    ; preds = %bb21
-  %"hew_hashmap_free_layout drop60" = load ptr, ptr %local_23, align 4
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop60")
+cancel_exit59:                                    ; preds = %bb21
+  %"hew_hashmap_free_layout drop61" = load ptr, ptr %local_23, align 4
+  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop61")
   store ptr null, ptr %local_23, align 4
-  %"hew_vec_free drop61" = load ptr, ptr %local_9, align 4
-  call void @hew_vec_free(ptr %"hew_vec_free drop61")
+  %"hew_vec_free drop62" = load ptr, ptr %local_9, align 4
+  call void @hew_vec_free(ptr %"hew_vec_free drop62")
   store ptr null, ptr %local_9, align 4
   ret i64 0
 
-after_cooperate59:                                ; preds = %bb21
+after_cooperate60:                                ; preds = %bb21
   br label %bb14
 
-cancel_exit64:                                    ; preds = %bb22
-  %"hew_hashmap_free_layout drop66" = load ptr, ptr %local_23, align 4
-  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop66")
+cancel_exit65:                                    ; preds = %bb22
+  %"hew_hashmap_free_layout drop67" = load ptr, ptr %local_23, align 4
+  call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop67")
   store ptr null, ptr %local_23, align 4
-  %"hew_vec_free drop67" = load ptr, ptr %local_9, align 4
-  call void @hew_vec_free(ptr %"hew_vec_free drop67")
+  %"hew_vec_free drop68" = load ptr, ptr %local_9, align 4
+  call void @hew_vec_free(ptr %"hew_vec_free drop68")
   store ptr null, ptr %local_9, align 4
   ret i64 0
 
-after_cooperate65:                                ; preds = %bb22
+after_cooperate66:                                ; preds = %bb22
   br label %bb14
 }
 
@@ -1542,6 +1548,37 @@ entry:
 }
 
 declare i32 @hew_actor_cooperate()
+
+define internal void @__hew_enum_drop_inplace_Color(ptr %0) {
+entry:
+  %enum_drop_tag_ptr = getelementptr inbounds nuw %Color, ptr %0, i32 0, i32 0
+  %enum_drop_tag = load i8, ptr %enum_drop_tag_ptr, align 1
+  switch i8 %enum_drop_tag, label %tag_oob_trap [
+    i8 0, label %enum_drop_variant_0
+    i8 1, label %enum_drop_variant_1
+    i8 2, label %enum_drop_variant_2
+  ]
+
+done:                                             ; preds = %enum_drop_variant_2, %enum_drop_variant_1, %enum_drop_variant_0
+  ret void
+
+tag_oob_trap:                                     ; preds = %entry
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
+
+enum_drop_variant_0:                              ; preds = %entry
+  %enum_drop_payload_0 = getelementptr inbounds nuw %Color, ptr %0, i32 0, i32 1
+  br label %done
+
+enum_drop_variant_1:                              ; preds = %entry
+  %enum_drop_payload_1 = getelementptr inbounds nuw %Color, ptr %0, i32 0, i32 1
+  br label %done
+
+enum_drop_variant_2:                              ; preds = %entry
+  %enum_drop_payload_2 = getelementptr inbounds nuw %Color, ptr %0, i32 0, i32 1
+  br label %done
+}
 
 declare void @hew_trap_with_code(i32)
 

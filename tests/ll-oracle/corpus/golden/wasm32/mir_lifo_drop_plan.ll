@@ -323,6 +323,9 @@ bb0:                                              ; preds = %after_cooperate
 bb1:                                              ; preds = %bb0
   %move_load = load i64, ptr %local_1, align 8
   store i64 %move_load, ptr %return_slot, align 8
+  %prepared_carrier_handle = load ptr, ptr %local_0, align 4
+  call void @hew_string_drop(ptr %prepared_carrier_handle)
+  store ptr null, ptr %local_0, align 4
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
@@ -356,6 +359,9 @@ entry:
   %local_17 = alloca i64, align 8
   %local_18 = alloca i8, align 1
   %local_19 = alloca i64, align 8
+  %local_20 = alloca ptr, align 4
+  %local_21 = alloca ptr, align 4
+  %local_22 = alloca ptr, align 4
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
@@ -385,15 +391,21 @@ bb0:                                              ; preds = %after_cooperate
   store ptr %hew_string_concat_call7, ptr %local_10, align 4
   %move_load8 = load ptr, ptr %local_10, align 4
   store ptr %move_load8, ptr %local_11, align 4
-  %call_arg = load ptr, ptr %local_3, align 4
+  %move_load9 = load ptr, ptr %local_3, align 4
+  store ptr %move_load9, ptr %local_20, align 4
+  store ptr null, ptr %local_3, align 4
+  %call_arg = load ptr, ptr %local_20, align 4
   %call_result = call i64 @measure(ptr %call_arg)
   store i64 %call_result, ptr %local_12, align 8
   br label %bb1
 
 bb1:                                              ; preds = %bb0
-  %call_arg9 = load ptr, ptr %local_7, align 4
-  %call_result10 = call i64 @measure(ptr %call_arg9)
-  store i64 %call_result10, ptr %local_13, align 8
+  %move_load10 = load ptr, ptr %local_7, align 4
+  store ptr %move_load10, ptr %local_21, align 4
+  store ptr null, ptr %local_7, align 4
+  %call_arg11 = load ptr, ptr %local_21, align 4
+  %call_result12 = call i64 @measure(ptr %call_arg11)
+  store i64 %call_result12, ptr %local_13, align 8
   br label %bb2
 
 bb2:                                              ; preds = %bb1
@@ -413,67 +425,70 @@ bb3:                                              ; preds = %bb2
   %"hew_string_drop drop" = load ptr, ptr %local_11, align 4
   call void @hew_string_drop(ptr %"hew_string_drop drop")
   store ptr null, ptr %local_11, align 4
-  %"hew_string_drop drop11" = load ptr, ptr %local_7, align 4
-  call void @hew_string_drop(ptr %"hew_string_drop drop11")
+  %"hew_string_drop drop13" = load ptr, ptr %local_7, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop13")
   store ptr null, ptr %local_7, align 4
-  %"hew_string_drop drop12" = load ptr, ptr %local_3, align 4
-  call void @hew_string_drop(ptr %"hew_string_drop drop12")
+  %"hew_string_drop drop14" = load ptr, ptr %local_3, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop14")
   store ptr null, ptr %local_3, align 4
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
 bb4:                                              ; preds = %bb2
-  %call_arg13 = load ptr, ptr %local_11, align 4
-  %call_result14 = call i64 @measure(ptr %call_arg13)
-  store i64 %call_result14, ptr %local_16, align 8
+  %move_load15 = load ptr, ptr %local_11, align 4
+  store ptr %move_load15, ptr %local_22, align 4
+  store ptr null, ptr %local_11, align 4
+  %call_arg16 = load ptr, ptr %local_22, align 4
+  %call_result17 = call i64 @measure(ptr %call_arg16)
+  store i64 %call_result17, ptr %local_16, align 8
   br label %bb5
 
 bb5:                                              ; preds = %bb4
-  %checked_lhs15 = load i64, ptr %local_14, align 8
-  %checked_rhs16 = load i64, ptr %local_16, align 8
-  %with_overflow17 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs15, i64 %checked_rhs16)
-  %checked_result18 = extractvalue { i64, i1 } %with_overflow17, 0
-  %checked_overflow19 = extractvalue { i64, i1 } %with_overflow17, 1
-  %checked_overflow_widen20 = zext i1 %checked_overflow19 to i8
-  store i64 %checked_result18, ptr %local_17, align 8
-  store i8 %checked_overflow_widen20, ptr %local_18, align 1
-  %cond_load21 = load i8, ptr %local_18, align 1
-  %cond_nz22 = icmp ne i8 %cond_load21, 0
-  br i1 %cond_nz22, label %bb6, label %bb7
+  %checked_lhs18 = load i64, ptr %local_14, align 8
+  %checked_rhs19 = load i64, ptr %local_16, align 8
+  %with_overflow20 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs18, i64 %checked_rhs19)
+  %checked_result21 = extractvalue { i64, i1 } %with_overflow20, 0
+  %checked_overflow22 = extractvalue { i64, i1 } %with_overflow20, 1
+  %checked_overflow_widen23 = zext i1 %checked_overflow22 to i8
+  store i64 %checked_result21, ptr %local_17, align 8
+  store i8 %checked_overflow_widen23, ptr %local_18, align 1
+  %cond_load24 = load i8, ptr %local_18, align 1
+  %cond_nz25 = icmp ne i8 %cond_load24, 0
+  br i1 %cond_nz25, label %bb6, label %bb7
 
 bb6:                                              ; preds = %bb5
-  %"hew_string_drop drop23" = load ptr, ptr %local_11, align 4
-  call void @hew_string_drop(ptr %"hew_string_drop drop23")
+  %"hew_string_drop drop26" = load ptr, ptr %local_11, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop26")
   store ptr null, ptr %local_11, align 4
-  %"hew_string_drop drop24" = load ptr, ptr %local_7, align 4
-  call void @hew_string_drop(ptr %"hew_string_drop drop24")
+  %"hew_string_drop drop27" = load ptr, ptr %local_7, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop27")
   store ptr null, ptr %local_7, align 4
-  %"hew_string_drop drop25" = load ptr, ptr %local_3, align 4
-  call void @hew_string_drop(ptr %"hew_string_drop drop25")
+  %"hew_string_drop drop28" = load ptr, ptr %local_3, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop28")
   store ptr null, ptr %local_3, align 4
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
 bb7:                                              ; preds = %bb5
-  %move_load26 = load i64, ptr %local_17, align 8
-  store i64 %move_load26, ptr %local_19, align 8
+  %move_load29 = load i64, ptr %local_17, align 8
+  store i64 %move_load29, ptr %local_19, align 8
   %print_arg = load i64, ptr %local_19, align 8
   call void @hew_print_value(i8 1, i64 %print_arg, i1 true)
   br label %bb8
 
 bb8:                                              ; preds = %bb7
-  %move_load27 = load i64, ptr %local_19, align 8
-  store i64 %move_load27, ptr %return_slot, align 8
-  %"hew_string_drop drop28" = load ptr, ptr %local_11, align 4
-  call void @hew_string_drop(ptr %"hew_string_drop drop28")
+  %move_load30 = load i64, ptr %local_19, align 8
+  store i64 %move_load30, ptr %return_slot, align 8
+  %"hew_string_drop drop31" = load ptr, ptr %local_11, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop31")
   store ptr null, ptr %local_11, align 4
-  %"hew_string_drop drop29" = load ptr, ptr %local_7, align 4
-  call void @hew_string_drop(ptr %"hew_string_drop drop29")
+  %"hew_string_drop drop32" = load ptr, ptr %local_7, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop32")
   store ptr null, ptr %local_7, align 4
-  %"hew_string_drop drop30" = load ptr, ptr %local_3, align 4
-  call void @hew_string_drop(ptr %"hew_string_drop drop30")
+  %"hew_string_drop drop33" = load ptr, ptr %local_3, align 4
+  call void @hew_string_drop(ptr %"hew_string_drop drop33")
   store ptr null, ptr %local_3, align 4
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val

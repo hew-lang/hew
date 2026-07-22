@@ -312,6 +312,10 @@ bb0:                                              ; preds = %after_cooperate
   store i64 %hew_bytes_len_call, ptr %local_1, align 8
   %move_load = load i64, ptr %local_1, align 8
   store i64 %move_load, ptr %return_slot, align 8
+  %bytes_drop_ptr_slot = getelementptr inbounds nuw { ptr, i32, i32 }, ptr %0, i32 0, i32 0
+  %bytes_drop_ptr = load ptr, ptr %bytes_drop_ptr_slot, align 4
+  call void @hew_bytes_drop(ptr %bytes_drop_ptr)
+  store ptr null, ptr %bytes_drop_ptr_slot, align 4
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
@@ -329,6 +333,7 @@ entry:
   %local_1 = alloca { ptr, i32, i32 }, align 8
   %local_2 = alloca i64, align 8
   %local_3 = alloca i64, align 8
+  %local_4 = alloca { ptr, i32, i32 }, align 8
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
@@ -340,7 +345,12 @@ bb0:                                              ; preds = %after_cooperate
   br label %bb1
 
 bb1:                                              ; preds = %bb0
-  %call_result = call i64 @byte_count(ptr %local_1)
+  %snapshot_bytes_source = load { ptr, i32, i32 }, ptr %local_1, align 4
+  store { ptr, i32, i32 } %snapshot_bytes_source, ptr %local_4, align 4
+  %snapshot_bytes_bytes_load = load { ptr, i32, i32 }, ptr %local_4, align 4
+  %snapshot_bytes_bytes_data = extractvalue { ptr, i32, i32 } %snapshot_bytes_bytes_load, 0
+  call void @hew_bytes_clone_ref(ptr %snapshot_bytes_bytes_data)
+  %call_result = call i64 @byte_count(ptr %local_4)
   store i64 %call_result, ptr %local_2, align 8
   br label %bb2
 
@@ -1074,6 +1084,8 @@ declare i32 @hew_actor_cooperate()
 declare i64 @hew_bytes_len(ptr)
 
 declare void @hew_bytes_drop(ptr)
+
+declare void @hew_bytes_clone_ref(ptr)
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #0

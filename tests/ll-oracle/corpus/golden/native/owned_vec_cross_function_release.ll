@@ -802,6 +802,7 @@ entry:
   %local_0 = alloca %Holder, align 8
   %local_1 = alloca %Holder, align 8
   %local_2 = alloca %Holder, align 8
+  %local_3 = alloca %Holder, align 8
   store %Holder %0, ptr %local_0, align 8
   store %Holder %1, ptr %local_1, align 8
   br label %bb0
@@ -809,14 +810,19 @@ entry:
 bb0:                                              ; preds = %entry
   %move_load = load %Holder, ptr %local_0, align 8
   store %Holder %move_load, ptr %local_2, align 8
-  %rfd_0_gep = getelementptr inbounds nuw %Holder, ptr %local_2, i32 0, i32 0
+  store %Holder zeroinitializer, ptr %local_0, align 8
+  %move_load1 = load %Holder, ptr %local_2, align 8
+  store %Holder %move_load1, ptr %local_3, align 8
+  %rfd_0_gep = getelementptr inbounds nuw %Holder, ptr %local_3, i32 0, i32 0
   %rfd_0_raw_load = load ptr, ptr %rfd_0_gep, align 8
   call void @hew_vec_free_owned(ptr %rfd_0_raw_load)
   store ptr null, ptr %rfd_0_gep, align 8
-  %move_load1 = load %Holder, ptr %local_1, align 8
-  store %Holder %move_load1, ptr %local_2, align 8
-  %move_load2 = load %Holder, ptr %local_2, align 8
-  store %Holder %move_load2, ptr %return_slot, align 8
+  %move_load2 = load %Holder, ptr %local_1, align 8
+  store %Holder %move_load2, ptr %local_3, align 8
+  %move_load3 = load %Holder, ptr %local_3, align 8
+  store %Holder %move_load3, ptr %return_slot, align 8
+  call void @__hew_record_drop_inplace_Holder(ptr %local_1)
+  call void @__hew_record_drop_inplace_Holder(ptr %local_0)
   %ret_val = load %Holder, ptr %return_slot, align 8
   ret %Holder %ret_val
 }
@@ -847,6 +853,8 @@ entry:
   %local_20 = alloca %Holder, align 8
   %local_21 = alloca i8, align 1
   %local_22 = alloca i64, align 8
+  %local_23 = alloca %Holder, align 8
+  %local_24 = alloca %Holder, align 8
   store i64 %0, ptr %local_0, align 8
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
@@ -898,7 +906,7 @@ bb3:                                              ; preds = %bb2
   store ptr %call_result9, ptr %local_14, align 8
   br label %bb8
 
-bb4:                                              ; preds = %after_cooperate39
+bb4:                                              ; preds = %after_cooperate41
   %checked_lhs = load i64, ptr %local_6, align 8
   %checked_rhs = load i64, ptr %local_9, align 8
   %with_overflow = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs, i64 %checked_rhs)
@@ -963,18 +971,24 @@ bb10:                                             ; preds = %bb8
   store i64 %field_1_init_src30, ptr %field_1_init_ptr29, align 8
   %move_load31 = load %Holder, ptr %local_18, align 8
   store %Holder %move_load31, ptr %local_19, align 8
-  %call_arg32 = load %Holder, ptr %local_5, align 8
-  %call_arg33 = load %Holder, ptr %local_19, align 8
-  %call_result34 = call %Holder @replace_holder(%Holder %call_arg32, %Holder %call_arg33)
-  store %Holder %call_result34, ptr %local_20, align 8
+  %move_load32 = load %Holder, ptr %local_5, align 8
+  store %Holder %move_load32, ptr %local_23, align 8
+  store %Holder zeroinitializer, ptr %local_5, align 8
+  %move_load33 = load %Holder, ptr %local_19, align 8
+  store %Holder %move_load33, ptr %local_24, align 8
+  store %Holder zeroinitializer, ptr %local_19, align 8
+  %call_arg34 = load %Holder, ptr %local_23, align 8
+  %call_arg35 = load %Holder, ptr %local_24, align 8
+  %call_result36 = call %Holder @replace_holder(%Holder %call_arg34, %Holder %call_arg35)
+  store %Holder %call_result36, ptr %local_20, align 8
   br label %bb11
 
 bb11:                                             ; preds = %bb10
-  %move_load35 = load %Holder, ptr %local_20, align 8
-  store %Holder %move_load35, ptr %local_5, align 8
-  %hew_actor_cooperate36 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel37 = icmp eq i32 %hew_actor_cooperate36, 2
-  br i1 %hew_cooperate_is_cancel37, label %cancel_exit38, label %after_cooperate39
+  %move_load37 = load %Holder, ptr %local_20, align 8
+  store %Holder %move_load37, ptr %local_5, align 8
+  %hew_actor_cooperate38 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel39 = icmp eq i32 %hew_actor_cooperate38, 2
+  br i1 %hew_cooperate_is_cancel39, label %cancel_exit40, label %after_cooperate41
 
 bb12:                                             ; preds = %bb4
   call void @hew_trap_with_code(i32 201)
@@ -993,10 +1007,10 @@ cancel_exit17:                                    ; preds = %bb7
 after_cooperate18:                                ; preds = %bb7
   br label %bb2
 
-cancel_exit38:                                    ; preds = %bb11
+cancel_exit40:                                    ; preds = %bb11
   ret i64 0
 
-after_cooperate39:                                ; preds = %bb11
+after_cooperate41:                                ; preds = %bb11
   br label %bb4
 }
 
@@ -1880,6 +1894,22 @@ declare void @llvm.coro.end(ptr, i1, token) #5
 declare void @hew_cont_resume(ptr)
 
 declare void @hew_gen_coro_destroy(ptr)
+
+define internal void @__hew_record_drop_inplace_Holder(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  %drop_f0_ptr = getelementptr inbounds nuw %Holder, ptr %0, i32 0, i32 0
+  %drop_f0 = load ptr, ptr %drop_f0_ptr, align 8
+  call void @hew_vec_free_owned(ptr %drop_f0)
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
+}
 
 declare i32 @hew_lambda_drain_all(i64)
 

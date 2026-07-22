@@ -1872,16 +1872,33 @@ fn cmd_version() {
     } else {
         "release"
     };
-    let git_hash = option_env!("HEW_GIT_HASH").unwrap_or("");
-    let dirty = match option_env!("HEW_GIT_DIRTY") {
-        Some("true") => "-dirty",
-        Some("unknown") => "-unknown",
-        _ => "",
+    println!(
+        "{}",
+        format_version(
+            version,
+            profile,
+            option_env!("HEW_GIT_HASH"),
+            option_env!("HEW_GIT_DIRTY")
+        )
+    );
+}
+
+fn format_version(
+    version: &str,
+    profile: &str,
+    git_hash: Option<&str>,
+    git_dirty: Option<&str>,
+) -> String {
+    let git = match (git_hash, git_dirty) {
+        (Some("unknown"), _) | (_, Some("unknown")) => Some("git-unavailable".to_string()),
+        (Some(hash), Some("true")) if !hash.is_empty() => Some(format!("{hash}-dirty")),
+        (Some(hash), _) if !hash.is_empty() => Some(hash.to_string()),
+        _ => None,
     };
-    if git_hash.is_empty() {
-        println!("hew {version} ({profile})");
-    } else {
-        println!("hew {version} ({profile}, {git_hash}{dirty})");
+
+    match git {
+        Some(git) => format!("hew {version} ({profile}, {git})"),
+        None => format!("hew {version} ({profile})"),
     }
 }
 
@@ -1969,3 +1986,32 @@ fn exec_sibling_binary(binary_name: &str, extra_args: &[String]) -> ! {
 // ---------------------------------------------------------------------------
 // Helper utilities
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod version_tests {
+    use super::format_version;
+
+    #[test]
+    fn version_formats_present_git_metadata() {
+        assert_eq!(
+            format_version("0.6.0-rc1", "release", Some("a1b2c3d"), Some("false")),
+            "hew 0.6.0-rc1 (release, a1b2c3d)"
+        );
+        assert_eq!(
+            format_version("0.6.0-rc1", "debug", Some("a1b2c3d"), Some("true")),
+            "hew 0.6.0-rc1 (debug, a1b2c3d-dirty)"
+        );
+    }
+
+    #[test]
+    fn version_formats_unavailable_git_metadata_as_one_state() {
+        assert_eq!(
+            format_version("0.6.0-rc1", "debug", Some("unknown"), Some("unknown")),
+            "hew 0.6.0-rc1 (debug, git-unavailable)"
+        );
+        assert_eq!(
+            format_version("0.6.0-rc1", "debug", Some("a1b2c3d"), Some("unknown")),
+            "hew 0.6.0-rc1 (debug, git-unavailable)"
+        );
+    }
+}

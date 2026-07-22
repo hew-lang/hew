@@ -205,20 +205,24 @@ impl Builder {
             return None;
         }
         let value = self.lower_value(expr)?;
+        Some(self.transfer_owned_carrier_value(expr, value))
+    }
+
+    fn transfer_owned_carrier_value(&mut self, expr: &HirExpr, value: Place) -> Place {
         let Some(target) = self.owned_carrier_neutralize.remove(&value) else {
-            return Some(value);
+            return value;
         };
         match target {
             OwnedCarrierNeutralizeTarget::Whole(source) => {
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.push_instr(Instr::Move { dest, src: value });
                 self.push_instr(Instr::NeutralizePayloadSlot { place: source });
-                Some(dest)
+                dest
             }
             OwnedCarrierNeutralizeTarget::Projection { root, fields } => {
                 self.push_instr(Instr::AggregateProjectionNeutralize { root, fields });
                 self.prepared_owned_call_sources.insert(value);
-                Some(value)
+                value
             }
         }
     }
@@ -270,7 +274,33 @@ impl Builder {
                             .copied()
                             == Some(true)
                     });
-                self.lower_method_arg_value(arg, is_move)
+                let target_is_owned_carrier = callee_item.is_some_and(|item| {
+                    self.param_ownership
+                        .call_param_owned_carrier
+                        .get(&(item, index))
+                        .copied()
+                        == Some(true)
+                });
+                if !is_move || target_is_owned_carrier {
+                    return self.lower_method_arg_value(arg, is_move);
+                }
+
+                // The general call-consume table is deliberately fail-closed
+                // and can over-approximate borrow-only wrappers. A prepared
+                // carrier must transfer only to a matching callee carrier (or
+                // another explicit ownership boundary), otherwise a read such
+                // as `string.is_empty(path)` would neutralize `path` before its
+                // later use. Non-carrier arguments retain the historical move
+                // lowering unchanged.
+                if self.reject_capture_env_whole_escape_expr(arg) {
+                    return None;
+                }
+                let value = self.lower_value(arg)?;
+                if self.owned_carrier_neutralize.contains_key(&value) {
+                    Some(value)
+                } else {
+                    Some(self.transfer_owned_carrier_value(arg, value))
+                }
             })
             .collect()
     }

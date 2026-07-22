@@ -13023,11 +13023,12 @@ fn lower_try_width_cast(
     }
 }
 
-fn lower_instruction(
+fn lower_instruction_with_cancel_drops(
     fn_ctx: &FnCtx<'_, '_>,
     instr: &Instr,
     block_id: u32,
     drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+    owned_carrier_cancel_drops: &[(Place, hew_mir::state_clone::ValueSnapshotPlan)],
 ) -> CodegenResult<()> {
     let ctx = fn_ctx
         .builder
@@ -13053,7 +13054,7 @@ fn lower_instruction(
                     "CheckCancellation requires a ctx-bearing execution context".into(),
                 ));
             }
-            emit_cooperate_check(fn_ctx, block_id, drop_plans)?;
+            emit_cooperate_check(fn_ctx, block_id, drop_plans, owned_carrier_cancel_drops)?;
         }
         Instr::RcIntrinsic {
             dest,
@@ -15926,6 +15927,16 @@ fn lower_instruction(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn lower_instruction(
+    fn_ctx: &FnCtx<'_, '_>,
+    instr: &Instr,
+    block_id: u32,
+    drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+) -> CodegenResult<()> {
+    lower_instruction_with_cancel_drops(fn_ctx, instr, block_id, drop_plans, &[])
 }
 
 fn load_rc_handle<'ctx>(
@@ -28823,10 +28834,58 @@ fn emit_cancel_drops(
     Ok(())
 }
 
+/// Recover the local-call carrier parameters whose terminal cleanup was
+/// installed by MIR lowering. Auto-cooperate cancellation exits are synthesized
+/// only in codegen, so they cannot carry the terminal `ValueSnapshotDrop`
+/// instruction directly. `func.params.len()` defines the authoritative local
+/// prefix occupied by parameters; filtering to that prefix excludes call-site carrier temps,
+/// which may be uninitialized when an entry cooperate check fires.
+fn collect_owned_carrier_cancel_drops(
+    func: &RawMirFunction,
+) -> CodegenResult<Vec<(Place, hew_mir::state_clone::ValueSnapshotPlan)>> {
+    let mut drops = Vec::new();
+    for block in &func.blocks {
+        if !matches!(
+            block.terminator,
+            Terminator::Return | Terminator::Trap { .. }
+        ) {
+            continue;
+        }
+        for instr in &block.instructions {
+            let Instr::ValueSnapshotDrop {
+                value,
+                plan,
+                boundary: hew_mir::PreparedCarrierBoundary::LocalCall,
+                ..
+            } = instr
+            else {
+                continue;
+            };
+            let Place::Local(local) = value else {
+                continue;
+            };
+            if usize::try_from(*local).map_or(true, |index| index >= func.params.len()) {
+                continue;
+            }
+            if let Some((_, installed)) = drops.iter().find(|(place, _)| place == value) {
+                if installed != plan {
+                    return Err(CodegenError::FailClosed(format!(
+                        "owned call-carrier parameter {value:?} has inconsistent terminal drop plans"
+                    )));
+                }
+            } else {
+                drops.push((*value, plan.clone()));
+            }
+        }
+    }
+    Ok(drops)
+}
+
 fn emit_cooperate_check<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     block_id: u32,
     drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+    owned_carrier_cancel_drops: &[(Place, hew_mir::state_clone::ValueSnapshotPlan)],
 ) -> CodegenResult<()> {
     let signal = fn_ctx.call_runtime_int(
         "hew_actor_cooperate",
@@ -28859,6 +28918,17 @@ fn emit_cooperate_check<'ctx>(
 
     fn_ctx.builder.position_at_end(cancel_bb);
     emit_cancel_drops(fn_ctx, block_id, drop_plans)?;
+    // `collect_owned_carrier_cancel_drops` preserves the terminal instruction
+    // order installed by MIR (already LIFO), so cancellation replays that same
+    // order without reversing it a second time.
+    for (value, plan) in owned_carrier_cancel_drops {
+        emit_prepared_carrier_drop(
+            fn_ctx,
+            *value,
+            plan,
+            hew_mir::PreparedCarrierBoundary::LocalCall,
+        )?;
+    }
     emit_cancel_trap_or_return(fn_ctx)?;
 
     fn_ctx.builder.position_at_end(continue_bb);
@@ -31167,6 +31237,7 @@ fn lower_function<'ctx>(
 
     let cooperate_sites: &[CooperateSite] =
         checked.map(|c| c.cooperate_sites.as_slice()).unwrap_or(&[]);
+    let owned_carrier_cancel_drops = collect_owned_carrier_cancel_drops(func)?;
     if let Some(site) = cooperate_sites
         .iter()
         .find(|site| site.kind == CooperateKind::FunctionEntry && site.bb_id != entry_block.id)
@@ -31190,7 +31261,12 @@ fn lower_function<'ctx>(
         .iter()
         .any(|site| cooperate_site_matches(site, entry_block.id, CooperateKind::FunctionEntry))
     {
-        emit_cooperate_check(&fn_ctx, entry_block.id, drop_plans)?;
+        emit_cooperate_check(
+            &fn_ctx,
+            entry_block.id,
+            drop_plans,
+            &owned_carrier_cancel_drops,
+        )?;
     }
     // P5-RX Stage 2a (A625): runtime fail-closed entry trap. When a borrowed
     // `String` receive view escapes through a vector this stage does not yet
@@ -31302,14 +31378,20 @@ fn lower_function<'ctx>(
             // entry (synthesised instructions outside any HIR statement). The
             // caller (`build_module_for_target`) retains this span only for a
             // root-origin function; every other origin has it stripped.
-            lower_instruction(&fn_ctx, instr, block.id, drop_plans)
-                .map_err(|e| e.with_instr_span(func.instr_spans.get(&instr_key).copied()))?;
+            lower_instruction_with_cancel_drops(
+                &fn_ctx,
+                instr,
+                block.id,
+                drop_plans,
+                &owned_carrier_cancel_drops,
+            )
+            .map_err(|e| e.with_instr_span(func.instr_spans.get(&instr_key).copied()))?;
         }
         if cooperate_sites
             .iter()
             .any(|site| cooperate_site_matches(site, block.id, CooperateKind::LoopBackEdge))
         {
-            emit_cooperate_check(&fn_ctx, block.id, drop_plans)?;
+            emit_cooperate_check(&fn_ctx, block.id, drop_plans, &owned_carrier_cancel_drops)?;
         }
         // Emit LIFO drops from the elaborated drop plan BEFORE the
         // terminator so the alloca null-stores precede the ret/br.

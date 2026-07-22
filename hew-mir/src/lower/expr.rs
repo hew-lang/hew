@@ -1778,7 +1778,11 @@ impl Builder {
                   splitting would obscure the exhaustiveness requirement"
     )]
     fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
-        let Some(src) = self.lower_value(value) else {
+        // Assignment stores the incoming value into a new owning slot. Route
+        // it through the same carrier-transfer funnel as `let`, return, and
+        // owned call arguments so a callee-owned parameter is neutralized
+        // before the reassigned binding becomes the sole release authority.
+        let Some(src) = self.lower_value_for_move(value) else {
             return;
         };
         if let Some((field_offset, _)) = self.actor_state_field_for_target(target) {

@@ -349,6 +349,52 @@ fn pushMixed(p: string, h: Holder) {
 }
 ";
 
+const ASSOCIATED_STATIC_CARRIER_SOURCE: &str = r#"
+type Ops { marker: i64 }
+type Holder { items: Vec<string>, keep: string }
+type Wrap { items: Vec<string> }
+
+enum Payload {
+    Text(string);
+    Scalar(i64);
+}
+
+impl Ops {
+    fn storeRecord(h: Holder) -> i64 {
+        let v: Vec<Wrap> = [];
+        v.push(Wrap { items: h.items });
+        v.len()
+    }
+
+    fn storeTuple(h: (Vec<string>, string)) -> i64 {
+        let v: Vec<Wrap> = [];
+        v.push(Wrap { items: h.0 });
+        v.len()
+    }
+
+    fn storeEnum(h: Payload) -> i64 {
+        match h {
+            Payload::Text(s) => {
+                let v: Vec<string> = [];
+                v.push(s);
+                v.len()
+            },
+            Payload::Scalar(_) => 0,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let h = Holder { items: ["record"], keep: "keep" };
+    let t = (["tuple"], "keep");
+    let e = Payload::Text("enum");
+    let total = Ops::storeRecord(h) + Ops::storeTuple(t) + Ops::storeEnum(e);
+    if h.items.len() != 1 { return 91; }
+    if t.0.len() != 1 { return 92; }
+    total
+}
+"#;
+
 const REUSABLE_CALLABLE_PARAM_SOURCE: &str = r"
 fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
     f(x)
@@ -834,7 +880,11 @@ fn nested_and_tuple_projection_moves_neutralize_the_original_carrier_slots() {
         .nth(1)
         .and_then(|section| section.split("fn tupled").next())
         .expect("nested MIR section");
-    let tupled = mir.split("fn tupled").nth(1).expect("tuple MIR section");
+    let tupled = mir
+        .split("fn tupled")
+        .nth(1)
+        .and_then(|section| section.split("fn i8::fmt").next())
+        .expect("tuple MIR section");
     assert!(
         nested.contains("aggregate_projection_neutralize _0 fields=[0, 0]"),
         "a two-hop record projection must clear the original carrier leaf; removing second-hop provenance must fail this tooth:\n{nested}"
@@ -922,6 +972,75 @@ fn non_string_param_embed_uses_owned_carrier_temp() {
         mir.contains("snapshot_drop _0 ty=Holder") && mir.contains("boundary=LocalCall"),
         "the same carrier fact must install the callee's inverse Holder cleanup:\n{mir}"
     );
+}
+
+#[test]
+fn associated_static_param_zero_keeps_record_tuple_and_enum_carriers() {
+    let mir = dump_checked_mir(
+        ASSOCIATED_STATIC_CARRIER_SOURCE,
+        "associated_static_carriers",
+    );
+    for (next, name, ty) in [
+        ("Ops::storeTuple", "Ops::storeRecord", "Holder"),
+        ("Ops::storeEnum", "Ops::storeTuple", "(Vec<string>, string)"),
+        ("main", "Ops::storeEnum", "Payload"),
+    ] {
+        let section = mir
+            .split(&format!("fn {name}"))
+            .nth(1)
+            .and_then(|body| body.split(&format!("fn {next}")).next())
+            .unwrap_or_else(|| panic!("missing checked MIR section for {name}:\n{mir}"));
+        assert!(
+            section.contains("snapshot_drop _0") && section.contains(&format!("ty={ty}")),
+            "associated/static parameter zero must retain the owned carrier contract for {ty}:\n{section}"
+        );
+    }
+    let main = mir.split("fn main").nth(1).expect("main checked MIR");
+    assert_eq!(
+        main.matches("snapshot_clone").count(),
+        2,
+        "the live-after-call record and tuple values must each mint one independent owner:\n{main}"
+    );
+    assert!(
+        main.contains("neutralize_payload") && main.contains("call Ops::storeEnum"),
+        "the last-use enum value must transfer its owner into the static call carrier:\n{main}"
+    );
+}
+
+#[test]
+fn owned_carrier_cancel_exit_drops_once_on_native_and_wasm() {
+    require_codegen();
+    for (target_name, target) in [("native", None), ("wasm32", Some("wasm32-unknown-unknown"))] {
+        let ir = compile_source_to_llvm(
+            CLONEABLE_ENUM_CONTROL_SOURCE,
+            &format!("owned_carrier_cancel_{target_name}"),
+            target,
+        );
+        let inspect = llvm_function_body(&ir, "inspect");
+        let cancel = inspect
+            .split("cancel_exit:")
+            .nth(1)
+            .and_then(|section| section.split("after_cooperate:").next())
+            .expect("inspect cancellation block");
+        assert_eq!(
+            cancel
+                .matches("call void @__hew_enum_drop_inplace_Mixed(")
+                .count(),
+            1,
+            "runtime cancellation code 2 must release the prepared enum carrier exactly once ({target_name}):\n{cancel}"
+        );
+        let normal_drop_count = inspect
+            .split("bb1:")
+            .nth(1)
+            .and_then(|section| section.split("ret i64").next())
+            .expect("inspect normal return block")
+            .matches("call void @__hew_enum_drop_inplace_Mixed(")
+            .count();
+        assert_eq!(
+            normal_drop_count, 1,
+            "the ordinary return path must retain one mutually exclusive carrier cleanup ({target_name}):\n{inspect}"
+        );
+    }
 }
 
 #[test]

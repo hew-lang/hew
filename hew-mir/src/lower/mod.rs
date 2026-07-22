@@ -3629,6 +3629,10 @@ pub(crate) struct ParamOwnershipFacts {
 struct ScanCtx<'a> {
     consume: &'a HashMap<(hew_hir::ItemId, usize), bool>,
     methods: &'a HashSet<hew_hir::ItemId>,
+    /// The subset of `methods` whose parameter zero is a true receiver. An
+    /// associated/static impl function has no receiver, so its first argument
+    /// retains ordinary carrier/consume inference.
+    true_receiver_methods: &'a HashSet<hew_hir::ItemId>,
     /// Whether consume-intent projections count as owning carriers of their
     /// root parameter. This is enabled only for the deep call-carrier summary,
     /// never for the legacy borrow/consume table.

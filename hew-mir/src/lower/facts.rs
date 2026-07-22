@@ -616,6 +616,52 @@ fn collect_method_item_ids(
         .map(|(&id, _)| id)
         .collect()
 }
+
+fn resolved_ty_matches_impl_self(ty: &ResolvedTy, self_ty: &str) -> bool {
+    let rendered = ty.user_facing().to_string();
+    matches!(ty, ResolvedTy::Named { name, .. } if name == self_ty)
+        || rendered
+            .split('<')
+            .next()
+            .is_some_and(|root| root == self_ty)
+}
+
+/// Collect the subset of `impl` items whose parameter zero is a true receiver.
+///
+/// An associated/static function is present in `collect_method_item_ids`, but
+/// its first value parameter is ordinary call data and must retain the same
+/// carrier/consume contract as any other non-receiver parameter. Receiver
+/// identity follows the checker authority: bare `self`, or a parameter whose
+/// resolved named type is the enclosing impl's Self type.
+fn collect_receiver_method_item_ids(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    items: &[HirItem],
+    methods: &HashSet<hew_hir::ItemId>,
+) -> HashSet<hew_hir::ItemId> {
+    let method_self_type: HashMap<&str, &str> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Impl(b) => Some(
+                b.method_symbols
+                    .iter()
+                    .map(|sym| (sym.as_str(), b.self_type_name.as_str())),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    fns.iter()
+        .filter(|(id, _)| methods.contains(id))
+        .filter_map(|(&id, &f)| {
+            let param0 = f.params.first()?;
+            (param0.name == "self"
+                || method_self_type
+                    .get(f.name.as_str())
+                    .is_some_and(|self_ty| resolved_ty_matches_impl_self(&param0.ty, self_ty)))
+            .then_some(id)
+        })
+        .collect()
+}
 /// Force-classify every NON-RECEIVER `#[resource]`/`#[linear]` value parameter
 /// of an `impl`/trait method as CONSUME (callee owns and drops it).
 ///
@@ -665,9 +711,9 @@ fn force_consume_method_nonreceiver_resource_params(
         }
         let receiver_arity = usize::from(f.params.first().is_some_and(|p| {
             p.name == "self"
-                || method_self_type.get(f.name.as_str()).is_some_and(
-                    |self_ty| matches!(&p.ty, ResolvedTy::Named { name, .. } if name == self_ty),
-                )
+                || method_self_type
+                    .get(f.name.as_str())
+                    .is_some_and(|self_ty| resolved_ty_matches_impl_self(&p.ty, self_ty))
         }));
         for (i, param) in f.params.iter().enumerate().skip(receiver_arity) {
             if is_user_resource_ty(&param.ty, type_classes) {
@@ -729,9 +775,9 @@ fn collect_borrow_receiver_methods(
         .filter_map(|(&id, &f)| {
             let param0 = f.params.first()?;
             let is_receiver = param0.name == "self"
-                || method_self_type.get(f.name.as_str()).is_some_and(
-                    |self_ty| matches!(&param0.ty, ResolvedTy::Named { name, .. } if name == self_ty),
-                );
+                || method_self_type
+                    .get(f.name.as_str())
+                    .is_some_and(|self_ty| resolved_ty_matches_impl_self(&param0.ty, self_ty));
             (is_receiver && !is_user_resource_ty(&param0.ty, type_classes)).then_some(id)
         })
         .collect()
@@ -765,6 +811,7 @@ fn receiver_is_whole_owned_operand(receiver: &HirExpr) -> bool {
 fn compute_call_param_consumption(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     methods: &HashSet<hew_hir::ItemId>,
+    true_receiver_methods: &HashSet<hew_hir::ItemId>,
     receiver_methods: &HashSet<hew_hir::ItemId>,
     resource_param_consume: &HashMap<(hew_hir::ItemId, usize), bool>,
     owned_projection_sinks: bool,
@@ -795,6 +842,7 @@ fn compute_call_param_consumption(
                     let cx = ScanCtx {
                         consume: &consume,
                         methods,
+                        true_receiver_methods,
                         receiver_methods,
                         owned_projection_sinks,
                     };
@@ -884,6 +932,10 @@ pub(super) fn compute_param_ownership(
     // move intent and is never relaxed by the borrow downgrade; associated/static
     // `impl` functions are captured here too.
     let methods = collect_method_item_ids(fns, items);
+    // Only this subset owns a receiver slot. Associated/static functions are
+    // method items for symbol/dispatch purposes, but parameter zero remains
+    // ordinary call data and must not lose carrier ownership evidence.
+    let true_receiver_methods = collect_receiver_method_item_ids(fns, items, &methods);
     // Shape A of #2753: the subset of `methods` whose param 0 is a by-value
     // NON-resource `self` receiver — the receiver slot the borrow-site collector
     // records so the caller keeps a value-receiver record/collection's
@@ -917,6 +969,7 @@ pub(super) fn compute_param_ownership(
                     let cx = ScanCtx {
                         consume: &param_consume,
                         methods: &methods,
+                        true_receiver_methods: &true_receiver_methods,
                         receiver_methods: &receiver_methods,
                         owned_projection_sinks: false,
                     };
@@ -932,15 +985,27 @@ pub(super) fn compute_param_ownership(
             break;
         }
     }
-    let call_param_consume =
-        compute_call_param_consumption(fns, &methods, &receiver_methods, &param_consume, false);
-    let mut call_param_owned_carrier =
-        compute_call_param_consumption(fns, &methods, &receiver_methods, &param_consume, true);
+    let call_param_consume = compute_call_param_consumption(
+        fns,
+        &methods,
+        &true_receiver_methods,
+        &receiver_methods,
+        &param_consume,
+        false,
+    );
+    let mut call_param_owned_carrier = compute_call_param_consumption(
+        fns,
+        &methods,
+        &true_receiver_methods,
+        &receiver_methods,
+        &param_consume,
+        true,
+    );
     // A by-value method receiver is governed by the receiver's accurate
     // read/consume intent, not the ordinary free-call carrier contract. In
     // particular, `Arena<T>::insert(self, value)` mutates through borrowed
     // `self`; only `value` crosses into owned storage.
-    for method in &methods {
+    for method in &true_receiver_methods {
         call_param_owned_carrier.remove(&(*method, 0));
     }
     // With the verdict final, collect every free-call argument `SiteId` whose
@@ -965,6 +1030,7 @@ pub(super) fn compute_param_ownership(
         &ScanCtx {
             consume: &param_consume,
             methods: &methods,
+            true_receiver_methods: &true_receiver_methods,
             receiver_methods: &receiver_methods,
             owned_projection_sinks: false,
         },
@@ -974,6 +1040,7 @@ pub(super) fn compute_param_ownership(
         &ScanCtx {
             consume: &call_param_consume,
             methods: &methods,
+            true_receiver_methods: &true_receiver_methods,
             receiver_methods: &receiver_methods,
             owned_projection_sinks: false,
         },
@@ -1139,9 +1206,27 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
             for (j, arg) in args.iter().enumerate() {
                 if is_binding_ref(arg, b_p) {
                     let borrows = if is_method {
-                        arg.intent == IntentKind::Read
+                        // Carrier inference needs positive ownership evidence,
+                        // not the fail-closed move intent stamped on a method
+                        // receiver. Receiver slot zero retains the method's
+                        // established borrowed-self authority (Arena and the
+                        // declarative string/collection FFI surface).
+                        (pc.owned_projection_sinks
+                            && j == 0
+                            && callee_item.is_some_and(|id| pc.true_receiver_methods.contains(&id)))
+                            || arg.intent == IntentKind::Read
                     } else {
-                        callee_item.and_then(|id| pc.consume.get(&(id, j))).copied() == Some(false)
+                        let target = callee_item.and_then(|id| pc.consume.get(&(id, j))).copied();
+                        if pc.owned_projection_sinks {
+                            // An unresolved/extern target supplies no proof
+                            // that it stores the argument. Keep carrier facts
+                            // monotone from explicit sinks and already-proven
+                            // carrier callees only; the ordinary consume table
+                            // remains fail-closed for move checking.
+                            target != Some(true)
+                        } else {
+                            target == Some(false)
+                        }
                     };
                     if !borrows {
                         return true;

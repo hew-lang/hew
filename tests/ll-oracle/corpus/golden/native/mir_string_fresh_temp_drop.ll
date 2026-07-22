@@ -319,9 +319,6 @@ bb0:                                              ; preds = %after_cooperate
 bb1:                                              ; preds = %bb0
   %move_load = load i64, ptr %local_1, align 8
   store i64 %move_load, ptr %return_slot, align 8
-  %prepared_carrier_handle = load ptr, ptr %local_0, align 8
-  call void @hew_string_drop(ptr %prepared_carrier_handle)
-  store ptr null, ptr %local_0, align 8
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
@@ -340,7 +337,6 @@ entry:
   %local_2 = alloca ptr, align 8
   %local_3 = alloca i64, align 8
   %local_4 = alloca i64, align 8
-  %local_5 = alloca ptr, align 8
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
@@ -352,24 +348,21 @@ bb0:                                              ; preds = %after_cooperate
   %"hew_string_concat arg1" = load ptr, ptr %local_1, align 8
   %hew_string_concat_call = call ptr @hew_string_concat(ptr %"hew_string_concat arg0", ptr %"hew_string_concat arg1")
   store ptr %hew_string_concat_call, ptr %local_2, align 8
-  %move_load = load ptr, ptr %local_2, align 8
-  store ptr %move_load, ptr %local_5, align 8
-  store ptr null, ptr %local_2, align 8
-  %call_arg = load ptr, ptr %local_5, align 8
+  %call_arg = load ptr, ptr %local_2, align 8
   %call_result = call i64 @measure(ptr %call_arg)
   store i64 %call_result, ptr %local_3, align 8
   br label %bb1
 
 bb1:                                              ; preds = %bb0
-  %move_load1 = load i64, ptr %local_3, align 8
-  store i64 %move_load1, ptr %local_4, align 8
+  %move_load = load i64, ptr %local_3, align 8
+  store i64 %move_load, ptr %local_4, align 8
   %print_arg = load i64, ptr %local_4, align 8
   call void @hew_print_value(i8 1, i64 %print_arg, i1 true)
   br label %bb2
 
 bb2:                                              ; preds = %bb1
-  %move_load2 = load i64, ptr %local_4, align 8
-  store i64 %move_load2, ptr %return_slot, align 8
+  %move_load1 = load i64, ptr %local_4, align 8
+  store i64 %move_load1, ptr %return_slot, align 8
   %"hew_string_drop drop" = load ptr, ptr %local_2, align 8
   call void @hew_string_drop(ptr %"hew_string_drop drop")
   store ptr null, ptr %local_2, align 8

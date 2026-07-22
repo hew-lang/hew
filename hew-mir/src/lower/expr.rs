@@ -1773,15 +1773,9 @@ impl Builder {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "single match over assignable HIR target shapes (binding, record field, \
-                  actor field, HashMap index); each arm is a fail-closed boundary rule and \
-                  splitting would obscure the exhaustiveness requirement"
+        reason = "one exhaustive match keeps assignment boundary rules together"
     )]
     fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
-        // Assignment stores the incoming value into a new owning slot. Route
-        // it through the same carrier-transfer funnel as `let`, return, and
-        // owned call arguments so a callee-owned parameter is neutralized
-        // before the reassigned binding becomes the sole release authority.
         let Some(src) = self.lower_value_for_move(value) else {
             return;
         };

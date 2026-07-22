@@ -803,6 +803,7 @@ entry:
   %local_1 = alloca %Holder, align 8
   %local_2 = alloca %Holder, align 8
   %local_3 = alloca %Holder, align 8
+  %local_4 = alloca %Holder, align 8
   store %Holder %0, ptr %local_0, align 8
   store %Holder %1, ptr %local_1, align 8
   br label %bb0
@@ -813,14 +814,17 @@ bb0:                                              ; preds = %entry
   store %Holder zeroinitializer, ptr %local_0, align 8
   %move_load1 = load %Holder, ptr %local_2, align 8
   store %Holder %move_load1, ptr %local_3, align 8
+  %move_load2 = load %Holder, ptr %local_1, align 8
+  store %Holder %move_load2, ptr %local_4, align 8
+  store %Holder zeroinitializer, ptr %local_1, align 8
   %rfd_0_gep = getelementptr inbounds nuw %Holder, ptr %local_3, i32 0, i32 0
   %rfd_0_raw_load = load ptr, ptr %rfd_0_gep, align 4
   call void @hew_vec_free_owned(ptr %rfd_0_raw_load)
   store ptr null, ptr %rfd_0_gep, align 4
-  %move_load2 = load %Holder, ptr %local_1, align 8
-  store %Holder %move_load2, ptr %local_3, align 8
-  %move_load3 = load %Holder, ptr %local_3, align 8
-  store %Holder %move_load3, ptr %return_slot, align 8
+  %move_load3 = load %Holder, ptr %local_4, align 8
+  store %Holder %move_load3, ptr %local_3, align 8
+  %move_load4 = load %Holder, ptr %local_3, align 8
+  store %Holder %move_load4, ptr %return_slot, align 8
   call void @__hew_record_drop_inplace_Holder(ptr %local_1)
   call void @__hew_record_drop_inplace_Holder(ptr %local_0)
   %ret_val = load %Holder, ptr %return_slot, align 8

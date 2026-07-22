@@ -425,24 +425,28 @@ bb7:                                              ; preds = %bb6
   br i1 %cond_nz27, label %bb4, label %bb5
 
 cancel_exit:                                      ; preds = %entry
+  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
   ret i64 0
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
 
 cancel_exit4:                                     ; preds = %bb2
+  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
   ret i64 0
 
 after_cooperate5:                                 ; preds = %bb2
   br label %bb1
 
 cancel_exit9:                                     ; preds = %bb3
+  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
   ret i64 0
 
 after_cooperate10:                                ; preds = %bb3
   br label %bb1
 
 cancel_exit14:                                    ; preds = %bb4
+  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
   ret i64 0
 
 after_cooperate15:                                ; preds = %bb4

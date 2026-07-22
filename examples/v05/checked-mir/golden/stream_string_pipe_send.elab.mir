@@ -377,9 +377,9 @@ fn fs$read -> string
     call[bb17 panic -> bb18] ->
       (none)
     goto[bb18->bb10] ->
-      drop _24 ty=string kind=cow_heap(hew_string_drop)
+      drop _23 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb18] ->
-      drop _24 ty=string kind=cow_heap(hew_string_drop)
+      drop _23 ty=string kind=cow_heap(hew_string_drop)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
     call[bb19 string_concat -> bb20] ->
       (none)
@@ -392,9 +392,9 @@ fn fs$read -> string
     call[bb23 panic -> bb24] ->
       (none)
     goto[bb24->bb10] ->
-      drop _31 ty=string kind=cow_heap(hew_string_drop)
+      drop _30 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb24] ->
-      drop _31 ty=string kind=cow_heap(hew_string_drop)
+      drop _30 ty=string kind=cow_heap(hew_string_drop)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
 
 fn fs$try_read -> Result<string, IoError>

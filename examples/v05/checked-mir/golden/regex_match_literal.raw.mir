@@ -102,7 +102,6 @@ fn Pattern::is_match(Pattern, string) -> bool [conv=default]
     stmt: return site=Some(SiteId(21)) ty=bool
     _4 = move _3
     ret = move _4
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
 
 fn Pattern::matches(Pattern, string) -> bool [conv=default]
@@ -121,7 +120,6 @@ fn Pattern::matches(Pattern, string) -> bool [conv=default]
     stmt: return site=Some(SiteId(27)) ty=bool
     _4 = move _3
     ret = move _4
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
 
 fn Pattern::find(Pattern, string) -> string [conv=default]
@@ -140,7 +138,6 @@ fn Pattern::find(Pattern, string) -> string [conv=default]
     stmt: return site=Some(SiteId(33)) ty=string
     _4 = move _3
     ret = move _4
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
 
 fn Pattern::replace(Pattern, string, string) -> string [conv=default]
@@ -161,8 +158,6 @@ fn Pattern::replace(Pattern, string, string) -> string [conv=default]
     stmt: return site=Some(SiteId(39)) ty=string
     _5 = move _4
     ret = move _5
-    snapshot_drop _2 ty=string plan=String boundary=LocalCall
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
 
 fn Pattern::find_all(Pattern, string) -> Vec<string> [conv=default]
@@ -181,7 +176,6 @@ fn Pattern::find_all(Pattern, string) -> Vec<string> [conv=default]
     stmt: return site=Some(SiteId(46)) ty=Vec<string>
     _4 = move _3
     ret = move _4
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
 
 fn Pattern::capture(Pattern, string, i64) -> Option<string> [conv=default]
@@ -240,10 +234,8 @@ fn Pattern::capture(Pattern, string, i64) -> Option<string> [conv=default]
   bb5:
     stmt: return site=Some(SiteId(59)) ty=Option<string>
     ret = move _7
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
   bb6:
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     trap(IndexOutOfBounds)
   bb7:
     _19 = call_rt hew_vec_get_str(_6, _16)
@@ -308,12 +300,8 @@ fn Pattern::capture_named(Pattern, string, string) -> Option<string> [conv=defau
   bb5:
     stmt: return site=Some(SiteId(78)) ty=Option<string>
     ret = move _7
-    snapshot_drop _2 ty=string plan=String boundary=LocalCall
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
   bb6:
-    snapshot_drop _2 ty=string plan=String boundary=LocalCall
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     trap(IndexOutOfBounds)
   bb7:
     _19 = call_rt hew_vec_get_str(_6, _16)
@@ -357,7 +345,6 @@ fn Pattern::captures(Pattern, string) -> CaptureMatches [conv=default]
     _9 = move _8
     _10 = record_init CaptureMatches { .0=_5, .1=_9 }
     ret = move _10
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
 
 fn Pattern::find_all_submatch(Pattern, string) -> CaptureMatches [conv=default]
@@ -395,7 +382,6 @@ fn Pattern::find_all_submatch(Pattern, string) -> CaptureMatches [conv=default]
     _9 = move _8
     _10 = record_init CaptureMatches { .0=_5, .1=_9 }
     ret = move _10
-    snapshot_drop _1 ty=string plan=String boundary=LocalCall
     return
 
 fn Pattern::clone(Pattern) -> Pattern [conv=default]
@@ -668,8 +654,7 @@ fn regex$new(string) -> Pattern [conv=default]
     _10: string
     _11: string
     _12: string
-    _13: string
-    _14: Pattern
+    _13: Pattern
   bb0:
     stmt: use BindingId(39) pattern site=SiteId(190) ty=string intent=Read
     _1 = call hew_regex_new(_0) -> bb1
@@ -690,25 +675,22 @@ fn regex$new(string) -> Pattern [conv=default]
   bb3:
     stmt: use BindingId(39) pattern site=SiteId(202) ty=string intent=Read
     _10 = string_lit "regex.new: invalid pattern: "
-    _11 = move _0
-    neutralize_payload _0
-    _12 = call string::fmt(_11) -> bb6
+    _11 = call string::fmt(_0) -> bb6
   bb4:
     goto bb5
   bb5:
     stmt: eval site=SiteId(209) ty=()
     stmt: use BindingId(41) re site=SiteId(210) ty=Pattern intent=Read
     stmt: return site=Some(SiteId(188)) ty=Pattern
-    _14 = move _4
-    ret = move _14
-    snapshot_drop _0 ty=string plan=String boundary=LocalCall
+    _13 = move _4
+    ret = move _13
     return
   bb6:
-    _13 = call string_concat(_10, _12) -> bb7
+    _12 = call string_concat(_10, _11) -> bb7
   bb7:
     stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(200) ty=string
-    drop _12 ty=string fn=release(hew_string_drop)
-    call panic(_13) -> bb8
+    drop _11 ty=string fn=release(hew_string_drop)
+    call panic(_12) -> bb8
   bb8:
     stmt: eval site=SiteId(199) ty=!
     goto bb5

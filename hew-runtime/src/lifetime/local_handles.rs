@@ -251,10 +251,14 @@ impl Drop for SupervisorPin {
 pub(crate) struct LocalHandles {
     state: PoisonSafe<LocalHandleState>,
     publication_gate: PublicationGate,
+    #[cfg(not(target_arch = "wasm32"))]
+    supervisor_teardown_gate: SupervisorTeardownGate,
     #[cfg(test)]
     fail_next_registration: AtomicBool,
     #[cfg(test)]
     admission_hook: Mutex<AdmissionHook>,
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    supervisor_teardown_drain_hook: Mutex<AdmissionHook>,
 }
 
 struct PublicationGate {
@@ -265,6 +269,62 @@ struct PublicationGate {
 struct PublicationGateState {
     accepting: bool,
     in_flight: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SupervisorTeardownGate {
+    state: Mutex<SupervisorTeardownGateState>,
+    idle: Condvar,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SupervisorTeardownGateState {
+    accepting: bool,
+    in_flight: usize,
+}
+
+/// One destructor owner that remains visible after its access pin and shutdown
+/// root are released. Runtime cleanup closes admission and drains these leases
+/// before it can reclaim actors, controls, or the owning `RuntimeInner`.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+pub(crate) struct SupervisorTeardownLease {
+    _owner: Arc<SupervisorTeardownOwner>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SupervisorTeardownOwner {
+    handles: *const LocalHandles,
+}
+
+// SAFETY: runtime cleanup cannot drop `LocalHandles` until every lease has
+// released itself through the gate. The pointed-to authority therefore outlives
+// a lease moved to a deferred destructor thread.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Send for SupervisorTeardownOwner {}
+// SAFETY: the owner only uses the pointed-to gate through its internally
+// synchronized mutex and condvar, under the same cleanup lifetime guarantee.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Sync for SupervisorTeardownOwner {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for SupervisorTeardownOwner {
+    fn drop(&mut self) {
+        // SAFETY: the cleanup drain described above keeps the authority live.
+        let handles = unsafe { &*self.handles };
+        let mut state = handles
+            .supervisor_teardown_gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.in_flight = state
+            .in_flight
+            .checked_sub(1)
+            .expect("supervisor teardown count underflow");
+        if state.in_flight == 0 {
+            handles.supervisor_teardown_gate.idle.notify_all();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -310,10 +370,20 @@ impl LocalHandles {
                 }),
                 idle: Condvar::new(),
             },
+            #[cfg(not(target_arch = "wasm32"))]
+            supervisor_teardown_gate: SupervisorTeardownGate {
+                state: Mutex::new(SupervisorTeardownGateState {
+                    accepting: true,
+                    in_flight: 0,
+                }),
+                idle: Condvar::new(),
+            },
             #[cfg(test)]
             fail_next_registration: AtomicBool::new(false),
             #[cfg(test)]
             admission_hook: Mutex::new(None),
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            supervisor_teardown_drain_hook: Mutex::new(None),
         }
     }
 
@@ -354,6 +424,71 @@ impl LocalHandles {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn begin_supervisor_teardown(&self) -> Option<SupervisorTeardownLease> {
+        let mut state = self
+            .supervisor_teardown_gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !state.accepting {
+            return None;
+        }
+        state.in_flight = state.in_flight.checked_add(1)?;
+        Some(SupervisorTeardownLease {
+            _owner: Arc::new(SupervisorTeardownOwner {
+                handles: std::ptr::from_ref(self),
+            }),
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn close_supervisor_teardown_admission(&self) {
+        self.supervisor_teardown_gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .accepting = false;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn wait_for_supervisor_teardowns(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now().checked_add(timeout);
+        let mut state = self
+            .supervisor_teardown_gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        #[cfg(test)]
+        if state.in_flight != 0 {
+            drop(state);
+            self.run_supervisor_teardown_drain_hook();
+            state = self
+                .supervisor_teardown_gate
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        while state.in_flight != 0 {
+            let Some(deadline) = deadline else {
+                return false;
+            };
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next, result) = self
+                .supervisor_teardown_gate
+                .idle
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(PoisonError::into_inner);
+            state = next;
+            if result.timed_out() && state.in_flight != 0 {
+                return false;
+            }
+        }
+        true
+    }
+
     #[cfg(any(test, target_arch = "wasm32"))]
     fn reopen_after_shutdown(&self) {
         let mut state = self
@@ -379,6 +514,19 @@ impl LocalHandles {
         }
     }
 
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn run_supervisor_teardown_drain_hook(&self) {
+        let hook = self
+            .supervisor_teardown_drain_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some((entered, release)) = hook {
+            entered.wait();
+            release.wait();
+        }
+    }
+
     #[cfg(test)]
     fn install_admission_hook(
         &self,
@@ -387,6 +535,18 @@ impl LocalHandles {
     ) {
         *self
             .admission_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((entered, release));
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn install_supervisor_teardown_drain_hook(
+        &self,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) {
+        *self
+            .supervisor_teardown_drain_hook
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some((entered, release));
     }
@@ -741,6 +901,18 @@ pub(crate) fn close_current_supervisors_for_cleanup(timeout: Duration) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn close_current_supervisor_teardown_admission() {
+    if let Some(handles) = current_handles() {
+        handles.close_supervisor_teardown_admission();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn wait_for_current_supervisor_teardowns(timeout: Duration) -> bool {
+    current_handles().is_none_or(|handles| handles.wait_for_supervisor_teardowns(timeout))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn assert_current_supervisors_empty() {
     let counts = current_handles().map_or((0, 0), LocalHandles::supervisor_counts);
     assert_eq!(
@@ -767,12 +939,39 @@ pub(crate) fn current_supervisor_counts_for_test() -> (usize, usize) {
     current_handles().map_or((0, 0), LocalHandles::supervisor_counts)
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn current_supervisor_teardown_state_for_test() -> (bool, usize) {
+    current_handles().map_or((false, 0), |handles| {
+        let state = handles
+            .supervisor_teardown_gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (state.accepting, state.in_flight)
+    })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn install_current_supervisor_teardown_drain_hook_for_test(
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) {
+    current_handles()
+        .expect("runtime authority for supervisor teardown drain hook")
+        .install_supervisor_teardown_drain_hook(entered, release);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorPin> {
     let runtime = crate::runtime::rt_current_opt()?;
     runtime
         .local_handles
         .pin_supervisor(runtime.runtime_id(), token)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn begin_current_supervisor_teardown() -> Option<SupervisorTeardownLease> {
+    current_handles()?.begin_supervisor_teardown()
 }
 
 #[cfg(not(target_arch = "wasm32"))]

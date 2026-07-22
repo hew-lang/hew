@@ -727,6 +727,9 @@ static SUPERVISOR_ACCESS_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
 #[cfg(all(test, not(target_arch = "wasm32")))]
 static SUPERVISOR_CLOSE_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
     std::sync::OnceLock::new();
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static SUPERVISOR_TEARDOWN_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+    std::sync::OnceLock::new();
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 struct SupervisorTestHookGuard(&'static std::sync::OnceLock<Mutex<SupervisorTestHook>>);
@@ -758,6 +761,16 @@ fn install_supervisor_close_hook_for_test(
     SupervisorTestHookGuard(&SUPERVISOR_CLOSE_HOOK)
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn install_supervisor_teardown_hook_for_test(
+    hook: Arc<dyn Fn() + Send + Sync>,
+) -> SupervisorTestHookGuard {
+    *SUPERVISOR_TEARDOWN_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock_or_recover() = Some(hook);
+    SupervisorTestHookGuard(&SUPERVISOR_TEARDOWN_HOOK)
+}
+
 fn run_supervisor_access_hook_for_test() {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     if let Some(hook) = SUPERVISOR_ACCESS_HOOK
@@ -772,6 +785,17 @@ fn run_supervisor_access_hook_for_test() {
 fn run_supervisor_close_hook_for_test() {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     if let Some(hook) = SUPERVISOR_CLOSE_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock_or_recover()
+        .clone()
+    {
+        hook();
+    }
+}
+
+fn run_supervisor_teardown_hook_for_test() {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if let Some(hook) = SUPERVISOR_TEARDOWN_HOOK
         .get_or_init(|| Mutex::new(None))
         .lock_or_recover()
         .clone()
@@ -806,6 +830,21 @@ unsafe fn close_supervisor_access(
         control,
         handles: &raw const runtime.local_handles,
     })
+}
+
+unsafe fn begin_supervisor_teardown(
+    sup: *mut HewSupervisor,
+) -> Option<crate::lifetime::local_handles::SupervisorTeardownLease> {
+    // SAFETY: callers provide a live allocation created by `hew_supervisor_new`.
+    let supervisor = unsafe { &*sup };
+    if supervisor.runtime.is_null() {
+        return None;
+    }
+    // SAFETY: cleanup cannot reclaim the runtime until this admission either
+    // fails under the closed gate or returns a lease that cleanup must drain.
+    unsafe { &*supervisor.runtime }
+        .local_handles
+        .begin_supervisor_teardown()
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1410,10 +1449,14 @@ fn stop_deferred_supervisor(deferred: DeferredSupervisorStop) {
     unsafe { hew_supervisor_stop(deferred.0) };
 }
 
-fn stop_owned_deferred_supervisor(deferred: DeferredSupervisorStop) {
+fn stop_owned_deferred_supervisor(
+    deferred: DeferredSupervisorStop,
+    teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+) {
     // SAFETY: teardown ownership was claimed by the caller before this thread
     // was spawned, so this background thread is the unique destructor.
-    unsafe { stop_supervisor_owned(deferred.0) };
+    unsafe { stop_supervisor_owned(deferred.0, &teardown) };
+    drop(teardown);
 }
 
 fn spawn_deferred_supervisor_stop(
@@ -1448,7 +1491,10 @@ fn spawn_deferred_supervisor_stop(
     }
 }
 
-fn spawn_owned_deferred_supervisor_stop(sup: *mut HewSupervisor) -> bool {
+fn spawn_owned_deferred_supervisor_stop(
+    sup: *mut HewSupervisor,
+    teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+) -> bool {
     if sup.is_null() {
         return true;
     }
@@ -1462,7 +1508,10 @@ fn spawn_owned_deferred_supervisor_stop(sup: *mut HewSupervisor) -> bool {
     if let Ok(handle) = std::thread::Builder::new()
         .name("deferred-sup-stop".into())
         .spawn(move || {
-            stop_owned_deferred_supervisor(DeferredSupervisorStop(sup_addr as *mut HewSupervisor));
+            stop_owned_deferred_supervisor(
+                DeferredSupervisorStop(sup_addr as *mut HewSupervisor),
+                teardown,
+            );
         })
     {
         // Register the teardown thread so `cleanup_all_actors` joins it
@@ -1660,7 +1709,10 @@ unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
     }
 }
 
-unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
+unsafe fn stop_supervisor_owned(
+    sup: *mut HewSupervisor,
+    teardown: &crate::lifetime::local_handles::SupervisorTeardownLease,
+) {
     // Every raw destructor path closes handle admission and drains outstanding
     // dereferences before the allocation may reach `Box::from_raw`.
     // SAFETY: the caller transfers a live supervisor allocation to this owner.
@@ -1704,7 +1756,7 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
             unsafe { (*child_sup).parent = ptr::null_mut() };
             // SAFETY: child_sup is a valid supervisor added via
             // hew_supervisor_add_child_supervisor.
-            unsafe { hew_supervisor_stop(child_sup) };
+            unsafe { stop_supervisor_with_teardown(child_sup, teardown.clone()) };
         }
     }
     // Stop all children and wait for each to reach a terminal state.
@@ -3010,9 +3062,13 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
 ///
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`]. The
 /// pointer must not be used after this call.
-unsafe fn stop_claimed_supervisor(sup: *mut HewSupervisor, root_unregistered: bool) -> bool {
+unsafe fn stop_claimed_supervisor(
+    sup: *mut HewSupervisor,
+    root_unregistered: bool,
+    teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+) -> bool {
     if current_thread_owns_supervisor_tree(sup) {
-        if !spawn_owned_deferred_supervisor_stop(sup) {
+        if !spawn_owned_deferred_supervisor_stop(sup, teardown.clone()) {
             if root_unregistered {
                 // SAFETY: the failed handoff leaves the top-level allocation
                 // live and teardown ownership is released below.
@@ -3020,6 +3076,7 @@ unsafe fn stop_claimed_supervisor(sup: *mut HewSupervisor, root_unregistered: bo
             }
             release_supervisor_teardown(sup);
             set_last_error("hew_supervisor_stop: failed to spawn deferred stop thread");
+            drop(teardown);
             return false;
         }
         if !root_unregistered {
@@ -3027,6 +3084,7 @@ unsafe fn stop_claimed_supervisor(sup: *mut HewSupervisor, root_unregistered: bo
             // SAFETY: `sup` is live and was registered when started.
             unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
         }
+        drop(teardown);
         return true;
     }
 
@@ -3036,9 +3094,38 @@ unsafe fn stop_claimed_supervisor(sup: *mut HewSupervisor, root_unregistered: bo
         // SAFETY: `sup` is live and was registered when started.
         unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
     }
+    run_supervisor_teardown_hook_for_test();
     // SAFETY: teardown ownership is uniquely claimed by the caller.
-    unsafe { stop_supervisor_owned(sup) };
+    unsafe { stop_supervisor_owned(sup, &teardown) };
+    drop(teardown);
     true
+}
+
+unsafe fn stop_supervisor_with_teardown(
+    sup: *mut HewSupervisor,
+    teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+) {
+    request_supervisor_shutdown(sup);
+    // SAFETY: the caller's teardown lease keeps runtime cleanup from reclaiming
+    // the live allocation or its runtime authority during access closure.
+    if unsafe { close_supervisor_access(sup, SUPERVISOR_PIN_DRAIN_TIMEOUT) }.is_none() {
+        // A recursively detached child no longer has a parent-owned root. Hand
+        // every still-live top-level allocation back to canonical cleanup before
+        // this lease can release the cleanup barrier.
+        // SAFETY: access closure failed closed, so `sup` remains allocated.
+        if unsafe { (*sup).parent.is_null() } {
+            // SAFETY: the still-live allocation has no parent root and remains
+            // valid until canonical cleanup consumes the restored root.
+            unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        }
+        set_last_error("hew_supervisor_stop: handle pins did not drain");
+        return;
+    }
+    if !claim_supervisor_teardown(sup) {
+        return;
+    }
+    // SAFETY: teardown ownership was claimed above and remains unique.
+    unsafe { stop_claimed_supervisor(sup, false, teardown) };
 }
 
 /// Stop the supervisor and all its children.
@@ -3051,21 +3138,14 @@ unsafe fn stop_claimed_supervisor(sup: *mut HewSupervisor, root_unregistered: bo
 pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
     cabi_guard!(sup.is_null());
 
-    // Publish shutdown before waiting for already-pinned readers. Such a
-    // reader remains memory-safe under its pin and must observe the supervisor
-    // as stopped while reclamation waits for that operation to finish.
-    request_supervisor_shutdown(sup);
     // SAFETY: the public raw-pointer contract guarantees a live supervisor.
-    if unsafe { close_supervisor_access(sup, SUPERVISOR_PIN_DRAIN_TIMEOUT) }.is_none() {
-        set_last_error("hew_supervisor_stop: handle pins did not drain");
+    let Some(teardown) = (unsafe { begin_supervisor_teardown(sup) }) else {
         return;
-    }
+    };
 
-    if !claim_supervisor_teardown(sup) {
-        return;
-    }
-    // SAFETY: teardown ownership was claimed above and remains unique.
-    unsafe { stop_claimed_supervisor(sup, false) };
+    // SAFETY: the public raw-pointer contract guarantees a live supervisor;
+    // the acquired lease remains visible to cleanup through final reclamation.
+    unsafe { stop_supervisor_with_teardown(sup, teardown) };
 }
 
 /// Return the stable direct identity for one supervisor allocation.
@@ -3110,6 +3190,10 @@ pub extern "C" fn hew_local_pid_supervisor_stop(
     let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
         return 1;
     };
+    let Some(teardown) = crate::lifetime::local_handles::begin_current_supervisor_teardown() else {
+        drop(pin);
+        return 1;
+    };
     let sup = pin.supervisor();
     // Publish shutdown and close the direct route while the allocation is
     // still protected by this operation's pin. Dropping the pin then permits
@@ -3146,7 +3230,7 @@ pub extern "C" fn hew_local_pid_supervisor_stop(
     }
     // SAFETY: this token operation claimed teardown while pinned and already
     // removed the supervisor from the runtime cleanup root set.
-    c_int::from(!unsafe { stop_claimed_supervisor(sup, top_level) }) * 2
+    c_int::from(!unsafe { stop_claimed_supervisor(sup, top_level, teardown) }) * 2
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -3243,6 +3327,152 @@ mod tests {
             let self_actor = (*sup).self_actor;
             (sup, child, self_actor)
         }
+    }
+
+    static TEARDOWN_RACE_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn count_teardown_race_state_drop(_state: *mut c_void) {
+        TEARDOWN_RACE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe fn make_supervisor_with_counted_child() -> *mut HewSupervisor {
+        // SAFETY: this helper owns the fresh supervisor and the runtime copies
+        // the scalar child state during registration.
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            assert!(!sup.is_null());
+            let initial_state = 17_u64;
+            let spec = HewChildSpec {
+                name: ptr::null(),
+                init_state: std::ptr::from_ref(&initial_state).cast_mut().cast(),
+                init_state_size: std::mem::size_of::<u64>(),
+                dispatch: Some(noop_child_dispatch),
+                restart_policy: RESTART_TEMPORARY,
+                mailbox_capacity: -1,
+                overflow: OVERFLOW_DROP_NEW,
+                coalesce_key_fn: None,
+                coalesce_fallback: OVERFLOW_DROP_NEW,
+                message_drop_fn: None,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
+                lifecycle_fn: None,
+                init_fn: None,
+                config: ptr::null_mut(),
+                config_size: 0,
+            };
+            assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
+            hew_supervisor_set_child_state_drop(sup, 0, count_teardown_race_state_drop);
+            sup
+        }
+    }
+
+    fn assert_cleanup_waits_for_synchronous_stop_owner(stop_by_token: bool) {
+        let _rt = crate::runtime_test_guard();
+        TEARDOWN_RACE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: the helper returns one live test-owned supervisor.
+        let sup = unsafe { make_supervisor_with_counted_child() };
+        if stop_by_token {
+            // Exercise recursive supervisor destruction after cleanup has closed
+            // new teardown admission. The child must share the parent's lease.
+            // SAFETY: both fresh supervisors are test-owned and unparented.
+            let child = unsafe { make_supervisor_with_counted_child() };
+            assert_eq!(
+                // SAFETY: the pointers are live and distinct.
+                unsafe { hew_supervisor_add_child_supervisor(sup, child) },
+                0
+            );
+        }
+        // SAFETY: this top-level root remains live until the stop owner or
+        // canonical cleanup consumes it.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        // SAFETY: the supervisor remains live until one of the joined owners
+        // reclaims it.
+        let token = unsafe { hew_supervisor_direct_id(sup) };
+
+        let teardown_entered = Arc::new(std::sync::Barrier::new(2));
+        let teardown_release = Arc::new(std::sync::Barrier::new(2));
+        let entered_hook = teardown_entered.clone();
+        let release_hook = teardown_release.clone();
+        let paused = Arc::new(AtomicBool::new(false));
+        let paused_hook = paused.clone();
+        let _hook = install_supervisor_teardown_hook_for_test(Arc::new(move || {
+            if !paused_hook.swap(true, Ordering::AcqRel) {
+                entered_hook.wait();
+                release_hook.wait();
+            }
+        }));
+
+        let sup_addr = sup as usize;
+        let stop = std::thread::spawn(move || {
+            if stop_by_token {
+                hew_local_pid_supervisor_stop(token)
+            } else {
+                // SAFETY: the test keeps the registered allocation live until
+                // this raw stop has acquired its teardown lease.
+                unsafe { hew_supervisor_stop(sup_addr as *mut HewSupervisor) };
+                0
+            }
+        });
+        teardown_entered.wait();
+
+        assert!(!crate::shutdown::is_supervisor_registered_for_test(sup));
+        assert_eq!(
+            crate::lifetime::local_handles::current_supervisor_counts_for_test(),
+            if stop_by_token { (1, 2) } else { (0, 1) }
+        );
+        assert_eq!(
+            crate::lifetime::local_handles::current_supervisor_teardown_state_for_test(),
+            (true, 1)
+        );
+
+        let drain_entered = Arc::new(std::sync::Barrier::new(2));
+        let drain_release = Arc::new(std::sync::Barrier::new(2));
+        crate::lifetime::local_handles::install_current_supervisor_teardown_drain_hook_for_test(
+            drain_entered.clone(),
+            drain_release.clone(),
+        );
+        let (cleanup_done_tx, cleanup_done_rx) = std::sync::mpsc::channel();
+        let cleanup = std::thread::spawn(move || {
+            crate::scheduler::hew_runtime_cleanup();
+            cleanup_done_tx
+                .send(())
+                .expect("cleanup completion receiver");
+        });
+        drain_entered.wait();
+        assert_eq!(
+            crate::lifetime::local_handles::current_supervisor_teardown_state_for_test(),
+            (false, 1)
+        );
+        assert!(matches!(
+            cleanup_done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        assert_eq!(TEARDOWN_RACE_DROP_COUNT.load(Ordering::SeqCst), 0);
+
+        teardown_release.wait();
+        assert_eq!(stop.join().expect("stop thread"), 0);
+        drain_release.wait();
+        cleanup.join().expect("cleanup thread");
+        cleanup_done_rx.recv().expect("cleanup completion");
+        assert_eq!(
+            TEARDOWN_RACE_DROP_COUNT.load(Ordering::SeqCst),
+            if stop_by_token { 2 } else { 1 }
+        );
+        assert_eq!(
+            crate::lifetime::local_handles::current_supervisor_counts_for_test(),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn runtime_cleanup_waits_for_synchronous_token_stop_owner() {
+        assert_cleanup_waits_for_synchronous_stop_owner(true);
+    }
+
+    #[test]
+    fn runtime_cleanup_waits_for_synchronous_raw_stop_owner() {
+        assert_cleanup_waits_for_synchronous_stop_owner(false);
     }
 
     #[test]

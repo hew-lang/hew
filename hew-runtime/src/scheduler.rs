@@ -665,14 +665,23 @@ pub extern "C" fn hew_runtime_cleanup() {
     crate::lifetime::live_actors::drain_deferred_teardown_threads();
 
     // Close the shared publication gate before supervisor reclamation, then
-    // retire every direct supervisor route and wait for already-pinned handle
-    // operations. A timeout is fail-closed: keep the runtime and allocations
-    // installed rather than freeing memory beneath a live dereference.
+    // close destructor-owner admission, retire every direct supervisor route,
+    // and wait for already-pinned handle operations. Existing destructor owners
+    // then drain before cleanup can touch roots, actors, or runtime storage. A
+    // timeout is fail-closed: keep the runtime and allocations installed rather
+    // than freeing memory beneath a live dereference or destructor.
     crate::lifetime::local_handles::begin_current_shutdown();
+    crate::lifetime::local_handles::close_current_supervisor_teardown_admission();
     if !crate::lifetime::local_handles::close_current_supervisors_for_cleanup(
         std::time::Duration::from_secs(30),
     ) {
         set_last_error("runtime cleanup: supervisor handle pins did not drain");
+        return;
+    }
+    if !crate::lifetime::local_handles::wait_for_current_supervisor_teardowns(
+        std::time::Duration::from_secs(30),
+    ) {
+        set_last_error("runtime cleanup: supervisor destructor owners did not drain");
         return;
     }
 

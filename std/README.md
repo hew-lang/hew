@@ -34,7 +34,7 @@ fn main() {
 - **CLI, files, and OS** — [`std::io`](io.hew), [`std::fs`](fs.hew), [`std::path`](path.hew), [`std::os`](os.hew), [`std::process`](process.hew)
 - **Collections and scans** — [`std::vec`](vec.hew), [`std::deque`](deque.hew), [`std::iter`](iter.hew), [`std::sort`](sort/sort.hew)
 - **Streams and coordination** — [`std::stream`](stream.hew), [`std::channel::channel`](channel/channel.hew), [`std::semaphore`](semaphore.hew), [`std::concurrency`](concurrency/concurrency.hew)
-- **Data formats and wire protocols** — [`std::encoding::json`](encoding/json/json.hew), [`std::encoding::yaml`](encoding/yaml/yaml.hew), [`std::encoding::toml`](encoding/toml/toml.hew), [`std::encoding::csv`](encoding/csv/csv.hew), [`std::encoding::xml`](encoding/xml/xml.hew), [`std::encoding::wire`](encoding/wire/wire.hew)
+- **Data formats and wire protocols** — [`std::encoding::json`](encoding/json/json.hew), [`std::encoding::yaml`](encoding/yaml/yaml.hew), [`std::encoding::toml`](encoding/toml/toml.hew), [`std::encoding::csv`](encoding/csv/csv.hew), [`std::encoding::xml`](encoding/xml/xml.hew), [`std::encoding::wire::value_trait`](encoding/wire/value_trait.hew)
 - **Networking** — [`std::net`](net/net.hew), [`std::net::http`](net/http/http.hew), [`std::net::dns`](net/dns/dns.hew), [`std::net::tls`](net/tls/tls.hew), [`std::net::quic`](net/quic/quic.hew), [`std::net::url`](net/url/url.hew)
 - **Testing, perf, and observability** — [`std::testing`](testing/testing.hew), [`std::bench`](bench/bench.hew), [`std::observe`](observe.hew)
 
@@ -53,7 +53,6 @@ Every shipped module under `std/` should appear here.
 | [`result`](result.hew) | `std::result` | Helper functions for common `Result<T, E>` patterns |
 | [`math`](math/math.hew) | `std::math` | Integer helpers, float ops, and common constants |
 | [`failure`](failure.hew) | `std::failure` | Crash-hook payloads and lifecycle failure actions |
-| [`mem`](mem/mem.hew) | `std::mem` | Compiler-internal allocation and typed-pointer intrinsics |
 
 ### Files, OS, and processes
 
@@ -79,7 +78,6 @@ Every shipped module under `std/` should appear here.
 | [`channel`](channel/channel.hew) | `std::channel::channel` | Bounded MPSC channels |
 | [`semaphore`](semaphore.hew) | `std::semaphore` | Counting semaphore for concurrency control |
 | [`concurrency`](concurrency/concurrency.hew) | `std::concurrency` | Structured concurrency support types such as `ScopeError<E>` |
-| [`lambda_actor`](concurrency/lambda_actor.hew) | `std::concurrency::lambda_actor` | Native lambda-actor handle declarations |
 | [`lifecycle`](concurrency/lifecycle.hew) | `std::concurrency::lifecycle` | Generic resource-service lifecycle state machine |
 | [`link_monitor`](link_monitor.hew) | `std::link_monitor` | Actor monitor handles and partition policies |
 | [`toggle`](machines/toggle.hew) | `std::machines::toggle` | Minimal reusable two-state machine |
@@ -98,7 +96,6 @@ Every shipped module under `std/` should appear here.
 | [`msgpack`](encoding/msgpack/msgpack.hew) | `std::encoding::msgpack` | MessagePack serialization |
 | [`protobuf`](encoding/protobuf/protobuf.hew) | `std::encoding::protobuf` | Protocol Buffers message construction |
 | [`toml`](encoding/toml/toml.hew) | `std::encoding::toml` | TOML parsing and generation |
-| [`wire`](encoding/wire/wire.hew) | `std::encoding::wire` | Hew wire format encoding and decoding |
 | [`value_trait`](encoding/wire/value_trait.hew) | `std::encoding::wire::value_trait` | Shared opaque-value contract for encoding modules |
 | [`xml`](encoding/xml/xml.hew) | `std::encoding::xml` | XML parsing and manipulation |
 | [`yaml`](encoding/yaml/yaml.hew) | `std::encoding::yaml` | YAML parsing and generation |

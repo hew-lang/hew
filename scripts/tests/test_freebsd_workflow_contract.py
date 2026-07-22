@@ -75,6 +75,7 @@ NIGHTLY_TOOL_PACKAGES = (
     "ninja",
     "git",
     "gmake",
+    "bash",
     "pkgconf",
     "libffi",
     "libxml2",
@@ -108,6 +109,14 @@ EXPECTED_WASM_LD_PROBE = (
     "wasm-ld",
     "--version",
 )
+EXPECTED_BASH_PROBE = (
+    "command",
+    "-v",
+    "bash",
+    "&&",
+    "bash",
+    "--version",
+)
 EXPECTED_GIT_SAFE_DIRECTORY = (
     "git",
     "config",
@@ -133,6 +142,7 @@ WASI_TOOL_COMMANDS = (
     EXPECTED_WASM_LD_LINK,
     EXPECTED_WASMTIME_PROBE,
     EXPECTED_WASM_LD_PROBE,
+    EXPECTED_BASH_PROBE,
 )
 LITERAL_SCALAR_HEADER = r"\|[+-]?"
 
@@ -334,11 +344,14 @@ def _assert_wasi_tool_setup(
         "refresh only that named repository, then install "
         f"the exact tool set without an automatic update; got {pkg_commands!r}"
     )
-    for required in (
+    required_commands = [
         EXPECTED_WASM_LD_LINK,
         EXPECTED_WASMTIME_PROBE,
         EXPECTED_WASM_LD_PROBE,
-    ):
+    ]
+    if job_name == "build-and-test":
+        required_commands.append(EXPECTED_BASH_PROBE)
+    for required in required_commands:
         assert run_commands.count(required) == 1, (
             f"{job_name} must run exactly one active command {required!r}"
         )
@@ -405,6 +418,7 @@ def _assert_nightly_compiled_hew_authority(workflow: str) -> None:
         EXPECTED_EXACT_REF_CHECK,
         EXPECTED_LLVM_ENV,
         EXPECTED_GNU_MAKE_ENV,
+        EXPECTED_BASH_PROBE,
         EXPECTED_NEXTEST_COMMAND,
         EXPECTED_VERTICAL_SLICE_GATE,
         EXPECTED_HEW_RATCHET_GATE,
@@ -418,8 +432,9 @@ def _assert_nightly_compiled_hew_authority(workflow: str) -> None:
     indexes = [commands.index(command) for command in required]
     assert indexes == sorted(indexes), (
         "FreeBSD nightly must authenticate its checkout, establish the LLVM "
-        "and GNU make environment, run canonical nextest, then run vertical "
-        f"slice before the Hew ratchet; got indexes {indexes!r}"
+        "and GNU make environment, prove the Bash interpreter, run canonical "
+        "nextest, then run vertical slice before the Hew ratchet; got indexes "
+        f"{indexes!r}"
     )
 
 
@@ -448,6 +463,7 @@ def test_nightly_compiled_hew_commands_cannot_be_commented_out() -> None:
         'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
         "export LLVM_SYS_221_PREFIX=/usr/local/llvm22",
         "export MAKE=gmake",
+        "command -v bash && bash --version",
         "gmake test-vertical-slice",
         "gmake test-hew-ratchet",
     ):
@@ -557,6 +573,36 @@ def test_added_nightly_exclusion_is_rejected() -> None:
         1,
     )
     _assert_rejected(lambda: _assert_exact_nextest(mutated, "build-and-test"))
+
+
+def test_nightly_bash_package_removal_is_rejected() -> None:
+    workflow = WORKFLOW.read_text()
+    job_name = "build-and-test"
+    step_name = "Build and test on FreeBSD"
+    step = _step_block(_job_block(workflow, job_name), step_name)
+    install_text = " ".join(EXPECTED_NIGHTLY_PKG_INSTALL)
+    assert step.count(install_text) == 1
+    mutated_install = tuple(
+        package for package in EXPECTED_NIGHTLY_PKG_INSTALL if package != "bash"
+    )
+    assert len(mutated_install) + 1 == len(EXPECTED_NIGHTLY_PKG_INSTALL)
+    mutated_step = step.replace(install_text, " ".join(mutated_install), 1)
+    mutated = workflow.replace(step, mutated_step, 1)
+    assert "gmake" in mutated_step and "pkgconf" in mutated_step
+    _assert_rejected(lambda: _assert_wasi_tool_setup(mutated, job_name, step_name))
+
+
+def test_nightly_bash_probe_removal_is_rejected() -> None:
+    workflow = WORKFLOW.read_text()
+    job_name = "build-and-test"
+    step_name = "Build and test on FreeBSD"
+    step = _step_block(_job_block(workflow, job_name), step_name)
+    probe = " ".join(EXPECTED_BASH_PROBE)
+    assert step.count(probe) == 1
+    mutated_step = step.replace(probe, "true", 1)
+    mutated = workflow.replace(step, mutated_step, 1)
+    _assert_rejected(lambda: _assert_nightly_compiled_hew_authority(mutated))
+    _assert_rejected(lambda: _assert_wasi_tool_setup(mutated, job_name, step_name))
 
 
 def test_aarch64_release_gate_drift_is_rejected() -> None:
@@ -970,6 +1016,8 @@ _TESTS = (
     test_docs_copy_cannot_mask_required_job_mutation,
     test_required_job_parity_marker_drift_is_rejected,
     test_added_nightly_exclusion_is_rejected,
+    test_nightly_bash_package_removal_is_rejected,
+    test_nightly_bash_probe_removal_is_rejected,
     test_aarch64_release_gate_drift_is_rejected,
     test_commented_nightly_tool_commands_are_rejected,
     test_single_release_leg_missing_wasmtime_is_rejected,

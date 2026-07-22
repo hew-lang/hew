@@ -41,7 +41,7 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git gmake pkgconf libffi libxml2 wasmtime
+            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -57,6 +57,7 @@ jobs:
             ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
             command -v wasmtime && wasmtime --version
             command -v wasm-ld && wasm-ld --version
+            command -v bash && bash --version
 
             # ── Rust builds ────────────────────────────────────────────────
             # Build runtime (release + debug for E2E tests)

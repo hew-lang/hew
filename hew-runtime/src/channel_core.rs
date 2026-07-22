@@ -103,6 +103,12 @@ pub struct ChannelCore {
     /// callers (`main`, free fns) that run on a foreign thread with no parkable
     /// continuation. Suspending callers never touch this; they use slots.
     cv: Condvar,
+    /// One-shot test rendezvous immediately before a foreign waiter enters
+    /// `cv.wait`. Taking the probe while `inner` is held makes the test edge
+    /// deterministic: the closer cannot publish its terminal predicate until
+    /// the waiter atomically releases `inner` and parks.
+    #[cfg(test)]
+    wait_probe: Mutex<Option<std::sync::Arc<std::sync::Barrier>>>,
 }
 
 // SAFETY: every field of `Inner` is accessed only under `inner`'s lock. The raw
@@ -137,6 +143,28 @@ impl ChannelCore {
                 elem_layout: None,
             }),
             cv: Condvar::new(),
+            #[cfg(test)]
+            wait_probe: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn install_wait_probe(&self, probe: std::sync::Arc<std::sync::Barrier>) {
+        *self
+            .wait_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(probe);
+    }
+
+    #[cfg(test)]
+    fn rendezvous_before_wait(&self) {
+        let probe = self
+            .wait_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(probe) = probe {
+            probe.wait();
         }
     }
 
@@ -322,6 +350,8 @@ impl ChannelCore {
                     item = None;
                     break;
                 }
+                #[cfg(test)]
+                self.rendezvous_before_wait();
                 inner = self
                     .cv
                     .wait(inner)
@@ -371,6 +401,8 @@ impl ChannelCore {
             if !inner.queue.is_empty() || inner.sink_closed || inner.sink_fault {
                 return true;
             }
+            #[cfg(test)]
+            self.rendezvous_before_wait();
             inner = self
                 .cv
                 .wait(inner)
@@ -494,6 +526,8 @@ impl ChannelCore {
                     consumer_wake = inner.consumer.take();
                     break;
                 }
+                #[cfg(test)]
+                self.rendezvous_before_wait();
                 inner = self
                     .cv
                     .wait(inner)
@@ -651,6 +685,12 @@ impl ChannelCore {
                 producer_wakes.push(producer);
             }
         }
+        // `sink_fault` is now a stable terminal predicate. Notify foreign
+        // condvar waiters before scheduler callbacks or recursive element-drop
+        // thunks: either may be slow or re-enter unrelated runtime machinery,
+        // but cannot strand a waiter behind an already-published terminal
+        // state.
+        self.cv.notify_all();
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
@@ -665,7 +705,6 @@ impl ChannelCore {
         for item in discarded {
             Self::drop_envelope(layout.as_ref(), item);
         }
-        self.cv.notify_all();
     }
 
     /// Fail closed on an empty-and-faulted read: never a silent EOF.
@@ -901,9 +940,11 @@ mod tests {
         let producer_core = Arc::clone(&core);
         let producer_parked_peer = Arc::clone(&producer_parked);
         let release_producer_peer = Arc::clone(&release_producer);
-        let slot_addr = slot as usize;
+        // `AtomicPtr` is a provenance-preserving `Send` carrier; raw pointers
+        // themselves deliberately do not implement `Send`.
+        let slot_for_producer = std::sync::atomic::AtomicPtr::new(slot);
         let producer = std::thread::spawn(move || {
-            let slot = slot_addr as *mut HewReadSlot;
+            let slot = slot_for_producer.load(std::sync::atomic::Ordering::Relaxed);
             let rc =
                 unsafe { producer_core.await_send(std::ptr::null_mut(), slot, b"parked".to_vec()) };
             producer_parked_peer.wait();
@@ -1010,6 +1051,214 @@ mod tests {
     static OWNED_TEST_LOCK: StdMutex<()> = StdMutex::new(());
     static OWNED_CLONES: AtomicUsize = AtomicUsize::new(0);
     static OWNED_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    struct BlockingDropGate {
+        entered: bool,
+        release: bool,
+    }
+
+    static BLOCKING_DROP_GATE: (StdMutex<BlockingDropGate>, std::sync::Condvar) = (
+        StdMutex::new(BlockingDropGate {
+            entered: false,
+            release: false,
+        }),
+        std::sync::Condvar::new(),
+    );
+    static BLOCKING_DROP_QUEUED: AtomicUsize = AtomicUsize::new(0);
+    static BLOCKING_DROP_PARKED: AtomicUsize = AtomicUsize::new(0);
+    static BLOCKING_DROP_FOREIGN: AtomicUsize = AtomicUsize::new(0);
+
+    fn reset_blocking_drop_probe() {
+        let (lock, _) = &BLOCKING_DROP_GATE;
+        let mut gate = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate.entered = false;
+        gate.release = false;
+        BLOCKING_DROP_QUEUED.store(0, Ordering::SeqCst);
+        BLOCKING_DROP_PARKED.store(0, Ordering::SeqCst);
+        BLOCKING_DROP_FOREIGN.store(0, Ordering::SeqCst);
+    }
+
+    fn wait_for_blocking_drop_entry() -> bool {
+        let (lock, cv) = &BLOCKING_DROP_GATE;
+        let gate = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (gate, _) = cv
+            .wait_timeout_while(gate, std::time::Duration::from_secs(2), |gate| {
+                !gate.entered
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate.entered
+    }
+
+    fn release_blocking_drop() {
+        let (lock, cv) = &BLOCKING_DROP_GATE;
+        let mut gate = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate.release = true;
+        cv.notify_all();
+    }
+
+    unsafe extern "C" fn blocking_elem_drop(slot: *mut core::ffi::c_void) {
+        let tag = unsafe { std::ptr::read_unaligned(slot.cast::<u64>()) };
+        match tag {
+            1 => &BLOCKING_DROP_QUEUED,
+            2 => {
+                let (lock, cv) = &BLOCKING_DROP_GATE;
+                let mut gate = lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                gate.entered = true;
+                cv.notify_all();
+                while !gate.release {
+                    gate = cv
+                        .wait(gate)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                &BLOCKING_DROP_PARKED
+            }
+            3 => &BLOCKING_DROP_FOREIGN,
+            _ => panic!("unexpected blocking-drop tag {tag}"),
+        }
+        .fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn blocking_elem_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: size_of::<u64>(),
+            align: align_of::<u64>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(blocking_elem_drop),
+        }
+    }
+
+    fn blocking_envelope(tag: u64) -> Vec<u8> {
+        tag.to_ne_bytes().to_vec()
+    }
+
+    #[test]
+    fn fault_close_notifies_blocking_sender_before_parked_drop_completes() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_blocking_drop_probe();
+
+        let core = std::sync::Arc::new(ChannelCore::new(1));
+        core.stamp_elem_layout(&blocking_elem_layout());
+        assert_eq!(core.try_send(blocking_envelope(1)), TrySendResult::Accepted);
+        let slot = hew_read_slot_new();
+        assert_eq!(
+            unsafe { core.await_send(std::ptr::null_mut(), slot, blocking_envelope(2),) },
+            STREAM_AWAIT_SUSPEND
+        );
+
+        let wait_probe = std::sync::Arc::new(std::sync::Barrier::new(2));
+        core.install_wait_probe(std::sync::Arc::clone(&wait_probe));
+        let (sender_done_tx, sender_done_rx) = std::sync::mpsc::channel();
+        let sender_core = std::sync::Arc::clone(&core);
+        let sender = std::thread::spawn(move || {
+            sender_core.blocking_send(blocking_envelope(3));
+            sender_done_tx.send(()).expect("sender completion receiver");
+        });
+        wait_probe.wait();
+
+        let fault_core = std::sync::Arc::clone(&core);
+        let fault = std::thread::spawn(move || fault_core.fault_close(45));
+        let drop_entered = wait_for_blocking_drop_entry();
+        let sender_before_release = sender_done_rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        // Always release the thunk before asserting so a regressing ordering
+        // fails cleanly instead of leaving the fault thread stranded.
+        release_blocking_drop();
+        fault.join().expect("fault close thread");
+        sender.join().expect("blocking sender thread");
+
+        assert!(drop_entered, "parked envelope drop thunk must run");
+        assert!(
+            sender_before_release.is_ok(),
+            "terminal blocking sender must wake before parked drop completes"
+        );
+        assert_eq!(BLOCKING_DROP_PARKED.load(Ordering::SeqCst), 1);
+        assert_eq!(BLOCKING_DROP_FOREIGN.load(Ordering::SeqCst), 1);
+        assert_eq!(BLOCKING_DROP_QUEUED.load(Ordering::SeqCst), 0);
+
+        let mut queued = core.pop().expect("pre-fault queued envelope");
+        assert_eq!(
+            u64::from_ne_bytes(queued.as_slice().try_into().expect("u64 envelope")),
+            1,
+            "pre-fault queue order must remain intact"
+        );
+        unsafe { blocking_elem_drop(queued.as_mut_ptr().cast()) };
+        assert_eq!(BLOCKING_DROP_QUEUED.load(Ordering::SeqCst), 1);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.pop())).is_err(),
+            "empty faulted channel must remain terminal"
+        );
+        assert_eq!(unsafe { read_slot_refs_for_test(slot) }, 1);
+        unsafe { hew_read_slot_free(slot) };
+        drop(core);
+        assert_eq!(BLOCKING_DROP_QUEUED.load(Ordering::SeqCst), 1);
+        assert_eq!(BLOCKING_DROP_PARKED.load(Ordering::SeqCst), 1);
+        assert_eq!(BLOCKING_DROP_FOREIGN.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fault_close_notifies_blocking_receiver_of_terminal_state() {
+        let core = std::sync::Arc::new(ChannelCore::new(1));
+        let wait_probe = std::sync::Arc::new(std::sync::Barrier::new(2));
+        core.install_wait_probe(std::sync::Arc::clone(&wait_probe));
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let receiver_core = std::sync::Arc::clone(&core);
+        let receiver = std::thread::spawn(move || {
+            let terminal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                receiver_core.blocking_recv()
+            }))
+            .is_err();
+            done_tx
+                .send(terminal)
+                .expect("receiver completion receiver");
+        });
+        wait_probe.wait();
+
+        core.fault_close(46);
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("blocking receiver completion"),
+            "blocking receiver must observe the terminal fault"
+        );
+        receiver.join().expect("blocking receiver thread");
+    }
+
+    #[test]
+    fn fault_close_notifies_wait_ready_of_terminal_state() {
+        let core = std::sync::Arc::new(ChannelCore::new(1));
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wait_probe = std::sync::Arc::new(std::sync::Barrier::new(2));
+        core.install_wait_probe(std::sync::Arc::clone(&wait_probe));
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let ready_core = std::sync::Arc::clone(&core);
+        let ready_cancelled = std::sync::Arc::clone(&cancelled);
+        let ready = std::thread::spawn(move || {
+            done_tx
+                .send(ready_core.wait_ready(&ready_cancelled))
+                .expect("wait-ready completion receiver");
+        });
+        wait_probe.wait();
+
+        core.fault_close(47);
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("wait-ready completion"),
+            "wait-ready must report a terminal channel as readable"
+        );
+        ready.join().expect("wait-ready thread");
+    }
 
     /// Mock heap-owning element: a tag plus one malloc'd 8-byte buffer. The
     /// clone thunk duplicates the buffer; the drop thunk frees it. Leaks and

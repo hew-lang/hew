@@ -4,13 +4,14 @@ use super::{
     monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
-    ClosurePairIngress, CmpPred, DecisionFact, Disposition, FieldLoadClass, HashMap, HashSet,
-    HirBinding, HirBlock, HirExpr, HirExprKind, HirStmtKind, Instr, IntentKind, LayoutClass,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, OwnedLocalEntry, OwnershipCtx,
-    OwnershipDecision, Place, PlaceProvenance, Projection, ResolvedRef, ResolvedTy, ResourceMarker,
-    SiteId, Strategy, Terminator, ValueClass, ValueOwnership, ValueProvenance,
-    SYNTHETIC_CALL_SCRUTINEE_NAME, SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
-    SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
+    ClosurePairIngress, CmpPred, DecisionFact, Disposition, FieldLoadClass,
+    FreshVecGetCloneProjectionBase, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
+    HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    OwnedLocalEntry, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance, Projection,
+    ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass,
+    ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
+    SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
+    SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
     SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
@@ -105,6 +106,62 @@ impl Builder {
         self.record_binding_scope(binding);
         self.register_owned_local(binding, name.to_string(), ty);
         binding
+    }
+
+    pub(crate) fn note_fresh_vec_clone_projection_base(
+        &mut self,
+        place: Place,
+        ty: ResolvedTy,
+        site: SiteId,
+    ) {
+        let Place::Local(local) = place else {
+            unreachable!("the Vec clone destination is always a local");
+        };
+        self.fresh_vec_get_clone_projection_bases
+            .push(FreshVecGetCloneProjectionBase { local, ty, site });
+    }
+
+    /// Registers the ordinary scope-exit owner for a fresh composite cloned by
+    /// `Vec` indexing and immediately used as a record-projection base.
+    pub(crate) fn register_fresh_vec_get_clone_projection_base_owner(
+        &mut self,
+        object: &HirExpr,
+        record_place: Place,
+    ) {
+        if !matches!(object.kind, HirExprKind::Index { .. }) {
+            return;
+        }
+        let Place::Local(local) = record_place else {
+            return;
+        };
+        let object_ty = self.subst_ty(&object.ty);
+        let Some(fact_index) = self
+            .fresh_vec_get_clone_projection_bases
+            .iter()
+            .position(|fact| fact.local == local && fact.ty == object_ty)
+        else {
+            return;
+        };
+        if self.parameter_locals.contains(&local)
+            || self
+                .binding_locals
+                .values()
+                .any(|place| *place == record_place)
+            || !crate::model::ty_owns_heap_mir(
+                &object_ty,
+                &self.record_field_orders,
+                &self.enum_layouts,
+            )
+        {
+            return;
+        }
+        let fact = self.fresh_vec_get_clone_projection_bases.remove(fact_index);
+        self.register_synthetic_owned_local(
+            SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
+            fact.site,
+            fact.local,
+            fact.ty,
+        );
     }
     /// Register a `let`-bound field projection whose result is a byte-copy
     /// interior ALIAS of the still-live owner named by `provenance` — the

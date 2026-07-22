@@ -55,7 +55,9 @@ fn main -> ()
     use BindingId(10) tags site=SiteId(105) ty=Vec<Tag> intent=Read
     bind BindingId(12) tail_tags site=SiteId(104) ty=Vec<Tag>
     use BindingId(12) tail_tags site=SiteId(111) ty=Vec<Tag> intent=Read
+    bind BindingId(4294967231) __hew_vec_get_clone_projection_base site=SiteId(110) ty=Tag
     eval site=SiteId(108) ty=()
+    drop BindingId(4294967231) __hew_vec_get_clone_projection_base ty=Tag
     drop BindingId(12) tail_tags ty=Vec<Tag>
     drop BindingId(11) t ty=Tag
     drop BindingId(10) tags ty=Vec<Tag>
@@ -219,6 +221,7 @@ fn main -> ()
     call[bb51 println_i64 -> bb52] ->
       (none)
     return[bb52] ->
+      drop _92 ty=Tag kind=record_in_place
       drop _88 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
       drop _80 ty=Tag kind=record_in_place
       drop _69 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)

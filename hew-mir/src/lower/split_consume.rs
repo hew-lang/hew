@@ -1279,6 +1279,14 @@ mod slice3_invariants {
     use super::*;
     use crate::model::{CaptureKind, Direction};
 
+    #[cfg(not(target_arch = "wasm32"))]
+    use hew_runtime::{
+        HEW_CTX_OFFSET_ACTOR_ID as RUNTIME_CTX_OFFSET_ACTOR_ID,
+        HEW_CTX_OFFSET_PARENT_SUPERVISOR as RUNTIME_CTX_OFFSET_PARENT_SUPERVISOR,
+        HEW_CTX_OFFSET_TRACE as RUNTIME_CTX_OFFSET_TRACE,
+        HEW_CTX_OFFSET_TRACE_SPAN as RUNTIME_CTX_OFFSET_TRACE_SPAN,
+    };
+
     fn reader_ty(reader: ExecutionContextReader) -> ResolvedTy {
         ResolvedTy::from_ty(&reader.ty()).expect("context reader type resolves")
     }
@@ -1373,6 +1381,34 @@ mod slice3_invariants {
                 lowered.diagnostics.is_empty(),
                 "{reader:?} diagnostics: {:?}",
                 lowered.diagnostics
+            );
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            assert_eq!(
+                HEW_CTX_OFFSET_ACTOR_ID, RUNTIME_CTX_OFFSET_ACTOR_ID,
+                "ActorId MIR offset must match the runtime authority"
+            );
+            assert_eq!(
+                HEW_CTX_OFFSET_PARENT_SUPERVISOR, RUNTIME_CTX_OFFSET_PARENT_SUPERVISOR,
+                "Supervisor MIR offset must match the runtime authority"
+            );
+            assert_eq!(
+                HEW_CTX_OFFSET_TRACE, RUNTIME_CTX_OFFSET_TRACE,
+                "TraceSpan base MIR offset must match the runtime authority"
+            );
+
+            let runtime_span_suboffset = RUNTIME_CTX_OFFSET_TRACE_SPAN
+                .checked_sub(RUNTIME_CTX_OFFSET_TRACE)
+                .expect("runtime trace span offset must be at or after its trace base");
+            assert_eq!(
+                HEW_TRACE_OFFSET_SPAN_ID, runtime_span_suboffset,
+                "TraceSpan span-id suboffset must match the runtime authority"
+            );
+            assert_eq!(
+                HEW_CTX_OFFSET_TRACE_SPAN, RUNTIME_CTX_OFFSET_TRACE_SPAN,
+                "TraceSpan absolute MIR offset must match the runtime authority"
             );
         }
     }

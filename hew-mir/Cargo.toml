@@ -30,6 +30,8 @@ hew-types = { path = "../hew-types" }
 # that consume proptest are themselves native-only, so this scoping
 # costs no test coverage on wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Runtime layout authorities are used only by native parity tests.
+hew-runtime = { path = "../hew-runtime", default-features = false }
 proptest = "1"
 
 [lints]

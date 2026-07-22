@@ -399,6 +399,52 @@ fn main() {
 }
 ";
 
+const HYBRID_ENUM_TEMPLATE: &str = r#"
+#[opaque]
+type Handle {}
+
+extern "C" {
+    fn hew_handle_create() -> Handle;
+}
+
+enum Mixed {
+    Text(string);
+    Opaque(Handle);
+}
+
+fn inspect(x: Mixed) -> i64 {
+    match x {
+        Mixed::Text(s) => s.len(),
+        Mixed::Opaque(_) => 0,
+    }
+}
+
+fn main() -> i64 {
+    for i in 0..$FRAMES {
+        if inspect(Mixed::Text(f"payload-{i}".to_upper())) < 9 { return 61; }
+    }
+    0
+}
+"#;
+
+const CLONEABLE_ENUM_CONTROL_SOURCE: &str = r#"
+enum Mixed {
+    Text(string);
+    Scalar(i64);
+}
+
+fn inspect(x: Mixed) -> i64 {
+    match x {
+        Mixed::Text(s) => s.len(),
+        Mixed::Scalar(_) => 0,
+    }
+}
+
+fn main() -> i64 {
+    inspect(Mixed::Text("payload".to_upper()))
+}
+"#;
+
 fn with_frames(template: &str, frames: usize) -> String {
     template.replace("$FRAMES", &frames.to_string())
 }
@@ -441,6 +487,10 @@ fn tuple_projection_param_source(frames: usize) -> String {
 
 fn resource_projection_direct_consume_source(frames: usize) -> String {
     with_frames(RESOURCE_PROJECTION_DIRECT_CONSUME_TEMPLATE, frames)
+}
+
+fn hybrid_enum_source(frames: usize) -> String {
+    with_frames(HYBRID_ENUM_TEMPLATE, frames)
 }
 
 fn assert_source_succeeds_under_scribble(shape_name: &str, source_fn: fn(usize) -> String) {
@@ -512,6 +562,52 @@ fn compile_callable_source(source: &str, name: &str, target: Option<&str>) -> st
         .current_dir(repo_root())
         .output()
         .expect("invoke hew compile")
+}
+
+fn compile_source_to_llvm(source: &str, name: &str, target: Option<&str>) -> String {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("owned-call-carrier-llvm-")
+        .tempdir()
+        .expect("tempdir");
+    let source_path = dir.path().join(format!("{name}.hew"));
+    let emit_dir = dir.path().join("emit");
+    std::fs::create_dir(&emit_dir).expect("create emit dir");
+    std::fs::write(&source_path, source).expect("write Hew source");
+    let mut command = Command::new(hew_binary());
+    command.arg("compile").arg(&source_path);
+    if let Some(target) = target {
+        command.args(["--target", target]);
+    }
+    let output = command
+        .arg("--emit-dir")
+        .arg(&emit_dir)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile");
+    assert!(
+        output.status.success(),
+        "LLVM emission failed for {name}:\n{}",
+        describe_output(&output)
+    );
+    std::fs::read_to_string(emit_dir.join(format!("{name}.ll"))).expect("read emitted LLVM IR")
+}
+
+fn llvm_function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
+    let marker = format!("@{symbol}(");
+    let start = ir
+        .lines()
+        .position(|line| line.starts_with("define ") && line.contains(&marker))
+        .unwrap_or_else(|| panic!("missing LLVM definition for {symbol}"));
+    let lines: Vec<&str> = ir.lines().collect();
+    let end = lines[start..]
+        .iter()
+        .position(|line| *line == "}")
+        .map(|offset| start + offset + 1)
+        .expect("LLVM function terminator");
+    let byte_start: usize = lines[..start].iter().map(|line| line.len() + 1).sum();
+    let byte_end: usize = lines[..end].iter().map(|line| line.len() + 1).sum();
+    &ir[byte_start..byte_end.min(ir.len())]
 }
 
 #[test]
@@ -626,6 +722,105 @@ fn prepared_resource_projection_transfers_once_into_direct_consume() {
         1,
         "the consuming callee must keep the transferred Token's one disposal authority:\n{consume_token}"
     );
+}
+
+#[test]
+fn non_cloneable_hybrid_enum_uses_legacy_callee_drop_after_transfer() {
+    let hybrid_source = hybrid_enum_source(1);
+    let checked = dump_checked_mir(&hybrid_source, "hybrid_enum_carrier");
+    let inspect = checked
+        .split("fn inspect")
+        .nth(1)
+        .and_then(|section| section.split("fn main").next())
+        .expect("inspect checked MIR section");
+    assert_eq!(
+        inspect.matches("snapshot_drop _0").count(),
+        0,
+        "a non-clone-total plan must not claim installed carrier machinery:\n{inspect}"
+    );
+    let main = checked.split("fn main").nth(1).expect("main checked MIR");
+    assert_eq!(
+        main.matches("neutralize_payload").count(),
+        1,
+        "the unique temporary must transfer sole ownership into inspect:\n{main}"
+    );
+    assert!(
+        main.contains("call inspect("),
+        "the neutralized temporary must feed the direct callee:\n{main}"
+    );
+
+    let elaborated = dump_elaborated_mir(&hybrid_source, "hybrid_enum_carrier");
+    let inspect = elaborated
+        .split("fn inspect")
+        .nth(1)
+        .and_then(|section| section.split("fn main").next())
+        .expect("inspect elaborated MIR section");
+    let return_plan = inspect
+        .split("return[bb1] ->")
+        .nth(1)
+        .and_then(|section| section.split('\n').nth(1))
+        .expect("inspect return drop plan");
+    assert!(
+        return_plan.contains("drop _0 ty=Mixed kind=enum_in_place"),
+        "an uninstalled carrier must leave the heap-owning enum fallback active:\n{inspect}"
+    );
+
+    let cloneable = dump_checked_mir(CLONEABLE_ENUM_CONTROL_SOURCE, "cloneable_enum_carrier");
+    let cloneable_inspect = cloneable
+        .split("fn inspect")
+        .nth(1)
+        .and_then(|section| section.split("fn main").next())
+        .expect("cloneable inspect checked MIR section");
+    assert_eq!(
+        cloneable_inspect
+            .matches("snapshot_drop _0 ty=Mixed")
+            .count(),
+        2,
+        "replacing the opaque variant with a scalar must install the clone-total carrier on return and trap; this control separates plan admission from the legacy fallback:\n{cloneable_inspect}"
+    );
+}
+
+#[test]
+fn hybrid_enum_text_transfer_drops_once_on_native_and_wasm() {
+    let source = hybrid_enum_source(1);
+    for (target_name, target) in [("native", None), ("wasm32", Some("wasm32-unknown-unknown"))] {
+        let ir = compile_source_to_llvm(
+            &source,
+            &format!("hybrid_enum_carrier_{target_name}"),
+            target,
+        );
+        let inspect = llvm_function_body(&ir, "inspect");
+        let return_block = inspect
+            .split("bb1:")
+            .nth(1)
+            .and_then(|section| section.split("\nbb2:").next())
+            .expect("inspect return block");
+        assert_eq!(
+            return_block
+                .matches("call void @__hew_enum_drop_inplace_Mixed(")
+                .count(),
+            1,
+            "the successful inspect path must dispose its transferred enum exactly once ({target_name}):\n{return_block}"
+        );
+        assert_eq!(
+            inspect
+                .matches("call void @__hew_enum_drop_inplace_Mixed(")
+                .count(),
+            5,
+            "every return, trap, and cancellation exit must keep one mutually exclusive enum cleanup ({target_name}):\n{inspect}"
+        );
+        let drop_thunk = llvm_function_body(&ir, "__hew_enum_drop_inplace_Mixed");
+        assert_eq!(
+            drop_thunk.matches("call void @hew_string_drop(").count(),
+            1,
+            "the Text variant must have exactly one payload release in the shared enum authority ({target_name}):\n{drop_thunk}"
+        );
+    }
+}
+
+#[test]
+fn hybrid_enum_text_transfer_has_flat_leak_slope() {
+    assert_clean_slope("hybrid_enum_text_transfer", hybrid_enum_source);
 }
 
 #[test]

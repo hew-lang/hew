@@ -96,6 +96,9 @@ impl Builder {
     }
 
     /// Register the callee half of an owned direct-call carrier contract.
+    /// Returns `true` only when snapshot cleanup and neutralization authority
+    /// were installed for the parameter; downstream fallback ownership must
+    /// remain active for an eligible but non-clone-total plan.
     pub(crate) fn register_owned_call_carrier_param(
         &mut self,
         func_id: hew_hir::ItemId,
@@ -147,17 +150,23 @@ impl Builder {
                 });
                 self.owned_carrier_neutralize
                     .insert(slot, OwnedCarrierNeutralizeTarget::Whole(slot));
+                true
             }
-            Ok(_) => {}
-            Err(error) => self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("owned call-carrier parameter `{}`", param.ty.user_facing()),
-                    site: SiteId(0),
-                },
-                note: error.to_string(),
-            }),
+            Ok(_) => false,
+            Err(error) => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "owned call-carrier parameter `{}`",
+                            param.ty.user_facing()
+                        ),
+                        site: SiteId(0),
+                    },
+                    note: error.to_string(),
+                });
+                false
+            }
         }
-        true
     }
 
     pub(crate) fn lower_capture_env_binding_ref(

@@ -151,7 +151,12 @@ jobs:
       - name: Exercise O2 differential gate
         if: needs.changes.outputs.scripts == 'true'
         run: make o2-differential-selftest
+
       # <<< CI-PARITY-STEPS
+
+      - name: Exercise doc-ratchet membership gate
+        if: needs.changes.outputs.scripts == 'true'
+        run: make doc-ratchet-selftest
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lint — fast feedback on code quality (always runs, ~1.5 min)

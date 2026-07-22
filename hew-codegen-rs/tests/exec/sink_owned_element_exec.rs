@@ -67,6 +67,40 @@ fn ensure_hew_runtime_lib() {
     });
 }
 
+const COVERAGE_DEADLINE_FACTOR: u32 = 4;
+
+fn subprocess_deadline(normal: Duration, coverage: bool) -> Duration {
+    if coverage {
+        normal.saturating_mul(COVERAGE_DEADLINE_FACTOR)
+    } else {
+        normal
+    }
+}
+
+fn active_subprocess_deadline(normal: Duration) -> Duration {
+    subprocess_deadline(normal, cfg!(coverage))
+}
+
+#[test]
+fn coverage_subprocess_deadlines_are_bounded_without_changing_normal_deadlines() {
+    let run_deadline = Duration::from_secs(30);
+    let compile_deadline = Duration::from_secs(60);
+
+    assert_eq!(subprocess_deadline(run_deadline, false), run_deadline);
+    assert_eq!(
+        subprocess_deadline(compile_deadline, false),
+        compile_deadline
+    );
+    assert_eq!(
+        subprocess_deadline(run_deadline, true),
+        Duration::from_secs(120)
+    );
+    assert_eq!(
+        subprocess_deadline(compile_deadline, true),
+        Duration::from_secs(240)
+    );
+}
+
 fn temp_source(stem: &str, source: &str) -> (PathBuf, PathBuf) {
     let dir = std::env::temp_dir().join(format!("hew-sink-owned-{}-{stem}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -95,7 +129,7 @@ fn run_hew_source_env(stem: &str, source: &str, scribble: bool) -> String {
     let output = hew_testutil::run_command_bounded(
         &mut cmd,
         format!("hew run {}", path.display()),
-        Duration::from_secs(30),
+        active_subprocess_deadline(Duration::from_secs(30)),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert!(
@@ -126,7 +160,7 @@ fn emit_llvm_ir(stem: &str, source: &str) -> String {
     let output = hew_testutil::run_command_bounded(
         &mut cmd,
         format!("hew compile --emit-dir {}", dir.display()),
-        Duration::from_secs(60),
+        active_subprocess_deadline(Duration::from_secs(60)),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert!(
@@ -150,7 +184,7 @@ fn compile_expect_refusal(stem: &str, source: &str) -> String {
     let output = hew_testutil::run_command_bounded(
         &mut cmd,
         format!("hew compile --emit-dir {}", dir.display()),
-        Duration::from_secs(60),
+        active_subprocess_deadline(Duration::from_secs(60)),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert!(

@@ -36,6 +36,13 @@ EXPECTED_NEXTEST_COMMAND = (
     "--no-fail-fast",
 )
 EXPECTED_PKG_UPDATE = ("pkg", "update", "-f", "-r", "FreeBSD")
+EXPECTED_PKG_BOOTSTRAP = (
+    "/usr/sbin/pkg",
+    "bootstrap",
+    "-fy",
+    "-r",
+    "FreeBSD",
+)
 PKG_INSTALL_PREFIX = (
     "pkg",
     "install",
@@ -44,7 +51,6 @@ PKG_INSTALL_PREFIX = (
     "-r",
     "FreeBSD",
 )
-EXPECTED_PKG_BOOTSTRAP = (*PKG_INSTALL_PREFIX, "pkg")
 FREEBSD_TOOL_PACKAGES = (
     "llvm22",
     "rust",
@@ -58,7 +64,6 @@ FREEBSD_TOOL_PACKAGES = (
 )
 EXPECTED_PKG_INSTALL = (*PKG_INSTALL_PREFIX, *FREEBSD_TOOL_PACKAGES)
 EXPECTED_PKG_PHASES = (
-    EXPECTED_PKG_UPDATE,
     EXPECTED_PKG_BOOTSTRAP,
     EXPECTED_PKG_UPDATE,
     EXPECTED_PKG_INSTALL,
@@ -244,10 +249,10 @@ def _rewrite_pkg_commands(
     pkg_commands: list[tuple[str, ...]] = []
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if not stripped.startswith("pkg "):
+        if not stripped.startswith(("pkg ", "/usr/sbin/pkg ")):
             continue
         command = tuple(shlex.split(stripped, comments=True))
-        if command[:1] == ("pkg",):
+        if command[:1] in (("pkg",), ("/usr/sbin/pkg",)):
             pkg_lines.append(index)
             pkg_commands.append(command)
     assert pkg_commands == list(EXPECTED_PKG_PHASES)
@@ -270,10 +275,14 @@ def _assert_wasi_tool_setup(workflow: str, job_name: str, step_name: str) -> Non
     prepare_commands = _active_shell_commands(_literal_block(step, "prepare"))
     run_commands = _active_shell_commands(_literal_block(step, "run"))
 
-    pkg_commands = [command for command in prepare_commands if command[:1] == ("pkg",)]
+    pkg_commands = [
+        command
+        for command in prepare_commands
+        if command[:1] in (("pkg",), ("/usr/sbin/pkg",))
+    ]
     assert pkg_commands == list(EXPECTED_PKG_PHASES), (
-        f"{job_name} must refresh FreeBSD, bootstrap pkg without an automatic "
-        "catalogue update, refresh FreeBSD under the new schema, then install "
+        f"{job_name} must bootstrap pkg through the base utility from FreeBSD, "
+        "refresh only that named repository, then install "
         f"the exact tool set without an automatic update; got {pkg_commands!r}"
     )
     for required in (
@@ -500,6 +509,13 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
             ]
             if command[:2] == ("pkg", "install"):
                 replacements.append(command_text.replace(" -U", "", 1))
+            if command == EXPECTED_PKG_BOOTSTRAP:
+                replacements.extend(
+                    (
+                        command_text.replace(" -fy", " -y", 1),
+                        command_text.replace(" -fy", " -f", 1),
+                    )
+                )
             for replacement in replacements:
                 mutated_step = _rewrite_pkg_commands(
                     step,
@@ -512,7 +528,7 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
                     for active in _active_shell_commands(
                         _literal_block(mutated_step, "prepare")
                     )
-                    if active[:1] == ("pkg",)
+                    if active[:1] in (("pkg",), ("/usr/sbin/pkg",))
                 ]
                 assert len(mutated_commands) == len(EXPECTED_PKG_PHASES)
                 for other_index, expected in enumerate(EXPECTED_PKG_PHASES):
@@ -529,17 +545,18 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
 
 
 def test_pkg_bootstrap_phases_cannot_be_removed_reordered_or_merged() -> None:
+    dynamic_self_install = (*PKG_INSTALL_PREFIX, "pkg")
     combined_install = (*PKG_INSTALL_PREFIX, "pkg", *FREEBSD_TOOL_PACKAGES)
     mutations: tuple[dict[int, tuple[str, ...] | None], ...] = (
         {0: None},
         {1: None},
         {2: None},
-        {3: None},
-        {0: EXPECTED_PKG_BOOTSTRAP, 1: EXPECTED_PKG_UPDATE},
-        {2: EXPECTED_PKG_INSTALL, 3: EXPECTED_PKG_UPDATE},
-        {1: EXPECTED_PKG_INSTALL, 3: EXPECTED_PKG_BOOTSTRAP},
-        {1: combined_install, 3: None},
-        {1: None, 3: combined_install},
+        {0: EXPECTED_PKG_UPDATE, 1: EXPECTED_PKG_BOOTSTRAP},
+        {1: EXPECTED_PKG_INSTALL, 2: EXPECTED_PKG_UPDATE},
+        {0: EXPECTED_PKG_INSTALL, 2: EXPECTED_PKG_BOOTSTRAP},
+        {0: dynamic_self_install},
+        {0: combined_install, 2: None},
+        {0: None, 2: combined_install},
     )
     for workflow, job_name, step_name in (
         (WORKFLOW.read_text(), "build-and-test", "Build and test on FreeBSD"),

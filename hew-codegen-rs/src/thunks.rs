@@ -2467,6 +2467,7 @@ pub(crate) fn emit_coalesce_key_fn<'ctx>(
     target_data: &TargetData,
     layout: &ActorLayout,
     record_layouts: &RecordLayoutMap<'ctx>,
+    enum_layouts: &[hew_mir::EnumLayout],
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let plan = layout.coalesce_key_plan.as_ref().ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -2531,11 +2532,23 @@ pub(crate) fn emit_coalesce_key_fn<'ctx>(
                 handler.param_tys.len()
             ))
         })?;
-        let field_ty = resolve_ty(ctx, target_data, param_ty, record_layouts)?;
+        let field_ty = crate::llvm::resolve_value_ty(
+            ctx,
+            target_data,
+            param_ty,
+            record_layouts,
+            enum_layouts,
+        )?;
         let field_ptr = if handler.param_tys.len() > 1 {
             let mut packed_field_tys = Vec::with_capacity(handler.param_tys.len());
             for ty in &handler.param_tys {
-                packed_field_tys.push(resolve_ty(ctx, target_data, ty, record_layouts)?);
+                packed_field_tys.push(crate::llvm::resolve_value_ty(
+                    ctx,
+                    target_data,
+                    ty,
+                    record_layouts,
+                    enum_layouts,
+                )?);
             }
             let packed_st = ctx.struct_type(&packed_field_tys, false);
             builder
@@ -2680,7 +2693,13 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
         let mut field_tys = Vec::with_capacity(handler.param_tys.len());
         let mut field_kinds = Vec::with_capacity(handler.param_tys.len());
         for param_ty in &handler.param_tys {
-            field_tys.push(resolve_ty(ctx, target_data, param_ty, record_layouts)?);
+            field_tys.push(crate::llvm::resolve_value_ty(
+                ctx,
+                target_data,
+                param_ty,
+                record_layouts,
+                enum_layouts,
+            )?);
             let mut visited = HashSet::new();
             field_kinds.push(
                 hew_mir::classify_state_field_with_enum_layouts(
@@ -2722,6 +2741,7 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
     Ok(drop_fn)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -2738,6 +2758,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     handler_suspendable: &[Option<bool>],
     fn_symbols: &FnSymbolMap<'ctx>,
     record_layouts: &RecordLayoutMap<'ctx>,
+    enum_layouts: &[hew_mir::EnumLayout],
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i32_ty = ctx.i32_type();
@@ -3051,7 +3072,13 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
             let mut packed_field_tys: Vec<BasicTypeEnum> =
                 Vec::with_capacity(handler.param_tys.len());
             for param_ty in &handler.param_tys {
-                packed_field_tys.push(resolve_ty(ctx, target_data, param_ty, record_layouts)?);
+                packed_field_tys.push(crate::llvm::resolve_value_ty(
+                    ctx,
+                    target_data,
+                    param_ty,
+                    record_layouts,
+                    enum_layouts,
+                )?);
             }
             let packed_st = ctx.struct_type(&packed_field_tys, false);
             for (idx, field_ty) in packed_field_tys.iter().enumerate() {
@@ -3077,7 +3104,13 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
             }
         } else {
             for (idx, param_ty) in handler.param_tys.iter().enumerate() {
-                let llvm_ty = resolve_ty(ctx, target_data, param_ty, record_layouts)?;
+                let llvm_ty = crate::llvm::resolve_value_ty(
+                    ctx,
+                    target_data,
+                    param_ty,
+                    record_layouts,
+                    enum_layouts,
+                )?;
                 let loaded = builder
                     .build_load(llvm_ty, payload_src, &format!("msg_arg_{idx}"))
                     .llvm_ctx("actor dispatch arg load")?;

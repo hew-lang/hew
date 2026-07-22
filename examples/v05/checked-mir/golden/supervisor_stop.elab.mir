@@ -34,14 +34,14 @@ fn main -> i64
     branch[bb1: bb3/bb4] ->
       (none)
     return[bb2] ->
-      drop actor2 ty=LocalPid<Worker> kind=resource
+      drop actor3 ty=LocalPid<Worker> kind=resource
       drop _1 ty=LocalPid<AppSupervisor> kind=resource
     send[bb3  -> bb2] ->
       (none)
     goto[bb4->bb2] ->
       (none)
     cancel[bb4] ->
-      drop actor2 ty=LocalPid<Worker> kind=resource
+      drop actor3 ty=LocalPid<Worker> kind=resource
       drop _1 ty=LocalPid<AppSupervisor> kind=resource
 
 fn i8::fmt -> string

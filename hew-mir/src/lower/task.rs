@@ -7,6 +7,7 @@ use super::{
     Place, RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin,
     SpawnEnvFieldOwnership, SuspendKind, Terminator, ThirFunction, ValueClass,
 };
+use crate::model::StableActorRole;
 
 impl Builder {
     /// Lower a recognised `hew_*` runtime-ABI call to
@@ -1426,29 +1427,41 @@ impl Builder {
                         return None;
                     }
                     let actor_place = self.lower_value(actor)?;
-                    // F-04: a select arm asking a FUNGIBLE supervisor-child
-                    // reference re-resolves the current child into the handle
-                    // alloca before the select dispatch. Like the single-shot
-                    // ask, no liveness branch is needed here: a not-live slot
-                    // resolves to a null handle, and the runtime ask path
-                    // fail-closes a null/stale actor to an ask error
-                    // (`actor_send_result_internal_reply` null-guard) rather than
-                    // a UAF or trap.
-                    if let Some(child_ref) = self.fungible_child_ref_of(actor_place) {
-                        self.emit_child_get_into(
-                            child_ref.sup_place,
-                            child_ref.slot_index,
-                            actor_place,
-                        );
+                    let stable_role =
+                        self.fungible_child_ref_of(actor_place)
+                            .map(|child_ref| StableActorRole {
+                                supervisor_token: child_ref.supervisor_token,
+                                slot_index: child_ref.slot_index,
+                            });
+                    // Lower each argument exactly once with move semantics. The
+                    // resulting places are both the arm's source authority and
+                    // the inputs to its packed payload; re-lowering here would
+                    // leave the original handler-owned binding live after the
+                    // mailbox handoff and make exit cleanup double-drop it.
+                    let mut lowered = Vec::with_capacity(args.len());
+                    for arg in args {
+                        lowered.push((self.lower_value_for_move(arg)?, self.subst_ty(&arg.ty)));
                     }
-                    let arg_places: Option<Vec<Place>> =
-                        args.iter().map(|a| self.lower_value(a)).collect();
-                    let arg_places = arg_places?;
-                    // Pack args into a single payload Place using the
-                    // same helper single-shot ask lowering uses. This
-                    // is the codegen-side ABI shape: one payload ptr
-                    // + size threads through `hew_actor_ask_with_channel`.
-                    let payload_place = self.lower_actor_payload(args, site)?;
+                    let arg_places = lowered.iter().map(|(place, _)| *place).collect();
+                    self.record_pending_actor_request_args(
+                        self.current_block_id,
+                        super::PendingOutboundTarget::SelectArm(arm_index),
+                        lowered
+                            .iter()
+                            .zip(args)
+                            .map(|((place, ty), arg)| (*place, ty.clone(), arg.site)),
+                    );
+                    // Pack args into the same payload shape as a single-shot ask:
+                    // one payload ptr + size through `hew_actor_ask_with_channel`.
+                    let payload_place = match &lowered[..] {
+                        [] => self.alloc_local(ResolvedTy::Unit),
+                        [(place, _)] => *place,
+                        _ => {
+                            let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
+                                lowered.into_iter().unzip();
+                            self.pack_actor_payload_from_places(field_places, field_tys)
+                        }
+                    };
                     // Per-arm reply slot. Codegen writes
                     // `hew_reply_wait`'s result here on win before
                     // jumping into the arm body. Register against the
@@ -1461,10 +1474,12 @@ impl Builder {
                     (
                         SelectArmKind::ActorAsk {
                             actor: actor_place,
+                            stable_role,
                             method: method.clone(),
                             args: arg_places,
                             msg_type: info.msg_type,
                             value: payload_place,
+                            cleanup_plan: None,
                         },
                         Some(reply_dest),
                     )
@@ -1734,7 +1749,7 @@ impl Builder {
         let next_bb = self.alloc_block();
 
         let mut mir_branches: Vec<JoinBranch> = Vec::with_capacity(join.branches.len());
-        for branch in &join.branches {
+        for (branch_index, branch) in join.branches.iter().enumerate() {
             // Resolve the actor handler's reply type so the per-branch
             // reply slot is typed correctly — identical to the single-arm
             // `lower_actor_ask` / select ActorAsk path.
@@ -1757,23 +1772,50 @@ impl Builder {
                 return None;
             }
             let actor_place = self.lower_value(&branch.actor)?;
-            let arg_places: Option<Vec<Place>> =
-                branch.args.iter().map(|a| self.lower_value(a)).collect();
-            let arg_places = arg_places?;
-            // Pack args into a single payload Place using the same helper
-            // single-shot ask + select lowering use (codegen-side ABI:
-            // one payload ptr + size through `hew_actor_ask_with_channel`).
-            let payload_place = self.lower_actor_payload(&branch.args, site)?;
+            let stable_role =
+                self.fungible_child_ref_of(actor_place)
+                    .map(|child_ref| StableActorRole {
+                        supervisor_token: child_ref.supervisor_token,
+                        slot_index: child_ref.slot_index,
+                    });
+            // Lower each argument once and use those exact moved places for the
+            // branch metadata and payload. This keeps handler-param ownership
+            // singular when a join forwards an owning value.
+            let mut lowered = Vec::with_capacity(branch.args.len());
+            for arg in &branch.args {
+                lowered.push((self.lower_value_for_move(arg)?, self.subst_ty(&arg.ty)));
+            }
+            let arg_places = lowered.iter().map(|(place, _)| *place).collect();
+            self.record_pending_actor_request_args(
+                self.current_block_id,
+                super::PendingOutboundTarget::JoinBranch(branch_index),
+                lowered
+                    .iter()
+                    .zip(&branch.args)
+                    .map(|((place, ty), arg)| (*place, ty.clone(), arg.site)),
+            );
+            // Pack args into the same payload shape as single-shot ask/select.
+            let payload_place = match &lowered[..] {
+                [] => self.alloc_local(ResolvedTy::Unit),
+                [(place, _)] => *place,
+                _ => {
+                    let (field_places, field_tys): (Vec<Place>, Vec<ResolvedTy>) =
+                        lowered.into_iter().unzip();
+                    self.pack_actor_payload_from_places(field_places, field_tys)
+                }
+            };
             // Per-branch reply slot. Codegen writes `hew_reply_wait`'s
             // result here, then composes it into `result_place`'s tuple
             // element at this branch's index.
             let reply_dest = self.alloc_local(info.return_ty.clone());
             mir_branches.push(JoinBranch {
                 actor: actor_place,
+                stable_role,
                 method: branch.method.clone(),
                 args: arg_places,
                 msg_type: info.msg_type,
                 value: payload_place,
+                cleanup_plan: None,
                 reply_dest,
                 reply_ty: info.return_ty.clone(),
             });

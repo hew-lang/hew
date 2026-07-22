@@ -3640,6 +3640,18 @@ pub struct SelectArm {
     pub binding: Option<Place>,
 }
 
+/// Stable identity for a fungible supervisor-child role.
+///
+/// `supervisor_token` is the target-word identity captured while the source
+/// supervisor binding is live. `slot_index` is the compile-time static child
+/// slot. Codegen resolves this pair immediately before request submission and
+/// never dereferences either the supervisor or a previous child allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StableActorRole {
+    pub supervisor_token: Place,
+    pub slot_index: u32,
+}
+
 /// The four sealed arm forms mirrored from HIR. The MIR layer carries
 /// only the discriminator + the place(s) holding the source operand;
 /// the per-form runtime contract is documented at the codegen
@@ -3659,10 +3671,17 @@ pub enum SelectArmKind {
     /// and `value` only.
     ActorAsk {
         actor: Place,
+        /// Present only for a fungible supervisor-child binding. Direct actor
+        /// handles keep the legacy raw-pointer submission path.
+        stable_role: Option<StableActorRole>,
         method: String,
         args: Vec<Place>,
         msg_type: i32,
         value: Place,
+        /// Releases the prepared request payload when enqueue fails before
+        /// ownership crosses into the mailbox. Successful submission transfers
+        /// the payload and must not run this plan.
+        cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
     },
     /// `await <task>` — task completion.
     TaskAwait { task: Place },
@@ -3692,12 +3711,19 @@ pub enum SelectArmKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct JoinBranch {
     pub actor: Place,
+    /// Present only for a fungible supervisor-child binding. Codegen resolves
+    /// the current child token immediately before this branch's ask.
+    pub stable_role: Option<StableActorRole>,
     pub method: String,
     pub args: Vec<Place>,
     pub msg_type: i32,
     /// Packed-payload place (one ptr + size threaded through
     /// `hew_actor_ask_with_channel`), built via `lower_actor_payload`.
     pub value: Place,
+    /// Releases this branch's prepared payload if its ask fails to enqueue.
+    /// Earlier successfully submitted branches already belong to their
+    /// mailboxes and are deliberately excluded from this plan.
+    pub cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
     /// Reply slot — codegen writes `hew_reply_wait`'s result here, then
     /// composes it into the `result` tuple at this branch's index.
     pub reply_dest: Place,

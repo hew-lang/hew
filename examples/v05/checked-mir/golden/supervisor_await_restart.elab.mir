@@ -29,25 +29,25 @@ fn main -> i64
       (none)
     cancel[bb0] ->
       (none)
-    ask[bb1 actor2 -> bb2] ->
+    ask[bb1 actor3 -> bb2] ->
       (none)
     branch[bb2: bb4/bb7] ->
       (none)
     return[bb3] ->
-      drop actor2 ty=LocalPid<Worker> kind=resource
+      drop actor3 ty=LocalPid<Worker> kind=resource
       drop _1 ty=LocalPid<App> kind=resource
     goto[bb4->bb3] ->
       (none)
     cancel[bb4] ->
-      drop actor2 ty=LocalPid<Worker> kind=resource
+      drop actor3 ty=LocalPid<Worker> kind=resource
       drop _1 ty=LocalPid<App> kind=resource
     goto[bb5->bb3] ->
       (none)
     cancel[bb5] ->
-      drop actor2 ty=LocalPid<Worker> kind=resource
+      drop actor3 ty=LocalPid<Worker> kind=resource
       drop _1 ty=LocalPid<App> kind=resource
     panic[bb6] ->
-      drop actor2 ty=LocalPid<Worker> kind=resource
+      drop actor3 ty=LocalPid<Worker> kind=resource
       drop _1 ty=LocalPid<App> kind=resource
     branch[bb7: bb5/bb6] ->
       (none)

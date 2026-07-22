@@ -14,14 +14,26 @@ impl Builder {
         block: u32,
         args: impl IntoIterator<Item = (Place, ResolvedTy, hew_hir::SiteId)>,
     ) {
+        self.record_pending_actor_request_args(block, super::PendingOutboundTarget::Direct, args);
+    }
+
+    pub(crate) fn record_pending_actor_request_args(
+        &mut self,
+        block: u32,
+        target: super::PendingOutboundTarget,
+        args: impl IntoIterator<Item = (Place, ResolvedTy, hew_hir::SiteId)>,
+    ) {
         let pending = PendingOutboundSite {
+            target,
             args: args
                 .into_iter()
                 .map(|(source, ty, site)| PendingOutboundArg { source, ty, site })
                 .collect(),
         };
-        let replaced = self.pending_outbound_actor_args.insert(block, pending);
-        debug_assert!(replaced.is_none(), "one outbound operation per MIR block");
+        self.pending_outbound_actor_args
+            .entry(block)
+            .or_default()
+            .push(pending);
     }
 
     pub(crate) fn actor_state_field_for_target(
@@ -635,6 +647,7 @@ impl Builder {
     ) -> Option<Place> {
         // Lower the supervisor object expression to get the supervisor PID place.
         let sup_place = self.lower_value(object)?;
+        let supervisor_token = self.capture_supervisor_token(sup_place);
 
         // Allocate the final ActorHandle place typed as `result_ty`
         // (the checker-authority `LocalPid<ChildActor>` type for this site).
@@ -650,6 +663,7 @@ impl Builder {
             handle_id,
             FungibleChildRef {
                 sup_place,
+                supervisor_token,
                 slot_index,
             },
         );
@@ -722,6 +736,7 @@ impl Builder {
             return None;
         };
         let sup_place = self.lower_value(object)?;
+        let supervisor_token = self.capture_supervisor_token(sup_place);
 
         // Translate the checker's combined-static index to the kind-partitioned
         // runtime slot index (the accessor reads the same partitioned space).
@@ -743,6 +758,7 @@ impl Builder {
             handle_id,
             FungibleChildRef {
                 sup_place,
+                supervisor_token,
                 slot_index,
             },
         );
@@ -1191,6 +1207,23 @@ impl Builder {
             dest: handle_place,
             src: raw_handle,
         });
+    }
+
+    /// Capture the stable direct identity for a live supervisor binding.
+    ///
+    /// The raw place remains usable by immediate legacy supervisor operations,
+    /// but fungible request carriers retain only this target-word token.
+    fn capture_supervisor_token(&mut self, sup_place: Place) -> Place {
+        let token_place = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_supervisor_direct_id",
+                vec![sup_place],
+                Some(token_place),
+            )
+            .expect("hew_supervisor_direct_id is an allowlisted runtime symbol"),
+        ));
+        token_place
     }
 
     /// Emit `Instr::CallRuntimeAbi` for a `.send` on an actor/duplex handle.
@@ -1746,18 +1779,6 @@ impl Builder {
         dest
     }
 
-    pub(crate) fn lower_actor_payload(
-        &mut self,
-        args: &[hew_hir::HirExpr],
-        site: hew_hir::SiteId,
-    ) -> Option<Place> {
-        match args {
-            [] => Some(self.alloc_local(ResolvedTy::Unit)),
-            [arg] => self.lower_value_for_move(arg),
-            _ => self.lower_packed_args_payload(args, site),
-        }
-    }
-
     /// Pack a multi-argument actor payload into a synthetic anonymous-record
     /// Place — the single shared payload mechanism for every multi-arg actor
     /// send shape (tell, ask, select arm, join branch, and the lambda-actor
@@ -1809,7 +1830,7 @@ impl Builder {
     /// building the packed temp — whose bytes the `Send` alone consumes — on
     /// the delivery edge only. Pure MIR construction: no user effect runs
     /// here, so the emission point is free to move across control flow.
-    fn pack_actor_payload_from_places(
+    pub(crate) fn pack_actor_payload_from_places(
         &mut self,
         field_places: Vec<Place>,
         field_tys: Vec<ResolvedTy>,
@@ -1935,6 +1956,7 @@ impl Builder {
     ) -> (u32, u32) {
         let FungibleChildRef {
             sup_place,
+            supervisor_token: _,
             slot_index,
         } = child_ref;
 

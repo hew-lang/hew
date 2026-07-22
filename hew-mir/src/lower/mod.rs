@@ -562,12 +562,14 @@ struct Builder {
     /// specific actor instance. The supervisor frees and replaces the underlying
     /// actor on restart, so a snapshotted `*mut HewActor` dangles across a yield.
     /// Rather than snapshot the resolved pointer, the handle carries this
-    /// reference and EACH send/ask re-resolves the current live child via
-    /// `hew_supervisor_child_get(sup, slot)` (the existing slot-table resolver,
-    /// race-free under `children_lock`). The reference never owns a child
-    /// pointer, so the stale-handle-across-yield UAF dissolves by construction
-    /// and a send to a not-live child fail-closes as a recoverable error rather
-    /// than a program-killing trap.
+    /// reference and each use re-resolves the current live child. Legacy
+    /// single sends/asks use `hew_supervisor_child_get(sup, slot)`; select/join
+    /// carriers retain the stable supervisor token plus slot and codegen uses
+    /// `hew_local_pid_supervisor_child_get` immediately before submission. Both
+    /// resolvers are race-free under `children_lock`. The reference never owns
+    /// a child pointer, so the stale-handle-across-yield UAF dissolves by
+    /// construction and a use of a not-live child fail-closes as a recoverable
+    /// error rather than a program-killing trap.
     ///
     /// Keyed by the handle local id because `let a = sup.w` binds `a` directly to
     /// the same `Place::ActorHandle(N)` (no copy — see the `Let` arm), so both
@@ -4956,8 +4958,10 @@ struct ScopeInfoEntry {
 /// Stands in for a specific child INSTANCE the way OTP's `{via, Sup, Name}`
 /// does — it identifies the slot/role, and the current occupant is re-resolved
 /// at each use. Carries no actor pointer, so it is yield-safe to hold: after a
-/// restart the next send re-resolves to the fresh child, and there is never a
-/// dangling child pointer to dereference.
+/// restart the next use re-resolves to the fresh child, and there is never a
+/// dangling child pointer to dereference. Select/join retain only the stable
+/// supervisor token and slot across their suspension boundary; `sup_place` is
+/// kept solely for the existing immediate single send/ask path.
 #[derive(Debug, Clone, Copy)]
 struct FungibleChildRef {
     /// The supervisor handle place (`Place::ActorHandle(M)` for the
@@ -4965,6 +4969,10 @@ struct FungibleChildRef {
     /// so this place stays valid for the binding's lifetime — re-loadable at
     /// each send site.
     sup_place: Place,
+    /// Stable target-word supervisor identity captured while `sup_place` is
+    /// known live. Select/join carry this token, never `sup_place`, across the
+    /// lowering/codegen boundary.
+    supervisor_token: Place,
     /// The static child slot index within `HewSupervisor.children[]`.
     slot_index: u32,
 }

@@ -1112,7 +1112,9 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::DuplexTrySend
         // Supervisor restart machinery requires the native preemptive
         // scheduler. WASM-TODO(#1475).
+        | F::SupervisorDirectId
         | F::SupervisorChildGet
+        | F::LocalPidSupervisorChildGet
         | F::SupervisorNestedGet
         | F::SupervisorPoolChildGet
         | F::SupervisorPoolLen

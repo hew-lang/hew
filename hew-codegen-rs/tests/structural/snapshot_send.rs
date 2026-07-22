@@ -259,6 +259,12 @@ fn failed_select_and_join_requests_drop_the_unsubmitted_indirect_payload() {
              {join_fail}"
         );
     }
+    assert_eq!(
+        ll.matches("call i32 @hew_local_pid_ask_with_channel(")
+            .count(),
+        3,
+        "the fungible select arm and both join branches must submit through stable child tokens"
+    );
 }
 
 #[test]
@@ -314,5 +320,37 @@ fn fungible_join_uses_stable_supervisor_role_and_local_pid_submission() {
             .count(),
         4,
         "each fungible join branch must submit through a stable child token:\n{ll}"
+    );
+}
+
+#[test]
+fn direct_join_keeps_raw_actor_submission() {
+    let ll = emit_ll(
+        r#"
+        actor Worker {
+            receive fn score(tag: i64) -> i64 { tag }
+        }
+
+        fn main() -> i64 {
+            let worker = spawn Worker;
+            let (a, b) = join {
+                worker.score(11),
+                worker.score(22),
+            };
+            a + b
+        }
+        "#,
+    );
+
+    assert_eq!(
+        ll.matches("call i32 @hew_actor_ask_with_channel(").count(),
+        2,
+        "direct actor join branches must preserve raw-pointer submission"
+    );
+    assert_eq!(
+        ll.matches("call i32 @hew_local_pid_ask_with_channel(")
+            .count(),
+        0,
+        "direct actor joins must not be reclassified as fungible roles"
     );
 }

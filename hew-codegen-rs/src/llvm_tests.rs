@@ -2381,6 +2381,7 @@ fn select_two_actor_ask_arms_emit_full_dispatch() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "ping".to_string(),
                 args: Vec::new(),
                 msg_type: 7,
@@ -2393,6 +2394,7 @@ fn select_two_actor_ask_arms_emit_full_dispatch() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "pong".to_string(),
                 args: Vec::new(),
                 msg_type: 8,
@@ -2482,6 +2484,7 @@ fn select_actor_ask_plus_after_timer_emits_deadline() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "ping".to_string(),
                 args: Vec::new(),
                 msg_type: 7,
@@ -2538,6 +2541,7 @@ fn select_loser_cleanup_cancels_before_freeing() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "a".to_string(),
                 args: Vec::new(),
                 msg_type: 1,
@@ -2550,6 +2554,7 @@ fn select_loser_cleanup_cancels_before_freeing() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "b".to_string(),
                 args: Vec::new(),
                 msg_type: 2,
@@ -2664,6 +2669,7 @@ fn fungible_actor_ask_arm_recovers_instead_of_trapping() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "ping".to_string(),
                 args: Vec::new(),
                 msg_type: 7,
@@ -2733,6 +2739,7 @@ fn select_setup_failure_in_second_arm_cleans_up_first_arm_with_cancel_first() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "a".to_string(),
                 args: Vec::new(),
                 msg_type: 1,
@@ -2787,6 +2794,7 @@ fn select_winner_switch_uses_arm_slot_index() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "a".to_string(),
                 args: Vec::new(),
                 msg_type: 1,
@@ -2834,6 +2842,7 @@ fn select_channel_array_layout_matches_runtime_abi() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "a".to_string(),
                 args: Vec::new(),
                 msg_type: 1,
@@ -2846,6 +2855,7 @@ fn select_channel_array_layout_matches_runtime_abi() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "b".to_string(),
                 args: Vec::new(),
                 msg_type: 2,
@@ -2858,6 +2868,7 @@ fn select_channel_array_layout_matches_runtime_abi() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "c".to_string(),
                 args: Vec::new(),
                 msg_type: 3,
@@ -2901,6 +2912,7 @@ fn select_winner_writes_reply_into_binding_place_and_frees_buffer() {
     let arms = vec![hew_mir::SelectArm {
         kind: hew_mir::SelectArmKind::ActorAsk {
             actor: Place::DuplexHandle(0),
+            stable_role: None,
             method: "ping".to_string(),
             args: Vec::new(),
             msg_type: 1,
@@ -2941,6 +2953,7 @@ fn select_winner_traps_on_null_reply_pointer() {
     let arms = vec![hew_mir::SelectArm {
         kind: hew_mir::SelectArmKind::ActorAsk {
             actor: Place::DuplexHandle(0),
+            stable_role: None,
             method: "ping".to_string(),
             args: Vec::new(),
             msg_type: 1,
@@ -2975,6 +2988,7 @@ fn select_emitted_module_verifies() {
         hew_mir::SelectArm {
             kind: hew_mir::SelectArmKind::ActorAsk {
                 actor: Place::DuplexHandle(0),
+                stable_role: None,
                 method: "ping".to_string(),
                 args: Vec::new(),
                 msg_type: 7,

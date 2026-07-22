@@ -7,6 +7,7 @@ use super::{
     Place, RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin,
     SpawnEnvFieldOwnership, SuspendKind, Terminator, ThirFunction, ValueClass,
 };
+use crate::model::StableActorRole;
 
 impl Builder {
     /// Lower a recognised `hew_*` runtime-ABI call to
@@ -1426,21 +1427,12 @@ impl Builder {
                         return None;
                     }
                     let actor_place = self.lower_value(actor)?;
-                    // F-04: a select arm asking a FUNGIBLE supervisor-child
-                    // reference re-resolves the current child into the handle
-                    // alloca before the select dispatch. Like the single-shot
-                    // ask, no liveness branch is needed here: a not-live slot
-                    // resolves to a null handle, and the runtime ask path
-                    // fail-closes a null/stale actor to an ask error
-                    // (`actor_send_result_internal_reply` null-guard) rather than
-                    // a UAF or trap.
-                    if let Some(child_ref) = self.fungible_child_ref_of(actor_place) {
-                        self.emit_child_get_into(
-                            child_ref.sup_place,
-                            child_ref.slot_index,
-                            actor_place,
-                        );
-                    }
+                    let stable_role =
+                        self.fungible_child_ref_of(actor_place)
+                            .map(|child_ref| StableActorRole {
+                                supervisor_token: child_ref.supervisor_token,
+                                slot_index: child_ref.slot_index,
+                            });
                     // Lower each argument exactly once with move semantics. The
                     // resulting places are both the arm's source authority and
                     // the inputs to its packed payload; re-lowering here would
@@ -1482,6 +1474,7 @@ impl Builder {
                     (
                         SelectArmKind::ActorAsk {
                             actor: actor_place,
+                            stable_role,
                             method: method.clone(),
                             args: arg_places,
                             msg_type: info.msg_type,
@@ -1779,6 +1772,12 @@ impl Builder {
                 return None;
             }
             let actor_place = self.lower_value(&branch.actor)?;
+            let stable_role =
+                self.fungible_child_ref_of(actor_place)
+                    .map(|child_ref| StableActorRole {
+                        supervisor_token: child_ref.supervisor_token,
+                        slot_index: child_ref.slot_index,
+                    });
             // Lower each argument once and use those exact moved places for the
             // branch metadata and payload. This keeps handler-param ownership
             // singular when a join forwards an owning value.
@@ -1811,6 +1810,7 @@ impl Builder {
             let reply_dest = self.alloc_local(info.return_ty.clone());
             mir_branches.push(JoinBranch {
                 actor: actor_place,
+                stable_role,
                 method: branch.method.clone(),
                 args: arg_places,
                 msg_type: info.msg_type,

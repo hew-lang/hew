@@ -217,6 +217,11 @@ pub struct ChildLookupResult {
     /// route messages to pool members without dereferencing the value as a
     /// pointer.
     ///
+    /// For stable-role lookups (`hew_local_pid_supervisor_child_get`), this
+    /// field carries the current child incarnation's `HewLocalPidId` encoded as
+    /// a pointer-width integer. It must be passed to stable local-pid operations
+    /// and never dereferenced.
+    ///
     /// When `tag` is non-zero: null.
     pub handle: *mut HewActor,
 }
@@ -4122,6 +4127,61 @@ mod tests {
         }
     }
 
+    /// Stable role lookup returns the child's semantic identity, never its
+    /// allocation address, and the supervisor token fails closed after stop.
+    #[test]
+    fn local_pid_child_get_returns_token_and_rejects_retired_supervisor() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test owns the complete tree and retains only stable scalar
+        // identities after stop reclaims the raw allocations.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            let supervisor_token = (*sup).local_pid_id;
+            let child_token = (*child).local_pid_id;
+
+            let live = hew_local_pid_supervisor_child_get(supervisor_token, 0);
+            assert_eq!(live.tag, 0);
+            assert_eq!(live.reason, ChildSlotReason::Ok as u8);
+            assert_eq!(live.handle as usize, usize::from(child_token));
+            assert_ne!(
+                live.handle, child,
+                "stable lookup exposed a raw child pointer"
+            );
+
+            let unknown = hew_local_pid_supervisor_child_get(supervisor_token, 1);
+            assert_eq!(unknown.tag, 2);
+            assert_eq!(unknown.reason, ChildSlotReason::UnknownSlot as u8);
+            assert!(unknown.handle.is_null());
+
+            hew_supervisor_stop(sup);
+            let retired = hew_local_pid_supervisor_child_get(supervisor_token, 0);
+            assert_eq!(retired.tag, 2);
+            assert_eq!(retired.reason, ChildSlotReason::SupervisorShutdown as u8);
+            assert!(retired.handle.is_null());
+        }
+    }
+
+    /// A transient restart slot remains classified and never leaks a stale
+    /// incarnation token through the stable lookup ABI.
+    #[test]
+    fn local_pid_child_get_null_restart_slot_is_transient() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test owns the tree and restores the child before teardown.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            let supervisor_token = (*sup).local_pid_id;
+            store_child_slot(&mut *sup, 0, ptr::null_mut());
+
+            let transient = hew_local_pid_supervisor_child_get(supervisor_token, 0);
+            assert_eq!(transient.tag, 1);
+            assert_eq!(transient.reason, ChildSlotReason::Restarting as u8);
+            assert!(transient.handle.is_null());
+
+            store_child_slot(&mut *sup, 0, child);
+            hew_supervisor_stop(sup);
+        }
+    }
+
     /// An out-of-range key returns Dead(UnknownSlot).
     #[test]
     fn child_get_unknown_key_returns_dead_unknown_slot() {
@@ -5541,6 +5601,26 @@ pub unsafe extern "C" fn hew_supervisor_child_get(
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &*sup };
 
+    child_get_from_supervisor(s, key, ChildHandleKind::RawPointer)
+}
+
+#[derive(Clone, Copy)]
+enum ChildHandleKind {
+    RawPointer,
+    StableLocalPid,
+}
+
+/// Resolve one static child while the supervisor allocation is known live.
+///
+/// Both public lookup ABIs share this discriminator authority. The stable form
+/// copies the current incarnation's `LocalPid` token while `children_lock` is
+/// held, so no caller can retain or dereference the child allocation after the
+/// restart machinery replaces it.
+fn child_get_from_supervisor(
+    s: &HewSupervisor,
+    key: u32,
+    handle_kind: ChildHandleKind,
+) -> ChildLookupResult {
     // Fast-path: supervisor-level shutdown check (no lock required — atomics).
     if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
@@ -5572,7 +5652,22 @@ pub unsafe extern "C" fn hew_supervisor_child_get(
 
     let slot = s.children.get(i).copied().unwrap_or(ptr::null_mut());
     if !slot.is_null() {
-        return ChildLookupResult::live(slot);
+        let handle = match handle_kind {
+            ChildHandleKind::RawPointer => slot,
+            ChildHandleKind::StableLocalPid => {
+                // SAFETY: a non-null slot is owned by this supervisor and the
+                // children lock prevents replacement/reclamation through this
+                // read. Actor publication installs the token before publishing
+                // the slot; an invalid token is an invariant failure and must
+                // fail closed rather than exposing the allocation address.
+                let token = unsafe { (*slot).local_pid_id };
+                if token == crate::lifetime::local_handles::HewLocalPidId::INVALID {
+                    return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+                }
+                usize::from(token) as *mut HewActor
+            }
+        };
+        return ChildLookupResult::live(handle);
     }
 
     // Slot is null — classify why using the per-child spec.
@@ -5597,6 +5692,41 @@ pub unsafe extern "C" fn hew_supervisor_child_get(
     // Default transient: slot is null, no CB suppression, no pending backoff —
     // the restart machinery is actively spawning the replacement actor.
     ChildLookupResult::transient(ChildSlotReason::Restarting)
+}
+
+/// Look up a static child through a stable supervisor identity.
+///
+/// The returned `handle` word encodes the current child's stable `LocalPid`
+/// token, never a child allocation pointer. Supervisor access is pinned for the
+/// complete classified lookup; the child token is copied under `children_lock`.
+/// A restart after return retires that exact token, so a subsequent token send
+/// fails closed instead of retargeting reused storage.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_local_pid_supervisor_child_get(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    key: u32,
+) -> ChildLookupResult {
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    };
+    let sup = pin.supervisor();
+    // SAFETY: the stable-identity pin prevents supervisor reclamation through
+    // the complete lookup, including the children-lock critical section.
+    let result = child_get_from_supervisor(unsafe { &*sup }, key, ChildHandleKind::StableLocalPid);
+    drop(pin);
+    result
+}
+
+/// Supervisors are unavailable on the wasm runtime; retain an exact symbol so
+/// runtime-family parity stays exhaustive while codegen rejects the substrate.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_local_pid_supervisor_child_get(
+    _token: crate::lifetime::local_handles::HewLocalPidId,
+    _key: u32,
+) -> ChildLookupResult {
+    ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown)
 }
 
 /// Look up a nested child supervisor by its compile-time-assigned slot index.

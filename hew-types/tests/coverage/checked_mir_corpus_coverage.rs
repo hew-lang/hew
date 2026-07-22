@@ -74,6 +74,9 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_cancel_token_retain",
     "hew_dyn_box_alloc",
     "hew_dyn_box_free",
+    // Fungible supervisor-child asks carry a typed role through MIR; codegen
+    // injects this stable-token lookup immediately before each submission.
+    "hew_local_pid_supervisor_child_get",
     "hew_lambda_actor_release",
     "hew_lambda_actor_clone",
     "hew_lambda_actor_downgrade",

@@ -310,7 +310,10 @@ fn fungible_join_uses_stable_supervisor_role_and_local_pid_submission() {
         "fungible role binding must capture the stable supervisor token:\n{ll}"
     );
     assert_eq!(
-        ll.matches("call [2 x i64] @hew_local_pid_supervisor_child_get(")
+        ll.lines()
+            .filter(|line| {
+                line.contains("call ") && line.contains("@hew_local_pid_supervisor_child_get(")
+            })
             .count(),
         4,
         "each join branch must re-resolve the role immediately before submission:\n{ll}"

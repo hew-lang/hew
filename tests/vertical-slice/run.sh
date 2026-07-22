@@ -3232,6 +3232,10 @@ run_accept_expect_status "vec_string_index_discard_loop" 9
 # and index_nested_in_loop_balances.
 run_accept_expect_status "vec_string_index_use_loop" 14
 
+# A direct field projection from a fresh owned record index has no source binding
+# to carry its clone through scope-exit cleanup. Exit 0 requires 32 exact reads.
+run_accept_expect_status "fresh_vec_index_projection_drop" 0
+
 # Accept (S0): scalar index control on Vec<i64> (BitCopy scalar element). Same
 # bounds-checked lower_vec_index path, dispatching to hew_vec_get_i64. Exit 22
 # = xs[1] + xs[2] - xs[0] (20 + 12 - 10).

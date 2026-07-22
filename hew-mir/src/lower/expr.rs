@@ -4037,6 +4037,7 @@ impl Builder {
                 };
                 self.mark_owned_string_record_field_site(object);
                 let record_place = self.lower_value(object)?;
+                self.register_fresh_vec_get_clone_projection_base_owner(object, record_place);
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.push_instr(Instr::RecordFieldLoad {
                     record: record_place,
@@ -6925,6 +6926,7 @@ impl Builder {
                 next,
             });
             self.start_block(next);
+            self.note_fresh_vec_clone_projection_base(result_place, elem_ty.clone(), site);
         } else {
             self.push_instr(Instr::CallRuntimeAbi(
                 crate::model::RuntimeCall::new(

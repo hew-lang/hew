@@ -260,3 +260,59 @@ fn failed_select_and_join_requests_drop_the_unsubmitted_indirect_payload() {
         );
     }
 }
+
+#[test]
+fn fungible_join_uses_stable_supervisor_role_and_local_pid_submission() {
+    let ll = emit_ll(
+        r#"
+        indirect enum Tree {
+            Leaf(i64);
+            Node(Tree, Tree);
+        }
+
+        actor Worker {
+            receive fn score(tag: i64, tree: Tree) -> i64 { tag }
+            receive fn boom() { panic("restart"); }
+        }
+
+        supervisor App {
+            strategy: one_for_one;
+            intensity: 3 within 60s;
+            child worker: Worker;
+        }
+
+        fn main() -> i64 {
+            let sup = spawn App;
+            let worker = sup.worker;
+            worker.boom();
+            let _ = await_restart sup.worker;
+            let (a, b) = join {
+                worker.score(11, Node(Leaf(1), Leaf(2))),
+                worker.score(22, Node(Leaf(3), Leaf(4))),
+            };
+            let (c, d) = join {
+                worker.score(33, Node(Leaf(5), Leaf(6))),
+                worker.score(44, Node(Leaf(7), Leaf(8))),
+            };
+            a + b + c + d
+        }
+        "#,
+    );
+
+    assert!(
+        ll.contains("call i64 @hew_supervisor_direct_id("),
+        "fungible role binding must capture the stable supervisor token:\n{ll}"
+    );
+    assert_eq!(
+        ll.matches("call [2 x i64] @hew_local_pid_supervisor_child_get(")
+            .count(),
+        4,
+        "each join branch must re-resolve the role immediately before submission:\n{ll}"
+    );
+    assert_eq!(
+        ll.matches("call i32 @hew_local_pid_ask_with_channel(")
+            .count(),
+        4,
+        "each fungible join branch must submit through a stable child token:\n{ll}"
+    );
+}

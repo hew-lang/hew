@@ -5724,6 +5724,92 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
     );
 }
 
+/// A fungible child binding survives a deterministically observed restart and
+/// feeds two sequential joins through the replacement incarnation. Distinct
+/// recursive payload tags make branch order and indirect-enum ownership part of
+/// the runtime oracle rather than merely proving that submission did not trap.
+#[test]
+fn run_fungible_child_binding_joins_after_observed_restart() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        r#"
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+fn tree_sum(tree: Tree) -> i64 {
+    match tree {
+        Leaf(value) => value,
+        Node(left, right) => tree_sum(left) + tree_sum(right),
+    }
+}
+
+actor Worker {
+    receive fn score(tag: i64, tree: Tree) -> i64 { tag + tree_sum(tree) }
+    receive fn boom() {
+        // Keep the crash beyond the 250 ms contextless-await grace while
+        // remaining well inside the restart barrier's bounded timeout.
+        sleep(500ms);
+        panic("restart");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: Worker;
+}
+
+extern "C" {
+    fn hew_supervisor_wait_restart(sup: LocalPid<App>, target: i64, timeout_ms: i64) -> i64;
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let worker = sup.worker;
+    worker.boom();
+    let restarted = unsafe {
+        hew_supervisor_wait_restart(sup, 1, 5000)
+    };
+    if restarted == 0 {
+        return 1;
+    }
+    let (a, b) = join {
+        worker.score(11, Node(Leaf(1), Leaf(2))),
+        worker.score(22, Node(Leaf(3), Leaf(4))),
+    };
+    let (c, d) = join {
+        worker.score(33, Node(Leaf(5), Leaf(6))),
+        worker.score(44, Node(Leaf(7), Leaf(8))),
+    };
+    print(f"{a},{b},{c},{d}");
+    supervisor_stop(sup);
+    0
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "two sequential joins through the pre-crash role binding must use the replacement child; \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "14,29,44,59",
+        "both joins must preserve exact branch order and recursive payload values"
+    );
+}
+
 /// Security regression (private-actor routing): a root/pub actor `Account` and
 /// a *private* (non-pub) imported actor `secret.Account` must NOT let
 /// `spawn secret.Account()` silently route to the root actor. Module-qualified

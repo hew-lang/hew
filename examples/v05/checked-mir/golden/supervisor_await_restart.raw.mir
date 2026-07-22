@@ -21,26 +21,27 @@ fn main() -> i64 [conv=default]
   locals:
     _0: LocalPid<App>
     _1: LocalPid<App>
-    _2: LocalPid<Worker>
-    _3: i64
+    _2: i64
+    _3: LocalPid<Worker>
     _4: i64
-    _5: __HewChildLookupResult
-    _6: i64
+    _5: i64
+    _6: __HewChildLookupResult
     _7: i64
     _8: i64
-    _9: __HewChildLookupResult
-    _10: i64
-    _11: ()
-    _12: Result<i64, AskError>
-    _13: i64
-    _14: AskError
-    _15: i64
+    _9: i64
+    _10: __HewChildLookupResult
+    _11: i64
+    _12: ()
+    _13: Result<i64, AskError>
+    _14: i64
+    _15: AskError
     _16: i64
-    _17: bool
-    _18: i64
-    _19: bool
-    _20: i64
+    _17: i64
+    _18: bool
+    _19: i64
+    _20: bool
     _21: i64
+    _22: i64
   bb0:
     _0 = call App__bootstrap() -> bb1
   bb1:
@@ -49,42 +50,43 @@ fn main() -> i64 [conv=default]
     stmt: bind BindingId(1) w2 site=SiteId(3) ty=LocalPid<Worker>
     stmt: use BindingId(1) w2 site=SiteId(9) ty=LocalPid<Worker> intent=Read
     _1 = move _0
-    _3 = const.i64 0
-    call_rt hew_supervisor_restart_await_blocking(_1, _3)
+    _2 = call_rt hew_supervisor_direct_id(_1)
     _4 = const.i64 0
-    _5 = call_rt hew_supervisor_child_get(_1, _4)
-    _6 = _5.field[1]
-    actor2 = move _6
-    _8 = const.i64 0
-    _9 = call_rt hew_supervisor_child_get(_1, _8)
-    _10 = _9.field[1]
-    actor2 = move _10
-    _12 = ask actor2[msg=-346962505] _11 reply=_13 err=_14 -> bb2
+    call_rt hew_supervisor_restart_await_blocking(_1, _4)
+    _5 = const.i64 0
+    _6 = call_rt hew_supervisor_child_get(_1, _5)
+    _7 = _6.field[1]
+    actor3 = move _7
+    _9 = const.i64 0
+    _10 = call_rt hew_supervisor_child_get(_1, _9)
+    _11 = _10.field[1]
+    actor3 = move _11
+    _13 = ask actor3[msg=-346962505] _12 reply=_14 err=_15 -> bb2
   bb2:
-    _15 = move etag12
-    _16 = const.i64 0
-    _17 = icmp.eq _15 _16
-    branch _17 ? bb4 : bb7
+    _16 = move etag13
+    _17 = const.i64 0
+    _18 = icmp.eq _16 _17
+    branch _18 ? bb4 : bb7
   bb3:
     stmt: return site=Some(SiteId(6)) ty=i64
-    ret = move _7
+    ret = move _8
     return
   bb4:
     stmt: bind BindingId(2) v site=SiteId(10) ty=i64
     stmt: use BindingId(2) v site=SiteId(10) ty=i64 intent=Read
-    _20 = move mvar12.0.0
-    _7 = move _20
+    _21 = move mvar13.0.0
+    _8 = move _21
     goto bb3
   bb5:
-    _21 = const.i64 0
-    _7 = move _21
+    _22 = const.i64 0
+    _8 = move _22
     goto bb3
   bb6:
     trap(ExhaustivenessFallthrough)
   bb7:
-    _18 = const.i64 1
-    _19 = icmp.eq _15 _18
-    branch _19 ? bb5 : bb6
+    _19 = const.i64 1
+    _20 = icmp.eq _16 _19
+    branch _20 ? bb5 : bb6
 
 fn i8::fmt(i8) -> string [conv=default]
   locals:

@@ -1,0 +1,14 @@
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+actor Sink {
+    receive fn take(t: Tree) {
+        let _ = t;
+    }
+}
+
+fn main() -> i64 {
+    0
+}

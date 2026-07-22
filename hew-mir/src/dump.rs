@@ -1746,6 +1746,8 @@ fn render_select_arms(arms: &[SelectArm]) -> String {
                     args,
                     msg_type,
                     value,
+                    cleanup_plan: _,
+                    stable_role: _,
                 } => {
                     let arg_str = args.iter().map(render_place).collect::<Vec<_>>().join(", ");
                     format!(

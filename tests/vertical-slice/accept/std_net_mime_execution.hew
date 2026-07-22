@@ -1,0 +1,13 @@
+import std::net::mime;
+
+fn main() {
+    let path_type = mime.from_path("report.json");
+    let extension_type = mime.from_ext("css");
+    if path_type != "application/json" || extension_type != "text/css" {
+        panic("unexpected MIME classification");
+    }
+    if !mime.is_text(extension_type) || mime.is_image(extension_type) {
+        panic("unexpected MIME category");
+    }
+    println("mime:application/json:text/css:text");
+}

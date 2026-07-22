@@ -3,6 +3,12 @@ use std::process::Command;
 
 const UNKNOWN_GIT_METADATA: &str = "unknown";
 
+#[derive(Debug, Eq, PartialEq)]
+struct GitMetadata {
+    hash: String,
+    dirty: String,
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     // Keep this build script focused on version metadata; the active
@@ -27,14 +33,19 @@ fn emit_git_metadata(repo_dir: &Path) {
         }
     }
 
-    let git_hash = git_output_or_unknown(
+    let metadata = read_git_metadata(repo_dir);
+    println!("cargo:rustc-env=HEW_GIT_HASH={}", metadata.hash);
+    println!("cargo:rustc-env=HEW_GIT_DIRTY={}", metadata.dirty);
+}
+
+fn read_git_metadata(repo_dir: &Path) -> GitMetadata {
+    let hash = git_output_or_unknown(
         repo_dir,
         &["rev-parse", "--short", "HEAD"],
         "git commit hash",
     );
-    println!("cargo:rustc-env=HEW_GIT_HASH={git_hash}");
 
-    let git_dirty = match git_stdout(repo_dir, &["status", "--porcelain"]) {
+    let dirty = match git_stdout(repo_dir, &["status", "--porcelain"]) {
         Ok(status) => {
             if status.is_empty() {
                 "false".to_string()
@@ -49,7 +60,8 @@ fn emit_git_metadata(repo_dir: &Path) {
             UNKNOWN_GIT_METADATA.to_string()
         }
     };
-    println!("cargo:rustc-env=HEW_GIT_DIRTY={git_dirty}");
+
+    GitMetadata { hash, dirty }
 }
 
 fn git_output_or_unknown(repo_dir: &Path, args: &[&str], description: &str) -> String {
@@ -97,10 +109,79 @@ fn cargo_warning(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::UNKNOWN_GIT_METADATA;
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::{read_git_metadata, GitMetadata, UNKNOWN_GIT_METADATA};
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn git_metadata_uses_unknown_sentinel() {
         assert_eq!(UNKNOWN_GIT_METADATA, "unknown");
+    }
+
+    #[test]
+    fn git_metadata_reports_unavailable_repository_coherently() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        assert_eq!(
+            read_git_metadata(dir.path()),
+            GitMetadata {
+                hash: UNKNOWN_GIT_METADATA.to_string(),
+                dirty: UNKNOWN_GIT_METADATA.to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn git_metadata_tracks_clean_dirty_and_detached_states() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        git(dir.path(), &["init", "--quiet"]);
+        git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Hew Tests",
+                "-c",
+                "user.email=tests@hew.dev",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=.git/disabled-hooks",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "test: seed metadata repository",
+            ],
+        );
+
+        let clean = read_git_metadata(dir.path());
+        assert!(!clean.hash.is_empty());
+        assert!(clean
+            .hash
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, 'a'..='f')));
+        assert_eq!(clean.dirty, "false");
+
+        fs::write(dir.path().join("mutation"), "dirty\n").expect("write mutation");
+        assert_eq!(read_git_metadata(dir.path()).dirty, "true");
+        fs::remove_file(dir.path().join("mutation")).expect("remove mutation");
+
+        git(dir.path(), &["checkout", "--quiet", "--detach"]);
+        assert_eq!(read_git_metadata(dir.path()), clean);
     }
 }

@@ -499,7 +499,12 @@ pub enum RuntimeCallFamily {
     StringSliceCodepoints,
 
     // --- Supervisor --------------------------------------------------------
+    /// Capture the stable direct identity for a live supervisor binding.
+    SupervisorDirectId,
     SupervisorChildGet,
+    /// Resolve a static child role through a stable supervisor identity and
+    /// return the current incarnation's stable `LocalPid` token.
+    LocalPidSupervisorChildGet,
     SupervisorNestedGet,
     /// `hew_supervisor_pool_child_get(sup, pool_key, index) -> ChildLookupResult`
     /// — resolve a static-pool member through its live static slot. Emitted by
@@ -806,7 +811,9 @@ impl RuntimeCallFamily {
             Self::StringIndex => "hew_string_index",
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
             // Supervisor
+            Self::SupervisorDirectId => "hew_supervisor_direct_id",
             Self::SupervisorChildGet => "hew_supervisor_child_get",
+            Self::LocalPidSupervisorChildGet => "hew_local_pid_supervisor_child_get",
             Self::SupervisorNestedGet => "hew_supervisor_nested_get",
             Self::SupervisorPoolChildGet => "hew_supervisor_pool_child_get",
             Self::SupervisorPoolLen => "hew_supervisor_pool_len",
@@ -1109,7 +1116,9 @@ impl RuntimeCallFamily {
             "hew_string_index" => Self::StringIndex,
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
             // Supervisor
+            "hew_supervisor_direct_id" => Self::SupervisorDirectId,
             "hew_supervisor_child_get" => Self::SupervisorChildGet,
+            "hew_local_pid_supervisor_child_get" => Self::LocalPidSupervisorChildGet,
             "hew_supervisor_nested_get" => Self::SupervisorNestedGet,
             "hew_supervisor_pool_child_get" => Self::SupervisorPoolChildGet,
             "hew_supervisor_pool_len" => Self::SupervisorPoolLen,
@@ -1676,7 +1685,9 @@ impl RuntimeCallFamily {
             | F::StringGet
             | F::StringIndex
             | F::StringSliceCodepoints
+            | F::SupervisorDirectId
             | F::SupervisorChildGet
+            | F::LocalPidSupervisorChildGet
             | F::SupervisorNestedGet
             | F::SupervisorPoolChildGet
             | F::SupervisorPoolLen

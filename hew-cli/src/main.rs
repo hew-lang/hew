@@ -1872,17 +1872,37 @@ fn cmd_version() {
     } else {
         "release"
     };
-    let git_hash = option_env!("HEW_GIT_HASH").unwrap_or("");
-    let dirty = match option_env!("HEW_GIT_DIRTY") {
-        Some("true") => "-dirty",
-        Some("unknown") => "-unknown",
-        _ => "",
+    println!(
+        "{}",
+        format_version(
+            version,
+            profile,
+            option_env!("HEW_GIT_HASH"),
+            option_env!("HEW_GIT_DIRTY")
+        )
+    );
+}
+
+fn format_version(
+    version: &str,
+    profile: &str,
+    git_hash: Option<&str>,
+    git_dirty: Option<&str>,
+) -> String {
+    let git = match (git_hash, git_dirty) {
+        (Some(hash), Some("true")) if is_lower_hex(hash) => format!("{hash}-dirty"),
+        (Some(hash), Some("false")) if is_lower_hex(hash) => hash.to_string(),
+        _ => "git-unavailable".to_string(),
     };
-    if git_hash.is_empty() {
-        println!("hew {version} ({profile})");
-    } else {
-        println!("hew {version} ({profile}, {git_hash}{dirty})");
-    }
+
+    format!("hew {version} ({profile}, {git})")
+}
+
+fn is_lower_hex(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, 'a'..='f'))
 }
 
 // ---------------------------------------------------------------------------
@@ -1969,3 +1989,46 @@ fn exec_sibling_binary(binary_name: &str, extra_args: &[String]) -> ! {
 // ---------------------------------------------------------------------------
 // Helper utilities
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod version_tests {
+    use super::format_version;
+
+    #[test]
+    fn version_formats_present_git_metadata() {
+        assert_eq!(
+            format_version("0.6.0-rc1", "release", Some("a1b2c3d"), Some("false")),
+            "hew 0.6.0-rc1 (release, a1b2c3d)"
+        );
+        assert_eq!(
+            format_version("0.6.0-rc1", "debug", Some("a1b2c3d"), Some("true")),
+            "hew 0.6.0-rc1 (debug, a1b2c3d-dirty)"
+        );
+    }
+
+    #[test]
+    fn version_formats_unavailable_git_metadata_as_one_state() {
+        for (hash, dirty) in [
+            (None, None),
+            (Some("a1b2c3d"), None),
+            (None, Some("false")),
+            (None, Some("true")),
+            (Some(""), Some("false")),
+            (Some(""), Some("true")),
+            (Some("unknown"), Some("unknown")),
+            (Some("unknown"), Some("false")),
+            (Some("a1b2c3d"), Some("unknown")),
+            (Some("a1b2c3d"), Some("maybe")),
+            (Some("a1b2c3d"), Some("TRUE")),
+            (Some("not-a-hash"), Some("false")),
+            (Some("A1B2C3D"), Some("false")),
+            (Some("A1B2C3D"), Some("true")),
+        ] {
+            assert_eq!(
+                format_version("0.6.0-rc1", "debug", hash, dirty),
+                "hew 0.6.0-rc1 (debug, git-unavailable)",
+                "hash={hash:?}, dirty={dirty:?}"
+            );
+        }
+    }
+}

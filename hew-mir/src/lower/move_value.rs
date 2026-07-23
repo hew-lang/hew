@@ -431,8 +431,7 @@ impl Builder {
                         self.param_ownership
                             .call_param_consume
                             .get(&(item, index))
-                            .copied()
-                            == Some(true)
+                            .is_some_and(|v| v.is_consume())
                     });
                 let target_is_owned_carrier = callee_item.is_some_and(|item| {
                     self.param_ownership

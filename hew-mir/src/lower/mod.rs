@@ -23,6 +23,7 @@ use hew_hir::{
     ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
+use hew_types::runtime_call::ConsumeVerdict;
 use hew_types::{
     short_name, BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
     NumericMethodOp, NumericSignedness, ResolvedTy,
@@ -3671,9 +3672,15 @@ pub(crate) struct ParamOwnershipFacts {
     /// composites (a by-value `Result<string, string>` / user enum), which
     /// `lower_params` needs to decide whether a heap-owning enum-composite param
     /// is the CALLEE's drop obligation (CONSUME) or the caller's (BORROW). A
-    /// BORROW param is `false`; a param absent from the map is treated as BORROW
-    /// (fail-safe: the caller keeps and drops it, no callee double-free).
-    call_param_consume: HashMap<(hew_hir::ItemId, usize), bool>,
+    /// A BORROW param is `ConsumeVerdict::ProvenBorrow`; a param absent from the
+    /// map is treated as BORROW (fail-safe: the caller keeps and drops it, no
+    /// callee double-free). The two consume flavours
+    /// (`ProvenConsume`/`ConservativeConsume`) both mean "callee owns/drops" and
+    /// are byte-identical at every consumer via `is_consume()` — the finer label
+    /// records WHY the param flipped (positive escape proof vs the fail-closed
+    /// forward-to-unproven disjunct) so a later pass can act on the proven-borrow
+    /// tail without re-deriving it.
+    call_param_consume: HashMap<(hew_hir::ItemId, usize), ConsumeVerdict>,
     /// A separate caller/callee contract for parameters whose body carries the
     /// value into an owning sink. Callers prepare an independent owner (or
     /// transfer a proven dead whole local); callees install the inverse
@@ -3706,6 +3713,16 @@ struct ScanCtx<'a> {
     /// root parameter. This is enabled only for the deep call-carrier summary,
     /// never for the legacy borrow/consume table.
     owned_projection_sinks: bool,
+    /// Whether a bare-ref argument forwarded to a free-function parameter is
+    /// treated OPTIMISTICALLY as a borrow, regardless of the target's verdict.
+    /// The normal scan flips such a forward to CONSUME when the target is
+    /// consuming or unproven (the fail-closed disjunct); this flag suppresses
+    /// exactly that disjunct so the scan reports ONLY the positively-proven
+    /// escapes (returned/stored/sent/captured). Used solely to split a converged
+    /// consume verdict into `ProvenConsume` vs `ConservativeConsume` (see
+    /// `refine_call_param_verdicts`); never enabled for the consume/borrow or
+    /// carrier tables that drive move intent.
+    assume_forward_borrows: bool,
     /// The subset of `methods` whose PARAM 0 is a by-value `self` receiver of a
     /// NON-resource type (`collect_borrow_receiver_methods`). Shape A of #2753:
     /// the borrow-site collector records such a receiver's `SiteId` so the
@@ -5969,8 +5986,7 @@ impl Builder {
                     .param_ownership
                     .call_param_consume
                     .get(&(func.id, i))
-                    .copied()
-                    == Some(true)
+                    .is_some_and(|v| v.is_consume())
             {
                 let owned_ty = self.subst_ty(&param.ty);
                 if ty_is_heap_owning_enum_composite(

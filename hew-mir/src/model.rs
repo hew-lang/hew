@@ -5867,21 +5867,22 @@ pub enum MirCheck {
     /// obligation is never met on this path: a leak. The discharge set is
     /// re-derived independently from the primitive `Instr` stream + CFG
     /// reachability (never from the elaborator's `Disposition` ledger — the
-    /// ledger is the component under test). Under-release is a hard error
-    /// gated by the shrink-only, issue-linked allowlist registry
-    /// (`obligation_registry`).
+    /// ledger is the component under test). Under-release is ADVISORY: the
+    /// gate surfaces it as a compile-time warning that does not fail the build
+    /// (see [`MirDiagnosticKind::is_advisory`]). No allowlist suppresses it —
+    /// the lite MIR tier cannot soundly gate leaks without un-forgeable module
+    /// provenance, so it warns on every under-release (tracked stdlib holes
+    /// included) rather than hard-gate behind a forgeable per-function key.
     ObligationUnderReleased {
-        /// Function symbol (`ElaboratedMirFunction::name`) — the registry key.
+        /// Function symbol (`ElaboratedMirFunction::name`).
         function: String,
         /// The unbalanced exit's block id (`return[bbN]`).
         block: u32,
-        /// Source-level name of the leaked local (registry key + diagnostics).
+        /// Source-level name of the leaked local (diagnostics).
         name: String,
-        /// Rendered type of the leaked local (`ResolvedTy` Display). Part of
-        /// the registry allowlist key: a scoping discriminator so an entry
-        /// minted for one site cannot suppress a same-named local of a
-        /// different type in another compilation unit. Empty when the type
-        /// could not be recovered (hand-built test MIR).
+        /// Rendered type of the leaked local (`ResolvedTy` Display), carried for
+        /// the diagnostic. Empty when the type could not be recovered
+        /// (hand-built test MIR).
         local_ty: String,
         reason: String,
     },
@@ -6870,9 +6871,10 @@ pub enum MirDiagnosticKind {
     DropPlanUndetermined { block: u32, reason: String },
     /// S1 obligation-balance under-release (leak): surfaced from
     /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has
-    /// ZERO discharges on a CFG path to a `Return` exit. Hard error unless
-    /// the (function, name) pair carries a shrink-only, issue-linked
-    /// registry entry (`obligation_registry`).
+    /// ZERO discharges on a CFG path to a `Return` exit. ADVISORY (see
+    /// [`MirDiagnosticKind::is_advisory`]): rendered as a compile-time warning
+    /// that does not fail the build, because the lite MIR tier cannot soundly
+    /// suppress a leak without un-forgeable module provenance (OWN-V1).
     ObligationUnderReleased {
         function: String,
         block: u32,
@@ -7109,6 +7111,39 @@ pub enum MirDiagnosticKind {
     /// When the full env-materialization protocol for Duplex captures is
     /// implemented, remove this guard AND the checker gate in `check_call`.
     ClosureCapturesDuplexHandle { name: String, site: SiteId },
+}
+
+impl MirDiagnosticKind {
+    /// Whether this diagnostic is ADVISORY — a compile-time warning that is
+    /// surfaced but does NOT fail the build — rather than a hard error.
+    ///
+    /// This is the single source of severity truth for MIR diagnostics: every
+    /// CLI consumer renders an advisory as a `warning` and never counts it
+    /// toward build failure. All other diagnostics stay hard `E_MIR_*` errors.
+    ///
+    /// Only [`MirDiagnosticKind::ObligationUnderReleased`] is advisory. An
+    /// under-release is a resource LEAK, not a memory-safety violation, and the
+    /// lite MIR-tier obligation-balance gate cannot SOUNDLY suppress a leak: it
+    /// has no un-forgeable defining-module provenance signal, so a per-function
+    /// allowlist keyed on the mangled symbol is forgeable (the compiler mangles
+    /// a user module `base64`'s `decode` to the same `base64$decode` a stdlib
+    /// entry used). Rather than hard-gate every leak behind a forgeable
+    /// allowlist — silently swallowing a genuine user leak that collides with a
+    /// tracked stdlib triple — the gate WARNS on every under-release and leaves
+    /// the build green. The tracked stdlib holes (semver/base64/generic-Vec-iter)
+    /// warn honestly on their own builds. Promoting under-release back to a
+    /// sound hard gate is the OWN-V1 follow-up: it needs frontend module
+    /// provenance threaded into this gate so a stdlib site is distinguishable
+    /// from a same-named user site.
+    ///
+    /// Over-release ([`MirDiagnosticKind::ObligationOverReleased`], double-free)
+    /// is memory-unsafe and is NEVER advisory; the fail-closed undecidability
+    /// verdict ([`MirDiagnosticKind::ObligationBalanceUnverified`]) is NEVER
+    /// advisory.
+    #[must_use]
+    pub fn is_advisory(&self) -> bool {
+        matches!(self, MirDiagnosticKind::ObligationUnderReleased { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7998,6 +8033,64 @@ mod suspend_terminator_tests {
             succs,
             vec![20],
             "successors must NOT collapse to [next] only (pre-fix regression)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_severity_tests {
+    //! Severity classification of MIR diagnostics
+    //! ([`MirDiagnosticKind::is_advisory`]) — the single source of truth every
+    //! CLI consumer keys off. Pins the S1 obligation-balance severity split:
+    //! under-release (leak) is advisory (compile-time warning, build stays
+    //! green); over-release (double-free) and the fail-closed undecidability
+    //! verdict are blocking hard errors with no advisory escape.
+
+    use super::*;
+
+    #[test]
+    fn under_release_leak_is_advisory() {
+        // The exact triple the deleted forgeable allowlist keyed on
+        // (`base64$decode` / `out` / `bytes`): now surfaced, never suppressed,
+        // and classified advisory so it warns rather than fails the build.
+        let leak = MirDiagnosticKind::ObligationUnderReleased {
+            function: "base64$decode".to_string(),
+            block: 20,
+            name: "out".to_string(),
+            reason: "mint without discharge = leak".to_string(),
+        };
+        assert!(
+            leak.is_advisory(),
+            "under-release (leak) must be advisory — a compile-time warning that \
+             does not fail the build"
+        );
+    }
+
+    #[test]
+    fn over_release_double_free_is_blocking() {
+        let double_free = MirDiagnosticKind::ObligationOverReleased {
+            function: "f".to_string(),
+            block: 3,
+            name: "h".to_string(),
+            reason: "double release".to_string(),
+        };
+        assert!(
+            !double_free.is_advisory(),
+            "over-release (double-free) is memory-unsafe and must stay a hard \
+             error — never advisory"
+        );
+    }
+
+    #[test]
+    fn unverified_balance_verdict_is_blocking() {
+        let unverified = MirDiagnosticKind::ObligationBalanceUnverified {
+            function: "f".to_string(),
+            reason: "fixpoint exceeded cap".to_string(),
+        };
+        assert!(
+            !unverified.is_advisory(),
+            "an undecided balance verdict fails closed as a hard error — never \
+             advisory"
         );
     }
 }

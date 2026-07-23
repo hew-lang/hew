@@ -117,9 +117,9 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
             },
             note: "every heap-owning owned value must be released exactly once \
                    on every reachable exit path; this exit path never \
-                   discharges the mint (leak). Fix the drop plan, or register \
-                   a tracked pre-existing hole in the shrink-only issue-linked \
-                   obligation registry"
+                   discharges the mint (leak). This is an advisory warning, not \
+                   a build error — fix the drop plan (release on every exit) to \
+                   silence it"
                 .to_string(),
         }),
         MirCheck::ObligationOverReleased {

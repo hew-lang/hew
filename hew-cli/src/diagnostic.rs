@@ -1115,7 +1115,18 @@ fn render_mir_diagnostic_without_source(
     diagnostic: &hew_mir::MirDiagnostic,
     site: Option<&hew_hir::HirSiteSource>,
 ) {
-    emit_plain_diagnostic_line(&format!("error: {}", mir_diagnostic_message(diagnostic)));
+    // Advisory diagnostics (obligation under-release leaks) are compile-time
+    // warnings, not build errors — render the `warning:` severity prefix so the
+    // location-less advisory reads honestly and no consumer treats it as fatal.
+    let severity = if diagnostic.kind.is_advisory() {
+        "warning"
+    } else {
+        "error"
+    };
+    emit_plain_diagnostic_line(&format!(
+        "{severity}: {}",
+        mir_diagnostic_message(diagnostic)
+    ));
     for note in mir_context_notes(diagnostic) {
         emit_plain_diagnostic_line(&format!("  = note: {note}"));
     }
@@ -1143,6 +1154,11 @@ pub(crate) fn render_mir_diagnostics(
 ) {
     let json = crate::diagnostic_json::json_output_active();
     for diagnostic in diagnostics {
+        // Advisory diagnostics (obligation under-release leaks) render as
+        // WARNINGS and never fail the build; everything else is a hard error.
+        // The severity is a property of the diagnostic kind
+        // (`MirDiagnosticKind::is_advisory`), the single source of truth.
+        let advisory = diagnostic.kind.is_advisory();
         let primary_site = mir_primary_site(&diagnostic.kind)
             .and_then(|site| site_spans.get(&site).map(|source| (site, source)));
         let Some((_, site)) = primary_site else {
@@ -1171,6 +1187,15 @@ pub(crate) fn render_mir_diagnostics(
                 Some((source, filename)),
                 Some(&site.span),
                 &secondary_spans,
+            );
+        } else if advisory {
+            render_warning_with_raw_notes(
+                source,
+                filename,
+                &site.span,
+                &mir_diagnostic_message(diagnostic),
+                &secondary_spans,
+                &suggestions,
             );
         } else {
             render_diagnostic_with_raw_notes(
@@ -1212,6 +1237,7 @@ fn push_mir_json_diagnostic(
         message,
         secondary_spans,
         &mir_context_notes(diagnostic),
+        diagnostic.kind.is_advisory(),
     ));
 }
 

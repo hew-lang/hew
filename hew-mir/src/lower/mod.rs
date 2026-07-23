@@ -64,7 +64,6 @@ mod expr;
 mod facts;
 mod machine_synth;
 mod move_value;
-mod obligation_registry;
 mod ownership;
 mod pattern;
 mod rc_intrinsic;
@@ -5212,23 +5211,28 @@ pub(crate) fn lower_function(
     // released exactly once on every reachable Return path. The discharge
     // set is re-derived from the primitive Instr stream + CFG (never from
     // the Disposition ledger — the ledger is the component under test).
-    // Over-release (double-free) is an unconditional hard error;
-    // under-release (leak) is a hard error unless the (function, local)
-    // pair carries a shrink-only, issue-linked entry in
-    // `obligation_registry` (LESSONS boundary-fail-closed,
-    // lifecycle-symmetry, migration-completeness).
+    //
+    // SEVERITY SPLIT (close-by-construction, no forgeable allowlist):
+    // - Over-release (double-free) is memory-unsafe — an unconditional HARD
+    //   error with no escape.
+    // - An unverifiable fixpoint (ObligationBalanceUnverified) fails CLOSED as
+    //   a HARD error.
+    // - Under-release (leak) is surfaced as an ADVISORY diagnostic
+    //   (`MirDiagnosticKind::is_advisory`) — a compile-time warning that does
+    //   NOT fail the build. The lite MIR tier has no un-forgeable defining-
+    //   module provenance at this gate, so it cannot SOUNDLY suppress a leak: a
+    //   per-function allowlist keyed on the mangled symbol is forgeable (the
+    //   compiler mangles a user module `base64`'s `decode` to the same
+    //   `base64$decode` a stdlib entry would use, silently swallowing a genuine
+    //   user leak). Rather than hard-gate leaks behind that forgeable key, the
+    //   gate warns on EVERY under-release — nothing to forge, tracked stdlib
+    //   holes warn honestly. Promoting under-release to a sound hard gate is the
+    //   OWN-V1 follow-up (frontend module provenance threaded into this gate).
+    //
+    // All three route through `check_to_diagnostic` unconditionally; the
+    // advisory-vs-blocking severity is a property of the diagnostic kind, read
+    // by the CLI at render time (LESSONS boundary-fail-closed).
     for check in validate_obligation_balance(&elaborated, &raw, &builder) {
-        if let MirCheck::ObligationUnderReleased {
-            function,
-            name,
-            local_ty,
-            ..
-        } = &check
-        {
-            if obligation_registry::under_release_allowlisted(function, name, local_ty) {
-                continue;
-            }
-        }
         if let Some(diag) = check_to_diagnostic(&check) {
             diagnostics.push(diag);
         }

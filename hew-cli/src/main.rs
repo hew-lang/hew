@@ -102,8 +102,10 @@ fn resolve_compile_emit_target(requested: Option<&str>) -> CompileEmitTarget {
 ///
 /// Shared by every native-lowering entry point so a MIR gate failure is
 /// reported identically (and never as a raw `MirDiagnostic { .. }` Debug
-/// payload) regardless of the command. Returns `true` when diagnostics were
-/// emitted and the caller should fail.
+/// payload) regardless of the command. Returns `true` when a BLOCKING
+/// (hard-error) diagnostic was emitted and the caller should fail. Advisory
+/// diagnostics (obligation under-release leaks — `MirDiagnosticKind::is_advisory`)
+/// render as compile-time warnings and never cause failure.
 fn render_pipeline_mir_diagnostics(
     program: &hew_parser::ast::Program,
     source: &str,
@@ -117,7 +119,11 @@ fn render_pipeline_mir_diagnostics(
     let module_source_map = diagnostic::build_module_source_map(program);
     let site_spans = hew_hir::collect_site_spans(module);
     diagnostic::render_mir_diagnostics(source, label, &module_source_map, &site_spans, diagnostics);
-    true
+    // Advisory diagnostics (obligation under-release leaks) render as warnings
+    // and NEVER fail the build; only a blocking (hard-error) diagnostic does.
+    // Severity is owned by the diagnostic kind (`is_advisory`) so a missed
+    // consumer fails closed (over-strict), never silently ships a real error.
+    diagnostics.iter().any(|d| !d.kind.is_advisory())
 }
 
 /// Surface the MIR-stage lint warnings recorded on `pipeline`, applying the
@@ -502,7 +508,9 @@ fn build_explain_cow_pipeline(
     let mut pipeline =
         hew_mir::lower_hir_module_with_facts(&lowered.module, mir_pointer_width(target));
     pipeline.attach_lowering_facts(tco);
-    pipeline.diagnostics.is_empty().then_some(pipeline)
+    // Advisory diagnostics (obligation under-release leaks) are non-blocking; the
+    // explain-cow view is still valid, so proceed unless a hard error is present.
+    (!pipeline.diagnostics.iter().any(|d| !d.kind.is_advisory())).then_some(pipeline)
 }
 
 fn emit_module(

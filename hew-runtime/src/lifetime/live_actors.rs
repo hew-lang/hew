@@ -432,6 +432,35 @@ pub(crate) fn with_actor_send_by_id<R>(
     Some(f(pin.as_ptr()))
 }
 
+/// Like [`with_actor_send_by_id`], but additionally verifies the pinned actor
+/// IS the resolved incarnation by matching its full [`HewActor::spawn_serial`]
+/// against `expected_serial` before running `f`.
+///
+/// The by-ID pin resolves through `LIVE_ACTORS`, keyed by the packed `id`,
+/// whose serial portion is masked to 48 bits (`pid::hew_pid_make`). After 2^48
+/// allocations a fresh actor can carry a retired incarnation's masked `id`, so
+/// a pin by `id` alone could hand `f` the WRONG actor. The two-phase
+/// owner-scoped role ask copies the resolved incarnation's full serial out
+/// under `children_lock` and passes it here; on serial mismatch this returns
+/// `None` WITHOUT calling `f` — fail closed, treated exactly like a retirement
+/// (the ID aliased a different incarnation). Only used where the caller holds
+/// the resolved incarnation's authoritative serial.
+// live on not(wasm32) — supervisor role ask + by-id ask; dead on wasm32.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn with_actor_send_by_identity<R>(
+    actor_id: u64,
+    expected_serial: u64,
+    f: impl FnOnce(*mut HewActor) -> R,
+) -> Option<R> {
+    let pin = pin_actor_by_id(actor_id)?;
+    // SAFETY: the pin keeps the actor allocation live for this field read; the
+    // free path cannot reclaim it until the pin drops.
+    if unsafe { (*pin.as_ptr()).spawn_serial } != expected_serial {
+        return None;
+    }
+    Some(f(pin.as_ptr()))
+}
+
 /// Resolve the per-actor-TYPE dispatch function pointer for a live actor id,
 /// returned as an opaque `*const c_void` codec-registry key.
 ///
@@ -482,8 +511,13 @@ pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
 
 /// Check whether `actor_id` still maps to the expected live actor pointer.
 ///
-/// ABA-proof variant of [`is_actor_live`]: actor ids are never reused, so a
-/// recycled allocation address cannot resurrect liveness for a freed actor.
+/// ABA-proof variant of [`is_actor_live`]: it also matches `expected`, so a
+/// recycled allocation address cannot resurrect liveness for a freed actor
+/// (a different live actor reusing the address maps under a different `id` or
+/// pointer). Note the packed `id` masks the serial to 48 bits, so full
+/// incarnation identity across a 2^48 wrap needs the serial discriminator
+/// (`with_actor_send_by_identity`); this probe's pointer + id match is
+/// sufficient for its liveness-probe callers.
 #[cfg_attr(
     not(test),
     allow(

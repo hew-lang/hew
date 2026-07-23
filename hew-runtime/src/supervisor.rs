@@ -4642,6 +4642,162 @@ mod tests {
         }
     }
 
+    /// TOOTH for the masked-`id` reuse finding: after 2^48 allocations a fresh
+    /// actor can carry a retired incarnation's packed `id` (the serial is masked
+    /// to 48 bits). If phase two pinned by `id` alone it would submit to that
+    /// DIFFERENT actor — the exact wrong-actor delivery this lane exists to make
+    /// impossible.
+    ///
+    /// This fabricates the alias at the resolve→submit seam: the hook retires
+    /// the resolved incarnation A, then spawns a genuine actor B tracked under
+    /// A's identical packed `id` but a DISTINCT full serial (a 2^48 wrap). A
+    /// naive by-`id` pin would find B and enqueue to it; the identity-verified
+    /// pin must instead refuse CLOSED (the pinned actor's full serial differs
+    /// from the resolved one) and never enqueue. Covers both entry points; run
+    /// 20× to shake out any ordering dependence.
+    /// Build a resolve→submit-seam hook that fabricates the masked-`id` alias:
+    /// it retires + frees the resolved incarnation A, then spawns a genuine
+    /// actor B tracked under A's identical packed `id` but a DISTINCT full
+    /// serial (a 2^48 wrap), publishing B's pointer through `alias_out`.
+    ///
+    /// # Safety
+    ///
+    /// `sup_addr` must be a live `*mut HewSupervisor` the caller owns for the
+    /// hook's lifetime; the caller reclaims the actor stored in `alias_out`.
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe fn make_role_ask_alias_hook(
+        sup_addr: usize,
+        alias_out: Arc<AtomicUsize>,
+    ) -> Arc<dyn Fn() + Send + Sync> {
+        Arc::new(move || {
+            let sup = sup_addr as *mut HewSupervisor;
+            // SAFETY: the caller owns `sup` for the hook's lifetime; the retired
+            // incarnation is exclusively owned once pulled from the slot.
+            unsafe {
+                // Retire the resolved incarnation A and free it, so its masked
+                // `id` is vacant in LIVE_ACTORS for reuse.
+                let retired = take_child_slot(&mut *sup, 0);
+                assert!(!retired.is_null(), "hook must find the live incarnation");
+                let a_id = (*retired).id;
+                let a_serial = (*retired).spawn_serial;
+                (*retired)
+                    .actor_state
+                    .store(HewActorState::Stopped as i32, Ordering::Release);
+                assert_eq!(actor::hew_actor_free(retired), 0);
+
+                // Spawn a genuine actor B that ALIASES A's packed `id` (a 2^48
+                // serial wrap) but carries a distinct full serial — precisely
+                // the shape a real id-reuse produces.
+                actor::override_next_spawn_actor_identity(a_id, a_serial.wrapping_add(1u64 << 48));
+                let b = actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_child_dispatch));
+                assert!(!b.is_null(), "alias actor B must spawn");
+                assert_eq!((*b).id, a_id, "B must reuse A's masked packed id");
+                assert_ne!(
+                    (*b).spawn_serial,
+                    a_serial,
+                    "B must carry a distinct full serial"
+                );
+                alias_out.store(b as usize, Ordering::Release);
+            }
+        })
+    }
+
+    #[test]
+    fn role_ask_masked_id_alias_refuses_closed_never_enqueues() {
+        for _ in 0..20 {
+            let _rt = crate::runtime_test_guard();
+            // SAFETY: the test owns the tree; the hook retires the resolved
+            // incarnation and installs a masked-`id`-aliasing replacement at the
+            // exact resolve→submit seam, then the test reclaims both.
+            unsafe {
+                let (sup, _child, _self_actor) = make_supervisor_with_child();
+                let supervisor_token = (*sup).local_pid_id;
+                let sup_addr = sup as usize;
+                // Carries the fabricated alias actor B out of the hook so the
+                // test can assert it never received the ask and then free it.
+                let alias_out = Arc::new(AtomicUsize::new(0));
+
+                // ── Channel twin: refuse closed with the named diagnostic. ──
+                *ROLE_ASK_PINNED_SUBMIT_HOOK.lock_or_recover() =
+                    Some(make_role_ask_alias_hook(sup_addr, Arc::clone(&alias_out)));
+                let before = crate::reply_channel::active_channel_count();
+                let ch = crate::reply_channel::hew_reply_channel_new();
+                crate::hew_clear_error();
+                let status = hew_supervisor_role_ask_with_channel(
+                    supervisor_token,
+                    0,
+                    7,
+                    ptr::null_mut(),
+                    0,
+                    ch.cast(),
+                );
+                *ROLE_ASK_PINNED_SUBMIT_HOOK.lock_or_recover() = None;
+                assert_eq!(
+                    status,
+                    crate::internal::types::HewError::ErrActorStopped as i32,
+                    "an aliased id must refuse closed, never submit to the wrong actor"
+                );
+                let err = crate::hew_last_error();
+                assert!(!err.is_null());
+                let msg = std::ffi::CStr::from_ptr(err).to_string_lossy();
+                assert!(
+                    msg.contains("retired during submission"),
+                    "the refusal must name the retirement; got: {msg}"
+                );
+                assert_eq!(
+                    crate::reply_channel::active_channel_count(),
+                    before + 1,
+                    "the refused ask must preserve the caller-owned channel reference"
+                );
+                crate::reply_channel::hew_reply_channel_free(ch);
+
+                // The aliasing actor B must NOT have received the ask.
+                let b_channel = alias_out.swap(0, Ordering::AcqRel) as *mut HewActor;
+                assert!(!b_channel.is_null(), "the channel-path hook must spawn B");
+                assert_eq!(
+                    crate::mailbox::hew_mailbox_len((*b_channel).mailbox.cast()),
+                    0,
+                    "the wrong-actor alias must never be enqueued (channel twin)"
+                );
+                (*b_channel)
+                    .actor_state
+                    .store(HewActorState::Stopped as i32, Ordering::Release);
+                assert_eq!(actor::hew_actor_free(b_channel), 0);
+
+                // ── Blocking twin: null reply + AskError::ActorStopped. ──
+                let respawned = restart_child_from_spec(&mut *sup, 0);
+                assert!(!respawned.is_null());
+                *ROLE_ASK_PINNED_SUBMIT_HOOK.lock_or_recover() =
+                    Some(make_role_ask_alias_hook(sup_addr, Arc::clone(&alias_out)));
+                let reply = hew_supervisor_role_ask(supervisor_token, 0, 7, ptr::null_mut(), 0);
+                *ROLE_ASK_PINNED_SUBMIT_HOOK.lock_or_recover() = None;
+                assert!(
+                    reply.is_null(),
+                    "the blocking role ask must refuse, never deliver to the aliased actor"
+                );
+                assert_eq!(
+                    actor::hew_actor_ask_take_last_error(),
+                    crate::internal::types::AskError::ActorStopped as i32,
+                    "the blocking refusal must bind AskError::ActorStopped"
+                );
+
+                let b_blocking = alias_out.swap(0, Ordering::AcqRel) as *mut HewActor;
+                assert!(!b_blocking.is_null(), "the blocking-path hook must spawn B");
+                assert_eq!(
+                    crate::mailbox::hew_mailbox_len((*b_blocking).mailbox.cast()),
+                    0,
+                    "the wrong-actor alias must never be enqueued (blocking twin)"
+                );
+                (*b_blocking)
+                    .actor_state
+                    .store(HewActorState::Stopped as i32, Ordering::Release);
+                assert_eq!(actor::hew_actor_free(b_blocking), 0);
+
+                hew_supervisor_stop(sup);
+            }
+        }
+    }
+
     /// An out-of-range key returns Dead(UnknownSlot).
     #[test]
     fn child_get_unknown_key_returns_dead_unknown_slot() {
@@ -6278,13 +6434,20 @@ fn role_ask_refuse(reason: u8, key: u32) -> i32 {
 /// the returned ID via the `LIVE_ACTORS` send pin (`with_actor_send_by_id`),
 /// the same liveness protocol every by-ID send uses: the pin guarantees the
 /// allocation outlives the submission, and a retirement that lands between
-/// the phases fails CLOSED (the ID is never reused) instead of touching
-/// reclaimed storage.
+/// the phases fails CLOSED instead of touching reclaimed storage.
+///
+/// The returned pair is `(packed id, full spawn serial)`. The packed `id`
+/// masks the serial to 48 bits (`pid::hew_pid_make`), so after 2^48
+/// allocations a fresh actor can carry a retired incarnation's `id`; phase two
+/// therefore matches the pinned actor's full serial against the resolved one
+/// (`live_actors::with_actor_send_by_identity`) so an aliased `id` refuses
+/// closed rather than delivering to the wrong actor. Both scalars are copied
+/// out under `children_lock`; no pointer crosses the lock boundary.
 #[cfg(not(target_arch = "wasm32"))]
 fn role_resolve_current_child_id(
     token: crate::lifetime::local_handles::HewLocalPidId,
     key: u32,
-) -> Result<u64, i32> {
+) -> Result<(u64, u64), i32> {
     let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
         return Err(role_ask_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
@@ -6333,9 +6496,11 @@ fn role_resolve_current_child_id(
     fire_role_ask_submit_gap_hook();
 
     // SAFETY: `child` is the slot's live incarnation and cannot be replaced or
-    // reclaimed while `children_lock` is held; only the scalar ID is copied
-    // out — no pointer crosses the lock boundary.
-    Ok(unsafe { (*child).id })
+    // reclaimed while `children_lock` is held; only the scalar id + full serial
+    // are copied out — no pointer crosses the lock boundary. The full serial is
+    // the aliasing-proof discriminator phase two re-checks against the pinned
+    // actor (the packed id alone can alias after 2^48 allocations).
+    Ok(unsafe { ((*child).id, (*child).spawn_serial) })
 }
 
 /// The classified refusal for a resolution that succeeded but whose
@@ -6390,15 +6555,17 @@ pub unsafe extern "C" fn hew_supervisor_role_ask_with_channel(
     size: usize,
     ch: *mut c_void,
 ) -> i32 {
-    let child_id = match role_resolve_current_child_id(token, key) {
-        Ok(id) => id,
+    let (child_id, child_serial) = match role_resolve_current_child_id(token, key) {
+        Ok(ids) => ids,
         Err(code) => return code,
     };
     #[cfg(test)]
     fire_role_ask_pinned_submit_hook();
-    crate::lifetime::live_actors::with_actor_send_by_id(child_id, |actor| {
+    crate::lifetime::live_actors::with_actor_send_by_identity(child_id, child_serial, |actor| {
         // SAFETY: the send pin keeps `actor` live for the submission;
-        // `data`/`ch` follow this fn's contract.
+        // `data`/`ch` follow this fn's contract. The identity-verified pin
+        // refuses closed (returns None) if the id aliased a different
+        // incarnation, so no wrong-actor enqueue can occur here.
         unsafe { crate::actor::ask_with_channel_pinned(actor, msg_type, data, size, ch) }
     })
     .unwrap_or_else(|| role_ask_refuse_retired(key))
@@ -6435,14 +6602,16 @@ pub unsafe extern "C" fn hew_supervisor_role_ask(
     data: *mut c_void,
     size: usize,
 ) -> *mut c_void {
-    let Ok(child_id) = role_resolve_current_child_id(token, key) else {
+    let Ok((child_id, child_serial)) = role_resolve_current_child_id(token, key) else {
         return crate::actor::actor_ask_null_actor_stopped();
     };
     #[cfg(test)]
     fire_role_ask_pinned_submit_hook();
-    // SAFETY: the by-ID ask pins the resolved actor for the submission and
-    // blocks on the reply channel; `data`/`size` follow this fn's contract.
-    unsafe { crate::actor::hew_actor_ask_by_id(child_id, msg_type, data, size) }
+    // SAFETY: the identity-verified by-ID ask pins the resolved actor for the
+    // submission and blocks on the reply channel; `data`/`size` follow this
+    // fn's contract. A serial mismatch (aliased id) fails closed to a null
+    // reply with `AskError::ActorStopped`, never a wrong-actor delivery.
+    unsafe { crate::actor::hew_actor_ask_by_identity(child_id, child_serial, msg_type, data, size) }
 }
 
 /// Supervisors are unavailable on the wasm runtime; the owner-scoped role ask

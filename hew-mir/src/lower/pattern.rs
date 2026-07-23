@@ -2067,13 +2067,17 @@ impl Builder {
     /// string double-free).
     ///
     /// * A WHOLE carrier (the parameter slot itself) hands its release
-    ///   authority to the match IN PLACE: the terminal drop registration is
-    ///   cancelled rather than the slot neutralized, because a neutralized
-    ///   (zeroed) slot would still run a `#[resource]` record's `close` over
-    ///   zeroed storage — an inline resource has no null sentinel to skip on.
-    ///   A path that branches around the match keeps the pre-carrier posture
-    ///   (leak, never a double-free), matching the fail direction every other
-    ///   carrier exclusion takes.
+    ///   authority to the match IN PLACE, and only on the paths that flow
+    ///   through the match: the consumption block is recorded and
+    ///   `append_owned_carrier_param_drops` skips the terminal snapshot drop
+    ///   on exits the consumption dominates while keeping it on exits that
+    ///   branch around the match (a guard / early `return` before the
+    ///   destructure still releases the untouched carrier). The slot is not
+    ///   neutralized, because a neutralized (zeroed) slot would still run a
+    ///   `#[resource]` record's `close` over zeroed storage — an inline
+    ///   resource has no null sentinel to skip on. An exit reachable both
+    ///   through and around the consumption has no single release authority
+    ///   and fails closed with a diagnostic.
     /// * A PROJECTION carrier transfers eagerly through the funnel
     ///   (`AggregateProjectionNeutralize`), so the terminal drop still
     ///   releases the untouched sibling fields exactly once.
@@ -2092,8 +2096,10 @@ impl Builder {
             match self.owned_carrier_neutralize.get(&raw_place) {
                 Some(super::OwnedCarrierNeutralizeTarget::Whole(root)) if *root == raw_place => {
                     self.owned_carrier_neutralize.remove(&raw_place);
-                    self.owned_carrier_params
-                        .retain(|param| param.value != raw_place);
+                    self.owned_carrier_consumed
+                        .entry(raw_place)
+                        .or_default()
+                        .push((self.current_block_id, scrutinee.site));
                     raw_place
                 }
                 Some(_) => {

@@ -420,6 +420,16 @@ struct Builder {
     /// terminal path receives the inverse snapshot drop.
     owned_carrier_params: Vec<OwnedCarrierParam>,
     owned_carrier_param_ids: HashSet<BindingId>,
+    /// Blocks in which a consuming record/tuple project match took over a
+    /// whole owned call-carrier's release authority, keyed by the carrier
+    /// slot. `append_owned_carrier_param_drops` classifies each function
+    /// exit against these blocks: an exit the consumption cannot reach
+    /// keeps the terminal snapshot drop, an exit only reachable through
+    /// the consumption skips it, and a return reachable both ways fails
+    /// closed — cancelling the registration globally instead would leak
+    /// every owned field on a guard / early-return path that branches
+    /// around the match.
+    owned_carrier_consumed: HashMap<Place, Vec<(u32, SiteId)>>,
     /// Raw byte-copy sources that must be neutralized if their loaded value is
     /// moved onward by the callee.
     owned_carrier_neutralize: HashMap<Place, OwnedCarrierNeutralizeTarget>,
@@ -4030,18 +4040,154 @@ fn prepare_owned_call_carriers(
     }
 }
 
-fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &Builder) {
+/// Per-exit release plan for one owned call-carrier parameter whose
+/// release authority a consuming record/tuple project match took over.
+struct CarrierConsumePlan {
+    /// Blocks reachable through (or containing) a consumption — the match
+    /// discharge already released every owned field on paths into these.
+    reach: HashSet<u32>,
+    /// Blocks reachable from the entry without passing through any
+    /// consumption — the carrier is still whole and owned on paths into
+    /// these.
+    avoid: HashSet<u32>,
+    /// Scrutinee site of the first recorded consumption, for diagnostics.
+    site: SiteId,
+}
+
+/// Forward CFG reachability from `starts`, never expanding into a block in
+/// `blocked` (a `starts` member is only visited if not blocked).
+fn cfg_reachable_over(
+    successors: &HashMap<u32, Vec<u32>>,
+    starts: impl IntoIterator<Item = u32>,
+    blocked: &HashSet<u32>,
+) -> HashSet<u32> {
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut stack: Vec<u32> = starts
+        .into_iter()
+        .filter(|block| !blocked.contains(block))
+        .collect();
+    while let Some(block) = stack.pop() {
+        if seen.insert(block) {
+            stack.extend(
+                successors
+                    .get(&block)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|succ| !blocked.contains(succ)),
+            );
+        }
+    }
+    seen
+}
+
+/// Append the callee-side terminal snapshot drop for every owned
+/// call-carrier parameter to the function's exits, honouring per-path
+/// release-authority transfer.
+///
+/// A consuming record/tuple project match takes over a carrier's release
+/// authority at a recorded block (`Builder::owned_carrier_consumed`): the
+/// selected arm's binder discharge and in-place field drops release every
+/// owned field on paths that flow through the match. Exits classify per
+/// carrier:
+///
+/// * an exit the consumption cannot reach keeps the terminal drop — a
+///   guard / early `return` that branches around the match must still
+///   release the untouched carrier (skipping here is the silent leak the
+///   global cancellation shipped);
+/// * an exit only reachable through a consumption skips the drop — the
+///   match already released every field, so a second release double-frees;
+/// * a RETURN exit reachable both through and around a consumption has no
+///   single release authority — fail closed with a diagnostic rather than
+///   pick between a leak and a double-free;
+/// * a TRAP exit reachable through a consumption skips the drop even when
+///   also reachable around it: the process is aborting, and a possible
+///   leak at abort is safe where a possible double-free is not;
+/// * a consumption reachable from itself (a consuming match on a loop
+///   path) would discharge once per iteration — fail closed.
+fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &mut Builder) {
     if builder.owned_carrier_params.is_empty() {
         return;
     }
+    let successors: HashMap<u32, Vec<u32>> = blocks
+        .iter()
+        .map(|block| (block.id, block.successors()))
+        .collect();
+    let entry = blocks.first().map(|block| block.id);
+    let consumed = std::mem::take(&mut builder.owned_carrier_consumed);
+    let params = std::mem::take(&mut builder.owned_carrier_params);
+    let plans: Vec<Option<CarrierConsumePlan>> = params
+        .iter()
+        .map(|param| {
+            let sites = consumed.get(&param.value)?;
+            let consume_blocks: HashSet<u32> = sites.iter().map(|(block, _)| *block).collect();
+            let site = sites.first().map_or(SiteId(0), |(_, site)| *site);
+            // Blocks strictly after a consumption.
+            let mut reach = cfg_reachable_over(
+                &successors,
+                consume_blocks
+                    .iter()
+                    .filter_map(|block| successors.get(block))
+                    .flatten()
+                    .copied(),
+                &HashSet::new(),
+            );
+            if consume_blocks.iter().any(|block| reach.contains(block)) {
+                builder.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "owned call-carrier `{}` consumed on a loop path",
+                            param.ty.user_facing()
+                        ),
+                        site,
+                    },
+                    note: "a consuming record/tuple match on a loop path would \
+                           discharge the carrier's fields once per iteration while \
+                           the value enters the function once; move the match out \
+                           of the loop or destructure a per-iteration clone"
+                        .to_string(),
+                });
+            }
+            reach.extend(consume_blocks.iter().copied());
+            // Blocks reachable from the entry without touching a consumption.
+            let avoid = cfg_reachable_over(&successors, entry, &consume_blocks);
+            Some(CarrierConsumePlan { reach, avoid, site })
+        })
+        .collect();
+    let mut ambiguous_reported: HashSet<usize> = HashSet::new();
     for block in blocks {
-        if !matches!(
-            block.terminator,
-            Terminator::Return | Terminator::Trap { .. }
-        ) {
+        let is_return = matches!(block.terminator, Terminator::Return);
+        if !is_return && !matches!(block.terminator, Terminator::Trap { .. }) {
             continue;
         }
-        for param in builder.owned_carrier_params.iter().rev() {
+        for (index, (param, plan)) in params.iter().zip(&plans).enumerate().rev() {
+            if let Some(plan) = plan {
+                if plan.reach.contains(&block.id) {
+                    if is_return
+                        && plan.avoid.contains(&block.id)
+                        && ambiguous_reported.insert(index)
+                    {
+                        builder.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "owned call-carrier `{}` conditionally consumed \
+                                     before a shared exit",
+                                    param.ty.user_facing()
+                                ),
+                                site: plan.site,
+                            },
+                            note: "a consuming record/tuple match transferred the \
+                                   carrier's release authority on one path to this \
+                                   exit while another path bypasses the match and \
+                                   still owns the whole value, so no single release \
+                                   authority covers the exit; destructure the value \
+                                   on every path, or return before the paths join"
+                                .to_string(),
+                        });
+                    }
+                    continue;
+                }
+            }
             block.instructions.push(Instr::ValueSnapshotDrop {
                 value: param.value,
                 ty: param.ty.clone(),
@@ -4050,6 +4196,7 @@ fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &Builder
             });
         }
     }
+    builder.owned_carrier_params = params;
 }
 
 #[allow(
@@ -4702,7 +4849,7 @@ pub(crate) fn lower_function(
     // when `If` (and later `Match` / loops) split the CFG. The order is
     // monotone in block id.
     let mut blocks = builder.finalize_blocks(Terminator::Return);
-    append_owned_carrier_param_drops(&mut blocks, &builder);
+    append_owned_carrier_param_drops(&mut blocks, &mut builder);
     if call_conv.carries_execution_context() {
         // `bracket_actor_handler_blocks` splices `EnterContext` at index 0 of
         // the entry block when it is not already present. That shifts the

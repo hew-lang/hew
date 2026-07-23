@@ -2604,6 +2604,45 @@ fn check_match_destructure_guarded_tuple_fails_closed() {
         "expected guarded-destructure fail-closed diagnostic; got: {combined}"
     );
 }
+
+/// Fail-closed: an owned call-carrier consumed by a project match on one
+/// path to a `return` another path reaches with the carrier still whole.
+/// The shared exit is reachable both through the match (a terminal
+/// snapshot drop would double-free the discharged fields) and around it
+/// (skipping the drop leaks the whole carrier), so no per-path release
+/// plan covers it. MIR refuses with `E_NOT_YET_IMPLEMENTED: owned
+/// call-carrier ... conditionally consumed before a shared exit` instead
+/// of shipping either memory bug.
+#[test]
+fn check_carrier_conditional_consume_shared_exit_fails_closed() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/reject/carrier_conditional_consume_shared_exit.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("conditionally consumed before a shared exit"),
+        "expected conditional-consume fail-closed diagnostic; got: {combined}"
+    );
+}
+
 /// The mailbox takes ownership of the buffer (no retain-on-send on the M-COW
 /// spine), so a sender that also scope-dropped it would free a buffer the live
 /// mailbox still owns — a use-after-free on the receiving side or a double-free

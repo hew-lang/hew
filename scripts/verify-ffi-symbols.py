@@ -207,6 +207,58 @@ def _extract_native_exports(source_dir: Path) -> set[str]:
     return exports
 
 
+# Release symbols that are not literal exports: type-directed drop thunks
+# resolved through the element layout descriptor at codegen time.
+DROP_THUNK_RELEASES = {"HewTypeLayout.drop_fn"}
+
+
+def _extract_fn_param_counts(source_dirs: list[Path]) -> dict[str, set[int]]:
+    """Map every literally-declared `fn name(...)` to its parameter count(s).
+
+    Multiple counts per name are possible (cfg-gated native/wasm variants).
+    Macro-generated exports have no literal signature and are absent from the
+    map; the params-arity check skips them rather than guessing.
+    """
+    counts: dict[str, set[int]] = {}
+    decl_re = re.compile(r"\bfn\s+(\w+)\s*\(")
+    for source_dir in source_dirs:
+        for rs_file in source_dir.rglob("*.rs"):
+            source = rs_file.read_text(encoding=SOURCE_ENCODING)
+            for match in decl_re.finditer(source):
+                name = match.group(1)
+                depth = 0
+                end = match.end() - 1
+                for index in range(end, len(source)):
+                    if source[index] == "(":
+                        depth += 1
+                    elif source[index] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            end = index
+                            break
+                params_text = source[match.end() : end]
+                parts: list[str] = []
+                nest = 0
+                current = ""
+                for ch in params_text:
+                    if ch in "<([":
+                        nest += 1
+                    elif ch in ">)]":
+                        nest -= 1
+                    if ch == "," and nest == 0:
+                        parts.append(current.strip())
+                        current = ""
+                    else:
+                        current += ch
+                if current.strip():
+                    parts.append(current.strip())
+                arity = len(
+                    [part for part in parts if part and not part.startswith("#")]
+                )
+                counts.setdefault(name, set()).add(arity)
+    return counts
+
+
 def extract_runtime_exports() -> set[str]:
     """Return native exports defined by hew-runtime."""
     return _extract_native_exports(RUNTIME_SRC)
@@ -247,7 +299,11 @@ def load_jit_symbol_classification() -> dict[str, set[str]]:
     return classification
 
 
-def validate_ownership_contracts(classification: dict[str, set[str]]) -> list[str]:
+def validate_ownership_contracts(
+    classification: dict[str, set[str]],
+    all_exports: set[str],
+    fn_param_counts: dict[str, set[int]],
+) -> list[str]:
     errors: list[str] = []
     document = tomllib.loads(
         JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
@@ -292,11 +348,34 @@ def validate_ownership_contracts(classification: dict[str, set[str]]) -> list[st
             errors.append(
                 f"{location} params must contain only {sorted(PARAM_OWNERSHIP)}"
             )
+        elif symbol in fn_param_counts and len(params) not in fn_param_counts[symbol]:
+            # Arity teeth: a contract whose params row no longer matches the C
+            # signature of the implementation is stale and must fail here, not
+            # silently mis-describe ownership positionally. Macro-generated
+            # exports have no literal signature and are skipped.
+            found = sorted(fn_param_counts[symbol])
+            errors.append(
+                f"{location} declares {len(params)} params but the FFI "
+                f"declaration has {found} parameters"
+            )
 
         release_symbol = contract.get("release-symbol")
         discharge_depth = contract.get("discharge-depth")
         if not isinstance(release_symbol, str):
             errors.append(f"{location} requires string release-symbol")
+        elif (
+            release_symbol
+            and release_symbol not in all_exports
+            and release_symbol not in DROP_THUNK_RELEASES
+        ):
+            # Release-symbol teeth: an owned result must name a REAL release
+            # entry (or the documented drop-thunk spelling); a renamed or
+            # deleted release function fails validation instead of leaving the
+            # contract pointing at a phantom discharge path.
+            errors.append(
+                f"{location} release-symbol {release_symbol!r} is not an "
+                "exported hew-runtime/hew-std symbol or known drop thunk"
+            )
         if discharge_depth not in DISCHARGE_DEPTHS:
             errors.append(
                 f"{location} discharge-depth must be one of {sorted(DISCHARGE_DEPTHS)}"
@@ -380,7 +459,13 @@ def validate_jit_symbol_classification(
             + ", ".join(missing_stdlib_exports)
             + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
         )
-    errors.extend(validate_ownership_contracts(classification))
+    errors.extend(
+        validate_ownership_contracts(
+            classification,
+            runtime_exports | stdlib_exports,
+            _extract_fn_param_counts([RUNTIME_SRC, STDLIB_SRC]),
+        )
+    )
     return errors
 
 

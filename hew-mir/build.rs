@@ -112,13 +112,16 @@ struct ContractRow {
     discharge_depth: String,
 }
 
-fn quoted_list(line: &str) -> Vec<String> {
-    let (_, value) = line.split_once('=').expect("params line must carry `=`");
+/// Parse a `params = [...]` array body. The TOML formatter wraps long arrays
+/// across lines, so the caller accumulates lines until the closing `]` and
+/// hands the joined body here.
+fn quoted_list(body: &str) -> Vec<String> {
+    let (_, value) = body.split_once('=').expect("params line must carry `=`");
     let value = value.trim();
     let inner = value
         .strip_prefix('[')
         .and_then(|v| v.strip_suffix(']'))
-        .expect("params must be a single-line array");
+        .expect("params must be a bracketed array");
     inner
         .split(',')
         .map(str::trim)
@@ -181,7 +184,8 @@ fn toml_ownership_contracts(path: &Path) -> BTreeMap<String, ContractRow> {
         }
     };
 
-    for line in source.lines() {
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
         let line = line.trim();
         if line == "[[ownership.contracts]]" {
             finish(current.take(), &mut contracts);
@@ -210,7 +214,16 @@ fn toml_ownership_contracts(path: &Path) -> BTreeMap<String, ContractRow> {
                 .expect("contract result must be quoted")
                 .clone_into(&mut row.result);
         } else if line.starts_with("params =") {
-            row.params = quoted_list(line);
+            // Accumulate a formatter-wrapped multi-line array until its `]`.
+            let mut body = line.to_owned();
+            while !body.trim_end().ends_with(']') {
+                let continuation = lines
+                    .next()
+                    .expect("unterminated params array in ownership contract");
+                body.push(' ');
+                body.push_str(continuation.trim());
+            }
+            row.params = quoted_list(&body);
         } else if line.starts_with("release-symbol =") {
             quoted_value(line)
                 .expect("contract release-symbol must be quoted")

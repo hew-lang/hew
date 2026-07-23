@@ -15243,7 +15243,7 @@ fn lower_instruction_with_cancel_drops(
             lower_actor_state_field_store(fn_ctx, *field_offset, *src)?;
             let _ = ctx;
         }
-        Instr::NeutralizePayloadSlot { place } => {
+        Instr::NeutralizePayloadSlot { place, .. } => {
             lower_neutralize_payload_slot(fn_ctx, *place)?;
             let _ = ctx;
         }

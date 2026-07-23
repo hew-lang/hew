@@ -4058,6 +4058,56 @@ pub enum FloatWidth {
     F64,
 }
 
+/// WHY an [`Instr::NeutralizePayloadSlot`] fires — the closed, compiler-owned
+/// set of discharge authorities (D159/U229). Every neutralize site names its
+/// authority so the fact is carried as data rather than re-derived from the
+/// surrounding instruction shape, and the fail-closed `DischargeAuthorityMissing`
+/// check knows which authorities structurally own a transferee.
+///
+/// The match on this enum is exhaustive at every consumer (no wildcard
+/// "unknown authority = assume fine" arm — `exhaustive-coverage`, L125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeutralizeAuthority {
+    /// The move-out arm of a consuming match: an `OwnedBinding`-provenance
+    /// projected payload binder is consumed, nulling the scrutinee's variant
+    /// slot (`hew-mir/src/lower/expr.rs`). The payload is consumed into an
+    /// in-flight expression, so there is no destination `Place` in hand —
+    /// `transferee` is `None` here by construction.
+    MoveOutArmConsume,
+    /// A fresh sole-owner ephemeral temp (`match f()`) whose payload is moved
+    /// out, nulling the temp. No re-readable origin and no persistent new owner
+    /// local — `transferee` is `None`.
+    EphemeralTempConsume,
+    /// A `SendAliasMode::TransferLastUse` send/ask argument funnel: the argument
+    /// is moved into a fresh by-value carrier `dest` and its source slot nulled
+    /// (`hew-mir/src/lower/mod.rs`). `transferee` is the `dest` carrier.
+    SendTransferLastUse,
+    /// A whole owned call-carrier consume: the carrier value is moved into a
+    /// fresh owner `dest` and its source slot nulled
+    /// (`hew-mir/src/lower/move_value.rs`). `transferee` is the `dest` owner.
+    WholeCarrierConsume,
+}
+
+impl NeutralizeAuthority {
+    /// Whether this authority structurally owns a `transferee` destination
+    /// `Place`. The funnel and whole-carrier authorities move into a named
+    /// `dest`; the move-out-arm authorities consume into an in-flight expression
+    /// with no destination local. A `None` transferee on a requires-transferee
+    /// authority is a defective (fact-erased) site the fail-closed
+    /// `DischargeAuthorityMissing` check rejects before codegen.
+    #[must_use]
+    pub fn requires_transferee(self) -> bool {
+        match self {
+            NeutralizeAuthority::SendTransferLastUse | NeutralizeAuthority::WholeCarrierConsume => {
+                true
+            }
+            NeutralizeAuthority::MoveOutArmConsume | NeutralizeAuthority::EphemeralTempConsume => {
+                false
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
     /// Semantic marker at actor-handler entry. Codegen emits no user-visible
@@ -4390,7 +4440,24 @@ pub enum Instr {
     /// a direct null store and an aggregate payload by nulling every heap leaf
     /// (`emit_overwrite_neutralize_*`), so every release symbol the scrutinee's
     /// drop later calls is a null-tolerant no-op.
-    NeutralizePayloadSlot { place: Place },
+    NeutralizePayloadSlot {
+        place: Place,
+        /// The new owner the neutralized storage's ownership transferred TO, when
+        /// it is a nameable `Place` at the emit site. `Some` at the send-transfer
+        /// funnels and the whole-carrier move (the move `dest` is in hand);
+        /// `None` at the move-out-arm consume hooks, where the payload is
+        /// consumed into an in-flight expression with no destination local yet
+        /// bound. The [`NeutralizeAuthority`] records which case applies, and the
+        /// fail-closed `DischargeAuthorityMissing` check rejects a `None` on an
+        /// authority that structurally owns a destination (see `check_to_diagnostic`).
+        transferee: Option<Place>,
+        /// WHY this neutralize fires — the closed, compiler-owned discharge
+        /// authority. Carried as data (D159/U229) so a downstream consumer reads
+        /// the recorded reason instead of re-deriving it from the surrounding
+        /// instruction shape, and the corroboration pass can pin it against the
+        /// independently-derived discharge set.
+        authority: NeutralizeAuthority,
+    },
     /// Neutralize one root-relative aggregate projection after its byte-copied
     /// value has transferred into a new owner. The path traverses inline record
     /// and tuple fields from `root`; clearing only the terminal slot leaves the

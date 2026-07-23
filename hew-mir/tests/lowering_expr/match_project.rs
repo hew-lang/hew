@@ -1050,6 +1050,7 @@ fn main() -> i64 {
                         variant_idx,
                         ..
                     },
+                ..
             } => Some(*variant_idx),
             _ => None,
         })

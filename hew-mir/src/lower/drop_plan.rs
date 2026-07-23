@@ -1369,7 +1369,7 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
     let mut neutralized_slots: HashSet<Place> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
-            if let Instr::NeutralizePayloadSlot { place } = instr {
+            if let Instr::NeutralizePayloadSlot { place, .. } = instr {
                 neutralized_slots.insert(*place);
             }
         }
@@ -1470,7 +1470,7 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
             // neutralize anywhere — see `collect_payload_alias_map`) or paid
             // by the `NeutralizePayloadSlot` that follows it; no event here.
         }
-        Instr::NeutralizePayloadSlot { place } => {
+        Instr::NeutralizePayloadSlot { place, .. } => {
             if let Some(root) = cx.tracked_carrier(*place) {
                 let entry = obligation_entry(state, root);
                 match entry.neutralized {
@@ -3341,7 +3341,7 @@ fn dedup_whole_value_handoff(
         .iter()
         .flat_map(|block| block.instructions.iter())
         .filter_map(|instr| match instr {
-            Instr::NeutralizePayloadSlot { place } => Some(*place),
+            Instr::NeutralizePayloadSlot { place, .. } => Some(*place),
             _ => None,
         })
         .collect();
@@ -7037,6 +7037,8 @@ mod obligation_balance_validator {
                 },
                 Instr::NeutralizePayloadSlot {
                     place: variant_place(1),
+                    transferee: Some(Place::Local(2)),
+                    authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
                 },
             ],
             Terminator::Return,

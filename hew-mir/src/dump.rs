@@ -926,8 +926,18 @@ fn render_instr(instr: &Instr) -> String {
                 render_place(src)
             )
         }
-        Instr::NeutralizePayloadSlot { place } => {
-            format!("neutralize_payload {}", render_place(place))
+        Instr::NeutralizePayloadSlot {
+            place,
+            transferee,
+            authority,
+        } => {
+            let transferee = transferee
+                .map(|t| format!(" -> {}", render_place(&t)))
+                .unwrap_or_default();
+            format!(
+                "neutralize_payload {}{transferee} [{authority:?}]",
+                render_place(place)
+            )
         }
         Instr::AggregateProjectionNeutralize { root, fields } => format!(
             "aggregate_projection_neutralize {} fields={fields:?}",

@@ -2384,6 +2384,9 @@ impl Builder {
                                 ProjectedPayloadOrigin::OwnedBinding(scrutinee) => {
                                     self.push_instr(Instr::NeutralizePayloadSlot {
                                         place: provenance.source_place,
+                                        transferee: None,
+                                        authority:
+                                            crate::model::NeutralizeAuthority::MoveOutArmConsume,
                                     });
                                     // #2523 F2 — a PARTIAL-PROJECTION consume-mark:
                                     // the owned scrutinee had one payload field
@@ -2404,6 +2407,9 @@ impl Builder {
                                 ProjectedPayloadOrigin::EphemeralTemp => {
                                     self.push_instr(Instr::NeutralizePayloadSlot {
                                         place: provenance.source_place,
+                                        transferee: None,
+                                        authority:
+                                            crate::model::NeutralizeAuthority::EphemeralTempConsume,
                                     });
                                 }
                                 ProjectedPayloadOrigin::Reject(reason) => {

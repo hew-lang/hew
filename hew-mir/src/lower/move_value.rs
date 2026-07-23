@@ -342,7 +342,11 @@ impl Builder {
             OwnedCarrierNeutralizeTarget::Whole(source) => {
                 let dest = self.alloc_local(ty.clone());
                 self.push_instr(Instr::Move { dest, src: value });
-                self.push_instr(Instr::NeutralizePayloadSlot { place: source });
+                self.push_instr(Instr::NeutralizePayloadSlot {
+                    place: source,
+                    transferee: Some(dest),
+                    authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                });
                 dest
             }
             OwnedCarrierNeutralizeTarget::Projection { root, fields } => {

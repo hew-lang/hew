@@ -4020,9 +4020,11 @@ fn prepare_owned_call_carriers(
                     dest,
                     src: arg.source,
                 });
-                block
-                    .instructions
-                    .push(Instr::NeutralizePayloadSlot { place: arg.source });
+                block.instructions.push(Instr::NeutralizePayloadSlot {
+                    place: arg.source,
+                    transferee: Some(dest),
+                    authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
+                });
                 if let Some(slot) = args.get_mut(arg.index) {
                     *slot = dest;
                 }
@@ -4513,7 +4515,11 @@ fn prepare_outbound_actor_payloads(
                             dest,
                             src: arg.source,
                         });
-                        prep.push(Instr::NeutralizePayloadSlot { place: arg.source });
+                        prep.push(Instr::NeutralizePayloadSlot {
+                            place: arg.source,
+                            transferee: Some(dest),
+                            authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
+                        });
                         if let Ok(plan) =
                             crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
                                 &arg.ty,

@@ -182,5 +182,24 @@ mod tests {
             .contract()
             .expect("hew_vec_get_owned is classified");
         assert_eq!(get_owned.result, ExternResultOwnership::Borrowed);
+
+        // `hew_string_drop` is THE universal String release: it consumes its
+        // single parameter (hew-runtime/src/string.rs `free_cstring`).
+        let string_drop = extern_ownership_contract("hew_string_drop")
+            .contract()
+            .expect("hew_string_drop is classified");
+        assert_eq!(string_drop.params, [ExternParamOwnership::Consume]);
+        assert_eq!(string_drop.result, ExternResultOwnership::None);
+
+        // `hew_tcp_write` reads its by-pointer BytesTriple without taking
+        // ownership (hew-runtime/src/transport.rs ABI doc).
+        let tcp_write = extern_ownership_contract("hew_tcp_write")
+            .contract()
+            .expect("hew_tcp_write is classified");
+        assert_eq!(
+            tcp_write.params,
+            [ExternParamOwnership::Borrow, ExternParamOwnership::Borrow]
+        );
+        assert_eq!(tcp_write.result, ExternResultOwnership::None);
     }
 }

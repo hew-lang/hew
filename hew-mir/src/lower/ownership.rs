@@ -538,7 +538,7 @@ impl Builder {
                 // unclassified symbol is an explicit `Absent`, never a
                 // fabricated contract.
                 debug_assert!(
-                    crate::ffi_contracts::extern_ownership_contract("hew_json_free")
+                    crate::ffi_contracts::extern_ownership_contract("hew_string_drop")
                         .contract()
                         .is_some_and(|contract| contract.params
                             == [crate::ffi_contracts::ExternParamOwnership::Consume]),

@@ -183,8 +183,13 @@ def _extract_native_exports(source_dir: Path) -> set[str]:
     """
     fn_pattern = re.compile(
         r"#\[no_mangle\]"
-        r"(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*"  # skip interleaved attrs
-        r'\s*(?:pub\s+)?(?:unsafe\s+)?extern\s+"C(?:-unwind)?"\s+fn\s+'
+        # Skip interleaved attributes AND doc/line comments: several modules
+        # (quic.rs among others) place `#[no_mangle]` BEFORE the doc comment,
+        # and a scanner that stops at `///` silently drops those exports from
+        # the candidate ABI (they can then never be classified or contracted).
+        # `const` qualifiers (e.g. hew_stream_pair_is_valid) are accepted too.
+        r"(?:\s*(?:#\[[^\]]*(?:\([^)]*\))?[^\]]*\]|//[^\n]*))*"
+        r'\s*(?:pub\s+)?(?:const\s+)?(?:unsafe\s+)?extern\s+"C(?:-unwind)?"\s+fn\s+'
         r"(\w+)",
         re.DOTALL,
     )

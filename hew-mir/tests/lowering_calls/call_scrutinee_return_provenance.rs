@@ -6,8 +6,9 @@
 //!
 //! - a forwarder whose summary carries `PARAM` (`fn passthru(x) { x }`) used as a
 //!   match / while-let / let-else / if-let / discarded scrutinee REJECTS with
-//!   exactly one `NotYetImplemented` diagnostic and NO partial MIR (no
-//!   `__hew_call_scrutinee` owner mint, no `NeutralizePayloadSlot`);
+//!   exactly one `NotYetImplemented` diagnostic and NO partial scrutinee MIR
+//!   (no `__hew_call_scrutinee` owner mint and no neutralization of a call
+//!   result; independent call-carrier transfers may neutralize argument slots);
 //! - an `OPAQUE`-only module fn (a Hew fn forwarding a heap-returning extern
 //!   result, the jwt/encrypt shape) takes the interim `LegacyModuleCall` path —
 //!   it COMPILES and STILL mints the `__hew_call_scrutinee` owner byte-for-byte as
@@ -98,13 +99,31 @@ fn count_owner_mints(p: &IrPipeline) -> usize {
         .count()
 }
 
-/// True when ANY lowered function emits a `NeutralizePayloadSlot` instruction.
-fn any_neutralize(p: &IrPipeline) -> bool {
+/// True when any lowered function neutralizes a direct call's result place.
+///
+/// Other ownership authorities may legitimately neutralize call arguments or
+/// callee parameters. The #2648 invariant is narrower: a rejected scrutinee
+/// must never partially consume the result produced by its rejected call.
+fn any_call_result_neutralize(p: &IrPipeline) -> bool {
     p.raw_mir.iter().any(|f| {
+        let call_results: Vec<_> = f
+            .blocks
+            .iter()
+            .filter_map(|b| match &b.terminator {
+                hew_mir::Terminator::Call {
+                    dest: Some(dest), ..
+                } => Some(*dest),
+                _ => None,
+            })
+            .collect();
         f.blocks.iter().any(|b| {
-            b.instructions
-                .iter()
-                .any(|i| matches!(i, hew_mir::Instr::NeutralizePayloadSlot { .. }))
+            b.instructions.iter().any(|i| {
+                matches!(
+                    i,
+                    hew_mir::Instr::NeutralizePayloadSlot { place }
+                        if call_results.contains(place)
+                )
+            })
         })
     })
 }
@@ -143,8 +162,8 @@ fn forwarder_borrow_only_match_rejects_with_no_owner_or_neutralize() {
         "a rejected forwarder scrutinee must mint NO __hew_call_scrutinee owner"
     );
     assert!(
-        !any_neutralize(&p),
-        "a rejected forwarder scrutinee must emit NO NeutralizePayloadSlot"
+        !any_call_result_neutralize(&p),
+        "a rejected forwarder scrutinee must not neutralize its call result"
     );
 }
 
@@ -600,8 +619,9 @@ fn payload_move_reject_count(p: &IrPipeline) -> usize {
 #[test]
 fn twin_call_forwarder_move_out_rejects_with_no_neutralize() {
     // The #2523 twin repro: a PARAM forwarder scrutinee whose Ok payload is
-    // MOVED OUT. The preflight rejects it before lowering, so no owner and no
-    // NeutralizePayloadSlot are emitted (the twin double-free is closed).
+    // MOVED OUT. The preflight rejects it before lowering, so no owner is
+    // minted and its call-result place is never neutralized (the twin
+    // double-free is closed).
     let src = format!(
         "{FORWARDER}\n\
          fn sink(s: string) -> i64 {{ 1 }}\n\
@@ -617,8 +637,8 @@ fn twin_call_forwarder_move_out_rejects_with_no_neutralize() {
         p.diagnostics
     );
     assert!(
-        !any_neutralize(&p),
-        "a rejected twin scrutinee must emit NO NeutralizePayloadSlot"
+        !any_call_result_neutralize(&p),
+        "a rejected twin scrutinee must not neutralize its call result"
     );
     assert!(!any_owner_minted(&p), "and NO owner mint");
 }
@@ -689,7 +709,8 @@ fn method_call_forwarder_move_out_rejects_with_no_owner_or_neutralize() {
     // (`fn forward(self, x) -> T { x }`) used as a match scrutinee whose payload
     // is moved out. The method-call scrutinee resolves through the same
     // return-provenance authority (summary `{PARAM}`), so the preflight rejects
-    // it before lowering — exactly one diagnostic, no owner mint, no neutralize.
+    // it before lowering — exactly one diagnostic, no owner mint, and no
+    // neutralization of the rejected call result.
     let src = r"
         type Holder { tag: i64; }
         impl Holder {
@@ -713,8 +734,8 @@ fn method_call_forwarder_move_out_rejects_with_no_owner_or_neutralize() {
         "a rejected method-call forwarder must mint NO owner"
     );
     assert!(
-        !any_neutralize(&p),
-        "a rejected method-call forwarder must emit NO NeutralizePayloadSlot"
+        !any_call_result_neutralize(&p),
+        "a rejected method-call forwarder must not neutralize its call result"
     );
 }
 
@@ -757,7 +778,10 @@ fn closure_match_forwarder_over_capture_rejects() {
         "no __hew_call_scrutinee owner may be minted in ANY lowered function \
          (including the closure shim)"
     );
-    assert!(!any_neutralize(&p), "and no NeutralizePayloadSlot");
+    assert!(
+        !any_call_result_neutralize(&p),
+        "and no neutralized call result"
+    );
 }
 
 #[test]
@@ -974,5 +998,5 @@ fn guard_buried_return_forwarder_rejects() {
         !any_owner_minted(&p),
         "no owner may be minted over the guard-forwarded borrow"
     );
-    assert!(!any_neutralize(&p));
+    assert!(!any_call_result_neutralize(&p));
 }

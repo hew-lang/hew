@@ -616,6 +616,52 @@ fn collect_method_item_ids(
         .map(|(&id, _)| id)
         .collect()
 }
+
+fn resolved_ty_matches_impl_self(ty: &ResolvedTy, self_ty: &str) -> bool {
+    let rendered = ty.user_facing().to_string();
+    matches!(ty, ResolvedTy::Named { name, .. } if name == self_ty)
+        || rendered
+            .split('<')
+            .next()
+            .is_some_and(|root| root == self_ty)
+}
+
+/// Collect the subset of `impl` items whose parameter zero is a true receiver.
+///
+/// An associated/static function is present in `collect_method_item_ids`, but
+/// its first value parameter is ordinary call data and must retain the same
+/// carrier/consume contract as any other non-receiver parameter. Receiver
+/// identity follows the checker authority: bare `self`, or a parameter whose
+/// resolved named type is the enclosing impl's Self type.
+fn collect_receiver_method_item_ids(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    items: &[HirItem],
+    methods: &HashSet<hew_hir::ItemId>,
+) -> HashSet<hew_hir::ItemId> {
+    let method_self_type: HashMap<&str, &str> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Impl(b) => Some(
+                b.method_symbols
+                    .iter()
+                    .map(|sym| (sym.as_str(), b.self_type_name.as_str())),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    fns.iter()
+        .filter(|(id, _)| methods.contains(id))
+        .filter_map(|(&id, &f)| {
+            let param0 = f.params.first()?;
+            (param0.name == "self"
+                || method_self_type
+                    .get(f.name.as_str())
+                    .is_some_and(|self_ty| resolved_ty_matches_impl_self(&param0.ty, self_ty)))
+            .then_some(id)
+        })
+        .collect()
+}
 /// Force-classify every NON-RECEIVER `#[resource]`/`#[linear]` value parameter
 /// of an `impl`/trait method as CONSUME (callee owns and drops it).
 ///
@@ -665,9 +711,9 @@ fn force_consume_method_nonreceiver_resource_params(
         }
         let receiver_arity = usize::from(f.params.first().is_some_and(|p| {
             p.name == "self"
-                || method_self_type.get(f.name.as_str()).is_some_and(
-                    |self_ty| matches!(&p.ty, ResolvedTy::Named { name, .. } if name == self_ty),
-                )
+                || method_self_type
+                    .get(f.name.as_str())
+                    .is_some_and(|self_ty| resolved_ty_matches_impl_self(&p.ty, self_ty))
         }));
         for (i, param) in f.params.iter().enumerate().skip(receiver_arity) {
             if is_user_resource_ty(&param.ty, type_classes) {
@@ -729,9 +775,9 @@ fn collect_borrow_receiver_methods(
         .filter_map(|(&id, &f)| {
             let param0 = f.params.first()?;
             let is_receiver = param0.name == "self"
-                || method_self_type.get(f.name.as_str()).is_some_and(
-                    |self_ty| matches!(&param0.ty, ResolvedTy::Named { name, .. } if name == self_ty),
-                );
+                || method_self_type
+                    .get(f.name.as_str())
+                    .is_some_and(|self_ty| resolved_ty_matches_impl_self(&param0.ty, self_ty));
             (is_receiver && !is_user_resource_ty(&param0.ty, type_classes)).then_some(id)
         })
         .collect()
@@ -765,8 +811,10 @@ fn receiver_is_whole_owned_operand(receiver: &HirExpr) -> bool {
 fn compute_call_param_consumption(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     methods: &HashSet<hew_hir::ItemId>,
+    true_receiver_methods: &HashSet<hew_hir::ItemId>,
     receiver_methods: &HashSet<hew_hir::ItemId>,
     resource_param_consume: &HashMap<(hew_hir::ItemId, usize), bool>,
+    owned_projection_sinks: bool,
 ) -> HashMap<(hew_hir::ItemId, usize), bool> {
     // Seed every parameter as BORROW, except explicit `consume` parameters and
     // resource parameters the RAII table already classified CONSUME. The
@@ -794,7 +842,9 @@ fn compute_call_param_consumption(
                     let cx = ScanCtx {
                         consume: &consume,
                         methods,
+                        true_receiver_methods,
                         receiver_methods,
+                        owned_projection_sinks,
                     };
                     param_consumed_in_body(&f.body, param.id, &cx)
                 };
@@ -882,6 +932,10 @@ pub(super) fn compute_param_ownership(
     // move intent and is never relaxed by the borrow downgrade; associated/static
     // `impl` functions are captured here too.
     let methods = collect_method_item_ids(fns, items);
+    // Only this subset owns a receiver slot. Associated/static functions are
+    // method items for symbol/dispatch purposes, but parameter zero remains
+    // ordinary call data and must not lose carrier ownership evidence.
+    let true_receiver_methods = collect_receiver_method_item_ids(fns, items, &methods);
     // Shape A of #2753: the subset of `methods` whose param 0 is a by-value
     // NON-resource `self` receiver — the receiver slot the borrow-site collector
     // records so the caller keeps a value-receiver record/collection's
@@ -915,7 +969,9 @@ pub(super) fn compute_param_ownership(
                     let cx = ScanCtx {
                         consume: &param_consume,
                         methods: &methods,
+                        true_receiver_methods: &true_receiver_methods,
                         receiver_methods: &receiver_methods,
+                        owned_projection_sinks: false,
                     };
                     param_consumed_in_body(&f.body, param.id, &cx)
                 };
@@ -929,8 +985,29 @@ pub(super) fn compute_param_ownership(
             break;
         }
     }
-    let call_param_consume =
-        compute_call_param_consumption(fns, &methods, &receiver_methods, &param_consume);
+    let call_param_consume = compute_call_param_consumption(
+        fns,
+        &methods,
+        &true_receiver_methods,
+        &receiver_methods,
+        &param_consume,
+        false,
+    );
+    let mut call_param_owned_carrier = compute_call_param_consumption(
+        fns,
+        &methods,
+        &true_receiver_methods,
+        &receiver_methods,
+        &param_consume,
+        true,
+    );
+    // A by-value method receiver is governed by the receiver's accurate
+    // read/consume intent, not the ordinary free-call carrier contract. In
+    // particular, `Arena<T>::insert(self, value)` mutates through borrowed
+    // `self`; only `value` crosses into owned storage.
+    for method in &true_receiver_methods {
+        call_param_owned_carrier.remove(&(*method, 0));
+    }
     // With the verdict final, collect every free-call argument `SiteId` whose
     // target parameter is a resource BORROW. The arg's `Use` is then emitted
     // `Read` instead of the HIR-over-stamped `Consume`, so the caller keeps the
@@ -953,7 +1030,9 @@ pub(super) fn compute_param_ownership(
         &ScanCtx {
             consume: &param_consume,
             methods: &methods,
+            true_receiver_methods: &true_receiver_methods,
             receiver_methods: &receiver_methods,
+            owned_projection_sinks: false,
         },
     );
     let proven_borrow_arg_sites = collect_module_borrow_arg_sites(
@@ -961,7 +1040,9 @@ pub(super) fn compute_param_ownership(
         &ScanCtx {
             consume: &call_param_consume,
             methods: &methods,
+            true_receiver_methods: &true_receiver_methods,
             receiver_methods: &receiver_methods,
+            owned_projection_sinks: false,
         },
     );
     ParamOwnershipFacts {
@@ -969,7 +1050,21 @@ pub(super) fn compute_param_ownership(
         borrow_arg_sites,
         proven_borrow_arg_sites,
         call_param_consume,
+        call_param_owned_carrier,
+        machine_decl_names: collect_machine_decl_names(items),
     }
+}
+/// Declared `machine` names plus their synthesised `<Name>Event` companions —
+/// the machines-ONLY dual of the classification-wide `machine_layout_names`.
+fn collect_machine_decl_names(items: &[HirItem]) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Machine(md) => Some([md.name.clone(), format!("{}Event", md.name)]),
+            _ => None,
+        })
+        .flatten()
+        .collect()
 }
 /// True when `expr` is a bare reference to binding `b_p`.
 fn is_binding_ref(expr: &HirExpr, b_p: BindingId) -> bool {
@@ -993,6 +1088,23 @@ fn projection_base_consumes(base: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) ->
         false
     } else {
         scan_expr_for_consume(base, b_p, pc)
+    }
+}
+
+/// True when a projection chain is rooted directly in parameter `b_p`.
+/// Wrappers that compute a new value are deliberately excluded: only a place
+/// projection can be neutralized by the callee-side carrier machinery.
+fn projection_is_rooted_in(expr: &HirExpr, b_p: BindingId) -> bool {
+    if is_binding_ref(expr, b_p) {
+        return true;
+    }
+    match &expr.kind {
+        HirExprKind::FieldAccess { object, .. } => projection_is_rooted_in(object, b_p),
+        HirExprKind::TupleIndex { tuple, .. } => projection_is_rooted_in(tuple, b_p),
+        HirExprKind::Index { container, .. } | HirExprKind::Slice { container, .. } => {
+            projection_is_rooted_in(container, b_p)
+        }
+        _ => false,
     }
 }
 /// Does any use of resource parameter `b_p` in `block` CONSUME it under the
@@ -1088,10 +1200,18 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         //  * the callee is a FREE function and slot `j`'s target parameter is
         //    classified BORROW in `pc`.
         // Every other arg form recurses (and a bare ref to a Consume/unresolved
-        // target bottoms out at the leaf rule → consume). The callee slot is
-        // scanned so a parameter used AS the callee (an indirect call) consumes.
+        // target bottoms out at the leaf rule → consume). Invoking a callable
+        // parameter, including through one of its place projections, only reads
+        // the callable pair: `CallClosure` does not store or take ownership of
+        // its environment. Wrappers that compute a new callee remain outside
+        // this place-root proof and recurse fail-closed.
         HirExprKind::Call { callee, args } => {
-            if scan_expr_for_consume(callee, b_p, pc) {
+            let borrows_callable_param = matches!(
+                &callee.ty,
+                ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+            ) && callee.intent == IntentKind::Read
+                && projection_is_rooted_in(callee, b_p);
+            if !borrows_callable_param && scan_expr_for_consume(callee, b_p, pc) {
                 return true;
             }
             let callee_item = callee_item_id(callee);
@@ -1099,9 +1219,27 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
             for (j, arg) in args.iter().enumerate() {
                 if is_binding_ref(arg, b_p) {
                     let borrows = if is_method {
-                        arg.intent == IntentKind::Read
+                        // Carrier inference needs positive ownership evidence,
+                        // not the fail-closed move intent stamped on a method
+                        // receiver. Receiver slot zero retains the method's
+                        // established borrowed-self authority (Arena and the
+                        // declarative string/collection FFI surface).
+                        (pc.owned_projection_sinks
+                            && j == 0
+                            && callee_item.is_some_and(|id| pc.true_receiver_methods.contains(&id)))
+                            || arg.intent == IntentKind::Read
                     } else {
-                        callee_item.and_then(|id| pc.consume.get(&(id, j))).copied() == Some(false)
+                        let target = callee_item.and_then(|id| pc.consume.get(&(id, j))).copied();
+                        if pc.owned_projection_sinks {
+                            // An unresolved/extern target supplies no proof
+                            // that it stores the argument. Keep carrier facts
+                            // monotone from explicit sinks and already-proven
+                            // carrier callees only; the ordinary consume table
+                            // remains fail-closed for move checking.
+                            target != Some(true)
+                        } else {
+                            target == Some(false)
+                        }
                     };
                     if !borrows {
                         return true;
@@ -1215,15 +1353,36 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
                     .as_deref()
                     .is_some_and(|e| scan_expr_for_consume(e, b_p, pc))
         }
+        // Owned-projection sinks require the projected RESULT to own heap: a
+        // primitive-scalar extraction (`v[i]` on `Vec<i64>`, `p.fd`, `t.0` of
+        // `i64`) copies bits and carries no ownership out of the container, so
+        // it is vacuous carrier evidence even when the HIR stamps the
+        // extraction `Consume`. Classifying the container param as an owned
+        // carrier on scalar reads turns a shared-mutation borrow (`v.set`
+        // through the param) into a callee-side clone, silently discarding
+        // every mutation the caller expected to observe.
         HirExprKind::StructInit { fields, base, .. } => {
-            fields
-                .iter()
-                .any(|(_, v)| scan_expr_for_consume(v, b_p, pc))
-                || base
-                    .as_deref()
-                    .is_some_and(|b| scan_expr_for_consume(b, b_p, pc))
+            fields.iter().any(|(_, v)| {
+                (pc.owned_projection_sinks
+                    && !is_binding_ref(v, b_p)
+                    && !crate::return_provenance::ty_is_scalar_non_heap(&v.ty)
+                    && projection_is_rooted_in(v, b_p))
+                    || scan_expr_for_consume(v, b_p, pc)
+            }) || base.as_deref().is_some_and(|b| {
+                (pc.owned_projection_sinks
+                    && !is_binding_ref(b, b_p)
+                    && !crate::return_provenance::ty_is_scalar_non_heap(&b.ty)
+                    && projection_is_rooted_in(b, b_p))
+                    || scan_expr_for_consume(b, b_p, pc)
+            })
         }
-        HirExprKind::FieldAccess { object, .. } => projection_base_consumes(object, b_p, pc),
+        HirExprKind::FieldAccess { object, .. } => {
+            (pc.owned_projection_sinks
+                && expr.intent == IntentKind::Consume
+                && !crate::return_provenance::ty_is_scalar_non_heap(&expr.ty)
+                && projection_is_rooted_in(object, b_p))
+                || projection_base_consumes(object, b_p, pc)
+        }
         HirExprKind::ScopeDeadline { duration, body } => {
             scan_expr_for_consume(duration, b_p, pc) || scan_block_for_consume(body, b_p, pc)
         }
@@ -1255,9 +1414,30 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
                     .iter()
                     .any(|a| scan_expr_for_consume(a, b_p, pc))
         }),
-        HirExprKind::TupleIndex { tuple, .. } => projection_base_consumes(tuple, b_p, pc),
+        HirExprKind::TupleIndex { tuple, .. } => {
+            (pc.owned_projection_sinks
+                && expr.intent == IntentKind::Consume
+                && !crate::return_provenance::ty_is_scalar_non_heap(&expr.ty)
+                && projection_is_rooted_in(tuple, b_p))
+                || projection_base_consumes(tuple, b_p, pc)
+        }
+        // Handle-based collections (`Vec`, `HashMap`, `string`) hand an owned
+        // element OUT as a NEW `+1` owner (`hew_vec_get_clone` /
+        // `hew_vec_get_str` / `hew_hashmap_get_clone_layout` — the
+        // `PROVED_OWNER_METHOD_SYMBOLS` contract): the container keeps its
+        // element and its release authority, so an index extraction is NEVER
+        // ownership evidence against the container param. Only an INLINE
+        // aggregate container (a fixed array, whose element load is a
+        // byte-copy alias like a record field) can carry ownership out
+        // through an index, and then only for a heap-owning element.
         HirExprKind::Index { container, index } => {
-            projection_base_consumes(container, b_p, pc) || scan_expr_for_consume(index, b_p, pc)
+            (pc.owned_projection_sinks
+                && expr.intent == IntentKind::Consume
+                && matches!(container.ty, ResolvedTy::Array(..))
+                && !crate::return_provenance::ty_is_scalar_non_heap(&expr.ty)
+                && projection_is_rooted_in(container, b_p))
+                || projection_base_consumes(container, b_p, pc)
+                || scan_expr_for_consume(index, b_p, pc)
         }
         HirExprKind::Slice {
             container,
@@ -1265,7 +1445,10 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
             end,
             ..
         } => {
-            projection_base_consumes(container, b_p, pc)
+            (pc.owned_projection_sinks
+                && expr.intent == IntentKind::Consume
+                && projection_is_rooted_in(container, b_p))
+                || projection_base_consumes(container, b_p, pc)
                 || start
                     .as_deref()
                     .is_some_and(|s| scan_expr_for_consume(s, b_p, pc))
@@ -1282,15 +1465,28 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         HirExprKind::MachineTakeEmits {
             receiver, event, ..
         } => scan_expr_for_consume(receiver, b_p, pc) || scan_expr_for_consume(event, b_p, pc),
+        // Rc/Weak intrinsic. Every op reads its RECEIVER handle through a
+        // borrow: `clone`/`downgrade`/`weak_clone` mint a NEW independently
+        // counted handle, the count/uniqueness probes read the header, and
+        // `set`/`get` reach the payload through the still-caller-owned cell.
+        // A bare-ref receiver must therefore be intercepted as a borrow slot
+        // (mirroring the `Read`-intent method receiver rule) instead of
+        // falling to the leaf consume rule — otherwise every by-value Rc/Weak
+        // parameter whose methods are called is misclassified as an owning
+        // sink and admitted as a call carrier. The VALUE operand (`Rc::new`,
+        // `set`) IS stored into the cell and keeps the consume scan.
         HirExprKind::RcIntrinsic {
             receiver, value, ..
         } => {
-            receiver
+            receiver.as_deref().is_some_and(|expr| {
+                if is_binding_ref(expr, b_p) {
+                    false
+                } else {
+                    scan_expr_for_consume(expr, b_p, pc)
+                }
+            }) || value
                 .as_deref()
                 .is_some_and(|expr| scan_expr_for_consume(expr, b_p, pc))
-                || value
-                    .as_deref()
-                    .is_some_and(|expr| scan_expr_for_consume(expr, b_p, pc))
         }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }

@@ -225,7 +225,8 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::ValueSnapshotDrop { .. }
         // A payload-slot neutralize writes a constant null — it produces no
         // interior-alias dest (it retires one).
-        | Instr::NeutralizePayloadSlot { .. } => None,
+        | Instr::NeutralizePayloadSlot { .. }
+        | Instr::AggregateProjectionNeutralize { .. } => None,
     }
 }
 fn string_place_is_typed(place: Place, local_tys: &[ResolvedTy]) -> bool {

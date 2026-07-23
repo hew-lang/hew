@@ -759,15 +759,21 @@ fn render_instr(instr: &Instr) -> String {
             src,
             ty,
             plan,
+            boundary,
         } => format!(
-            "{} = snapshot_clone {} ty={} plan={:?}",
+            "{} = snapshot_clone {} ty={} plan={:?} boundary={boundary:?}",
             render_place(dest),
             render_place(src),
             ty.user_facing(),
             plan.root()
         ),
-        Instr::ValueSnapshotDrop { value, ty, plan } => format!(
-            "snapshot_drop {} ty={} plan={:?}",
+        Instr::ValueSnapshotDrop {
+            value,
+            ty,
+            plan,
+            boundary,
+        } => format!(
+            "snapshot_drop {} ty={} plan={:?} boundary={boundary:?}",
             render_place(value),
             ty.user_facing(),
             plan.root()
@@ -923,6 +929,10 @@ fn render_instr(instr: &Instr) -> String {
         Instr::NeutralizePayloadSlot { place } => {
             format!("neutralize_payload {}", render_place(place))
         }
+        Instr::AggregateProjectionNeutralize { root, fields } => format!(
+            "aggregate_projection_neutralize {} fields={fields:?}",
+            render_place(root)
+        ),
 
         // Actor spawn
         Instr::SpawnActor {

@@ -1,0 +1,41 @@
+//! Reject: an owned call-carrier consumed by a project match on one path
+//! to an exit that another path reaches with the carrier still whole.
+//!
+//! A consuming record/tuple destructure takes over the carrier's release
+//! authority: the arm's binder discharge and in-place field drops release
+//! every owned field, so the callee's terminal snapshot drop must be
+//! discharged on paths that flow through the match. When a conditional
+//! consumes the carrier on one branch and rejoins the other branch at a
+//! shared `return`, that exit is reachable both through the match (fields
+//! already released — a terminal drop double-frees) and around it (the
+//! carrier still whole — no terminal drop leaks). No single release
+//! authority covers the exit, so MIR refuses fail-closed with
+//! `E_NOT_YET_IMPLEMENTED: owned call-carrier `Packet` conditionally
+//! consumed before a shared exit` instead of shipping either memory bug.
+//!
+//! Observable contract: `hew check` fails non-zero with the
+//! NotYetImplemented diagnostic. A regression that admits this shape
+//! either leaks the two string fields per `skip=true` call (terminal drop
+//! cancelled globally) or double-frees them per `skip=false` call
+//! (terminal drop kept globally).
+
+type Packet {
+    tag: string;
+    body: string;
+}
+
+fn measure(p: Packet, skip: bool) -> i64 {
+    var total: i64 = 0;
+    if !skip {
+        total = match p {
+            Packet { tag, body } => tag.len() + body.len(),
+        };
+    }
+    total
+}
+
+fn main() -> i64 {
+    let kept = measure(Packet { tag: string_concat("t", "g"), body: string_concat("b", "d") }, true);
+    let drained = measure(Packet { tag: string_concat("t", "g"), body: string_concat("b", "d") }, false);
+    kept + drained - 4
+}

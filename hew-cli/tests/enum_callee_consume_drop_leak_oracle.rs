@@ -107,6 +107,55 @@ fn move_out_source(frames: usize) -> String {
     )
 }
 
+/// MIXED-ARM pin: the `Ok` arm MOVES the payload out (the returned binder owns
+/// it; the arm neutralizes the variant slot so the callee's carrier drop
+/// no-ops on that path) while the `Err` arm only reads (its payload must be
+/// released by the callee's carrier drop on that path). Exactly-once on BOTH
+/// paths is the per-arm path-sensitivity tooth: a path-insensitive shell drop
+/// double-frees the `Ok` path; a path-insensitive suppression leaks the `Err`
+/// path. `ef` per iteration: Ok yields "ab" (2), Err yields "err" (3).
+fn mixed_move_out_and_read_source(frames: usize) -> String {
+    format!(
+        "fn ef(e: Result<string, string>) -> string {{ match e {{ Ok(x) => x, Err(y) => \"e\" + \"rr\" }} }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..{frames} {{\n\
+         \x20       let s = ef(Ok(\"a\" + \"b\"));\n\
+         \x20       let t = ef(Err(\"c\" + \"d\"));\n\
+         \x20       total = total + s.len() + t.len();\n\
+         \x20   }}\n\
+         \x20   if total != {frames} * 5 {{ return 76; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// LET-SHARE pin: `let s = x` on a `string` payload binder is a RETAIN-share
+/// (+1 on the buffer), not a move — the variant slot keeps its release
+/// authority and the callee's carrier drop releases the original count while
+/// the retained binding crosses to the caller. Neutralizing the slot on a
+/// share edge leaks one buffer per call; treating the share as a move
+/// double-frees.
+fn move_out_via_let_share_source(frames: usize) -> String {
+    format!(
+        "fn ef(e: Result<string, string>) -> string {{\n\
+         \x20   match e {{\n\
+         \x20       Ok(x) => {{ let s = x; s }},\n\
+         \x20       Err(y) => y\n\
+         \x20   }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..{frames} {{\n\
+         \x20       let s = ef(Ok(\"a\" + \"b\"));\n\
+         \x20       total = total + s.len();\n\
+         \x20   }}\n\
+         \x20   if total != {frames} * 2 {{ return 77; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 /// Poisoned-allocator exactly-once pin: a leak leaves the payload behind (caught
 /// by the slope test); a double-free (a callee shell drop that races the caller
 /// drop, or a shell drop on a move-out arm) aborts under the scribbled
@@ -126,6 +175,56 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
          once by the callee — and never on a move-out arm;\n{}",
         describe_output(&output)
     );
+}
+
+/// PAYLOAD-FORWARD pin: a consuming match arm forwards the moved-out string
+/// payload binder into a summary-consuming callee whose `string` param stays
+/// on the `CoW` borrow spine (never carrier-registered). The funnel neutralizes
+/// the variant slot and hands release authority to the BINDER, whose
+/// elaborated drop releases the transferred count after the call returns; the
+/// callee's copy-in mints its own independent owner. Exactly-once teeth on
+/// both callee liveness shapes: `stash` consumes the binder as a last use
+/// (push handoff), `stash_after` keeps the binder live past the push (retain
+/// mint). Skipping the binder drop leaks the payload per call; re-arming the
+/// variant slot double-frees it.
+fn payload_forward_source(frames: usize) -> String {
+    format!(
+        "fn stash(s: string) -> i64 {{\n\
+         \x20   let v: Vec<string> = Vec::new();\n\
+         \x20   v.push(s);\n\
+         \x20   v.len()\n\
+         }}\n\
+         fn stash_after(s: string) -> i64 {{\n\
+         \x20   let v: Vec<string> = Vec::new();\n\
+         \x20   v.push(s);\n\
+         \x20   v.len() + s.len()\n\
+         }}\n\
+         fn forward_last(e: Result<string, string>) -> i64 {{\n\
+         \x20   match e {{ Ok(x) => stash(x), Err(y) => y.len() }}\n\
+         }}\n\
+         fn forward_live(e: Result<string, string>) -> i64 {{\n\
+         \x20   match e {{ Ok(x) => stash_after(x), Err(y) => y.len() }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..{frames} {{\n\
+         \x20       total = total + forward_last(Ok(\"a\" + \"b\"));\n\
+         \x20       total = total + forward_live(Ok(\"c\" + \"d\"));\n\
+         \x20   }}\n\
+         \x20   if total != {frames} * 4 {{ return 78; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+#[test]
+fn payload_forward_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("enum_callee_payload_forward", payload_forward_source);
+}
+
+#[test]
+fn payload_forward_does_not_double_free() {
+    assert_no_double_free("payload_forward_df", &payload_forward_source(50));
 }
 
 #[test]
@@ -166,4 +265,24 @@ fn user_enum_consume_does_not_double_free() {
 #[test]
 fn move_out_arm_does_not_double_free() {
     assert_no_double_free("move_out_df", &move_out_source(50));
+}
+
+#[test]
+fn mixed_move_out_and_read_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("enum_callee_mixed_arms", mixed_move_out_and_read_source);
+}
+
+#[test]
+fn mixed_move_out_and_read_does_not_double_free() {
+    assert_no_double_free("mixed_arms_df", &mixed_move_out_and_read_source(50));
+}
+
+#[test]
+fn move_out_via_let_share_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("enum_callee_let_share", move_out_via_let_share_source);
+}
+
+#[test]
+fn move_out_via_let_share_does_not_double_free() {
+    assert_no_double_free("let_share_df", &move_out_via_let_share_source(50));
 }

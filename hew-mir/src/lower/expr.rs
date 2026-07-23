@@ -1773,12 +1773,15 @@ impl Builder {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "single match over assignable HIR target shapes (binding, record field, \
-                  actor field, HashMap index); each arm is a fail-closed boundary rule and \
-                  splitting would obscure the exhaustiveness requirement"
+        reason = "one exhaustive match keeps assignment boundary rules together"
     )]
     fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
-        let Some(src) = self.lower_value(value) else {
+        let src = if self.assign_target_stays_copy_in(target, value) {
+            self.lower_value(value)
+        } else {
+            self.lower_value_for_move(value)
+        };
+        let Some(src) = src else {
             return;
         };
         if let Some((field_offset, _)) = self.actor_state_field_for_target(target) {
@@ -1902,12 +1905,7 @@ impl Builder {
                 // `BindingRef` whose effective MIR use intent is `Consume`
                 // moves. A borrowed/read binding stays COPY-IN, as do
                 // constructions embedding a whole by-value parameter.
-                let effective_symbol = if target_symbol.as_str() == "hew_vec_set_owned"
-                    && (Self::expr_is_materialized_owner(
-                        value,
-                        &self.funcupdate_fn_returns_fresh,
-                        &self.funcupdate_param_ids,
-                    ) || self.is_consumed_bound_local(value))
+                let effective_symbol = if self.vec_set_owned_assign_moves_rhs(target_symbol, value)
                 {
                     "hew_vec_set_owned_move"
                 } else {
@@ -4044,6 +4042,8 @@ impl Builder {
                     field_offset,
                     dest,
                 });
+                let field_ty = self.subst_ty(&expr.ty);
+                self.note_carrier_projection(record_place, field_offset.0, dest, &field_ty);
                 Some(dest)
             }
             HirExprKind::Scope { body } => Some(self.lower_task_scope(body)),
@@ -4167,6 +4167,8 @@ impl Builder {
                     field_index,
                     dest,
                 });
+                let field_ty = self.subst_ty(&expr.ty);
+                self.note_carrier_projection(inner_place, field_index, dest, &field_ty);
                 Some(dest)
             }
             HirExprKind::Index { container, index } => {
@@ -7857,6 +7859,7 @@ impl Builder {
             self.proven_borrow_call_args
                 .insert(self.current_block_id, proven_borrow_args);
         }
+        self.note_owned_call_site(callee_item, hir_args, &arg_places);
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
             builtin,

@@ -66,10 +66,11 @@ pub use model::{
     LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirCheck, MirConst, MirConstValue,
     MirDiagnostic, MirDiagnosticKind, MirHeapLayouts, MirLint, MirScope, MirStatement,
     ModuleCapabilities, Place, PointerWidth, PolymorphicMirFunction, PoolCount,
-    ProjectedPayloadRejectReason, RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall,
-    SelectArm, SelectArmKind, SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership, StableActorRole,
-    Strategy, SupervisorChildLayout, SupervisorConfigParam, SupervisorLayout, SuspendKind,
-    Terminator, ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
+    PreparedCarrierBoundary, ProjectedPayloadRejectReason, RawMirFunction, RecordLayout,
+    RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, SourceOrigin,
+    SpawnEnvFieldOwnership, StableActorRole, Strategy, SupervisorChildLayout,
+    SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator, ThirFunction,
+    TraitObjectStorage, TrapKind, WitnessOperand,
 };
 pub use ownership::{
     AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf,

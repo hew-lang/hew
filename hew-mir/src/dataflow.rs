@@ -666,6 +666,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         // The neutralize references the scrutinee's payload slot (keeping the
         // base local live through the null store) and defines no new SSA value.
         Instr::NeutralizePayloadSlot { place } => (vec![*place], vec![]),
+        Instr::AggregateProjectionNeutralize { root, .. } => (vec![*root], vec![]),
         // Closure-env write-back (#1′): reads the env pointer (to GEP into it)
         // and the stored value. The env stays Live — only the field bytes are
         // overwritten through the pointer, opaque to the MIR lattice — so the
@@ -747,7 +748,7 @@ fn write_place_local(place: Place) -> Option<u32> {
 /// ([`local_is_written_in_body`], consumed by codegen's `bytes` aliasing
 /// decision) gates coroutine functions out before consulting this, so the
 /// empty set returned for the suspend carriers is sound for that use.
-fn terminator_write_places(term: &Terminator) -> Vec<Place> {
+pub(crate) fn terminator_write_places(term: &Terminator) -> Vec<Place> {
     match term {
         Terminator::Return
         | Terminator::Goto { .. }

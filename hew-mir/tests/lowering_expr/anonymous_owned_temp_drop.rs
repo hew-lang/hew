@@ -106,14 +106,19 @@ fn assert_record_param_embed_mints(p: &IrPipeline) {
         ("pushParam", "hew_vec_push_owned", "hew_vec_push_owned_move"),
         ("setParam", "hew_vec_set_owned", "hew_vec_set_owned_move"),
     ] {
-        assert_eq!(string_retain_count(p, fn_name), 1);
+        assert_eq!(
+            string_retain_count(p, fn_name),
+            1,
+            "{fn_name} embeds a borrowed string param: the copy-in temp mints \
+             exactly one +1 retain (the caller keeps its own count)"
+        );
         assert_eq!(call_count(p, fn_name, copy_symbol), 1);
         assert_eq!(call_count(p, fn_name, move_symbol), 0);
         assert_eq!(synthetic_binds(p, fn_name, "__hew_copy_in_param_temp"), 1);
         assert_eq!(
             record_drops(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
             1,
-            "{fn_name} must drop the retained source-temp share exactly once"
+            "{fn_name} must drop the prepared source-temp carrier exactly once"
         );
     }
 }
@@ -131,35 +136,45 @@ fn assert_tuple_param_embed_mints(p: &IrPipeline) {
             "hew_vec_set_owned_move",
         ),
     ] {
-        assert_eq!(string_retain_count(p, fn_name), 1);
+        assert_eq!(
+            string_retain_count(p, fn_name),
+            1,
+            "{fn_name} embeds a borrowed string param: the copy-in temp mints \
+             exactly one +1 retain (the caller keeps its own count)"
+        );
         assert_eq!(call_count(p, fn_name, copy_symbol), 1);
         assert_eq!(call_count(p, fn_name, move_symbol), 0);
         assert_eq!(synthetic_binds(p, fn_name, "__hew_copy_in_param_temp"), 1);
         assert_eq!(
             tuple_drops(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
             1,
-            "{fn_name} must drop the retained tuple source-temp share exactly once"
+            "{fn_name} must drop the prepared tuple source-temp carrier exactly once"
         );
     }
 }
 
-fn assert_unsupported_param_embeds_fail_closed(p: &IrPipeline) {
-    assert_eq!(call_count(p, "unsupported", "hew_vec_push_owned"), 1);
+fn assert_deep_param_embeds_use_prepared_carriers(p: &IrPipeline) {
     for fn_name in ["unsupported", "unsupportedProjection"] {
         assert_eq!(
             synthetic_binds(p, fn_name, "__hew_copy_in_param_temp"),
-            0,
-            "{fn_name} must not mint an owner for an unretained parameter alias"
+            1,
+            "{fn_name} must mint one owner for its prepared carrier aggregate"
         );
-        assert!(
-            record_drops(p, fn_name, |_| true).is_empty(),
-            "{fn_name} must not drop a caller-owned parameter alias"
+        assert_eq!(
+            call_count(p, fn_name, "hew_vec_push_owned"),
+            1,
+            "{fn_name} keeps COPY-IN with one balancing source-temp owner"
+        );
+        assert_eq!(
+            record_drops(p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
+            1,
+            "{fn_name} must release the prepared source temp exactly once"
         );
     }
 }
 
 #[test]
-fn vec_copy_in_string_param_temps_own_only_their_retained_share() {
+fn vec_copy_in_param_temps_own_only_their_prepared_carriers() {
     let p = pipeline_with_tc(
         r#"
 type Holder { items: Vec<string> }
@@ -224,7 +239,7 @@ fn unsupportedProjection(p: string, h: Holder) {
         0,
         "a no-parameter fresh owner must stay on MOVE-IN"
     );
-    assert_unsupported_param_embeds_fail_closed(&p);
+    assert_deep_param_embeds_use_prepared_carriers(&p);
 }
 
 #[test]
@@ -372,4 +387,62 @@ fn run() -> i64 {
         "a payload moved into a surviving outer binding must keep the composite excluded; \
          got {drops:?}"
     );
+}
+
+/// A `machine` value never enters the owned call-carrier protocol: its
+/// layout registers in `machine_layouts` (codegen's enum-layout lookup for
+/// snapshot free synthesis fails closed on it) and machines pass BY VALUE
+/// with the caller keeping an independent copy. The by-value machine param
+/// must lower with no terminal snapshot drop and no slot neutralization —
+/// the guide's "drive a machine through a free-function parameter" fence.
+#[test]
+fn machine_param_stays_off_the_carrier_protocol() {
+    let p = pipeline_with_tc(
+        r"
+machine Door {
+    events { Open; Close; }
+    state Shut;
+    state Ajar { angle: i64; }
+    on Open: Shut => Ajar { Ajar { angle: 90 } }
+    on Close: Ajar => Shut { Shut }
+    default { state }
+}
+fn drive(d: Door) -> string {
+    var local = d;
+    local.step(Open);
+    local.state_name()
+}
+fn main() { println(drive(Door::Shut)); }
+",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        p.diagnostics
+    );
+    for fn_name in ["drive", "main"] {
+        let func = p
+            .raw_mir
+            .iter()
+            .find(|f| f.name == fn_name)
+            .unwrap_or_else(|| panic!("raw fn {fn_name}"));
+        let carrier_instrs: Vec<&Instr> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.instructions.iter())
+            .filter(|i| {
+                matches!(
+                    i,
+                    Instr::ValueSnapshotDrop { .. }
+                        | Instr::ValueSnapshotClone { .. }
+                        | Instr::NeutralizePayloadSlot { .. }
+                )
+            })
+            .collect();
+        assert!(
+            carrier_instrs.is_empty(),
+            "{fn_name} must not run machine values through the carrier \
+             protocol; got {carrier_instrs:?}"
+        );
+    }
 }

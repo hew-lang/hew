@@ -4961,7 +4961,12 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
     // we never parked). ──────────────────────────────────────────────────────
     fn_ctx.builder.position_at_end(send_err_bb);
     if let Some(plan) = &term.cleanup_plan {
-        crate::llvm::emit_prepared_carrier_drop(fn_ctx, term.value, plan)?;
+        crate::llvm::emit_prepared_carrier_drop(
+            fn_ctx,
+            term.value,
+            plan,
+            hew_mir::PreparedCarrierBoundary::Actor,
+        )?;
     }
     let ch_free = intern_runtime_decl(
         fn_ctx.ctx,
@@ -10285,7 +10290,12 @@ fn emit_select_arm_setup<'ctx>(
                 ..
             } = &arms[arm_idx].kind
             {
-                crate::llvm::emit_prepared_carrier_drop(fn_ctx, *value, plan)?;
+                crate::llvm::emit_prepared_carrier_drop(
+                    fn_ctx,
+                    *value,
+                    plan,
+                    hew_mir::PreparedCarrierBoundary::Actor,
+                )?;
             }
             // Release the caller-side reference the runtime kept on send failure
             // (`KeepCreatorRef`): `hew_reply_channel_free` runs the channel's
@@ -11415,7 +11425,12 @@ pub(crate) fn emit_join_terminator<'ctx>(
         // (no cancel — no ask was submitted), then trap.
         fn_ctx.builder.position_at_end(setup_fail_bb);
         if let Some(plan) = &branch.cleanup_plan {
-            crate::llvm::emit_prepared_carrier_drop(fn_ctx, branch.value, plan)?;
+            crate::llvm::emit_prepared_carrier_drop(
+                fn_ctx,
+                branch.value,
+                plan,
+                hew_mir::PreparedCarrierBoundary::Actor,
+            )?;
         }
         for j in 0..i {
             let cleanup_slot = slot_ptr(j)?;

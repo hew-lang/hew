@@ -2059,6 +2059,85 @@ impl Builder {
         !self.cursor_unreachable
     }
 
+    /// Lower a project-match scrutinee to a local place. A CONSUMING project
+    /// match is an ownership boundary: the selected arm's binder discharge and
+    /// in-place field drops release every owned field of the scrutinee exactly
+    /// once, so an owned call-carrier scrutinee must not ALSO receive the
+    /// callee's terminal carrier snapshot drop (a resource double-close /
+    /// string double-free).
+    ///
+    /// * A WHOLE carrier (the parameter slot itself) hands its release
+    ///   authority to the match IN PLACE, and only on the paths that flow
+    ///   through the match: the consumption block is recorded and
+    ///   `append_owned_carrier_param_drops` skips the terminal snapshot drop
+    ///   on exits the consumption dominates while keeping it on exits that
+    ///   branch around the match (a guard / early `return` before the
+    ///   destructure still releases the untouched carrier). The slot is not
+    ///   neutralized, because a neutralized (zeroed) slot would still run a
+    ///   `#[resource]` record's `close` over zeroed storage — an inline
+    ///   resource has no null sentinel to skip on. An exit reachable both
+    ///   through and around the consumption has no single release authority
+    ///   and fails closed with a diagnostic.
+    /// * A PROJECTION carrier transfers eagerly through the funnel
+    ///   (`AggregateProjectionNeutralize`), so the terminal drop still
+    ///   releases the untouched sibling fields exactly once.
+    /// * A non-carrier scrutinee passes through untouched; a borrow-mode
+    ///   match skips the boundary entirely and the carrier keeps its
+    ///   terminal release.
+    fn lower_project_match_scrutinee_local(
+        &mut self,
+        scrutinee: &HirExpr,
+        consume_owned: bool,
+        construct: &str,
+        note: &str,
+    ) -> Option<u32> {
+        let raw_place = self.lower_value(scrutinee)?;
+        let place = if consume_owned {
+            match self.owned_carrier_neutralize.get(&raw_place) {
+                Some(super::OwnedCarrierNeutralizeTarget::Whole(root)) if *root == raw_place => {
+                    self.owned_carrier_neutralize.remove(&raw_place);
+                    self.owned_carrier_consumed
+                        .entry(raw_place)
+                        .or_default()
+                        .push((self.current_block_id, scrutinee.site));
+                    raw_place
+                }
+                Some(_) => {
+                    let scrutinee_ty = self.subst_ty(&scrutinee.ty);
+                    self.transfer_owned_carrier_place(raw_place, &scrutinee_ty)
+                }
+                None => {
+                    // A consuming match on a PARTITIONED sibling path already
+                    // took this whole carrier's authority (the first recording
+                    // removed the funnel entry above, so this arm sees `None`).
+                    // This match consumes on ITS path and must be recorded too:
+                    // an unrecorded site leaves its exit outside the consume
+                    // set, so the exit keeps the terminal snapshot drop over
+                    // fields the arm discharge already released — a double
+                    // release. Non-carrier scrutinees have no consumed entry
+                    // and pass through unrecorded, as before.
+                    if let Some(sites) = self.owned_carrier_consumed.get_mut(&raw_place) {
+                        sites.push((self.current_block_id, scrutinee.site));
+                    }
+                    raw_place
+                }
+            }
+        } else {
+            raw_place
+        };
+        let Place::Local(local) = place else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: construct.to_string(),
+                    site: scrutinee.site,
+                },
+                note: note.to_string(),
+            });
+            return None;
+        };
+        Some(local)
+    }
+
     fn lower_match_project(
         &mut self,
         scrutinee: &HirExpr,
@@ -2112,16 +2191,12 @@ impl Builder {
         let discharges = self.preflight_selected_project_arm(scrutinee, selected, consume_owned)?;
 
         let result_place = self.alloc_local(result_ty.clone());
-        let Place::Local(scrutinee_local) = self.lower_value(scrutinee)? else {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "project match scrutinee place shape".to_string(),
-                    site: scrutinee.site,
-                },
-                note: "record/tuple match destructure requires a local scrutinee".to_string(),
-            });
-            return None;
-        };
+        let scrutinee_local = self.lower_project_match_scrutinee_local(
+            scrutinee,
+            consume_owned,
+            "project match scrutinee place shape",
+            "record/tuple match destructure requires a local scrutinee",
+        )?;
         let join_bb = self.alloc_block();
         let body_bb = self.alloc_block();
         self.finish_current_block(Terminator::Goto { target: body_bb });
@@ -2231,16 +2306,12 @@ impl Builder {
             .map(|arm| self.preflight_selected_project_arm(scrutinee, arm, consume_owned))
             .collect::<Option<Vec<_>>>()?;
         let result_place = self.alloc_local(result_ty.clone());
-        let Place::Local(scrutinee_local) = self.lower_value(scrutinee)? else {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "project predicate match scrutinee place shape".to_string(),
-                    site: scrutinee.site,
-                },
-                note: "record/tuple literal-predicate match requires a local scrutinee".to_string(),
-            });
-            return None;
-        };
+        let scrutinee_local = self.lower_project_match_scrutinee_local(
+            scrutinee,
+            consume_owned,
+            "project predicate match scrutinee place shape",
+            "record/tuple literal-predicate match requires a local scrutinee",
+        )?;
 
         let join_bb = self.alloc_block();
         let arm_bbs: Vec<u32> = (0..arms.len()).map(|_| self.alloc_block()).collect();
@@ -3850,6 +3921,21 @@ impl Builder {
                         field_idx: binding.field_idx,
                     },
                 });
+                // An owned call-carrier scrutinee gets a terminal snapshot
+                // drop on every exit, so a payload binder that MOVES the
+                // payload out must neutralize the variant slot on that arm —
+                // the funnel authority registered here fires only when the
+                // binder crosses an ownership boundary.
+                self.note_carrier_payload_binder(
+                    scrutinee_local,
+                    Place::MachineVariant {
+                        local: scrutinee_local,
+                        variant_idx,
+                        field_idx: binding.field_idx,
+                    },
+                    dest,
+                    &binding_ty,
+                );
                 let previous = self.binding_locals.insert(binding.binding, dest);
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 // #2523 — record provenance for a heap-owning TOP-LEVEL projected

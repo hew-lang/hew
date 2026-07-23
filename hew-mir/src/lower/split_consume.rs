@@ -544,6 +544,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::ActorStateFieldLoad { dest, .. } => vec![*dest],
         Instr::ActorStateFieldStore { src, .. } => vec![*src],
         Instr::NeutralizePayloadSlot { place } => vec![*place],
+        Instr::AggregateProjectionNeutralize { root, .. } => vec![*root],
         Instr::TupleFieldLoad { tuple, dest, .. } => vec![*tuple, *dest],
         Instr::TupleConstruct { elements, dest } => {
             let mut places = Vec::with_capacity(elements.len() + 1);

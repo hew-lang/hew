@@ -10103,7 +10103,15 @@ mod tests {
             DROP_COUNT.fetch_add(1, Ordering::SeqCst);
         }
 
-        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
+        // `hew_actor_trap` walks the runtime-owned monitor table. Participate
+        // in the shared runtime-test serialization contract so another test
+        // cannot tear down the installed `RuntimeInner` during that walk.
+        let _runtime_guard = crate::runtime_test_guard();
+        assert!(
+            crate::scheduler::SchedTestLock::is_held(),
+            "trap/monitor tests must hold the shared runtime test lock"
+        );
+        let _alias_guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
 
         for _ in 0..ITERS {
             DROP_COUNT.store(0, Ordering::SeqCst);

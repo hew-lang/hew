@@ -70,7 +70,7 @@ spec-0015   1507524389   # SNIPPET: bare `type Point { ... }` + bare `var` — s
 spec-0020   3005964102   # SNIPPET: bare `let config = load_config()` — actor capture illustration
 spec-0021   667087144   # SNIPPET: bare `let local_ref = ...` — non-Send capture illustration
 spec-0022   1016251393   # FRAGMENT: actor calls undefined `process()` — allowed-ops illustration
-spec-0023   2765383023   # ERROR-DEMO: intentionally shows use-after-send and non-Send capture errors
+spec-0023   3898239403   # ERROR-DEMO: intentionally shows non-Send send and non-Send capture errors
 spec-0024   2818127750   # SPEC-BUG: type mismatch in aspirational TCP module example
 spec-0025   1856890936   # FRAGMENT: imports `network::tcp` — hypothetical module, not in stdlib
 spec-0026   1579215179   # SNIPPET: bare code after import statement — illustration of import effect

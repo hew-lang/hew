@@ -65,6 +65,9 @@ pub(crate) struct SuspendingRemoteAskEmit<'a> {
 
 pub(crate) struct SuspendingAskEmit {
     pub(crate) actor: Place,
+    /// Present only for a fungible supervisor-child receiver: submit through
+    /// the owner-scoped role ask instead of a resolved child pointer.
+    pub(crate) stable_role: Option<hew_mir::StableActorRole>,
     pub(crate) msg_type: i32,
     pub(crate) value: Place,
     pub(crate) cleanup_plan: Option<hew_mir::state_clone::ValueSnapshotPlan>,
@@ -4818,7 +4821,6 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
         .into_pointer_value();
-    let actor_ptr = load_duplex_handle(fn_ctx, term.actor, "suspending_ask receiver")?;
     let (payload_ptr, payload_size) =
         actor_payload_ptr_size(fn_ctx, term.value, "suspending_ask_payload")?;
 
@@ -4896,12 +4898,6 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
         None
     };
 
-    let ask_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_ask_with_channel",
-    )?;
     let msg_type_val = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
     // `payload_size` is built as i64; the `size` param is `usize`/`size_t`
     // (i32 on wasm32). Reconcile to the target-correct width.
@@ -4912,24 +4908,77 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
         suspending_ask_size_ty.into(),
         "suspending ask payload size",
     )?;
-    let rc = fn_ctx
-        .builder
-        .build_call(
-            ask_fn,
-            &[
-                actor_ptr.into(),
-                msg_type_val.into(),
-                payload_ptr.into(),
-                payload_size.into(),
-                ch.into(),
-            ],
-            "suspending_ask_submit",
-        )
-        .llvm_ctx("hew_actor_ask_with_channel call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into()))?
-        .into_int_value();
+    // A fungible stable-role receiver submits through the OWNER-SCOPED role
+    // ask (resolve + ID-pinned submission inside the runtime; same status
+    // return contract as hew_actor_ask_with_channel). The former shape
+    // dereferenced a re-resolved, UNPINNED child pointer that a restart could
+    // free before the deref.
+    let rc = if let Some(role) = term.stable_role {
+        let sup_token = load_int_arg(
+            fn_ctx,
+            role.supervisor_token,
+            i64_ty,
+            "suspending_ask_role_supervisor_token",
+        )?;
+        let slot_idx = i32_ty.const_int(u64::from(role.slot_index), false);
+        let role_ask_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_supervisor_role_ask_with_channel",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                role_ask_fn,
+                &[
+                    sup_token.into(),
+                    slot_idx.into(),
+                    msg_type_val.into(),
+                    payload_ptr.into(),
+                    payload_size.into(),
+                    ch.into(),
+                ],
+                "suspending_ask_submit",
+            )
+            .llvm_ctx("hew_supervisor_role_ask_with_channel call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_supervisor_role_ask_with_channel returned void".into(),
+                )
+            })?
+            .into_int_value()
+    } else {
+        let actor_ptr = load_duplex_handle(fn_ctx, term.actor, "suspending_ask receiver")?;
+        let ask_fn = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_actor_ask_with_channel",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(
+                ask_fn,
+                &[
+                    actor_ptr.into(),
+                    msg_type_val.into(),
+                    payload_ptr.into(),
+                    payload_size.into(),
+                    ch.into(),
+                ],
+                "suspending_ask_submit",
+            )
+            .llvm_ctx("hew_actor_ask_with_channel call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
+            })?
+            .into_int_value()
+    };
 
     let parent = fn_ctx
         .builder

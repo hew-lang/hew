@@ -3958,6 +3958,22 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // with the classified slot state in the error slot. Channel-ref
         // discipline matches hew_actor_ask_with_channel (creator ref
         // survives failure).
+        // hew_supervisor_role_ask(token: i64, key: u32, msg_type: i32,
+        //     data: *mut c_void, size: usize) -> *mut c_void
+        // (`hew-runtime/src/supervisor.rs`). Blocking owner-scoped stable-role
+        // ask: classified resolve under children_lock, then the ID-pinned
+        // blocking ask. Same null-or-reply return contract as hew_actor_ask
+        // (null binds Err via hew_actor_ask_take_last_error).
+        "hew_supervisor_role_ask" => ptr_ty.fn_type(
+            &[
+                i64_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                size_ty.into(),
+            ],
+            false,
+        ),
         "hew_supervisor_role_ask_with_channel" => i32_ty.fn_type(
             &[
                 i64_ty.into(),

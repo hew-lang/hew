@@ -260,10 +260,11 @@ fn failed_select_and_join_requests_drop_the_unsubmitted_indirect_payload() {
         );
     }
     assert_eq!(
-        ll.matches("call i32 @hew_local_pid_ask_with_channel(")
+        ll.matches("call i32 @hew_supervisor_role_ask_with_channel(")
             .count(),
         3,
-        "the fungible select arm and both join branches must submit through stable child tokens"
+        "the fungible select arm and both join branches must submit through \
+         the owner-scoped stable-role ask"
     );
 }
 
@@ -309,20 +310,21 @@ fn fungible_join_uses_stable_supervisor_role_and_local_pid_submission() {
         ll.contains("call i64 @hew_supervisor_direct_id("),
         "fungible role binding must capture the stable supervisor token:\n{ll}"
     );
-    assert_eq!(
-        ll.lines()
-            .filter(|line| {
-                line.contains("call ") && line.contains("@hew_local_pid_supervisor_child_get(")
-            })
-            .count(),
-        4,
-        "each join branch must re-resolve the role immediately before submission:\n{ll}"
+    assert!(
+        !ll.contains("@hew_local_pid_supervisor_child_get("),
+        "no join branch may emit the lookup-token half of the retired \
+         lookup-token-then-send pair:\n{ll}"
     );
     assert_eq!(
-        ll.matches("call i32 @hew_local_pid_ask_with_channel(")
+        ll.matches("call i32 @hew_supervisor_role_ask_with_channel(")
             .count(),
         4,
-        "each fungible join branch must submit through a stable child token:\n{ll}"
+        "each fungible join branch must submit through the owner-scoped \
+         stable-role ask (resolve + submission in ONE runtime call):\n{ll}"
+    );
+    assert!(
+        !ll.contains("@hew_local_pid_ask_with_channel("),
+        "the token-submission half of the retired pair must not survive:\n{ll}"
     );
 }
 
@@ -351,9 +353,57 @@ fn direct_join_keeps_raw_actor_submission() {
         "direct actor join branches must preserve raw-pointer submission"
     );
     assert_eq!(
-        ll.matches("call i32 @hew_local_pid_ask_with_channel(")
+        ll.matches("call i32 @hew_supervisor_role_ask_with_channel(")
             .count(),
         0,
         "direct actor joins must not be reclassified as fungible roles"
+    );
+}
+
+/// A fungible single ask — blocking (`main`) and suspending (an actor
+/// handler's `await`) — submits through the OWNER-SCOPED role ask. The
+/// retired shape resolved a raw child pointer (`hew_supervisor_child_get`)
+/// and dereferenced it at the ask site: an UNPINNED pointer a restart could
+/// free between the lookup and the deref.
+#[test]
+fn fungible_single_ask_submits_owner_scoped_never_raw_pointer() {
+    let ll = emit_ll(
+        r#"
+        actor Worker {
+            receive fn score(tag: i64) -> i64 { tag }
+        }
+
+        supervisor App {
+            strategy: one_for_one;
+            intensity: 3 within 60s;
+            child worker: Worker;
+        }
+
+        fn main() -> i64 {
+            let sup = spawn App;
+            let worker = sup.worker;
+            let blocking = match await worker.score(11) {
+                Ok(v) => v,
+                Err(_) => 0,
+            };
+            supervisor_stop(sup);
+            blocking
+        }
+        "#,
+    );
+
+    assert_eq!(
+        ll.matches("call ptr @hew_supervisor_role_ask(").count(),
+        1,
+        "a blocking fungible ask must submit through the owner-scoped role \
+         ask:\n{ll}"
+    );
+    // The retired raw-pointer shape must not survive on the ask path: no
+    // child-pointer re-resolve feeding a raw hew_actor_ask deref.
+    assert_eq!(
+        ll.matches("call ptr @hew_actor_ask(").count(),
+        0,
+        "a fungible ask must never dereference a re-resolved child \
+         pointer:\n{ll}"
     );
 }

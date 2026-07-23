@@ -69,11 +69,11 @@ use std::sync::{Mutex, OnceLock};
 use hew_hir::stdlib_catalog::PrintKind;
 use hew_hir::{mangle, mangle_dotted_name, ItemId};
 use hew_mir::{
-    instr_source_places, terminator_source_places, validate_context_markers, ActorHandlerKind,
-    ActorLayout, ActorStateLoadMode, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite,
-    DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset,
-    FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
-    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
+    instr_source_places, is_string_const_ty, terminator_source_places, validate_context_markers,
+    ActorHandlerKind, ActorLayout, ActorStateLoadMode, CheckedMirFunction, CmpPred, CooperateKind,
+    CooperateSite, DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
+    FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind,
+    IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
     RawMirFunction, RecordLayout, RegexLiteral, SourceOrigin, StateFieldCloneKind,
     SupervisorChildLayout, SuspendKind, Terminator, TrapKind,
 };
@@ -2438,11 +2438,6 @@ fn const_string_data_symbol(c: &MirConst) -> String {
     )
 }
 
-fn is_codegen_string_ty(ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::String)
-        || matches!(ty, ResolvedTy::Named { name, .. } if name == "String")
-}
-
 pub(crate) fn is_unsigned_integer_ty(ty: &ResolvedTy) -> bool {
     matches!(
         ty,
@@ -2513,7 +2508,10 @@ fn emit_const_globals<'ctx>(
                 (global, int_ty.into())
             }
             MirConstValue::Str(value) => {
-                if !is_codegen_string_ty(&c.ty) {
+                // Defence-in-depth re-validation of the descriptor MIR
+                // authored via the same `hew_mir::is_string_const_ty`
+                // authority — never a local respelling of the predicate.
+                if !is_string_const_ty(&c.ty) {
                     return Err(CodegenError::FailClosed(format!(
                         "const `{}` string value requires String type, got `{}`",
                         c.name, c.ty
@@ -15527,7 +15525,7 @@ fn retain_string_field_load<'ctx>(
     field_val: BasicValueEnum<'ctx>,
     label: &str,
 ) -> CodegenResult<BasicValueEnum<'ctx>> {
-    if !is_codegen_string_ty(place_resolved_ty(fn_ctx, dest)?) {
+    if !is_string_const_ty(place_resolved_ty(fn_ctx, dest)?) {
         return Ok(field_val);
     }
     let clone_fn = get_or_declare_clone_helper(
@@ -15603,7 +15601,7 @@ fn retain_bytes_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> Code
 /// co-owner mint. The runtime wrapper handles null and static strings before
 /// touching the refcount header.
 fn retain_string_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> CodegenResult<()> {
-    if !is_codegen_string_ty(place_resolved_ty(fn_ctx, value)?) {
+    if !is_string_const_ty(place_resolved_ty(fn_ctx, value)?) {
         return Err(CodegenError::FailClosed(format!(
             "StringRetain value is not string-typed: {value:?}"
         )));

@@ -1024,7 +1024,17 @@ fn is_concrete_integer_ty(ty: &ResolvedTy) -> bool {
 }
 /// True for the string primitive in either resolved spelling: the bare
 /// `ResolvedTy::String` or the `Named { name: "String" }` builtin form.
-pub(super) fn is_string_const_ty(ty: &ResolvedTy) -> bool {
+///
+/// This is the sole authority for the string-constant type-compatibility
+/// spelling set. [`build_const_descriptors`] applies it when authoring
+/// `MirConstValue::Str` descriptors; codegen's const-global emission
+/// re-validates through this same function as defence-in-depth and must
+/// never respell the predicate locally, or the two layers could drift on
+/// which spellings count as `String`. The accepted spelling set is pinned
+/// by `string_const_ty_spelling_set_is_pinned` in the const-descriptor
+/// diagnostics tests.
+#[must_use]
+pub fn is_string_const_ty(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::String)
         || matches!(ty, ResolvedTy::Named { name, .. } if name == "String")
 }

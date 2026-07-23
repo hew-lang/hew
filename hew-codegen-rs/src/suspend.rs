@@ -27,7 +27,7 @@ use hew_mir::{
     ActorLayout, ChildInitArg, Place, PoolCount, RecordLayout, StateFieldCloneKind,
     SupervisorChildLayout, SupervisorLayout,
 };
-use hew_runtime::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
+use hew_runtime::internal::types::{HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_JOIN_BRANCH_FAILED};
 use hew_types::ResolvedTy;
 
 use crate::llvm::CoroState;
@@ -9675,103 +9675,6 @@ fn emit_select_winner_dispatch<'ctx>(
     Ok(())
 }
 
-/// Resolve one fungible `(stable supervisor token, static slot)` role to the
-/// current child `LocalPid` token immediately before request submission.
-///
-/// The runtime pins the supervisor control and copies the child token under
-/// `children_lock`. The returned token can become retired after this call, but
-/// `hew_local_pid_ask_with_channel` then fails closed by identity; no allocation
-/// pointer crosses this boundary. The aggregate return follows the same
-/// register-pair/MSVC-sret classifier as the legacy child lookup.
-fn resolve_stable_role_token<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    role: hew_mir::StableActorRole,
-    label: &str,
-) -> CodegenResult<IntValue<'ctx>> {
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let i64_ty = fn_ctx.ctx.i64_type();
-    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    let supervisor_token = load_int_arg(
-        fn_ctx,
-        role.supervisor_token,
-        i64_ty,
-        &format!("{label}_supervisor_token"),
-    )?;
-    let slot = i32_ty.const_int(u64::from(role.slot_index), false);
-    let result_ty = fn_ctx.ctx.struct_type(
-        &[
-            fn_ctx.ctx.i8_type().into(),
-            fn_ctx.ctx.i8_type().into(),
-            fn_ctx.ctx.i8_type().array_type(6).into(),
-            ptr_ty.into(),
-        ],
-        false,
-    );
-    let triple = fn_ctx.llvm_mod.get_triple();
-    let triple_str = triple.as_str().to_string_lossy();
-    let (lookup, return_abi) = crate::abi_class::declare_aggregate_return(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        fn_ctx.target_data,
-        &triple_str,
-        "hew_local_pid_supervisor_child_get",
-        result_ty,
-        &[i64_ty.into(), i32_ty.into()],
-    )?;
-    match return_abi {
-        crate::abi_class::AggregateReturnAbi::RegisterPair { .. } => {
-            let pair = fn_ctx
-                .builder
-                .build_call(
-                    lookup,
-                    &[supervisor_token.into(), slot.into()],
-                    &format!("{label}_lookup"),
-                )
-                .llvm_ctx("stable supervisor role lookup")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(
-                        "hew_local_pid_supervisor_child_get returned void".into(),
-                    )
-                })?
-                .into_array_value();
-            Ok(fn_ctx
-                .builder
-                .build_extract_value(pair, 1, &format!("{label}_child_token"))
-                .llvm_ctx("stable role child token extract")?
-                .into_int_value())
-        }
-        crate::abi_class::AggregateReturnAbi::Sret => {
-            let result_slot = fn_ctx
-                .builder
-                .build_alloca(result_ty, &format!("{label}_lookup_result"))
-                .llvm_ctx("stable role sret alloca")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    lookup,
-                    &[result_slot.into(), supervisor_token.into(), slot.into()],
-                    &format!("{label}_lookup"),
-                )
-                .llvm_ctx("stable supervisor role sret lookup")?;
-            let handle_field = fn_ctx
-                .builder
-                .build_struct_gep(result_ty, result_slot, 3, &format!("{label}_handle_gep"))
-                .llvm_ctx("stable role handle gep")?;
-            let handle = fn_ctx
-                .builder
-                .build_load(ptr_ty, handle_field, &format!("{label}_handle"))
-                .llvm_ctx("stable role handle load")?
-                .into_pointer_value();
-            fn_ctx
-                .builder
-                .build_ptr_to_int(handle, i64_ty, &format!("{label}_child_token"))
-                .llvm_ctx("stable role token ptrtoint")
-        }
-    }
-}
-
 /// Emit the per-arm readiness setup shared by [`emit_select_terminator`]
 /// (blocking) and [`emit_suspending_select_terminator`] (coro-suspend): for each
 /// wait arm allocate its reply channel, store it into `channel_array[slot]`,
@@ -9823,11 +9726,11 @@ fn emit_select_arm_setup<'ctx>(
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_actor_ask_with_channel",
     )?;
-    let local_pid_ask_with_channel = intern_runtime_decl(
+    let role_ask_with_channel = intern_runtime_decl(
         ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_local_pid_ask_with_channel",
+        "hew_supervisor_role_ask_with_channel",
     )?;
     let channel_cancel = intern_runtime_decl(
         ctx,
@@ -10052,42 +9955,66 @@ fn emit_select_arm_setup<'ctx>(
                     select_ask_size_ty.into(),
                     "select ask payload size",
                 )?;
-                let (ask_fn, actor_arg) = if let Some(role) = stable_role {
-                    (
-                        local_pid_ask_with_channel,
-                        resolve_stable_role_token(
-                            fn_ctx,
-                            *role,
-                            &format!("select_role_{slot_idx}"),
-                        )?
-                        .into(),
-                    )
+                // A fungible stable-role arm submits through the OWNER-SCOPED
+                // ask (resolve + enqueue under one children_lock section) —
+                // the same cutover as the join emitter; the former
+                // lookup-token-then-send pair raced the restart machinery.
+                let status = if let Some(role) = stable_role {
+                    let sup_token = load_int_arg(
+                        fn_ctx,
+                        role.supervisor_token,
+                        i64_ty,
+                        &format!("select_role_{slot_idx}_supervisor_token"),
+                    )?;
+                    let slot_const = i32_ty.const_int(u64::from(role.slot_index), false);
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            role_ask_with_channel,
+                            &[
+                                sup_token.into(),
+                                slot_const.into(),
+                                msg_type_val.into(),
+                                payload_ptr.into(),
+                                payload_size.into(),
+                                ch_val.into(),
+                            ],
+                            &format!("select_ask_issue_{slot_idx}"),
+                        )
+                        .llvm_ctx("hew_supervisor_role_ask_with_channel call")?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "hew_supervisor_role_ask_with_channel returned void".into(),
+                            )
+                        })?
+                        .into_int_value()
                 } else {
-                    (
-                        ask_with_channel,
-                        load_duplex_handle(fn_ctx, *actor, "select_actor_handle")?.into(),
-                    )
+                    let actor_arg = load_duplex_handle(fn_ctx, *actor, "select_actor_handle")?;
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            ask_with_channel,
+                            &[
+                                actor_arg.into(),
+                                msg_type_val.into(),
+                                payload_ptr.into(),
+                                payload_size.into(),
+                                ch_val.into(),
+                            ],
+                            &format!("select_ask_issue_{slot_idx}"),
+                        )
+                        .llvm_ctx("hew_actor_ask_with_channel call")?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "hew_actor_ask_with_channel returned void".into(),
+                            )
+                        })?
+                        .into_int_value()
                 };
-                let status = fn_ctx
-                    .builder
-                    .build_call(
-                        ask_fn,
-                        &[
-                            actor_arg,
-                            msg_type_val.into(),
-                            payload_ptr.into(),
-                            payload_size.into(),
-                            ch_val.into(),
-                        ],
-                        &format!("select_ask_issue_{slot_idx}"),
-                    )
-                    .llvm_ctx("hew_actor_ask_with_channel call")?
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
-                    })?
-                    .into_int_value();
                 (status, false, true)
             }
             SelectArmKind::StreamNext { stream } => {
@@ -11286,11 +11213,11 @@ pub(crate) fn emit_join_terminator<'ctx>(
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_actor_ask_with_channel",
     )?;
-    let local_pid_ask_with_channel = intern_runtime_decl(
+    let role_ask_with_channel = intern_runtime_decl(
         ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_local_pid_ask_with_channel",
+        "hew_supervisor_role_ask_with_channel",
     )?;
     let channel_cancel = intern_runtime_decl(
         ctx,
@@ -11309,6 +11236,12 @@ pub(crate) fn emit_join_terminator<'ctx>(
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_reply_wait",
+    )?;
+    let join_branch_failed = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_join_branch_failed",
     )?;
     let libc_free = get_or_declare_free(fn_ctx);
 
@@ -11369,37 +11302,68 @@ pub(crate) fn emit_join_terminator<'ctx>(
             join_ask_size_ty.into(),
             "join ask payload size",
         )?;
-        let (ask_fn, actor_arg) = if let Some(role) = branch.stable_role {
-            (
-                local_pid_ask_with_channel,
-                resolve_stable_role_token(fn_ctx, role, &format!("join_role_{i}"))?.into(),
-            )
+        // A fungible stable-role branch submits through the OWNER-SCOPED ask:
+        // the runtime pins the supervisor, resolves the slot, and enqueues
+        // into the CURRENT incarnation under ONE children_lock section. The
+        // former lookup-token-then-send pair
+        // (hew_local_pid_supervisor_child_get → hew_local_pid_ask_with_channel)
+        // let the restart machinery advance the slot between the two calls,
+        // losing the ask into a retiring incarnation with no diagnostic.
+        let status = if let Some(role) = branch.stable_role {
+            let i64_ty = ctx.i64_type();
+            let sup_token = load_int_arg(
+                fn_ctx,
+                role.supervisor_token,
+                i64_ty,
+                &format!("join_role_{i}_supervisor_token"),
+            )?;
+            let slot_idx = i32_ty.const_int(u64::from(role.slot_index), false);
+            fn_ctx
+                .builder
+                .build_call(
+                    role_ask_with_channel,
+                    &[
+                        sup_token.into(),
+                        slot_idx.into(),
+                        msg_type_val.into(),
+                        payload_ptr.into(),
+                        payload_size.into(),
+                        ch_val.into(),
+                    ],
+                    &format!("join_ask_issue_{i}"),
+                )
+                .llvm_ctx("hew_supervisor_role_ask_with_channel call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "hew_supervisor_role_ask_with_channel returned void".into(),
+                    )
+                })?
+                .into_int_value()
         } else {
-            (
-                ask_with_channel,
-                load_duplex_handle(fn_ctx, branch.actor, "join_actor_handle")?.into(),
-            )
+            let actor_arg = load_duplex_handle(fn_ctx, branch.actor, "join_actor_handle")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    ask_with_channel,
+                    &[
+                        actor_arg.into(),
+                        msg_type_val.into(),
+                        payload_ptr.into(),
+                        payload_size.into(),
+                        ch_val.into(),
+                    ],
+                    &format!("join_ask_issue_{i}"),
+                )
+                .llvm_ctx("hew_actor_ask_with_channel call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
+                })?
+                .into_int_value()
         };
-        let status = fn_ctx
-            .builder
-            .build_call(
-                ask_fn,
-                &[
-                    actor_arg,
-                    msg_type_val.into(),
-                    payload_ptr.into(),
-                    payload_size.into(),
-                    ch_val.into(),
-                ],
-                &format!("join_ask_issue_{i}"),
-            )
-            .llvm_ctx("hew_actor_ask_with_channel call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
-            })?
-            .into_int_value();
 
         // Branch on status: 0 → next ask; non-zero → mid-setup recovery
         // (free every channel allocated through `i` inclusive, then trap).
@@ -11523,6 +11487,19 @@ pub(crate) fn emit_join_terminator<'ctx>(
 
         // Cancel-rest + trap branch.
         fn_ctx.builder.position_at_end(null_bb);
+        // Status-bearing failure: classify the null reply (actor stopped /
+        // cancelled / handler trapped / reply allocation failure) and emit the
+        // diagnostic WHILE the caller-side channel ref is still live — the
+        // runtime reads the channel's failure classification.
+        let branch_idx_const = i32_ty.const_int(i as u64, false);
+        fn_ctx
+            .builder
+            .build_call(
+                join_branch_failed,
+                &[win_ch.into(), branch_idx_const.into()],
+                &format!("join_branch_failed_{i}"),
+            )
+            .llvm_ctx("hew_join_branch_failed call")?;
         // Free the failing channel's caller-side ref (its reply was null).
         fn_ctx
             .builder
@@ -11557,20 +11534,16 @@ pub(crate) fn emit_join_terminator<'ctx>(
                 )
                 .llvm_ctx("join error rest free")?;
         }
-        let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
-            CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
-        })?;
-        let trap_fn = trap_intrinsic
-            .get_declaration(fn_ctx.llvm_mod, &[])
-            .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-        fn_ctx
-            .builder
-            .build_call(trap_fn, &[], &format!("join_reply_null_trap_{i}"))
-            .llvm_ctx("join reply null trap")?;
-        fn_ctx
-            .builder
-            .build_unreachable()
-            .llvm_ctx("join reply null unreachable")?;
+        // Fail-closed with the canonical join-branch trap code — the bare
+        // llvm.trap this replaces produced an empty-output abort with no
+        // diagnostic; the classified cause above plus this code make the
+        // failure observable in actor context (error_code 211) and in main
+        // context (the trap-kind diagnostic on stderr).
+        emit_trap_with_code(
+            fn_ctx,
+            HEW_TRAP_JOIN_BRANCH_FAILED as u64,
+            &format!("join_reply_null_trap_{i}"),
+        )?;
 
         // Ok branch: materialise the reply into result tuple element `i`.
         fn_ctx.builder.position_at_end(ok_bb);

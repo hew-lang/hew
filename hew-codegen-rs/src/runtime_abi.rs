@@ -3948,10 +3948,20 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             ],
             false,
         ),
-        // Stable actor-token twin used by fungible supervisor-child roles.
-        "hew_local_pid_ask_with_channel" => i32_ty.fn_type(
+        // hew_supervisor_role_ask_with_channel(token: i64, key: u32,
+        //     msg_type: i32, data: *mut c_void, size: usize,
+        //     ch: *mut HewReplyChannel) -> i32
+        // (`hew-runtime/src/supervisor.rs`). Owner-scoped stable-role ask:
+        // resolves the supervisor child slot and enqueues into the CURRENT
+        // incarnation under one children_lock section, replacing the racy
+        // lookup-token-then-send pair. 0 = submitted; non-zero fails closed
+        // with the classified slot state in the error slot. Channel-ref
+        // discipline matches hew_actor_ask_with_channel (creator ref
+        // survives failure).
+        "hew_supervisor_role_ask_with_channel" => i32_ty.fn_type(
             &[
                 i64_ty.into(),
+                i32_ty.into(),
                 i32_ty.into(),
                 ptr_ty.into(),
                 size_ty.into(),
@@ -3959,6 +3969,14 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             ],
             false,
         ),
+        // hew_join_branch_failed(ch: *mut HewReplyChannel, branch: i32) -> i32
+        // (`hew-runtime/src/reply_channel.rs`). Classifies a join branch's
+        // null reply (actor stopped / cancelled / handler trapped / payload
+        // allocation failure), records + prints the diagnostic, and returns
+        // the HEW_REPLY_FAIL_* kind. Called on the join null-reply edge
+        // BEFORE the caller-side channel ref is freed and the branch traps
+        // with HEW_TRAP_JOIN_BRANCH_FAILED.
+        "hew_join_branch_failed" => i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false),
         // hew_reply_channel_new() -> *mut HewReplyChannel
         // (`hew-runtime/src/reply_channel.rs:78`). Box-allocates a fresh
         // single-shot reply channel with one caller-side reference.

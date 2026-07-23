@@ -2370,6 +2370,135 @@ fn emit_select_ir(name: &str, pipeline: &IrPipeline) -> String {
     llvm_mod.print_to_string().to_string()
 }
 
+/// Build a pipeline whose entry block is sealed by `Terminator::Join`
+/// (single result local; per-branch reply slots), the join analogue of
+/// [`pipeline_with_select_arms`].
+fn pipeline_with_join_branches(
+    branches: Vec<hew_mir::JoinBranch>,
+    locals: Vec<ResolvedTy>,
+    result: Place,
+    next_id: u32,
+) -> IrPipeline {
+    let blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Join {
+                branches,
+                result,
+                next: next_id,
+            },
+        },
+        BasicBlock {
+            id: next_id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Return,
+        },
+    ];
+    // Reuse the select fixture's pipeline scaffolding (which carries every
+    // IrPipeline field), then seal the entry with the join CFG built above.
+    let mut pipeline = pipeline_with_select_arms(Vec::new(), locals, &[], next_id);
+    pipeline.raw_mir[0].blocks = blocks;
+    pipeline
+}
+
+/// A fungible stable-role join branch submits through the OWNER-SCOPED
+/// runtime op — supervisor token + slot index + payload in ONE call — and
+/// emits NO trace of the racy lookup-token-then-send pair
+/// (`hew_local_pid_supervisor_child_get` → `hew_local_pid_ask_with_channel`),
+/// whose unlocked gap let the restart machinery retire the resolved
+/// incarnation between the two calls.
+#[test]
+fn join_stable_role_branch_submits_owner_scoped() {
+    let branches = vec![hew_mir::JoinBranch {
+        actor: Place::DuplexHandle(0),
+        stable_role: Some(hew_mir::StableActorRole {
+            supervisor_token: Place::Local(2),
+            slot_index: 0,
+        }),
+        method: "score".to_string(),
+        args: Vec::new(),
+        msg_type: 7,
+        value: Place::Local(3),
+        cleanup_plan: None,
+        reply_dest: Place::Local(1),
+        reply_ty: ResolvedTy::I64,
+    }];
+    let locals = vec![
+        duplex_ty(),      // 0: actor handle (unused by the stable-role path)
+        ResolvedTy::I64,  // 1: reply slot / join result (single branch)
+        ResolvedTy::I64,  // 2: stable supervisor token
+        ResolvedTy::Unit, // 3: payload
+    ];
+    let pipeline = pipeline_with_join_branches(branches, locals, Place::Local(1), 99);
+    let ir = emit_select_ir("join_stable_role", &pipeline);
+
+    assert_eq!(
+        ir.matches("call i32 @hew_supervisor_role_ask_with_channel(")
+            .count(),
+        1,
+        "the stable-role branch must submit through the owner-scoped ask; ir:\n{ir}"
+    );
+    assert!(
+        !ir.contains("hew_local_pid_supervisor_child_get")
+            && !ir.contains("hew_local_pid_ask_with_channel"),
+        "no lookup-token-then-send pair may survive on the stable-role join \
+             path; ir:\n{ir}"
+    );
+    assert!(
+        !ir.contains("call i32 @hew_actor_ask_with_channel("),
+        "a stable-role branch must not fall back to the raw-handle ask; ir:\n{ir}"
+    );
+}
+
+/// The join null-reply edge is STATUS-BEARING: it classifies the failure via
+/// `hew_join_branch_failed` while the caller-side channel ref is live, then
+/// traps with the canonical join-branch code (211) — never the bare
+/// `llvm.trap` that produced an empty-output abort with no diagnostic.
+#[test]
+fn join_null_reply_edge_diagnoses_then_traps_with_code() {
+    let branches = vec![hew_mir::JoinBranch {
+        actor: Place::DuplexHandle(0),
+        stable_role: None,
+        method: "score".to_string(),
+        args: Vec::new(),
+        msg_type: 7,
+        value: Place::Local(2),
+        cleanup_plan: None,
+        reply_dest: Place::Local(1),
+        reply_ty: ResolvedTy::I64,
+    }];
+    let locals = vec![
+        duplex_ty(),      // 0: actor handle
+        ResolvedTy::I64,  // 1: reply slot / join result
+        ResolvedTy::Unit, // 2: payload
+    ];
+    let pipeline = pipeline_with_join_branches(branches, locals, Place::Local(1), 99);
+    let ir = emit_select_ir("join_null_reply_diagnosis", &pipeline);
+
+    let null_idx = ir
+        .find("join_reply_null_0:")
+        .expect("join null-reply block must exist");
+    let null_region = &ir[null_idx..];
+    let diagnose_at = null_region
+        .find("call i32 @hew_join_branch_failed(")
+        .expect("null edge must classify the failure via hew_join_branch_failed");
+    let free_at = null_region
+        .find("call void @hew_reply_channel_free(")
+        .expect("null edge frees the failing channel");
+    assert!(
+        diagnose_at < free_at,
+        "the classifier must read the channel BEFORE its caller-side ref is \
+             freed; ir:\n{ir}"
+    );
+    assert!(
+        null_region.contains("call void @hew_trap_with_code(i32 211)"),
+        "the null edge must trap with HEW_TRAP_JOIN_BRANCH_FAILED (211); ir:\n{ir}"
+    );
+}
+
 /// Two ActorAsk arms (no AfterTimer): emit shows exactly 2 channel
 /// allocations, 2 ask-issues, 1 `hew_select_first` call with
 /// timeout=-1, a switch on the winner index, per-winner reply
@@ -2529,6 +2658,64 @@ fn select_actor_ask_plus_after_timer_emits_deadline() {
     assert!(
         ir.contains("select_win_ask_0:") && ir.contains("select_win_after:"),
         "expected both winner branch labels; ir:\n{ir}"
+    );
+}
+
+/// A fungible stable-role select arm submits through the OWNER-SCOPED
+/// runtime op, mirroring the join cutover: no lookup-token-then-send pair
+/// survives on the select ask path either.
+#[test]
+fn select_stable_role_arm_submits_owner_scoped() {
+    let arms = vec![
+        hew_mir::SelectArm {
+            kind: hew_mir::SelectArmKind::ActorAsk {
+                actor: Place::DuplexHandle(0),
+                stable_role: Some(hew_mir::StableActorRole {
+                    supervisor_token: Place::Local(2),
+                    slot_index: 1,
+                }),
+                method: "ping".to_string(),
+                args: Vec::new(),
+                msg_type: 7,
+                value: Place::Local(3),
+                cleanup_plan: None,
+            },
+            body_block: 10,
+            binding: Some(Place::Local(1)),
+        },
+        hew_mir::SelectArm {
+            kind: hew_mir::SelectArmKind::AfterTimer {
+                duration: Place::Local(4),
+            },
+            body_block: 11,
+            binding: None,
+        },
+    ];
+    let locals = vec![
+        duplex_ty(),          // 0: actor handle (unused by the stable-role path)
+        ResolvedTy::I64,      // 1: reply slot
+        ResolvedTy::I64,      // 2: stable supervisor token
+        ResolvedTy::Unit,     // 3: payload
+        ResolvedTy::Duration, // 4: after-arm duration
+    ];
+    let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+    let ir = emit_select_ir("select_stable_role", &pipeline);
+
+    assert_eq!(
+        ir.matches("call i32 @hew_supervisor_role_ask_with_channel(")
+            .count(),
+        1,
+        "the stable-role arm must submit through the owner-scoped ask; ir:\n{ir}"
+    );
+    assert!(
+        !ir.contains("hew_local_pid_supervisor_child_get")
+            && !ir.contains("hew_local_pid_ask_with_channel"),
+        "no lookup-token-then-send pair may survive on the stable-role select \
+             path; ir:\n{ir}"
+    );
+    assert!(
+        !ir.contains("call i32 @hew_actor_ask_with_channel("),
+        "a stable-role arm must not fall back to the raw-handle ask; ir:\n{ir}"
     );
 }
 

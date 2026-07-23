@@ -287,6 +287,14 @@ fn channel_handle_use_after_transfer_refused() {
 /// record transitions into a channel whose receiver was handed to a
 /// separate observer actor through a message; the observer selects on
 /// transitions with an `after` safety net and reacts to the Faulted edge.
+///
+/// Main blocks on a COMPLETION channel the observer closes out after its
+/// watch loop ends — a deterministic seam, not a `sleep` that races the
+/// observer under load. The `after 2s` arm must never fire here: every
+/// wake the select observes carries a real transition (or the close), so
+/// a `timeout` line in the output is the stale-wake fabricated-timeout
+/// regression (a wake with no readiness routed to the `after` arm while
+/// the deadline is unexpired), not a slow machine.
 #[test]
 fn cross_actor_record_transition_watch_runs_clean() {
     run_inline_scribbled(
@@ -319,7 +327,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
          }\n\
          \n\
          actor Observer {\n\
-         \x20   receive fn watch(rx: channel.Receiver<Transition>) {\n\
+         \x20   receive fn watch(rx: channel.Receiver<Transition>, done: channel.Sender<i64>) {\n\
          \x20       var waiting = true;\n\
          \x20       while waiting {\n\
          \x20           select {\n\
@@ -344,18 +352,65 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20           };\n\
          \x20       }\n\
          \x20       rx.close();\n\
+         \x20       done.send(1);\n\
+         \x20       done.close();\n\
          \x20   }\n\
          }\n\
          \n\
          fn main() {\n\
          \x20   let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(8);\n\
+         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
          \x20   let obs = spawn Observer;\n\
-         \x20   obs.watch(rx);\n\
+         \x20   obs.watch(rx, done_tx);\n\
          \x20   let svc = spawn Service;\n\
          \x20   svc.drive(tx);\n\
-         \x20   sleep(300ms);\n\
+         \x20   let _ = done_rx.recv();\n\
+         \x20   done_rx.close();\n\
          }\n",
         "Created -> Initialising\nInitialising -> Faulted\nobserver: child faulted\nwatch closed\n",
+    );
+}
+
+/// The other direction of the timeout-honesty contract: a GENUINE deadline
+/// expiry (no sender ever publishes, the channel stays open) must still
+/// take the `after` arm. The resume-edge gate that refuses to fabricate a
+/// timeout on a stale wake consults the deadline arbiter — this pins that
+/// a real `TimedOut` still routes to the `after` body and is not
+/// re-suspended into a hang (main would block on the completion channel
+/// forever and the bounded runner would kill it).
+#[test]
+fn select_after_genuine_expiry_takes_after_arm() {
+    run_inline_scribbled(
+        "select_after_genuine_expiry",
+        "import std::channel::channel;\n\
+         \n\
+         actor Observer {\n\
+         \x20   receive fn watch(rx: channel.Receiver<i64>, done: channel.Sender<i64>) {\n\
+         \x20       select {\n\
+         \x20           v from rx.recv() => {\n\
+         \x20               match v {\n\
+         \x20                   Some(_) => println(\"value\"),\n\
+         \x20                   None => println(\"closed\"),\n\
+         \x20               }\n\
+         \x20           },\n\
+         \x20           after 400ms => println(\"timeout\"),\n\
+         \x20       };\n\
+         \x20       rx.close();\n\
+         \x20       done.send(1);\n\
+         \x20       done.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let obs = spawn Observer;\n\
+         \x20   obs.watch(rx, done_tx);\n\
+         \x20   let _ = done_rx.recv();\n\
+         \x20   done_rx.close();\n\
+         \x20   tx.close();\n\
+         }\n",
+        "timeout\n",
     );
 }
 

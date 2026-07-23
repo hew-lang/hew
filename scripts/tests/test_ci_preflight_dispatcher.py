@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -414,6 +415,30 @@ def test_compiler_pipeline_rs_change_includes_vertical_slice_oracle() -> None:
     assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
     assert "make test-compiler-pipeline" in result.stdout, result.stdout
     assert "make test-vertical-slice" in result.stdout, result.stdout
+    # The hew-cli consumer corpus (compiled leak/drop oracles, await_e2e,
+    # eval_e2e, …) runs inside make test-compiler-pipeline (-p hew-cli
+    # -p adze-cli, ci profile); a separate single-test hew-cli command here
+    # would be a duplicate run of tests the lane already covers.
+    assert "--test await_e2e" not in result.stdout, result.stdout
+
+
+def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> None:
+    """The compiler-pipeline and types lanes delegate hew-cli consumer-corpus
+    coverage to make test-compiler-pipeline: its nextest invocation must keep
+    -p hew-cli and -p adze-cli under the ci profile.  If a Makefile edit drops
+    either package, the compiled leak/drop oracles and the e2e suites silently
+    stop running for HIR/MIR/codegen and type-checker diffs — exactly the
+    consumer-corpus escape class this ratchet exists to block.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    match = re.search(
+        r"^test-compiler-pipeline:[^\n]*\n(?:\t[^\n]*\n)+", makefile, re.MULTILINE
+    )
+    assert match is not None, "test-compiler-pipeline recipe not found in Makefile"
+    recipe = match.group(0)
+    assert "--profile ci" in recipe, recipe
+    assert "-p hew-cli" in recipe, recipe
+    assert "-p adze-cli" in recipe, recipe
 
 
 def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
@@ -554,6 +579,9 @@ def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
         f"Expected types profile for parser + types diff.\nstdout:\n{result.stdout}"
     )
     assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    # The proving gate needs its per-command floor: 7887 tests measure ~234 s
+    # warm, so the types lane's 180 s narrow tier would watchdog-kill it.
+    assert "make test-compiler-pipeline  (budget: 600s)" in result.stdout, result.stdout
     # fuzz-oracle must run: a type-checker change can produce wrong trap signals.
     assert "make fuzz-oracle" in result.stdout, result.stdout
     # Must NOT have fallen back to the full suite.
@@ -699,6 +727,7 @@ _TESTS = [
     test_runtime_net_lane_rebuilds_libhew,
     test_zero_timeout_fails_closed,
     test_compiler_pipeline_rs_change_includes_vertical_slice_oracle,
+    test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages,
     test_docs_only_change_does_not_include_vertical_slice_oracle,
     test_fallback_lane_includes_smoke_tier_before_heavy,
     test_parser_plus_types_narrow_multi_bucket_uses_types_lane,

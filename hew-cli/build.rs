@@ -115,9 +115,17 @@ mod tests {
 
     use super::{read_git_metadata, GitMetadata, UNKNOWN_GIT_METADATA};
 
-    fn git(repo: &Path, args: &[&str]) {
+    /// Runs git against `repo` with a hermetic configuration: `config` replaces
+    /// the global and system config files via the environment, so the temp repo
+    /// gets a deterministic identity, no commit signing, and no hooks without
+    /// passing `-c` overrides on the command line. Host git policy wrappers may
+    /// refuse `-c` overrides of keys like `commit.gpgsign`; file-based config
+    /// carries the same settings without per-invocation overrides.
+    fn git(repo: &Path, config: &Path, args: &[&str]) {
         let output = Command::new("git")
             .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", config)
+            .env("GIT_CONFIG_SYSTEM", config)
             .args(args)
             .output()
             .expect("git should run");
@@ -127,6 +135,25 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// Writes the hermetic git config used by [`git`] into `dir` and returns
+    /// its path. Kept outside the repository worktree so the config file never
+    /// shows up as an untracked (dirty) entry in `git status`.
+    fn write_git_test_config(dir: &Path) -> std::path::PathBuf {
+        let config = dir.join("gitconfig");
+        fs::write(
+            &config,
+            "[user]\n\
+             \tname = Hew Tests\n\
+             \temail = tests@hew.dev\n\
+             [commit]\n\
+             \tgpgsign = false\n\
+             [core]\n\
+             \thooksPath = .git/disabled-hooks\n",
+        )
+        .expect("write git test config");
+        config
     }
 
     #[test]
@@ -149,18 +176,13 @@ mod tests {
     #[test]
     fn git_metadata_tracks_clean_dirty_and_detached_states() {
         let dir = tempfile::tempdir().expect("temporary directory");
-        git(dir.path(), &["init", "--quiet"]);
+        let config_dir = tempfile::tempdir().expect("config directory");
+        let config = write_git_test_config(config_dir.path());
+        git(dir.path(), &config, &["init", "--quiet"]);
         git(
             dir.path(),
+            &config,
             &[
-                "-c",
-                "user.name=Hew Tests",
-                "-c",
-                "user.email=tests@hew.dev",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "core.hooksPath=.git/disabled-hooks",
                 "commit",
                 "--quiet",
                 "--allow-empty",
@@ -181,7 +203,7 @@ mod tests {
         assert_eq!(read_git_metadata(dir.path()).dirty, "true");
         fs::remove_file(dir.path().join("mutation")).expect("remove mutation");
 
-        git(dir.path(), &["checkout", "--quiet", "--detach"]);
+        git(dir.path(), &config, &["checkout", "--quiet", "--detach"]);
         assert_eq!(read_git_metadata(dir.path()), clean);
     }
 }

@@ -68,7 +68,8 @@ fn shutdown_phase_store(value: i32, ordering: Ordering) {
 
 /// Default drain timeout in milliseconds.
 const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 5_000;
-/// Poll interval while waiting for the scheduler to drain existing work.
+/// Poll interval while waiting for the scheduler to drain existing work and
+/// while blocking in `hew_shutdown_wait` for the orchestrator to finish.
 const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Immediate shutdown normally skips the drain. If the reactor sweep wakes an
 /// already-parked actor, give that typed cancellation a short bounded window to
@@ -292,7 +293,7 @@ pub extern "C" fn hew_shutdown_wait() -> c_int {
             PHASE_RUNNING => return -1,
             PHASE_DONE => return 0,
             PHASE_FAILED => return -2,
-            _ => std::thread::sleep(Duration::from_millis(10)),
+            _ => std::thread::sleep(DRAIN_POLL_INTERVAL),
         }
     }
 }

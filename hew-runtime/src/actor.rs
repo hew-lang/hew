@@ -5080,6 +5080,39 @@ where
     send_result
 }
 
+/// Submit an ask with a caller-owned reply channel against an actor
+/// allocation whose liveness the CALLER pins (the owner-scoped stable-role
+/// path: `hew_supervisor_role_ask_with_channel` resolves the child slot and
+/// submits while holding the supervisor's `children_lock`, so the incarnation
+/// cannot be replaced or reclaimed across the submission).
+///
+/// Channel-reference discipline is identical to
+/// [`hew_actor_ask_with_channel`]: the queued sender-side ref is retained here
+/// and released on a failed submission; the caller-provided creator ref
+/// survives failure so the caller can still free the channel.
+///
+/// # Safety
+///
+/// - `actor` must be a live `HewActor` the caller keeps live for the call.
+/// - `data` and `ch` must satisfy [`hew_actor_ask_with_channel`]'s contract.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn ask_with_channel_pinned(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    ch: *mut c_void,
+) -> i32 {
+    // SAFETY: the caller pins `actor`; channel/data follow this fn's contract.
+    unsafe {
+        submit_ask_with_reply_channel(
+            ch.cast(),
+            AskReplyChannelFailureCleanup::KeepCreatorRef,
+            |ch| actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()),
+        )
+    }
+}
+
 // ── Ask (request-response) ──────────────────────────────────────────────
 // Native asks block on threaded reply channels; WASM asks cooperate by
 // driving the single-threaded scheduler in bounded ticks.

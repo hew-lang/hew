@@ -4182,6 +4182,224 @@ mod tests {
         }
     }
 
+    /// The lookup-token-then-send shape loses the ask when the restart
+    /// machinery advances the slot inside the unlocked gap. Both faces of the
+    /// window, forced deterministically at the exact seam the two-call codegen
+    /// sequence exposed:
+    ///
+    /// 1. Token resolved, replacement lands, OLD incarnation stopped, THEN the
+    ///    send: refused (`ErrActorStopped`) even though the caller observed a
+    ///    Live slot at resolve time.
+    /// 2. Token resolved, ask ACCEPTED by the old incarnation, THEN the
+    ///    replacement wave retires it: the accepted ask's reply resolves null
+    ///    with only the orphaned marker — the input that surfaced as a silent
+    ///    join-site trap with no diagnostic.
+    #[test]
+    fn stale_role_token_send_after_replacement_loses_the_ask() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test owns the supervisor tree and sequences the
+        // replacement wave by hand; no worker threads run.
+        unsafe {
+            let (sup, old_child, _self_actor) = make_supervisor_with_child();
+            let supervisor_token = (*sup).local_pid_id;
+
+            // Face 1: resolve → replace+stop → send.
+            let live = hew_local_pid_supervisor_child_get(supervisor_token, 0);
+            assert_eq!(live.tag, 0, "pre-race lookup must observe a Live slot");
+            let old_token = (*old_child).local_pid_id;
+            assert_eq!(
+                live.handle as usize,
+                usize::from(old_token),
+                "the lookup handle word is the incarnation's stable token"
+            );
+
+            let replacement = restart_child_from_spec(&mut *sup, 0);
+            assert!(!replacement.is_null(), "replacement spawn must succeed");
+            actor::hew_actor_stop(old_child);
+
+            let ch = crate::reply_channel::hew_reply_channel_new();
+            let status =
+                actor::hew_local_pid_ask_with_channel(old_token, 7, ptr::null_mut(), 0, ch.cast());
+            assert_eq!(
+                status,
+                crate::internal::types::HewError::ErrActorStopped as i32,
+                "a stale role token resolved before the replacement wave must refuse the send"
+            );
+            crate::reply_channel::hew_reply_channel_free(ch);
+            // The old incarnation stopped Idle → Stopped; reclaim it.
+            assert_eq!(actor::hew_actor_free(old_child), 0);
+
+            // Face 2: resolve → ask accepted → replacement wave retires the
+            // target. The accepted ask's reply resolves null + orphaned.
+            let live2 = hew_local_pid_supervisor_child_get(supervisor_token, 0);
+            assert_eq!(live2.tag, 0, "replacement slot must be Live");
+            let repl_token = (*replacement).local_pid_id;
+            assert_eq!(live2.handle as usize, usize::from(repl_token));
+            let ch2 = crate::reply_channel::hew_reply_channel_new();
+            let status2 = actor::hew_local_pid_ask_with_channel(
+                repl_token,
+                7,
+                ptr::null_mut(),
+                0,
+                ch2.cast(),
+            );
+            assert_eq!(
+                status2,
+                crate::internal::types::HewError::Ok as i32,
+                "the ask must be accepted while the incarnation is current"
+            );
+
+            // The replacement wave retires the accepted-ask target: pull it
+            // from the slot and tear it down (worker-less runtime: force the
+            // terminal state the drain would have produced, then free — the
+            // free path retires the queued ask's sender ref).
+            let retired = take_child_slot(&mut *sup, 0);
+            assert_eq!(retired, replacement);
+            (*retired)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            assert_eq!(actor::hew_actor_free(retired), 0);
+
+            let reply = crate::reply_channel::hew_reply_wait(ch2);
+            assert!(
+                reply.is_null(),
+                "an ask orphaned by the replacement wave must resolve a null reply"
+            );
+            assert_eq!(
+                crate::reply_channel::hew_reply_channel_is_orphaned(ch2),
+                1,
+                "the orphaned marker is the only fact the null-only reply carries"
+            );
+            crate::reply_channel::hew_reply_channel_free(ch2);
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// The owner-scoped role ask resolves the slot and submits under ONE
+    /// `children_lock` critical section: the slot writers cannot interpose
+    /// (probed at the seam), and the ask lands in the incarnation that was
+    /// current at resolve time — never a later one, never nowhere.
+    #[test]
+    fn role_ask_submits_to_resolved_incarnation_under_slot_lock() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test owns the supervisor tree; the seam hook probes the
+        // lock from a joined helper thread (synchronization only, no sleeps).
+        unsafe {
+            let (sup, old_child, _self_actor) = make_supervisor_with_child();
+            let supervisor_token = (*sup).local_pid_id;
+            let sup_addr = sup as usize;
+
+            let probed = Arc::new(AtomicBool::new(false));
+            let probed_hook = Arc::clone(&probed);
+            *ROLE_ASK_SUBMIT_GAP_HOOK.lock_or_recover() = Some(Arc::new(move || {
+                let handle = std::thread::spawn(move || {
+                    // The supervisor outlives the ask call that fires this
+                    // hook; the probe only touches the lock word.
+                    let sup = sup_addr as *mut HewSupervisor;
+                    (*sup).children_lock.try_lock().is_err()
+                });
+                let writer_excluded = handle.join().expect("lock probe thread");
+                assert!(
+                    writer_excluded,
+                    "children_lock must be held at the resolve→submit seam so \
+                     store_child_slot/take_child_slot cannot interpose"
+                );
+                probed_hook.store(true, Ordering::Release);
+            }));
+
+            let ch = crate::reply_channel::hew_reply_channel_new();
+            let status = hew_supervisor_role_ask_with_channel(
+                supervisor_token,
+                0,
+                42,
+                ptr::null_mut(),
+                0,
+                ch.cast(),
+            );
+            *ROLE_ASK_SUBMIT_GAP_HOOK.lock_or_recover() = None;
+            assert_eq!(status, crate::internal::types::HewError::Ok as i32);
+            assert!(
+                probed.load(Ordering::Acquire),
+                "the seam hook must have run inside the critical section"
+            );
+
+            // A replacement landing AFTER the owner-scoped submission cannot
+            // repoint the already-enqueued ask.
+            let replacement = restart_child_from_spec(&mut *sup, 0);
+            assert!(!replacement.is_null());
+
+            let old_mb = (*old_child).mailbox.cast::<mailbox::HewMailbox>();
+            let node = mailbox::hew_mailbox_try_recv(old_mb);
+            assert!(
+                !node.is_null(),
+                "the ask must be enqueued in the incarnation resolved under the lock"
+            );
+            assert_eq!((*node).msg_type, 42);
+            assert_eq!(
+                (*node).reply_channel,
+                ch.cast(),
+                "the enqueued node must carry the caller's reply channel"
+            );
+            let repl_mb = (*replacement).mailbox.cast::<mailbox::HewMailbox>();
+            assert!(
+                mailbox::hew_mailbox_try_recv(repl_mb).is_null(),
+                "the replacement incarnation must not receive the pre-swap ask"
+            );
+
+            // Node free retires the queued sender ref (orphan path) so the
+            // creator-side wait resolves; then reclaim both incarnations.
+            mailbox::hew_msg_node_free(node);
+            assert!(crate::reply_channel::hew_reply_wait(ch).is_null());
+            crate::reply_channel::hew_reply_channel_free(ch);
+
+            (*old_child)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            assert_eq!(actor::hew_actor_free(old_child), 0);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// A mid-restart (null) slot refuses the owner-scoped ask closed: nothing
+    /// is enqueued and the caller's channel reference survives.
+    #[test]
+    fn role_ask_mid_restart_slot_fails_closed() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: test owns the tree; nulls the slot to model the restart
+        // window, then restores it for teardown.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            let supervisor_token = (*sup).local_pid_id;
+            store_child_slot(&mut *sup, 0, ptr::null_mut());
+
+            let before = crate::reply_channel::active_channel_count();
+            let ch = crate::reply_channel::hew_reply_channel_new();
+            let status = hew_supervisor_role_ask_with_channel(
+                supervisor_token,
+                0,
+                7,
+                ptr::null_mut(),
+                0,
+                ch.cast(),
+            );
+            assert_eq!(
+                status,
+                crate::internal::types::HewError::ErrActorStopped as i32,
+                "a mid-restart slot must refuse, never guess a future incarnation"
+            );
+            assert_eq!(
+                crate::reply_channel::active_channel_count(),
+                before + 1,
+                "the refused ask must preserve the caller-owned channel reference"
+            );
+            crate::reply_channel::hew_reply_channel_free(ch);
+
+            store_child_slot(&mut *sup, 0, child);
+            hew_supervisor_stop(sup);
+        }
+    }
+
     /// An out-of-range key returns Dead(UnknownSlot).
     #[test]
     fn child_get_unknown_key_returns_dead_unknown_slot() {
@@ -5727,6 +5945,126 @@ pub extern "C" fn hew_local_pid_supervisor_child_get(
     _key: u32,
 ) -> ChildLookupResult {
     ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown)
+}
+
+/// Test-only hook fired inside [`hew_supervisor_role_ask_with_channel`] in the
+/// gap between resolving the current child slot and submitting the ask — with
+/// `children_lock` HELD. The forced-interleaving regression installs a closure
+/// that probes the lock from another thread at this exact point, proving the
+/// restart machinery's slot writers (`store_child_slot` / `take_child_slot`)
+/// cannot interpose between resolution and submission.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static ROLE_ASK_SUBMIT_GAP_HOOK: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn fire_role_ask_submit_gap_hook() {
+    let hook = ROLE_ASK_SUBMIT_GAP_HOOK.lock_or_recover().clone();
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// Submit an ask through a fungible `(stable supervisor token, static slot)`
+/// role as ONE owner-scoped operation: pin the supervisor identity, resolve
+/// the slot, and enqueue into the CURRENT incarnation's mailbox — all inside
+/// one `children_lock` critical section.
+///
+/// This replaces the lookup-token-then-send shape
+/// (`hew_local_pid_supervisor_child_get` followed by
+/// `hew_local_pid_ask_with_channel`), whose unlocked gap let the restart
+/// machinery advance the slot between resolution and submission: the resolved
+/// token either went stale (send refused after the caller observed a live
+/// slot) or — worse — the ask was accepted by an incarnation the supervisor
+/// was about to retire, orphaning the reply with no diagnostic at the join
+/// site. The doctrinal sibling is the connection-manager
+/// refresh-identity-under-owner-lock fix: identity resolution and use happen
+/// under the owner's lock, never across it.
+///
+/// Locking: `children_lock` is the slot writers' exclusion
+/// (`store_child_slot` / `take_child_slot`), and a non-null slot's allocation
+/// is owned by the supervisor and cannot be reclaimed while the lock is held —
+/// the same liveness contract `child_get_from_supervisor` documents for the
+/// token copy. The mailbox submission inside the critical section takes only
+/// the mailbox and scheduler queue locks, which are never held while a thread
+/// waits on `children_lock` (slot writers acquire it with no locks held).
+///
+/// Returns `HewError::Ok` on submission. A dead, unknown, or mid-restart slot
+/// fails closed with `HewError::ErrActorStopped` and enqueues nothing —
+/// matching the refusal the retired-token path produced. The channel-reference
+/// discipline matches [`crate::actor::hew_actor_ask_with_channel`]: the
+/// caller's creator ref survives failure.
+///
+/// # Safety
+///
+/// `data` and `ch` must satisfy
+/// [`crate::actor::hew_actor_ask_with_channel`]'s contract.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_role_ask_with_channel(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    key: u32,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    ch: *mut c_void,
+) -> i32 {
+    use crate::internal::types::HewError;
+
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
+        return HewError::ErrActorStopped as i32;
+    };
+    let sup = pin.supervisor();
+    // SAFETY: the stable-identity pin prevents supervisor reclamation for the
+    // complete lookup + submission, including the children-lock section.
+    let s = unsafe { &*sup };
+
+    // Fast-path shutdown check (atomics, no lock).
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
+        return HewError::ErrActorStopped as i32;
+    }
+    let i = key as usize;
+    if i >= s.child_count {
+        return HewError::ErrActorStopped as i32;
+    }
+
+    let _guard = s.children_lock.lock_or_recover();
+
+    // Re-check shutdown under the lock (the supervisor can be cancelled
+    // between the atomic check above and acquiring the lock).
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
+        return HewError::ErrActorStopped as i32;
+    }
+
+    let child = s.children.get(i).copied().unwrap_or(ptr::null_mut());
+    if child.is_null() {
+        // Mid-restart (Transient) or permanently dead: refuse rather than
+        // guess a future incarnation. Nothing was enqueued; the caller's
+        // fail-closed surface names the refusal.
+        return HewError::ErrActorStopped as i32;
+    }
+
+    #[cfg(test)]
+    fire_role_ask_submit_gap_hook();
+
+    // SAFETY: `child` is the slot's live incarnation and cannot be replaced or
+    // reclaimed while `children_lock` is held; `data`/`ch` follow this fn's
+    // contract.
+    unsafe { crate::actor::ask_with_channel_pinned(child, msg_type, data, size, ch) }
+}
+
+/// Supervisors are unavailable on the wasm runtime; the owner-scoped role ask
+/// keeps symbol parity and fails closed exactly like the lookup twin above.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_supervisor_role_ask_with_channel(
+    _token: crate::lifetime::local_handles::HewLocalPidId,
+    _key: u32,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _size: usize,
+    _ch: *mut c_void,
+) -> i32 {
+    crate::internal::types::HewError::ErrActorStopped as i32
 }
 
 /// Look up a nested child supervisor by its compile-time-assigned slot index.

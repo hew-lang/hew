@@ -3850,6 +3850,21 @@ impl Builder {
                         field_idx: binding.field_idx,
                     },
                 });
+                // An owned call-carrier scrutinee gets a terminal snapshot
+                // drop on every exit, so a payload binder that MOVES the
+                // payload out must neutralize the variant slot on that arm —
+                // the funnel authority registered here fires only when the
+                // binder crosses an ownership boundary.
+                self.note_carrier_payload_binder(
+                    scrutinee_local,
+                    Place::MachineVariant {
+                        local: scrutinee_local,
+                        variant_idx,
+                        field_idx: binding.field_idx,
+                    },
+                    dest,
+                    &binding_ty,
+                );
                 let previous = self.binding_locals.insert(binding.binding, dest);
                 overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
                 // #2523 — record provenance for a heap-owning TOP-LEVEL projected

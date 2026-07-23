@@ -45,6 +45,55 @@ impl Builder {
         );
     }
 
+    /// Propagate whole-carrier release authority into a match payload binder.
+    ///
+    /// The binder local holds a byte-copy ALIAS of the carrier scrutinee's
+    /// variant payload slot. When the binder crosses an ownership boundary
+    /// (arm-value move, `let`, `return`, a consuming call argument — every one
+    /// funnels through `transfer_owned_carrier_place`), the variant slot must
+    /// be neutralized on THAT path so the carrier's terminal snapshot drop
+    /// observes null and the new owner keeps the single release authority. A
+    /// binder that never escapes leaves the entry unfired and the terminal
+    /// drop releases the payload — exactly once either way, per arm.
+    ///
+    /// Only a SELF-ROOTED whole carrier participates (the owned call-carrier
+    /// parameter slot itself); projection or derived scrutinees keep their
+    /// existing fail-closed handling. `BitCopy` payloads carry no release
+    /// authority and are skipped.
+    pub(crate) fn note_carrier_payload_binder(
+        &mut self,
+        scrutinee_local: u32,
+        source: Place,
+        dest: Place,
+        binding_ty: &hew_types::ResolvedTy,
+    ) {
+        let scrutinee = Place::Local(scrutinee_local);
+        if !matches!(
+            self.owned_carrier_neutralize.get(&scrutinee),
+            Some(OwnedCarrierNeutralizeTarget::Whole(root)) if *root == scrutinee
+        ) {
+            return;
+        }
+        let record_layouts = outbound_record_layouts(self);
+        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+            binding_ty,
+            &record_layouts,
+            &self.enum_layouts,
+            &self.opaque_handle_names,
+            &self.resource_opaque_close,
+        ) else {
+            // Unreachable for a registered carrier: the parameter registration
+            // requires a clone-total plan over the whole enum, which
+            // classifies every payload field.
+            return;
+        };
+        if matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
+            return;
+        }
+        self.owned_carrier_neutralize
+            .insert(dest, OwnedCarrierNeutralizeTarget::Whole(source));
+    }
+
     /// Save the raw argument places for the post-CFG owned-carrier pass.
     pub(crate) fn note_owned_call_site(
         &mut self,
@@ -240,6 +289,16 @@ impl Builder {
     }
 
     fn transfer_owned_carrier_value(&mut self, expr: &HirExpr, value: Place) -> Place {
+        // A string/bytes let-share RETAINS the source (+1 on the shared
+        // buffer) instead of moving it: the source slot stays live and keeps
+        // its release authority, so the carrier must not be neutralized on
+        // this edge — the retained binding and the original each release
+        // their own count.
+        if self.string_local_share_sites.contains_key(&expr.site)
+            || self.bytes_local_share_sites.contains(&expr.site)
+        {
+            return value;
+        }
         let ty = self.subst_ty(&expr.ty);
         self.transfer_owned_carrier_place(value, &ty)
     }
@@ -306,11 +365,16 @@ impl Builder {
                     // A whole carrier parameter can be read by more than one
                     // freeing callee. Preserve its source until the post-CFG
                     // carrier pass can use liveness to choose snapshot or
-                    // last-use transfer. Projection carriers still transfer
-                    // eagerly so their root-relative slot is neutralized once.
+                    // last-use transfer. Only a SELF-ROOTED whole (the carrier
+                    // slot itself) defers: a payload-binder authority points at
+                    // a variant slot inside a different root, and the post-CFG
+                    // pass would neutralize the binder copy instead of that
+                    // slot — it must transfer eagerly through the funnel.
+                    // Projection carriers still transfer eagerly so their
+                    // root-relative slot is neutralized once.
                     if matches!(
                         self.owned_carrier_neutralize.get(&value),
-                        Some(OwnedCarrierNeutralizeTarget::Whole(_))
+                        Some(OwnedCarrierNeutralizeTarget::Whole(root)) if *root == value
                     ) {
                         return Some(value);
                     }

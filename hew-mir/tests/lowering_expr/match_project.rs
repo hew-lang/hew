@@ -1009,3 +1009,71 @@ fn main() -> i64 {
     );
     assert_eq!(source_consume_count(&pipeline, "main", "value"), 0);
 }
+
+/// An owned call-carrier enum param gets a terminal `ValueSnapshotDrop` on
+/// every exit, so a match arm that MOVES the payload out must neutralize the
+/// variant slot ON THAT ARM — the returned binder becomes the sole owner and
+/// the terminal drop observes null there, while a read-only sibling arm keeps
+/// its slot live for the terminal drop. Path-sensitive by construction: the
+/// neutralize sits in the arm's own block, never shared.
+#[test]
+fn carrier_param_move_out_arm_neutralizes_variant_slot() {
+    let pipeline = pipeline_with_tc(
+        r#"
+fn ef(e: Result<string, string>) -> string {
+    match e { Ok(x) => x, Err(y) => "e" + "rr" }
+}
+
+fn main() -> i64 {
+    let s = ef(Ok("a" + "b"));
+    s.len()
+}
+"#,
+    );
+    let ef = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "ef")
+        .expect("raw fn ef");
+
+    // The move-out (Ok) arm neutralizes its variant payload slot; the
+    // read-only (Err) arm must NOT — its payload is the terminal drop's.
+    let neutralized_variants: Vec<u32> = ef
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot {
+                place:
+                    hew_mir::Place::MachineVariant {
+                        local: 0,
+                        variant_idx,
+                        ..
+                    },
+            } => Some(*variant_idx),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        neutralized_variants,
+        vec![0],
+        "exactly the Ok arm's variant slot must be neutralized"
+    );
+
+    // The terminal carrier drop remains on the return path (it releases the
+    // Err payload when that arm runs, and no-ops on the neutralized Ok path).
+    assert!(
+        ef.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::ValueSnapshotDrop {
+                        value: hew_mir::Place::Local(0),
+                        ..
+                    }
+                )
+            })
+        }),
+        "the carrier param keeps its terminal snapshot drop"
+    );
+}

@@ -1434,6 +1434,18 @@ fn render_mir_check(check: &MirCheck) -> String {
         MirCheck::DropPlanUndetermined { block, reason } => {
             format!("DropPlanUndetermined bb{block} {reason:?}")
         }
+        MirCheck::ObligationUnderReleased {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("ObligationUnderReleased {function} bb{block} {name} {reason:?}"),
+        MirCheck::ObligationOverReleased {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
         MirCheck::ContextBoundaryViolation {
             function,
             block,
@@ -1621,6 +1633,18 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         MirDiagnosticKind::DropPlanUndetermined { block, reason } => {
             format!("DropPlanUndetermined bb{block} {reason:?}")
         }
+        MirDiagnosticKind::ObligationUnderReleased {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("ObligationUnderReleased {function} bb{block} {name} {reason:?}"),
+        MirDiagnosticKind::ObligationOverReleased {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
         MirDiagnosticKind::ContextBoundaryViolation {
             function,
             block,

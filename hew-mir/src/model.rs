@@ -5682,6 +5682,35 @@ pub enum MirCheck {
     /// `reason` carries a short human-readable cause for diagnostic
     /// anchoring; `ty` is the rejected operand rendered for display.
     WitnessOperandUnresolved { ty: String, reason: String },
+    /// S1 obligation-balance: a heap-owning owned local reaches a `Return`
+    /// exit with ZERO discharges on every modelling of that path — no terminal
+    /// drop in the exit's plan, no ownership transfer (move-out / neutralize /
+    /// send / consuming runtime call), no inline release. The mint's release
+    /// obligation is never met on this path: a leak. The discharge set is
+    /// re-derived independently from the primitive `Instr` stream + CFG
+    /// reachability (never from the elaborator's `Disposition` ledger — the
+    /// ledger is the component under test). Under-release is a hard error
+    /// gated by the shrink-only, issue-linked allowlist registry
+    /// (`obligation_registry`).
+    ObligationUnderReleased {
+        /// Function symbol (`ElaboratedMirFunction::name`) — the registry key.
+        function: String,
+        /// The unbalanced exit's block id (`return[bbN]`).
+        block: u32,
+        /// Source-level name of the leaked local (registry key + diagnostics).
+        name: String,
+        reason: String,
+    },
+    /// S1 obligation-balance: a heap-owning owned local accumulates TWO OR
+    /// MORE definite discharges on a single CFG path to a `Return` exit — a
+    /// double-free. Memory-unsafe; unconditional hard error with NO allowlist
+    /// escape.
+    ObligationOverReleased {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
     /// W3.053 fail-closed gate: an owned handle (Generator / Stream / Sink /
     /// Duplex / Cancellation token / actor handle — any `AffineResource` /
     /// `CowHeap`-drop handle) was moved into a local tuple/record and then
@@ -6619,6 +6648,27 @@ pub enum MirDiagnosticKind {
     /// emits a partial drop (fail-closed per LESSONS
     /// `cleanup-all-exits` / `boundary-fail-closed`).
     DropPlanUndetermined { block: u32, reason: String },
+    /// S1 obligation-balance under-release (leak): surfaced from
+    /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has
+    /// ZERO discharges on a CFG path to a `Return` exit. Hard error unless
+    /// the (function, name) pair carries a shrink-only, issue-linked
+    /// registry entry (`obligation_registry`).
+    ObligationUnderReleased {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
+    /// S1 obligation-balance over-release (double-free): surfaced from
+    /// `MirCheck::ObligationOverReleased`. Two or more definite discharges
+    /// on one CFG path. Unconditional hard error — memory-unsafe, no
+    /// allowlist escape.
+    ObligationOverReleased {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
     /// Execution-context carrier marker validation failed.
     ContextBoundaryViolation {
         function: String,

@@ -124,6 +124,8 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::OutboundModeUnresolved { .. }
         | hew_mir::MirDiagnosticKind::MustConsume { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "E_MIR_CHECK",
@@ -571,6 +573,8 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         }
         hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { .. } => "RemotePayloadUnsupported",
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. } => "DropPlanUndetermined",
+        hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. } => "ObligationUnderReleased",
+        hew_mir::MirDiagnosticKind::ObligationOverReleased { .. } => "ObligationOverReleased",
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. } => "ContextBoundaryViolation",
         hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "ContextBindingEscapes",
         hew_mir::MirDiagnosticKind::UnknownActorStateField { .. } => "UnknownActorStateField",
@@ -668,6 +672,8 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
@@ -756,6 +762,28 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         ),
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, reason } => {
             format!("drop plan for MIR block {block} could not be determined: {reason}")
+        }
+        hew_mir::MirDiagnosticKind::ObligationUnderReleased {
+            function,
+            name,
+            reason,
+            ..
+        } => {
+            format!(
+                "obligation balance in `{function}`: owned value `{name}` is \
+                 never released on an exit path (leak): {reason}"
+            )
+        }
+        hew_mir::MirDiagnosticKind::ObligationOverReleased {
+            function,
+            name,
+            reason,
+            ..
+        } => {
+            format!(
+                "obligation balance in `{function}`: owned value `{name}` is \
+                 released more than once on an exit path (double-free): {reason}"
+            )
         }
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation {
             function,
@@ -968,6 +996,8 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             notes.push(format!("site: {site}"));
         }
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, .. }
+        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { block, .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { block, .. } => {
             notes.push(format!("block: {block}"));

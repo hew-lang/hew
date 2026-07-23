@@ -1,0 +1,62 @@
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+fn sum(t: Tree) -> i64 {
+    match t {
+        Leaf(value) => value,
+        Node(left, right) => sum(left) + sum(right),
+    }
+}
+
+actor Scorer {
+    receive fn score(tag: i64, tree: Tree) -> i64 {
+        tag + sum(tree)
+    }
+}
+
+actor Coordinator {
+    let scorer: LocalPid<Scorer>;
+
+    receive fn ask_score(tag: i64, tree: Tree) -> i64 {
+        match await scorer.score(tag, tree) {
+            Ok(value) => value,
+            Err(_) => -1,
+        }
+    }
+
+    receive fn select_score(tag: i64, tree: Tree) -> i64 {
+        select {
+            reply from scorer.score(tag, tree) => reply,
+            after 5s => -2,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let scorer = spawn Scorer;
+    let coordinator = spawn Coordinator(scorer: scorer);
+    let direct = match await scorer.score(10, Node(Leaf(1), Leaf(2))) {
+        Ok(value) => value,
+        Err(_) => -3,
+    };
+    let selected = select {
+        reply from scorer.score(20, Node(Leaf(3), Leaf(4))) => reply,
+        after 5s => -4,
+    };
+    let (joined_a, joined_b) = join {
+        scorer.score(30, Node(Leaf(5), Leaf(6))),
+        scorer.score(40, Node(Leaf(7), Leaf(8))),
+    };
+    let suspended_ask = match await coordinator.ask_score(50, Node(Leaf(9), Leaf(10))) {
+        Ok(value) => value,
+        Err(_) => -5,
+    };
+    let suspended_select = match await coordinator.select_score(60, Node(Leaf(11), Leaf(12))) {
+        Ok(value) => value,
+        Err(_) => -6,
+    };
+    print(f"{direct},{selected},{joined_a},{joined_b},{suspended_ask},{suspended_select}");
+    0
+}

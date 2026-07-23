@@ -2450,7 +2450,10 @@ Important current details:
   `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
   `Vec<T>` through it via `.iter()` or `.into_iter()`
 - `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,
-  `sort_floats`, `reverse_ints`, `reverse_strings`, and `reverse_floats`
+  `sort_floats`, `reverse_ints`, `reverse_strings`, and `reverse_floats`;
+  integer and string sorts copy their input and use iterative merge passes
+  with O(n log n) comparisons, while float sorting retains its total-order
+  runtime implementation
 - `std::testing` is a pure-Hew assertion library layered on top of `panic()`
 
 #### 3.10.5 Printing, Formatting, and Strings

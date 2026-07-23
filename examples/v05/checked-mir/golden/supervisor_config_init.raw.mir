@@ -30,11 +30,12 @@ fn main() -> i64 [conv=default]
     _3: AppConfig
     _4: LocalPid<App>
     _5: LocalPid<App>
-    _6: LocalPid<Cache>
-    _7: i64
-    _8: __HewChildLookupResult
-    _9: i64
+    _6: i64
+    _7: LocalPid<Cache>
+    _8: i64
+    _9: __HewChildLookupResult
     _10: i64
+    _11: i64
   bb0:
     stmt: bind BindingId(4) cfg site=SiteId(9) ty=AppConfig
     stmt: use BindingId(4) cfg site=SiteId(13) ty=AppConfig intent=Read
@@ -51,13 +52,14 @@ fn main() -> i64 [conv=default]
     stmt: eval site=SiteId(16) ty=()
     stmt: return site=Some(SiteId(19)) ty=i64
     _5 = move _4
-    _7 = const.i64 0
-    _8 = call_rt hew_supervisor_child_get(_5, _7)
-    _9 = _8.field[1]
-    actor6 = move _9
+    _6 = call_rt hew_supervisor_direct_id(_5)
+    _8 = const.i64 0
+    _9 = call_rt hew_supervisor_child_get(_5, _8)
+    _10 = _9.field[1]
+    actor7 = move _10
     call_rt hew_supervisor_stop(_5)
-    _10 = const.i64 0
-    ret = move _10
+    _11 = const.i64 0
+    ret = move _11
     return
 
 fn i8::fmt(i8) -> string [conv=default]

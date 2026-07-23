@@ -727,11 +727,28 @@ pub(super) fn elaborate(
     // alone cannot prove sole ownership — this derivation supplies the
     // construction-site + parent-ingress proof; the `returned_aggregate_members`
     // skip and the `Consumed`/`MaybeConsumed` exit filter below complete it.
+    let actor_message_ingress_locals: HashSet<u32> =
+        if builder.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler {
+            builder
+                .parameter_locals
+                .iter()
+                .copied()
+                .filter(|local| {
+                    builder
+                        .locals
+                        .get(*local as usize)
+                        .is_some_and(|ty| ty_is_indirect_enum(ty, &builder.enum_layouts))
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        };
     let mut indirect_enum_drop_allowed = derive_indirect_enum_drop_allowed(
         &checked.blocks,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.enum_layouts,
+        &actor_message_ingress_locals,
     );
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
@@ -2584,6 +2601,7 @@ fn derive_indirect_enum_drop_allowed(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     enum_layouts: &[crate::model::EnumLayout],
+    actor_message_ingress_locals: &HashSet<u32>,
 ) -> HashSet<BindingId> {
     // Pass 1 — classify the construction sites, the parent-ingress sources, and
     // the whole-value Move edges. A constructed node lands in a tag/variant
@@ -2646,7 +2664,10 @@ fn derive_indirect_enum_drop_allowed(
     // Pass 2 — forward-propagate node ownership from each construction-site
     // local along the Move edges to a fixpoint. `owns_node` is the set of
     // locals that hold a freshly-constructed node (the node's flow closure).
-    let mut owns_node: HashSet<u32> = construction_sites.clone();
+    let mut owns_node: HashSet<u32> = construction_sites
+        .union(actor_message_ingress_locals)
+        .copied()
+        .collect();
     loop {
         let mut changed = false;
         for &(sl, dl) in &move_edges {

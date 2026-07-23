@@ -23,14 +23,54 @@ fn assert_version_shape(stdout: &str) {
     assert!(matches!(profile, "debug" | "release"), "stdout: {stdout}");
 
     if let Some(git) = parts.next() {
-        let git = git.strip_suffix("-dirty").unwrap_or(git);
-        assert!(
-            !git.is_empty() && git.chars().all(|ch| ch.is_ascii_hexdigit()),
-            "stdout: {stdout}"
-        );
+        if git != "git-unavailable" {
+            let git = git.strip_suffix("-dirty").unwrap_or(git);
+            assert!(
+                !git.is_empty()
+                    && git
+                        .chars()
+                        .all(|ch| ch.is_ascii_digit() || matches!(ch, 'a'..='f')),
+                "stdout: {stdout}"
+            );
+        }
     }
 
     assert!(parts.next().is_none(), "stdout: {stdout}");
+}
+
+#[test]
+fn version_shape_accepts_present_and_unavailable_git_metadata() {
+    assert_version_shape(&format!(
+        "hew {} (debug, a1b2c3d)\n",
+        env!("CARGO_PKG_VERSION")
+    ));
+    assert_version_shape(&format!(
+        "hew {} (release, a1b2c3d-dirty)\n",
+        env!("CARGO_PKG_VERSION")
+    ));
+    assert_version_shape(&format!(
+        "hew {} (debug, git-unavailable)\n",
+        env!("CARGO_PKG_VERSION")
+    ));
+}
+
+#[test]
+fn version_shape_rejects_malformed_git_metadata() {
+    for detail in [
+        "unknown-unknown",
+        "git-unknown",
+        "git-unavailable-dirty",
+        "not-a-hash",
+        "a1b2c3d-unknown",
+        "A1B2C3D",
+        "A1B2C3D-dirty",
+    ] {
+        let output = format!("hew {} (debug, {detail})\n", env!("CARGO_PKG_VERSION"));
+        assert!(
+            std::panic::catch_unwind(|| assert_version_shape(&output)).is_err(),
+            "malformed version detail was accepted: {detail}"
+        );
+    }
 }
 
 #[test]

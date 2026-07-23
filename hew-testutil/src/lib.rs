@@ -1327,6 +1327,17 @@ mod tests {
             } else {
                 std::io::Error::last_os_error().raw_os_error()
             };
+            self.finish_terminate_group(result, os_error)
+        }
+
+        /// Finishes the real classification/state-transition path from a
+        /// captured `killpg` outcome, which the permission-denied negative
+        /// control injects without depending on the host's process table.
+        fn finish_terminate_group(
+            &mut self,
+            result: i32,
+            os_error: Option<i32>,
+        ) -> Result<(), String> {
             classify_killpg_result(result, self.pgid, os_error)?;
             self.child.wait().map_err(|error| {
                 format!("cannot reap heartbeat probe leader after kill: {error}")
@@ -1522,38 +1533,33 @@ mod tests {
         assert!(classify_killpg_result(-1, 4242, None).is_err());
     }
 
-    /// `classify_killpg_result` against a real, injected `killpg` failure
-    /// rather than a synthetic `errno` value: signal `0` delivers nothing
-    /// (a pure permission/existence probe), and process group `1`
-    /// (init/launchd) is a group an unprivileged test process is never
-    /// permitted to signal, so this deterministically produces a genuine
-    /// `EPERM` without ever touching any real process. Proves the
-    /// classifier treats a real "denied" failure as "group might still be
-    /// alive", never as "confirmed gone" -- the distinction that keeps
-    /// `terminate_group` from ever declaring a heart-beating grandchild
-    /// terminated just because the kill attempt was refused.
+    /// `classify_killpg_result` through the probe's real termination boundary,
+    /// with a deterministic injected `EPERM` outcome. This avoids assuming that
+    /// process group 1 exists or belongs to init: FreeBSD can validly return
+    /// `ESRCH` for that ambient probe. The short-lived owned child bounds the
+    /// test even if a regression accepts `EPERM` and waits for the group leader.
     #[test]
     fn classify_killpg_result_rejects_a_real_injected_permission_failure() {
-        // SAFETY: signal 0 delivers no signal; this only probes whether
-        // the calling process is permitted to signal process group 1.
-        let result = unsafe { libc::killpg(1, 0) };
-        if result == 0 {
-            // Running with a privilege level that can signal init (e.g.
-            // root) -- this environment cannot exercise a real denial, so
-            // there is nothing further to assert here; the synthetic-input
-            // test above already covers the EPERM branch directly.
-            return;
-        }
-        let os_error = std::io::Error::last_os_error().raw_os_error();
-        assert_eq!(
-            os_error,
-            Some(libc::EPERM),
-            "expected a permission-denied failure signaling process group 1, got {os_error:?}"
-        );
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 0.2"]);
+        own_process_group(&mut command);
+        let child = command.spawn().expect("spawn bounded permission probe");
+        let pgid = child.id().cast_signed();
+        let mut probe = HeartbeatProbe {
+            child,
+            pgid,
+            state: ProbeState::Running,
+        };
+        let result = probe.finish_terminate_group(-1, Some(libc::EPERM));
+        let error = result.expect_err("an injected EPERM must keep termination unconfirmed");
         assert!(
-            classify_killpg_result(result, 1, os_error).is_err(),
-            "a real signal-denied failure must never be classified as the group already \
-             being gone"
+            error.contains(&format!("os error {:?}", Some(libc::EPERM))),
+            "permission-denied classification should preserve the injected errno: {error}"
+        );
+        assert_eq!(
+            probe.state,
+            ProbeState::Running,
+            "a denied group signal must not advance the probe to GroupTerminated"
         );
     }
 }

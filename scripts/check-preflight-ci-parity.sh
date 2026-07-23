@@ -15,14 +15,15 @@
 # CI_REQUIRED_CHECKS array in ci-preflight-dispatcher.sh, not here.
 #
 # The CI gate step list is parsed directly from .github/workflows/ci.yml using
-# one or more comment-marked blocks (>>> CI-PARITY-STEPS … <<< CI-PARITY-STEPS).
+# one or more comment-marked required-command blocks
+# (>>> CI-PARITY-STEPS … <<< CI-PARITY-STEPS).
 # Within that block, steps are identified by:
 #   - A single-line `run: <cmd>` value, OR
 #   - A `# parity-cmd: <cmd>` annotation on a `run: >-` line (used when the
 #     actual run: value is a multi-line YAML block whose canonical local command
 #     differs from the CI command text, e.g. cargo nextest → make test).
 #
-# Adding a new step inside the marked block that is NOT in CI_REQUIRED_CHECKS
+# Adding a new step inside a marked block that is NOT in CI_REQUIRED_CHECKS
 # fails this self-test (and therefore the lint CI job), blocking the merge.
 #
 # Usage:
@@ -40,7 +41,7 @@ CI_YML="${PREFLIGHT_PARITY_CI_YML:-$REPO_ROOT/.github/workflows/ci.yml}"
 VERBOSE=0
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=1
 
-# ── Parse CI build-and-test steps from the marked block in ci.yml ─────────────
+# ── Parse marked required CI steps from ci.yml ────────────────────────────────
 # Extract commands from all >>> CI-PARITY-STEPS … <<< CI-PARITY-STEPS blocks.
 # Two extraction rules:
 #   1. `run: >-  # parity-cmd: <cmd>` → extract <cmd> (multi-line run: override)
@@ -97,7 +98,7 @@ if (( ${#CI_BUILD_AND_TEST_STEPS[@]} == 0 )); then
 fi
 
 if (( VERBOSE == 1 )); then
-    echo "==> CI build-and-test steps (parsed from CI-PARITY-STEPS block in ci.yml):"
+    echo "==> Required CI steps (parsed from CI-PARITY-STEPS blocks in ci.yml):"
     for step in "${CI_BUILD_AND_TEST_STEPS[@]}"; do
         echo "  - $step"
     done
@@ -172,13 +173,13 @@ fi
 
 echo "     Local preflight fallback lane covers all CI-required checks."
 
-# ── Subset assertion: every CI build-and-test step maps to CI_REQUIRED_CHECKS ─
+# ── Subset assertion: every marked required step maps to CI_REQUIRED_CHECKS ───
 # Assert that every command parsed from the CI-PARITY-STEPS block has at least
 # one matching pattern in CI_REQUIRED_CHECKS.  This is the structural drift
 # detector: a new unconditional step added inside the block without updating
 # CI_REQUIRED_CHECKS fails here, blocking the merge via the lint CI job.
 echo ""
-echo "==> CI build-and-test steps ⊆ CI_REQUIRED_CHECKS:"
+echo "==> Marked required CI steps ⊆ CI_REQUIRED_CHECKS:"
 subset_pass=0
 subset_fail=0
 for step_cmd in "${CI_BUILD_AND_TEST_STEPS[@]}"; do
@@ -206,12 +207,12 @@ echo "==> CI step coverage: $subset_pass/${#CI_BUILD_AND_TEST_STEPS[@]} steps ma
 
 if (( subset_fail > 0 )); then
     echo ""
-    echo "FAIL: $subset_fail CI build-and-test step(s) not mirrored in CI_REQUIRED_CHECKS."
+    echo "FAIL: $subset_fail marked required CI step(s) not mirrored in CI_REQUIRED_CHECKS."
     echo "      A lane can now skip a CI step without the parity checker catching it."
     exit 1
 fi
 
-echo "     All CI build-and-test steps are mirrored in CI_REQUIRED_CHECKS."
+echo "     All marked required CI steps are mirrored in CI_REQUIRED_CHECKS."
 
 # ── GAP-2: lane→gate assertions ────────────────────────────────────────────────
 # For path classes that must run specific gates, assert the dispatcher dry-run

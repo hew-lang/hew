@@ -67,6 +67,28 @@
 //!   poisoned allocator (the first reassignment must read the null-initialised
 //!   slot, not free uninitialised bytes; later ones must not double-free).
 //!
+//! - **Queued actor-message teardown**: a supervised actor acknowledges entry
+//!   into a parked handler before the fixture queues direct and packed
+//!   indirect-enum tells behind it. Stopping the supervisor therefore destroys
+//!   those messages from the mailbox without dispatching them. The macOS leak
+//!   slope proves that the registered message destructor recursively reclaims
+//!   every node, while the poisoned allocator catches double-free and
+//!   use-after-free failures on the same teardown path.
+//!
+//! - **Local actor-request carriers**: every iteration sends fresh recursive
+//!   trees through blocking ask, suspending ask, blocking and suspending select,
+//!   and both join branches. The exact aggregate plus a flat leak slope proves
+//!   each uniquely typed packed carrier transfers and releases its pointer field;
+//!   the poisoned allocator rejects an over-release on any producer shape.
+//!
+//! - **Failed actor-request setup**: a stopped or restart-budget-exhausted
+//!   supervisor gives select and join a permanently dead fungible actor handle.
+//!   Select retires each failed arm,
+//!   so its flat leak slope proves the caller releases every prepared but
+//!   unsubmitted tree. Join intentionally traps on failed setup; its structural
+//!   drop-order oracle lives in `hew-codegen-rs`, while a poisoned-allocator run
+//!   proves cleanup reaches the intended trap instead of allocator corruption.
+//!
 //! ## Fixture-authoring rule (non-vacuous)
 //!
 //! Every fixture provably heap-allocates: an `indirect enum` value is ALWAYS a
@@ -79,8 +101,11 @@
 
 mod support;
 
+use std::os::unix::process::ExitStatusExt;
+
 use support::leak_slope::{
-    assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
+    assert_frame_slope_below_tolerance, compile_to_native, leaks_supported, measure_leaks,
+    run_under_malloc_scribble, HIGH_FRAMES, LOW_FRAMES, SLOPE_TOLERANCE,
 };
 use support::{describe_output, require_codegen};
 
@@ -370,6 +395,258 @@ fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
     )
 }
 
+/// Queue direct and packed indirect-enum messages behind a handler that is
+/// known to be parked, then stop the supervising actor tree. Receiving the
+/// ready signal proves `hold` has started before any payload tell is sent, and
+/// its long sleep keeps every payload queued until `supervisor_stop` destroys
+/// the mailbox. Each iteration contributes two depth-2 trees (14 heap nodes),
+/// so a missing message destructor produces a steep leak slope.
+fn actor_mailbox_teardown_source(frames: usize) -> String {
+    format!(
+        "import std::channel::channel;\n\
+         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+         fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
+         actor Sink {{\n\
+         \x20   receive fn hold(ready: channel.Sender<i64>) {{\n\
+         \x20       ready.send(1);\n\
+         \x20       sleep(10s);\n\
+         \x20   }}\n\
+         \x20   receive fn take(t: Tree) {{ let _ = sum(t); }}\n\
+         \x20   receive fn tagged(tag: i64, t: Tree) {{ let _ = tag + sum(t); }}\n\
+         }}\n\
+         supervisor App {{\n\
+         \x20   strategy: one_for_one;\n\
+         \x20   intensity: 3 within 60s;\n\
+         \x20   child sink: Sink;\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let sup = spawn App;\n\
+         \x20   let sink = sup.sink;\n\
+         \x20   let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   sink.hold(ready_tx);\n\
+         \x20   let started = match await ready_rx.recv() {{ Some(n) => n, None => 0, }};\n\
+         \x20   if started != 1 {{ print(\"BAD\"); return 1; }}\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       sink.take(Node(Node(Leaf(1), Leaf(2)), Node(Leaf(3), Leaf(4))));\n\
+         \x20       sink.tagged(i, Node(Node(Leaf(5), Leaf(6)), Node(Leaf(7), Leaf(8))));\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   supervisor_stop(sup);\n\
+         \x20   print(\"ok\");\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Exercise every local multi-argument actor-request carrier with fresh trees.
+/// Each frame crosses ordinary Ask, `SuspendKind::Ask`, Select `ActorAsk`,
+/// `SuspendingSelect` `ActorAsk`, and two Join branches. The six trees contribute
+/// eighteen heap nodes per frame, so an inline-layout carrier or missed release
+/// produces a steep leak slope. The exact total makes every request observable.
+fn actor_request_carrier_source(frames: usize) -> String {
+    let expected_total = 3 * frames * frames + 75 * frames;
+    format!(
+        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+         fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
+         actor Scorer {{\n\
+         \x20   receive fn score(tag: i64, tree: Tree) -> i64 {{ tag + sum(tree) }}\n\
+         }}\n\
+         actor Coordinator {{\n\
+         \x20   let scorer: LocalPid<Scorer>;\n\
+         \x20   receive fn ask_score(tag: i64, tree: Tree) -> i64 {{\n\
+         \x20       match await scorer.score(tag, tree) {{ Ok(value) => value, Err(_) => -1, }}\n\
+         \x20   }}\n\
+         \x20   receive fn select_score(tag: i64, tree: Tree) -> i64 {{\n\
+         \x20       select {{ reply from scorer.score(tag, tree) => reply, after 5s => -2, }}\n\
+         \x20   }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let scorer = spawn Scorer;\n\
+         \x20   let coordinator = spawn Coordinator(scorer: scorer);\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let direct = match await scorer.score(i, Node(Leaf(1), Leaf(2))) {{ Ok(value) => value, Err(_) => -3, }};\n\
+         \x20       let selected = select {{ reply from scorer.score(i, Node(Leaf(3), Leaf(4))) => reply, after 5s => -4, }};\n\
+         \x20       let (joined_a, joined_b) = join {{\n\
+         \x20           scorer.score(i, Node(Leaf(5), Leaf(6))),\n\
+         \x20           scorer.score(i, Node(Leaf(7), Leaf(8))),\n\
+         \x20       }};\n\
+         \x20       let suspended_ask = match await coordinator.ask_score(i, Node(Leaf(9), Leaf(10))) {{ Ok(value) => value, Err(_) => -5, }};\n\
+         \x20       let suspended_select = match await coordinator.select_score(i, Node(Leaf(11), Leaf(12))) {{ Ok(value) => value, Err(_) => -6, }};\n\
+         \x20       total = total + direct + selected + joined_a + joined_b + suspended_ask + suspended_select;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total == {expected_total} {{ print(\"ok\"); }} else {{ print(\"BAD\"); }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Shape-identical scalar control for [`actor_request_carrier_source`]. Actor,
+/// ask/select/join, reply-channel, and scheduler allocations are unchanged; only
+/// each recursive three-node Tree payload becomes one `i64`. Comparing slopes
+/// isolates payload ownership from unrelated request-runtime allocations.
+fn actor_request_carrier_scalar_source(frames: usize) -> String {
+    let expected_total = 3 * frames * frames + 75 * frames;
+    format!(
+        "actor Scorer {{\n\
+         \x20   receive fn score(tag: i64, value: i64) -> i64 {{ tag + value }}\n\
+         }}\n\
+         actor Coordinator {{\n\
+         \x20   let scorer: LocalPid<Scorer>;\n\
+         \x20   receive fn ask_score(tag: i64, value: i64) -> i64 {{\n\
+         \x20       match await scorer.score(tag, value) {{ Ok(result) => result, Err(_) => -1, }}\n\
+         \x20   }}\n\
+         \x20   receive fn select_score(tag: i64, value: i64) -> i64 {{\n\
+         \x20       select {{ reply from scorer.score(tag, value) => reply, after 5s => -2, }}\n\
+         \x20   }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let scorer = spawn Scorer;\n\
+         \x20   let coordinator = spawn Coordinator(scorer: scorer);\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let direct = match await scorer.score(i, 3) {{ Ok(value) => value, Err(_) => -3, }};\n\
+         \x20       let selected = select {{ reply from scorer.score(i, 7) => reply, after 5s => -4, }};\n\
+         \x20       let (joined_a, joined_b) = join {{ scorer.score(i, 11), scorer.score(i, 15), }};\n\
+         \x20       let suspended_ask = match await coordinator.ask_score(i, 19) {{ Ok(value) => value, Err(_) => -5, }};\n\
+         \x20       let suspended_select = match await coordinator.select_score(i, 23) {{ Ok(value) => value, Err(_) => -6, }};\n\
+         \x20       total = total + direct + selected + joined_a + joined_b + suspended_ask + suspended_select;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total == {expected_total} {{ print(\"ok\"); }} else {{ print(\"BAD\"); }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// A stopped supervisor leaves `worker` as a permanently dead fungible handle.
+/// Each select arm still prepares a fresh owning request carrier before enqueue
+/// fails. Recovery must drop that unsubmitted carrier before retiring the arm;
+/// the `after` arm makes every iteration observable without trapping.
+fn dead_actor_select_request_source(frames: usize) -> String {
+    format!(
+        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+         actor Worker {{\n\
+         \x20   receive fn score(tag: i64, tree: Tree) -> i64 {{ tag }}\n\
+         }}\n\
+         supervisor App {{\n\
+         \x20   strategy: one_for_one;\n\
+         \x20   intensity: 3 within 60s;\n\
+         \x20   child worker: Worker;\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let sup = spawn App;\n\
+         \x20   let worker = sup.worker;\n\
+         \x20   supervisor_stop(sup);\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let selected = select {{\n\
+         \x20           reply from worker.score(i, Node(Leaf(1), Leaf(2))) => reply,\n\
+         \x20           after 1ms => i,\n\
+         \x20       }};\n\
+         \x20       total = total + selected;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total == {} {{ print(\"ok\"); }} else {{ print(\"BAD\"); }}\n\
+         \x20   0\n\
+         }}\n",
+        frames.saturating_mul(frames.saturating_sub(1)) / 2
+    )
+}
+
+/// Join preserves its fail-closed process trap when a branch cannot enqueue.
+/// The only observable continuation is therefore the trap itself: cleanup of
+/// the prepared owning carrier must complete under the poisoned allocator, and
+/// the post-join `BAD` sentinel must remain unreachable.
+const DEAD_ACTOR_JOIN_REQUEST_SOURCE: &str = "\
+indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
+actor Worker {\n\
+\x20   receive fn score(tag: i64, tree: Tree) -> i64 { tag }\n\
+\x20   receive fn crash_me() { panic(\"worker crash\"); }\n\
+}\n\
+supervisor App {\n\
+\x20   strategy: one_for_one;\n\
+\x20   intensity: 1 within 60s;\n\
+\x20   child worker: Worker;\n\
+}\n\
+fn main() -> i64 {\n\
+\x20   let sup = spawn App;\n\
+\x20   let worker = sup.worker;\n\
+\x20   for _ in 0..5 {\n\
+\x20       worker.crash_me();\n\
+\x20       sleep(80ms);\n\
+\x20   }\n\
+\x20   sleep(200ms);\n\
+\x20   let (left, right) = join {\n\
+\x20       worker.score(1, Node(Leaf(2), Leaf(3))),\n\
+\x20       worker.score(4, Node(Leaf(5), Leaf(6))),\n\
+\x20   };\n\
+\x20   print(\"BAD\");\n\
+\x20   left + right\n\
+}\n";
+
+/// Compare recursive-payload and scalar-control leak slopes for the exact same
+/// request topology. The recursive shape may add only constant measurement
+/// noise; a per-frame excess means one or more three-node Tree payloads escaped.
+fn assert_actor_request_payload_slope_matches_scalar() {
+    let shape = "indirect_enum_actor_request_carriers";
+    if !leaks_supported(shape) {
+        return;
+    }
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("leak-slope-indirect-enum-actor-requests-")
+        .tempdir()
+        .expect("tempdir");
+    let recursive_low = compile_to_native(
+        &actor_request_carrier_source(LOW_FRAMES),
+        dir.path(),
+        "request_recursive_low",
+    );
+    let recursive_high = compile_to_native(
+        &actor_request_carrier_source(HIGH_FRAMES),
+        dir.path(),
+        "request_recursive_high",
+    );
+    let scalar_low = compile_to_native(
+        &actor_request_carrier_scalar_source(LOW_FRAMES),
+        dir.path(),
+        "request_scalar_low",
+    );
+    let scalar_high = compile_to_native(
+        &actor_request_carrier_scalar_source(HIGH_FRAMES),
+        dir.path(),
+        "request_scalar_high",
+    );
+
+    let (Some(recursive_low), Some(recursive_high), Some(scalar_low), Some(scalar_high)) = (
+        measure_leaks(&recursive_low),
+        measure_leaks(&recursive_high),
+        measure_leaks(&scalar_low),
+        measure_leaks(&scalar_high),
+    ) else {
+        return;
+    };
+    let recursive_slope = recursive_high.saturating_sub(recursive_low);
+    let scalar_slope = scalar_high.saturating_sub(scalar_low);
+    eprintln!(
+        "{shape}: recursive={recursive_low}->{recursive_high} slope={recursive_slope}; \
+         scalar={scalar_low}->{scalar_high} slope={scalar_slope}; tolerance={SLOPE_TOLERANCE}"
+    );
+    assert!(
+        recursive_slope <= scalar_slope + SLOPE_TOLERANCE,
+        "{shape}: recursive payloads add a leak slope beyond the shape-identical scalar \
+         request baseline — recursive={recursive_low}->{recursive_high} ({recursive_slope}), \
+         scalar={scalar_low}->{scalar_high} ({scalar_slope}), tolerance={SLOPE_TOLERANCE}"
+    );
+}
+
 /// F4 / #2208 — actor ASK-REPLY of an `indirect enum`, the ABI-boundary leg.
 ///
 /// An `indirect enum` return value is ABI-lowered to a bare heap-node POINTER
@@ -629,6 +906,128 @@ fn indirect_enum_tuple_of_inline_enum_no_corruption_under_malloc_scribble() {
         &tuple_of_inline_enum_loop_source(50),
         "ok",
     );
+}
+
+/// Direct and packed indirect-enum tells queued behind a parked handler are
+/// destroyed from the mailbox when the supervisor stops. The leak count must
+/// remain flat as the number of queued recursive payloads grows; a missing or
+/// inline-layout message destructor leaks at least fourteen nodes per frame.
+#[test]
+fn indirect_enum_actor_mailbox_teardown_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "indirect_enum_actor_mailbox_teardown",
+        actor_mailbox_teardown_source,
+    );
+}
+
+/// The same queued-message teardown runs clean under the poisoned allocator.
+/// The exact sentinel proves `supervisor_stop` completed after draining the
+/// mailbox; an ABI mismatch, recursive double-free, or poisoned read aborts
+/// before it can print `ok`.
+#[test]
+fn indirect_enum_actor_mailbox_teardown_no_corruption_under_malloc_scribble() {
+    assert_exact_under_malloc_scribble(
+        "indirect_enum_actor_mailbox_teardown_df",
+        &actor_mailbox_teardown_source(50),
+        "ok",
+    );
+}
+
+/// Every local actor-request producer consumes and releases its recursive Tree
+/// payload once per frame. A missed packed pointer field grows by at least three
+/// nodes per affected request and cannot hide inside the constant runtime floor.
+#[test]
+fn indirect_enum_actor_request_carriers_leak_slope_below_tolerance() {
+    assert_actor_request_payload_slope_matches_scalar();
+}
+
+/// The same request matrix runs under poisoned allocation. An ABI mismatch,
+/// double-free, or use-after-free aborts before the exact aggregate prints `ok`.
+#[test]
+fn indirect_enum_actor_request_carriers_no_corruption_under_malloc_scribble() {
+    assert_exact_under_malloc_scribble(
+        "indirect_enum_actor_request_carriers_df",
+        &actor_request_carrier_source(10),
+        "ok",
+    );
+}
+
+/// A failed select enqueue leaves ownership with the caller. Growing the number
+/// of failed arms must not grow the process leak count: each prepared recursive
+/// carrier is released on `select_setup_recover` before its channel is retired.
+#[test]
+fn indirect_enum_dead_actor_select_request_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "indirect_enum_dead_actor_select_request",
+        dead_actor_select_request_source,
+    );
+}
+
+/// The same dead-actor select recovery runs clean under poisoned allocation and
+/// reaches the exact `after`-arm aggregate. A double release or poisoned read
+/// aborts before `ok`; a missing cleanup is caught by the companion slope test.
+#[test]
+fn indirect_enum_dead_actor_select_request_no_corruption_under_malloc_scribble() {
+    assert_exact_under_malloc_scribble(
+        "indirect_enum_dead_actor_select_request_df",
+        &dead_actor_select_request_source(50),
+        "ok",
+    );
+}
+
+/// Join deliberately traps when setup cannot enqueue a branch, so it cannot
+/// expose a post-exit leak slope. Its exact IR drop oracle is paired with this
+/// runtime poisoned-allocator pin: the prepared carrier cleanup must finish and
+/// reach the intended LLVM trap, not abort with allocator corruption first.
+#[test]
+fn indirect_enum_dead_actor_join_request_cleans_before_intentional_trap() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("indirect-enum-dead-actor-join-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        DEAD_ACTOR_JOIN_REQUEST_SOURCE,
+        dir.path(),
+        "dead_actor_join_request",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    let signal = output.status.signal();
+    let exit_code = output.status.code();
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    let handled_trap = matches!(
+        exit_code,
+        Some(value) if value == 128 + libc::SIGILL || value == 128 + libc::SIGTRAP
+    ) && stderr_text.contains("trap in main context: ActorSendFailed");
+
+    assert!(
+        matches!(signal, Some(value) if value == libc::SIGILL || value == libc::SIGTRAP)
+            || handled_trap,
+        "dead join setup must reach the intentional LLVM trap after releasing its unsubmitted \
+         carrier, not exit normally or abort in allocator cleanup; signal={signal:?}, \
+         code={exit_code:?}\n{}",
+        describe_output(&output)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("BAD"),
+        "join continued past its fail-closed setup trap:\n{}",
+        describe_output(&output)
+    );
+    let stderr = stderr_text.to_ascii_lowercase();
+    for corruption in [
+        "double free",
+        "incorrect checksum",
+        "pointer being freed was not allocated",
+        "heap corruption",
+    ] {
+        assert!(
+            !stderr.contains(corruption),
+            "dead join setup hit allocator corruption `{corruption}` instead of its intentional \
+             trap after exact carrier cleanup:\n{}",
+            describe_output(&output)
+        );
+    }
 }
 
 /// F4 / #2208 — the actor ask-reply ABI-boundary leg, pinned at the IR level.

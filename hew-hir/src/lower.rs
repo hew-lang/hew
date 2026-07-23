@@ -28599,15 +28599,22 @@ fn scan_expr_for_call_shape(
                 match resolved {
                     ResolvedRef::Item(_) => {
                         if !callable.contains(name) {
-                            diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CallableUnsupportedInMir { name: name.clone() },
-                                callee.span.clone(),
+                            let message = if name == "LambdaActorHandle::new" {
+                                "`LambdaActorHandle::new` is not a public constructor; use \
+                                 `actor |params| { body }` to create a lambda actor"
+                                    .to_string()
+                            } else {
                                 format!(
                                     "call to `{name}` has no MIR body or runtime-ABI lowering; \
                                      only module functions, extern fns, monomorphisation \
                                      instantiations, and recognised runtime symbols are \
                                      callable here"
-                                ),
+                                )
+                            };
+                            diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CallableUnsupportedInMir { name: name.clone() },
+                                callee.span.clone(),
+                                message,
                             ));
                         }
                     }

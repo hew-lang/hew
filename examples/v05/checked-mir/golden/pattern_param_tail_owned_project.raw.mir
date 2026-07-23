@@ -14,7 +14,6 @@ fn record_tail(Packet) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(0)) ty=i64
     ret = move _1
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     return
   bb2:
     stmt: bind BindingId(1) tag site=SiteId(2) ty=string
@@ -33,7 +32,6 @@ fn record_tail(Packet) -> i64 [conv=default]
     _6 ovf=_7 = add.checked.s _4 _5
     branch _7 ? bb5 : bb6
   bb5:
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     trap(IntegerOverflow)
   bb6:
     _1 = move _6
@@ -59,7 +57,6 @@ fn record_nontail(Packet) -> i64 [conv=default]
     stmt: return site=Some(SiteId(18)) ty=i64
     _8 = move _1
     ret = move _8
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     return
   bb2:
     stmt: bind BindingId(4) tag site=SiteId(11) ty=string
@@ -78,7 +75,6 @@ fn record_nontail(Packet) -> i64 [conv=default]
     _6 ovf=_7 = add.checked.s _4 _5
     branch _7 ? bb5 : bb6
   bb5:
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     trap(IntegerOverflow)
   bb6:
     _1 = move _6
@@ -100,7 +96,6 @@ fn tuple_tail((string, string)) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(19)) ty=i64
     ret = move _1
-    snapshot_drop _0 ty=(string, string) plan=Tuple { elems: [String, String] } boundary=LocalCall
     return
   bb2:
     stmt: bind BindingId(8) left site=SiteId(21) ty=string
@@ -119,7 +114,6 @@ fn tuple_tail((string, string)) -> i64 [conv=default]
     _6 ovf=_7 = add.checked.s _4 _5
     branch _7 ? bb5 : bb6
   bb5:
-    snapshot_drop _0 ty=(string, string) plan=Tuple { elems: [String, String] } boundary=LocalCall
     trap(IntegerOverflow)
   bb6:
     _1 = move _6
@@ -145,7 +139,6 @@ fn tuple_nontail((string, string)) -> i64 [conv=default]
     stmt: return site=Some(SiteId(37)) ty=i64
     _8 = move _1
     ret = move _8
-    snapshot_drop _0 ty=(string, string) plan=Tuple { elems: [String, String] } boundary=LocalCall
     return
   bb2:
     stmt: bind BindingId(11) left site=SiteId(30) ty=string
@@ -164,7 +157,6 @@ fn tuple_nontail((string, string)) -> i64 [conv=default]
     _6 ovf=_7 = add.checked.s _4 _5
     branch _7 ? bb5 : bb6
   bb5:
-    snapshot_drop _0 ty=(string, string) plan=Tuple { elems: [String, String] } boundary=LocalCall
     trap(IntegerOverflow)
   bb6:
     _1 = move _6

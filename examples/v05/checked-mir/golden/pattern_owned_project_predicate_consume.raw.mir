@@ -21,7 +21,6 @@ fn record_join(Packet) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(0)) ty=i64
     ret = move _1
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     return
   bb2:
     _2 = _0.field[0]
@@ -67,7 +66,6 @@ fn tuple_join((i64, Token, string)) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(6)) ty=i64
     ret = move _1
-    snapshot_drop _0 ty=(i64, Token, string) plan=Tuple { elems: [BitCopy { size_bytes: 8 }, UserRecord { name: "Token" }, String] } boundary=LocalCall
     return
   bb2:
     _2 = _0.0
@@ -114,7 +112,6 @@ fn record_whole(Packet) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(12)) ty=i64
     ret = move _1
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     return
   bb2:
     _2 = _0.field[0]
@@ -160,7 +157,6 @@ fn direct_return(Packet) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(19)) ty=i64
     ret = move _1
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     return
   bb2:
     _2 = _0.field[0]
@@ -188,7 +184,6 @@ fn direct_return(Packet) -> i64 [conv=default]
     drop_field_in_place _0.field[2] ty=string
     _6 = _5.field[0]
     ret = move _6
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
     return
   bb6:
     goto bb1

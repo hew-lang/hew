@@ -23,7 +23,6 @@ fn classify(string) -> i64 [conv=default]
   bb1:
     stmt: return site=Some(SiteId(0)) ty=i64
     ret = move _1
-    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
   bb2:
     _11 = const.i64 0
@@ -53,30 +52,21 @@ fn main() -> i64 [conv=default]
     _4: string
     _5: i64
     _6: i64
-    _7: string
-    _8: string
-    _9: string
   bb0:
     _0 = string_lit "123"
-    _7 = move _0
-    neutralize_payload _0
-    _1 = call classify(_7) -> bb1
+    _1 = call classify(_0) -> bb1
   bb1:
     call println_i64(_1) -> bb2
   bb2:
     stmt: eval site=SiteId(5) ty=()
     _2 = string_lit "abc"
-    _8 = move _2
-    neutralize_payload _2
-    _3 = call classify(_8) -> bb3
+    _3 = call classify(_2) -> bb3
   bb3:
     call println_i64(_3) -> bb4
   bb4:
     stmt: eval site=SiteId(10) ty=()
     _4 = string_lit "a1"
-    _9 = move _4
-    neutralize_payload _4
-    _5 = call classify(_9) -> bb5
+    _5 = call classify(_4) -> bb5
   bb5:
     call println_i64(_5) -> bb6
   bb6:

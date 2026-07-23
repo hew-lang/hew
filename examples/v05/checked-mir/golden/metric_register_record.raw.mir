@@ -213,12 +213,11 @@ fn metrics$try_counter(string) -> Result<Counter, MetricsError> [conv=default]
     _8: i64
     _9: MetricsError
     _10: i64
-    _11: string
+    _11: Result<metrics.Counter, metrics.MetricsError>
     _12: Result<metrics.Counter, metrics.MetricsError>
-    _13: Result<metrics.Counter, metrics.MetricsError>
-    _14: i64
-    _15: metrics.Counter
-    _16: Result<metrics.Counter, metrics.MetricsError>
+    _13: i64
+    _14: metrics.Counter
+    _15: Result<metrics.Counter, metrics.MetricsError>
   bb0:
     stmt: use BindingId(16) name site=SiteId(98) ty=string intent=Read
     stmt: bind BindingId(17) id site=SiteId(96) ty=i64
@@ -235,26 +234,24 @@ fn metrics$try_counter(string) -> Result<Counter, MetricsError> [conv=default]
     mtag7 = move _8
     _10 = const.i64 0
     mtag9 = move _10
-    _11 = move _0
-    neutralize_payload _0
-    mvar9.0.0 = move _11
+    string.retain _0
+    mvar9.0.0 = move _0
     mvar7.1.0 = move _9
-    _12 = move _7
-    _4 = move _12
+    _11 = move _7
+    _4 = move _11
     goto bb3
   bb2:
     stmt: use BindingId(17) id site=SiteId(111) ty=i64 intent=Read
-    _14 = const.i64 0
-    mtag13 = move _14
-    _15 = record_init metrics.Counter { .0=_3 }
-    mvar13.0.0 = move _15
-    _16 = move _13
-    _4 = move _16
+    _13 = const.i64 0
+    mtag12 = move _13
+    _14 = record_init metrics.Counter { .0=_3 }
+    mvar12.0.0 = move _14
+    _15 = move _12
+    _4 = move _15
     goto bb3
   bb3:
     stmt: return site=Some(SiteId(100)) ty=Result<metrics.Counter, metrics.MetricsError>
     ret = move _4
-    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn metrics$gauge(string) -> Gauge [conv=default]
@@ -322,12 +319,11 @@ fn metrics$try_gauge(string) -> Result<Gauge, MetricsError> [conv=default]
     _8: i64
     _9: MetricsError
     _10: i64
-    _11: string
+    _11: Result<metrics.Gauge, metrics.MetricsError>
     _12: Result<metrics.Gauge, metrics.MetricsError>
-    _13: Result<metrics.Gauge, metrics.MetricsError>
-    _14: i64
-    _15: metrics.Gauge
-    _16: Result<metrics.Gauge, metrics.MetricsError>
+    _13: i64
+    _14: metrics.Gauge
+    _15: Result<metrics.Gauge, metrics.MetricsError>
   bb0:
     stmt: use BindingId(20) name site=SiteId(137) ty=string intent=Read
     stmt: bind BindingId(21) id site=SiteId(135) ty=i64
@@ -344,26 +340,24 @@ fn metrics$try_gauge(string) -> Result<Gauge, MetricsError> [conv=default]
     mtag7 = move _8
     _10 = const.i64 0
     mtag9 = move _10
-    _11 = move _0
-    neutralize_payload _0
-    mvar9.0.0 = move _11
+    string.retain _0
+    mvar9.0.0 = move _0
     mvar7.1.0 = move _9
-    _12 = move _7
-    _4 = move _12
+    _11 = move _7
+    _4 = move _11
     goto bb3
   bb2:
     stmt: use BindingId(21) id site=SiteId(150) ty=i64 intent=Read
-    _14 = const.i64 0
-    mtag13 = move _14
-    _15 = record_init metrics.Gauge { .0=_3 }
-    mvar13.0.0 = move _15
-    _16 = move _13
-    _4 = move _16
+    _13 = const.i64 0
+    mtag12 = move _13
+    _14 = record_init metrics.Gauge { .0=_3 }
+    mvar12.0.0 = move _14
+    _15 = move _12
+    _4 = move _15
     goto bb3
   bb3:
     stmt: return site=Some(SiteId(139)) ty=Result<metrics.Gauge, metrics.MetricsError>
     ret = move _4
-    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn metrics$histogram(string) -> Histogram [conv=default]
@@ -431,12 +425,11 @@ fn metrics$try_histogram(string) -> Result<Histogram, MetricsError> [conv=defaul
     _8: i64
     _9: MetricsError
     _10: i64
-    _11: string
+    _11: Result<metrics.Histogram, metrics.MetricsError>
     _12: Result<metrics.Histogram, metrics.MetricsError>
-    _13: Result<metrics.Histogram, metrics.MetricsError>
-    _14: i64
-    _15: metrics.Histogram
-    _16: Result<metrics.Histogram, metrics.MetricsError>
+    _13: i64
+    _14: metrics.Histogram
+    _15: Result<metrics.Histogram, metrics.MetricsError>
   bb0:
     stmt: use BindingId(24) name site=SiteId(176) ty=string intent=Read
     stmt: bind BindingId(25) id site=SiteId(174) ty=i64
@@ -453,26 +446,24 @@ fn metrics$try_histogram(string) -> Result<Histogram, MetricsError> [conv=defaul
     mtag7 = move _8
     _10 = const.i64 0
     mtag9 = move _10
-    _11 = move _0
-    neutralize_payload _0
-    mvar9.0.0 = move _11
+    string.retain _0
+    mvar9.0.0 = move _0
     mvar7.1.0 = move _9
-    _12 = move _7
-    _4 = move _12
+    _11 = move _7
+    _4 = move _11
     goto bb3
   bb2:
     stmt: use BindingId(25) id site=SiteId(189) ty=i64 intent=Read
-    _14 = const.i64 0
-    mtag13 = move _14
-    _15 = record_init metrics.Histogram { .0=_3 }
-    mvar13.0.0 = move _15
-    _16 = move _13
-    _4 = move _16
+    _13 = const.i64 0
+    mtag12 = move _13
+    _14 = record_init metrics.Histogram { .0=_3 }
+    mvar12.0.0 = move _14
+    _15 = move _12
+    _4 = move _15
     goto bb3
   bb3:
     stmt: return site=Some(SiteId(178)) ty=Result<metrics.Histogram, metrics.MetricsError>
     ret = move _4
-    snapshot_drop _0 ty=string plan=String boundary=LocalCall
     return
 
 fn i8::fmt(i8) -> string [conv=default]

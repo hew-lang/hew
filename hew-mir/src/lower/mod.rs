@@ -456,6 +456,16 @@ struct Builder {
     /// Raw byte-copy sources that must be neutralized if their loaded value is
     /// moved onward by the callee.
     owned_carrier_neutralize: HashMap<Place, OwnedCarrierNeutralizeTarget>,
+    /// Parameter slots this function does NOT own: by-value params that are
+    /// neither consume-classified, nor registered owned carriers, nor
+    /// mailbox-delivered (`ActorHandler`), nor #2732 enum-composite consumes.
+    /// The original caller keeps ownership and drops them, so the post-CFG
+    /// owned-call and outbound preparation passes must never LAST-USE
+    /// TRANSFER one into an owning callee or send — the callee/mailbox would
+    /// free a buffer the real owner still releases (the `Version::to_string`
+    /// borrowed-receiver double-free). Snapshot-clone remains the correct
+    /// preparation for these sources.
+    borrowed_value_param_locals: HashSet<u32>,
     /// Locals whose original carrier slot has already been neutralized. These
     /// are sole owners, not projection aliases, so a later consuming direct
     /// call transfers them exactly once instead of preparing another clone.
@@ -3993,6 +4003,7 @@ fn prepare_owned_call_carriers(
                         .get(&block.id)
                         .is_some_and(|live| live.contains(&local))
                         && !projection_tainted.contains(&local)
+                        && !builder.borrowed_value_param_locals.contains(&local)
                         && local_counts.get(&local) == Some(&1)
                 });
             if transferable {
@@ -4261,6 +4272,7 @@ fn resolve_outbound_actor_modes(
                             .get(&block.id)
                             .is_some_and(|live| live.contains(&local))
                             && !projection_tainted.contains(&local)
+                            && !builder.borrowed_value_param_locals.contains(&local)
                             && local_counts.get(&local) == Some(&1)
                     });
 
@@ -5778,6 +5790,29 @@ impl Builder {
                 == Some(true);
             let param_is_owned_carrier =
                 self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed);
+            // A summary-owned param is one whose CALLERS consult the same
+            // `call_param_owned_carrier` verdict and therefore move ownership
+            // in (transfer, clone, or fail closed) — the callee owns it even
+            // when registration declined (e.g. a non-clone-total plan keeps
+            // the legacy transfer path). Two caller populations do NOT move
+            // in despite a true summary: method callers of a stripped
+            // true-receiver slot (summary removed — absent here), and
+            // String/Bytes args, which the caller preparation skips onto the
+            // CoW borrow spine.
+            let param_summary_owned = self
+                .param_ownership
+                .call_param_owned_carrier
+                .get(&(func.id, i))
+                .copied()
+                == Some(true)
+                && !matches!(
+                    self.subst_ty(&param.ty),
+                    ResolvedTy::String | ResolvedTy::Bytes
+                );
+            let mut callee_owns_param = param_is_consumed
+                || param_is_owned_carrier
+                || param_summary_owned
+                || self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler;
             if matches!(self.subst_ty(&param.ty), ResolvedTy::Bytes)
                 && !param_is_consumed
                 && !param_is_owned_carrier
@@ -5865,6 +5900,7 @@ impl Builder {
                 ) {
                     self.register_owned_local(param.id, param.name.clone(), owned_ty);
                     self.binding_scope.insert(param.id, func.body.scope);
+                    callee_owns_param = true;
                 }
             }
             // #2747 — callee-side drop for a by-value owned-aggregate RECORD
@@ -5915,6 +5951,11 @@ impl Builder {
                 if crate::lower::drop_plan::ty_is_indirect_enum(&owned_ty, &self.enum_layouts) {
                     self.register_owned_local(param.id, param.name.clone(), owned_ty);
                     self.binding_scope.insert(param.id, func.body.scope);
+                }
+            }
+            if !callee_owns_param {
+                if let Place::Local(local) = slot {
+                    self.borrowed_value_param_locals.insert(local);
                 }
             }
         }

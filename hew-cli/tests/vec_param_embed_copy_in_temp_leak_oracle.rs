@@ -56,6 +56,47 @@ fn main() -> i64 {
 }
 "#;
 
+/// A true-receiver trait-impl method forwards its BY-VALUE record receiver
+/// into a summary-owning free function. Method callers keep ownership of the
+/// receiver (the receiver summary is stripped), so the wrapper must SNAPSHOT
+/// the receiver into the owning callee — a last-use transfer would hand the
+/// callee release authority over string fields the original caller still
+/// drops (the `Version::to_string` double-free).
+const BORROWED_RECEIVER_FORWARD_SOURCE: &str = r#"
+type Item { tag: i64, label: string, note: string }
+
+trait Render {
+    fn render(self) -> string;
+}
+
+impl Render for Item {
+    fn render(item: Item) -> string {
+        let result = render_item(item);
+        result
+    }
+}
+
+fn render_item(v: Item) -> string {
+    let label = v.label;
+    var s = "i" + ":";
+    if label.len() > 0 {
+        s = s + "-" + label;
+    }
+    s
+}
+
+fn main() -> i64 {
+    let item = Item { tag: 1, label: "al" + "pha", note: "ke" + "ep" };
+    let rendered = item.render();
+    if rendered != "i:-alpha" { return 1; }
+    if item.note != "keep" { return 2; }
+    print(rendered);
+    print("|");
+    print(item.note);
+    0
+}
+"#;
+
 const REPEATED_OWNED_PARAM_READ_SOURCE: &str = r#"
 type SavedKey { value: string }
 
@@ -1161,6 +1202,34 @@ fn repeated_owned_parameter_reads_survive_native_cleanup() {
         String::from_utf8_lossy(&output.stdout),
         "15|CARRIER-GUARD",
         "the original caller and both helper calls must observe the same live string:\n{}",
+        describe_output(&output)
+    );
+}
+
+#[test]
+fn borrowed_receiver_forward_releases_each_owner_exactly_once() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("borrowed-receiver-forward-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        BORROWED_RECEIVER_FORWARD_SOURCE,
+        dir.path(),
+        "borrowed_receiver_forward",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "a borrowed method receiver forwarded into an owning callee must be \
+         snapshot-cloned, never last-use transferred — the receiver's caller \
+         still drops the original fields:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "i:-alpha|keep",
+        "the caller's receiver must stay intact after the method returns:\n{}",
         describe_output(&output)
     );
 }

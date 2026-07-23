@@ -583,9 +583,9 @@ A `let` (or bare) actor field is immutable after construction: it may be assigne
 
 This distinction exists because actor fields are stateful (they change over the actor's lifetime) and use initialization syntax similar to variable declarations, while type fields are data layout declarations.
 
-#### 3.4.4 The Boundary Rule: Move on Send
+#### 3.4.4 The Boundary Rule: Snapshot on Send
 
-The **only** ownership constraint is at actor boundaries. When a value crosses an actor boundary (via method call or `.send()`), it must be **moved** or **cloned**:
+The **only** ownership constraint is at actor boundaries. When a value crosses an actor boundary (via method call or `.send()`), the receiver observes a **logical snapshot** — an independent value — and the sender's binding stays valid:
 
 ```hew
 type Message { body: string }
@@ -598,7 +598,7 @@ actor Handler {
 
 actor Forwarder {
     receive fn forward(message: Message, target: LocalPid<Handler>) {
-        target.process(message);  // message is MOVED to target's mailbox
+        target.process(message);  // target receives a snapshot of message
     }
 }
 
@@ -613,21 +613,22 @@ fn main() {
 
 > **Send semantics (language vs runtime):**
 >
-> - **Language level** (unchanged): A method call or `.send()` moves the value — the sender can no longer use it.
-> - **Runtime level** (gated): the send mechanism is selected based on the value's admissibility class:
+> - **Language level**: A method call or `.send()` delivers a logical snapshot to the receiver. The sender's binding remains valid after the send; reuse after send — including fan-out sends in a loop — is ordinary code with no `clone` ceremony.
+> - **Runtime level** (gated): the snapshot mechanism is selected based on the value's admissibility class:
+>   - **Provably-unique values** (refcount 1 at the send, with no later use): transferred by pointer — zero copy.
 >   - **Immutable-shareable** types (`string`, `bytes`): alias-shared by **refcount retain** — the receiver gets a retained reference to the same backing buffer; no byte copy occurs; a COW write-barrier (`ensure_unique`) forks the buffer before any subsequent mutation, preserving actor isolation.
 >   - **Mutable collections** (`Vec<T>`, `HashMap<K,V>`, `HashSet<T>`): **deep-copied** into the receiver's per-actor heap.
 >   - **Consumed-linear (`iso`/Linear) values**: zero-copy **ownership move** (P6 — not yet surfaced in edition 2026).
 > - The send-admissibility gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Note: bare `copy` does **not** imply sendability — a type may derive `Copy` yet hold non-send internals (`copy ⊥ sendable`, B-INV-3). Foreign-view syntax is not legal in ordinary message declarations, so it cannot cross an actor boundary.
-> - From the programmer's perspective the gated model is indistinguishable from move-then-independent-value: the receiver observes an independent value; the sender cannot use the value after send. Alias-sharing is a runtime optimization valid precisely because immutable-shareable values are never mutated in place through shared aliases.
+> - Each mechanism is indistinguishable from the others at the source level: the receiver observes an independent value and the sender keeps a valid, independent value. A surface move survives only as the pointer-transfer fast path for provably-unique values — a runtime optimization, never a rule the programmer must reason about.
 
-**Why move semantics?**
+**Why snapshot semantics?**
 
 - The receiving actor may be on a different thread (in the runtime)
 - Two actors cannot share mutable state (this is the core safety guarantee)
-- Move ensures the sender relinquishes the value
+- The snapshot gives the receiver an independent value while the sender keeps its own — actor isolation without a use-after-send rule to reason about
 
-**Cloning for continued use:**
+**Duplication syntax:**
 
 Hew provides two syntactic forms for duplication:
 
@@ -637,6 +638,9 @@ Hew provides two syntactic forms for duplication:
   Only acts as a prefix when followed by an operand token (identifier or
   literal); otherwise `clone` is a plain identifier, so `clone(args)` and
   `x.clone()` are unaffected.
+
+Cloning is never required to keep using a value after a send — the sender's
+binding stays valid. Fan-out to multiple receivers is ordinary code:
 
 ```hew
 type Message { body: string }
@@ -649,8 +653,8 @@ actor Handler {
 
 actor Broadcaster {
     receive fn broadcast(message: Message, first: LocalPid<Handler>, second: LocalPid<Handler>) {
-        first.process(message.clone());
-        second.process(message.clone());
+        first.process(message);
+        second.process(message);   // message still valid — each send snapshots
     }
 }
 
@@ -661,7 +665,7 @@ fn main() {
     broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 
-// Lambda actor .send() uses the same move-on-send rule.
+// Lambda actor .send() uses the same snapshot-on-send rule.
 ```
 
 #### 3.4.5 Capturing Values in Lambda Actors
@@ -738,20 +742,12 @@ actor Example {
 
 ```hew
 actor Example {
-    var data: Vec<i64> = Vec::new();
-
     receive fn bad_examples(other: LocalPid<Other>) {
-        // Sending without move - ERROR (implicit move makes source invalid)
-        other.process(data);
-        data.push(1);     // compile error: data was moved
-
-        // Using value after send - ERROR
-        let msg = Message::new();
-        other.process(msg);
-        println(msg.content);  // compile error: msg was moved
+        // Sending a non-Send value - ERROR
+        let local_handle: RawPointer = get_handle();
+        other.process(local_handle);  // compile error: RawPointer is not Send
 
         // Capturing non-Send value - ERROR
-        let local_handle: RawPointer = get_handle();
         let worker = actor |x: i64| {
             use(local_handle);  // compile error: RawPointer is not Send
         };
@@ -759,14 +755,17 @@ actor Example {
 }
 ```
 
+Sending a non-`Send` value — `Rc<T>`, `Weak<T>`, raw handles, or any type
+containing one — is a fail-closed compile error, never a silent copy.
+
 #### 3.4.8 Summary
 
-| Context       | Aliasing     | Mutation     | Borrow checking |
-| ------------- | ------------ | ------------ | --------------- |
-| Within actor  | Unrestricted | Unrestricted | None            |
-| Across actors | Not allowed  | N/A          | Move required   |
+| Context       | Aliasing     | Mutation     | Boundary rule    |
+| ------------- | ------------ | ------------ | ---------------- |
+| Within actor  | Unrestricted | Unrestricted | None             |
+| Across actors | Not allowed  | N/A          | Snapshot on send |
 
-**Hew's guarantee:** No data races between actors, enforced at compile time through `Send` and move semantics. No runtime overhead, no borrow checker complexity for local code.
+**Hew's guarantee:** No data races between actors, enforced at compile time through `Send` and snapshot-on-send semantics. No borrow checker complexity for local code.
 
 ---
 
@@ -1227,7 +1226,7 @@ Hew guarantees no GC pauses. Memory reclamation is entirely deterministic:
 
 #### 3.7.2 Message Passing Semantics
 
-At the **language level**, `send()` **moves** the value — the sender loses access and cannot use it after sending (see §3.4.4). At the **runtime level**, the send mechanism is **gated** on the value's admissibility class (D355):
+At the **language level**, `send()` delivers a **logical snapshot** — the receiver observes an independent value and the sender's binding remains valid after the send (see §3.4.4). At the **runtime level**, the snapshot mechanism is **gated** on the value's admissibility class (D355):
 
 | Admissibility class | Runtime mechanism | Examples |
 | ------------------- | ----------------- | -------- |
@@ -1237,15 +1236,15 @@ At the **language level**, `send()` **moves** the value — the sender loses acc
 
 The gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Bare `copy` does **not** imply sendability (`copy ⊥ sendable`, B-INV-3). Foreign-view syntax is not legal in ordinary message declarations, so it cannot cross an actor boundary.
 
-This hybrid gives the safety of Rust's move semantics (no use-after-send bugs) with actor isolation (no shared mutable state between actors).
+This hybrid gives actor isolation (no shared mutable state between actors) with none of the ceremony of surface move semantics: there is no use-after-send error to avoid.
 
-> **Immutable-shareable alias sharing:** `string` and `bytes` are immutable-shareable owned heap types. When sent, the runtime retains a reference to the same backing buffer for the receiver rather than copying it. The sender's move and the receiver's retained alias both resolve to the same buffer with a shared refcount; the buffer is freed once the last reference drops. The backing buffer is never mutated in place through a shared alias — if a mutation targets a shared (`rc>1`) buffer, the COW write-barrier (`ensure_unique`) forks a private copy before the write, preserving actor isolation. An immutable `let`-bound sendable value is alias-shared with no barrier (never mutated in place).
+> **Immutable-shareable alias sharing:** `string` and `bytes` are immutable-shareable owned heap types. When sent, the runtime retains a reference to the same backing buffer for the receiver rather than copying it. The sender's retained binding and the receiver's retained alias both resolve to the same buffer with a shared refcount; the buffer is freed once the last reference drops. The backing buffer is never mutated in place through a shared alias — if a mutation targets a shared (`rc>1`) buffer, the COW write-barrier (`ensure_unique`) forks a private copy before the write, preserving actor isolation. An immutable `let`-bound sendable value is alias-shared with no barrier (never mutated in place).
 
-> **Programmer indistinguishability preserved:** From the programmer's perspective the gated model is indistinguishable from move-then-independent-value. The receiver observes an independent value; the sender cannot use the value after send. Alias-sharing is a runtime optimization valid precisely because immutable-shareable values are never mutated in place through shared aliases.
+> **Programmer indistinguishability preserved:** From the programmer's perspective the gated model is indistinguishable from deep-copy-then-independent-value. The receiver observes an independent value; the sender keeps its own valid, independent value. Alias-sharing is a runtime optimization valid precisely because immutable-shareable values are never mutated in place through shared aliases.
 
-**Move-on-send:**
+**Snapshot-on-send:**
 
-- When a message is sent to an actor (via method call or `.send()`), the value is moved at the language level — the sender can no longer use it. At runtime, the mechanism is gated: immutable-shareable values (`string`, `bytes`) are alias-shared by retain; mutable collections are deep-copied; `iso`/Linear values are moved (P6).
+- When a message is sent to an actor (via method call or `.send()`), the receiver gets a logical snapshot and the sender's binding stays valid. At runtime, the mechanism is gated: provably-unique values are transferred by pointer; immutable-shareable values (`string`, `bytes`) are alias-shared by retain; mutable collections are deep-copied; `iso`/Linear values are moved (P6).
 - The receiver observes an independent value (alias-sharing is an optimization invisible to program semantics)
 - No user-visible references or borrows cross actor boundaries: ordinary message declarations cannot contain foreign-view syntax. The runtime retain optimization applies only to admissible immutable-shareable **owned** values, and the receiver always observes an independent owned value at the language level, never a view into the sender's heap.
 
@@ -1260,7 +1259,7 @@ actor Handler {
 
 actor Forwarder {
     receive fn forward(message: Message, target: LocalPid<Handler>) {
-        target.process(message);  // message is MOVED by the gated send mechanism
+        target.process(message);  // target receives a snapshot; message stays valid
     }
 }
 

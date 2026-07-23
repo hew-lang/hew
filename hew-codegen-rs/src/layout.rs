@@ -873,17 +873,12 @@ pub(crate) fn is_tuple_composite_shape(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Tuple(_))
 }
 
-/// Returns `true` when the named enum registered in `enum_layouts` has
-/// `is_indirect = true`, meaning every variable of the type holds a
-/// heap pointer rather than an inline tagged-union struct.
-pub(crate) fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
-    // Look up by exact name first, then by short (unqualified) name so
-    // module-qualified enums (`"mod.Expr"`) match `"Expr"` entries.
-    enum_layouts
-        .iter()
-        .find(|el| el.name == name || el.name == short_name(name))
-        .is_some_and(|el| el.is_indirect)
-}
+/// Re-export of the single indirect-enum predicate. The authority moved to
+/// `hew-mir` alongside the thunk-synthesis registry
+/// (`hew-mir/src/thunk_requirements.rs`) so the MIR-side seed derivation and
+/// every codegen consumer answer "is this enum heap-indirect?" from ONE
+/// function that cannot drift.
+pub(crate) use hew_mir::is_indirect_enum;
 
 /// The single layout-witness descriptor for a runtime-managed collection's
 /// memory lifecycle (W5.001 F0a).

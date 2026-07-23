@@ -1459,6 +1459,19 @@ pub fn machine_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLayout> 
     machine_layouts.iter().map(machine_enum_view).collect()
 }
 
+/// Returns `true` when the named enum registered in `enum_layouts` has
+/// `is_indirect = true`, meaning every variable of the type holds a
+/// heap pointer rather than an inline tagged-union struct.
+#[must_use]
+pub fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
+    // Look up by exact name first, then by short (unqualified) name so
+    // module-qualified enums (`"mod.Expr"`) match `"Expr"` entries.
+    enum_layouts
+        .iter()
+        .find(|el| el.name == name || el.name == hew_types::short_name(name))
+        .is_some_and(|el| el.is_indirect)
+}
+
 /// THE single enum-layout lookup authority for this module.
 ///
 /// Resolve a `Named { name, args }` to its registered [`EnumLayout`]. Every

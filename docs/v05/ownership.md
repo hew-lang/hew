@@ -44,6 +44,29 @@ Ordinary Hew syntax has no references; the separate extern-signature-only FFI
 view spelling is documented in the language guide's
 [FFI boundary appendix](../hew-language-guide.md#appendix-a---ffi-boundary-types).
 
+### The leak-never-double-free order
+
+Release bugs are not all equal: a double-free corrupts memory another owner
+still holds, while a leak wastes memory the program has already paid for. The
+model, its runtime, and its gates enforce that severity difference as a total
+order:
+
+- **Over-release is unconditionally rejected.** Discharging an obligation that
+  was never minted — a refcount that would go below zero — aborts the program
+  rather than wrapping (the shared-refcount release assert in
+  `hew-runtime/src/arc.rs` is the canonical site). There is no build mode in
+  which a double-free proceeds.
+- **Under-release is tracked and ratcheted shrink-only.** A known leak is
+  recorded in the sanitizer and leak-oracle expectations (the ASan/LSan
+  fixture gate on Linux, the `leaks --atExit` oracle on macOS), and the
+  tracked set may only shrink: a new leak is a gate failure, and a fixed leak
+  deletes its entry so it cannot silently return.
+- **Abort and trap paths may leak-at-abort, never double-free.** A runtime
+  trap abandons outstanding obligations rather than force-discharging them:
+  an abandoned obligation is a bounded leak in a dying process, while a
+  speculative release on a trap path risks freeing a value another owner
+  still holds.
+
 ## `clone x` — the eager-copy cost operation
 
 `clone` is not an ownership keyword. It is a stdlib **cost operation** that means

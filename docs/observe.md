@@ -4,6 +4,11 @@ Hew's observability surface is runtime-owned and read-only from Hew code. Use it
 when you want to inspect memory, scheduler, actor, coroutine, reactor, and
 runtime-hook counters that the native runtime already records.
 
+This surface also carries a design obligation: any silent adaptive behaviour in
+the runtime or toolchain must be observable in the artifact's output, response,
+or telemetry — see the observable-honesty axiom in the
+[IR ladder reference](internal/v05-ir-ladder.md#design-axioms).
+
 There are three primary metric APIs in `std::observe`:
 
 ```hew

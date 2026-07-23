@@ -47,6 +47,44 @@ source.hew
   work now widens the Rust HIR/MIR/codegen-rs path instead of adding dialect
   conversion passes.
 
+### Design axioms
+
+Three cross-cutting invariants the ladder, the gates, and the runtime are
+built to preserve.
+
+- **Totality at decision points.** Internal semantic decision enums, and the
+  dispatch tables over them, are total: no semantic branch carries a silent
+  wildcard or default arm. Adding a variant fails compilation at every
+  consumer site until that site decides what the new case means.
+  `SendAliasMode` (`hew-mir/src/model.rs`) is the exemplar: MIR authors a
+  complete per-argument send decision, and checked MIR may not contain an
+  undecided value. Genuinely undecidable cases take the sanctioned form of
+  an explicit fail-closed variant — `Strategy::UnknownBlocked`, routed to
+  `MirCheck::DropPlanUndetermined` — because "undecidable" is itself a
+  decision, and it must reject, never fall through. A wildcard arm on a
+  semantic branch converts a future variant into silent misbehaviour;
+  totality converts it into a build break that names every site owing a
+  decision.
+
+- **Leak-never-double-free total order.** Release bugs have a strict
+  severity order, and the gates enforce it as a total one: over-release is
+  unconditionally rejected (a refcount that would go below zero aborts, in
+  every build mode), under-release is tracked and ratcheted shrink-only, and
+  abort/trap paths may leak-at-abort but must never double-free. The full
+  statement lives in the ownership model doc
+  ([`docs/v05/ownership.md`](../v05/ownership.md)).
+
+- **Observable honesty.** Any silent adaptive behaviour in the runtime or
+  toolchain — execution-lane fallback, COW share-vs-materialize selection,
+  retained-version selection, supervision restart/rehoming — is observable
+  in the artifact's output, response, or telemetry. A fallback that cannot
+  be observed is a fail-open: the system substitutes behaviour without
+  leaving evidence, and neither users nor gates can tell the substituted
+  path from the intended one. The Ownership Plan Report (§4) is this axiom
+  applied to the value model — every share/materialize decision surfaces as
+  a `DecisionFact` — and the `std::observe` counters
+  ([`docs/observe.md`](../observe.md)) carry the runtime side.
+
 ---
 
 ## 2. Layer contracts

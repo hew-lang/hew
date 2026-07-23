@@ -9,6 +9,7 @@ pub mod closure_env;
 pub mod dataflow;
 pub mod dump;
 pub mod dyn_vtable_registry;
+pub mod ffi_contracts;
 pub mod liveness;
 pub mod lower;
 pub mod model;

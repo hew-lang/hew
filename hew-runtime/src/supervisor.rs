@@ -4645,8 +4645,8 @@ mod tests {
     /// TOOTH for the masked-`id` reuse finding: after 2^48 allocations a fresh
     /// actor can carry a retired incarnation's packed `id` (the serial is masked
     /// to 48 bits). If phase two pinned by `id` alone it would submit to that
-    /// DIFFERENT actor — the exact wrong-actor delivery this lane exists to make
-    /// impossible.
+    /// DIFFERENT actor — the exact wrong-actor delivery the identity check
+    /// exists to make impossible.
     ///
     /// This fabricates the alias at the resolve→submit seam: the hook retires
     /// the resolved incarnation A, then spawns a genuine actor B tracked under

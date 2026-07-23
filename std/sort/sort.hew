@@ -1,7 +1,8 @@
 //! Sorting utilities for vectors.
 //!
 //! Provides type-specific sort and reverse functions. Each returns a
-//! new vector — the original is never modified.
+//! new vector — the original is never modified. Integer and string sorting
+//! use iterative merge passes with O(n log n) comparisons.
 //!
 //! # Examples
 //!
@@ -28,11 +29,7 @@ fn copy_ints(v: Vec<i64>) -> Vec<i64> {
 }
 
 fn copy_strings(v: Vec<string>) -> Vec<string> {
-    let out: Vec<string> = Vec::new();
-    for i in 0 .. v.len() {
-        out.push(v[i]);
-    }
-    out
+    v.clone()
 }
 
 fn copy_floats(v: Vec<f64>) -> Vec<f64> {
@@ -61,34 +58,152 @@ fn swap_floats(v: Vec<f64>, i: i64, j: i64) {
     v.set(j, tmp);
 }
 
-fn sort_ints_in_place(v: Vec<i64>) {
-    let n = v.len();
-    for i in 0 .. n {
-        var min_idx = i;
-        for j in i + 1 .. n {
-            if v[j] < v[min_idx] {
-                min_idx = j;
-            }
+fn merge_int_run(v: Vec<i64>, scratch: Vec<i64>, start: i64, mid: i64, end: i64) -> i64 {
+    var left = start;
+    var right = mid;
+    var write = start;
+    var comparisons = 0;
+    while left < mid && right < end {
+        comparisons = comparisons + 1;
+        let left_value = v[left];
+        let right_value = v[right];
+        // Taking the left element on equality makes each merge left-biased.
+        if right_value < left_value {
+            scratch.set(write, right_value);
+            right = right + 1;
+        } else {
+            scratch.set(write, left_value);
+            left = left + 1;
         }
-        if min_idx != i {
-            swap_ints(v, i, min_idx);
-        }
+        write = write + 1;
     }
+    while left < mid {
+        let value = v[left];
+        scratch.set(write, value);
+        left = left + 1;
+        write = write + 1;
+    }
+    while right < end {
+        let value = v[right];
+        scratch.set(write, value);
+        right = right + 1;
+        write = write + 1;
+    }
+    comparisons
 }
 
-fn sort_strings_in_place(v: Vec<string>) {
-    let n = v.len();
-    for i in 0 .. n {
-        var min_idx = i;
-        for j in i + 1 .. n {
-            if v[j] < v[min_idx] {
-                min_idx = j;
-            }
+fn merge_string_run(v: Vec<string>, scratch: Vec<string>, start: i64, mid: i64, end: i64) -> i64 {
+    var left = start;
+    var right = mid;
+    var write = start;
+    var comparisons = 0;
+    while left < mid && right < end {
+        comparisons = comparisons + 1;
+        let left_value = v[left];
+        let right_value = v[right];
+        // Taking the left element on equality makes each merge left-biased.
+        if right_value < left_value {
+            scratch.set(write, right_value);
+            right = right + 1;
+        } else {
+            scratch.set(write, left_value);
+            left = left + 1;
         }
-        if min_idx != i {
-            swap_strings(v, i, min_idx);
-        }
+        write = write + 1;
     }
+    while left < mid {
+        let value = v[left];
+        scratch.set(write, value);
+        left = left + 1;
+        write = write + 1;
+    }
+    while right < end {
+        let value = v[right];
+        scratch.set(write, value);
+        right = right + 1;
+        write = write + 1;
+    }
+    comparisons
+}
+
+fn sort_ints_in_place(v: Vec<i64>) -> i64 {
+    let n = v.len();
+    if n < 2 {
+        return 0;
+    }
+    let scratch = copy_ints(v);
+    var width = 1;
+    var comparisons = 0;
+    while width < n {
+        var start = 0;
+        while start < n {
+            // Derive every boundary from the remaining length. This avoids
+            // overflowing either `start + 2 * width` or the width doubling.
+            let left_len = if width < n - start {
+                width
+            } else {
+                n - start
+            };
+            let mid = start + left_len;
+            let right_len = if width < n - mid {
+                width
+            } else {
+                n - mid
+            };
+            let end = mid + right_len;
+            comparisons = comparisons + merge_int_run(v, scratch, start, mid, end);
+            start = end;
+        }
+        for i in 0 .. n {
+            let value = scratch[i];
+            v.set(i, value);
+        }
+        width = if width > n / 2 {
+            n
+        } else {
+            width * 2
+        };
+    }
+    comparisons
+}
+
+fn sort_strings_in_place(v: Vec<string>) -> i64 {
+    let n = v.len();
+    if n < 2 {
+        return 0;
+    }
+    let scratch = copy_strings(v);
+    var width = 1;
+    var comparisons = 0;
+    while width < n {
+        var start = 0;
+        while start < n {
+            let left_len = if width < n - start {
+                width
+            } else {
+                n - start
+            };
+            let mid = start + left_len;
+            let right_len = if width < n - mid {
+                width
+            } else {
+                n - mid
+            };
+            let end = mid + right_len;
+            comparisons = comparisons + merge_string_run(v, scratch, start, mid, end);
+            start = end;
+        }
+        for i in 0 .. n {
+            let value = scratch[i];
+            v.set(i, value);
+        }
+        width = if width > n / 2 {
+            n
+        } else {
+            width * 2
+        };
+    }
+    comparisons
 }
 
 fn reverse_ints_in_place(v: Vec<i64>) {
@@ -139,8 +254,18 @@ fn reverse_floats_in_place(v: Vec<f64>) {
 /// Returns a new sorted vector; the original is unchanged.
 pub fn sort_ints(v: Vec<i64>) -> Vec<i64> {
     let out = copy_ints(v);
-    sort_ints_in_place(out);
+    let _ = sort_ints_in_place(out);
     out
+}
+
+/// Sort integers and return the production merge core's comparison count.
+///
+/// This diagnostic form exists for deterministic complexity regression tests.
+#[doc(hidden)]
+pub fn sort_ints_counted(v: Vec<i64>) -> (Vec<i64>, i64) {
+    let out = copy_ints(v);
+    let comparisons = sort_ints_in_place(out);
+    (out, comparisons)
 }
 
 /// Sort a vector of strings in alphabetical order.
@@ -148,8 +273,18 @@ pub fn sort_ints(v: Vec<i64>) -> Vec<i64> {
 /// Returns a new sorted vector; the original is unchanged.
 pub fn sort_strings(v: Vec<string>) -> Vec<string> {
     let out = copy_strings(v);
-    sort_strings_in_place(out);
+    let _ = sort_strings_in_place(out);
     out
+}
+
+/// Sort strings and return the production merge core's comparison count.
+///
+/// This diagnostic form exists for deterministic complexity regression tests.
+#[doc(hidden)]
+pub fn sort_strings_counted(v: Vec<string>) -> (Vec<string>, i64) {
+    let out = copy_strings(v);
+    let comparisons = sort_strings_in_place(out);
+    (out, comparisons)
 }
 
 /// Sort a vector of floats in ascending order.

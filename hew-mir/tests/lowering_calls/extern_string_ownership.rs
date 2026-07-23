@@ -139,12 +139,27 @@ fn user_package_provenance_foreign_string_is_adopted() {
 
 #[test]
 fn user_package_symbol_collision_with_absent_std_producer_still_adopts() {
-    // A user-package extern whose NAME collides with a std string producer
-    // (`hew_uuid_v4`, which is absent from the JIT catalog) must classify from
-    // its user/package provenance — adopt — not from the colliding name. This is
-    // the exact failure the old "absence from diagnostic_source_modules" heuristic
-    // could not distinguish; provenance can.
+    // A user-package extern whose NAME wears the `hew_` prefix but is absent
+    // from the JIT catalog must classify from its user/package provenance —
+    // adopt — not from the name spelling. This is the exact failure the old
+    // "absence from diagnostic_source_modules" heuristic could not
+    // distinguish; provenance can. (`hew_uuid_v4` served as the fixture until
+    // the std-used extern surface was classified into the catalog, which
+    // correctly flipped it to the suppressed case below.)
     assert!(!hew_types::jit_symbols::is_classified_hew_ffi_symbol(
+        "hew_uuid_v99"
+    ));
+    assert_eq!(
+        classify_extern_string_ownership(
+            &ExternProvenance::Module("mypkg.strings".to_string()),
+            "hew_uuid_v99",
+        ),
+        ExternStringOwnership::ForeignAdopt,
+    );
+    // The classified std producer itself is monotonically suppressed to
+    // header-aware even from user provenance: adopting a header-aware
+    // `str_to_malloc` string as foreign malloc is the memory-unsafe direction.
+    assert!(hew_types::jit_symbols::is_classified_hew_ffi_symbol(
         "hew_uuid_v4"
     ));
     assert_eq!(
@@ -152,7 +167,7 @@ fn user_package_symbol_collision_with_absent_std_producer_still_adopts() {
             &ExternProvenance::Module("mypkg.strings".to_string()),
             "hew_uuid_v4",
         ),
-        ExternStringOwnership::ForeignAdopt,
+        ExternStringOwnership::HeaderAware,
     );
 }
 
@@ -207,9 +222,16 @@ fn lowering_root_foreign_string_extern_adopts() {
 
 #[test]
 fn lowering_user_package_collision_string_extern_adopts() {
-    // Package provenance beats a name that happens to match an absent std
-    // producer — the decl adopts.
+    // Package provenance beats a `hew_`-prefixed name absent from the catalog
+    // — the decl adopts. A CLASSIFIED std producer (`hew_uuid_v4`) is instead
+    // monotonically suppressed even from package provenance.
     assert!(malloc_string_return_for(
+        "hew_uuid_v99",
+        ResolvedTy::String,
+        "C",
+        ExternProvenance::Module("mypkg.strings".to_string()),
+    ));
+    assert!(!malloc_string_return_for(
         "hew_uuid_v4",
         ResolvedTy::String,
         "C",

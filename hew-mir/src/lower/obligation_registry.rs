@@ -11,40 +11,45 @@
 //! REGISTRY DISCIPLINE (D139 / S1128 ratification):
 //! - the table only ever SHRINKS: an entry is removed when its leak is
 //!   fixed; adding an entry requires a filed issue link in the same commit;
-//! - entries key on the SCOPED tuple `(module, function, local, local_ty)` —
-//!   never a bare `(function, local)` wildcard. The source `module` scopes a
-//!   stdlib entry to its originating module (un-forgeable by user code) and
-//!   the `local_ty` narrows every entry to its minting site's value shape;
+//! - entries key on the SCOPED tuple `(function, local, local_ty)` — never a
+//!   bare `(function, local)` wildcard. The `local_ty` narrows every entry to
+//!   its minting site's value shape;
 //! - `registry_matches_pinned_key_set` pins the EXACT current population by
 //!   scoped key, so a removed-and-replaced entry fails the build (not just a
 //!   grown one) until the change is a deliberate table + pin edit.
 //!
+//! STDLIB SCOPING (un-forgeable): a stdlib entry's `function` is a
+//! module-mangled symbol carrying a `$` separator (`channel$try_new`,
+//! `base64$decode`, `semver$try_parse`, …). Hew identifiers are
+//! `[a-zA-Z_][a-zA-Z0-9_]*` (see `hew-lexer`), so `$` can NEVER appear in a
+//! user-authored function symbol — the `$`-mangled name is itself the
+//! un-forgeable module scope, and no user program can produce a finding whose
+//! `function` matches a stdlib entry. (A dotted source-module discriminator
+//! was rejected: `HirModule::diagnostic_source_modules` attributes the same
+//! stdlib function inconsistently across import paths — e.g. `std.channel`
+//! vs `std.channel.channel` — so it is not a stable key. The mangling prefix
+//! encodes the module and is stable.)
+//!
 //! SCOPING LIMIT (fail-open residual, tracked as OWN-V1 follow-up):
-//! a root-unit entry (`module: None`) originates from the root compilation
-//! unit, which carries no dotted module path at this MIR gate — the HIR module
-//! reaching `hew-mir` attributes only imported (`std.*`) items, not the root
-//! file. Such an entry is therefore keyed only on `(function, local,
-//! local_ty)`, which a user program COULD still alias by defining a
-//! same-named function with a same-named local of the same type at a genuine
-//! leak site. That is a far narrower target than the former bare-name wildcard
-//! (which matched on name alone), but it is not airtight. Full closure needs a
-//! per-compilation-unit source-file discriminator threaded from the frontend
-//! into the MIR gate; until then a leak in user code that reproduces one of
-//! these exact triples is suppressed. The stdlib (`module: Some`) entries are
-//! not exposed to this residual — their module is un-forgeable.
+//! a root-unit entry (a bare, un-mangled `function` such as `main` / `parse` /
+//! `check_ints`) originates from the root compilation unit, which carries no
+//! stable per-file discriminator at this MIR gate. Such an entry is keyed only
+//! on `(function, local, local_ty)`, which a user program COULD still alias by
+//! defining a same-named function with a same-named local of the same type at
+//! a genuine leak site. That is a far narrower target than the former
+//! bare-name wildcard (which matched on name alone), but it is not airtight.
+//! Full closure needs a per-compilation-unit source-file discriminator
+//! threaded from the frontend into the MIR gate; until then a leak in user
+//! code that reproduces one of these exact triples is suppressed. The stdlib
+//! (`$`-mangled) entries are not exposed to this residual.
 
 /// One tracked pre-existing under-release hole.
 pub(super) struct UnderReleaseAllowEntry {
-    /// The dotted source module this function originates from (e.g.
-    /// `std.base64`), or `None` for a root-compilation-unit function. Part of
-    /// the scoping key: an entry only matches a finding whose function was
-    /// lowered from the SAME source module. A stdlib module path is
-    /// un-forgeable by user code (the compiler never attributes a user body to
-    /// `std.*`), so a stdlib tracked-leak entry can never suppress a same-named
-    /// leak in a user program. Root-unit entries (`None`) remain
-    /// per-compilation-unit aliasable — see the module-level SCOPING LIMIT.
-    pub module: Option<&'static str>,
-    /// Exact `ElaboratedMirFunction::name` symbol the finding reports.
+    /// Exact `ElaboratedMirFunction::name` symbol the finding reports. For a
+    /// stdlib entry this is a `$`-mangled symbol (un-forgeable by user code —
+    /// `$` is not a legal identifier character), which is the entry's module
+    /// scope. A bare (un-mangled) symbol is a root-unit entry (see the
+    /// module-level SCOPING LIMIT).
     pub function: &'static str,
     /// Exact source-level local name the finding reports.
     pub local: &'static str,
@@ -57,7 +62,7 @@ pub(super) struct UnderReleaseAllowEntry {
         dead_code,
         reason = "issue-link discipline field: read by the registry pin tests \
                   and by humans triaging the entry; the gate keys on \
-                  (module, function, local, local_ty) only"
+                  (function, local, local_ty) only"
     )]
     pub issue: &'static str,
     /// The condition under which this entry is removed.
@@ -91,7 +96,6 @@ const BRANCH_AROUND_ISSUE: &str = "https://github.com/hew-lang/hew/pull/2784";
 /// The current registry population. Keep sorted by `function` then `local`.
 pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
     UnderReleaseAllowEntry {
-        module: Some("std.encoding.base64"),
         function: "base64$decode",
         local: "out",
         local_ty: "bytes",
@@ -99,7 +103,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: Some("std.channel"),
         function: "channel$try_new",
         local: "detail",
         local_ty: "string",
@@ -107,7 +110,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "check_ints",
         local: "reverse_out",
         local_ty: "Vec<i64>",
@@ -115,7 +117,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "check_strings",
         local: "out",
         local_ty: "Vec<string>",
@@ -123,7 +124,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "generic_iter_count$$IterOwnedItem",
         local: "_0",
         local_ty: "IterOwnedItem",
@@ -136,7 +136,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
                     release lands and the finding leaves make test-hew-ratchet",
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "main",
         local: "__hew_call_scrutinee",
         local_ty: "Result<scanner.Scanner, fs.IoError>",
@@ -153,7 +152,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
                     remove with the family",
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "main",
         local: "first",
         local_ty: "((Rec, i64), bool)",
@@ -167,7 +165,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
                     family fix lands; remove with the family",
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "main",
         local: "bag",
         local_ty: "Bag",
@@ -179,7 +176,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
                     fix lands; remove with the family",
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "parse",
         local: "__hew_call_scrutinee",
         local_ty: "Result<(i64, string), string>",
@@ -191,7 +187,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
                     string). BROAD KEY — remove with the family",
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "scenario_identity_location",
         local: "inspected",
         local_ty: "Result<IdentityResp, AskError>",
@@ -199,7 +194,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "scenario_remote_ask",
         local: "ask1",
         local_ty: "Result<KvResp, AskError>",
@@ -207,7 +201,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "scenario_remote_ask",
         local: "ask2",
         local_ty: "Result<KvResp, AskError>",
@@ -215,7 +208,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "scenario_repoint_preserves_ref",
         local: "new_value",
         local_ty: "Result<KvResp, AskError>",
@@ -223,7 +215,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "scenario_repoint_preserves_ref",
         local: "old_value",
         local_ty: "Result<KvResp, AskError>",
@@ -231,7 +222,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "scenario_repoint_preserves_ref",
         local: "seeded",
         local_ty: "Result<KvResp, AskError>",
@@ -239,7 +229,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: Some("std.text.semver"),
         function: "semver$try_parse",
         local: "build",
         local_ty: "string",
@@ -247,7 +236,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: Some("std.text.semver"),
         function: "semver$try_parse",
         local: "pre",
         local_ty: "string",
@@ -255,7 +243,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: Some("std.stream"),
         function: "stream$try_bytes_pipe",
         local: "detail",
         local_ty: "string",
@@ -263,7 +250,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: Some("std.stream"),
         function: "stream$try_pipe",
         local: "detail",
         local_ty: "string",
@@ -271,7 +257,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: Some("std.text.template"),
         function: "template$consume_range_body",
         local: "out",
         local_ty: "string",
@@ -279,7 +264,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: Some("std.text.template"),
         function: "template$render_segment",
         local: "out",
         local_ty: "string",
@@ -287,7 +271,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "test_capture_indexed_groups",
         local: "__hew_call_scrutinee",
         local_ty: "Option<string>",
@@ -295,7 +278,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "test_concrete_enum_clone_owned_payload",
         local: "a",
         local_ty: "Shape",
@@ -303,7 +285,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "test_remove_i64_key",
         local: "v",
         local_ty: "string",
@@ -311,7 +292,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "test_remove_string_value_moves_out_exact",
         local: "v",
         local_ty: "string",
@@ -319,7 +299,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "test_remove_string_value_moves_out_exact",
         local: "w",
         local_ty: "string",
@@ -327,7 +306,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        module: None,
         function: "test_stream_try_to_file_send_close_and_try_from_file",
         local: "__hew_call_scrutinee",
         local_ty: "Result<Stream<string>, fs.IoError>",
@@ -336,23 +314,15 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
     },
 ];
 
-/// `true` iff the `(module, function, local, local_ty)` tuple carries a
-/// registry entry — the ONLY path on which an `ObligationUnderReleased`
-/// finding does not become a compile error. All four components must match:
-/// the source module scopes stdlib entries against user-code aliasing, and
-/// the local type narrows every entry to its minting site's value shape.
+/// `true` iff the `(function, local, local_ty)` tuple carries a registry
+/// entry — the ONLY path on which an `ObligationUnderReleased` finding does
+/// not become a compile error. All three components must match: the
+/// `$`-mangled stdlib symbol is un-forgeable (its module scope), and the
+/// local type narrows every entry to its minting site's value shape.
 #[must_use]
-pub(super) fn under_release_allowlisted(
-    module: Option<&str>,
-    function: &str,
-    local: &str,
-    local_ty: &str,
-) -> bool {
+pub(super) fn under_release_allowlisted(function: &str, local: &str, local_ty: &str) -> bool {
     UNDER_RELEASE_ALLOWLIST.iter().any(|entry| {
-        entry.module == module
-            && entry.function == function
-            && entry.local == local
-            && entry.local_ty == local_ty
+        entry.function == function && entry.local == local && entry.local_ty == local_ty
     })
 }
 
@@ -361,14 +331,14 @@ mod tests {
     use super::*;
 
     /// The EXACT current population, pinned by scoped key
-    /// `(module, function, local, local_ty)`. A size-only ceiling let an
-    /// author delete a still-needed entry and swap in a placeholder without
-    /// tripping the pin; this exact set fails BOTH ways — a removed entry
-    /// leaves a pinned key with no live match, and an added or altered entry
-    /// leaves a live key absent from the pin. Shrinking the registry (an entry
-    /// whose leak is fixed) is therefore a deliberate two-place edit: delete
-    /// the table entry AND its pin row in the same commit. Growing it needs a
-    /// filed issue link on the new entry AND its pin row.
+    /// `(function, local, local_ty)`. A size-only ceiling let an author delete
+    /// a still-needed entry and swap in a placeholder without tripping the pin;
+    /// this exact set fails BOTH ways — a removed entry leaves a pinned key
+    /// with no live match, and an added or altered entry leaves a live key
+    /// absent from the pin. Shrinking the registry (an entry whose leak is
+    /// fixed) is therefore a deliberate two-place edit: delete the table entry
+    /// AND its pin row in the same commit. Growing it needs a filed issue link
+    /// on the new entry AND its pin row.
     ///
     /// Post-#2784 census: the branch-around consume-cancellation family
     /// (semver / base64 / stream / template / channel runtime-confirmed leak
@@ -376,130 +346,72 @@ mod tests {
     /// owned-element generic `Vec<T>::iter()` receiver-snapshot leak, and the
     /// root-unit fixture holes. #2784 fixed the scanner-exhaustion family and
     /// the hashmap-get discarded-result holes; those entries left the registry.
-    const PINNED_KEYS: &[(Option<&str>, &str, &str, &str)] = &[
-        (Some("std.encoding.base64"), "base64$decode", "out", "bytes"),
-        (Some("std.channel"), "channel$try_new", "detail", "string"),
-        (None, "check_ints", "reverse_out", "Vec<i64>"),
-        (None, "check_strings", "out", "Vec<string>"),
+    const PINNED_KEYS: &[(&str, &str, &str)] = &[
+        ("base64$decode", "out", "bytes"),
+        ("channel$try_new", "detail", "string"),
+        ("check_ints", "reverse_out", "Vec<i64>"),
+        ("check_strings", "out", "Vec<string>"),
+        ("generic_iter_count$$IterOwnedItem", "_0", "IterOwnedItem"),
         (
-            None,
-            "generic_iter_count$$IterOwnedItem",
-            "_0",
-            "IterOwnedItem",
-        ),
-        (
-            None,
             "main",
             "__hew_call_scrutinee",
             "Result<scanner.Scanner, fs.IoError>",
         ),
-        (None, "main", "first", "((Rec, i64), bool)"),
-        (None, "main", "bag", "Bag"),
+        ("main", "first", "((Rec, i64), bool)"),
+        ("main", "bag", "Bag"),
         (
-            None,
             "parse",
             "__hew_call_scrutinee",
             "Result<(i64, string), string>",
         ),
         (
-            None,
             "scenario_identity_location",
             "inspected",
             "Result<IdentityResp, AskError>",
         ),
+        ("scenario_remote_ask", "ask1", "Result<KvResp, AskError>"),
+        ("scenario_remote_ask", "ask2", "Result<KvResp, AskError>"),
         (
-            None,
-            "scenario_remote_ask",
-            "ask1",
-            "Result<KvResp, AskError>",
-        ),
-        (
-            None,
-            "scenario_remote_ask",
-            "ask2",
-            "Result<KvResp, AskError>",
-        ),
-        (
-            None,
             "scenario_repoint_preserves_ref",
             "new_value",
             "Result<KvResp, AskError>",
         ),
         (
-            None,
             "scenario_repoint_preserves_ref",
             "old_value",
             "Result<KvResp, AskError>",
         ),
         (
-            None,
             "scenario_repoint_preserves_ref",
             "seeded",
             "Result<KvResp, AskError>",
         ),
+        ("semver$try_parse", "build", "string"),
+        ("semver$try_parse", "pre", "string"),
+        ("stream$try_bytes_pipe", "detail", "string"),
+        ("stream$try_pipe", "detail", "string"),
+        ("template$consume_range_body", "out", "string"),
+        ("template$render_segment", "out", "string"),
         (
-            Some("std.text.semver"),
-            "semver$try_parse",
-            "build",
-            "string",
-        ),
-        (Some("std.text.semver"), "semver$try_parse", "pre", "string"),
-        (
-            Some("std.stream"),
-            "stream$try_bytes_pipe",
-            "detail",
-            "string",
-        ),
-        (Some("std.stream"), "stream$try_pipe", "detail", "string"),
-        (
-            Some("std.text.template"),
-            "template$consume_range_body",
-            "out",
-            "string",
-        ),
-        (
-            Some("std.text.template"),
-            "template$render_segment",
-            "out",
-            "string",
-        ),
-        (
-            None,
             "test_capture_indexed_groups",
             "__hew_call_scrutinee",
             "Option<string>",
         ),
-        (None, "test_concrete_enum_clone_owned_payload", "a", "Shape"),
-        (None, "test_remove_i64_key", "v", "string"),
+        ("test_concrete_enum_clone_owned_payload", "a", "Shape"),
+        ("test_remove_i64_key", "v", "string"),
+        ("test_remove_string_value_moves_out_exact", "v", "string"),
+        ("test_remove_string_value_moves_out_exact", "w", "string"),
         (
-            None,
-            "test_remove_string_value_moves_out_exact",
-            "v",
-            "string",
-        ),
-        (
-            None,
-            "test_remove_string_value_moves_out_exact",
-            "w",
-            "string",
-        ),
-        (
-            None,
             "test_stream_try_to_file_send_close_and_try_from_file",
             "__hew_call_scrutinee",
             "Result<Stream<string>, fs.IoError>",
         ),
     ];
 
-    fn live_keys() -> Vec<(
-        Option<&'static str>,
-        &'static str,
-        &'static str,
-        &'static str,
-    )> {
+    fn live_keys() -> Vec<(&'static str, &'static str, &'static str)> {
         UNDER_RELEASE_ALLOWLIST
             .iter()
-            .map(|e| (e.module, e.function, e.local, e.local_ty))
+            .map(|e| (e.function, e.local, e.local_ty))
             .collect()
     }
 
@@ -544,60 +456,47 @@ mod tests {
         assert_eq!(n, live.len(), "duplicate scoped keys in the registry");
     }
 
-    /// Every module-mangled stdlib symbol (a `$` in the function name) MUST
-    /// carry a source module — that module is the un-forgeable scope that
-    /// stops user code from aliasing a stdlib tracked-leak entry. An entry
-    /// that forgets it would silently regress to the old bare-name wildcard.
-    #[test]
-    fn stdlib_mangled_entries_are_module_scoped() {
-        for e in UNDER_RELEASE_ALLOWLIST {
-            if e.function.contains('$') && !e.function.contains("$$") {
-                assert!(
-                    e.module.is_some(),
-                    "stdlib-mangled entry `{}` has no module scope; without it \
-                     the entry falls back to a user-forgeable wildcard",
-                    e.function
-                );
-            }
-        }
-    }
-
     /// The scoped key defeats cross-compilation-unit aliasing that the former
     /// bare `(function, local)` match allowed.
     #[test]
     fn scoping_key_rejects_aliased_sites() {
         // The exact minting site is allowlisted.
         assert!(under_release_allowlisted(
-            None,
             "main",
             "first",
             "((Rec, i64), bool)"
         ));
         // A user program with the same function + local name but a DIFFERENT
         // local type does NOT ride the entry (the old bare match would have).
-        assert!(!under_release_allowlisted(None, "main", "first", "string"));
-        // A stdlib entry cannot be forged from user (root-unit) code: the
-        // un-forgeable module scope must match, so a root-unit `base64$decode`
-        // is not suppressed.
-        assert!(!under_release_allowlisted(
-            None,
-            "base64$decode",
-            "out",
-            "bytes"
-        ));
-        assert!(under_release_allowlisted(
-            Some("std.encoding.base64"),
-            "base64$decode",
-            "out",
-            "bytes"
-        ));
-        // Wrong module also fails closed.
-        assert!(!under_release_allowlisted(
-            Some("std.stream"),
-            "base64$decode",
-            "out",
-            "bytes"
-        ));
+        assert!(!under_release_allowlisted("main", "first", "string"));
+        // The stdlib entry matches at its own `$`-mangled symbol...
+        assert!(under_release_allowlisted("base64$decode", "out", "bytes"));
+        // ...and a same-named local of another type does not ride it.
+        assert!(!under_release_allowlisted("base64$decode", "out", "string"));
+    }
+
+    /// Every stdlib entry keys on a `$`-mangled symbol. `$` is not a legal
+    /// identifier character in Hew source (`hew-lexer` identifiers are
+    /// `[a-zA-Z_][a-zA-Z0-9_]*`), so no user program can author a function that
+    /// emits this symbol — the mangled name is the entry's un-forgeable scope.
+    /// This test documents which entries carry that guarantee vs. the
+    /// root-unit residual (bare names — see the module-level SCOPING LIMIT).
+    #[test]
+    fn stdlib_entries_are_dollar_mangled() {
+        let mangled: Vec<&str> = UNDER_RELEASE_ALLOWLIST
+            .iter()
+            .filter(|e| e.function.contains('$'))
+            .map(|e| e.function)
+            .collect();
+        // The known stdlib symbols are all `$`-scoped; the count is pinned so a
+        // future stdlib entry that forgets its mangling (a bare name) is
+        // noticed. `generic_iter_count$$IterOwnedItem` is a `$$` monomorphised
+        // symbol and also un-forgeable.
+        assert_eq!(
+            mangled.len(),
+            9,
+            "expected 9 `$`-mangled (un-forgeable) entries, got {mangled:?}"
+        );
     }
 
     /// Every entry must carry a real issue link and a lift trigger.

@@ -184,7 +184,6 @@ fn lower_actor_receive_handlers(
                 pointer_width,
                 crate::model::FunctionCallConv::ActorHandler,
                 task_entry_adapter_symbols.clone(),
-                None,
             ),
             actor,
             ActorHandlerKind::Receive,
@@ -369,7 +368,6 @@ fn lower_actor_init_handler(
             pointer_width,
             crate::model::FunctionCallConv::ActorHandler,
             task_entry_adapter_symbols.clone(),
-            None,
         ),
         actor,
         ActorHandlerKind::Init,
@@ -463,7 +461,6 @@ fn lower_actor_lifecycle_handlers(
                         pointer_width,
                         crate::model::FunctionCallConv::ActorHandler,
                         task_entry_adapter_symbols.clone(),
-                        None,
                     ),
                     actor,
                     ActorHandlerKind::Start,
@@ -519,7 +516,6 @@ fn lower_actor_lifecycle_handlers(
                         pointer_width,
                         crate::model::FunctionCallConv::ActorHandler,
                         task_entry_adapter_symbols.clone(),
-                        None,
                     ),
                     actor,
                     ActorHandlerKind::Stop,
@@ -796,7 +792,6 @@ fn lower_actor_lifecycle_handlers(
                         pointer_width,
                         crate::model::FunctionCallConv::ActorHandler,
                         task_entry_adapter_symbols.clone(),
-                        None,
                     ),
                     actor,
                     ActorHandlerKind::Crash,
@@ -909,7 +904,6 @@ fn lower_actor_lifecycle_handlers(
                         pointer_width,
                         crate::model::FunctionCallConv::ActorHandler,
                         task_entry_adapter_symbols.clone(),
-                        None,
                     ),
                     actor,
                     ActorHandlerKind::Exit,
@@ -1029,7 +1023,6 @@ fn lower_actor_lifecycle_handlers(
                         pointer_width,
                         crate::model::FunctionCallConv::ActorHandler,
                         task_entry_adapter_symbols.clone(),
-                        None,
                     ),
                     actor,
                     ActorHandlerKind::Down,
@@ -2576,7 +2569,6 @@ pub(super) fn lower_supervisor_bootstrap(
         // by the bootstrap's call_conv.
         crate::model::FunctionCallConv::Default,
         Rc::clone(task_entry_adapter_symbols),
-        None,
     ))
 }
 /// Build the MIR `ActorHandlerLayout` row for every `receive fn` on this

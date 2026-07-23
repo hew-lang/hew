@@ -3129,10 +3129,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                         pointer_width,
                         crate::model::FunctionCallConv::Default,
                         task_entry_adapter_symbols.clone(),
-                        module
-                            .diagnostic_source_modules
-                            .get(&func.id)
-                            .map(String::as_str),
                     );
                     // F3 fail-closed guard: an abstract origin declares every
                     // type parameter it can mention, so the witness verifier
@@ -3185,10 +3181,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     pointer_width,
                     crate::model::FunctionCallConv::Default,
                     task_entry_adapter_symbols.clone(),
-                    module
-                        .diagnostic_source_modules
-                        .get(&func.id)
-                        .map(String::as_str),
                 );
                 thir.push(lowered.thir);
                 lowered.raw.source_origin = resolve_source_origin(func.id, module);
@@ -3426,10 +3418,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             pointer_width,
             crate::model::FunctionCallConv::Default,
             task_entry_adapter_symbols.clone(),
-            module
-                .diagnostic_source_modules
-                .get(&mono.key.origin)
-                .map(String::as_str),
         );
         thir.push(lowered.thir);
         lowered.raw.source_origin = resolve_source_origin(mono.key.origin, module);
@@ -4830,11 +4818,6 @@ pub(crate) fn lower_function(
     pointer_width: PointerWidth,
     call_conv: crate::model::FunctionCallConv,
     task_entry_adapter_symbols: TaskEntryAdapterSymbols,
-    // Dotted source-module path this body originates from (`std.base64`, …),
-    // or `None` for a root-compilation-unit body or a synthesized function.
-    // Scopes the obligation-balance under-release allowlist so a stdlib
-    // tracked-leak entry cannot be aliased by a same-named local in user code.
-    source_module: Option<&str>,
 ) -> LoweredFunction {
     let mut builder = Builder {
         type_classes: type_classes.clone(),
@@ -5242,12 +5225,7 @@ pub(crate) fn lower_function(
             ..
         } = &check
         {
-            if obligation_registry::under_release_allowlisted(
-                source_module,
-                function,
-                name,
-                local_ty,
-            ) {
+            if obligation_registry::under_release_allowlisted(function, name, local_ty) {
                 continue;
             }
         }

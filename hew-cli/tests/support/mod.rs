@@ -134,7 +134,7 @@ fn build_wasi_runtime_serialized(target_dir: &Path, build_profile: &str) -> Resu
         return Ok(());
     }
 
-    let mut command = Command::new("cargo");
+    let mut command = wasm_cargo_command();
     command
         .args([
             "build",
@@ -183,6 +183,35 @@ fn build_wasi_runtime_serialized(target_dir: &Path, build_profile: &str) -> Resu
     Ok(())
 }
 
+/// Cargo command for wasm32-wasip1 archive builds with coverage
+/// instrumentation flags scrubbed.
+///
+/// Under `cargo llvm-cov`, test processes inherit the instrumentation
+/// environment — a `RUSTC_WRAPPER` shim driven by `__CARGO_LLVM_COV_*` vars
+/// (cargo-llvm-cov 0.8.x) and/or `-C instrument-coverage` in `RUSTFLAGS`.
+/// wasm32-wasip1 ships no profiler runtime, so an inherited instrumented
+/// build fails with "can't find crate for `profiler_builtins`". The archives
+/// execute under wasmtime and contribute no host coverage, so the
+/// instrumentation environment is dropped rather than honoured.
+fn wasm_cargo_command() -> Command {
+    let mut command = Command::new("cargo");
+    for var in [
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_BUILD_RUSTFLAGS",
+        "LLVM_PROFILE_FILE",
+        "RUSTC_WRAPPER",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER_RUSTFLAGS",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES",
+        "__CARGO_LLVM_COV_RUSTC_WRAPPER_PRE_EXISTING",
+        "CARGO_LLVM_COV",
+    ] {
+        command.env_remove(var);
+    }
+    command
+}
+
 fn build_wasi_stdlib_archive(
     target_dir: &std::path::Path,
     build_profile: &str,
@@ -197,7 +226,7 @@ fn build_wasi_stdlib_archive(
         return Ok(());
     }
 
-    let mut command = Command::new("cargo");
+    let mut command = wasm_cargo_command();
     command
         .args(["build", "-q", "-p", package, "--target", "wasm32-wasip1"])
         .env("CARGO_TARGET_DIR", target_dir)
@@ -266,7 +295,7 @@ fn wasi_stdlib_archive_clean_and_retry(
         ));
     }
 
-    let mut retry_cmd = Command::new("cargo");
+    let mut retry_cmd = wasm_cargo_command();
     retry_cmd
         .args(["build", "-q", "-p", package, "--target", "wasm32-wasip1"])
         .env("CARGO_TARGET_DIR", target_dir)
@@ -312,7 +341,7 @@ fn wasi_runtime_clean_and_retry(
         ));
     }
 
-    let mut retry_cmd = Command::new("cargo");
+    let mut retry_cmd = wasm_cargo_command();
     retry_cmd
         .args([
             "build",

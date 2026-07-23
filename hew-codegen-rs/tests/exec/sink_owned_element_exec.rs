@@ -17,54 +17,43 @@
 #![cfg(not(target_arch = "wasm32"))]
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+fn ensure_codegen_artifacts() -> (PathBuf, PathBuf) {
+    static BUILT: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let hew = hew_testutil::ensure_hew_bin_built().expect("build hew compiler");
+            let libhew = hew_testutil::ensure_hew_lib_built().expect("build Hew runtime archive");
+            assert_eq!(
+                hew.parent(),
+                libhew.parent(),
+                "hew and the Hew runtime archive must share one target/profile authority"
+            );
+            (hew, libhew)
+        })
+        .clone()
+}
+
+fn hew_command() -> Command {
+    let (hew, _) = ensure_codegen_artifacts();
+    Command::new(hew)
+}
+
+#[test]
+fn sink_harness_artifacts_follow_running_test_target_profile() {
+    let (hew, libhew) = ensure_codegen_artifacts();
+    let current_exe = std::env::current_exe().expect("resolve running test executable");
+    let expected_dir = current_exe
         .parent()
-        .expect("hew-codegen-rs has a workspace parent")
-        .to_path_buf()
-}
+        .and_then(std::path::Path::parent)
+        .expect("test executable must use <target>/<profile>/deps layout");
 
-fn target_dir(repo: &Path) -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || repo.join("target"),
-        |dir| {
-            let path = PathBuf::from(dir);
-            if path.is_absolute() {
-                path
-            } else {
-                repo.join(path)
-            }
-        },
-    )
-}
-
-fn hew_bin(repo: &Path) -> PathBuf {
-    target_dir(repo).join("debug").join("hew")
-}
-
-fn hew_command(repo: &Path) -> Command {
-    let bin = hew_bin(repo);
-    if bin.exists() {
-        return Command::new(bin);
-    }
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut command = Command::new(cargo);
-    command
-        .current_dir(repo)
-        .args(["run", "--quiet", "-p", "hew-cli", "--bin", "hew", "--"]);
-    command
-}
-
-fn ensure_hew_runtime_lib() {
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
-        hew_testutil::ensure_hew_lib_built().expect("build libhew.a");
-    });
+    assert_eq!(hew.parent(), Some(expected_dir));
+    assert_eq!(libhew.parent(), Some(expected_dir));
 }
 
 fn temp_source(stem: &str, source: &str) -> (PathBuf, PathBuf) {
@@ -81,11 +70,9 @@ fn temp_source(stem: &str, source: &str) -> (PathBuf, PathBuf) {
 /// memory (`MallocScribble` + guard edges) so a double-free of a moved handle
 /// crashes instead of silently passing.
 fn run_hew_source_env(stem: &str, source: &str, scribble: bool) -> String {
-    ensure_hew_runtime_lib();
-    let repo = repo_root();
     let (_dir, path) = temp_source(stem, source);
 
-    let mut cmd = hew_command(&repo);
+    let mut cmd = hew_command();
     cmd.arg("run").arg(&path);
     if scribble {
         cmd.env("MallocScribble", "1")
@@ -117,11 +104,9 @@ fn run_hew_source(stem: &str, source: &str) -> String {
 
 /// Compile `source` and return the emitted LLVM IR text (`<stem>.ll`).
 fn emit_llvm_ir(stem: &str, source: &str) -> String {
-    ensure_hew_runtime_lib();
-    let repo = repo_root();
     let (dir, path) = temp_source(stem, source);
 
-    let mut cmd = hew_command(&repo);
+    let mut cmd = hew_command();
     cmd.arg("compile").arg("--emit-dir").arg(&dir).arg(&path);
     let output = hew_testutil::run_command_bounded(
         &mut cmd,
@@ -143,9 +128,8 @@ fn emit_llvm_ir(stem: &str, source: &str) -> String {
 /// Compile a snippet expecting a fail-closed compile refusal; return combined
 /// stderr. Asserts the compile exited non-zero.
 fn compile_expect_refusal(stem: &str, source: &str) -> String {
-    let repo = repo_root();
     let (dir, path) = temp_source(stem, source);
-    let mut cmd = hew_command(&repo);
+    let mut cmd = hew_command();
     cmd.arg("compile").arg("--emit-dir").arg(&dir).arg(&path);
     let output = hew_testutil::run_command_bounded(
         &mut cmd,

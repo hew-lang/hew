@@ -86,15 +86,38 @@ jobs:
         # entering the build, independently of the build itself.
         run: df -h /
 
+      - name: Install WASI runner prerequisites
+        # The instrumented run includes hew-cli's wasmtime-backed e2e tests
+        # (e.g. sort_merge_authority_runs_under_wasmtime), whose support
+        # bootstrap builds the wasm32-wasip1 runtime + stdlib archives at test
+        # time and runs the output under wasmtime. Same wasmtime provisioning
+        # as ci.yml's "Build & test (Linux)" job — the two environment
+        # contracts must not drift (same class as the FreeBSD nightly wasmtime
+        # omission). The heavyweight eval_wasm / wasi_run_e2e suites stay
+        # excluded below; they gate per-PR in ci.yml.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rustup target add wasm32-wasip1
+          WASMTIME_TAG="$(gh release view --repo bytecodealliance/wasmtime --json tagName --jq .tagName)"
+          WASMTIME_DIR="wasmtime-${WASMTIME_TAG}-x86_64-linux"
+          gh release download "$WASMTIME_TAG" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
+          tar -xJf "${WASMTIME_DIR}.tar.xz"
+          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "./${WASMTIME_DIR}/wasmtime" --version
+
       - name: Run tests with coverage
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests are covered without an explicit flag.
-        # The wasi-runner e2e tests (eval_wasm_* and the wasi_run_e2e
-        # binary) need wasmtime plus the wasm runtime archive; they run and
-        # gate in the per-PR "Build & test (Linux)" job, so they are excluded
-        # from the instrumented run rather than duplicating that wasm setup here
-        # (which would also hit the llvm-cov target-dir path issue). Their
-        # Rust-side coverage is marginal — they drive a wasmtime subprocess.
+        # The heavyweight wasi-runner e2e suites (eval_wasm_* and the
+        # wasi_run_e2e binary) run and gate in the per-PR "Build & test
+        # (Linux)" job, so they stay excluded from the instrumented run.
+        # Their Rust-side coverage is marginal — they drive a wasmtime
+        # subprocess. The remaining wasmtime-backed tests (e.g. hew-cli's
+        # sort authority) run here against the wasmtime provisioned above;
+        # their support bootstrap builds the wasm32-wasip1 archives with
+        # instrumentation flags scrubbed (no profiler runtime on wasm).
         #
         # two_process_remote_ask / remote_ask_two_process tests are
         # intentionally NOT excluded here (x86_64 coverage is preserved).

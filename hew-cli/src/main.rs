@@ -1060,10 +1060,26 @@ fn cmd_compile(a: &args::CompileArgs) {
             "elab" => hew_mir::DumpStage::Elab,
             other => {
                 eprintln!("Error: unknown --dump-mir stage `{other}`");
+                if json {
+                    diagnostic_json::flush_json_diagnostics();
+                }
                 std::process::exit(2);
             }
         };
-        print!("{}", hew_mir::dump_mir(&pipeline, dump_stage));
+        let dump = hew_mir::dump_mir(&pipeline, dump_stage);
+        if json {
+            // Under JSON, stdout is the machine diagnostic contract; the MIR
+            // text dump is a human debug aid, so it goes to stderr to keep the
+            // JSON array on stdout parseable. Flush the accumulated diagnostics
+            // (advisory under-release warnings included) so a leak is NEVER
+            // silently dropped on this exit path — observable-honesty.
+            eprint!("{dump}");
+            diagnostic_json::flush_json_diagnostics();
+        } else {
+            // Text mode: the warnings already rendered to stderr during
+            // lowering; the dump is the stdout payload the caller asked for.
+            print!("{dump}");
+        }
         return;
     }
 

@@ -1303,16 +1303,33 @@ jobs:
     needs: release
     runs-on: ubuntu-24.04
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    # The downstream workflow is bounded at 5 + 45 + 30 minutes across its
-    # sequential verifier, smoke, and publish jobs. Leave another 40 minutes
-    # for dispatch visibility and runner scheduling while still failing closed.
+    # The downstream publish path is bounded at 5 + 5 + 45 + 30 + 5 minutes
+    # across its authority, contract-verify, smoke, publish, and result jobs
+    # (90 minutes sequential worst case). Leave another 30 minutes for dispatch
+    # visibility and runner scheduling while still failing closed.
     timeout-minutes: 120
 
     steps:
+      - name: Resolve release commit identity
+        id: release-commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          HEW_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq '.sha')
+          if ! [[ "${HEW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::${RELEASE_TAG} did not resolve to an exact lowercase 40-character commit SHA"
+            exit 1
+          fi
+          echo "hew_sha=${HEW_SHA}" >> "${GITHUB_OUTPUT}"
+
       - name: Trigger playground image rebuild
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PLAYGROUND_DISPATCH_TOKEN }}
+          HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}
         run: |
           set -euo pipefail
 
@@ -1320,9 +1337,13 @@ jobs:
             echo "::error::PLAYGROUND_DISPATCH_TOKEN secret is required for the playground dispatch"
             exit 1
           fi
+          if ! [[ "${HEW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::release commit identity is not an exact lowercase 40-character commit SHA"
+            exit 1
+          fi
           VERSION="${RELEASE_TAG#v}"
           CORRELATION_ID="hew-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          EXPECTED_DISPLAY_TITLE="Build Playground ${VERSION} [${CORRELATION_ID}]"
+          EXPECTED_DISPLAY_TITLE="Build Playground mode=publish sha=${HEW_SHA} version=${VERSION} correlation=${CORRELATION_ID}"
           if ! gh repo view hew-lang/playground --json name >/dev/null 2>&1; then
             echo "::error::hew-lang/playground is unavailable"
             exit 1
@@ -1347,6 +1368,8 @@ jobs:
           gh workflow run build.yml \
             -R hew-lang/playground \
             --ref "${PLAYGROUND_REF}" \
+            -f publish=true \
+            -f hew_sha="${HEW_SHA}" \
             -f version="${VERSION}" \
             -f correlation_id="${CORRELATION_ID}"
           RUN_ID=""

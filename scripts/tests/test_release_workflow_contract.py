@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+HEW_SHA = "0123456789abcdef0123456789abcdef01234567"
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
@@ -41,13 +42,15 @@ def assert_exact_dispatch_correlation(job: str) -> None:
     """Require the unique caller identity in both dispatch and run selection."""
     assert 'CORRELATION_ID="hew-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"' in job
     assert (
-        'EXPECTED_DISPLAY_TITLE="Build Playground ${VERSION} [${CORRELATION_ID}]"'
-        in job
+        'EXPECTED_DISPLAY_TITLE="Build Playground mode=publish'
+        ' sha=${HEW_SHA} version=${VERSION} correlation=${CORRELATION_ID}"' in job
     )
 
     dispatch_start = job.index("          gh workflow run build.yml")
     dispatch_end = job.index('          RUN_ID=""', dispatch_start)
     dispatch = job[dispatch_start:dispatch_end]
+    assert "-f publish=true \\\n" in dispatch
+    assert '-f hew_sha="${HEW_SHA}" \\\n' in dispatch
     assert '-f version="${VERSION}" \\\n' in dispatch
     assert '-f correlation_id="${CORRELATION_ID}"' in dispatch
 
@@ -128,7 +131,9 @@ if "repos/hew-lang/playground/actions/workflows/build.yml/runs" in joined:
         "head_sha": "sha-good",
         "actor": {"login": "actor-good"},
         "display_title": (
-            "Build Playground 0.6.0-rc1 [hew-777-2]"
+            "Build Playground mode=publish"
+            " sha=0123456789abcdef0123456789abcdef01234567"
+            " version=0.6.0-rc1 correlation=hew-777-2"
         ),
     }
     if scenario == "empty":
@@ -166,7 +171,9 @@ raise SystemExit(93)
 """
 
 
-def run_playground(scenario: str, *, jq_failure: bool = False) -> tuple:
+def run_playground(
+    scenario: str, *, jq_failure: bool = False, hew_sha: str = HEW_SHA
+) -> tuple:
     """Execute the workflow's exact Bash with deterministic command doubles."""
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -189,6 +196,7 @@ def run_playground(scenario: str, *, jq_failure: bool = False) -> tuple:
             {
                 "PATH": f"{bin_dir}:{env['PATH']}",
                 "GH_TOKEN": "test-token",
+                "HEW_SHA": hew_sha,
                 "RELEASE_TAG": "v0.6.0-rc1",
                 "GITHUB_RUN_ID": "777",
                 "GITHUB_RUN_ATTEMPT": "2",
@@ -211,7 +219,7 @@ def run_playground(scenario: str, *, jq_failure: bool = False) -> tuple:
 
 
 def assert_wait_budget(job: str) -> None:
-    """Keep caller time above the downstream 5 + 45 + 30 minute maximum."""
+    """Keep caller time above the downstream 5+5+45+30+5 minute maximum."""
     match = re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)
     assert match is not None
     assert int(match.group(1)) >= 100
@@ -227,6 +235,12 @@ def test_rc_tag_normalization_and_exact_release_body() -> None:
 
 def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
     job = playground_job()
+    assert "      - name: Resolve release commit identity\n" in job
+    assert (
+        "gh api \"repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}\" --jq '.sha'"
+    ) in job
+    assert "did not resolve to an exact lowercase" in job
+    assert "HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}" in job
     assert "PLAYGROUND_DISPATCH_TOKEN" in job
     assert "HOMEBREW_TAP_TOKEN" not in job
     assert 'if [ -z "${GH_TOKEN}" ]; then' in job
@@ -243,6 +257,8 @@ def test_dispatch_uses_exact_playground_workflow_input_and_ref() -> None:
     job = playground_job()
     assert "gh workflow run build.yml" in job
     assert '--ref "${PLAYGROUND_REF}"' in job
+    assert "-f publish=true" in job
+    assert '-f hew_sha="${HEW_SHA}"' in job
     assert '-f version="${VERSION}"' in job
     assert "-f event=workflow_dispatch" in job
     assert '-f branch="${PLAYGROUND_REF}"' in job
@@ -274,8 +290,27 @@ def test_exact_workflow_shell_accepts_one_stable_matching_run() -> None:
     result, calls, polls = run_playground("success")
     assert result.returncode == 0, result.stderr
     assert polls == 2
+    dispatches = [call for call in calls if call.startswith("gh workflow run")]
+    assert dispatches == [
+        "gh workflow run build.yml -R hew-lang/playground --ref main"
+        f" -f publish=true -f hew_sha={HEW_SHA}"
+        " -f version=0.6.0-rc1 -f correlation_id=hew-777-2"
+    ]
     watches = [call for call in calls if call.startswith("gh run watch")]
     assert watches == ["gh run watch 101 -R hew-lang/playground --exit-status"]
+
+
+def test_malformed_release_commit_identity_is_terminal() -> None:
+    for bad_sha in ("", "not-a-sha", HEW_SHA[:39], HEW_SHA.upper()):
+        result, calls, polls = run_playground("success", hew_sha=bad_sha)
+        assert result.returncode != 0, repr(bad_sha)
+        assert "release commit identity is not an exact lowercase" in result.stdout, (
+            repr(bad_sha)
+        )
+        assert polls == 0, repr(bad_sha)
+        assert not any(call.startswith("gh workflow run") for call in calls), repr(
+            bad_sha
+        )
 
 
 def test_run_listing_api_failure_is_terminal() -> None:
@@ -330,6 +365,16 @@ def test_timeout_undercut_mutation_is_rejected() -> None:
     raise AssertionError(
         "the upstream wait accepted the downstream maximum without margin"
     )
+
+
+def test_publish_mode_downgrade_mutation_is_rejected() -> None:
+    mutated = playground_job().replace("-f publish=true", "-f publish=false")
+    mutated += "\n# -f publish=true\n"
+    try:
+        assert_exact_dispatch_correlation(mutated)
+    except (AssertionError, ValueError):
+        return
+    raise AssertionError("a publish-mode downgrade was hidden by padding")
 
 
 def test_correlation_swap_with_padding_is_rejected() -> None:
@@ -413,12 +458,14 @@ _TESTS = [
     test_dispatch_uses_exact_playground_workflow_input_and_ref,
     test_dispatch_correlation_is_unique_and_bounded,
     test_exact_workflow_shell_accepts_one_stable_matching_run,
+    test_malformed_release_commit_identity_is_terminal,
     test_run_listing_api_failure_is_terminal,
     test_run_listing_jq_failure_is_terminal,
     test_successful_empty_polls_exhaust_the_bound,
     test_ambiguous_correlation_fails_on_the_first_poll,
     test_each_exact_run_identity_dimension_is_mandatory,
     test_timeout_undercut_mutation_is_rejected,
+    test_publish_mode_downgrade_mutation_is_rejected,
     test_correlation_swap_with_padding_is_rejected,
     test_correlation_argument_swap_with_padding_is_rejected,
     test_pipeline_status_masking_mutation_is_rejected,

@@ -802,6 +802,18 @@ fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::Run
 /// mirroring the `Idle → Runnable` waker discipline in `activate_actor`, which
 /// closes the use-after-free window against a freed actor.
 ///
+/// RECORDED-vs-DIRECT delivery is exclusive (stale-wake guard): a call that
+/// wins the CAS delivers DIRECTLY and must CONSUME any `pending_wake` marker —
+/// including one this same call recorded moments earlier in the mid-park
+/// window. A marker left set after a direct delivery is a STALE wake: it
+/// survives into the actor's NEXT park cycle, whose FG3 drain re-enqueues a
+/// wake with no readiness behind it, and a suspending `select` resumed by that
+/// stale wake scans `hew_select_ready_index() == -1` and fabricates a timeout
+/// (the `after` arm fires with the deadline unexpired — the event sits queued,
+/// unconsumed, until teardown). Consuming under the registry lock BEFORE the
+/// enqueue is race-free: the actor is `Runnable` but not yet on the queue, so
+/// nothing can run it and re-park between the CAS and the consume.
+///
 /// # Safety
 ///
 /// `actor`, if non-null, may reference a freed `HewActor` — this function does
@@ -867,11 +879,24 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
             )
             .is_ok()
         {
+            // Direct delivery won: consume the pending marker so recorded and
+            // direct delivery collapse into ONE wake. Without this, the mark at
+            // the top of this call (mid-park window, park published `Suspended`
+            // between the slot load and the re-check) leaks past the park's own
+            // FG3 drain and fires a stale wake on the actor's NEXT park — the
+            // fabricated-timeout race (see the fn doc). Consuming a CONCURRENT
+            // racer's marker here is equally correct: its readiness deposit
+            // happens-before its mark (deposit-then-wake contract), so the
+            // single direct wake's resume scan observes that readiness too.
+            let _ = crate::coro_exec::take_pending_wake(a);
             (true, actor_runtime_id)
         } else {
             // The actor was not `Suspended` yet (park still completing) — record
             // the wake so the suspend edge observes it. Terminal actors also land
-            // here; marking is harmless (the actor will never park again).
+            // here; marking is harmless (the actor will never park again). A
+            // `Runnable` actor (another wake's delivery in flight) also lands
+            // here; the marker folds this wake into that delivery, and the
+            // winning deliverer consumes it above.
             crate::coro_exec::mark_pending_wake(a);
             (false, actor_runtime_id)
         }
@@ -3572,6 +3597,62 @@ mod tests {
         assert!(
             crate::coro_exec::take_pending_wake(&actor),
             "a wake in the park window must be recorded, not lost (FG3)"
+        );
+    }
+
+    /// Stale-wake guard: a direct delivery (successful `Suspended → Runnable`
+    /// CAS) must CONSUME the `pending_wake` marker, not leave it set.
+    ///
+    /// This pins the exact interleaving of the fabricated-timeout race: a
+    /// readiness source's `enqueue_resume` loads a null `suspended_cont`
+    /// mid-park and marks `pending_wake`; the park publishes `Suspended` and
+    /// its FG3 drain runs FIRST (finds no marker yet); the source then marks,
+    /// re-checks, sees `Suspended`, and wins the CAS — delivering directly with
+    /// the marker unconsumed. The test enters `enqueue_resume` with that exact
+    /// pre-state (parked + marker set) and asserts the delivery consumes the
+    /// marker. Before the fix the marker survived into the actor's next park,
+    /// whose drain re-enqueued a wake with no readiness behind it — a resumed
+    /// `select` scanned -1 and fabricated a timeout while its event sat queued.
+    #[test]
+    fn enqueue_resume_direct_delivery_consumes_pending_marker() {
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = TrackedTestActor::install(stub_actor());
+        // Fully parked: Suspended, published (sentinel) handle, Parked tag.
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        // The unconsumed marker: recorded by this wake's own mid-park mark
+        // (the park's FG3 drain already ran and missed it).
+        crate::coro_exec::mark_pending_wake(&actor);
+        let actor_ptr = actor.ptr();
+
+        // SAFETY: actor is live (tracked); the sentinel handle is never resumed
+        // (no worker thread exists under NoWorkerSchedulerForTest).
+        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32,
+            "the direct delivery must win the Suspended -> Runnable CAS"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            Some(actor_ptr),
+            "the woken actor must be enqueued exactly once"
+        );
+        assert!(
+            !crate::coro_exec::take_pending_wake(&actor),
+            "a direct delivery must consume the pending marker — a surviving \
+             marker is a STALE wake for the actor's next park (the \
+             fabricated-timeout race)"
         );
     }
 

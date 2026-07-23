@@ -5889,6 +5889,15 @@ pub enum MirCheck {
         name: String,
         reason: String,
     },
+    /// S1 obligation-balance: the discharge-interval fixpoint did not reach a
+    /// verdict for this function — the monotone worklist exceeded its
+    /// iteration cap before converging. The lattice is finite and the transfer
+    /// monotone, so this is unreachable in principle; if it ever fires it is a
+    /// modelling defect, and the balance of this function is UNVERIFIED. The
+    /// gate must not silently certify an unverified function as balanced, so
+    /// this is an unconditional hard error with NO allowlist escape (fail
+    /// closed — a leak/double-free gate that cannot decide rejects).
+    ObligationBalanceUnverified { function: String, reason: String },
     /// W3.053 fail-closed gate: an owned handle (Generator / Stream / Sink /
     /// Duplex / Cancellation token / actor handle — any `AffineResource` /
     /// `CowHeap`-drop handle) was moved into a local tuple/record and then
@@ -6874,6 +6883,12 @@ pub enum MirDiagnosticKind {
         name: String,
         reason: String,
     },
+    /// S1 obligation-balance verdict unreached: surfaced from
+    /// `MirCheck::ObligationBalanceUnverified`. The discharge-interval fixpoint
+    /// exceeded its iteration cap before converging, so the function's balance
+    /// is undecided. Unconditional hard error — the gate fails closed rather
+    /// than certify an unverified function.
+    ObligationBalanceUnverified { function: String, reason: String },
     /// Execution-context carrier marker validation failed.
     ContextBoundaryViolation {
         function: String,

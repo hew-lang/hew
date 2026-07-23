@@ -1461,6 +1461,9 @@ fn render_mir_check(check: &MirCheck) -> String {
             name,
             reason,
         } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
+        MirCheck::ObligationBalanceUnverified { function, reason } => {
+            format!("ObligationBalanceUnverified {function} {reason:?}")
+        }
         MirCheck::ContextBoundaryViolation {
             function,
             block,
@@ -1672,6 +1675,9 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
             name,
             reason,
         } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
+        MirDiagnosticKind::ObligationBalanceUnverified { function, reason } => {
+            format!("ObligationBalanceUnverified {function} {reason:?}")
+        }
         MirDiagnosticKind::ContextBoundaryViolation {
             function,
             block,

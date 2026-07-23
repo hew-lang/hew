@@ -126,6 +126,7 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. }
         | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. }
@@ -577,6 +578,9 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. } => "DropPlanUndetermined",
         hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. } => "ObligationUnderReleased",
         hew_mir::MirDiagnosticKind::ObligationOverReleased { .. } => "ObligationOverReleased",
+        hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. } => {
+            "ObligationBalanceUnverified"
+        }
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. } => "ContextBoundaryViolation",
         hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. } => "DischargeAuthorityMissing",
         hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. } => "DischargeAuthorityDrift",
@@ -678,6 +682,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
         | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. }
         | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. }
@@ -789,6 +794,12 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             format!(
                 "obligation balance in `{function}`: owned value `{name}` is \
                  released more than once on an exit path (double-free): {reason}"
+            )
+        }
+        hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { function, reason } => {
+            format!(
+                "obligation balance in `{function}` could not be verified: \
+                 {reason}"
             )
         }
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation {
@@ -1027,6 +1038,9 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             key_field, ..
         } => {
             notes.push(format!("coalesce key field: {key_field}"));
+        }
+        hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { function, .. } => {
+            notes.push(format!("function: {function}"));
         }
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }

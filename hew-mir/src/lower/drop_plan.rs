@@ -139,6 +139,17 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                    carries no allowlist escape"
                 .to_string(),
         }),
+        MirCheck::ObligationBalanceUnverified { function, reason } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::ObligationBalanceUnverified {
+                function: function.clone(),
+                reason: reason.clone(),
+            },
+            note: "the obligation-balance fixpoint could not reach a verdict for \
+                   this function; the gate fails closed rather than certify an \
+                   unverified body as leak- and double-free-free. This is a \
+                   modelling invariant, not a user error"
+                .to_string(),
+        }),
         MirCheck::ContextBoundaryViolation {
             function,
             block,
@@ -1895,17 +1906,45 @@ pub(super) fn validate_obligation_balance(
 
 /// Decomposed core of [`validate_obligation_balance`] — the unit-test entry
 /// (hand-constructed blocks + drop plans + tracked set, no `Builder`).
-#[allow(
-    clippy::too_many_lines,
-    reason = "single fixpoint + exit-verdict walk; splitting would obscure \
-              the dataflow (mirrors validate_cross_block_split_consume)"
-)]
+/// Computes the default fixpoint iteration cap and forwards to
+/// [`validate_obligation_balance_capped`].
 fn validate_obligation_balance_with(
     elab: &ElaboratedMirFunction,
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     tracked_in: &BTreeMap<u32, String>,
     parameter_locals: &HashSet<u32>,
+) -> Vec<MirCheck> {
+    // Iteration cap for the monotone worklist. The lattice is finite and the
+    // transfer monotone, so convergence is guaranteed well within this bound;
+    // the cap is a defensive ceiling whose exhaustion fails CLOSED (see the
+    // capped core).
+    let iteration_cap = blocks.len().saturating_mul(64).saturating_add(1024);
+    validate_obligation_balance_capped(
+        elab,
+        blocks,
+        suspend_kinds,
+        tracked_in,
+        parameter_locals,
+        iteration_cap,
+    )
+}
+
+/// Balance-verdict core with an explicit fixpoint iteration cap. Split out so
+/// the fail-closed cap-exhaustion path is unit-testable (a tiny cap forces the
+/// unverified verdict a converging body would never reach).
+#[allow(
+    clippy::too_many_lines,
+    reason = "single fixpoint + exit-verdict walk; splitting would obscure \
+              the dataflow (mirrors validate_cross_block_split_consume)"
+)]
+fn validate_obligation_balance_capped(
+    elab: &ElaboratedMirFunction,
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    tracked_in: &BTreeMap<u32, String>,
+    parameter_locals: &HashSet<u32>,
+    iteration_cap: usize,
 ) -> Vec<MirCheck> {
     use std::collections::VecDeque;
 
@@ -2050,13 +2089,25 @@ fn validate_obligation_balance_with(
     let mut exit_states: HashMap<u32, ObligationMap> = HashMap::new();
     let mut worklist: VecDeque<u32> = dataflow::compute_rpo(blocks).into();
     let mut iterations: usize = 0;
-    let iteration_cap = blocks.len().saturating_mul(64).saturating_add(1024);
     while let Some(bb_id) = worklist.pop_front() {
         iterations += 1;
         if iterations > iteration_cap {
-            // Defensive: the lattice is finite and the transfer monotone, so
-            // this cap is unreachable; bail to empty rather than loop.
-            return Vec::new();
+            // The lattice is finite and the transfer monotone, so convergence
+            // is guaranteed within the cap; reaching it means the model is
+            // defective. Fail CLOSED — a balance gate that cannot decide must
+            // NOT certify the body as leak- and double-free-free. Emit an
+            // unverified hard error (no allowlist escape) rather than the old
+            // silent `return Vec::new()`, which certified the function as
+            // balanced on the exact path where the verdict is unknown.
+            return vec![MirCheck::ObligationBalanceUnverified {
+                function: elab.name.clone(),
+                reason: format!(
+                    "discharge-interval fixpoint exceeded its iteration cap \
+                     ({iteration_cap}) over {n} blocks before converging; the \
+                     balance of this function is undecided",
+                    n = blocks.len(),
+                ),
+            }];
         }
         let Some(block) = by_id.get(&bb_id) else {
             continue;
@@ -7181,6 +7232,51 @@ mod obligation_balance_validator {
         assert!(
             findings.is_empty(),
             "borrow-derived mints never definite-leak: {findings:?}"
+        );
+    }
+
+    /// Fail-closed cap exhaustion: when the fixpoint cannot converge within
+    /// its iteration budget the verdict is UNKNOWN, and an unknown verdict
+    /// must NOT certify the body as balanced. A zero cap forces the exhaustion
+    /// path a converging body would never reach; the gate must emit an
+    /// unverified hard error rather than the old silent empty result.
+    #[test]
+    fn fixpoint_cap_exhaustion_fails_closed_unverified() {
+        let blocks = vec![block(0, vec![mint(1)], Terminator::Return)];
+        let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+        let elab = elab_with_plans(plans);
+        let tracked: BTreeMap<u32, String> = [(1_u32, "leaky".to_string())].into_iter().collect();
+        let suspend_kinds = HashMap::new();
+        let params = HashSet::new();
+        let findings = validate_obligation_balance_capped(
+            &elab,
+            &blocks,
+            &suspend_kinds,
+            &tracked,
+            &params,
+            0,
+        );
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::ObligationBalanceUnverified { .. }]
+            ),
+            "cap exhaustion must fail closed with an unverified verdict, not \
+             silently certify balance: {findings:?}"
+        );
+    }
+
+    /// The unverified verdict is a hard diagnostic with NO allowlist escape:
+    /// `check_to_diagnostic` must upgrade it so the CLI rejects the program.
+    #[test]
+    fn unverified_balance_upgrades_to_hard_diagnostic() {
+        let check = MirCheck::ObligationBalanceUnverified {
+            function: "f".to_string(),
+            reason: "cap exhausted".to_string(),
+        };
+        assert!(
+            check_to_diagnostic(&check).is_some(),
+            "an unverified balance verdict must surface as a hard diagnostic"
         );
     }
 

@@ -5849,6 +5849,62 @@ fn main() -> i64 {
     );
 }
 
+/// A join branch whose handler traps mid-dispatch fails CLOSED with a
+/// status-bearing diagnostic: the classified cause ("handler trapped") and the
+/// branch index reach stderr, and the process exits by the canonical
+/// `JoinBranchFailed` trap — never the pre-fix empty-output abort that carried
+/// no evidence of which branch died or why.
+#[test]
+fn run_join_branch_handler_trap_names_cause() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        r#"
+actor Worker {
+    receive fn ok(x: i64) -> i64 { x }
+    receive fn boom() -> i64 {
+        panic("kaboom");
+        0
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn Worker;
+    let (a, b) = join {
+        w.ok(5),
+        w.boom(),
+    };
+    print(f"{a},{b}");
+    0
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a trapped join branch must fail the program; stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("5,"),
+        "the join must not bind a tuple from a trapped branch; stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("join branch 1 failed") && stderr.contains("handler trapped"),
+        "the failure must name the branch and the classified cause; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("JoinBranchFailed"),
+        "the trap must carry the canonical JoinBranchFailed kind; stderr: {stderr}"
+    );
+}
+
 /// Security regression (private-actor routing): a root/pub actor `Account` and
 /// a *private* (non-pub) imported actor `secret.Account` must NOT let
 /// `spawn secret.Account()` silently route to the root actor. Module-qualified

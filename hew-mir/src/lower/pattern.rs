@@ -2106,7 +2106,21 @@ impl Builder {
                     let scrutinee_ty = self.subst_ty(&scrutinee.ty);
                     self.transfer_owned_carrier_place(raw_place, &scrutinee_ty)
                 }
-                None => raw_place,
+                None => {
+                    // A consuming match on a PARTITIONED sibling path already
+                    // took this whole carrier's authority (the first recording
+                    // removed the funnel entry above, so this arm sees `None`).
+                    // This match consumes on ITS path and must be recorded too:
+                    // an unrecorded site leaves its exit outside the consume
+                    // set, so the exit keeps the terminal snapshot drop over
+                    // fields the arm discharge already released — a double
+                    // release. Non-carrier scrutinees have no consumed entry
+                    // and pass through unrecorded, as before.
+                    if let Some(sites) = self.owned_carrier_consumed.get_mut(&raw_place) {
+                        sites.push((self.current_block_id, scrutinee.site));
+                    }
+                    raw_place
+                }
             }
         } else {
             raw_place

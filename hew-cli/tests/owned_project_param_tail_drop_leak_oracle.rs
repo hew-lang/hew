@@ -88,6 +88,50 @@ fn guard_branch_around_source(frames: usize) -> String {
     )
 }
 
+/// Partitioned consume: BOTH paths of an early-return/tail split end in
+/// their own consuming project match on the same carrier, each with its own
+/// exit. EVERY consuming site must join the carrier's consume set — the
+/// first site alone leaves the second path's exit outside the set, so that
+/// exit keeps the terminal snapshot drop over fields its arm discharge
+/// already released (a double release; observable as a `#[resource]` close
+/// firing twice). The string loop pins the leak slope on both paths; the
+/// resource pair pins exactly-once close per value via exact stdout
+/// (`closed-1` then `closed-2`, each once, in call order — a regression
+/// prints a third close line).
+fn partitioned_consume_source(frames: usize) -> String {
+    format!(
+        "#[resource] type Conn {{ fd: i64; }}\n\
+         impl Conn {{ fn close(self) {{ println(\"closed-\" + self.fd.fmt()); }} }}\n\
+         type Wire {{ conn: Conn }}\n\
+         type Packet {{ tag: string, body: string }}\n\
+         fn pick(p: Packet, left: bool) -> i64 {{\n\
+         \x20   if left {{\n\
+         \x20       return match p {{ Packet {{ tag, body }} => tag.len() }};\n\
+         \x20   }}\n\
+         \x20   match p {{ Packet {{ tag, body }} => body.len() }}\n\
+         }}\n\
+         fn pick_wire(w: Wire, left: bool) -> i64 {{\n\
+         \x20   if left {{\n\
+         \x20       return match w {{ Wire {{ conn }} => conn.fd }};\n\
+         \x20   }}\n\
+         \x20   match w {{ Wire {{ conn }} => conn.fd }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..{frames} {{\n\
+         \x20       total = total + pick(Packet {{ tag: \"l\" + \"t\", body: \"ab\" + \"c\" }}, true);\n\
+         \x20       total = total + pick(Packet {{ tag: \"r\" + \"t\", body: \"de\" + \"f\" }}, false);\n\
+         \x20   }}\n\
+         \x20   if total != {frames} * 5 {{ return 73; }}\n\
+         \x20   let a = pick_wire(Wire {{ conn: Conn {{ fd: 1 }} }}, true);\n\
+         \x20   let b = pick_wire(Wire {{ conn: Conn {{ fd: 2 }} }}, false);\n\
+         \x20   if a + b != 3 {{ return 74; }}\n\
+         \x20   println(\"partitioned-ok\");\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 #[test]
 fn owned_project_param_tail_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_project_param_tail", param_tail_project_source);
@@ -150,6 +194,42 @@ fn guard_branch_around_is_clean_under_malloc_scribble() {
         String::from_utf8_lossy(&output.stdout),
         "guard-branch-around-ok\n",
         "guard-branch-around paths must preserve exact output;\n{}",
+        describe_output(&output)
+    );
+}
+
+#[test]
+fn partitioned_consume_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "owned_project_partitioned_consume",
+        partitioned_consume_source,
+    );
+}
+
+#[test]
+fn partitioned_consume_closes_each_resource_exactly_once() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("owned-project-partitioned-consume-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        &partitioned_consume_source(50),
+        dir.path(),
+        "owned_project_partitioned_consume_scribble",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "every partitioned consuming match must join the carrier's consume \
+         set — an unrecorded site's exit re-releases the discharged fields;\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "closed-1\nclosed-2\npartitioned-ok\n",
+        "each partitioned carrier's resource must close exactly once, in call \
+         order — a third close line is the terminal-drop double release;\n{}",
         describe_output(&output)
     );
 }

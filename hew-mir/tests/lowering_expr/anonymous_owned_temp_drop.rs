@@ -388,3 +388,61 @@ fn run() -> i64 {
          got {drops:?}"
     );
 }
+
+/// A `machine` value never enters the owned call-carrier protocol: its
+/// layout registers in `machine_layouts` (codegen's enum-layout lookup for
+/// snapshot free synthesis fails closed on it) and machines pass BY VALUE
+/// with the caller keeping an independent copy. The by-value machine param
+/// must lower with no terminal snapshot drop and no slot neutralization —
+/// the guide's "drive a machine through a free-function parameter" fence.
+#[test]
+fn machine_param_stays_off_the_carrier_protocol() {
+    let p = pipeline_with_tc(
+        r"
+machine Door {
+    events { Open; Close; }
+    state Shut;
+    state Ajar { angle: i64; }
+    on Open: Shut => Ajar { Ajar { angle: 90 } }
+    on Close: Ajar => Shut { Shut }
+    default { state }
+}
+fn drive(d: Door) -> string {
+    var local = d;
+    local.step(Open);
+    local.state_name()
+}
+fn main() { println(drive(Door::Shut)); }
+",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        p.diagnostics
+    );
+    for fn_name in ["drive", "main"] {
+        let func = p
+            .raw_mir
+            .iter()
+            .find(|f| f.name == fn_name)
+            .unwrap_or_else(|| panic!("raw fn {fn_name}"));
+        let carrier_instrs: Vec<&Instr> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.instructions.iter())
+            .filter(|i| {
+                matches!(
+                    i,
+                    Instr::ValueSnapshotDrop { .. }
+                        | Instr::ValueSnapshotClone { .. }
+                        | Instr::NeutralizePayloadSlot { .. }
+                )
+            })
+            .collect();
+        assert!(
+            carrier_instrs.is_empty(),
+            "{fn_name} must not run machine values through the carrier \
+             protocol; got {carrier_instrs:?}"
+        );
+    }
+}

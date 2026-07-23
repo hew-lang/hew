@@ -3678,6 +3678,13 @@ pub(crate) struct ParamOwnershipFacts {
     /// structural drop. Method receiver slot zero is excluded so an `Arena`
     /// value receiver retains its established borrowed-self semantics.
     call_param_owned_carrier: HashMap<(hew_hir::ItemId, usize), bool>,
+    /// Declared `machine` type names (each with its synthesised
+    /// `<Name>Event` companion). Unlike `Builder::machine_layout_names` —
+    /// which also carries every user enum and generic-enum origin for
+    /// runtime-type classification — this set names ONLY machines, so the
+    /// carrier-admission exclusion can recognise a machine without
+    /// mistaking `Result`/`Option` for one.
+    machine_decl_names: HashSet<String>,
 }
 
 /// Shared context for the consume-detection and borrow-site walkers. Bundles
@@ -5808,7 +5815,8 @@ impl Builder {
                 && !matches!(
                     self.subst_ty(&param.ty),
                     ResolvedTy::String | ResolvedTy::Bytes
-                );
+                )
+                && !self.ty_is_machine(&self.subst_ty(&param.ty));
             let mut callee_owns_param = param_is_consumed
                 || param_is_owned_carrier
                 || param_summary_owned

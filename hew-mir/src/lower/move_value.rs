@@ -6,6 +6,23 @@ use super::{
 };
 
 impl Builder {
+    /// A `machine` value never enters the owned call-carrier protocol. Its
+    /// layout registers in `machine_layouts` (codegen's enum-layout lookup
+    /// for snapshot free synthesis fails closed on it), and the language
+    /// contract passes machines BY VALUE — the caller keeps an independent
+    /// copy — so transfer/neutralize semantics are wrong for it exactly as
+    /// they are for indirect enums.
+    pub(crate) fn ty_is_machine(&self, ty: &hew_types::ResolvedTy) -> bool {
+        matches!(
+            ty,
+            hew_types::ResolvedTy::Named { name, .. }
+                if super::machine_layout_name_matches(
+                    &self.param_ownership.machine_decl_names,
+                    name,
+                )
+        )
+    }
+
     /// Propagate the original carrier authority through one aggregate field
     /// load. Non-string owned fields are byte-copy aliases, so a later move
     /// must neutralize the root-relative source path before terminal cleanup.
@@ -116,6 +133,7 @@ impl Builder {
                 // snapshot protocol. Its existing match/move authority remains
                 // responsible until an allocating node-clone protocol exists.
                 (!ty_is_indirect_enum(&owned_ty, &self.enum_layouts)
+                    && !self.ty_is_machine(&owned_ty)
                     && self
                         .param_ownership
                         .call_param_owned_carrier
@@ -167,8 +185,10 @@ impl Builder {
                 == Some(true)
             // Indirect enums use a pointer-slot representation and have their
             // own move/match/drop authority. Structural enum snapshots accept
-            // inline tagged-union storage only.
-            && !ty_is_indirect_enum(&owned_ty, &self.enum_layouts);
+            // inline tagged-union storage only. Machines are excluded for the
+            // same class of reason — see `ty_is_machine`.
+            && !ty_is_indirect_enum(&owned_ty, &self.enum_layouts)
+            && !self.ty_is_machine(&owned_ty);
         if !is_carrier {
             return false;
         }

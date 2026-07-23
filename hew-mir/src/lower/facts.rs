@@ -1051,7 +1051,20 @@ pub(super) fn compute_param_ownership(
         proven_borrow_arg_sites,
         call_param_consume,
         call_param_owned_carrier,
+        machine_decl_names: collect_machine_decl_names(items),
     }
+}
+/// Declared `machine` names plus their synthesised `<Name>Event` companions —
+/// the machines-ONLY dual of the classification-wide `machine_layout_names`.
+fn collect_machine_decl_names(items: &[HirItem]) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Machine(md) => Some([md.name.clone(), format!("{}Event", md.name)]),
+            _ => None,
+        })
+        .flatten()
+        .collect()
 }
 /// True when `expr` is a bare reference to binding `b_p`.
 fn is_binding_ref(expr: &HirExpr, b_p: BindingId) -> bool {

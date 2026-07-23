@@ -10987,10 +10987,19 @@ pub(crate) fn emit_suspending_select_terminator<'ctx>(
         },
         || {
             // Resume: a readiness arm fired (or the deadline). Scan the readiness
-            // flags once (non-blocking) to find the winner; -1 means the deadline
-            // won (no channel ready). Then dispatch through the shared winner
-            // blocks, which bind the winner, cancel the losers, and tear down the
-            // arbiter (cancel-no-wake + free) on every resume edge exactly once.
+            // flags once (non-blocking) to find the winner. A -1 scan is
+            // AMBIGUOUS — the deadline may have won, OR the wake was stale (a
+            // folded/leaked `pending_wake` with no readiness behind it) — so -1
+            // consults the arbiter's one-shot state before dispatch: ONLY
+            // TimedOut may enter the `after` arm. Pending re-suspends (the arms
+            // and the deadline are all still armed; nothing was torn down), so a
+            // stale wake never fabricates a timeout — the observable-honesty
+            // axiom at the runtime level. Completed/Cancelled with no ready arm
+            // violates the publish-ready-before-complete contract
+            // (`publish_reply_from_sender_ref`) and traps fail-closed. A real
+            // winner (>= 0) dispatches through the shared winner blocks, which
+            // bind the winner, cancel the losers, and tear down the arbiter
+            // (cancel-no-wake + free) on every resume edge exactly once.
             let idx0 = i32_ty.const_zero();
             let arr_first = unsafe {
                 fn_ctx
@@ -11024,6 +11033,95 @@ pub(crate) fn emit_suspending_select_terminator<'ctx>(
                     CodegenError::FailClosed("hew_select_ready_index returned void".into())
                 })?
                 .into_int_value();
+
+            // -1 gate: route through the arbiter status before any dispatch.
+            let dispatch_bb = ctx.append_basic_block(parent, "suspending_select_dispatch");
+            let no_ready_bb = ctx.append_basic_block(parent, "suspending_select_no_ready");
+            let pending_check_bb =
+                ctx.append_basic_block(parent, "suspending_select_pending_check");
+            let respark_bb = ctx.append_basic_block(parent, "suspending_select_respark");
+            let stale_trap_bb = ctx.append_basic_block(parent, "suspending_select_stale_trap");
+            let neg_one = i32_ty.const_all_ones();
+            let no_ready = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    winner,
+                    neg_one,
+                    "suspending_select_scan_no_ready",
+                )
+                .llvm_ctx("suspending select no-ready compare")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(no_ready, no_ready_bb, dispatch_bb)
+                .llvm_ctx("suspending select no-ready branch")?;
+
+            fn_ctx.builder.position_at_end(no_ready_bb);
+            let status_fn = intern_runtime_decl(
+                ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_await_cancel_status",
+            )?;
+            let status = fn_ctx
+                .builder
+                .build_call(status_fn, &[reg.into()], "suspending_select_wake_status")
+                .llvm_ctx("hew_await_cancel_status (select wake) call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_await_cancel_status returned void".into())
+                })?
+                .into_int_value();
+            let timed_out = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    status,
+                    i32_ty.const_int(3, false), // AwaitCancelStatus::TimedOut
+                    "suspending_select_deadline_won",
+                )
+                .llvm_ctx("suspending select timed-out compare")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(timed_out, dispatch_bb, pending_check_bb)
+                .llvm_ctx("suspending select timed-out branch")?;
+
+            fn_ctx.builder.position_at_end(pending_check_bb);
+            let still_pending = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    status,
+                    i32_ty.const_zero(), // AwaitCancelStatus::Pending
+                    "suspending_select_stale_wake",
+                )
+                .llvm_ctx("suspending select pending compare")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(still_pending, respark_bb, stale_trap_bb)
+                .llvm_ctx("suspending select pending branch")?;
+
+            // Stale wake with the wait still Pending: re-suspend. Every arm
+            // registration and the deadline timer are still armed (this edge
+            // tore nothing down), so looping back to the suspend point re-parks
+            // the continuation against the SAME readiness sources — the
+            // executor's `ResumePoll::Pending` re-park path. The next genuine
+            // wake re-enters the scan above.
+            fn_ctx.builder.position_at_end(respark_bb);
+            fn_ctx
+                .builder
+                .build_unconditional_branch(do_suspend_bb)
+                .llvm_ctx("suspending select respark br")?;
+
+            // Completed or Cancelled with NO ready arm: the fire path publishes
+            // channel readiness BEFORE completing the arbiter, so this state is
+            // unreachable under the contract — fail closed, never fabricate a
+            // winner.
+            fn_ctx.builder.position_at_end(stale_trap_bb);
+            emit_select_no_winner_trap(fn_ctx)?;
+
+            fn_ctx.builder.position_at_end(dispatch_bb);
 
             // Tear down the shared arbiter once per resume edge (cancel-no-wake
             // settles the one-shot if the deadline won; the timer is already

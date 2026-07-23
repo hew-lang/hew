@@ -382,6 +382,29 @@ struct OwnedCarrierParam {
     plan: crate::state_clone::ValueSnapshotPlan,
 }
 
+/// Snapshot-plan roots that never enter the owned call-carrier protocol.
+///
+/// `BitCopy` carries no release authority. Whole-`string`/`bytes` values
+/// stay on the `CoW` borrow spine: the caller owns the buffer and every
+/// co-owner mint (let-share, return-of-param, copy-in embed) is balanced by
+/// that spine's retain-site derivation, which classifies parameter locals
+/// as borrowed sources. This predicate is the single home for the decision
+/// — both admission halves consult it (`register_owned_call_carrier_param`
+/// on the callee, `prepare_owned_call_carriers` on the caller) so the two
+/// sides cannot drift apart. `lower_direct_call_args` deliberately does
+/// NOT consult it: forwarding an already-tracked carrier projection or
+/// payload binder into a String/Bytes-param callee still discharges
+/// through the funnel, and the transferred count is released by the
+/// binder/projection local's own elaborated drop while the callee borrows
+/// (the copy-in runtime symbols mint independent owners) — verified leak-
+/// and scribble-clean in both liveness directions.
+pub(crate) fn snapshot_root_outside_carrier_protocol(root: &SnapshotFieldKind) -> bool {
+    matches!(
+        root,
+        SnapshotFieldKind::BitCopy { .. } | SnapshotFieldKind::String | SnapshotFieldKind::Bytes
+    )
+}
+
 #[derive(Debug, Clone)]
 struct ResolvedOutboundSite {
     target: PendingOutboundTarget,
@@ -3929,16 +3952,10 @@ fn prepare_owned_call_carriers(
                     continue;
                 }
             };
-            // BitCopy args carry no release authority; whole-`string`/`bytes`
-            // args stay on the CoW borrow spine (the callee half never
-            // registers them — see `register_owned_call_carrier_param`), so
-            // preparing a transfer or clone here would strand a second owner.
-            if matches!(
-                plan.root(),
-                SnapshotFieldKind::BitCopy { .. }
-                    | SnapshotFieldKind::String
-                    | SnapshotFieldKind::Bytes
-            ) {
+            // Caller half of the admission predicate: the callee half never
+            // registers these roots (`register_owned_call_carrier_param`),
+            // so preparing a transfer or clone here would strand an owner.
+            if snapshot_root_outside_carrier_protocol(plan.root()) {
                 continue;
             }
             let local = base_local(arg.source);

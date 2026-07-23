@@ -177,6 +177,56 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
     );
 }
 
+/// PAYLOAD-FORWARD pin: a consuming match arm forwards the moved-out string
+/// payload binder into a summary-consuming callee whose `string` param stays
+/// on the `CoW` borrow spine (never carrier-registered). The funnel neutralizes
+/// the variant slot and hands release authority to the BINDER, whose
+/// elaborated drop releases the transferred count after the call returns; the
+/// callee's copy-in mints its own independent owner. Exactly-once teeth on
+/// both callee liveness shapes: `stash` consumes the binder as a last use
+/// (push handoff), `stash_after` keeps the binder live past the push (retain
+/// mint). Skipping the binder drop leaks the payload per call; re-arming the
+/// variant slot double-frees it.
+fn payload_forward_source(frames: usize) -> String {
+    format!(
+        "fn stash(s: string) -> i64 {{\n\
+         \x20   let v: Vec<string> = Vec::new();\n\
+         \x20   v.push(s);\n\
+         \x20   v.len()\n\
+         }}\n\
+         fn stash_after(s: string) -> i64 {{\n\
+         \x20   let v: Vec<string> = Vec::new();\n\
+         \x20   v.push(s);\n\
+         \x20   v.len() + s.len()\n\
+         }}\n\
+         fn forward_last(e: Result<string, string>) -> i64 {{\n\
+         \x20   match e {{ Ok(x) => stash(x), Err(y) => y.len() }}\n\
+         }}\n\
+         fn forward_live(e: Result<string, string>) -> i64 {{\n\
+         \x20   match e {{ Ok(x) => stash_after(x), Err(y) => y.len() }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..{frames} {{\n\
+         \x20       total = total + forward_last(Ok(\"a\" + \"b\"));\n\
+         \x20       total = total + forward_live(Ok(\"c\" + \"d\"));\n\
+         \x20   }}\n\
+         \x20   if total != {frames} * 4 {{ return 78; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+#[test]
+fn payload_forward_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("enum_callee_payload_forward", payload_forward_source);
+}
+
+#[test]
+fn payload_forward_does_not_double_free() {
+    assert_no_double_free("payload_forward_df", &payload_forward_source(50));
+}
+
 #[test]
 fn result_named_consume_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("enum_callee_result_named", result_named_consume_source);

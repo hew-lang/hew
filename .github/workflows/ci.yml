@@ -117,6 +117,7 @@ jobs:
               - 'scripts/**'
               - '.github/workflows/freebsd.yml'
               - '.github/workflows/release-gate.yml'
+              - '.github/workflows/release.yml'
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lightweight docs/scripts coverage — required signal for narrow PRs.
@@ -157,6 +158,10 @@ jobs:
       - name: Exercise doc-ratchet membership gate
         if: needs.changes.outputs.scripts == 'true'
         run: make doc-ratchet-selftest
+
+      - name: Verify release workflow contract
+        if: needs.changes.outputs.scripts == 'true'
+        run: make test-release-workflow-contract
 
       # <<< CI-PARITY-STEPS
 

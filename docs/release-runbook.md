@@ -168,7 +168,34 @@ Expected `otool -L` output is limited to system paths under `/usr/lib/` and
 `/System/Library/`. Any `/opt/homebrew/` or `/usr/local/opt/` entry is a
 release blocker.
 
-## Phase 5 — Tag and release
+## Phase 5 — Candidate tag and publication order
+
+The publication sequence is a fail-closed dependency graph. Do not advance
+past a failed or missing result; items grouped in braces may run independently,
+but every arm must succeed before the graph rejoins:
+
+1. Confirm every release bar and the final-candidate checklist are green on
+   the exact candidate commit, including sanitizer evidence, required secrets,
+   and branch protection.
+2. Create the signed tag only after the preceding evidence is recorded.
+3. Let the release workflow build and publish the signed platform assets and
+   checksums. Its curated body must be the exact
+   `docs/releases/<tag>.md` file for that tag.
+4. After the assets exist, complete both independent publication arms:
+   - Manually dispatch `.github/workflows/publish-npm-packages.yml` for
+     `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1` through its actual
+     workflow, and wait for each result. A tag does not publish these packages.
+   - Wait for the release workflow's automated playground dispatch, then
+     verify the published image, API, and `hew run` smoke path against the
+     candidate version.
+5. Only after both arms are green, pin the candidate and cut over the banner in
+   `hew.sh` and `hew.run`.
+6. Rebuild Android from the tagged candidate and verify its artifact.
+
+Homebrew intentionally skips prerelease tags; its optional tap update is
+separate from the required playground dispatch. Do not run obsolete downstream
+vendoring commands for npm consumers until their vendoring assumptions are
+repaired or the commands are removed.
 
 Do not tag until `.github/workflows/release-gate.yml` is green on the release
 branch. In particular, `gate-sanitizers` must have validated ASan on the exact

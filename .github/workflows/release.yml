@@ -20,7 +20,12 @@
 #   APPLE_API_KEY_ID            — App Store Connect API key ID
 #   APPLE_API_ISSUER_ID         — App Store Connect API issuer ID
 #
-# Required secrets for Homebrew tap updates (optional — skipped if absent):
+# Required secret for the required playground dispatch:
+#   PLAYGROUND_DISPATCH_TOKEN — purpose-scoped token with the minimum permission
+#     needed to dispatch hew-lang/playground's build.yml workflow
+#
+# Homebrew tap updates use a separate optional credential and are skipped for
+# prereleases:
 #   HOMEBREW_TAP_TOKEN           — GitHub PAT with actions:write scope for hew-lang/homebrew-hew
 #
 # Required secrets for VS Code extension publishing (optional — skipped if absent):
@@ -92,9 +97,11 @@ jobs:
       - name: Configure LLVM toolchain (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
-          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
-          echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+          {
+            echo "CC=${LLVM_PREFIX}/bin/clang"
+            echo "CXX=${LLVM_PREFIX}/bin/clang++"
+            echo "MACOSX_DEPLOYMENT_TARGET=13.0"
+          } >> "$GITHUB_ENV"
           # The brew llvm bottle links libz3.dylib into its static libraries'
           # dependency set; hew never calls z3 (clang static-analyzer only).
           # dead_strip_dylibs drops load commands with no referenced symbols,
@@ -282,7 +289,6 @@ jobs:
         run: |
           VERSION="${RELEASE_TAG#v}"
           ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
-          RELEASE_DIR="target/${{ matrix.rust_target }}/release"
           RELEASE_LIB_DIR="target/${{ matrix.rust_target }}/release-lib"
 
           mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
@@ -482,17 +488,18 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           # Write the API key (base64-encoded in secret) to disk
-          mkdir -p ~/private_keys
-          echo "${APPLE_API_KEY_P8}" | base64 --decode > ~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
+          KEY_PATH="${HOME}/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8"
+          mkdir -p "${HOME}/private_keys"
+          echo "${APPLE_API_KEY_P8}" | base64 --decode > "${KEY_PATH}"
 
           ditto -c -k --keepParent "${ARCHIVE_NAME}" "${ARCHIVE_NAME}-notarize.zip"
           xcrun notarytool submit "${ARCHIVE_NAME}-notarize.zip" \
-            --key ~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
+            --key "${KEY_PATH}" \
             --key-id "${APPLE_API_KEY_ID}" \
             --issuer "${APPLE_API_ISSUER_ID}" \
             --wait
           rm -f "${ARCHIVE_NAME}-notarize.zip"
-          rm -rf ~/private_keys
+          rm -rf "${HOME}/private_keys"
 
       # ── Create final archive ────────────────────────────────────────────
 
@@ -1296,30 +1303,126 @@ jobs:
     needs: release
     runs-on: ubuntu-24.04
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    timeout-minutes: 5
+    # The downstream publish path is bounded at 5 + 5 + 45 + 30 + 5 minutes
+    # across its authority, contract-verify, smoke, publish, and result jobs
+    # (90 minutes sequential worst case). Leave another 30 minutes for dispatch
+    # visibility and runner scheduling while still failing closed.
+    timeout-minutes: 120
 
     steps:
-      - name: Trigger playground image rebuild
+      - name: Resolve release commit identity
+        id: release-commit
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
+          HEW_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq '.sha')
+          if ! [[ "${HEW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::${RELEASE_TAG} did not resolve to an exact lowercase 40-character commit SHA"
+            exit 1
+          fi
+          echo "hew_sha=${HEW_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Trigger playground image rebuild
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PLAYGROUND_DISPATCH_TOKEN }}
+          HEW_SHA: ${{ steps.release-commit.outputs.hew_sha }}
+        run: |
+          set -euo pipefail
+
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::warning::HOMEBREW_TAP_TOKEN secret not set — skipping playground trigger"
-            exit 0
+            echo "::error::PLAYGROUND_DISPATCH_TOKEN secret is required for the playground dispatch"
+            exit 1
+          fi
+          if ! [[ "${HEW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::release commit identity is not an exact lowercase 40-character commit SHA"
+            exit 1
           fi
           VERSION="${RELEASE_TAG#v}"
-          # Check if the playground repo exists before dispatching
+          CORRELATION_ID="hew-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          EXPECTED_DISPLAY_TITLE="Build Playground mode=publish sha=${HEW_SHA} version=${VERSION} correlation=${CORRELATION_ID}"
           if ! gh repo view hew-lang/playground --json name >/dev/null 2>&1; then
-            echo "::warning::hew-lang/playground repo not found — skipping playground trigger"
-            exit 0
+            echo "::error::hew-lang/playground is unavailable"
+            exit 1
           fi
-          # Resolve the default branch via REST (avoids a GraphQL defaultBranchRef
-          # lookup that PATs without full repo scope cannot satisfy).
-          PLAYGROUND_REF=$(gh api repos/hew-lang/playground --jq '.default_branch' 2>/dev/null || echo "main")
+          PLAYGROUND_REF=$(gh api repos/hew-lang/playground --jq '.default_branch')
+          PLAYGROUND_SHA=$(gh api \
+            "repos/hew-lang/playground/commits/${PLAYGROUND_REF}" \
+            --jq '.sha')
+          DISPATCH_ACTOR=$(gh api user --jq '.login')
+          WORKFLOW_STATE=$(gh workflow view build.yml \
+            -R hew-lang/playground --json state --jq '.state')
+          if [ "${WORKFLOW_STATE}" != "active" ]; then
+            echo "::error::hew-lang/playground build.yml is not active"
+            exit 1
+          fi
+          PRE_DISPATCH_MAX_ID=$(gh api -X GET \
+            repos/hew-lang/playground/actions/workflows/build.yml/runs \
+            -f event=workflow_dispatch \
+            -f branch="${PLAYGROUND_REF}" \
+            -f per_page=100 \
+            --jq '[.workflow_runs[].id] | max // 0')
           gh workflow run build.yml \
             -R hew-lang/playground \
             --ref "${PLAYGROUND_REF}" \
-            -f version="${VERSION}"
+            -f publish=true \
+            -f hew_sha="${HEW_SHA}" \
+            -f version="${VERSION}" \
+            -f correlation_id="${CORRELATION_ID}"
+          RUN_ID=""
+          LAST_CANDIDATE_ID=""
+          for _ in $(seq 1 30); do
+            if ! RUNS_JSON=$(gh api -X GET \
+              repos/hew-lang/playground/actions/workflows/build.yml/runs \
+              -f event=workflow_dispatch \
+              -f branch="${PLAYGROUND_REF}" \
+              -f per_page=100); then
+              echo "::error::failed to list playground workflow runs"
+              exit 1
+            fi
+            if ! RUN_IDS_OUTPUT=$(jq -r \
+                --argjson floor "${PRE_DISPATCH_MAX_ID}" \
+                --arg sha "${PLAYGROUND_SHA}" \
+                --arg actor "${DISPATCH_ACTOR}" \
+                --arg display_title "${EXPECTED_DISPLAY_TITLE}" \
+                '.workflow_runs[]
+                  | select(.id > $floor)
+                  | select(.head_sha == $sha)
+                  | select(.actor.login == $actor)
+                  | select(.display_title == $display_title)
+                  | .id' <<< "${RUNS_JSON}"); then
+              echo "::error::failed to parse playground workflow runs"
+              exit 1
+            fi
+            RUN_IDS=()
+            while IFS= read -r CANDIDATE_ID; do
+              if [ -n "${CANDIDATE_ID}" ]; then
+                RUN_IDS[${#RUN_IDS[@]}]="${CANDIDATE_ID}"
+              fi
+            done <<< "${RUN_IDS_OUTPUT}"
+            if [ "${#RUN_IDS[@]}" -gt 1 ]; then
+              echo "::error::ambiguous playground workflow dispatch correlation"
+              exit 1
+            fi
+            if [ "${#RUN_IDS[@]}" -eq 1 ]; then
+              if [ "${RUN_IDS[0]}" = "${LAST_CANDIDATE_ID}" ]; then
+                RUN_ID="${RUN_IDS[0]}"
+                break
+              fi
+              LAST_CANDIDATE_ID="${RUN_IDS[0]}"
+            else
+              LAST_CANDIDATE_ID=""
+            fi
+            sleep 2
+          done
+          if [ -z "${RUN_ID}" ]; then
+            echo "::error::could not correlate the playground workflow dispatch with a run"
+            exit 1
+          fi
+          gh run watch "${RUN_ID}" -R hew-lang/playground --exit-status
 
   # ─────────────────────────────────────────────────────────────────────────
   # VS Code Extension — package + publish with bundled hew-lsp per platform

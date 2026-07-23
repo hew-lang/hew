@@ -76,6 +76,36 @@ fn forward_param_into_field_loop_source(frames: usize) -> String {
     )
 }
 
+/// The forward-into-field shape with one more call layer: `wrap` returns the
+/// `make_adder` result directly, so the value crossing into `make_handler` is a
+/// FRESH CALL-RESULT temporary — defined by one call terminator, consumed by
+/// the next, never bound to a name. Inside the loop the temp's single use sits
+/// on a back edge through its own defining block, which a liveness that does
+/// not kill call-terminator dests misreads as "live after the call". The
+/// carrier pass must still prove it a unique last use and transfer it.
+fn forward_fresh_call_result_into_field_loop_source(frames: usize) -> String {
+    let expected_total = frames + frames * frames.saturating_sub(1) / 2;
+    format!(
+        "type Handler {{ action: fn(i64) -> i64; }}\n\
+         fn make_adder(n: i64) -> fn(i64) -> i64 {{ |x: i64| x + n }}\n\
+         fn wrap(n: i64) -> fn(i64) -> i64 {{ make_adder(n) }}\n\
+         fn make_handler(f: fn(i64) -> i64) -> Handler {{ Handler {{ action: f }} }}\n\
+         fn run_loop(frames: i64) -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..frames {{\n\
+         \x20       let h = make_handler(wrap(i));\n\
+         \x20       total = total + h.action(1);\n\
+         \x20   }}\n\
+         \x20   total\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let total = run_loop({frames});\n\
+         \x20   if total != {expected_total} {{ return 83; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 /// The struct holding the closure drops on a NORMAL function exit
 /// (`cleanup-all-exits`), looped. `use_then_drop` builds a `Handler`, invokes it,
 /// and lets it drop at the tail; its env-drop must fire on that exit, freeing the
@@ -157,5 +187,29 @@ fn forward_param_into_field_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
         "forward_param_into_field_df",
         &forward_param_into_field_loop_source(200),
+    );
+}
+
+/// Slope oracle for the fresh call-result carrier: the temp returned by
+/// `wrap(i)` transfers into the record every iteration and the record frees it
+/// once — flat leak slope.
+#[test]
+fn forward_fresh_call_result_into_field_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "forward_fresh_call_result_into_field",
+        forward_fresh_call_result_into_field_loop_source,
+    );
+}
+
+/// No-double-free pin for the fresh call-result carrier: a liveness that fails
+/// to kill call-terminator dests circulates the temp around the loop back edge
+/// and rejects the shape at MIR lowering (`E_NOT_YET_IMPLEMENTED` "live owned
+/// call-carrier"); a transfer without neutralizing the source aborts under the
+/// poisoned allocator.
+#[test]
+fn forward_fresh_call_result_into_field_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "forward_fresh_call_result_into_field_df",
+        &forward_fresh_call_result_into_field_loop_source(200),
     );
 }

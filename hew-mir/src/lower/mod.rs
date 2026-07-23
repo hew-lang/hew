@@ -3776,6 +3776,20 @@ fn outbound_live_out(
                 .flat_map(|set| set.iter().copied())
                 .collect();
             let mut live = out.clone();
+            // A terminator's dest slots (a `Call`'s result temp, an `Ask`'s
+            // reply dests, …) are defined on the edge into the successor, so
+            // the definition kills the local here. Without the kill, a
+            // call-result temp consumed by a later call terminator circulates a
+            // loop back edge through its own defining block and reads as
+            // live-out of its single use site — rejecting a by-construction
+            // unique last-use carrier. Only whole-local dests kill: an interior
+            // projection write leaves its base live (conservative, and today's
+            // terminator dests are freshly allocated whole locals).
+            for place in dataflow::terminator_write_places(&block.terminator) {
+                if let Place::Local(local) = place {
+                    live.remove(&local);
+                }
+            }
             for place in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
                 if let Some(local) = base_local(place) {
                     live.insert(local);

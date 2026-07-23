@@ -748,7 +748,7 @@ fn write_place_local(place: Place) -> Option<u32> {
 /// ([`local_is_written_in_body`], consumed by codegen's `bytes` aliasing
 /// decision) gates coroutine functions out before consulting this, so the
 /// empty set returned for the suspend carriers is sound for that use.
-fn terminator_write_places(term: &Terminator) -> Vec<Place> {
+pub(crate) fn terminator_write_places(term: &Terminator) -> Vec<Place> {
     match term {
         Terminator::Return
         | Terminator::Goto { .. }

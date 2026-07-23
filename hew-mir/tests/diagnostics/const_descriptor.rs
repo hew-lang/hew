@@ -5,8 +5,10 @@
 //! and resolve `ResolvedRef::Const(item_id)` references.
 
 use hew_hir::{lower_program, verify_hir, HirModule, ResolutionCtx};
-use hew_mir::{build_const_descriptors, lower_hir_module, Instr, MirConstValue};
-use hew_types::TypeCheckOutput;
+use hew_mir::{
+    build_const_descriptors, is_string_const_ty, lower_hir_module, Instr, MirConstValue,
+};
+use hew_types::{ResolvedTy, TypeCheckOutput};
 
 /// Lower source to a verified `HirModule` with no HIR diagnostics.
 fn hir(source: &str) -> HirModule {
@@ -152,6 +154,29 @@ fn module_without_consts_builds_empty_table() {
     let (consts, diags) = build_const_descriptors(&module);
     assert!(consts.is_empty(), "no consts ⇒ empty descriptor table");
     assert!(diags.is_empty());
+}
+
+/// Drift pin for the string-const type authority (`is_string_const_ty`):
+/// MIR authors the `MirConstValue::Str` boundary through this predicate and
+/// codegen's const-global emission re-validates through the SAME function,
+/// so this pin is the single place the accepted spelling set is asserted.
+/// Any change to the set must be a conscious edit here, not silent drift.
+#[test]
+fn string_const_ty_spelling_set_is_pinned() {
+    let named_string = |name: &str| ResolvedTy::Named {
+        name: name.to_string(),
+        args: Vec::new(),
+        builtin: None,
+        is_opaque: false,
+    };
+    // Accepted: exactly the two resolved spellings of the string primitive.
+    assert!(is_string_const_ty(&ResolvedTy::String));
+    assert!(is_string_const_ty(&named_string("String")));
+    // Rejected: case variants, qualified spellings, and non-string types.
+    assert!(!is_string_const_ty(&named_string("string")));
+    assert!(!is_string_const_ty(&named_string("std.String")));
+    assert!(!is_string_const_ty(&ResolvedTy::I64));
+    assert!(!is_string_const_ty(&ResolvedTy::Char));
 }
 
 #[test]

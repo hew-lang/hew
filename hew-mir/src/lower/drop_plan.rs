@@ -1263,9 +1263,10 @@ struct ObligationCtx<'a> {
     /// carriers (see [`collect_payload_alias_map`]). Discharges of the binder
     /// attribute to the carrier's obligation.
     alias_to: &'a HashMap<u32, u32>,
-    /// Per-call-block argument positions proven borrow-only by the module
-    /// parameter-body summary (`Builder::proven_borrow_call_args`).
-    proven_borrow_call_args: &'a HashMap<u32, HashSet<usize>>,
+    /// Parameter slots (`Builder::parameter_locals`): caller-retained
+    /// borrows. A whole-local rebind FROM a parameter is a borrow alias, so
+    /// the rebound dest mints with the hi-credit.
+    parameter_locals: &'a HashSet<u32>,
 }
 
 impl ObligationCtx<'_> {
@@ -1297,6 +1298,41 @@ impl ObligationCtx<'_> {
 
 fn obligation_entry(state: &mut ObligationMap, root: u32) -> &mut ObligationState {
     state.entry(root).or_insert_with(ObligationState::minted)
+}
+
+/// Fold one elaborated plan drop into the state: guard-gated closes are
+/// path-sensitive at runtime (widen-only), unguarded drops discharge per the
+/// neutralization flag, and a drop on an UNMINTED local belongs to paths
+/// that never reach here with a live mint (skip rather than phantom-mint).
+///
+/// `inline_dropped` carries every place released by an inline `Instr::Drop`
+/// anywhere in the function: an exit plan can MIRROR an inline drop (one
+/// runtime release rendered on both surfaces — the inline release
+/// null-clears the storage, so the plan copy is a null-tolerant no-op on
+/// paths through it, and real only on paths that bypass it). Path-exact
+/// resolution would need per-place release sets; the widen-only treatment
+/// is AMBIGUOUS, which can neither certify balance nor manufacture a
+/// definite verdict on either kind of path.
+fn apply_plan_drop(
+    state: &mut ObligationMap,
+    drop: &ElabDrop,
+    inline_dropped: &HashSet<Place>,
+    cx: &ObligationCtx<'_>,
+) {
+    let Some(root) = cx
+        .tracked_root(drop.place)
+        .or_else(|| cx.tracked_carrier(drop.place))
+    else {
+        return;
+    };
+    let Some(entry) = state.get_mut(&root) else {
+        return;
+    };
+    if drop.guard.is_some() || inline_dropped.contains(&drop.place) {
+        entry.ambiguous_discharge();
+    } else {
+        entry.drop_discharge();
+    }
 }
 
 /// Meet two per-block obligation maps. A local absent on one side is
@@ -1372,16 +1408,34 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
               merging them would erase the per-class rationale comments"
 )]
 fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &ObligationCtx<'_>) {
-    // Whole-local rebind (`let m2 = m;`): the payload pointer hands over with
-    // no retain, and WHICH slot's drop pays the one obligation is the alias
-    // machinery's decision. The rebound dest therefore mints with an
-    // hi-credit of 1 ("the source's drop may be mine"), applied after the
-    // generic mint below.
+    // Derived mints take an hi-credit of 1 ("another owner's release may be
+    // mine"), applied after the generic mint below:
+    //   - a whole-local rebind FROM a tracked local (`let m2 = m;` — which
+    //     slot's drop pays the one obligation is the alias machinery's
+    //     decision) or FROM a parameter (a caller-retained borrow alias);
+    //   - a whole-local minted by a field/tuple/env load (a byte-copy or
+    //     handle transfer out of a base whose composite release may cover
+    //     it — the `FieldLoadClass` fact is not re-derived here);
+    //   - an actor-state load in `Borrowed` mode (a bare byte-copy alias;
+    //     `Owned` mode retains a fresh owner and earns NO credit).
+    // A fresh-producer mint (literal, call result, constructor) earns no
+    // credit — those are the shapes the under-release net must keep.
+    let credit_dest = |dest: &Place| {
+        whole_owner_local(*dest)
+            .filter(|d| cx.tracked.contains_key(d) && !cx.alias_to.contains_key(d))
+    };
     let rebind_credit_dest = match instr {
-        Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => cx
-            .tracked_root(*src)
-            .and_then(|_| whole_owner_local(*dest))
-            .filter(|d| cx.tracked.contains_key(d) && !cx.alias_to.contains_key(d)),
+        Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => whole_owner_local(*src)
+            .filter(|s| cx.parameter_locals.contains(s) || cx.tracked.contains_key(&cx.root_of(*s)))
+            .and_then(|_| credit_dest(dest)),
+        Instr::RecordFieldLoad { dest, .. }
+        | Instr::TupleFieldLoad { dest, .. }
+        | Instr::ClosureEnvFieldLoad { dest, .. } => credit_dest(dest),
+        Instr::ActorStateFieldLoad {
+            dest,
+            mode: crate::model::ActorStateLoadMode::Borrowed,
+            ..
+        } => credit_dest(dest),
         _ => None,
     };
     match instr {
@@ -1631,17 +1685,15 @@ fn apply_balance_terminator(
 ) {
     match &block.terminator {
         Terminator::Call { args, .. } => {
-            let proven = cx.proven_borrow_call_args.get(&block.id);
-            for (i, arg) in args.iter().enumerate() {
+            // Consume-vs-borrow is a cross-function contract this LOCAL pass
+            // does not verify (S2/OWN-V1's target): every tracked whole arg
+            // is an ambiguous transfer. Deliberately NOT refined by the
+            // `proven_borrow_call_args` summary — that summary also records
+            // by-value `self` receiver slots whose method may be declared
+            // `consuming` (the linear inherent-consume shape), so treating
+            // it as a definite non-discharge manufactures phantom leaks.
+            for arg in args {
                 if let Some(root) = cx.tracked_root(*arg) {
-                    if proven.is_some_and(|set| set.contains(&i)) {
-                        // Proven caller-retained borrow: definitely NOT a
-                        // discharge.
-                        continue;
-                    }
-                    // Consume-vs-borrow is a cross-function contract this
-                    // LOCAL pass does not verify (S2/OWN-V1's target):
-                    // ambiguous.
                     obligation_entry(state, root).ambiguous_discharge();
                 }
             }
@@ -1649,9 +1701,13 @@ fn apply_balance_terminator(
         Terminator::Send { value, .. }
         | Terminator::Ask { value, .. }
         | Terminator::RemoteAsk { value, .. } => {
-            // Transport consumes the prepared outbound owner.
+            // Whether transport consumes the outbound value is per-argument
+            // (`SendAliasMode`): a prepared snapshot owner transfers, while a
+            // `Copy`-mode handle payload (an actor ref forwarded by value)
+            // stays caller-owned and keeps its scope-exit drop. Ambiguous
+            // (widen-only) — the mode-exact refinement is S2 territory.
             if let Some(root) = cx.tracked_root(*value) {
-                obligation_entry(state, root).definite_discharge();
+                obligation_entry(state, root).ambiguous_discharge();
             }
         }
         Terminator::MakeLambdaActor {
@@ -1752,7 +1808,13 @@ pub(super) fn validate_obligation_balance(
     raw: &RawMirFunction,
     builder: &Builder,
 ) -> Vec<MirCheck> {
-    let tracked = tracked_obligation_locals(builder);
+    let mut tracked = tracked_obligation_locals(builder);
+    // Structural parameter exclusion: `locals[0..params.len()]` ARE the
+    // parameter slots (the RawMirFunction invariant). Synthesized bodies can
+    // register a param-backed binding without a `parameter_locals` entry;
+    // by-value params are caller-retained borrows either way.
+    let n_params = u32::try_from(raw.params.len()).unwrap_or(u32::MAX);
+    tracked.retain(|local, _| *local >= n_params);
     if tracked.is_empty() {
         return Vec::new();
     }
@@ -1761,7 +1823,7 @@ pub(super) fn validate_obligation_balance(
         &raw.blocks,
         &raw.suspend_kinds,
         &tracked,
-        &builder.proven_borrow_call_args,
+        &builder.parameter_locals,
     )
 }
 
@@ -1777,7 +1839,7 @@ fn validate_obligation_balance_with(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     tracked_in: &BTreeMap<u32, String>,
-    proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
+    parameter_locals: &HashSet<u32>,
 ) -> Vec<MirCheck> {
     use std::collections::VecDeque;
 
@@ -1808,6 +1870,12 @@ fn validate_obligation_balance_with(
     //   - stack/null-env closure pairs: the pair owns no heap (the env is a
     //     frame alloca or null) — the type-level mint fact over-approximates
     //     (only a `HeapBox` env pair carries a release obligation).
+    // A third surface joins them: collection accessors whose result-payload
+    // release choreography is emitted by the codegen callee intercept
+    // (empirically leak-clean under `leaks --atExit` with NO release visible
+    // in either MIR stream). Closed table — string/bytes producers (slice,
+    // concat, to_upper, ...) mint fresh owners and deliberately stay
+    // balance-checked.
     let mut excluded: HashSet<u32> = HashSet::new();
     for block in blocks {
         match &block.terminator {
@@ -1816,6 +1884,21 @@ fn validate_obligation_balance_with(
                     if let Some(local) = arm.binding.and_then(whole_owner_local) {
                         excluded.insert(local);
                     }
+                }
+            }
+            Terminator::Call {
+                callee,
+                dest: Some(dest),
+                ..
+            } if matches!(
+                callee.as_str(),
+                "hew_hashmap_get_layout"
+                    | "hew_hashmap_get_clone_layout"
+                    | "hew_hashmap_remove_take_layout"
+            ) =>
+            {
+                if let Some(local) = whole_owner_local(*dest) {
+                    excluded.insert(local);
                 }
             }
             _ => {}
@@ -1860,8 +1943,37 @@ fn validate_obligation_balance_with(
     let cx = ObligationCtx {
         tracked: &tracked,
         alias_to: &alias_to,
-        proven_borrow_call_args,
+        parameter_locals,
     };
+
+    // Scope-exit releases ride the NORMAL-continuation exit plans (a
+    // `goto[bbN->bbM]` edge closing an inner scope carries real drops), so
+    // those plans participate in the dataflow at their owning block.
+    // Exception edges (`Panic` / `Cancel`) fire only on unwind and `Return`
+    // plans are folded at the verdict — neither applies here.
+    let mut edge_drops: HashMap<u32, Vec<&ElabDrop>> = HashMap::new();
+    for (exit, plan) in &elab.drop_plans {
+        if matches!(
+            exit,
+            ExitPath::Return { .. } | ExitPath::Panic { .. } | ExitPath::Cancel { .. }
+        ) {
+            continue;
+        }
+        edge_drops
+            .entry(exit_block_id(exit))
+            .or_default()
+            .extend(plan.drops.iter());
+    }
+    // Every place inline-dropped anywhere in the function, for the
+    // mirrored-plan widening in `apply_plan_drop`.
+    let mut inline_dropped: HashSet<Place> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Drop { place, .. } = instr {
+                inline_dropped.insert(*place);
+            }
+        }
+    }
 
     // Forward interval fixpoint over the raw CFG. Monotone: `lo` only
     // decreases, `hi` only increases, `neutralized` only coarsens — all
@@ -1900,6 +2012,11 @@ fn validate_obligation_balance_with(
             apply_balance_instr(&mut state, instr, &cx);
         }
         apply_balance_terminator(&mut state, block, suspend_kinds.get(&bb_id), &cx);
+        if let Some(drops) = edge_drops.get(&bb_id) {
+            for drop in drops {
+                apply_plan_drop(&mut state, drop, &inline_dropped, &cx);
+            }
+        }
         let changed = exit_states.get(&bb_id) != Some(&state);
         exit_states.insert(bb_id, state);
         if changed {
@@ -1923,25 +2040,7 @@ fn validate_obligation_balance_with(
         };
         let mut state = block_state.clone();
         for drop in &plan.drops {
-            let Some(root) = cx
-                .tracked_root(drop.place)
-                .or_else(|| cx.tracked_carrier(drop.place))
-            else {
-                continue;
-            };
-            // A drop on an UNMINTED local at this exit belongs to paths that
-            // never reach here with a live mint; skip rather than mint it.
-            let Some(entry) = state.get_mut(&root) else {
-                continue;
-            };
-            if drop.guard.is_some() {
-                // Path-sensitive runtime-gated close: fires only on the
-                // still-live paths — exactly the by-construction balanced
-                // case; widen-only.
-                entry.ambiguous_discharge();
-            } else {
-                entry.drop_discharge();
-            }
+            apply_plan_drop(&mut state, drop, &inline_dropped, &cx);
         }
         for (root, ob) in &state {
             let name = tracked
@@ -6759,8 +6858,42 @@ mod obligation_balance_validator {
             .map(|(local, name)| (*local, (*name).to_string()))
             .collect();
         let suspend_kinds = HashMap::new();
-        let proven_borrow = HashMap::new();
-        validate_obligation_balance_with(&elab, &blocks, &suspend_kinds, &tracked, &proven_borrow)
+        let params = HashSet::new();
+        validate_obligation_balance_with(&elab, &blocks, &suspend_kinds, &tracked, &params)
+    }
+
+    /// A whole-local rebind out of a PARAMETER (`var iter = self;`) is a
+    /// caller-retained borrow alias: the rebound local must never produce a
+    /// definite under-release, even when re-minted per loop iteration from
+    /// a tuple-load (`iter = step.1`) — the `VecIter` cursor shape.
+    #[test]
+    fn param_rebind_and_tuple_load_remint_accept() {
+        let blocks = vec![block(
+            0,
+            vec![
+                Instr::Move {
+                    dest: Place::Local(3),
+                    src: Place::Local(0),
+                },
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(5),
+                    field_index: 1,
+                    dest: Place::Local(3),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+        let elab = elab_with_plans(plans);
+        let tracked: BTreeMap<u32, String> = [(3_u32, "iter".to_string())].into_iter().collect();
+        let suspend_kinds = HashMap::new();
+        let params: HashSet<u32> = [0_u32].into_iter().collect();
+        let findings =
+            validate_obligation_balance_with(&elab, &blocks, &suspend_kinds, &tracked, &params);
+        assert!(
+            findings.is_empty(),
+            "borrow-derived mints never definite-leak: {findings:?}"
+        );
     }
 
     fn is_under(check: &MirCheck) -> bool {

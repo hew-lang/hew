@@ -5815,6 +5815,33 @@ pub enum MirCheck {
         /// true` (no extraction arm).
         owner: AggregateOwner,
     },
+    /// Discharge-authority carriage (A / D159): a `NeutralizePayloadSlot`
+    /// carries a [`NeutralizeAuthority`] that structurally owns a `transferee`
+    /// destination (`SendTransferLastUse` / `WholeCarrierConsume`) but the
+    /// `transferee` is `None` — a fact-erased site that slipped a defaulted
+    /// authority past the write chokepoint. Fail-closed hard error before
+    /// codegen (boundary-fail-closed, L49): a neutralize with a required-but-
+    /// absent transferee is a defective discharge record, never a silent pass.
+    DischargeAuthorityMissing {
+        function: String,
+        block: u32,
+        /// The authority whose structural transferee requirement was violated.
+        authority: NeutralizeAuthority,
+        reason: String,
+    },
+    /// Discharge-authority corroboration pin (A / D159 dual-carrier): a carried
+    /// discharge authority disagrees with the INDEPENDENTLY re-derived discharge
+    /// set — a `NeutralizePayloadSlot` names a `transferee` the primitive-stream
+    /// derivation does not see actually taking ownership, or a `ConsumedAt`
+    /// disposition claims a consume the instruction stream never performs (the
+    /// S1889-F3 routing-vs-disposition drift shape). Hard error: two carriers of
+    /// one fact must agree (L211).
+    DischargeAuthorityDrift {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -6741,6 +6768,22 @@ pub enum MirDiagnosticKind {
         function: String,
         block: u32,
         kind: &'static str,
+        reason: String,
+    },
+    /// Discharge-authority carriage: a `NeutralizePayloadSlot` whose authority
+    /// requires a transferee reached elaboration without one (fail-closed).
+    DischargeAuthorityMissing {
+        function: String,
+        block: u32,
+        authority: NeutralizeAuthority,
+        reason: String,
+    },
+    /// Discharge-authority corroboration drift: a carried discharge fact
+    /// disagrees with the independently re-derived discharge set.
+    DischargeAuthorityDrift {
+        function: String,
+        block: u32,
+        name: String,
         reason: String,
     },
     /// A context-derived place escaped past `ExitContext`.

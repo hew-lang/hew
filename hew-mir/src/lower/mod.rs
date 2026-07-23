@@ -114,7 +114,8 @@ use self::drop_plan::{
     stream_handle_drop_descriptor, ty_is_closure_pair, ty_is_generator_handle,
     ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
     ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
-    ty_is_stream_handle, ty_is_vec, validate_drop_plan, validate_field_drop_in_place,
+    ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
 };
 pub(crate) use self::facts::*;
@@ -5199,6 +5200,24 @@ pub(crate) fn lower_function(
                 continue;
             }
         }
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
+    // Discharge-authority carriage gates (A / D159): (1) the fail-closed
+    // backstop — a NeutralizePayloadSlot whose authority owns a destination must
+    // carry its transferee; (2) the corroboration pin — the carried transferee
+    // fact must agree with the independently re-derived routing. S1 above does
+    // NOT read these facts (independence preserved); the corroboration is a
+    // separate third pass comparing the two carriers (LESSONS boundary-fail-closed,
+    // duplicated-boundary-fact-needs-a-pin-test).
+    for check in validate_discharge_authority(&elaborated, &raw)
+        .into_iter()
+        .chain(validate_discharge_authority_corroboration(
+            &elaborated,
+            &raw,
+        ))
+    {
         if let Some(diag) = check_to_diagnostic(&check) {
             diagnostics.push(diag);
         }

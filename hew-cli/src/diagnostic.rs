@@ -127,6 +127,8 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "E_MIR_CHECK",
         hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
@@ -576,6 +578,8 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. } => "ObligationUnderReleased",
         hew_mir::MirDiagnosticKind::ObligationOverReleased { .. } => "ObligationOverReleased",
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. } => "ContextBoundaryViolation",
+        hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. } => "DischargeAuthorityMissing",
+        hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. } => "DischargeAuthorityDrift",
         hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "ContextBindingEscapes",
         hew_mir::MirDiagnosticKind::UnknownActorStateField { .. } => "UnknownActorStateField",
         hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { .. } => "InvalidActorSpawnArgument",
@@ -675,6 +679,8 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
@@ -792,6 +798,16 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             ..
         } => {
             format!("context boundary violation in `{function}` ({kind}): {reason}")
+        }
+        hew_mir::MirDiagnosticKind::DischargeAuthorityMissing {
+            function, reason, ..
+        } => {
+            format!("discharge-authority carriage in `{function}`: {reason}")
+        }
+        hew_mir::MirDiagnosticKind::DischargeAuthorityDrift {
+            function, reason, ..
+        } => {
+            format!("discharge-authority corroboration in `{function}`: {reason}")
         }
         hew_mir::MirDiagnosticKind::ContextBindingEscapes { place, block } => format!(
             "context-bound place `{}` escapes from MIR block {block}",
@@ -999,6 +1015,8 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         | hew_mir::MirDiagnosticKind::ObligationUnderReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ObligationOverReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { block, .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { block, .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { block, .. } => {
             notes.push(format!("block: {block}"));
         }

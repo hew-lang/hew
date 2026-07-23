@@ -160,6 +160,42 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
             },
             note: "context-derived MIR place escapes past ExitContext".to_string(),
         }),
+        MirCheck::DischargeAuthorityMissing {
+            function,
+            block,
+            authority,
+            reason,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::DischargeAuthorityMissing {
+                function: function.clone(),
+                block: *block,
+                authority: *authority,
+                reason: reason.clone(),
+            },
+            note: "a payload-slot neutralize whose discharge authority takes \
+                   ownership into a destination reached elaboration with no \
+                   transferee recorded; the discharge fact is defective. This is \
+                   a lowering invariant (close-by-construction), not a user error"
+                .to_string(),
+        }),
+        MirCheck::DischargeAuthorityDrift {
+            function,
+            block,
+            name,
+            reason,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::DischargeAuthorityDrift {
+                function: function.clone(),
+                block: *block,
+                name: name.clone(),
+                reason: reason.clone(),
+            },
+            note: "a carried discharge authority disagrees with the \
+                   independently re-derived discharge set (dual-carrier drift); \
+                   the two carriers of one ownership-transfer fact must agree. \
+                   This is a lowering invariant, not a user error"
+                .to_string(),
+        }),
         MirCheck::OwnedHandleAggregateDoubleFree {
             name,
             handle_ty,
@@ -2077,6 +2113,129 @@ fn validate_obligation_balance_with(
                          (discharge interval [{lo}, {hi}]): double release",
                         lo = ob.lo,
                         hi = ob.hi,
+                    ),
+                });
+            }
+        }
+    }
+    findings
+}
+
+// ============================================================================
+// A — discharge-authority carriage (D159/U229)
+// ============================================================================
+
+/// Fail-closed discharge-authority backstop: every `NeutralizePayloadSlot`
+/// whose [`crate::model::NeutralizeAuthority`] structurally owns a destination
+/// (`SendTransferLastUse` / `WholeCarrierConsume`) MUST carry a `transferee`. A
+/// `None` on such an authority is a fact-erased site that slipped a defaulted
+/// authority past the `set_owned_local_consumed`/emit chokepoints — reject
+/// before codegen (boundary-fail-closed, L49). The passing corpus has none; the
+/// check exists so a future emit site that drops the fact fails closed rather
+/// than silently reintroducing the erasure A removes.
+pub(super) fn validate_discharge_authority(
+    elab: &ElaboratedMirFunction,
+    raw: &RawMirFunction,
+) -> Vec<MirCheck> {
+    validate_discharge_authority_over(&elab.name, &raw.blocks)
+}
+
+/// Testable core of [`validate_discharge_authority`] — hand-constructed blocks,
+/// no `RawMirFunction`.
+fn validate_discharge_authority_over(function: &str, blocks: &[BasicBlock]) -> Vec<MirCheck> {
+    let mut findings = Vec::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let Instr::NeutralizePayloadSlot {
+                authority,
+                transferee,
+                ..
+            } = instr
+            else {
+                continue;
+            };
+            if authority.requires_transferee() && transferee.is_none() {
+                findings.push(MirCheck::DischargeAuthorityMissing {
+                    function: function.to_string(),
+                    block: block.id,
+                    authority: *authority,
+                    reason: format!(
+                        "NeutralizePayloadSlot carries authority {authority:?}, which moves \
+                         ownership into a destination local, but no transferee was recorded — \
+                         the discharge fact was erased at the emit site"
+                    ),
+                });
+            }
+        }
+    }
+    findings
+}
+
+/// Discharge-authority corroboration pin (D159 dual-carrier / L211). INDEPENDENT
+/// of the carried authority: it re-derives, from the primitive `Instr` stream
+/// ALONE, whether each named `transferee` is a real destination the routing
+/// actually writes, and reports drift when the two carriers of the one
+/// ownership-transfer fact disagree.
+///
+/// S1's [`validate_obligation_balance`] does NOT read these facts — it re-derives
+/// the discharge set from the primitive stream and never consults the carried
+/// authority (independence preserved; a ledger-trusting validator inherits ledger
+/// bugs). This is a THIRD pass comparing the carried authority against a
+/// from-primitives re-derivation. A `transferee` the stream never writes is a
+/// fabricated transfer — the routing-vs-disposition drift class (S1889-F3).
+pub(super) fn validate_discharge_authority_corroboration(
+    elab: &ElaboratedMirFunction,
+    raw: &RawMirFunction,
+) -> Vec<MirCheck> {
+    validate_discharge_authority_corroboration_over(&elab.name, &raw.blocks)
+}
+
+/// Testable core of [`validate_discharge_authority_corroboration`] — hand-
+/// constructed blocks, no `RawMirFunction`.
+fn validate_discharge_authority_corroboration_over(
+    function: &str,
+    blocks: &[BasicBlock],
+) -> Vec<MirCheck> {
+    // Carrier 2 (independent): every local the primitive stream writes as a
+    // Move/WitnessMove destination — a real ownership-receiving slot. Derived
+    // WITHOUT reading any NeutralizePayloadSlot authority.
+    let mut move_destinations: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let dest = match instr {
+                Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. } => *dest,
+                _ => continue,
+            };
+            if let Some(local) = whole_owner_local(dest) {
+                move_destinations.insert(local);
+            }
+        }
+    }
+    let mut findings = Vec::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            // Carrier 1: the carried transferee fact.
+            let Instr::NeutralizePayloadSlot {
+                transferee: Some(transferee),
+                authority,
+                ..
+            } = instr
+            else {
+                continue;
+            };
+            let Some(dest_local) = whole_owner_local(*transferee) else {
+                continue;
+            };
+            if !move_destinations.contains(&dest_local) {
+                findings.push(MirCheck::DischargeAuthorityDrift {
+                    function: function.to_string(),
+                    block: block.id,
+                    name: format!("local_{dest_local}"),
+                    reason: format!(
+                        "NeutralizePayloadSlot ({authority:?}) names transferee local_{dest_local} \
+                         as the new owner of the neutralized slot, but the primitive instruction \
+                         stream never moves any value into local_{dest_local}: the carried \
+                         transfer fact and the actual routing disagree (dual-carrier drift)"
                     ),
                 });
             }
@@ -6867,6 +7026,103 @@ mod obligation_balance_validator {
         let suspend_kinds = HashMap::new();
         let params = HashSet::new();
         validate_obligation_balance_with(&elab, &blocks, &suspend_kinds, &tracked, &params)
+    }
+
+    use crate::model::NeutralizeAuthority;
+
+    #[test]
+    fn discharge_authority_missing_fails_closed() {
+        // A SendTransferLastUse neutralize structurally owns a destination, so a
+        // `transferee: None` is a fact-erased site — reject fail-closed.
+        let blocks = vec![block(
+            0,
+            vec![Instr::NeutralizePayloadSlot {
+                place: variant_place(1),
+                transferee: None,
+                authority: NeutralizeAuthority::SendTransferLastUse,
+            }],
+            Terminator::Return,
+        )];
+        let findings = validate_discharge_authority_over("f", &blocks);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::DischargeAuthorityMissing {
+                    authority: NeutralizeAuthority::SendTransferLastUse,
+                    ..
+                }]
+            ),
+            "a requires-transferee authority with no transferee must fail closed, got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn discharge_authority_missing_allows_move_out_arm_without_transferee() {
+        // A MoveOutArmConsume neutralize consumes into an in-flight expression
+        // with no destination local, so `transferee: None` is legitimate.
+        let blocks = vec![block(
+            0,
+            vec![Instr::NeutralizePayloadSlot {
+                place: variant_place(1),
+                transferee: None,
+                authority: NeutralizeAuthority::MoveOutArmConsume,
+            }],
+            Terminator::Return,
+        )];
+        assert!(
+            validate_discharge_authority_over("f", &blocks).is_empty(),
+            "a move-out-arm authority does not structurally require a transferee"
+        );
+    }
+
+    #[test]
+    fn discharge_authority_corroboration_flags_fabricated_transferee() {
+        // The neutralize names local 9 as the new owner, but the primitive
+        // stream never moves any value into local 9 — the carried transfer fact
+        // and the actual routing disagree (dual-carrier drift).
+        let blocks = vec![block(
+            0,
+            vec![Instr::NeutralizePayloadSlot {
+                place: variant_place(1),
+                transferee: Some(Place::Local(9)),
+                authority: NeutralizeAuthority::WholeCarrierConsume,
+            }],
+            Terminator::Return,
+        )];
+        let findings = validate_discharge_authority_corroboration_over("f", &blocks);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::DischargeAuthorityDrift { .. }]
+            ),
+            "a transferee the stream never writes must drift, got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn discharge_authority_corroboration_accepts_real_transfer() {
+        // The well-formed emit shape: the carrier is moved into the destination
+        // immediately before the neutralize names it as the transferee. The two
+        // carriers agree, so no drift.
+        let blocks = vec![block(
+            0,
+            vec![
+                Instr::Move {
+                    dest: Place::Local(9),
+                    src: variant_place(1),
+                },
+                Instr::NeutralizePayloadSlot {
+                    place: variant_place(1),
+                    transferee: Some(Place::Local(9)),
+                    authority: NeutralizeAuthority::WholeCarrierConsume,
+                },
+            ],
+            Terminator::Return,
+        )];
+        assert!(
+            validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
+            "a transferee the stream actually writes must corroborate clean"
+        );
     }
 
     /// A whole-local rebind out of a PARAMETER (`var iter = self;`) is a

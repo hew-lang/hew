@@ -1771,12 +1771,50 @@ impl Builder {
         }
     }
 
+    /// Whether a Vec index-assignment RHS moves into the slot. Mirrors the
+    /// `effective_symbol` routing in `assign`'s Vec-set arm exactly: only a
+    /// fresh materialised owner or a consumed non-parameter, non-capture bound
+    /// local routes to the MOVE-in `hew_vec_set_owned_move`; every other RHS
+    /// (a borrowed/read binding, a closure-captured value, a whole-parameter
+    /// embed) stays COPY-IN via `hew_vec_set_owned` and its source keeps
+    /// ownership.
+    fn vec_set_owned_assign_moves_rhs(&self, target_symbol: &str, value: &HirExpr) -> bool {
+        target_symbol == "hew_vec_set_owned"
+            && (Self::expr_is_materialized_owner(
+                value,
+                &self.funcupdate_fn_returns_fresh,
+                &self.funcupdate_param_ids,
+            ) || self.is_consumed_bound_local(value))
+    }
+
+    /// Whether an assignment target's lowering deep-clones the RHS into place
+    /// (COPY-IN) rather than moving it. Such an RHS never crosses an ownership
+    /// boundary, so it must be lowered through the plain value funnel: the
+    /// move funnel would wrongly reject a closure-captured RHS as a
+    /// whole-value environment escape and would neutralize a carrier-tracked
+    /// RHS whose source remains the owner.
+    fn assign_target_stays_copy_in(&self, target: &HirExpr, value: &HirExpr) -> bool {
+        match &target.kind {
+            HirExprKind::ResolvedImplCall {
+                target_symbol,
+                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Set),
+                ..
+            } => !self.vec_set_owned_assign_moves_rhs(target_symbol, value),
+            _ => false,
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive match keeps assignment boundary rules together"
     )]
     fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
-        let Some(src) = self.lower_value_for_move(value) else {
+        let src = if self.assign_target_stays_copy_in(target, value) {
+            self.lower_value(value)
+        } else {
+            self.lower_value_for_move(value)
+        };
+        let Some(src) = src else {
             return;
         };
         if let Some((field_offset, _)) = self.actor_state_field_for_target(target) {
@@ -1900,12 +1938,7 @@ impl Builder {
                 // `BindingRef` whose effective MIR use intent is `Consume`
                 // moves. A borrowed/read binding stays COPY-IN, as do
                 // constructions embedding a whole by-value parameter.
-                let effective_symbol = if target_symbol.as_str() == "hew_vec_set_owned"
-                    && (Self::expr_is_materialized_owner(
-                        value,
-                        &self.funcupdate_fn_returns_fresh,
-                        &self.funcupdate_param_ids,
-                    ) || self.is_consumed_bound_local(value))
+                let effective_symbol = if self.vec_set_owned_assign_moves_rhs(target_symbol, value)
                 {
                     "hew_vec_set_owned_move"
                 } else {

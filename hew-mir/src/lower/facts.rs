@@ -1340,15 +1340,25 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
                     .as_deref()
                     .is_some_and(|e| scan_expr_for_consume(e, b_p, pc))
         }
+        // Owned-projection sinks require the projected RESULT to own heap: a
+        // primitive-scalar extraction (`v[i]` on `Vec<i64>`, `p.fd`, `t.0` of
+        // `i64`) copies bits and carries no ownership out of the container, so
+        // it is vacuous carrier evidence even when the HIR stamps the
+        // extraction `Consume`. Classifying the container param as an owned
+        // carrier on scalar reads turns a shared-mutation borrow (`v.set`
+        // through the param) into a callee-side clone, silently discarding
+        // every mutation the caller expected to observe.
         HirExprKind::StructInit { fields, base, .. } => {
             fields.iter().any(|(_, v)| {
                 (pc.owned_projection_sinks
                     && !is_binding_ref(v, b_p)
+                    && !crate::return_provenance::ty_is_scalar_non_heap(&v.ty)
                     && projection_is_rooted_in(v, b_p))
                     || scan_expr_for_consume(v, b_p, pc)
             }) || base.as_deref().is_some_and(|b| {
                 (pc.owned_projection_sinks
                     && !is_binding_ref(b, b_p)
+                    && !crate::return_provenance::ty_is_scalar_non_heap(&b.ty)
                     && projection_is_rooted_in(b, b_p))
                     || scan_expr_for_consume(b, b_p, pc)
             })
@@ -1356,6 +1366,7 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         HirExprKind::FieldAccess { object, .. } => {
             (pc.owned_projection_sinks
                 && expr.intent == IntentKind::Consume
+                && !crate::return_provenance::ty_is_scalar_non_heap(&expr.ty)
                 && projection_is_rooted_in(object, b_p))
                 || projection_base_consumes(object, b_p, pc)
         }
@@ -1393,12 +1404,24 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         HirExprKind::TupleIndex { tuple, .. } => {
             (pc.owned_projection_sinks
                 && expr.intent == IntentKind::Consume
+                && !crate::return_provenance::ty_is_scalar_non_heap(&expr.ty)
                 && projection_is_rooted_in(tuple, b_p))
                 || projection_base_consumes(tuple, b_p, pc)
         }
+        // Handle-based collections (`Vec`, `HashMap`, `string`) hand an owned
+        // element OUT as a NEW `+1` owner (`hew_vec_get_clone` /
+        // `hew_vec_get_str` / `hew_hashmap_get_clone_layout` — the
+        // `PROVED_OWNER_METHOD_SYMBOLS` contract): the container keeps its
+        // element and its release authority, so an index extraction is NEVER
+        // ownership evidence against the container param. Only an INLINE
+        // aggregate container (a fixed array, whose element load is a
+        // byte-copy alias like a record field) can carry ownership out
+        // through an index, and then only for a heap-owning element.
         HirExprKind::Index { container, index } => {
             (pc.owned_projection_sinks
                 && expr.intent == IntentKind::Consume
+                && matches!(container.ty, ResolvedTy::Array(..))
+                && !crate::return_provenance::ty_is_scalar_non_heap(&expr.ty)
                 && projection_is_rooted_in(container, b_p))
                 || projection_base_consumes(container, b_p, pc)
                 || scan_expr_for_consume(index, b_p, pc)

@@ -531,6 +531,20 @@ impl Builder {
             // trusted-Fresh in the interim (the marker-backed jwt/encrypt rows
             // land at S4b).
             if prov.extern_names.contains(name) {
+                // OWN-0b carriage: the machine-checked per-symbol ownership
+                // fact is consultable at exactly this extern-callee position.
+                // Nothing is enforced from it yet (S1/V1 consume it); the
+                // conservative reject below stays authoritative, and an
+                // unclassified symbol is an explicit `Absent`, never a
+                // fabricated contract.
+                debug_assert!(
+                    crate::ffi_contracts::extern_ownership_contract("hew_string_drop")
+                        .contract()
+                        .is_some_and(|contract| contract.params
+                            == [crate::ffi_contracts::ExternParamOwnership::Consume]),
+                    "FFI ownership carriage table unreadable at the extern-call \
+                     lowering position"
+                );
                 return Err(Box::new(Self::call_scrutinee_reject(
                     scrutinee,
                     "an un-audited heap-returning `extern` may hand back an interior pointer \

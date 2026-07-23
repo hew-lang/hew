@@ -160,6 +160,7 @@ stable = [
   "hew_channel_detach_recv",
   "hew_channel_new",
   "hew_channel_pair_free",
+  "hew_channel_pair_is_valid",
   "hew_channel_pair_receiver",
   "hew_channel_pair_sender",
   "hew_channel_poll",
@@ -537,6 +538,7 @@ stable = [
   "hew_stream_next_sized",
   "hew_stream_next_view",
   "hew_stream_pair_free",
+  "hew_stream_pair_is_valid",
   "hew_stream_pair_sink",
   "hew_stream_pair_sink_bytes",
   "hew_stream_pair_stream",
@@ -854,6 +856,17 @@ stable = [
 # linker knows which stdlib archives to pull in. User `extern "rt"` blocks
 # may name these directly; the checker treats them identically to `stable`.
 stable-stdlib = [
+  "hew_cidr_broadcast",
+  "hew_cidr_contains",
+  "hew_cidr_hosts",
+  "hew_cidr_network",
+  "hew_constant_time_eq_hew",
+  "hew_cron_free",
+  "hew_cron_is_valid",
+  "hew_cron_last_error",
+  "hew_cron_next_hew",
+  "hew_cron_parse",
+  "hew_cron_to_string",
   "hew_datetime_day",
   "hew_datetime_format",
   "hew_datetime_hour",
@@ -866,21 +879,278 @@ stable-stdlib = [
   "hew_datetime_second",
   "hew_datetime_weekday",
   "hew_datetime_year",
+  "hew_deflate_compress_hew",
+  "hew_deflate_decompress_hew",
+  "hew_dns_lookup_host",
+  "hew_dns_lookup_host_timed",
+  "hew_dns_resolve",
+  "hew_dns_resolve_timed",
+  "hew_ed25519_generate_pkcs8_hew",
+  "hew_ed25519_public_key_from_pkcs8_hew",
+  "hew_ed25519_sign_hew",
+  "hew_ed25519_verify_hew",
+  "hew_encrypt_last_open_error_code",
+  "hew_encrypt_must_open_hew",
+  "hew_encrypt_seal_base64_hew",
+  "hew_encrypt_try_open_hew",
+  "hew_gzip_compress_hew",
+  "hew_gzip_decompress_hew",
+  "hew_hmac_sha256_hew",
+  "hew_http_last_error",
+  "hew_http_request_body_string",
+  "hew_http_request_free",
+  "hew_http_request_header",
+  "hew_http_request_headers",
+  "hew_http_request_hew",
+  "hew_http_request_method",
+  "hew_http_request_path",
+  "hew_http_respond_bridge",
+  "hew_http_respond_json",
+  "hew_http_respond_stream",
+  "hew_http_respond_text",
+  "hew_http_response_body",
+  "hew_http_response_content_type",
+  "hew_http_response_free",
+  "hew_http_response_header",
+  "hew_http_response_headers",
+  "hew_http_response_status",
+  "hew_http_server_close",
+  "hew_http_server_new",
+  "hew_http_server_recv",
+  "hew_http_server_set_request_timeout_ms",
+  "hew_http_set_timeout",
+  "hew_ip_is_loopback",
+  "hew_ip_is_private",
+  "hew_ip_is_v4",
+  "hew_ip_is_v6",
+  "hew_ip_parse",
+  "hew_json_array_get",
+  "hew_json_array_len",
+  "hew_json_array_new",
   "hew_json_array_push",
+  "hew_json_array_push_bool",
+  "hew_json_array_push_float",
+  "hew_json_array_push_int",
+  "hew_json_array_push_null",
+  "hew_json_array_push_string",
   "hew_json_free",
+  "hew_json_from_bool",
+  "hew_json_from_float",
+  "hew_json_from_int",
+  "hew_json_from_null",
+  "hew_json_from_string",
+  "hew_json_get_bool",
+  "hew_json_get_field",
+  "hew_json_get_float",
+  "hew_json_get_int",
+  "hew_json_get_string",
+  "hew_json_last_error",
+  "hew_json_object_keys",
+  "hew_json_object_new",
   "hew_json_object_set",
+  "hew_json_object_set_bool",
+  "hew_json_object_set_float",
+  "hew_json_object_set_int",
+  "hew_json_object_set_null",
+  "hew_json_object_set_string",
+  "hew_json_parse",
+  "hew_json_stringify",
+  "hew_json_type",
+  "hew_jwt_decode_hew",
+  "hew_jwt_decode_insecure",
+  "hew_jwt_encode_hew",
+  "hew_jwt_last_error_code",
+  "hew_jwt_validate",
   "hew_markdown_to_html",
   "hew_markdown_to_html_safe",
+  "hew_msgpack_encode_bytes_hew",
+  "hew_msgpack_encode_int_hew",
+  "hew_msgpack_encode_string_hew",
+  "hew_msgpack_from_json_hew",
+  "hew_msgpack_last_error",
+  "hew_msgpack_to_json_hew",
+  "hew_password_hash",
+  "hew_password_hash_custom",
+  "hew_password_verify",
+  "hew_proto_msg_free",
   "hew_proto_msg_get_string",
+  "hew_proto_msg_get_varint",
+  "hew_proto_msg_has_field",
+  "hew_proto_msg_new",
+  "hew_proto_msg_set_string",
+  "hew_proto_msg_set_varint",
+  "hew_quic_conn_accept_stream",
+  "hew_quic_conn_accepted_streams",
+  "hew_quic_conn_bytes_received",
+  "hew_quic_conn_bytes_sent",
+  "hew_quic_conn_disconnect",
+  "hew_quic_conn_is_closed",
+  "hew_quic_conn_last_error",
+  "hew_quic_conn_local_addr",
+  "hew_quic_conn_on_event",
+  "hew_quic_conn_open_stream",
+  "hew_quic_conn_opened_streams",
+  "hew_quic_conn_peer_addr",
+  "hew_quic_conn_rtt_ms",
+  "hew_quic_endpoint_accept",
+  "hew_quic_endpoint_accepted_connections",
+  "hew_quic_endpoint_close",
+  "hew_quic_endpoint_connect",
+  "hew_quic_endpoint_last_error",
+  "hew_quic_endpoint_local_addr",
+  "hew_quic_endpoint_on_event",
+  "hew_quic_event_free",
+  "hew_quic_event_kind",
+  "hew_quic_last_error",
+  "hew_quic_new_client",
+  "hew_quic_new_client_with_ca",
+  "hew_quic_new_server",
+  "hew_quic_new_server_with_tls",
+  "hew_quic_stream_bytes_received",
+  "hew_quic_stream_bytes_sent",
+  "hew_quic_stream_close",
+  "hew_quic_stream_finish",
+  "hew_quic_stream_last_error",
+  "hew_quic_stream_last_recv_status",
+  "hew_quic_stream_recv",
+  "hew_quic_stream_recv_closed",
+  "hew_quic_stream_recv_timeout_hew",
+  "hew_quic_stream_send",
+  "hew_quic_stream_send_closed",
+  "hew_quic_stream_send_timeout_hew",
+  "hew_quic_stream_stop",
+  "hew_random_bytes_hew",
+  "hew_regex_capture_index_one",
+  "hew_regex_capture_name_one",
+  "hew_regex_capture_width",
+  "hew_regex_captures_flat",
+  "hew_regex_clone",
+  "hew_regex_find",
+  "hew_regex_find_all",
+  "hew_regex_find_all_submatch_flat",
+  "hew_regex_free",
+  "hew_regex_is_match",
+  "hew_regex_is_valid",
+  "hew_regex_new",
+  "hew_regex_replace",
+  "hew_sha256_hew",
+  "hew_sha384_hew",
+  "hew_sha512_hew",
+  "hew_smtp_close",
+  "hew_smtp_connect",
+  "hew_smtp_connect_tls",
+  "hew_smtp_last_error",
+  "hew_smtp_send",
+  "hew_smtp_send_html",
+  "hew_smtp_send_html_once",
+  "hew_smtp_send_once",
+  "hew_sort_floats",
+  "hew_tls_attach",
+  "hew_tls_close",
+  "hew_tls_connect",
+  "hew_tls_last_error",
+  "hew_tls_read_result",
+  "hew_tls_write_result",
+  "hew_toml_array_get",
+  "hew_toml_array_len",
+  "hew_toml_array_new",
   "hew_toml_array_push",
+  "hew_toml_array_push_bool",
+  "hew_toml_array_push_float",
+  "hew_toml_array_push_int",
+  "hew_toml_array_push_string",
   "hew_toml_free",
+  "hew_toml_from_bool",
+  "hew_toml_from_float",
+  "hew_toml_from_int",
+  "hew_toml_from_string",
+  "hew_toml_get_bool",
+  "hew_toml_get_field",
+  "hew_toml_get_float",
+  "hew_toml_get_int",
   "hew_toml_get_string",
   "hew_toml_last_error",
-  "hew_toml_table_set",
+  "hew_toml_parse",
   "hew_toml_stringify",
+  "hew_toml_table_new",
+  "hew_toml_table_set",
+  "hew_toml_table_set_bool",
+  "hew_toml_table_set_float",
+  "hew_toml_table_set_int",
+  "hew_toml_table_set_string",
+  "hew_toml_type",
+  "hew_url_fragment",
+  "hew_url_free",
+  "hew_url_host",
+  "hew_url_is_valid",
+  "hew_url_join",
+  "hew_url_parse",
+  "hew_url_path",
+  "hew_url_port",
+  "hew_url_query",
+  "hew_url_scheme",
+  "hew_url_to_string",
+  "hew_uuid_parse",
+  "hew_uuid_v4",
+  "hew_uuid_v7",
+  "hew_ws_attach",
+  "hew_ws_close",
+  "hew_ws_connect",
+  "hew_ws_message_free",
+  "hew_ws_message_is_valid",
+  "hew_ws_message_text",
+  "hew_ws_message_type",
+  "hew_ws_recv",
+  "hew_ws_recv_last_timed_out",
+  "hew_ws_recv_timeout",
+  "hew_ws_send_text",
+  "hew_ws_server_accept",
+  "hew_ws_server_close",
+  "hew_ws_server_new",
+  "hew_ws_server_port",
+  "hew_xml_children_count",
+  "hew_xml_free",
+  "hew_xml_get_attribute",
+  "hew_xml_get_child",
+  "hew_xml_get_tag",
+  "hew_xml_get_text",
+  "hew_xml_is_element",
+  "hew_xml_last_error",
+  "hew_xml_parse",
+  "hew_xml_to_string",
+  "hew_yaml_array_get",
+  "hew_yaml_array_len",
+  "hew_yaml_array_new",
   "hew_yaml_array_push",
+  "hew_yaml_array_push_bool",
+  "hew_yaml_array_push_float",
+  "hew_yaml_array_push_int",
+  "hew_yaml_array_push_null",
+  "hew_yaml_array_push_string",
   "hew_yaml_free",
+  "hew_yaml_from_bool",
+  "hew_yaml_from_float",
+  "hew_yaml_from_int",
+  "hew_yaml_from_null",
+  "hew_yaml_from_string",
+  "hew_yaml_get_bool",
+  "hew_yaml_get_field",
+  "hew_yaml_get_float",
+  "hew_yaml_get_int",
+  "hew_yaml_get_string",
+  "hew_yaml_last_error",
+  "hew_yaml_object_new",
   "hew_yaml_object_set",
+  "hew_yaml_object_set_bool",
+  "hew_yaml_object_set_float",
+  "hew_yaml_object_set_int",
+  "hew_yaml_object_set_null",
+  "hew_yaml_object_set_string",
+  "hew_yaml_parse",
+  "hew_yaml_stringify",
+  "hew_yaml_type",
+  "hew_zlib_compress_hew",
+  "hew_zlib_decompress_hew",
 ]
 
 # jit: codegen-stable — symbols the Hew compiler emits into generated IR for
@@ -1579,4 +1849,3038 @@ symbol = "hew_weak_clone_rc"
 result = "retained"
 params = ["borrow"]
 release-symbol = "hew_weak_drop_rc"
+discharge-depth = "shallow"
+
+# ── std-used extern surface (derived by reading each runtime implementation;
+# per-family provenance in the comments below) ──
+
+# process environment / identity — hew-runtime/src/env.rs. String results are
+# string_to_malloc/str_to_malloc header-aware allocations (fresh); key/value
+# params are read via CStr::from_ptr (borrow).
+[[ownership.contracts]]
+symbol = "hew_args_count"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_args_get"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_cwd"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_env_get"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_env_has"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_env_remove"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_env_set"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_home_dir"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_hostname"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_pid"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_temp_dir"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# runtime error/control singles — hew-runtime/src/lib.rs (hew_clear_error),
+# hew-runtime/src/execution_context.rs (hew_set_partition_policy: scalar tag in,
+# bool out).
+[[ownership.contracts]]
+symbol = "hew_clear_error"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_set_partition_policy"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# stdio — hew-runtime/src/stdio.rs. read_line/read_all return str_to_malloc
+# strings; write/write_err read their C-string operand only.
+[[ownership.contracts]]
+symbol = "hew_io_read_all"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_io_read_line"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_io_write"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_io_write_err"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# logging — hew-runtime/src/log_core.rs. hew_log_emit/_ex read msg via
+# cstr_to_str (borrow); hew_log_encode_field_value returns a malloc_cstring
+# copy (fresh).
+[[ownership.contracts]]
+symbol = "hew_log_emit"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_log_emit_ex"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_log_encode_field_value"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_log_get_format"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_log_get_level"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_log_set_format"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_log_set_level"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# string singles — hew-runtime/src/string.rs. hew_string_drop is THE universal
+# String release (free_cstring; consume). hew_char_to_string allocates a fresh
+# string; hew_string_to_bytes forwards to bytes.rs hew_bytes_from_str (fresh
+# rc=1 buffer, released via hew_bytes_drop); hew_string_compare and the
+# hew_unicode_* codepoint predicates/mappers are read-only.
+[[ownership.contracts]]
+symbol = "hew_char_to_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_string_compare"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_drop"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_to_bytes"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_unicode_is_alnum"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_unicode_is_digit"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_unicode_is_letter"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_unicode_is_lower"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_unicode_is_space"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_unicode_is_upper"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_unicode_to_lower"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_unicode_to_upper"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# bytes construction — hew-runtime/src/bytes.rs hew_bytes_from_str copies the
+# borrowed C string into a fresh rc=1 bytes buffer.
+[[ownership.contracts]]
+symbol = "hew_bytes_from_str"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+# stream error channel — hew-runtime/src/stream_error.rs. hew_stream_last_error
+# returns an alloc_cstring_from_str header-aware string (fresh); the errno/kind
+# probes are scalar.
+[[ownership.contracts]]
+symbol = "hew_stream_last_errno"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_stream_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_stream_last_error_kind"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+# streams and sinks — hew-runtime/src/stream.rs. hew_stream_channel and
+# hew_tcp_stream_from_conn hand back a Box'd HewStreamPair whose free also
+# drops unextracted handles (deep). hew_stream_pair_sink/_stream (and _bytes
+# aliases) null-out the pair slot and MOVE the handle to the caller (fresh;
+# released via hew_sink_close / hew_stream_close). hew_stream_pipe takes
+# Box::from_raw ownership of BOTH handles; hew_stream_collect_string consumes
+# its stream and returns a fresh alloc_cstring string.
+[[ownership.contracts]]
+symbol = "hew_sink_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_stream_channel"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_stream_collect_string"
+result = "fresh"
+params = ["consume"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_stream_from_file_read"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_stream_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_stream_from_file_write"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_sink_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_stream_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_stream_pair_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_stream_pair_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_stream_pair_sink"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_sink_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_stream_pair_sink_bytes"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_sink_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_stream_pair_stream"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_stream_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_stream_pair_stream_bytes"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_stream_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_stream_pipe"
+result = "none"
+params = ["consume", "consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_stream_from_conn"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+
+# channels — hew-runtime/src/channel.rs (native) / channel_wasm.rs (wasm; same
+# ownership shape). hew_channel_new returns a Box'd pair whose free drops
+# unextracted halves (deep); pair_sender/pair_receiver MOVE the half out
+# (null-out; fresh). hew_channel_sender_clone allocates a NEW Box'd handle over
+# an Arc clone (fresh). The *_close entries Box::from_raw their handle.
+[[ownership.contracts]]
+symbol = "hew_channel_new"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_channel_pair_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_channel_pair_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_channel_pair_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_channel_pair_receiver"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_channel_receiver_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_channel_pair_sender"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_channel_sender_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_channel_receiver_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_channel_sender_clone"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_channel_sender_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_channel_sender_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# semaphore — hew-runtime/src/semaphore.rs. new is Box::into_raw (fresh);
+# free is Box::from_raw (consume); the rest borrow the handle.
+[[ownership.contracts]]
+symbol = "hew_semaphore_acquire"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_semaphore_acquire_timeout"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_semaphore_count"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_semaphore_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_semaphore_new"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_semaphore_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_semaphore_release"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_semaphore_try_acquire"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# deque — hew-runtime/src/vecdeque.rs. i64-element deque: new is fresh, free
+# consumes, push/pop/len/is_empty borrow the handle.
+[[ownership.contracts]]
+symbol = "hew_deque_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_deque_is_empty"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_deque_len"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_deque_new"
+result = "fresh"
+params = []
+release-symbol = "hew_deque_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_deque_pop_back"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_deque_pop_front"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_deque_push_back"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_deque_push_front"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# random — hew-runtime/src/random.rs. Scalar RNG surface; the vec-taking
+# entries (choices_vec, shuffle_i64) mutate the borrowed HewVec in place.
+[[ownership.contracts]]
+symbol = "hew_random_choices_vec"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_random_gauss"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_random_randint"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_random_random"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_random_seed"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_random_shuffle_i64"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# process — hew-runtime/src/process.rs. run/run_argv return a Box'd
+# HewProcessResult whose free also releases the malloc'd stdout/stderr fields
+# (deep). spawn returns a Box'd HewProcess reaped by hew_process_drop.
+# result_stdout/result_stderr clone the stored strings (fresh). wait/kill
+# borrow; hew_process_run_argv borrows its Vec<String> argv.
+[[ownership.contracts]]
+symbol = "hew_process_drop"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_kill"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_process_result_exit_code"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_result_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_result_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_process_result_stderr"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_process_result_stdout"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_process_run"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_process_result_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_process_run_argv"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_process_result_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_process_spawn"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_process_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_process_wait"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# file I/O — hew-runtime/src/file_io.rs. Path/content params are borrowed C
+# strings; hew_file_read returns a fresh string, hew_file_read_bytes a fresh
+# bytes buffer, hew_fs_list_dir a fresh Vec<string> (hew_vec_free discharges
+# the element strings: deep).
+[[ownership.contracts]]
+symbol = "hew_file_append"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_delete"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_exists"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_read"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_file_read_bytes"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_file_size"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_write"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_write_bytes"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_copy"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_is_dir"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_list_dir"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_fs_mkdir"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_mkdir_all"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fs_rename"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_path_exists"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# path / glob — hew-runtime/src/path.rs. hew_glob returns a Box'd
+# HewGlobResult (freed by hew_glob_free); hew_glob_get and hew_path_absolute
+# return str_to_malloc strings (fresh).
+[[ownership.contracts]]
+symbol = "hew_glob"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_glob_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_glob_count"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_glob_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_glob_get"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_path_absolute"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_path_is_dir"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_path_is_file"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# TCP transport — hew-runtime/src/transport.rs. Connections/listeners are
+# scalar c_int table handles (no pointer ownership axis). hew_tcp_read returns
+# a fresh BytesTriple; hew_tcp_write / hew_tcp_broadcast_except take the bytes
+# triple by-pointer WITHOUT transferring ownership (borrow).
+[[ownership.contracts]]
+symbol = "hew_connection_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_listener_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_accept"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_broadcast_except"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_close"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_connect"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_connect_timeout"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_listen"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_listener_close"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_listener_local_port"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_read"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_set_read_timeout"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_set_write_timeout"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_write"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# IP / CIDR — hew-std/src/ipnet.rs. Read-only string predicates; network and
+# broadcast return str_to_malloc strings.
+[[ownership.contracts]]
+symbol = "hew_cidr_broadcast"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_cidr_contains"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cidr_hosts"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cidr_network"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ip_is_loopback"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ip_is_private"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ip_is_v4"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ip_is_v6"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ip_parse"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# DNS — hew-std/src/dns.rs. lookup_host(_timed) return str_to_malloc strings;
+# resolve(_timed) return a fresh Vec<string> built with hew_vec_new_str /
+# hew_vec_push_str (hew_vec_free discharges element strings: deep).
+[[ownership.contracts]]
+symbol = "hew_dns_lookup_host"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_dns_lookup_host_timed"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_dns_resolve"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_dns_resolve_timed"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# crypto digests — hew-std/src/crypto.rs. BytesTriple params are read via
+# bytes_slice_from_triple (borrow); results are fresh bytes via
+# hew_bytes_from_static copies.
+[[ownership.contracts]]
+symbol = "hew_constant_time_eq_hew"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_hmac_sha256_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_random_bytes_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_sha256_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_sha384_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_sha512_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+# compression — hew-std/src/compress.rs. Borrowed BytesTriple in, fresh
+# BytesTriple out (bytes_triple_from_slice → hew_bytes_from_static).
+[[ownership.contracts]]
+symbol = "hew_deflate_compress_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_deflate_decompress_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_gzip_compress_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_gzip_decompress_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_zlib_compress_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_zlib_decompress_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+# msgpack — hew-std/src/msgpack.rs. Encoders borrow their scalar/string/bytes
+# input and return fresh bytes; to_json returns a fresh string.
+[[ownership.contracts]]
+symbol = "hew_msgpack_encode_bytes_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_msgpack_encode_int_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_msgpack_encode_string_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_msgpack_from_json_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_msgpack_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_msgpack_to_json_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# ed25519 signing — hew-std/src/sign.rs. Borrowed BytesTriple params; fresh
+# bytes results (key material / signatures).
+[[ownership.contracts]]
+symbol = "hew_ed25519_generate_pkcs8_hew"
+result = "fresh"
+params = []
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_public_key_from_pkcs8_hew"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_sign_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ed25519_verify_hew"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# authenticated encryption — hew-std/src/encrypt.rs. Key/ciphertext are
+# borrowed; seal/open results are fresh strings.
+[[ownership.contracts]]
+symbol = "hew_encrypt_last_open_error_code"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_encrypt_must_open_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_encrypt_seal_base64_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_encrypt_try_open_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# JWT — hew-std/src/jwt.rs. Token/secret/payload strings are borrowed;
+# encode/decode return fresh JSON/token strings.
+[[ownership.contracts]]
+symbol = "hew_jwt_decode_hew"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_jwt_decode_insecure"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_jwt_encode_hew"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_jwt_last_error_code"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_jwt_validate"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# password hashing — hew-std/src/password.rs. Borrowed inputs; bcrypt hash
+# results are fresh strings.
+[[ownership.contracts]]
+symbol = "hew_password_hash"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_password_hash_custom"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_password_verify"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# UUID — hew-std/src/uuid.rs. v4/v7 return fresh formatted strings; parse is
+# a read-only validity probe.
+[[ownership.contracts]]
+symbol = "hew_uuid_parse"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_uuid_v4"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_uuid_v7"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# datetime — hew-std/src/time/datetime.rs. Scalar epoch math; format and
+# last_error return fresh strings; parse borrows both strings.
+[[ownership.contracts]]
+symbol = "hew_datetime_day"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_format"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_hour"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_minute"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_month"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_now_ms"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_now_nanos"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_parse"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_second"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_weekday"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_datetime_year"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# cron — hew-std/src/time/cron.rs. parse returns a Box'd HewCronExpr (freed
+# by hew_cron_free); next_hew returns a scalar-only HewCronNextResult struct;
+# last_error/to_string return fresh strings.
+[[ownership.contracts]]
+symbol = "hew_cron_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cron_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cron_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_cron_next_hew"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_cron_parse"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_cron_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_cron_to_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# URL — hew-std/src/url.rs. parse/join return Box'd HewUrl handles (freed by
+# hew_url_free); component getters return str_to_malloc strings.
+[[ownership.contracts]]
+symbol = "hew_url_fragment"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_url_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_url_host"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_url_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_url_join"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_url_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_url_parse"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_url_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_url_path"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_url_port"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_url_query"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_url_scheme"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_url_to_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# HTTP server — hew-std/src/http/server.rs. server_new/server_recv return
+# Box'd handles; respond_* take the responder out of the borrowed request but
+# the handle itself stays caller-owned (freed by hew_http_request_free).
+# respond_stream hands back an owned HewSink; request_headers builds a fresh
+# owned-element Vec<(String,String)> discharged by hew_vec_free_owned (deep).
+[[ownership.contracts]]
+symbol = "hew_http_request_body_string"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_request_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_request_header"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_request_headers"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free_owned"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_http_request_method"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_request_path"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_respond_bridge"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_respond_json"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_respond_stream"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_sink_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_respond_text"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_server_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_server_new"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_http_server_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_server_recv"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_http_request_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_server_set_request_timeout_ms"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# HTTP client — hew-std/src/http/client.rs. request_hew borrows its
+# Vec<(String,String)> headers and returns a Box'd HewHttpResponse whose free
+# releases the owned body (deep). Body/header getters strdup fresh strings;
+# response_headers builds a fresh owned-element Vec (hew_vec_free_owned deep).
+[[ownership.contracts]]
+symbol = "hew_http_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_request_hew"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_http_response_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_http_response_body"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_response_content_type"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_response_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_response_header"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_http_response_headers"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free_owned"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_http_response_status"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_set_timeout"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# WebSocket — hew-std/src/websocket.rs. connect/server_accept return Box'd
+# HewWsConn handles (Box::from_raw in hew_ws_close); recv(_timeout) return
+# Box'd HewWsMessage handles; message_text returns a fresh alloc_cstring
+# string. hew_ws_attach snapshots the actor ref by value (borrow).
+[[ownership.contracts]]
+symbol = "hew_ws_attach"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_connect"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_ws_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ws_message_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_message_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_message_text"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ws_message_type"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_recv"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_ws_message_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ws_recv_last_timed_out"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_recv_timeout"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_ws_message_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ws_send_text"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_server_accept"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_ws_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ws_server_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_server_new"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_ws_server_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ws_server_port"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# TLS — hew-std/src/tls.rs. connect returns a Box'd HewTlsStream consumed by
+# hew_tls_close. hew_tls_read_result returns a repr(C) struct whose .data
+# field is a fresh owned BytesTriple (released via hew_bytes_drop); the write
+# bridge only reads its borrowed BytesTriple. hew_tls_attach snapshots the
+# actor ref by value (borrow).
+[[ownership.contracts]]
+symbol = "hew_tls_attach"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tls_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tls_connect"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_tls_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_tls_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_tls_read_result"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_tls_write_result"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# SMTP — hew-std/src/smtp.rs. connect(_tls) return Box'd HewSmtpConn handles
+# consumed by hew_smtp_close; all send entries borrow their string params.
+[[ownership.contracts]]
+symbol = "hew_smtp_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_smtp_connect"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_smtp_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_smtp_connect_tls"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_smtp_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_smtp_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_smtp_send"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_smtp_send_html"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_smtp_send_html_once"
+result = "none"
+params = [
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_smtp_send_once"
+result = "none"
+params = [
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+]
+release-symbol = ""
+discharge-depth = "none"
+
+# QUIC — hew-std/src/quic.rs. Endpoint/conn/stream/event handles are Box'd;
+# the close entries (endpoint_close, conn_disconnect, stream_close,
+# event_free) Box::from_raw (consume). Producers hand back the matching owned
+# handle; *_last_error / *_addr return str_to_malloc strings; stream_recv(_
+# timeout_hew) return fresh BytesTriples; stream_send borrows its triple
+# (ownership not transferred, per the ABI doc).
+[[ownership.contracts]]
+symbol = "hew_quic_conn_accept_stream"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_quic_stream_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_accepted_streams"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_bytes_received"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_bytes_sent"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_disconnect"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_is_closed"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_last_error"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_local_addr"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_on_event"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_quic_event_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_open_stream"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_quic_stream_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_opened_streams"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_peer_addr"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_rtt_ms"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_endpoint_accept"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_quic_conn_disconnect"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_endpoint_accepted_connections"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_endpoint_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_endpoint_connect"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_quic_conn_disconnect"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_endpoint_last_error"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_endpoint_local_addr"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_endpoint_on_event"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_quic_event_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_event_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_event_kind"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_new_client"
+result = "fresh"
+params = []
+release-symbol = "hew_quic_endpoint_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_new_client_with_ca"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_quic_endpoint_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_new_server"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_quic_endpoint_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_new_server_with_tls"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_quic_endpoint_close"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_bytes_received"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_bytes_sent"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_finish"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_last_error"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_last_recv_status"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_recv"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_recv_closed"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_recv_timeout_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_send"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_send_closed"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_send_timeout_hew"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_stop"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# JSON values — hew-std/src/json.rs. Every value producer (parse, from_*,
+# object_new/array_new, get_field/array_get/object_keys — the getters clone
+# the sub-value) returns a Box'd HewJsonValue released by hew_json_free,
+# which drops the whole serde tree (deep). Setters/pushes borrow the target
+# and copy scalar/string operands; get_string/stringify return fresh strings.
+[[ownership.contracts]]
+symbol = "hew_json_array_get"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_array_len"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_array_new"
+result = "fresh"
+params = []
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_array_push_bool"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_array_push_float"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_array_push_int"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_array_push_null"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_array_push_string"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_from_bool"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_from_float"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_from_int"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_from_null"
+result = "fresh"
+params = []
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_from_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_get_bool"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_get_field"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_get_float"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_get_int"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_get_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_json_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_json_object_keys"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_object_new"
+result = "fresh"
+params = []
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_object_set_bool"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_object_set_float"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_object_set_int"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_object_set_null"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_object_set_string"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_parse"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_json_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_json_stringify"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_json_type"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# TOML values — hew-std/src/toml.rs. Same shape as the JSON family: value
+# producers (parse, from_*, table_new/array_new, get_field/array_get clone-
+# out) return Box'd HewTomlValue handles released by hew_toml_free (deep);
+# setters/pushes borrow and copy.
+[[ownership.contracts]]
+symbol = "hew_toml_array_get"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_toml_array_len"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_array_new"
+result = "fresh"
+params = []
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_toml_array_push_bool"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_array_push_float"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_array_push_int"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_array_push_string"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_from_bool"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_toml_from_float"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_toml_from_int"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_toml_from_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_toml_get_bool"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_get_field"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_toml_get_float"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_get_int"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_parse"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_toml_table_new"
+result = "fresh"
+params = []
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_toml_table_set_bool"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_table_set_float"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_table_set_int"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_table_set_string"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_type"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# YAML values — hew-std/src/yaml.rs. Same shape as the JSON family: value
+# producers return Box'd HewYamlValue handles released by hew_yaml_free
+# (deep); setters/pushes borrow and copy; get_string/stringify return fresh
+# strings.
+[[ownership.contracts]]
+symbol = "hew_yaml_array_get"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_array_len"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_array_new"
+result = "fresh"
+params = []
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_array_push_bool"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_array_push_float"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_array_push_int"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_array_push_null"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_array_push_string"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_from_bool"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_from_float"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_from_int"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_from_null"
+result = "fresh"
+params = []
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_from_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_get_bool"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_get_field"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_get_float"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_get_int"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_get_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_object_new"
+result = "fresh"
+params = []
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_object_set_bool"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_object_set_float"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_object_set_int"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_object_set_null"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_object_set_string"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_parse"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_yaml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_stringify"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_type"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# XML — hew-std/src/xml.rs. parse and get_child (clone-out) return Box'd
+# HewXmlNode trees released by hew_xml_free (deep); tag/text/attribute/error/
+# to_string return str_to_malloc strings (hew_xml_string_free is the same
+# free_cstring path as hew_string_drop).
+[[ownership.contracts]]
+symbol = "hew_xml_children_count"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_xml_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_xml_get_attribute"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_xml_get_child"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_xml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_xml_get_tag"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_xml_get_text"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_xml_is_element"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_xml_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_xml_parse"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_xml_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_xml_to_string"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# regex — hew-std/src/regex.rs. new/clone return Box'd HewRegex handles
+# (hew_regex_free). Match/capture entries borrow the regex and text; the
+# Vec<string> producers build fresh vecs via hew_vec_new_str/hew_vec_push_str
+# (hew_vec_free deep); find/replace return str_to_malloc strings.
+[[ownership.contracts]]
+symbol = "hew_regex_capture_index_one"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_regex_capture_name_one"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_regex_capture_width"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_regex_captures_flat"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_regex_clone"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_regex_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_regex_find"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_regex_find_all"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_regex_find_all_submatch_flat"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_regex_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_regex_is_match"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_regex_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_regex_new"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_regex_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_regex_replace"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+# protobuf — hew-std/src/protobuf.rs. msg_new returns a Box'd HewProtoMsg
+# (hew_proto_msg_free drops owned field storage: deep); setters borrow the
+# message and copy their operands; getters are scalar reads.
+[[ownership.contracts]]
+symbol = "hew_proto_msg_free"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_proto_msg_get_varint"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_proto_msg_has_field"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_proto_msg_new"
+result = "fresh"
+params = []
+release-symbol = "hew_proto_msg_free"
+discharge-depth = "deep"
+
+[[ownership.contracts]]
+symbol = "hew_proto_msg_set_string"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_proto_msg_set_varint"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# sorting — hew-std/src/sort.rs. hew_sort_floats clones the borrowed input
+# vec (hew_vec_clone) and sorts the copy: fresh f64 vec, hew_vec_free.
+[[ownership.contracts]]
+symbol = "hew_sort_floats"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
 discharge-depth = "shallow"

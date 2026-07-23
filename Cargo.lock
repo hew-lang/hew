@@ -1911,6 +1911,7 @@ dependencies = [
  "proptest",
  "serde",
  "siphasher",
+ "toml",
 ]
 
 [[package]]

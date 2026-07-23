@@ -33,6 +33,10 @@ hew-types = { path = "../hew-types" }
 # Runtime layout authorities are used only by native parity tests.
 hew-runtime = { path = "../hew-runtime", default-features = false }
 proptest = "1"
+# Independent TOML parser for the FFI ownership-contract drift test
+# (tests/ffi_contract_drift.rs) — deliberately NOT the build script's
+# hand parser, so parser bugs cannot self-validate.
+toml.workspace = true
 
 [lints]
 workspace = true

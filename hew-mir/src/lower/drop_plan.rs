@@ -1166,12 +1166,29 @@ const OBLIGATION_COUNT_SATURATION: u8 = 2;
 
 /// Discharge-count interval for one tracked local over the CFG paths
 /// reaching a program point. `lo` = minimum possible discharges along any
-/// reaching path, `hi` = maximum; both saturate at
-/// [`OBLIGATION_COUNT_SATURATION`].
+/// reaching path, `hi` = maximum; `max_definite` = the maximum number of
+/// DEFINITE (unambiguous) discharges on any single reaching path. All three
+/// saturate at [`OBLIGATION_COUNT_SATURATION`].
+///
+/// The two release verdicts read different components so each fails in the
+/// safe direction:
+///   - UNDER-release (leak) requires EVERY path to under-discharge, so it
+///     reads `hi == 0` (no discharge — definite or ambiguous — on any path);
+///   - OVER-release (double-free) is memory-unsafe on ANY path, so it reads
+///     `max_definite >= SATURATION` (some single path definitely discharges
+///     twice). Reading `lo` (the per-path MINIMUM) here would path-dilute a
+///     branch-conditional double-free away: a double-free on one arm but not
+///     another leaves `lo == 1` and silently certifies. Ambiguous discharges
+///     never raise `max_definite`, so widen-only events (mirrored plan drops,
+///     aggregation operands, single-owner-resolved-elsewhere transfers)
+///     cannot manufacture a false over-release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ObligationState {
     lo: u8,
     hi: u8,
+    /// Per-path maximum of DEFINITE discharges. `meet` takes the max across
+    /// joining paths; only [`ObligationState::definite_discharge`] raises it.
+    max_definite: u8,
     neutralized: PayloadNeutralized,
 }
 
@@ -1180,6 +1197,7 @@ impl ObligationState {
         Self {
             lo: 0,
             hi: 0,
+            max_definite: 0,
             neutralized: PayloadNeutralized::No,
         }
     }
@@ -1188,6 +1206,7 @@ impl ObligationState {
         Self {
             lo: self.lo.min(other.lo),
             hi: self.hi.max(other.hi),
+            max_definite: self.max_definite.max(other.max_definite),
             neutralized: self.neutralized.meet(other.neutralized),
         }
     }
@@ -1196,6 +1215,10 @@ impl ObligationState {
     fn definite_discharge(&mut self) {
         self.lo = self.lo.saturating_add(1).min(OBLIGATION_COUNT_SATURATION);
         self.hi = self.hi.saturating_add(1).min(OBLIGATION_COUNT_SATURATION);
+        self.max_definite = self
+            .max_definite
+            .saturating_add(1)
+            .min(OBLIGATION_COUNT_SATURATION);
     }
 
     /// A discharge whose single-owner resolution belongs to another
@@ -2102,15 +2125,17 @@ fn validate_obligation_balance_with(
                          exit (mint without discharge = leak)"
                     ),
                 });
-            } else if ob.lo >= OBLIGATION_COUNT_SATURATION {
+            } else if ob.max_definite >= OBLIGATION_COUNT_SATURATION {
                 findings.push(MirCheck::ObligationOverReleased {
                     function: elab.name.clone(),
                     block: *block,
                     name: name.clone(),
                     reason: format!(
-                        "owned local `{name}` accumulates {lo}+ definite \
+                        "owned local `{name}` accumulates {max_def}+ definite \
                          discharges on a single path reaching return[bb{block}] \
-                         (discharge interval [{lo}, {hi}]): double release",
+                         (discharge interval [{lo}, {hi}], per-path definite max \
+                         {max_def}): double release",
+                        max_def = ob.max_definite,
                         lo = ob.lo,
                         hi = ob.hi,
                     ),
@@ -7276,6 +7301,66 @@ mod obligation_balance_validator {
             panic!("expected over-release, got {:?}", findings[0]);
         };
         assert_eq!(name, "carrier");
+    }
+
+    /// Branch-conditional double-free: the value is definitely discharged
+    /// TWICE on the `then` arm (returned twice) and once on the `else` arm,
+    /// and the two arms join before a common return. The join meet leaves the
+    /// per-path MINIMUM at 1, so a verdict keyed on `lo` path-dilutes the
+    /// double-free away and silently certifies. The per-path definite MAXIMUM
+    /// is 2, so the fixed verdict REJECTS: a double-free on any single path is
+    /// memory-unsafe regardless of the other paths.
+    #[test]
+    fn branch_conditional_double_free_on_one_arm_rejects_over_release() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            // `then`: two definite discharges (return-transfer twice) — the
+            // double-free arm.
+            block(
+                1,
+                vec![
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(1),
+                    },
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(1),
+                    },
+                ],
+                Terminator::Goto { target: 3 },
+            ),
+            // `else`: exactly one definite discharge — balanced.
+            block(
+                2,
+                vec![Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                }],
+                Terminator::Goto { target: 3 },
+            ),
+            block(3, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![(ExitPath::Return { block: 3 }, DropPlan::default())];
+        let findings = run(blocks, plans, &[(1, "doubled")]);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the then-arm double-free must reject even though it merges with a \
+             single-discharge arm: {findings:?}"
+        );
+        let MirCheck::ObligationOverReleased { name, .. } = &findings[0] else {
+            panic!("expected over-release, got {:?}", findings[0]);
+        };
+        assert_eq!(name, "doubled");
     }
 
     /// The FIXED move-out shape (#2523): the move-out is paired with a

@@ -1697,7 +1697,10 @@ impl Builder {
             .checked_add(1)
             .expect("generator id overflow — closure id counter exhausted");
         let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
-        let body_name = format!("__hew_gen_body_{owner}_{gen_id}");
+        // Minted from the shared prefix const so the coroutine classifier
+        // (`RawMirFunction::coroutine_facts`) and this minting site can never
+        // drift onto different spellings.
+        let body_name = format!("{}{owner}_{gen_id}", crate::model::GEN_BODY_PREFIX);
 
         // Allocate a place in the ENCLOSING function typed as
         // `Generator<yield_ty, return_ty>`.  S3b will replace this with the

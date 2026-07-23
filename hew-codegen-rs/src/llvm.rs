@@ -29025,31 +29025,14 @@ fn lower_auto_mutex_bracket<'ctx>(
 /// (its LLVM return type is the `coro.begin` handle `ptr`, and it gets the coro
 /// prologue + shared cleanup/suspend-return epilogue).
 ///
-/// A function is a coroutine when EITHER it carries a suspend-family terminator
-/// (the await family + a generator `Yield`) OR it is a generator body
-/// (`__hew_gen_body_*`). The generator-body name check is load-bearing for a
-/// NO-YIELD generator (`gen { 1 }` → `Generator<Never, R>`): it carries no
-/// `Yield`, so the terminator scan alone would treat it as an ordinary function
-/// returning its logical type — but its construction site (`MakeGenerator`)
-/// drives it as a coro ramp expecting the handle. Marking every gen body a
-/// coroutine makes a no-yield generator a ramp that runs straight to its final
-/// suspend (the consumer's first `next()` then observes `None`), keeping the
-/// representation uniform.
+/// Thin delegate to the single MIR-side authority
+/// [`RawMirFunction::coroutine_facts`] — codegen holds no terminator scan of
+/// its own, so this predicate, the coroutine prologue shape, and the dispatch
+/// trampoline's per-handler suspendability all read one derivation (see
+/// `hew_mir::CoroutineFacts` for the full classification rationale, including
+/// the load-bearing no-yield `__hew_gen_body_*` name check).
 fn is_coroutine_function(func: &RawMirFunction) -> bool {
-    func.name.starts_with("__hew_gen_body_")
-        || func.blocks.iter().any(|b| {
-            matches!(
-                b.terminator,
-                // The ten pure-{resume,cleanup} carriers all collapse to the bare
-                // `Suspend`; `SuspendingScopeDeadline` / `SuspendingSelect` keep
-                // their distinct terminators. Any of them makes the function a
-                // presplit coroutine.
-                Terminator::Yield { .. }
-                    | Terminator::Suspend { .. }
-                    | Terminator::SuspendingScopeDeadline { .. }
-                    | Terminator::SuspendingSelect { .. }
-            )
-        })
+    func.coroutine_facts().is_coroutine
 }
 
 /// True when `func`'s `param_idx`-th parameter is a `bytes` value that may be
@@ -30384,10 +30367,13 @@ fn lower_function<'ctx>(
     // A generator body's `yield` is a `coro.suspend` on this same substrate (the
     // `Terminator::Yield` codegen arm calls `CoroContext::emit_suspend`), so a
     // gen body — whether it yields or is a no-yield `Generator<Never, R>` —
-    // needs the coro prologue + shared cleanup/suspend-return epilogue. Reuses
-    // the same coroutine predicate `declare_function` uses, so the prologue
-    // emission and the `ptr`-handle return type agree.
-    let has_suspend = is_coroutine_function(func);
+    // needs the coro prologue + shared cleanup/suspend-return epilogue.
+    // `coroutine_facts` is the single MIR-side derivation of every coroutine
+    // predicate this body lowering consumes (ramp-ness, generator shape,
+    // explicit final suspend) — the same authority `declare_function` keys the
+    // `ptr`-handle return type off, so prologue emission and return type agree.
+    let coro_facts = func.coroutine_facts();
+    let has_suspend = coro_facts.is_coroutine;
 
     // DWARF subprogram + function-entry location for `hew build -g` (W0.060).
     // Emitted only for plain (non-suspend) `fn`s whose span falls within the
@@ -30525,19 +30511,14 @@ fn lower_function<'ctx>(
         // edge (return to executor) and the cleanup edge (coro.destroy).
         let suspend_return_block = ctx.append_basic_block(llvm_fn, "coro.suspend.return");
         let cleanup_block = ctx.append_basic_block(llvm_fn, "coro.cleanup");
-        let has_explicit_final_suspend = func
-            .blocks
-            .iter()
-            .any(|b| matches!(b.terminator, Terminator::Suspend { is_final: true, .. }));
-        // A generator body carries `Terminator::Yield` (its non-final suspends)
-        // and completes at its `Return` — it has no explicit final `Suspend`.
-        // Its completion routes through the shared `final_suspend_block` like a
-        // SuspendingAsk coroutine, but the block emits a VALUE-FREE final suspend
-        // (the value channel is the out-pointer, not a reply channel).
-        let is_generator = func
-            .blocks
-            .iter()
-            .any(|b| matches!(b.terminator, Terminator::Yield { .. }));
+        // Both read from the `coro_facts` authority above: a generator body
+        // carries `Terminator::Yield` (its non-final suspends) and completes at
+        // its `Return` — it has no explicit final `Suspend`. Its completion
+        // routes through the shared `final_suspend_block` like a SuspendingAsk
+        // coroutine, but the block emits a VALUE-FREE final suspend (the value
+        // channel is the out-pointer, not a reply channel).
+        let has_explicit_final_suspend = coro_facts.has_explicit_final_suspend;
+        let is_generator = coro_facts.is_generator;
         // A coroutine with no explicit final Suspend (a SuspendingAsk handler OR
         // a generator) completes at its `Return` terminator(s). Reserve ONE
         // shared final-suspend block that every `Return` branches to, so the
@@ -32023,17 +32004,20 @@ fn build_module_for_target<'ctx>(
     // than as a dangling reference at link time.
     verify_drop_dispatch_resolves(pipeline, &fn_symbols)?;
     for actor in &pipeline.actor_layouts {
-        // NEW-3a (R326/R327): per-handler suspendable predicate, derived from
-        // the SAME carrier the per-function coroutine emission keys off — the
-        // handler's MIR block terminators carrying `Terminator::Suspend`
-        // (`lower_function` `has_suspend`, see the coroutine prologue arm). The
-        // handler MIR blocks are not on `ActorHandlerLayout`; they live in
-        // `pipeline.raw_mir`, in scope here. Deriving the predicate from the
-        // identical data + match arm makes the trampoline's ramp-vs-direct
-        // decision agree with the ramp emission BY CONSTRUCTION — there is no
-        // second source of truth to drift (R2 / the Lane-B silent-no-op class).
-        // A handler whose symbol has no matching raw MIR function fails closed
-        // inside the trampoline rather than silently defaulting to direct-call.
+        // NEW-3a (R326/R327): per-handler suspendable predicate, read from the
+        // SAME `coroutine_facts` authority the per-function coroutine emission
+        // keys off (`lower_function` / `declare_function`). The handler MIR
+        // blocks are not on `ActorHandlerLayout`; they live in
+        // `pipeline.raw_mir`, in scope here. Reading the one MIR-side
+        // derivation makes the trampoline's ramp-vs-direct decision agree with
+        // the ramp emission BY CONSTRUCTION — there is no second source of
+        // truth to drift (R2 / the Lane-B silent-no-op class). The predicate is
+        // `has_suspend_carrier`, NOT `is_coroutine`: a handler is never a
+        // generator body, so the `Yield` / `__hew_gen_body_*` arms of the wider
+        // ramp classification are deliberately excluded here (see
+        // `hew_mir::CoroutineFacts`). A handler whose symbol has no matching
+        // raw MIR function fails closed inside the trampoline rather than
+        // silently defaulting to direct-call.
         let handler_suspendable: Vec<Option<bool>> = actor
             .handlers
             .iter()
@@ -32042,18 +32026,7 @@ fn build_module_for_target<'ctx>(
                     .raw_mir
                     .iter()
                     .find(|f| f.name == h.symbol)
-                    .map(|f| {
-                        f.blocks.iter().any(|b| {
-                            matches!(
-                                b.terminator,
-                                // The ten pure carriers collapse to bare `Suspend`;
-                                // ScopeDeadline / Select stay distinct.
-                                Terminator::Suspend { .. }
-                                    | Terminator::SuspendingScopeDeadline { .. }
-                                    | Terminator::SuspendingSelect { .. }
-                            )
-                        })
-                    })
+                    .map(|f| f.coroutine_facts().has_suspend_carrier)
             })
             .collect();
         crate::thunks::emit_actor_dispatch_trampoline(

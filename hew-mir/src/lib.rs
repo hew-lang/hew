@@ -58,9 +58,9 @@ pub use model::{
     ActorLayout, ActorStateLoadMode, AggregateOwner, BasicBlock, BlockKind, BorrowKind,
     CaptureKind, CheckedMirFunction, ChildInitArg, ClosureEnvAllocation, ClosureEnvFieldInit,
     ClosureEnvFieldOwnership, ClosureEnvMode, CmpPred, CooperateKind, CooperateSite,
-    CoroutineSchema, DecisionFact, Direction, DropFnSpec, DropKind, DropPlan, DynVtableInstance,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, ExternDecl,
-    ExternStringOwnership, FieldAddr, FieldOffset, FloatWidth, FunctionCallConv,
+    CoroutineFacts, CoroutineSchema, DecisionFact, Direction, DropFnSpec, DropKind, DropPlan,
+    DynVtableInstance, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
+    ExternDecl, ExternStringOwnership, FieldAddr, FieldOffset, FloatWidth, FunctionCallConv,
     GeneratorEnvFieldPlan, GeneratorEnvPlan, HeapOwnership, HeapOwnershipLayouts, Instr,
     IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaActorShape, LambdaCapture,
     LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirCheck, MirConst, MirConstValue,
@@ -70,7 +70,7 @@ pub use model::{
     RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, SourceOrigin,
     SpawnEnvFieldOwnership, StableActorRole, Strategy, SupervisorChildLayout,
     SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator, ThirFunction,
-    TraitObjectStorage, TrapKind, WitnessOperand,
+    TraitObjectStorage, TrapKind, WitnessOperand, GEN_BODY_PREFIX,
 };
 pub use ownership::{
     AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf,

@@ -2597,7 +2597,7 @@ fn shorten_named_ty_spine(ty: &ResolvedTy) -> ResolvedTy {
 /// registered `Holder$$Box` and the lookup falls through the fail-closed gate.
 /// Nested qualified payloads (`Result<Vec<json.Value>, _>`) are shortened at
 /// every depth. In-repo unqualified generics are unaffected (a no-op strip).
-pub(super) fn mangle_layout_key(name: &str, args: &[ResolvedTy]) -> String {
+pub(crate) fn mangle_layout_key(name: &str, args: &[ResolvedTy]) -> String {
     let short_args: Vec<ResolvedTy> = args.iter().map(shorten_named_ty_spine).collect();
     hew_hir::mangle(name, &short_args)
 }

@@ -454,7 +454,7 @@ fn assert_clone_adds_no_leak(shape_name: &str, control_source: &str, fixture_sou
          clone thunk was synthesised WITHOUT its matching per-mono drop (R1 asymmetry): the \
          clone's deep-copied buffers are never freed. The fix is the clone/drop thunk PAIR \
          emitted together per key in `emit_state_clone_drop_synthesis`, seeded by \
-         `collect_record_clone_inplace_seeds` (hew-codegen-rs/src/llvm.rs). Re-run with \
+         `collect_record_clone_inplace_seeds` (hew-mir/src/thunk_requirements.rs). Re-run with \
          `MallocStackLogging=1 leaks --atExit -- {}` to see the leaked stack.",
         fixture_leaks.saturating_sub(control_leaks + FLOOR_TOLERANCE),
         fixture_bin.display()

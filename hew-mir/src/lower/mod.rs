@@ -76,6 +76,12 @@ mod temp_drop;
 
 use self::pattern::{project_match_ownership_mode, ProjectMatchOwnershipMode};
 
+/// Crate-visible re-export of the layout-key mangler for the MIR-owned
+/// thunk-synthesis registry (`crate::thunk_requirements`), which must resolve
+/// generic-instantiation seed keys under the SAME bare-normalised spine the
+/// layout registration uses.
+pub(crate) use self::facts::mangle_layout_key;
+
 #[cfg(not(test))]
 use self::cfg_util::{
     block_by_id, blocks_reachable_from, call_terminator_next, local_is_used_after,

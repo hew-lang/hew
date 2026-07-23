@@ -28,6 +28,13 @@ command_timeout_floor() {
         "make lint") echo 90 ;;
         "make playground-check") echo 150 ;;
         "make test") echo 360 ;;
+        # test-compiler-pipeline carries the hew-cli consumer corpus (compiled
+        # leak/drop oracles + e2e suites): 7887 tests, ~234 s wall on a warm
+        # 16-core target.  Without this floor the types lane's 180 s narrow
+        # tier watchdog-kills its own proving gate.  600 s gives cold-cache
+        # headroom and matches the compiler-pipeline lane tier, so that lane's
+        # effective budget is unchanged.
+        "make test-compiler-pipeline") echo 600 ;;
         "make test-vertical-slice") echo 240 ;;
         "make test-pkg-import") echo 60 ;;
         "make fuzz-oracle") echo 210 ;;
@@ -706,15 +713,19 @@ case "$LANE" in
     compiler-pipeline)
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
+        # test-compiler-pipeline IS the consumer-corpus gate: its nextest
+        # invocation includes -p hew-cli -p adze-cli under the ci profile, so
+        # every hew-cli integration suite — the compiled leak/drop oracles,
+        # await_e2e, eval_e2e, and the rest of the e2e corpus — runs for any
+        # HIR/MIR/codegen diff.  scripts/tests/test_ci_preflight_dispatcher.py
+        # locks the -p hew-cli membership in the Makefile recipe so the corpus
+        # cannot silently fall out of this lane.
         add_command "make test-compiler-pipeline"
         add_command "make test-vertical-slice"
         add_command "make test-pkg-import"
         # fuzz-oracle catches trap signal-code regressions (SIGILL/SIGTRAP) and
         # ratchet mismatches invisible to the nextest workspace run (#2025).
         add_command "make fuzz-oracle"
-        # await_e2e is in hew-cli, not covered by test-compiler-pipeline; a codegen
-        # change can break the suspend/resume async path visible only via CLI e2e (#2023).
-        add_command "cargo nextest run --profile ci -p hew-cli --test await_e2e"
         ;;
     vertical-slice)
         add_command "cargo fmt --all -- --check"

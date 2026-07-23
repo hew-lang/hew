@@ -609,6 +609,7 @@ stable = [
   "hew_supervisor_restart_await_blocking",
   "hew_supervisor_restart_await_detach",
   "hew_supervisor_restart_await_suspend",
+  "hew_supervisor_role_ask",
   "hew_supervisor_role_ask_with_channel",
   "hew_supervisor_set_child_init_fn",
   "hew_supervisor_set_child_lifecycle",
@@ -4912,6 +4913,16 @@ result = "none"
 params = ["borrow", "borrow", "borrow", "borrow", "borrow", "retain"]
 release-symbol = ""
 discharge-depth = "none"
+
+# hew-runtime/src/supervisor.rs: blocking owner-scoped stable-role ask. The
+# payload is deep-copied by the mailbox; the reply buffer transfers to the
+# caller (null on refusal/failure with the ask error recorded).
+[[ownership.contracts]]
+symbol = "hew_supervisor_role_ask"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_reply_payload_free"
+discharge-depth = "shallow"
 
 # hew-runtime/src/reply_channel.rs: reads classification flags only.
 [[ownership.contracts]]

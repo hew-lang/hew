@@ -8929,6 +8929,7 @@ mod binding_ty_is_plain_vec_tuple {
     //! `Vec<(string,i64)>` or `Vec<((Rec,i64),bool)>` to `hew_vec_free` would
     //! skip the per-element owned drop and leak or corrupt heap.
     use super::*;
+    use crate::lower::DischargeSite;
 
     fn vec_of_ty(elem: ResolvedTy) -> ResolvedTy {
         ResolvedTy::Named {
@@ -9904,7 +9905,7 @@ mod binding_ty_is_plain_vec_tuple {
         );
 
         // Retract one via a consume disposition (what `mark_binding_moved` does).
-        builder.set_owned_local_disposition(BindingId(4), Disposition::ConsumedAt);
+        builder.set_owned_local_consumed(BindingId(4), None, DischargeSite::BindingMoved);
 
         // The live view now excludes the retracted binding — exactly the set the
         // former `owned_locals.retain(...)` physical removal would have left.
@@ -9928,7 +9929,10 @@ mod binding_ty_is_plain_vec_tuple {
         assert_eq!(ledger[1].binding, BindingId(4));
         assert_eq!(
             ledger[1].disposition,
-            Disposition::ConsumedAt,
+            Disposition::ConsumedAt {
+                transferee: None,
+                site: DischargeSite::BindingMoved,
+            },
             "the retracted entry survives carrying its recorded disposition"
         );
     }

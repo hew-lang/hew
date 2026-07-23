@@ -5475,6 +5475,20 @@ struct FungibleChildRef {
 /// end-of-pass scan can observe a binding whose release was handled
 /// mid-lowering — the retraction-invisible class that a physical
 /// `owned_locals.retain(...)` removal used to make unobservable.
+/// WHY a [`Disposition::ConsumedAt`] retraction fired — the discharge authority
+/// for a consume, carried on the ledger entry as data (D159/U229). Compact and
+/// `Copy` so [`Disposition`] keeps its `Copy` derive (a non-`Copy` payload would
+/// ripple through every by-value `Disposition` read). The match on this enum is
+/// exhaustive at every consumer (no wildcard — `exhaustive-coverage`, L125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DischargeSite {
+    /// The general consume retraction [`Builder::mark_binding_moved`] performs
+    /// when a heap-owning owned local is moved out (returned, sent, or stored
+    /// into a longer-lived owner). This is the only production origin today; the
+    /// destination owner is not a nameable `Place` at this seam.
+    BindingMoved,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Disposition {
     /// Released by the function-exit LIFO drop pass, narrowed per exit edge —
@@ -5491,7 +5505,20 @@ enum Disposition {
     /// so the scope-exit release is suppressed. A later overwrite on a different
     /// control-flow path is gated by the path-sensitive drop flag, independent
     /// of this disposition.
-    ConsumedAt,
+    ///
+    /// Carries the discharge authority as data (D159/U229): `site` names WHY the
+    /// consume retraction fired, and `transferee` names the new owner when it is
+    /// a nameable `Place` at the retraction seam. The sole production writer
+    /// ([`Builder::mark_binding_moved`]) is a general consume seam (return / send
+    /// / store) with no destination local in hand, so `transferee` is `None`
+    /// there; the field exists so a future consume site that DOES know its
+    /// destination records it without erasing the fact. The variant is not
+    /// constructible without both fields, so a caller cannot retract to
+    /// `ConsumedAt` while dropping the authority (close-by-construction, U221).
+    ConsumedAt {
+        transferee: Option<Place>,
+        site: DischargeSite,
+    },
     /// Released inline when an INNER scope closes (a generator coro frame or a
     /// `VecIter` cursor handle declared in a nested block), so the release fires
     /// once per outer-loop iteration instead of accumulating to function exit.

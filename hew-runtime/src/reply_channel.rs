@@ -1501,6 +1501,73 @@ mod tests {
         }
     }
 
+    /// The re-scan contract the suspending-select resume gate relies on: a
+    /// scan that reads -1 while an arm's fire races it can observe the
+    /// arbiter as `Completed` — and once it does, a RE-SCAN is GUARANTEED to
+    /// find the winner. `publish_reply_from_sender_ref` stores the readiness
+    /// flag (Release) BEFORE completing the arbiter (`AcqRel` one-shot CAS), so
+    /// an Acquire status load reading `Completed` orders the winner's
+    /// readiness store before every subsequent operation: the re-scan cannot
+    /// read -1 again. This is why the codegen gate loops back to the scan on
+    /// `Completed` instead of trapping — the interleaving is valid, and the
+    /// loop terminates in one extra iteration.
+    #[test]
+    fn completed_status_after_empty_scan_guarantees_rescan_finds_winner() {
+        let _guard = crate::runtime_test_guard();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: the test owns the channel and registration; the producer
+        // thread consumes only the retained observer reference.
+        unsafe {
+            let reg =
+                crate::await_cancel::hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+            hew_reply_channel_set_await_cancel(ch, reg);
+
+            // The first scan: nothing fired yet — -1, the ambiguous edge.
+            let mut channels = [ch];
+            assert_eq!(
+                hew_select_ready_index(channels.as_mut_ptr(), 1),
+                -1,
+                "pre-fire scan must read no winner"
+            );
+
+            // The racing arm fire: publish readiness, then complete the
+            // arbiter (the signal_ready path — publish-before-complete).
+            hew_reply_channel_retain(ch);
+            let ch_addr = ch as usize;
+            let producer = std::thread::spawn(move || {
+                hew_reply_channel_signal_ready((ch_addr as *mut HewReplyChannel).cast());
+            });
+
+            // Spin until the arbiter reads Completed (the status load the
+            // resume gate performs), bounded so a broken contract fails the
+            // test instead of hanging it.
+            let mut spins: u64 = 0;
+            while crate::await_cancel::hew_await_cancel_status(reg)
+                != crate::await_cancel::AwaitCancelStatus::Completed as i32
+            {
+                spins += 1;
+                assert!(
+                    spins < 500_000_000,
+                    "arbiter never read Completed after the fire"
+                );
+                std::hint::spin_loop();
+            }
+
+            // The re-scan MUST find the winner: no -1, no trap, no timeout.
+            assert_eq!(
+                hew_select_ready_index(channels.as_mut_ptr(), 1),
+                0,
+                "a Completed status guarantees the re-scan finds the \
+                 published winner (publish-ready-before-complete)"
+            );
+
+            producer.join().expect("producer thread must not panic");
+            hew_reply_channel_free(ch);
+            crate::await_cancel::hew_await_cancel_free(reg);
+        }
+    }
+
     #[test]
     fn is_orphaned_reports_mailbox_teardown_flag() {
         let _guard = crate::runtime_test_guard();

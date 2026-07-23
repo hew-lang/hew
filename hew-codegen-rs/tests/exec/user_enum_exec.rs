@@ -14,6 +14,70 @@ use hew_mir::{
     RawMirFunction, Terminator,
 };
 use hew_types::ResolvedTy;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
+
+fn ensure_codegen_artifacts() -> (PathBuf, PathBuf) {
+    static BUILT: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let hew = hew_testutil::ensure_hew_bin_built().expect("build hew compiler");
+            let libhew = hew_testutil::ensure_hew_lib_built().expect("build Hew runtime archive");
+            assert_eq!(
+                hew.parent(),
+                libhew.parent(),
+                "hew and the Hew runtime archive must share one target/profile authority"
+            );
+            (hew, libhew)
+        })
+        .clone()
+}
+
+fn hew_command() -> Command {
+    let (hew, _) = ensure_codegen_artifacts();
+    Command::new(hew)
+}
+
+fn running_test_artifact_dir(exe: &Path) -> &Path {
+    exe.parent()
+        .and_then(Path::parent)
+        .expect("test executable must use <target>/<profile>/deps layout")
+}
+
+#[test]
+fn user_enum_harness_artifacts_follow_running_test_target_profile() {
+    let (hew, libhew) = ensure_codegen_artifacts();
+    let current_exe = std::env::current_exe().expect("resolve running test executable");
+    let expected_dir = running_test_artifact_dir(&current_exe);
+    let command = hew_command();
+
+    assert_eq!(hew.parent(), Some(expected_dir));
+    assert_eq!(libhew.parent(), Some(expected_dir));
+    assert_eq!(command.get_program(), hew.as_os_str());
+}
+
+#[test]
+fn hardcoded_debug_cannot_satisfy_alternate_non_debug_authority() {
+    let workspace = Path::new("workspace");
+    let current_exe = workspace
+        .join("target")
+        .join("llvm-cov-target")
+        .join("release-lib")
+        .join("deps")
+        .join("exec-test");
+    let expected_dir = running_test_artifact_dir(&current_exe);
+    let hardcoded_debug = workspace.join("target").join("debug");
+
+    assert_eq!(
+        expected_dir,
+        workspace
+            .join("target")
+            .join("llvm-cov-target")
+            .join("release-lib")
+    );
+    assert_ne!(hardcoded_debug, expected_dir);
+}
 
 fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
     let tmp = std::env::temp_dir().join(format!("hew-user-enum-exec-{module_name}"));
@@ -205,38 +269,7 @@ fn enum_unit_ctor_module_verifies() {
 /// each scrutinee dispatches to its named variant body.
 #[test]
 fn run_colour_match_fixture_executes() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let hew_bin = std::path::PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug")
-        .join("hew");
-    let fixture = std::path::PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .join("examples")
-        .join("enums")
-        .join("run_colour_match.hew");
-    let expected_path = fixture.with_extension("expected");
-    let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
-
-    let mut command = std::process::Command::new(&hew_bin);
-    command.arg("run").arg(&fixture);
-    let output = hew_testutil::run_command_bounded(
-        &mut command,
-        format!("hew run {}", fixture.display()),
-        hew_testutil::DEFAULT_EXEC_TIMEOUT,
-    )
-    .expect("spawn hew run");
-    assert!(
-        output.status.success(),
-        "hew run exited non-zero (status={:?}); stderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
-    assert_eq!(stdout, expected, "run_colour_match stdout mismatch");
+    run_enum_fixture_executes("run_colour_match");
 }
 
 /// End-to-end signal for wildcard arms in match-arm dispatch. Runs the
@@ -246,41 +279,7 @@ fn run_colour_match_fixture_executes() {
 /// the named path and the catch-all path produce the expected outputs.
 #[test]
 fn run_colour_match_wildcard_fixture_executes() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let hew_bin = std::path::PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug")
-        .join("hew");
-    let fixture = std::path::PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .join("examples")
-        .join("enums")
-        .join("run_colour_match_wildcard.hew");
-    let expected_path = fixture.with_extension("expected");
-    let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
-
-    let mut command = std::process::Command::new(&hew_bin);
-    command.arg("run").arg(&fixture);
-    let output = hew_testutil::run_command_bounded(
-        &mut command,
-        format!("hew run {}", fixture.display()),
-        hew_testutil::DEFAULT_EXEC_TIMEOUT,
-    )
-    .expect("spawn hew run");
-    assert!(
-        output.status.success(),
-        "hew run exited non-zero (status={:?}); stderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
-    assert_eq!(
-        stdout, expected,
-        "run_colour_match_wildcard stdout mismatch"
-    );
+    run_enum_fixture_executes("run_colour_match_wildcard");
 }
 
 /// End-to-end signal for `let n = match ...` — match-as-expression
@@ -289,38 +288,7 @@ fn run_colour_match_wildcard_fixture_executes() {
 /// the `.expected` file.
 #[test]
 fn run_colour_match_let_fixture_executes() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let hew_bin = std::path::PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug")
-        .join("hew");
-    let fixture = std::path::PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .join("examples")
-        .join("enums")
-        .join("run_colour_match_let.hew");
-    let expected_path = fixture.with_extension("expected");
-    let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
-
-    let mut command = std::process::Command::new(&hew_bin);
-    command.arg("run").arg(&fixture);
-    let output = hew_testutil::run_command_bounded(
-        &mut command,
-        format!("hew run {}", fixture.display()),
-        hew_testutil::DEFAULT_EXEC_TIMEOUT,
-    )
-    .expect("spawn hew run");
-    assert!(
-        output.status.success(),
-        "hew run exited non-zero (status={:?}); stderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf-8");
-    assert_eq!(stdout, expected, "run_colour_match_let stdout mismatch");
+    run_enum_fixture_executes("run_colour_match_let");
 }
 
 /// End-to-end signal for `==` / `!=` on fieldless enum values. Runs
@@ -410,12 +378,6 @@ fn run_mutual_indirect_enum_fixture_executes() {
 /// `hew` binary and diff stdout against `<name>.expected`.
 fn run_enum_fixture_executes(name: &str) {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let hew_bin = std::path::PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("debug")
-        .join("hew");
     let fixture = std::path::PathBuf::from(manifest)
         .parent()
         .unwrap()
@@ -425,7 +387,7 @@ fn run_enum_fixture_executes(name: &str) {
     let expected_path = fixture.with_extension("expected");
     let expected = std::fs::read_to_string(&expected_path).expect("read .expected");
 
-    let mut command = std::process::Command::new(&hew_bin);
+    let mut command = hew_command();
     command.arg("run").arg(&fixture);
     let output = hew_testutil::run_command_bounded(
         &mut command,

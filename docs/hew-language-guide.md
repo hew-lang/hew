@@ -49,7 +49,7 @@ for the documented resolver precedence.
 - Access actor state by bare field name inside handlers — no `self.` or `this.`.
 - Fire-and-forget actor sends have no return type and no `await`: `ref.method(arg);`.
 - Ask (request-reply) is `await ref.method(arg)` and returns `Result<R, AskError>` — match `Ok`/`Err`.
-- Passing a value into an actor consumes it; duplicate it first with `clone x` (canonical) if you keep using it afterward.
+- Sending a value into an actor delivers a logical snapshot; the sender's binding stays valid afterward — no `clone` needed to keep using it. Types that cannot be sent are rejected at compile time.
 - Within a fn or actor there is no borrow checker: pass values freely, mutations to Vec/HashMap persist in the caller.
 - Last expression of a block (no trailing semicolon) is its value; a trailing `;` makes it unit.
 - Lean on the safe stdlib trio: `std::string`, `std::math`, `std::iter`. Do not import `std::option`/`std::result`.
@@ -870,7 +870,7 @@ fn main() {
 }
 ```
 
-Use `.clone()` only when you need a second independent copy — e.g. before sending one to an actor and keeping one.
+Use `.clone()` only when you need a second independent copy — e.g. keeping the original after an ownership-sink like `HashSet.insert(x)`. Actor sends do not need it: the sender's binding stays valid after a send.
 
 ### clone x — the canonical duplication prefix
 
@@ -963,20 +963,20 @@ fn main() {
 
 For transformations, construct and return a fresh struct literal. Struct fields are immutable by default — produce a new struct rather than mutating.
 
-### Move-on-send: passing into an actor consumes it
+### Snapshot-on-send: the sender keeps its value
 
 ```hew
 actor Sink { let id: i64; receive fn take(data: string) -> i64 { data.len() } }
 fn main() {
     let s = spawn Sink(id: 0);
     let msg: string = "hello";
-    let n = await s.take(clone msg);   // send a copy to keep msg
+    let n = await s.take(msg);         // receiver gets a snapshot of msg
     match n { Ok(len) => println(len), Err(_) => println("ask failed") }
-    println(msg.len());   // 5, msg still valid
+    println(msg.len());   // 5 — msg still valid after the send
 }
 ```
 
-Passing a value into an actor's `receive fn` consumes it; reusing it after is a hard `use of moved value` error. Duplicate it first with `clone x` (or the equivalent `x.clone()`) to keep the original. `await actor.method(...)` on a request-reply fn returns `Result<R, AskError>` — match it.
+Passing a value into an actor's `receive fn` sends the receiver a logical snapshot: the receiver observes an independent value, and the sender's binding stays valid. Reuse after send — including sending the same value to many actors in a loop — is ordinary code with no `clone` ceremony. Types that cannot cross an actor boundary (such as `Rc<T>` and `Weak<T>`) are still rejected with a compile-time diagnostic. `await actor.method(...)` on a request-reply fn returns `Result<R, AskError>` — match it.
 
 ### Strings and scalars are freely reusable
 
@@ -2471,7 +2471,7 @@ fn main() {
 }
 ```
 
-`sort_ints` / `sort_strings` / `sort_floats` return new sorted Vecs (ascending); `reverse_ints` / `reverse_strings` / `reverse_floats` return new reversed Vecs. The original is never modified.
+`sort_ints` / `sort_strings` / `sort_floats` return new sorted Vecs (ascending); `reverse_ints` / `reverse_strings` / `reverse_floats` return new reversed Vecs. The original is never modified. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
 
 ### std::random — pseudo-random number generation
 

@@ -2805,6 +2805,104 @@ pub struct RawMirFunction {
     pub source_origin: SourceOrigin,
 }
 
+/// Name prefix minted by `lower/closure_gen.rs` for every synthesised
+/// generator body (`__hew_gen_body_<owner>_<id>`). The prefix is a semantic
+/// carrier: [`RawMirFunction::coroutine_facts`] keys the no-yield-generator
+/// coroutine classification off it, so the minting site and the classifier
+/// must spell the identical prefix — both reference this single const.
+pub const GEN_BODY_PREFIX: &str = "__hew_gen_body_";
+
+/// Coroutine-lowering facts for one [`RawMirFunction`], derived by the single
+/// authority [`RawMirFunction::coroutine_facts`]. Codegen consumes these
+/// instead of re-scanning `blocks` at each decision site (the coroutine-ramp
+/// declaration, the coroutine prologue's final-suspend/generator shape, and
+/// the dispatch trampoline's per-handler ramp-vs-direct choice), so the
+/// decision sites cannot drift onto differing terminator sets.
+///
+/// The facts are intentionally DISTINCT predicates, not one boolean:
+/// `is_coroutine` (ramp declaration) is strictly wider than
+/// `has_suspend_carrier` (handler suspendability) because a generator body
+/// (`Yield`, or a no-yield `__hew_gen_body_*`) is a coroutine ramp but is
+/// never an actor handler.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "not a state machine: four independent predicates over one block scan, each consumed by a different codegen decision site"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CoroutineFacts {
+    /// The function lowers as an `llvm.coro` switched-resume coroutine RAMP
+    /// (LLVM return type is the `coro.begin` handle `ptr`; coro prologue +
+    /// shared cleanup/suspend-return epilogue). True when the body carries
+    /// ANY suspend-family terminator (`has_suspend_carrier`), carries a
+    /// generator `Yield` (`is_generator`), or is a synthesised generator body
+    /// by name. The name check is load-bearing for a NO-YIELD generator
+    /// (`gen { 1 }` → `Generator<Never, R>`): it carries no `Yield`, so the
+    /// terminator scan alone would treat it as an ordinary function — but its
+    /// construction site (`MakeGenerator`) drives it as a coro ramp expecting
+    /// the handle. Marking every gen body a coroutine makes a no-yield
+    /// generator a ramp that runs straight to its final suspend (the
+    /// consumer's first `next()` then observes `None`), keeping the
+    /// representation uniform.
+    pub is_coroutine: bool,
+    /// The body carries a suspend-family terminator: the ten pure
+    /// `{resume, cleanup}` carriers all collapse to the bare
+    /// [`Terminator::Suspend`]; [`Terminator::SuspendingScopeDeadline`] /
+    /// [`Terminator::SuspendingSelect`] keep their distinct terminators.
+    /// This is the actor-dispatch trampoline's per-handler ramp-vs-direct
+    /// predicate: a handler is driven as a coro ramp exactly when its body
+    /// can actually suspend (`Yield` / gen bodies are excluded — a handler is
+    /// never a generator body).
+    pub has_suspend_carrier: bool,
+    /// The body carries [`Terminator::Yield`] (a generator body's non-final
+    /// suspends). A generator completes at its `Return` — it has no explicit
+    /// final `Suspend` — so its completion routes through the shared
+    /// final-suspend block with a VALUE-FREE final suspend (the value channel
+    /// is the out-pointer, not a reply channel).
+    pub is_generator: bool,
+    /// The body carries an explicit terminal suspend
+    /// (`Terminator::Suspend { is_final: true, .. }`). Such a coroutine needs
+    /// no shared synthesised final-suspend block: its `Return` arm just
+    /// `ret`s the handle.
+    pub has_explicit_final_suspend: bool,
+}
+
+impl RawMirFunction {
+    /// Derive this function's [`CoroutineFacts`] from its finalized `blocks`
+    /// (and its `name`, for the synthesised no-yield generator body).
+    ///
+    /// This is the SINGLE derivation of every coroutine-lowering predicate —
+    /// codegen holds no terminator scan of its own, so the ramp declaration,
+    /// the coroutine prologue shape, and the trampoline's suspendability
+    /// choice agree by construction. Computed on demand (not stored on the
+    /// struct): the facts are fully determined by `name` + `blocks`, which
+    /// already travel to every consumer, and a stored copy would be a second
+    /// carrier that can go stale against post-authoring block edits.
+    #[must_use]
+    pub fn coroutine_facts(&self) -> CoroutineFacts {
+        let mut facts = CoroutineFacts::default();
+        for block in &self.blocks {
+            match block.terminator {
+                Terminator::Yield { .. } => facts.is_generator = true,
+                Terminator::Suspend { is_final, .. } => {
+                    facts.has_suspend_carrier = true;
+                    facts.has_explicit_final_suspend |= is_final;
+                }
+                Terminator::SuspendingScopeDeadline { .. }
+                | Terminator::SuspendingSelect { .. } => facts.has_suspend_carrier = true,
+                _ => {}
+            }
+        }
+        facts.is_coroutine = facts.has_suspend_carrier
+            || facts.is_generator
+            || self.name.starts_with(GEN_BODY_PREFIX);
+        // Structural pin: an explicit final suspend is itself a suspend
+        // carrier, and any carrier makes the function a coroutine.
+        debug_assert!(!facts.has_explicit_final_suspend || facts.has_suspend_carrier);
+        debug_assert!(!facts.has_suspend_carrier || facts.is_coroutine);
+        facts
+    }
+}
+
 /// A generic origin function lowered against abstract `ResolvedTy::TypeParam`
 /// operands, paired with the type-parameter binder it was lowered under
 /// (W5.007a — see [`IrPipeline::polymorphic_mir`]).

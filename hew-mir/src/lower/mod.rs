@@ -63,6 +63,7 @@ mod expr;
 mod facts;
 mod machine_synth;
 mod move_value;
+mod obligation_registry;
 mod ownership;
 mod pattern;
 mod rc_intrinsic;
@@ -114,7 +115,7 @@ use self::drop_plan::{
     ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
     ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
     ty_is_stream_handle, ty_is_vec, validate_drop_plan, validate_field_drop_in_place,
-    vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
+    validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
 };
 pub(crate) use self::facts::*;
 #[cfg(not(test))]
@@ -5173,6 +5174,25 @@ pub(crate) fn lower_function(
     // the CLI rejects the program before codegen runs. LESSONS:
     // cleanup-all-exits, boundary-fail-closed.
     for check in validate_drop_plan(&elaborated) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
+    // S1 obligation-balance gate: every heap-owning owned local must be
+    // released exactly once on every reachable Return path. The discharge
+    // set is re-derived from the primitive Instr stream + CFG (never from
+    // the Disposition ledger — the ledger is the component under test).
+    // Over-release (double-free) is an unconditional hard error;
+    // under-release (leak) is a hard error unless the (function, local)
+    // pair carries a shrink-only, issue-linked entry in
+    // `obligation_registry` (LESSONS boundary-fail-closed,
+    // lifecycle-symmetry, migration-completeness).
+    for check in validate_obligation_balance(&elaborated, &raw, &builder) {
+        if let MirCheck::ObligationUnderReleased { function, name, .. } = &check {
+            if obligation_registry::under_release_allowlisted(function, name) {
+                continue;
+            }
+        }
         if let Some(diag) = check_to_diagnostic(&check) {
             diagnostics.push(diag);
         }

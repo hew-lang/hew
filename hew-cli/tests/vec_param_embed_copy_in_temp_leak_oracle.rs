@@ -1114,7 +1114,7 @@ fn callable_storage_return_and_capture_stay_fail_closed_on_both_targets() {
 }
 
 #[test]
-fn repeated_owned_parameter_reads_prepare_two_independent_call_carriers() {
+fn repeated_string_parameter_reads_stay_on_the_borrow_spine() {
     let mir = dump_checked_mir(
         REPEATED_OWNED_PARAM_READ_SOURCE,
         "repeated_owned_param_reads",
@@ -1126,13 +1126,16 @@ fn repeated_owned_parameter_reads_prepare_two_independent_call_carriers() {
         .expect("inspectTwice checked MIR section");
     assert_eq!(
         inspect_twice.matches("snapshot_clone _0 ty=string").count(),
-        2,
-        "both borrowing helpers free their parameter carrier, so each live read must receive an independent snapshot:\n{inspect_twice}"
+        0,
+        "a whole-string param never registers as an owned call-carrier (the CoW \
+         borrow spine owns string sharing): each live read passes the \
+         caller-owned parameter raw, and the callee's copy-in temp mints its \
+         own +1 retain:\n{inspect_twice}"
     );
     assert_eq!(
         inspect_twice.matches("neutralize_payload _0").count(),
         0,
-        "neither borrowing call may transfer and clear the still-live source parameter:\n{inspect_twice}"
+        "no call may transfer and clear the still-live source parameter:\n{inspect_twice}"
     );
 }
 

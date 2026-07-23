@@ -108,8 +108,9 @@ fn assert_record_param_embed_mints(p: &IrPipeline) {
     ] {
         assert_eq!(
             string_retain_count(p, fn_name),
-            0,
-            "{fn_name} transfers the prepared carrier without another retain"
+            1,
+            "{fn_name} embeds a borrowed string param: the copy-in temp mints \
+             exactly one +1 retain (the caller keeps its own count)"
         );
         assert_eq!(call_count(p, fn_name, copy_symbol), 1);
         assert_eq!(call_count(p, fn_name, move_symbol), 0);
@@ -137,8 +138,9 @@ fn assert_tuple_param_embed_mints(p: &IrPipeline) {
     ] {
         assert_eq!(
             string_retain_count(p, fn_name),
-            0,
-            "{fn_name} transfers the prepared carrier without another retain"
+            1,
+            "{fn_name} embeds a borrowed string param: the copy-in temp mints \
+             exactly one +1 retain (the caller keeps its own count)"
         );
         assert_eq!(call_count(p, fn_name, copy_symbol), 1);
         assert_eq!(call_count(p, fn_name, move_symbol), 0);

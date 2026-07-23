@@ -3929,7 +3929,16 @@ fn prepare_owned_call_carriers(
                     continue;
                 }
             };
-            if matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
+            // BitCopy args carry no release authority; whole-`string`/`bytes`
+            // args stay on the CoW borrow spine (the callee half never
+            // registers them — see `register_owned_call_carrier_param`), so
+            // preparing a transfer or clone here would strand a second owner.
+            if matches!(
+                plan.root(),
+                SnapshotFieldKind::BitCopy { .. }
+                    | SnapshotFieldKind::String
+                    | SnapshotFieldKind::Bytes
+            ) {
                 continue;
             }
             let local = base_local(arg.source);

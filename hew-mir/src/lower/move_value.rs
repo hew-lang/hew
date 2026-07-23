@@ -181,16 +181,31 @@ impl Builder {
             &self.opaque_handle_names,
             &self.resource_opaque_close,
         ) {
+            // Whole-`string`/`bytes` params stay on the CoW borrow spine: the
+            // caller owns the buffer and every co-owner mint (`let alias =
+            // value`, return-of-param, tuple duplication) is balanced by that
+            // spine's retain-site derivation, which classifies parameter
+            // locals as borrowed sources. Registering the param as an owned
+            // carrier adds a callee terminal drop WITHOUT the spine's retain
+            // (a share then double-frees) and routes let-shares through the
+            // transfer funnel. Aggregate roots (records, tuples, enums, Vec)
+            // have no competing ownership spine and stay on the carrier
+            // protocol. Mirrored by the caller-side root skip in
+            // `prepare_owned_call_carriers`.
             Ok(plan)
-                if !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. })
-                    && plan
-                        .is_clone_total(
-                            &record_layouts,
-                            &self.enum_layouts,
-                            &self.opaque_handle_names,
-                            &self.resource_opaque_close,
-                        )
-                        .unwrap_or(false) =>
+                if !matches!(
+                    plan.root(),
+                    SnapshotFieldKind::BitCopy { .. }
+                        | SnapshotFieldKind::String
+                        | SnapshotFieldKind::Bytes
+                ) && plan
+                    .is_clone_total(
+                        &record_layouts,
+                        &self.enum_layouts,
+                        &self.opaque_handle_names,
+                        &self.resource_opaque_close,
+                    )
+                    .unwrap_or(false) =>
             {
                 self.owned_carrier_param_ids.insert(param.id);
                 self.owned_carrier_params.push(OwnedCarrierParam {

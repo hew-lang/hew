@@ -1349,21 +1349,28 @@ fn meet_obligation_maps(a: &ObligationMap, b: &ObligationMap) -> ObligationMap {
 }
 
 /// Pre-scan: map payload-binder locals to their carrier root for move-outs
-/// of carriers that carry NO `NeutralizePayloadSlot` anywhere in the
-/// function. Without a neutralize, the binder's storage is a byte-copy of
-/// the carrier's payload slot with two live release paths — one obligation,
-/// so the binder's discharges must attribute to the carrier (this is exactly
-/// the S1882 `move_out_arm` double-free shape). When a neutralize IS
-/// present, the transfer is modelled path-sensitively by the neutralize
-/// instruction itself and the binder is an independent mint.
+/// of payload slots that carry NO `NeutralizePayloadSlot`. Without a
+/// neutralize on THAT slot, the binder's storage is a byte-copy of the
+/// carrier's payload slot with two live release paths — one obligation, so
+/// the binder's discharges must attribute to the carrier (this is exactly the
+/// S1882 `move_out_arm` double-free shape). When a neutralize IS present on
+/// the moved slot, the transfer is modelled path-sensitively by the
+/// neutralize instruction itself and the binder is an independent mint.
+///
+/// Neutralization is keyed PER SLOT, not per carrier: since #2784 a
+/// whole-carrier scrutinee neutralizes exactly the variant slot whose
+/// ownership leaves, on the arm where it leaves. A move-out arm nulls its own
+/// slot (`Ok(x) => x`) while a read-only sibling arm (`Err(y) => ..`) leaves
+/// its slot live for the carrier's terminal drop. Keying on the carrier local
+/// would let one arm's neutralize strip the read-only sibling's binder out of
+/// the alias fold, leaving it a phantom independent mint that the shell drop
+/// actually discharges — a false under-release on the sibling arm's exits.
 fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
-    let mut neutralized_carriers: HashSet<u32> = HashSet::new();
+    let mut neutralized_slots: HashSet<Place> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::NeutralizePayloadSlot { place } = instr {
-                if let Some(carrier) = payload_carrier_local(*place) {
-                    neutralized_carriers.insert(carrier);
-                }
+                neutralized_slots.insert(*place);
             }
         }
     }
@@ -1385,7 +1392,7 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
             // may sit outside the mint set, and its payload binder's storage
             // still traces to the carrier's slot — the binder is then also
             // outside the balance (its ownership story is the carrier's).
-            if !neutralized_carriers.contains(&carrier) && binder != carrier {
+            if !neutralized_slots.contains(&src) && binder != carrier {
                 alias_to.insert(binder, carrier);
             }
         }

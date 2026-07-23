@@ -17,7 +17,7 @@ use crate::await_cancel::{hew_await_cancel_status, AwaitCancelStatus, HewAwaitCa
 use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -99,6 +99,12 @@ pub struct HewReplyChannel {
     reply_drop_fn: AtomicPtr<c_void>,
     /// Distinguishes allocator failure from a legitimate null reply.
     allocation_failed: AtomicBool,
+    /// Reply-failure classification (`HEW_REPLY_FAIL_*`), first-write-wins.
+    /// Stamped by the failure producers (mailbox orphan retire, the
+    /// scheduler's crash fallback, allocation-failure marks) so a null reply
+    /// is status-bearing: `hew_reply_channel_failure_kind` names WHY no value
+    /// arrived instead of collapsing every failure into "null".
+    fail_reason: AtomicI32,
     /// The waiter-kind discriminator (W6.010). When non-null, the waiter is a
     /// PARKED CONTINUATION belonging to this actor: a reply wakes it via
     /// `scheduler::enqueue_resume(caller_actor, ..)` (the suspend edge owns the
@@ -153,6 +159,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         value_size: 0,
         reply_drop_fn: AtomicPtr::new(ptr::null_mut()),
         allocation_failed: AtomicBool::new(false),
+        fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
         caller_actor: AtomicPtr::new(ptr::null_mut()),
         lock: Mutex::new(()),
         cond: Condvar::new(),
@@ -438,7 +445,112 @@ pub(crate) unsafe fn hew_reply_channel_mark_allocation_failed(ch: *mut HewReplyC
     // SAFETY: caller guarantees `ch` is a live reply channel reference.
     unsafe {
         (*ch).allocation_failed.store(true, Ordering::Release);
+        hew_reply_channel_mark_failed(
+            ch,
+            crate::internal::types::HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED,
+        );
     }
+}
+
+/// Stamp a reply-failure classification (`HEW_REPLY_FAIL_*`) on the channel,
+/// first-write-wins: the FIRST failure producer to classify owns the reason,
+/// so a later teardown sweep (e.g. the mailbox orphan retire running after
+/// the scheduler's crash fallback already resolved the waiter) cannot repaint
+/// a specific cause with a generic one.
+pub(crate) unsafe fn hew_reply_channel_mark_failed(ch: *mut HewReplyChannel, reason: i32) {
+    if ch.is_null() || reason == crate::internal::types::HEW_REPLY_FAIL_NONE {
+        return;
+    }
+    // SAFETY: caller guarantees `ch` is a live reply channel reference.
+    unsafe {
+        let _ = (*ch).fail_reason.compare_exchange(
+            crate::internal::types::HEW_REPLY_FAIL_NONE,
+            reason,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+/// Publish the scheduler's crash fallback: classify the null reply as a
+/// handler trap, then deposit the empty reply that unblocks the waiter. The
+/// classification is stamped BEFORE the deposit so the woken waiter's
+/// `hew_reply_channel_failure_kind` read observes it (release/acquire through
+/// the ready flag).
+pub(crate) unsafe fn hew_reply_channel_publish_crash_fallback(ch: *mut HewReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `ch` is a live reply channel reference.
+    unsafe {
+        hew_reply_channel_mark_failed(ch, crate::internal::types::HEW_REPLY_FAIL_HANDLER_TRAPPED);
+        let _ = hew_reply(ch, ptr::null_mut(), 0);
+    }
+}
+
+/// Classify a resolved-null reply: WHY did the wait produce no value?
+///
+/// Returns a `HEW_REPLY_FAIL_*` discriminant. Precedence: an explicitly
+/// stamped reason (handler trap, allocation failure) wins; otherwise the
+/// channel flags classify — cancelled, then orphaned (actor stopped before
+/// dispatch). `HEW_REPLY_FAIL_NONE` means the null was a legitimate reply
+/// value. Read on the caller-side reference BEFORE it is released.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`] that the
+/// caller still holds a reference to.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_failure_kind(ch: *mut HewReplyChannel) -> i32 {
+    use crate::internal::types::{
+        HEW_REPLY_FAIL_ACTOR_STOPPED, HEW_REPLY_FAIL_CANCELLED, HEW_REPLY_FAIL_NONE,
+    };
+    if ch.is_null() {
+        return HEW_REPLY_FAIL_NONE;
+    }
+    // SAFETY: caller guarantees `ch` is a live reply channel reference.
+    unsafe {
+        let stamped = (*ch).fail_reason.load(Ordering::Acquire);
+        if stamped != HEW_REPLY_FAIL_NONE {
+            return stamped;
+        }
+        if (*ch).cancelled.load(Ordering::Acquire) {
+            return HEW_REPLY_FAIL_CANCELLED;
+        }
+        if (*ch).orphaned.load(Ordering::Acquire) {
+            return HEW_REPLY_FAIL_ACTOR_STOPPED;
+        }
+        HEW_REPLY_FAIL_NONE
+    }
+}
+
+/// Diagnose a failed `join{}` branch before the caller traps.
+///
+/// Classifies the branch's null reply via [`hew_reply_channel_failure_kind`],
+/// records the diagnostic in the error slot, and prints it to stderr — the
+/// join surface binds a tuple (no per-branch `Result`), so the trap that
+/// follows is fail-closed, and this call is what makes it status-bearing:
+/// actor-stop, cancellation, handler trap, and payload failure are
+/// distinguishable at the join site (the observable-honesty axiom). Returns
+/// the classified kind. The caller (codegen's join null-reply edge) traps
+/// with `HEW_TRAP_JOIN_BRANCH_FAILED` immediately after.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`] that the
+/// caller still holds a reference to.
+#[no_mangle]
+pub unsafe extern "C" fn hew_join_branch_failed(
+    ch: *mut HewReplyChannel,
+    branch_index: i32,
+) -> i32 {
+    // SAFETY: caller guarantees `ch` is a live reply channel reference.
+    let kind = unsafe { hew_reply_channel_failure_kind(ch) };
+    let cause = crate::internal::types::reply_fail_kind_name(kind);
+    let diagnostic = format!("hew: join branch {branch_index} failed: {cause}");
+    crate::set_last_error(diagnostic.clone());
+    eprintln!("{diagnostic}");
+    kind
 }
 
 /// Retire an ask sender reference whose mailbox ownership ends before dispatch.
@@ -537,6 +649,10 @@ pub unsafe extern "C" fn hew_reply(
             let buf = alloc_reply_buffer(size);
             if buf.is_null() {
                 (*ch).allocation_failed.store(true, Ordering::Release);
+                hew_reply_channel_mark_failed(
+                    ch,
+                    crate::internal::types::HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED,
+                );
                 // The reply buffer could not be allocated; the waiter will
                 // observe a null reply and the allocation-failed flag. The
                 // channel never took `value`, so reclaim its embedded heap via
@@ -2364,6 +2480,101 @@ mod tests {
 
         for h in handles {
             h.join().unwrap();
+        }
+    }
+
+    /// The scheduler's crash fallback stamps `HANDLER_TRAPPED` before the
+    /// null deposit, and the classification is first-write-wins: a later
+    /// generic teardown mark cannot repaint the specific cause.
+    #[test]
+    fn crash_fallback_classifies_handler_trap_first_write_wins() {
+        use crate::internal::types::{
+            HEW_REPLY_FAIL_ACTOR_STOPPED, HEW_REPLY_FAIL_HANDLER_TRAPPED,
+        };
+        // SAFETY: the channel is created, used, and freed within this test.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_retain(ch); // sender's reference
+            hew_reply_channel_publish_crash_fallback(ch);
+            assert!(
+                hew_reply_wait(ch).is_null(),
+                "the crash fallback resolves the waiter with an empty reply"
+            );
+            assert_eq!(
+                hew_reply_channel_failure_kind(ch),
+                HEW_REPLY_FAIL_HANDLER_TRAPPED,
+                "a crash-fallback null must classify as a handler trap"
+            );
+            // A later, more generic classification must not repaint it.
+            hew_reply_channel_mark_failed(ch, HEW_REPLY_FAIL_ACTOR_STOPPED);
+            assert_eq!(
+                hew_reply_channel_failure_kind(ch),
+                HEW_REPLY_FAIL_HANDLER_TRAPPED,
+                "the first failure producer owns the classification"
+            );
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    /// A mailbox-teardown orphan retire (no explicit stamp) classifies as
+    /// actor-stopped; a cancelled channel classifies as cancelled; an
+    /// untouched channel classifies as no-failure (a legitimate null).
+    #[test]
+    fn failure_kind_classifies_orphaned_cancelled_and_clean_channels() {
+        use crate::internal::types::{
+            HEW_REPLY_FAIL_ACTOR_STOPPED, HEW_REPLY_FAIL_CANCELLED, HEW_REPLY_FAIL_NONE,
+        };
+        // SAFETY: each channel is created, used, and freed within this test.
+        unsafe {
+            let clean = hew_reply_channel_new();
+            assert_eq!(hew_reply_channel_failure_kind(clean), HEW_REPLY_FAIL_NONE);
+            hew_reply_channel_free(clean);
+
+            let orphaned = hew_reply_channel_new();
+            hew_reply_channel_retain(orphaned); // mailbox sender's reference
+            hew_reply_channel_retire_orphaned_ask_sender_ref(orphaned);
+            assert!(hew_reply_wait(orphaned).is_null());
+            assert_eq!(
+                hew_reply_channel_failure_kind(orphaned),
+                HEW_REPLY_FAIL_ACTOR_STOPPED,
+                "an orphan retire with no explicit stamp is an actor-stop"
+            );
+            hew_reply_channel_free(orphaned);
+
+            let cancelled = hew_reply_channel_new();
+            hew_reply_channel_cancel(cancelled);
+            assert_eq!(
+                hew_reply_channel_failure_kind(cancelled),
+                HEW_REPLY_FAIL_CANCELLED,
+                "a cancelled channel classifies as cancelled"
+            );
+            hew_reply_channel_free(cancelled);
+        }
+    }
+
+    /// The join-branch diagnostic names the classified cause, records it in
+    /// the error slot, and returns the kind for the trap edge.
+    #[test]
+    fn join_branch_failed_names_the_classified_cause() {
+        use crate::internal::types::HEW_REPLY_FAIL_HANDLER_TRAPPED;
+        // SAFETY: the channel is created, used, and freed within this test.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_retain(ch); // sender's reference
+            hew_reply_channel_publish_crash_fallback(ch);
+            assert!(hew_reply_wait(ch).is_null());
+
+            crate::hew_clear_error();
+            let kind = hew_join_branch_failed(ch, 1);
+            assert_eq!(kind, HEW_REPLY_FAIL_HANDLER_TRAPPED);
+            let err = crate::hew_last_error();
+            assert!(!err.is_null(), "the diagnostic must land in the error slot");
+            let msg = std::ffi::CStr::from_ptr(err).to_string_lossy();
+            assert!(
+                msg.contains("join branch 1") && msg.contains("handler trapped"),
+                "the diagnostic must name the branch and the classified cause; got: {msg}"
+            );
+            hew_reply_channel_free(ch);
         }
     }
 }

@@ -418,16 +418,16 @@ pub unsafe extern "C" fn hew_trap_with_code(code: i32) {
 }
 
 /// Map a trap code to a human-readable trap kind name.
+///
+/// Delegates to the canonical [`ExitReason`] naming so every registered trap
+/// code (including additions) prints its real name here — the local table this
+/// replaces had drifted, printing bare "Trap" for codes 207+. A raw signal
+/// number (not a registered trap code) stays "Trap": this diagnostic names
+/// codegen-emitted trap kinds, not hardware signals.
 fn trap_kind_name(code: i32) -> &'static str {
-    match code {
-        HEW_TRAP_HEAP_EXCEEDED => "HeapExceeded",
-        HEW_TRAP_INTEGER_OVERFLOW => "IntegerOverflow",
-        HEW_TRAP_DIVIDE_BY_ZERO => "DivideByZero",
-        HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE => "SignedMinDivNegOne",
-        HEW_TRAP_SHIFT_OUT_OF_RANGE => "ShiftOutOfRange",
-        HEW_TRAP_INDEX_OUT_OF_BOUNDS => "IndexOutOfBounds",
-        HEW_TRAP_ACTOR_SEND_FAILED => "ActorSendFailed",
-        _ => "Trap",
+    match ExitReason::from_error_code(code) {
+        ExitReason::Signal(_) | ExitReason::Normal => "Trap",
+        reason => reason.trap_kind_name(),
     }
 }
 
@@ -4269,6 +4269,11 @@ mod tests {
                 crate::reply_channel::hew_reply_channel_is_orphaned(ch2),
                 1,
                 "the orphaned marker is the only fact the null-only reply carries"
+            );
+            assert_eq!(
+                crate::reply_channel::hew_reply_channel_failure_kind(ch2),
+                crate::internal::types::HEW_REPLY_FAIL_ACTOR_STOPPED,
+                "the status-bearing surface classifies the retirement as an actor stop"
             );
             crate::reply_channel::hew_reply_channel_free(ch2);
 

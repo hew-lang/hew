@@ -393,6 +393,62 @@ pub(crate) unsafe fn reply_is_orphaned(ch: *mut WasmReplyChannel) -> bool {
     unsafe { (*ch).orphaned }
 }
 
+/// Classify a resolved-null reply (wasm parity of the native
+/// `hew_reply_channel_failure_kind`): cancelled, orphaned (actor stopped /
+/// mailbox teardown), or allocation failure. The wasm channel carries no
+/// handler-trap stamp — a trapped wasm dispatch retires through the same
+/// mailbox-teardown orphan path, so it classifies as actor-stopped.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`] that the
+/// caller still holds a reference to.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub unsafe extern "C" fn hew_reply_channel_failure_kind(ch: *mut WasmReplyChannel) -> i32 {
+    use crate::internal::types::{
+        HEW_REPLY_FAIL_ACTOR_STOPPED, HEW_REPLY_FAIL_CANCELLED, HEW_REPLY_FAIL_NONE,
+        HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED,
+    };
+    if ch.is_null() {
+        return HEW_REPLY_FAIL_NONE;
+    }
+    // SAFETY: caller guarantees `ch` is a live reply channel reference.
+    unsafe {
+        if (*ch).allocation_failed {
+            return HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED;
+        }
+        if (*ch).cancelled {
+            return HEW_REPLY_FAIL_CANCELLED;
+        }
+        if (*ch).orphaned {
+            return HEW_REPLY_FAIL_ACTOR_STOPPED;
+        }
+        HEW_REPLY_FAIL_NONE
+    }
+}
+
+/// Diagnose a failed `join{}` branch before the caller traps (wasm parity of
+/// the native `hew_join_branch_failed`): classify, record the diagnostic, and
+/// print it, returning the classified kind.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`] that the
+/// caller still holds a reference to.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub unsafe extern "C" fn hew_join_branch_failed(
+    ch: *mut WasmReplyChannel,
+    branch_index: i32,
+) -> i32 {
+    // SAFETY: caller guarantees `ch` is a live reply channel reference.
+    let kind = unsafe { hew_reply_channel_failure_kind(ch) };
+    let cause = crate::internal::types::reply_fail_kind_name(kind);
+    let diagnostic = format!("hew: join branch {branch_index} failed: {cause}");
+    crate::set_last_error(diagnostic.clone());
+    eprintln!("{diagnostic}");
+    kind
+}
+
 /// Release a WASM reply channel reference and free it when the count reaches zero.
 ///
 /// # Safety

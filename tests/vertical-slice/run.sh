@@ -52,8 +52,7 @@ run_fixture_path_expect_status() {
   local bin
   bin="${ROOT}/.tmp/compile-out/$(basename "${fixture_path}" .hew)"
   local status=0
-  # shellcheck disable=SC2016  # $1/$2/$3 are positional args to inner bash -c; single quotes deliberate.
-  if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+  if run_compiled_binary "${bin}" "${stdout_output}" "${stderr_output}"; then
     status=0
   else
     status=$?
@@ -64,6 +63,28 @@ run_fixture_path_expect_status() {
     cat "${stdout_output}" >&2
     cat "${stderr_output}" >&2
     exit 1
+  fi
+}
+
+run_compiled_binary() {
+  local bin="$1"
+  local stdout_path="$2"
+  local stderr_path="$3"
+  shift 3
+  # Keep compilation uncapped because linking libhew.a needs substantial
+  # address space; apply the platform-appropriate cap only to execution.
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    # shellcheck disable=SC2016  # positional parameters expand in inner bash.
+    "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c \
+      'ulimit -v 524288; exec "$1" >"$2" 2>"$3"' _ \
+      "${bin}" "${stdout_path}" "${stderr_path}" 2>/dev/null
+  else
+    # Darwin and BSD reject ulimit -v; the data-segment cap is the nearest
+    # supported proxy and the timeout remains the hard containment boundary.
+    # shellcheck disable=SC2016  # positional parameters expand in inner bash.
+    "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c \
+      'ulimit -d 524288 2>/dev/null || true; exec "$1" >"$2" 2>"$3"' _ \
+      "${bin}" "${stdout_path}" "${stderr_path}" 2>/dev/null
   fi
 }
 
@@ -78,9 +99,7 @@ run_accept_expect_status() {
   # Time-bound the fixture binary: a non-terminating fixture (e.g. an actor
   # that never exits) must surface as a failure, not hang CI. 124/137 from
   # `timeout` then fail the exit-code assertion below rather than blocking.
-  # shellcheck disable=SC2016  # $1/$2/$3 are positional args to the inner
-  # `bash -c`, expanded there — the single quotes are deliberate.
-  if "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+  if run_compiled_binary "${bin}" "${stdout_output}" "${stderr_output}" "$@"; then
     status=0
   else
     status=$?
@@ -141,8 +160,7 @@ run_accept_expect_trap() {
   compile_accept "${fixture}"
   local bin="${ROOT}/.tmp/compile-out/${fixture}"
   local status=0
-  # shellcheck disable=SC2016  # $1/$2/$3 are positional args to inner bash -c; single quotes deliberate.
-  if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+  if run_compiled_binary "${bin}" "${stdout_output}" "${stderr_output}"; then
     status=0
   else
     status=$?
@@ -174,8 +192,7 @@ run_accept_expect_panic() {
   compile_accept "${fixture}"
   local bin="${ROOT}/.tmp/compile-out/${fixture}"
   local status=0
-  # shellcheck disable=SC2016  # $1/$2/$3 are positional args to inner bash -c; single quotes deliberate.
-  if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+  if run_compiled_binary "${bin}" "${stdout_output}" "${stderr_output}"; then
     status=0
   else
     status=$?

@@ -45,11 +45,12 @@ pub(super) struct UnderReleaseAllowEntry {
 /// the consume (a returned aggregate / whole-value return / payload
 /// move-out / call-carrier transfer) sits on only SOME paths, so every
 /// guard-style early return leaks the mint. Runtime-confirmed on trunk for
-/// `semver::try_parse` (44 MB / 500k error-path calls), `base64::decode`
-/// (30 MB / 500k remaining==1 calls), and `scanner::lines` (47 MB / 300k
-/// calls). Lifts when per-exit-path consume cancellation lands on the
-/// aggregation/return seam (the PR #2784 round-4 discharge model extended
-/// past `pattern.rs`) and the finding leaves the ratchet.
+/// `semver::try_parse` (44 MB / 500k error-path calls) and `base64::decode`
+/// (30 MB / 500k remaining==1 calls); the sibling `scanner` exhaustion sites
+/// left this registry once #2784's carrier model discharged them. Lifts when
+/// per-exit-path consume cancellation lands on the aggregation/return seam
+/// (the PR #2784 round-4 discharge model extended past `pattern.rs`) and the
+/// finding leaves the ratchet.
 const BRANCH_AROUND_FAMILY: &str = "per-path consume cancellation (PR #2784 round-4 model) \
                                     covers the returned-aggregate / whole-return seam and \
                                     the finding leaves make test-hew-ratchet";
@@ -97,6 +98,21 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
     },
     UnderReleaseAllowEntry {
         function: "main",
+        local: "__hew_call_scrutinee",
+        issue: BRANCH_AROUND_ISSUE,
+        lift_when: "vertical-slice `stdlib_io_scanner_file_oracle`: #2784 admits a \
+                    fresh `scanner.from_file(..)` call-result Result temp as a \
+                    unique owned carrier, but its `Ok(_) => ..` discard arm \
+                    drops the extracted payload without a shell drop in that \
+                    exit's plan, so the carrier is unreleased on the discard \
+                    path (statically real, runtime-dead in the fixture: the \
+                    probed path is guaranteed-missing so the Err arm is taken). \
+                    BROAD KEY — any `main`-local named `__hew_call_scrutinee` \
+                    rides this entry until the discard-arm shell drop lands; \
+                    remove with the family",
+    },
+    UnderReleaseAllowEntry {
+        function: "main",
         local: "first",
         issue: BRANCH_AROUND_ISSUE,
         lift_when: "vertical-slice `owned_nested_tuple_record`: the second \
@@ -126,24 +142,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
                     with no drop in that exit's plan (branch-around family; \
                     fixture-benign only because the Err payload is a static \
                     string). BROAD KEY — remove with the family",
-    },
-    UnderReleaseAllowEntry {
-        function: "scanner$collect",
-        local: "cur",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "scanner$lines",
-        local: "sc",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "scanner$words",
-        local: "sc",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
         function: "scenario_identity_location",
@@ -230,18 +228,6 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        function: "test_hashmap_get_owned_record_value_survives_remove",
-        local: "__hew_discarded_call_result",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "test_hashmap_get_string_value_survives_remove",
-        local: "__hew_discarded_call_result",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
         function: "test_remove_i64_key",
         local: "v",
         issue: BRANCH_AROUND_ISSUE,
@@ -260,56 +246,8 @@ pub(super) const UNDER_RELEASE_ALLOWLIST: &[UnderReleaseAllowEntry] = &[
         lift_when: BRANCH_AROUND_FAMILY,
     },
     UnderReleaseAllowEntry {
-        function: "test_scan_blank_lines_emitted",
-        local: "sc",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "test_scan_crlf_stripped",
-        local: "sc",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "test_scan_empty_input_no_tokens",
-        local: "sc",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "test_scan_iterate_three_lines",
-        local: "sc",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "test_scan_single_line_without_newline",
-        local: "sc",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "test_scan_trailing_newline_no_extra_token",
-        local: "sc",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
         function: "test_stream_try_to_file_send_close_and_try_from_file",
         local: "__hew_call_scrutinee",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "test_with_split_resets_position",
-        local: "sc",
-        issue: BRANCH_AROUND_ISSUE,
-        lift_when: BRANCH_AROUND_FAMILY,
-    },
-    UnderReleaseAllowEntry {
-        function: "test_with_split_switches_to_words_mode",
-        local: "sc",
         issue: BRANCH_AROUND_ISSUE,
         lift_when: BRANCH_AROUND_FAMILY,
     },
@@ -336,12 +274,19 @@ mod tests {
     fn registry_is_shrink_only() {
         /// The pinned ceiling. Lower it when an entry is fixed; raising it
         /// requires a filed issue on the new entry in the same commit.
-        /// Current population: the 27 branch-around consume-cancellation
-        /// family entries (three runtime-confirmed leak sites plus their
-        /// structural siblings; see `BRANCH_AROUND_FAMILY`) plus the
-        /// owned-element generic `Vec<T>::iter()` receiver-snapshot leak
-        /// (leaks --atExit confirmed).
-        const REGISTRY_PIN: usize = 39;
+        /// Current population after the post-#2784 corpus census: the
+        /// branch-around consume-cancellation family (semver / base64 /
+        /// stream / template / channel runtime-confirmed leak sites plus
+        /// their structural siblings; see `BRANCH_AROUND_FAMILY`), the
+        /// owned-element generic `Vec<T>::iter()` receiver-snapshot leak, and
+        /// the #2784 fresh-call-carrier discard-arm hole
+        /// (`main`/`__hew_call_scrutinee`). #2784 fixed the scanner-exhaustion
+        /// family (`scanner$lines`/`words`/`collect` + the `test_scan_*` and
+        /// `test_with_split_*` sites)
+        /// and the hashmap-get discarded-result holes; those entries left the
+        /// registry, each removal proven by its source file passing the gate
+        /// with no allowlist.
+        const REGISTRY_PIN: usize = 27;
         #[allow(
             clippy::absurd_extreme_comparisons,
             reason = "the pin is deliberately comparable at zero: the empty \

@@ -870,35 +870,52 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
 
         // CAS Suspended → Runnable; only enqueue on success (fail-closed against
         // a terminal or not-yet-parked actor).
-        if a.actor_state
-            .compare_exchange(
-                HewActorState::Suspended as i32,
-                HewActorState::Runnable as i32,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            // Direct delivery won: consume the pending marker so recorded and
-            // direct delivery collapse into ONE wake. Without this, the mark at
-            // the top of this call (mid-park window, park published `Suspended`
-            // between the slot load and the re-check) leaks past the park's own
-            // FG3 drain and fires a stale wake on the actor's NEXT park — the
-            // fabricated-timeout race (see the fn doc). Consuming a CONCURRENT
-            // racer's marker here is equally correct: its readiness deposit
-            // happens-before its mark (deposit-then-wake contract), so the
-            // single direct wake's resume scan observes that readiness too.
-            let _ = crate::coro_exec::take_pending_wake(a);
-            (true, actor_runtime_id)
-        } else {
-            // The actor was not `Suspended` yet (park still completing) — record
-            // the wake so the suspend edge observes it. Terminal actors also land
-            // here; marking is harmless (the actor will never park again). A
-            // `Runnable` actor (another wake's delivery in flight) also lands
-            // here; the marker folds this wake into that delivery, and the
-            // winning deliverer consumes it above.
-            crate::coro_exec::mark_pending_wake(a);
-            (false, actor_runtime_id)
+        match a.actor_state.compare_exchange(
+            HewActorState::Suspended as i32,
+            HewActorState::Runnable as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                // Direct delivery won: consume the pending marker so recorded and
+                // direct delivery collapse into ONE wake. Without this, the mark at
+                // the top of this call (mid-park window, park published `Suspended`
+                // between the slot load and the re-check) leaks past the park's own
+                // FG3 drain and fires a stale wake on the actor's NEXT park — the
+                // fabricated-timeout race (see the fn doc). Consuming a CONCURRENT
+                // racer's marker here is equally correct: its readiness deposit
+                // happens-before its mark (deposit-then-wake contract), so the
+                // single direct wake's resume scan observes that readiness too.
+                let _ = crate::coro_exec::take_pending_wake(a);
+                (true, actor_runtime_id)
+            }
+            Err(observed) if observed == HewActorState::Runnable as i32 => {
+                // `Runnable`: a delivery is ALREADY enqueued — either the park's
+                // FG3 drain (it consumed a marker and re-enqueued) or another
+                // source's direct CAS win. Marking here would be the stale-wake
+                // duplicate: if this call's own mark above was already drained,
+                // a second mark survives into a later park and fires with no
+                // readiness behind it. No wake is lost by not marking:
+                // - if the drain consumed OUR mark, its AcqRel swap reading our
+                //   Release mark orders our readiness deposit before the drain's
+                //   enqueue and hence before the resume's scan;
+                // - if another source won directly, every enqueue_resume source
+                //   settles a one-shot arbiter BEFORE waking — our source either
+                //   won it (its readiness is published before the completion the
+                //   resume edge observes, so the resume's status-gated re-scan
+                //   finds it) or lost it (the winner carries the resume; our
+                //   effect is resolved by the arbiter).
+                (false, actor_runtime_id)
+            }
+            Err(_) => {
+                // `Running` (dispatch park not yet published — the FG3 window) or
+                // `Idle` (lifecycle park's Idle → Suspended window): the wake
+                // could genuinely be missed — record it so the park's drain
+                // delivers. Terminal actors (`Stopped`/`Crashed`) also land
+                // here; the mark is inert (a terminal actor never parks again).
+                crate::coro_exec::mark_pending_wake(a);
+                (false, actor_runtime_id)
+            }
         }
     });
 
@@ -3653,6 +3670,57 @@ mod tests {
             "a direct delivery must consume the pending marker — a surviving \
              marker is a STALE wake for the actor's next park (the \
              fabricated-timeout race)"
+        );
+    }
+
+    /// Stale-wake guard, CAS-lose direction: a wake that loses the
+    /// `Suspended → Runnable` CAS to an ALREADY-`Runnable` actor must NOT
+    /// record a pending marker.
+    ///
+    /// This pins the duplicate-marker interleaving: the waker marks
+    /// `pending_wake` mid-park; the park publishes `Suspended` and its FG3
+    /// drain consumes the marker and re-enqueues (state now `Runnable`); the
+    /// waker's CAS then loses. The old unconditional re-mark created a second
+    /// marker with no readiness behind it — the same stale wake the
+    /// direct-delivery consume closes. The wake is already delivered: the
+    /// drain's `AcqRel` swap reading the waker's Release mark orders the
+    /// readiness deposit before the drain's enqueue, so nothing is lost by
+    /// not marking. The test enters `enqueue_resume` with the drain's exact
+    /// post-state (parked handle, `Runnable`, marker already consumed) and
+    /// asserts no marker is recorded and no second enqueue occurs.
+    #[test]
+    fn enqueue_resume_cas_lose_to_runnable_does_not_mark() {
+        let sched = NoWorkerSchedulerForTest::install();
+        let actor = TrackedTestActor::install(stub_actor());
+        // The drain's post-state: handle parked, marker consumed, and the
+        // actor already `Runnable` (the drain won and enqueued).
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        let actor_ptr = actor.ptr();
+
+        // SAFETY: actor is live (tracked); the sentinel handle is never
+        // resumed (no worker thread exists under NoWorkerSchedulerForTest).
+        unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+
+        assert_eq!(
+            sched.pop_global(),
+            None,
+            "a lost CAS must not enqueue a second delivery"
+        );
+        assert!(
+            !crate::coro_exec::take_pending_wake(&actor),
+            "losing the CAS to Runnable must not record a marker — the \
+             delivery already in flight covers this wake, and a recorded \
+             marker is a stale wake for the actor's next park"
         );
     }
 

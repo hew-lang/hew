@@ -1429,15 +1429,28 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         HirExprKind::MachineTakeEmits {
             receiver, event, ..
         } => scan_expr_for_consume(receiver, b_p, pc) || scan_expr_for_consume(event, b_p, pc),
+        // Rc/Weak intrinsic. Every op reads its RECEIVER handle through a
+        // borrow: `clone`/`downgrade`/`weak_clone` mint a NEW independently
+        // counted handle, the count/uniqueness probes read the header, and
+        // `set`/`get` reach the payload through the still-caller-owned cell.
+        // A bare-ref receiver must therefore be intercepted as a borrow slot
+        // (mirroring the `Read`-intent method receiver rule) instead of
+        // falling to the leaf consume rule — otherwise every by-value Rc/Weak
+        // parameter whose methods are called is misclassified as an owning
+        // sink and admitted as a call carrier. The VALUE operand (`Rc::new`,
+        // `set`) IS stored into the cell and keeps the consume scan.
         HirExprKind::RcIntrinsic {
             receiver, value, ..
         } => {
-            receiver
+            receiver.as_deref().is_some_and(|expr| {
+                if is_binding_ref(expr, b_p) {
+                    false
+                } else {
+                    scan_expr_for_consume(expr, b_p, pc)
+                }
+            }) || value
                 .as_deref()
                 .is_some_and(|expr| scan_expr_for_consume(expr, b_p, pc))
-                || value
-                    .as_deref()
-                    .is_some_and(|expr| scan_expr_for_consume(expr, b_p, pc))
         }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }

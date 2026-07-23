@@ -10989,17 +10989,19 @@ pub(crate) fn emit_suspending_select_terminator<'ctx>(
             // Resume: a readiness arm fired (or the deadline). Scan the readiness
             // flags once (non-blocking) to find the winner. A -1 scan is
             // AMBIGUOUS — the deadline may have won, OR the wake was stale (a
-            // folded/leaked `pending_wake` with no readiness behind it) — so -1
-            // consults the arbiter's one-shot state before dispatch: ONLY
-            // TimedOut may enter the `after` arm. Pending re-suspends (the arms
-            // and the deadline are all still armed; nothing was torn down), so a
-            // stale wake never fabricates a timeout — the observable-honesty
-            // axiom at the runtime level. Completed/Cancelled with no ready arm
-            // violates the publish-ready-before-complete contract
-            // (`publish_reply_from_sender_ref`) and traps fail-closed. A real
-            // winner (>= 0) dispatches through the shared winner blocks, which
-            // bind the winner, cancel the losers, and tear down the arbiter
-            // (cancel-no-wake + free) on every resume edge exactly once.
+            // folded/leaked `pending_wake` with no readiness behind it), OR an
+            // arm's fire raced the scan — so -1 consults the arbiter's one-shot
+            // state before dispatch: ONLY TimedOut may enter the `after` arm.
+            // Pending re-suspends (the arms and the deadline are all still
+            // armed; nothing was torn down), so a stale wake never fabricates a
+            // timeout — the observable-honesty axiom at the runtime level.
+            // Completed re-scans: publish-ready-before-complete guarantees the
+            // racing winner's readiness is visible once the status reads
+            // Completed. Cancelled with no ready arm has no live source and
+            // traps fail-closed. A real winner (>= 0) dispatches through the
+            // shared winner blocks, which bind the winner, cancel the losers,
+            // and tear down the arbiter (cancel-no-wake + free) on every resume
+            // edge exactly once.
             let idx0 = i32_ty.const_zero();
             let arr_first = unsafe {
                 fn_ctx
@@ -11040,6 +11042,9 @@ pub(crate) fn emit_suspending_select_terminator<'ctx>(
             let pending_check_bb =
                 ctx.append_basic_block(parent, "suspending_select_pending_check");
             let respark_bb = ctx.append_basic_block(parent, "suspending_select_respark");
+            let completed_check_bb =
+                ctx.append_basic_block(parent, "suspending_select_completed_check");
+            let rescan_bb = ctx.append_basic_block(parent, "suspending_select_rescan");
             let stale_trap_bb = ctx.append_basic_block(parent, "suspending_select_stale_trap");
             let neg_one = i32_ty.const_all_ones();
             let no_ready = fn_ctx
@@ -11099,7 +11104,7 @@ pub(crate) fn emit_suspending_select_terminator<'ctx>(
                 .llvm_ctx("suspending select pending compare")?;
             fn_ctx
                 .builder
-                .build_conditional_branch(still_pending, respark_bb, stale_trap_bb)
+                .build_conditional_branch(still_pending, respark_bb, completed_check_bb)
                 .llvm_ctx("suspending select pending branch")?;
 
             // Stale wake with the wait still Pending: re-suspend. Every arm
@@ -11114,10 +11119,44 @@ pub(crate) fn emit_suspending_select_terminator<'ctx>(
                 .build_unconditional_branch(do_suspend_bb)
                 .llvm_ctx("suspending select respark br")?;
 
-            // Completed or Cancelled with NO ready arm: the fire path publishes
-            // channel readiness BEFORE completing the arbiter, so this state is
-            // unreachable under the contract — fail closed, never fabricate a
-            // winner.
+            // Completed with NO ready arm: an arm's fire RACED the scan — it
+            // published readiness and completed the arbiter after the scan read
+            // its channel but before the status load. Publish-ready-before-
+            // complete (`publish_reply_from_sender_ref`) plus the Acquire status
+            // load reading the completer's AcqRel one-shot CAS order the
+            // winner's readiness store before everything after the status load,
+            // so a RE-SCAN is guaranteed to find the winner (the loop terminates
+            // in one extra iteration). Never trap on a valid interleaving.
+            fn_ctx.builder.position_at_end(completed_check_bb);
+            let completed = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    status,
+                    i32_ty.const_int(1, false), // AwaitCancelStatus::Completed
+                    "suspending_select_completed_race",
+                )
+                .llvm_ctx("suspending select completed compare")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(completed, rescan_bb, stale_trap_bb)
+                .llvm_ctx("suspending select completed branch")?;
+
+            fn_ctx.builder.position_at_end(rescan_bb);
+            fn_ctx
+                .builder
+                .build_unconditional_branch(scan_bb)
+                .llvm_ctx("suspending select rescan br")?;
+
+            // Cancelled with no ready arm: unreachable today, trap fail-closed.
+            // Cancelled requires `hew_await_cancel_cancel`/`observe_token` on
+            // this arbiter: the abandon edge cancels no-wake and DESTROYS the
+            // parked continuation (mutually exclusive with this resume edge),
+            // the resume teardown cancels no-wake only AFTER this gate passed
+            // (and the select is then complete — this gate never re-runs), and
+            // `hew_await_cancel_observe_token` has no callers. A Cancelled
+            // status observed here would mean an unknown cancel-with-wake
+            // source; never fabricate a timeout or a winner for it.
             fn_ctx.builder.position_at_end(stale_trap_bb);
             emit_select_no_winner_trap(fn_ctx)?;
 

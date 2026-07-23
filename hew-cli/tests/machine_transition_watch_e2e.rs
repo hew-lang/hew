@@ -414,6 +414,108 @@ fn select_after_genuine_expiry_takes_after_arm() {
     );
 }
 
+/// The resume-edge gate's emitted shape, pinned in the `.ll` dump: a -1
+/// scan consults the deadline arbiter, and each status routes to its
+/// proven-safe continuation. Behavioural coverage exists for the
+/// `TimedOut` arm (`select_after_genuine_expiry_takes_after_arm`) and the
+/// no-stale-timeout direction (`cross_actor_record_transition_watch_runs_clean`);
+/// the Pending-respark and Completed-rescan edges fire only on wake/scan
+/// races that cannot be forced end to end, so their CFG is pinned here:
+/// - `suspending_select_respark` loops back to the suspend point
+///   (Pending: re-park, never fabricate a timeout);
+/// - `suspending_select_rescan` loops back to the scan (Completed: the
+///   racing winner's readiness is visible, the re-scan finds it);
+/// - the fail-closed trap is reachable ONLY from the Completed check
+///   (i.e. only for Cancelled, the no-live-source state).
+#[test]
+fn suspending_select_wake_gate_ir_shape_holds() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("gate_shape.hew");
+    std::fs::write(
+        &source,
+        "import std::channel::channel;\n\
+         \n\
+         actor Observer {\n\
+         \x20   receive fn watch(rx: channel.Receiver<i64>) {\n\
+         \x20       select {\n\
+         \x20           v from rx.recv() => {\n\
+         \x20               match v {\n\
+         \x20                   Some(_) => println(\"value\"),\n\
+         \x20                   None => println(\"closed\"),\n\
+         \x20               }\n\
+         \x20           },\n\
+         \x20           after 1s => println(\"timeout\"),\n\
+         \x20       };\n\
+         \x20       rx.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   let obs = spawn Observer;\n\
+         \x20   obs.watch(rx);\n\
+         \x20   tx.close();\n\
+         \x20   sleep(20ms);\n\
+         }\n",
+    )
+    .unwrap();
+
+    let emit_dir = dir.path().join("ll-out");
+    let output = support::run_hew_in(
+        dir.path(),
+        &[
+            "compile",
+            "--emit-dir",
+            emit_dir.to_str().unwrap(),
+            source.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "gate-shape fixture must compile:\n{}",
+        support::describe_output(&output),
+    );
+
+    let ll = std::fs::read_to_string(emit_dir.join("gate_shape.ll"))
+        .expect("--emit-dir must produce gate_shape.ll");
+
+    assert!(
+        ll.contains("%suspending_select_wake_status = call i32 @hew_await_cancel_status"),
+        "the -1 edge must consult the arbiter status"
+    );
+    let suspend_label = ll
+        .lines()
+        .find(|l| l.starts_with("suspending_select_suspend:"))
+        .expect("suspend block label present");
+    assert!(
+        suspend_label.contains("%suspending_select_respark"),
+        "Pending must re-suspend: respark is a predecessor of the suspend \
+         point; got: {suspend_label}"
+    );
+    let scan_label = ll
+        .lines()
+        .find(|l| l.starts_with("suspending_select_scan:"))
+        .expect("scan block label present");
+    assert!(
+        scan_label.contains("%suspending_select_rescan"),
+        "Completed must re-scan: rescan is a predecessor of the scan; \
+         got: {scan_label}"
+    );
+    let trap_label = ll
+        .lines()
+        .find(|l| l.starts_with("suspending_select_stale_trap:"))
+        .expect("stale-trap block label present");
+    assert!(
+        trap_label.contains("%suspending_select_completed_check")
+            && !trap_label.contains("%suspending_select_no_ready")
+            && !trap_label.contains("%suspending_select_pending_check"),
+        "the fail-closed trap must be reachable only from the Completed \
+         check (Cancelled); got: {trap_label}"
+    );
+}
+
 /// A heap-payload machine held in actor state: step into the
 /// string-payload `Failed` state and back out. The store-back rides the
 /// state-field overwrite-release path, so the old state's payload is

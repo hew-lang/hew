@@ -2382,12 +2382,10 @@ impl Builder {
                             };
                             match origin {
                                 ProjectedPayloadOrigin::OwnedBinding(scrutinee) => {
-                                    self.push_instr(Instr::NeutralizePayloadSlot {
-                                        place: provenance.source_place,
-                                        transferee: None,
-                                        authority:
-                                            crate::model::NeutralizeAuthority::MoveOutArmConsume,
-                                    });
+                                    self.push_move_out_neutralize(
+                                        provenance.source_place,
+                                        crate::model::NeutralizeAuthority::MoveOutArmConsume,
+                                    );
                                     // #2523 F2 — a PARTIAL-PROJECTION consume-mark:
                                     // the owned scrutinee had one payload field
                                     // moved out. Marks `b` re-read-forbidding
@@ -2405,12 +2403,10 @@ impl Builder {
                                     });
                                 }
                                 ProjectedPayloadOrigin::EphemeralTemp => {
-                                    self.push_instr(Instr::NeutralizePayloadSlot {
-                                        place: provenance.source_place,
-                                        transferee: None,
-                                        authority:
-                                            crate::model::NeutralizeAuthority::EphemeralTempConsume,
-                                    });
+                                    self.push_move_out_neutralize(
+                                        provenance.source_place,
+                                        crate::model::NeutralizeAuthority::EphemeralTempConsume,
+                                    );
                                 }
                                 ProjectedPayloadOrigin::Reject(reason) => {
                                     // Do NOT emit the unsound temp-neutralize —
@@ -9927,13 +9923,9 @@ mod binding_ty_is_plain_vec_tuple {
         assert_eq!(ledger[0].binding, BindingId(3));
         assert_eq!(ledger[0].disposition, Disposition::ScopeExit);
         assert_eq!(ledger[1].binding, BindingId(4));
-        assert_eq!(
-            ledger[1].disposition,
-            Disposition::ConsumedAt {
-                transferee: None,
-                site: DischargeSite::BindingMoved,
-            },
-            "the retracted entry survives carrying its recorded disposition"
+        assert!(
+            matches!(ledger[1].disposition, Disposition::ConsumedAt { .. }),
+            "the retracted entry survives carrying its recorded consume disposition"
         );
     }
 

@@ -681,7 +681,7 @@ fn fs$read(string) -> string [conv=default]
     _20 = call fs$io_error_from_errno(_19) -> bb14
   bb14:
     _33 = move _20
-    neutralize_payload _20
+    neutralize_payload _20 -> _33 [SendTransferLastUse]
     _21 = call fs$io_error_message(_33) -> bb15
   bb15:
     _22 = call string::fmt(_21) -> bb16

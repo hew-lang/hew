@@ -3152,16 +3152,13 @@ fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
     clippy::needless_pass_by_value,
     reason = "SendTransport and Arc values are moved into this thread from spawn closure"
 )]
-// The 8th argument (`noise_transport`) only exists under the `encryption`
-// feature; without it the arg list is under the lint threshold, so the
-// expectation must be conditional or it goes unfulfilled.
-#[cfg_attr(
-    feature = "encryption",
-    expect(
-        clippy::too_many_arguments,
-        reason = "reader_loop captures all per-connection state; splitting into a struct \
-                  would require unsafe Send impls for the contained raw pointers"
-    )
+// Eight arguments even without the `encryption` feature (`noise_transport`
+// is the ninth), so the arg list exceeds the lint threshold in both feature
+// configurations and the expectation is unconditional.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "reader_loop captures all per-connection state; splitting into a struct \
+              would require unsafe Send impls for the contained raw pointers"
 )]
 #[allow(
     clippy::too_many_lines,

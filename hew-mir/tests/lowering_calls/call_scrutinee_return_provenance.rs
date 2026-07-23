@@ -120,7 +120,7 @@ fn any_call_result_neutralize(p: &IrPipeline) -> bool {
             b.instructions.iter().any(|i| {
                 matches!(
                     i,
-                    hew_mir::Instr::NeutralizePayloadSlot { place }
+                    hew_mir::Instr::NeutralizePayloadSlot { place, .. }
                         if call_results.contains(place)
                 )
             })

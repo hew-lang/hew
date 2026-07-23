@@ -23,6 +23,7 @@ use hew_hir::{
     ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
+use hew_types::runtime_call::ConsumeVerdict;
 use hew_types::{
     short_name, BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
     NumericMethodOp, NumericSignedness, ResolvedTy,
@@ -63,6 +64,7 @@ mod expr;
 mod facts;
 mod machine_synth;
 mod move_value;
+mod obligation_registry;
 mod ownership;
 mod pattern;
 mod rc_intrinsic;
@@ -113,8 +115,9 @@ use self::drop_plan::{
     stream_handle_drop_descriptor, ty_is_closure_pair, ty_is_generator_handle,
     ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
     ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
-    ty_is_stream_handle, ty_is_vec, validate_drop_plan, validate_field_drop_in_place,
-    vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
+    ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
+    validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
 };
 pub(crate) use self::facts::*;
 #[cfg(not(test))]
@@ -3669,9 +3672,15 @@ pub(crate) struct ParamOwnershipFacts {
     /// composites (a by-value `Result<string, string>` / user enum), which
     /// `lower_params` needs to decide whether a heap-owning enum-composite param
     /// is the CALLEE's drop obligation (CONSUME) or the caller's (BORROW). A
-    /// BORROW param is `false`; a param absent from the map is treated as BORROW
-    /// (fail-safe: the caller keeps and drops it, no callee double-free).
-    call_param_consume: HashMap<(hew_hir::ItemId, usize), bool>,
+    /// A BORROW param is `ConsumeVerdict::ProvenBorrow`; a param absent from the
+    /// map is treated as BORROW (fail-safe: the caller keeps and drops it, no
+    /// callee double-free). The two consume flavours
+    /// (`ProvenConsume`/`ConservativeConsume`) both mean "callee owns/drops" and
+    /// are byte-identical at every consumer via `is_consume()` — the finer label
+    /// records WHY the param flipped (positive escape proof vs the fail-closed
+    /// forward-to-unproven disjunct) so a later pass can act on the proven-borrow
+    /// tail without re-deriving it.
+    call_param_consume: HashMap<(hew_hir::ItemId, usize), ConsumeVerdict>,
     /// A separate caller/callee contract for parameters whose body carries the
     /// value into an owning sink. Callers prepare an independent owner (or
     /// transfer a proven dead whole local); callees install the inverse
@@ -3704,6 +3713,16 @@ struct ScanCtx<'a> {
     /// root parameter. This is enabled only for the deep call-carrier summary,
     /// never for the legacy borrow/consume table.
     owned_projection_sinks: bool,
+    /// Whether a bare-ref argument forwarded to a free-function parameter is
+    /// treated OPTIMISTICALLY as a borrow, regardless of the target's verdict.
+    /// The normal scan flips such a forward to CONSUME when the target is
+    /// consuming or unproven (the fail-closed disjunct); this flag suppresses
+    /// exactly that disjunct so the scan reports ONLY the positively-proven
+    /// escapes (returned/stored/sent/captured). Used solely to split a converged
+    /// consume verdict into `ProvenConsume` vs `ConservativeConsume` (see
+    /// `refine_call_param_verdicts`); never enabled for the consume/borrow or
+    /// carrier tables that drive move intent.
+    assume_forward_borrows: bool,
     /// The subset of `methods` whose PARAM 0 is a by-value `self` receiver of a
     /// NON-resource type (`collect_borrow_receiver_methods`). Shape A of #2753:
     /// the borrow-site collector records such a receiver's `SiteId` so the
@@ -4019,9 +4038,11 @@ fn prepare_owned_call_carriers(
                     dest,
                     src: arg.source,
                 });
-                block
-                    .instructions
-                    .push(Instr::NeutralizePayloadSlot { place: arg.source });
+                block.instructions.push(Instr::NeutralizePayloadSlot {
+                    place: arg.source,
+                    transferee: Some(dest),
+                    authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
+                });
                 if let Some(slot) = args.get_mut(arg.index) {
                     *slot = dest;
                 }
@@ -4512,7 +4533,11 @@ fn prepare_outbound_actor_payloads(
                             dest,
                             src: arg.source,
                         });
-                        prep.push(Instr::NeutralizePayloadSlot { place: arg.source });
+                        prep.push(Instr::NeutralizePayloadSlot {
+                            place: arg.source,
+                            transferee: Some(dest),
+                            authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
+                        });
                         if let Ok(plan) =
                             crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
                                 &arg.ty,
@@ -5177,6 +5202,43 @@ pub(crate) fn lower_function(
             diagnostics.push(diag);
         }
     }
+    // S1 obligation-balance gate: every heap-owning owned local must be
+    // released exactly once on every reachable Return path. The discharge
+    // set is re-derived from the primitive Instr stream + CFG (never from
+    // the Disposition ledger — the ledger is the component under test).
+    // Over-release (double-free) is an unconditional hard error;
+    // under-release (leak) is a hard error unless the (function, local)
+    // pair carries a shrink-only, issue-linked entry in
+    // `obligation_registry` (LESSONS boundary-fail-closed,
+    // lifecycle-symmetry, migration-completeness).
+    for check in validate_obligation_balance(&elaborated, &raw, &builder) {
+        if let MirCheck::ObligationUnderReleased { function, name, .. } = &check {
+            if obligation_registry::under_release_allowlisted(function, name) {
+                continue;
+            }
+        }
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
+    // Discharge-authority carriage gates (A / D159): (1) the fail-closed
+    // backstop — a NeutralizePayloadSlot whose authority owns a destination must
+    // carry its transferee; (2) the corroboration pin — the carried transferee
+    // fact must agree with the independently re-derived routing. S1 above does
+    // NOT read these facts (independence preserved); the corroboration is a
+    // separate third pass comparing the two carriers (LESSONS boundary-fail-closed,
+    // duplicated-boundary-fact-needs-a-pin-test).
+    for check in validate_discharge_authority(&elaborated, &raw)
+        .into_iter()
+        .chain(validate_discharge_authority_corroboration(
+            &elaborated,
+            &raw,
+        ))
+    {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
     // Fail-closed legality rules for the field-addressed in-place drop op:
     // the op's `ty` must be a shape the shared classifier (or the `string`
     // reroute) admits, its base must be a record/tuple local matching the
@@ -5449,6 +5511,20 @@ struct FungibleChildRef {
 /// end-of-pass scan can observe a binding whose release was handled
 /// mid-lowering — the retraction-invisible class that a physical
 /// `owned_locals.retain(...)` removal used to make unobservable.
+/// WHY a [`Disposition::ConsumedAt`] retraction fired — the discharge authority
+/// for a consume, carried on the ledger entry as data (D159/U229). Compact and
+/// `Copy` so [`Disposition`] keeps its `Copy` derive (a non-`Copy` payload would
+/// ripple through every by-value `Disposition` read). The match on this enum is
+/// exhaustive at every consumer (no wildcard — `exhaustive-coverage`, L125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DischargeSite {
+    /// The general consume retraction [`Builder::mark_binding_moved`] performs
+    /// when a heap-owning owned local is moved out (returned, sent, or stored
+    /// into a longer-lived owner). This is the only production origin today; the
+    /// destination owner is not a nameable `Place` at this seam.
+    BindingMoved,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Disposition {
     /// Released by the function-exit LIFO drop pass, narrowed per exit edge —
@@ -5465,7 +5541,20 @@ enum Disposition {
     /// so the scope-exit release is suppressed. A later overwrite on a different
     /// control-flow path is gated by the path-sensitive drop flag, independent
     /// of this disposition.
-    ConsumedAt,
+    ///
+    /// Carries the discharge authority as data (D159/U229): `site` names WHY the
+    /// consume retraction fired, and `transferee` names the new owner when it is
+    /// a nameable `Place` at the retraction seam. The sole production writer
+    /// ([`Builder::mark_binding_moved`]) is a general consume seam (return / send
+    /// / store) with no destination local in hand, so `transferee` is `None`
+    /// there; the field exists so a future consume site that DOES know its
+    /// destination records it without erasing the fact. The variant is not
+    /// constructible without both fields, so a caller cannot retract to
+    /// `ConsumedAt` while dropping the authority (close-by-construction, U221).
+    ConsumedAt {
+        transferee: Option<Place>,
+        site: DischargeSite,
+    },
     /// Released inline when an INNER scope closes (a generator coro frame or a
     /// `VecIter` cursor handle declared in a nested block), so the release fires
     /// once per outer-loop iteration instead of accumulating to function exit.
@@ -5897,8 +5986,7 @@ impl Builder {
                     .param_ownership
                     .call_param_consume
                     .get(&(func.id, i))
-                    .copied()
-                    == Some(true)
+                    .is_some_and(|v| v.is_consume())
             {
                 let owned_ty = self.subst_ty(&param.ty);
                 if ty_is_heap_owning_enum_composite(

@@ -4058,6 +4058,56 @@ pub enum FloatWidth {
     F64,
 }
 
+/// WHY an [`Instr::NeutralizePayloadSlot`] fires — the closed, compiler-owned
+/// set of discharge authorities (D159/U229). Every neutralize site names its
+/// authority so the fact is carried as data rather than re-derived from the
+/// surrounding instruction shape, and the fail-closed `DischargeAuthorityMissing`
+/// check knows which authorities structurally own a transferee.
+///
+/// The match on this enum is exhaustive at every consumer (no wildcard
+/// "unknown authority = assume fine" arm — `exhaustive-coverage`, L125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeutralizeAuthority {
+    /// The move-out arm of a consuming match: an `OwnedBinding`-provenance
+    /// projected payload binder is consumed, nulling the scrutinee's variant
+    /// slot (`hew-mir/src/lower/expr.rs`). The payload is consumed into an
+    /// in-flight expression, so there is no destination `Place` in hand —
+    /// `transferee` is `None` here by construction.
+    MoveOutArmConsume,
+    /// A fresh sole-owner ephemeral temp (`match f()`) whose payload is moved
+    /// out, nulling the temp. No re-readable origin and no persistent new owner
+    /// local — `transferee` is `None`.
+    EphemeralTempConsume,
+    /// A `SendAliasMode::TransferLastUse` send/ask argument funnel: the argument
+    /// is moved into a fresh by-value carrier `dest` and its source slot nulled
+    /// (`hew-mir/src/lower/mod.rs`). `transferee` is the `dest` carrier.
+    SendTransferLastUse,
+    /// A whole owned call-carrier consume: the carrier value is moved into a
+    /// fresh owner `dest` and its source slot nulled
+    /// (`hew-mir/src/lower/move_value.rs`). `transferee` is the `dest` owner.
+    WholeCarrierConsume,
+}
+
+impl NeutralizeAuthority {
+    /// Whether this authority structurally owns a `transferee` destination
+    /// `Place`. The funnel and whole-carrier authorities move into a named
+    /// `dest`; the move-out-arm authorities consume into an in-flight expression
+    /// with no destination local. A `None` transferee on a requires-transferee
+    /// authority is a defective (fact-erased) site the fail-closed
+    /// `DischargeAuthorityMissing` check rejects before codegen.
+    #[must_use]
+    pub fn requires_transferee(self) -> bool {
+        match self {
+            NeutralizeAuthority::SendTransferLastUse | NeutralizeAuthority::WholeCarrierConsume => {
+                true
+            }
+            NeutralizeAuthority::MoveOutArmConsume | NeutralizeAuthority::EphemeralTempConsume => {
+                false
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
     /// Semantic marker at actor-handler entry. Codegen emits no user-visible
@@ -4390,7 +4440,24 @@ pub enum Instr {
     /// a direct null store and an aggregate payload by nulling every heap leaf
     /// (`emit_overwrite_neutralize_*`), so every release symbol the scrutinee's
     /// drop later calls is a null-tolerant no-op.
-    NeutralizePayloadSlot { place: Place },
+    NeutralizePayloadSlot {
+        place: Place,
+        /// The new owner the neutralized storage's ownership transferred TO, when
+        /// it is a nameable `Place` at the emit site. `Some` at the send-transfer
+        /// funnels and the whole-carrier move (the move `dest` is in hand);
+        /// `None` at the move-out-arm consume hooks, where the payload is
+        /// consumed into an in-flight expression with no destination local yet
+        /// bound. The [`NeutralizeAuthority`] records which case applies, and the
+        /// fail-closed `DischargeAuthorityMissing` check rejects a `None` on an
+        /// authority that structurally owns a destination (see `check_to_diagnostic`).
+        transferee: Option<Place>,
+        /// WHY this neutralize fires — the closed, compiler-owned discharge
+        /// authority. Carried as data (D159/U229) so a downstream consumer reads
+        /// the recorded reason instead of re-deriving it from the surrounding
+        /// instruction shape, and the corroboration pass can pin it against the
+        /// independently-derived discharge set.
+        authority: NeutralizeAuthority,
+    },
     /// Neutralize one root-relative aggregate projection after its byte-copied
     /// value has transferred into a new owner. The path traverses inline record
     /// and tuple fields from `root`; clearing only the terminal slot leaves the
@@ -5682,6 +5749,35 @@ pub enum MirCheck {
     /// `reason` carries a short human-readable cause for diagnostic
     /// anchoring; `ty` is the rejected operand rendered for display.
     WitnessOperandUnresolved { ty: String, reason: String },
+    /// S1 obligation-balance: a heap-owning owned local reaches a `Return`
+    /// exit with ZERO discharges on every modelling of that path — no terminal
+    /// drop in the exit's plan, no ownership transfer (move-out / neutralize /
+    /// send / consuming runtime call), no inline release. The mint's release
+    /// obligation is never met on this path: a leak. The discharge set is
+    /// re-derived independently from the primitive `Instr` stream + CFG
+    /// reachability (never from the elaborator's `Disposition` ledger — the
+    /// ledger is the component under test). Under-release is a hard error
+    /// gated by the shrink-only, issue-linked allowlist registry
+    /// (`obligation_registry`).
+    ObligationUnderReleased {
+        /// Function symbol (`ElaboratedMirFunction::name`) — the registry key.
+        function: String,
+        /// The unbalanced exit's block id (`return[bbN]`).
+        block: u32,
+        /// Source-level name of the leaked local (registry key + diagnostics).
+        name: String,
+        reason: String,
+    },
+    /// S1 obligation-balance: a heap-owning owned local accumulates TWO OR
+    /// MORE definite discharges on a single CFG path to a `Return` exit — a
+    /// double-free. Memory-unsafe; unconditional hard error with NO allowlist
+    /// escape.
+    ObligationOverReleased {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
     /// W3.053 fail-closed gate: an owned handle (Generator / Stream / Sink /
     /// Duplex / Cancellation token / actor handle — any `AffineResource` /
     /// `CowHeap`-drop handle) was moved into a local tuple/record and then
@@ -5718,6 +5814,33 @@ pub enum MirCheck {
         /// remediation wording. Actor-state findings are always `overwrite:
         /// true` (no extraction arm).
         owner: AggregateOwner,
+    },
+    /// Discharge-authority carriage (A / D159): a `NeutralizePayloadSlot`
+    /// carries a [`NeutralizeAuthority`] that structurally owns a `transferee`
+    /// destination (`SendTransferLastUse` / `WholeCarrierConsume`) but the
+    /// `transferee` is `None` — a fact-erased site that slipped a defaulted
+    /// authority past the write chokepoint. Fail-closed hard error before
+    /// codegen (boundary-fail-closed, L49): a neutralize with a required-but-
+    /// absent transferee is a defective discharge record, never a silent pass.
+    DischargeAuthorityMissing {
+        function: String,
+        block: u32,
+        /// The authority whose structural transferee requirement was violated.
+        authority: NeutralizeAuthority,
+        reason: String,
+    },
+    /// Discharge-authority corroboration pin (A / D159 dual-carrier): a carried
+    /// discharge authority disagrees with the INDEPENDENTLY re-derived discharge
+    /// set — a `NeutralizePayloadSlot` names a `transferee` the primitive-stream
+    /// derivation does not see actually taking ownership, or a `ConsumedAt`
+    /// disposition claims a consume the instruction stream never performs (the
+    /// S1889-F3 routing-vs-disposition drift shape). Hard error: two carriers of
+    /// one fact must agree (L211).
+    DischargeAuthorityDrift {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
     },
 }
 
@@ -6619,11 +6742,48 @@ pub enum MirDiagnosticKind {
     /// emits a partial drop (fail-closed per LESSONS
     /// `cleanup-all-exits` / `boundary-fail-closed`).
     DropPlanUndetermined { block: u32, reason: String },
+    /// S1 obligation-balance under-release (leak): surfaced from
+    /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has
+    /// ZERO discharges on a CFG path to a `Return` exit. Hard error unless
+    /// the (function, name) pair carries a shrink-only, issue-linked
+    /// registry entry (`obligation_registry`).
+    ObligationUnderReleased {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
+    /// S1 obligation-balance over-release (double-free): surfaced from
+    /// `MirCheck::ObligationOverReleased`. Two or more definite discharges
+    /// on one CFG path. Unconditional hard error — memory-unsafe, no
+    /// allowlist escape.
+    ObligationOverReleased {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
     /// Execution-context carrier marker validation failed.
     ContextBoundaryViolation {
         function: String,
         block: u32,
         kind: &'static str,
+        reason: String,
+    },
+    /// Discharge-authority carriage: a `NeutralizePayloadSlot` whose authority
+    /// requires a transferee reached elaboration without one (fail-closed).
+    DischargeAuthorityMissing {
+        function: String,
+        block: u32,
+        authority: NeutralizeAuthority,
+        reason: String,
+    },
+    /// Discharge-authority corroboration drift: a carried discharge fact
+    /// disagrees with the independently re-derived discharge set.
+    DischargeAuthorityDrift {
+        function: String,
+        block: u32,
+        name: String,
         reason: String,
     },
     /// A context-derived place escaped past `ExitContext`.

@@ -926,8 +926,18 @@ fn render_instr(instr: &Instr) -> String {
                 render_place(src)
             )
         }
-        Instr::NeutralizePayloadSlot { place } => {
-            format!("neutralize_payload {}", render_place(place))
+        Instr::NeutralizePayloadSlot {
+            place,
+            transferee,
+            authority,
+        } => {
+            let transferee = transferee
+                .map(|t| format!(" -> {}", render_place(&t)))
+                .unwrap_or_default();
+            format!(
+                "neutralize_payload {}{transferee} [{authority:?}]",
+                render_place(place)
+            )
         }
         Instr::AggregateProjectionNeutralize { root, fields } => format!(
             "aggregate_projection_neutralize {} fields={fields:?}",
@@ -1378,6 +1388,11 @@ fn render_mir_statement(stmt: &MirStatement) -> String {
 // MirCheck renderer (compact single-line)
 // ---------------------------------------------------------------------------
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive single-line arm per MirCheck variant; splitting \
+              would obscure the 1:1 variant-to-rendering mapping"
+)]
 fn render_mir_check(check: &MirCheck) -> String {
     match check {
         MirCheck::InitialisedBeforeUse {
@@ -1434,6 +1449,18 @@ fn render_mir_check(check: &MirCheck) -> String {
         MirCheck::DropPlanUndetermined { block, reason } => {
             format!("DropPlanUndetermined bb{block} {reason:?}")
         }
+        MirCheck::ObligationUnderReleased {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("ObligationUnderReleased {function} bb{block} {name} {reason:?}"),
+        MirCheck::ObligationOverReleased {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
         MirCheck::ContextBoundaryViolation {
             function,
             block,
@@ -1443,6 +1470,18 @@ fn render_mir_check(check: &MirCheck) -> String {
         MirCheck::ContextBindingEscapes { place, block } => {
             format!("ContextBindingEscapes {} bb{block}", render_place(place))
         }
+        MirCheck::DischargeAuthorityMissing {
+            function,
+            block,
+            authority,
+            reason,
+        } => format!("DischargeAuthorityMissing {function} bb{block} {authority:?} {reason:?}"),
+        MirCheck::DischargeAuthorityDrift {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("DischargeAuthorityDrift {function} bb{block} {name} {reason:?}"),
         MirCheck::WitnessOperandUnresolved { ty, reason } => {
             format!("WitnessOperandUnresolved {ty} {reason:?}")
         }
@@ -1621,12 +1660,36 @@ fn render_diag_kind(kind: &MirDiagnosticKind) -> String {
         MirDiagnosticKind::DropPlanUndetermined { block, reason } => {
             format!("DropPlanUndetermined bb{block} {reason:?}")
         }
+        MirDiagnosticKind::ObligationUnderReleased {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("ObligationUnderReleased {function} bb{block} {name} {reason:?}"),
+        MirDiagnosticKind::ObligationOverReleased {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("ObligationOverReleased {function} bb{block} {name} {reason:?}"),
         MirDiagnosticKind::ContextBoundaryViolation {
             function,
             block,
             kind,
             reason,
         } => format!("ContextBoundaryViolation {function} bb{block} {kind} {reason:?}"),
+        MirDiagnosticKind::DischargeAuthorityMissing {
+            function,
+            block,
+            authority,
+            reason,
+        } => format!("DischargeAuthorityMissing {function} bb{block} {authority:?} {reason:?}"),
+        MirDiagnosticKind::DischargeAuthorityDrift {
+            function,
+            block,
+            name,
+            reason,
+        } => format!("DischargeAuthorityDrift {function} bb{block} {name} {reason:?}"),
         MirDiagnosticKind::ContextBindingEscapes { place, block } => {
             format!("ContextBindingEscapes {} bb{block}", render_place(place))
         }

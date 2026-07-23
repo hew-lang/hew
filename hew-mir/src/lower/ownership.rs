@@ -4,7 +4,7 @@ use super::{
     monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
-    ClosurePairIngress, CmpPred, DecisionFact, Disposition, FieldLoadClass,
+    ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
     FreshVecGetCloneProjectionBase, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
     HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind, MirStatement,
     OwnedLocalEntry, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance, Projection,
@@ -1098,6 +1098,20 @@ impl Builder {
             }
         }
     }
+    /// Retract a binding to [`Disposition::ConsumedAt`], REQUIRING its discharge
+    /// authority (`transferee` + `site`) by signature — the close-by-construction
+    /// consume-write chokepoint (U221/U229). A consume retraction cannot be
+    /// spelled without naming who took ownership and why, so the fact is never
+    /// erased at the retraction seam. Every production consume routes through
+    /// here (via [`Builder::mark_binding_moved`]).
+    pub(crate) fn set_owned_local_consumed(
+        &mut self,
+        binding: BindingId,
+        transferee: Option<Place>,
+        site: DischargeSite,
+    ) {
+        self.set_owned_local_disposition(binding, Disposition::ConsumedAt { transferee, site });
+    }
     pub(crate) fn owned_string_record_field_kinds_for_key(
         &self,
         key: &str,
@@ -2158,7 +2172,10 @@ impl Builder {
                 value: 1,
             });
         }
-        self.set_owned_local_disposition(id, Disposition::ConsumedAt);
+        // General consume seam: the value is moved out (returned / sent / stored
+        // into a longer-lived owner) with no destination local nameable here, so
+        // the transferee is `None`; the authority is recorded regardless.
+        self.set_owned_local_consumed(id, None, DischargeSite::BindingMoved);
     }
     // JUSTIFIED: this predicate deliberately stays adjacent to the aggregate
     // alias marker instead of collapsing to `ty_contains_heap_owning` alone.

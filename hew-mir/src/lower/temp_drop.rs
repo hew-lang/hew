@@ -1246,7 +1246,7 @@ pub(super) fn compute_projection_alias_taint(
         .iter()
         .flat_map(|block| block.instructions.iter())
         .filter_map(|instr| match instr {
-            Instr::NeutralizePayloadSlot { place } => Some(*place),
+            Instr::NeutralizePayloadSlot { place, .. } => Some(*place),
             _ => None,
         })
         .collect();

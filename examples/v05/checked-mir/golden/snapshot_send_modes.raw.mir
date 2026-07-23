@@ -70,7 +70,7 @@ fn main() -> () [conv=default]
     _17 = snapshot_clone _4 ty=string plan=String boundary=Actor
     _18 = snapshot_clone _11 ty=Boxed plan=UserRecord { name: "Boxed" } boundary=Actor
     _19 = move _13
-    neutralize_payload _13
+    neutralize_payload _13 -> _19 [SendTransferLastUse]
     _14 = record_init __hew_packed_args_main_0 { .0=_2, .1=_17, .2=_18, .3=_19 }
     send actor0[msg=1476289385] _14 alias=Copy -> bb4
   bb4:

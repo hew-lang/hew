@@ -1306,6 +1306,12 @@ internal = [
   # target-side monitor table. Used by two-process fixtures to assert bounded
   # table growth after a watcher node dies. Not user-callable; not JIT-reachable.
   "hew_dist_monitor_remote_watcher_count",
+  # Test-introspection probe: returns the monotonic cumulative count of
+  # target-side RemoteWatcher registrations ever accepted. Used by two-process
+  # monitor fixtures to derive registration from an event counter instead of
+  # sampling the transient live count. Not user-callable; not
+  # JIT-reachable.
+  "hew_dist_monitor_remote_watcher_registered_total",
   "hew_dist_monitor_current_actor_ref_id",
   "hew_dist_monitor_pending_observation_count",
   # Test-introspection probe: returns the current actor's id (-1 outside a
@@ -1420,6 +1426,14 @@ internal = [
 ]
 
 [ownership]
+
+# Scalar i64 counter getter; no parameters, nothing owned crosses the boundary.
+[[ownership.contracts]]
+symbol = "hew_dist_monitor_remote_watcher_registered_total"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_node_api_id"

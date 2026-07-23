@@ -1153,9 +1153,11 @@ fn link_remote_non_crashlinked_policy_no_crash() {
 
 /// Cross-node demonitor reclamation: when a client closes a cross-node
 /// `MonitorRef`, the close routes to the cross-node teardown (not the local-table
-/// no-op), sending `CTRL_DEMONITOR` to the peer. The server observes its
-/// target-side watcher count rise then fall and prints the verdict with an exact
-/// reclaimed count.
+/// no-op), sending `CTRL_DEMONITOR` to the peer. The server derives the
+/// registration from the monotonic `hew_dist_monitor_remote_watcher_registered_total()`
+/// event counter (a sampled live count can miss the window under a coarse host
+/// timer tick), waits for the live count to fall to zero, and prints the verdict
+/// with an exact reclaimed count.
 #[test]
 fn cross_node_monitor_close_reclaims_watcher_entry() {
     let server_out = run_server_verdict_scenario("cross_node_monitor_close_reclaim");
@@ -1183,7 +1185,11 @@ fn cross_node_monitor_close_reclaims_watcher_entry() {
 
 /// Repeated cross-node monitor setup/close keeps both authorities exact: every
 /// handle id is distinct, close delivers no DOWN, and both watcher- and
-/// target-side tables finish at zero.
+/// target-side tables finish at zero. The server proves each cycle registered
+/// via the monotonic `hew_dist_monitor_remote_watcher_registered_total()` event
+/// counter (exactly one registration per cycle) — sampling the transient live
+/// count phase-locks with the client's short holds under a coarse host timer
+/// tick and can miss every window.
 #[test]
 fn repeated_cross_node_monitor_close_keeps_tables_empty() {
     let server_out = run_server_verdict_scenario("monitor_leak_low");

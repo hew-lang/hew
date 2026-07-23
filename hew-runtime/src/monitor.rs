@@ -66,6 +66,11 @@ pub(crate) struct MonitorState {
     observations: Mutex<HashMap<u64, ObservationEntry>>,
     /// Target-side remote registrations used only to fan terminal frames to peers.
     remote_targets: Mutex<HashMap<u64, Vec<RemoteWatcher>>>,
+    /// Cumulative count of target-side remote-watcher registrations ever
+    /// accepted — monotonic, never reset. Test-introspection authority: an
+    /// event counter cannot be missed by a sampler the way the transient live
+    /// count can.
+    remote_watchers_registered_total: AtomicU64,
     ref_counter: AtomicU64,
     ref_exhausted: AtomicBool,
 }
@@ -143,6 +148,7 @@ impl MonitorState {
             }),
             observations: Mutex::new(HashMap::new()),
             remote_targets: Mutex::new(HashMap::new()),
+            remote_watchers_registered_total: AtomicU64::new(0),
             ref_counter: AtomicU64::new(1),
             ref_exhausted: AtomicBool::new(false),
         }
@@ -475,6 +481,8 @@ impl MonitorState {
                         ref_id: monitor_id,
                         is_link,
                     });
+                    self.remote_watchers_registered_total
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 RemoteWatcherSetup::Registered
             })
@@ -576,6 +584,11 @@ impl MonitorState {
             !watchers.is_empty()
         });
         pruned
+    }
+
+    pub(crate) fn remote_watchers_registered_total(&self) -> u64 {
+        self.remote_watchers_registered_total
+            .load(Ordering::Relaxed)
     }
 
     pub(crate) fn remote_watcher_count(&self) -> usize {

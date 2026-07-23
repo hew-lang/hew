@@ -1468,6 +1468,7 @@ fn scenario_repoint_preserves_ref(kv: RemotePid<KeyValue>) -> i64 {
 
 extern "C" {
     fn hew_dist_monitor_remote_watcher_count() -> i64;
+    fn hew_dist_monitor_remote_watcher_registered_total() -> i64;
     fn hew_dist_monitor_current_actor_ref_id() -> u64;
     fn hew_dist_monitor_pending_observation_count() -> u64;
 }
@@ -1666,24 +1667,37 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
 }
 
 fn scenario_server_monitor_close_reclaim() {
+    // Registration is derived from the monotonic event counter, not a sampled
+    // live count: a sleep-poll can miss a short-lived count==1 window under a
+    // coarse host timer tick, while the cumulative total cannot be missed.
+    let base = unsafe {
+        hew_dist_monitor_remote_watcher_registered_total()
+    };
     var registered: i64 = 0;
     var wait_attempts: i64 = 0;
     loop {
         let c = unsafe {
             hew_dist_monitor_remote_watcher_count()
         };
-        if c == 1 {
-            registered = c;
-            println(f"READY_SERVER_WATCHER_REGISTERED cross_node_monitor_close_reclaim count={registered}");
-            break;
-        }
         if c > 1 {
             println(f"FAIL cross_node_monitor_close_reclaim unexpected-watcher-count={c}");
             return;
         }
+        let total = unsafe {
+            hew_dist_monitor_remote_watcher_registered_total()
+        };
+        registered = total - base;
+        if registered > 1 {
+            println(f"FAIL cross_node_monitor_close_reclaim unexpected-registered-total={registered}");
+            return;
+        }
+        if registered == 1 {
+            println(f"READY_SERVER_WATCHER_REGISTERED cross_node_monitor_close_reclaim count={registered}");
+            break;
+        }
         wait_attempts = wait_attempts + 1;
         if wait_attempts >= 200 {
-            println(f"FAIL cross_node_monitor_close_reclaim server-no-watcher last-count={c}");
+            println(f"FAIL cross_node_monitor_close_reclaim server-no-watcher registered-total={registered}");
             return;
         }
         sleep(100ms);
@@ -1724,19 +1738,23 @@ fn scenario_client_monitor_close_reclaim(kv: RemotePid<KeyValue>) -> i64 {
 }
 
 fn scenario_server_monitor_leak(kx: string, scenario: string, expected: i64) {
-    var observed_one: bool = false;
+    // Registration is derived from the monotonic event counter, not a sampled
+    // live count: each client cycle holds its registration open only briefly,
+    // and a sleep-poll under a coarse host timer tick (default Windows ~15.6ms)
+    // can phase-lock with the cycles and miss every count==1 window. The
+    // cumulative total cannot be missed. The sampled count keeps only its
+    // over-registration tooth (count > 1), which can never false-fail.
+    let base = unsafe {
+        hew_dist_monitor_remote_watcher_registered_total()
+    };
     var attempts: i64 = 0;
     loop {
         let count = unsafe {
             hew_dist_monitor_remote_watcher_count()
         };
-        if count == 1 {
-            observed_one = true;
-        } else {
-            if count > 1 {
-                println(f"FAIL {scenario} target-count={count}");
-                return;
-            }
+        if count > 1 {
+            println(f"FAIL {scenario} target-count={count}");
+            return;
         }
         if fs.exists(f"{kx}/leak.done") {
             break;
@@ -1748,16 +1766,22 @@ fn scenario_server_monitor_leak(kx: string, scenario: string, expected: i64) {
         }
         sleep(2ms);
     }
+    // leak.done is published only after every register/close cycle has been
+    // acked, so the counter is final here: exactly one registration per cycle.
+    let total = unsafe {
+        hew_dist_monitor_remote_watcher_registered_total()
+    };
+    let registered = total - base;
+    if registered != expected {
+        println(f"FAIL {scenario} registered-total={registered} expected={expected}");
+        return;
+    }
     var cleanup_attempts: i64 = 0;
     loop {
         let count = unsafe {
             hew_dist_monitor_remote_watcher_count()
         };
         if count == 0 {
-            if !observed_one {
-                println(f"FAIL {scenario} target-never-observed-registration");
-                return;
-            }
             publish_atomic(kx, "leak.verdict", "target=0");
             println(f"PASS {scenario} iterations={expected} target=0 max=1");
             return;

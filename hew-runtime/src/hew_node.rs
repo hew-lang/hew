@@ -4517,6 +4517,32 @@ pub extern "C" fn hew_dist_monitor_remote_watcher_count() -> i64 {
     }
 }
 
+/// Return the cumulative number of `RemoteWatcher` registrations ever accepted
+/// into the target-side monitor table — monotonic, process-local, never reset.
+///
+/// Test-introspection probe used by the two-process monitor fixtures to derive
+/// "a registration happened" from the event counter instead of sampling the
+/// transient live count. On hosts with a coarse timer tick (default Windows
+/// ~15.6 ms) a sleep-poll sampler can miss every short-lived `count == 1`
+/// window; the monotonic total cannot be missed. Not user-callable; the
+/// compiler does not emit calls to this symbol. Callable from `.hew` via
+/// `extern "C" { fn hew_dist_monitor_remote_watcher_registered_total() -> i64; }`.
+#[no_mangle]
+pub extern "C" fn hew_dist_monitor_remote_watcher_registered_total() -> i64 {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        return -1;
+    };
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "the cumulative registration count grows by one per accepted remote \
+                  monitor/link registration and stays far below i64::MAX in any realistic \
+                  process lifetime; the sentinel -1 covers the no-runtime case"
+    )]
+    {
+        rt.monitors.remote_watchers_registered_total() as i64
+    }
+}
+
 /// Return the sole remote monitor id owned by the current actor, or zero when
 /// the actor has none or more than one.
 ///

@@ -4375,6 +4375,7 @@ mod tests {
 
             let before = crate::reply_channel::active_channel_count();
             let ch = crate::reply_channel::hew_reply_channel_new();
+            crate::hew_clear_error();
             let status = hew_supervisor_role_ask_with_channel(
                 supervisor_token,
                 0,
@@ -4387,6 +4388,13 @@ mod tests {
                 status,
                 crate::internal::types::HewError::ErrActorStopped as i32,
                 "a mid-restart slot must refuse, never guess a future incarnation"
+            );
+            let err = crate::hew_last_error();
+            assert!(!err.is_null(), "the refusal must record a diagnostic");
+            let msg = std::ffi::CStr::from_ptr(err).to_string_lossy();
+            assert!(
+                msg.contains("Restarting"),
+                "the refusal must carry the classified slot state (tag semantics); got: {msg}"
             );
             assert_eq!(
                 crate::reply_channel::active_channel_count(),
@@ -5889,8 +5897,16 @@ fn child_get_from_supervisor(
     }
 
     // Slot is null — classify why using the per-child spec.
-    // child_specs is parallel to children and has the same length after
-    // hew_supervisor_start, so the index is always valid here.
+    classify_null_child_slot(s, i)
+}
+
+/// Classify a null child slot from its per-child spec (the FSM in §2.2):
+/// circuit-breaker cooldown, backoff timer pending, or an active restart.
+/// Shared by the classified lookups and the owner-scoped role ask so both
+/// surfaces name the same slot state. Caller holds `children_lock`;
+/// `child_specs` is parallel to `children` after `hew_supervisor_start`, so
+/// the index is always valid here.
+fn classify_null_child_slot(s: &HewSupervisor, i: usize) -> ChildLookupResult {
     let spec = &s.child_specs[i];
 
     // CB OPEN = circuit breaker is suppressing restarts during cooldown.
@@ -5964,6 +5980,37 @@ fn fire_role_ask_submit_gap_hook() {
     }
 }
 
+/// Name a [`ChildSlotReason`] discriminant for the role-ask refusal
+/// diagnostic. Fail-closed: an out-of-range discriminant (ABI drift) names
+/// itself as such rather than borrowing a real reason's name.
+#[cfg(not(target_arch = "wasm32"))]
+const fn child_slot_reason_name(reason: u8) -> &'static str {
+    match reason {
+        r if r == ChildSlotReason::Ok as u8 => "Ok",
+        r if r == ChildSlotReason::Restarting as u8 => "Restarting",
+        r if r == ChildSlotReason::BackoffDelay as u8 => "BackoffDelay",
+        r if r == ChildSlotReason::CircuitOpen as u8 => "CircuitOpen",
+        r if r == ChildSlotReason::BudgetExhausted as u8 => "BudgetExhausted",
+        r if r == ChildSlotReason::SupervisorShutdown as u8 => "SupervisorShutdown",
+        r if r == ChildSlotReason::UnknownSlot as u8 => "UnknownSlot",
+        _ => "(unrecognized ChildSlotReason discriminant)",
+    }
+}
+
+/// Refuse an owner-scoped role ask closed, recording the classified slot
+/// state so a Dead slot is never conflated with a Transient one at the
+/// diagnostic surface (the tag semantics of the classified lookup ABIs —
+/// contrast the tag-unchecked handle extraction the retired token path
+/// performed, which collapsed every non-Live state into a token-0 send).
+#[cfg(not(target_arch = "wasm32"))]
+fn role_ask_refuse(reason: u8, key: u32) -> i32 {
+    set_last_error(format!(
+        "stable-role ask refused: child slot {key} is {}",
+        child_slot_reason_name(reason)
+    ));
+    crate::internal::types::HewError::ErrActorStopped as i32
+}
+
 /// Submit an ask through a fungible `(stable supervisor token, static slot)`
 /// role as ONE owner-scoped operation: pin the supervisor identity, resolve
 /// the slot, and enqueue into the CURRENT incarnation's mailbox — all inside
@@ -6008,10 +6055,8 @@ pub unsafe extern "C" fn hew_supervisor_role_ask_with_channel(
     size: usize,
     ch: *mut c_void,
 ) -> i32 {
-    use crate::internal::types::HewError;
-
     let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
-        return HewError::ErrActorStopped as i32;
+        return role_ask_refuse(ChildSlotReason::SupervisorShutdown as u8, key);
     };
     let sup = pin.supervisor();
     // SAFETY: the stable-identity pin prevents supervisor reclamation for the
@@ -6020,11 +6065,11 @@ pub unsafe extern "C" fn hew_supervisor_role_ask_with_channel(
 
     // Fast-path shutdown check (atomics, no lock).
     if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
-        return HewError::ErrActorStopped as i32;
+        return role_ask_refuse(ChildSlotReason::SupervisorShutdown as u8, key);
     }
     let i = key as usize;
     if i >= s.child_count {
-        return HewError::ErrActorStopped as i32;
+        return role_ask_refuse(ChildSlotReason::UnknownSlot as u8, key);
     }
 
     let _guard = s.children_lock.lock_or_recover();
@@ -6032,15 +6077,17 @@ pub unsafe extern "C" fn hew_supervisor_role_ask_with_channel(
     // Re-check shutdown under the lock (the supervisor can be cancelled
     // between the atomic check above and acquiring the lock).
     if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
-        return HewError::ErrActorStopped as i32;
+        return role_ask_refuse(ChildSlotReason::SupervisorShutdown as u8, key);
     }
 
     let child = s.children.get(i).copied().unwrap_or(ptr::null_mut());
     if child.is_null() {
         // Mid-restart (Transient) or permanently dead: refuse rather than
-        // guess a future incarnation. Nothing was enqueued; the caller's
-        // fail-closed surface names the refusal.
-        return HewError::ErrActorStopped as i32;
+        // guess a future incarnation. Nothing was enqueued; the refusal
+        // carries the classified slot state (the tag semantics the lookup
+        // ABIs expose) so a Dead slot is never conflated with a Transient
+        // one at the diagnostic surface.
+        return role_ask_refuse(classify_null_child_slot(s, i).reason, key);
     }
 
     #[cfg(test)]

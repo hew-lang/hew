@@ -1112,7 +1112,9 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::DuplexTrySend
         // Supervisor restart machinery requires the native preemptive
         // scheduler. WASM-TODO(#1475).
+        | F::SupervisorDirectId
         | F::SupervisorChildGet
+        | F::LocalPidSupervisorChildGet
         | F::SupervisorNestedGet
         | F::SupervisorPoolChildGet
         | F::SupervisorPoolLen
@@ -3075,6 +3077,27 @@ pub(crate) fn resolve_ty<'ctx>(
         return Ok(ctx.struct_type(&field_tys, false).into());
     }
     primitive_to_llvm(ctx, target_data, ty)
+}
+
+/// Resolve a top-level value crossing a value-ABI boundary.
+///
+/// An indirect enum owns a heap node, so its value representation is the node
+/// pointer rather than the inline tagged-union layout used for embedded fields.
+/// Keeping this separate from [`resolve_ty`] preserves inline layouts inside
+/// records, tuples, and actor state while every value boundary uses one ABI.
+pub(crate) fn resolve_value_ty<'ctx>(
+    ctx: &'ctx Context,
+    target_data: &TargetData,
+    ty: &ResolvedTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<BasicTypeEnum<'ctx>> {
+    if let ResolvedTy::Named { name, .. } = ty {
+        if crate::layout::is_indirect_enum(name, enum_layouts) {
+            return Ok(ctx.ptr_type(AddressSpace::default()).into());
+        }
+    }
+    resolve_ty(ctx, target_data, ty, record_layouts)
 }
 
 pub(crate) fn primitive_to_llvm<'ctx>(
@@ -8307,13 +8330,17 @@ fn collect_xnode_codec_drop_seeds(
             // drop-seed bodies. Multi-arg handlers are not seeded (their
             // packed-args wire has no cross-node codec yet).
             if let [msg_ty] = h.param_tys.as_slice() {
-                try_add(
-                    msg_ty,
-                    &mut rec_seeds,
-                    &mut enum_seeds,
-                    &mut rec_seen,
-                    &mut enum_seen,
-                );
+                if !matches!(msg_ty, ResolvedTy::Named { name, .. }
+                    if crate::layout::is_indirect_enum(name, enum_layouts))
+                {
+                    try_add(
+                        msg_ty,
+                        &mut rec_seeds,
+                        &mut enum_seeds,
+                        &mut rec_seen,
+                        &mut enum_seen,
+                    );
+                }
             }
             try_add(
                 &h.return_ty,
@@ -28899,18 +28926,6 @@ fn declare_function<'ctx>(
     } else {
         Some(Linkage::Internal)
     };
-    // `indirect enum` parameters and return values are heap-pointer-sized;
-    // resolve_ty returns the struct type (struct-layout-first invariant for
-    // collision safety), so override here for indirect enum names.
-    let resolve_value_ty = |ty: &ResolvedTy| -> CodegenResult<BasicTypeEnum<'ctx>> {
-        let raw = resolve_ty(ctx, target_data, ty, record_layouts)?;
-        if let ResolvedTy::Named { name, .. } = ty {
-            if crate::layout::is_indirect_enum(name, enum_layouts) {
-                return Ok(ctx.ptr_type(AddressSpace::default()).into());
-            }
-        }
-        Ok(raw)
-    };
     // A suspendable function (its MIR carries a suspend carrier) is lowered as a
     // coroutine RAMP whose LLVM return type is the `coro.begin` handle (`ptr`),
     // NOT its logical Hew return type. The logical return value is deposited by
@@ -28933,7 +28948,13 @@ fn declare_function<'ctx>(
         // is fixed to i32 here.
         ctx.i32_type().into()
     } else {
-        resolve_value_ty(&func.return_ty)?
+        resolve_value_ty(
+            ctx,
+            target_data,
+            &func.return_ty,
+            record_layouts,
+            enum_layouts,
+        )?
     };
     // Accept integer, float, pointer, and struct return types. Integer covers
     // the original Cluster 1 spine; pointer covers `String` (a
@@ -28983,7 +29004,7 @@ fn declare_function<'ctx>(
             param_tys.push(ctx_ptr_ty.into());
             continue;
         }
-        let llvm_ty = resolve_value_ty(param_ty)?;
+        let llvm_ty = resolve_value_ty(ctx, target_data, param_ty, record_layouts, enum_layouts)?;
         param_tys.push(metadata_type_from_basic(llvm_ty));
     }
     // P5-RX sub-stage 1: receive handlers gain a trailing `borrow_mode: i32`
@@ -30488,16 +30509,7 @@ fn lower_function<'ctx>(
             if matches!(ty, ResolvedTy::Never) {
                 ctx.i8_type().into()
             } else {
-                let raw_ty = resolve_ty(ctx, target_data, ty, record_layouts)?;
-                if let ResolvedTy::Named { name, .. } = ty {
-                    if crate::layout::is_indirect_enum(name, enum_layouts) {
-                        ctx.ptr_type(inkwell::AddressSpace::default()).into()
-                    } else {
-                        raw_ty
-                    }
-                } else {
-                    raw_ty
-                }
+                resolve_value_ty(ctx, target_data, ty, record_layouts, enum_layouts)?
             }
         };
         let idx_u32 = u32::try_from(idx).map_err(|_| {
@@ -30815,8 +30827,13 @@ fn lower_function<'ctx>(
     // vector this stage does not retain (call/composite/ask/...)? If so we emit
     // a runtime `borrow_mode != 0` entry trap below (fail-closed without
     // breaking copy-mode compilation). Computed before the FnCtx move.
-    let borrow_escape_trap =
-        borrow_mode.is_some() && has_unhandled_borrow_escape(func, &borrow_tainted);
+    let has_indirect_enum_message_param = is_recv_handler
+        && func.params.iter().any(|ty| {
+            matches!(ty, ResolvedTy::Named { name, .. }
+                if crate::layout::is_indirect_enum(name, enum_layouts))
+        });
+    let borrow_escape_trap = borrow_mode.is_some()
+        && (has_unhandled_borrow_escape(func, &borrow_tainted) || has_indirect_enum_message_param);
 
     // Emit the implicit actor-drain epilogue only for the native program entry
     // point of an actor-using program WITHOUT supervisors.
@@ -31393,6 +31410,70 @@ fn build_module<'ctx>(
     build_module_for_target(ctx, pipeline, name, None, None)
 }
 
+/// Return the anonymous multi-field record layouts carried by local actor
+/// messages. Their fields cross the same value ABI as single message arguments;
+/// user records and all other embedded layouts retain their inline form.
+fn actor_message_value_record_names(pipeline: &IrPipeline) -> CodegenResult<HashSet<String>> {
+    let records: HashMap<&str, &RecordLayout> = pipeline
+        .record_layouts
+        .iter()
+        .map(|layout| (layout.name.as_str(), layout))
+        .collect();
+    let mut names = HashSet::new();
+
+    for function in &pipeline.raw_mir {
+        let mut record_payload = |value: Place| -> CodegenResult<()> {
+            let Place::Local(local) = value else {
+                return Ok(());
+            };
+            let local_index = usize::try_from(local).map_err(|_| {
+                CodegenError::FailClosed(format!(
+                    "actor message local index {local} does not fit usize"
+                ))
+            })?;
+            let Some(ResolvedTy::Named { name, .. }) = function.locals.get(local_index) else {
+                return Ok(());
+            };
+            let Some(layout) = records.get(name.as_str()) else {
+                return Ok(());
+            };
+            if layout.field_names.is_empty() && layout.field_tys.len() > 1 {
+                names.insert(name.clone());
+            }
+            Ok(())
+        };
+
+        for block in &function.blocks {
+            match &block.terminator {
+                Terminator::Send { value, .. } | Terminator::Ask { value, .. } => {
+                    record_payload(*value)?;
+                }
+                Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
+                    for arm in arms {
+                        if let hew_mir::SelectArmKind::ActorAsk { value, .. } = &arm.kind {
+                            record_payload(*value)?;
+                        }
+                    }
+                }
+                Terminator::Join { branches, .. } => {
+                    for branch in branches {
+                        record_payload(branch.value)?;
+                    }
+                }
+                Terminator::Suspend { .. } => {
+                    if let Some(SuspendKind::Ask { value, .. }) =
+                        function.suspend_kinds.get(&block.id)
+                    {
+                        record_payload(*value)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(names)
+}
+
 fn build_module_for_target<'ctx>(
     ctx: &'ctx Context,
     pipeline: &IrPipeline,
@@ -31534,11 +31615,14 @@ fn build_module_for_target<'ctx>(
         &pipeline.machine_layouts,
         &pipeline.opaque_handle_names,
     )?;
+    let actor_message_value_records = actor_message_value_record_names(pipeline)?;
     crate::layout::fill_record_layout_bodies(
         ctx,
         &pipeline.record_layouts,
         &record_layouts,
         &target_data,
+        &pipeline.enum_layouts,
+        &actor_message_value_records,
     )?;
     // Build a quick lookup from record name → field ResolvedTys, shared by
     // every per-function lowering context. The synthesis path consults this
@@ -31782,6 +31866,7 @@ fn build_module_for_target<'ctx>(
             &handler_suspendable,
             &fn_symbols,
             &record_layouts,
+            &pipeline.enum_layouts,
         )?;
         if actor.coalesce_key_plan.is_some() {
             crate::thunks::emit_coalesce_key_fn(
@@ -31790,6 +31875,7 @@ fn build_module_for_target<'ctx>(
                 &target_data,
                 actor,
                 &record_layouts,
+                &pipeline.enum_layouts,
             )?;
         }
         let msg_drop_witnesses = DropSynthWitnesses {
@@ -33618,6 +33704,15 @@ fn emit_actor_codec_module_init<'ctx>(
             let [msg_ty] = h.param_tys.as_slice() else {
                 continue;
             };
+            // Direct actor mailboxes transfer an indirect enum as its owned node
+            // pointer. The cross-node codec has no pointer-node representation,
+            // so leaving this message unregistered keeps remote receipt on the
+            // runtime's existing fail-closed no-codec path.
+            if matches!(msg_ty, ResolvedTy::Named { name, .. }
+                if crate::layout::is_indirect_enum(name, enum_layouts))
+            {
+                continue;
+            }
             // Channel handles (`Sender<T>`/`Receiver<T>`) and actor identities
             // (`LocalPid`/`RemotePid`) have no message-payload wire layout. The
             // local mailbox transfers a handle pointer or inline identity

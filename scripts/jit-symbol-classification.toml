@@ -332,6 +332,7 @@ stable = [
   "hew_local_pid_link",
   "hew_local_pid_monitor",
   "hew_local_pid_send",
+  "hew_local_pid_supervisor_child_get",
   "hew_local_pid_supervisor_is_running",
   "hew_local_pid_supervisor_stop",
   "hew_local_pid_unlink",

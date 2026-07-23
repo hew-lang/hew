@@ -159,6 +159,8 @@ pub(crate) fn fill_record_layout_bodies<'ctx>(
     layouts: &[RecordLayout],
     map: &RecordLayoutMap<'ctx>,
     target_data: &TargetData,
+    enum_layouts: &[EnumLayout],
+    value_abi_records: &HashSet<String>,
 ) -> CodegenResult<()> {
     for layout in layouts {
         let st = map.get(&layout.name).copied().ok_or_else(|| {
@@ -170,7 +172,12 @@ pub(crate) fn fill_record_layout_bodies<'ctx>(
         })?;
         let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(layout.field_tys.len());
         for fty in &layout.field_tys {
-            field_tys.push(resolve_ty(ctx, target_data, fty, map)?);
+            let field_ty = if value_abi_records.contains(&layout.name) {
+                resolve_value_ty(ctx, target_data, fty, map, enum_layouts)?
+            } else {
+                resolve_ty(ctx, target_data, fty, map)?
+            };
+            field_tys.push(field_ty);
         }
         // packed = false: use the target's natural alignment per
         // `RecordLayout` doc (A-6b). LESSONS: parity-or-tracked-gap.

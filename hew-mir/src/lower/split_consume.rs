@@ -1363,6 +1363,7 @@ mod slice3_invariants {
                 PointerWidth::Bits64,
                 crate::model::FunctionCallConv::ActorHandler,
                 TaskEntryAdapterSymbols::default(),
+                None,
             );
             let offsets: Vec<_> = lowered
                 .raw

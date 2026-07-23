@@ -5877,6 +5877,12 @@ pub enum MirCheck {
         block: u32,
         /// Source-level name of the leaked local (registry key + diagnostics).
         name: String,
+        /// Rendered type of the leaked local (`ResolvedTy` Display). Part of
+        /// the registry allowlist key: a scoping discriminator so an entry
+        /// minted for one site cannot suppress a same-named local of a
+        /// different type in another compilation unit. Empty when the type
+        /// could not be recovered (hand-built test MIR).
+        local_ty: String,
         reason: String,
     },
     /// S1 obligation-balance: a heap-owning owned local accumulates TWO OR

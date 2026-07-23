@@ -107,6 +107,7 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
             block,
             name,
             reason,
+            ..
         } => Some(MirDiagnostic {
             kind: MirDiagnosticKind::ObligationUnderReleased {
                 function: function.clone(),
@@ -1895,11 +1896,24 @@ pub(super) fn validate_obligation_balance(
     if tracked.is_empty() {
         return Vec::new();
     }
+    // Rendered types of the tracked locals, keyed by root, for the registry
+    // scoping discriminator carried on each under-release finding. The type
+    // narrows an allowlist entry to its minting site so a same-named local of
+    // a different type in another compilation unit cannot ride it.
+    let local_types: BTreeMap<u32, String> = tracked
+        .keys()
+        .filter_map(|&root| {
+            raw.locals
+                .get(root as usize)
+                .map(|ty| (root, format!("{ty}")))
+        })
+        .collect();
     validate_obligation_balance_with(
         elab,
         &raw.blocks,
         &raw.suspend_kinds,
         &tracked,
+        &local_types,
         &builder.parameter_locals,
     )
 }
@@ -1913,6 +1927,7 @@ fn validate_obligation_balance_with(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     tracked_in: &BTreeMap<u32, String>,
+    local_types: &BTreeMap<u32, String>,
     parameter_locals: &HashSet<u32>,
 ) -> Vec<MirCheck> {
     // Iteration cap for the monotone worklist. The lattice is finite and the
@@ -1925,6 +1940,7 @@ fn validate_obligation_balance_with(
         blocks,
         suspend_kinds,
         tracked_in,
+        local_types,
         parameter_locals,
         iteration_cap,
     )
@@ -1943,6 +1959,7 @@ fn validate_obligation_balance_capped(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     tracked_in: &BTreeMap<u32, String>,
+    local_types: &BTreeMap<u32, String>,
     parameter_locals: &HashSet<u32>,
     iteration_cap: usize,
 ) -> Vec<MirCheck> {
@@ -2169,6 +2186,7 @@ fn validate_obligation_balance_capped(
                     function: elab.name.clone(),
                     block: *block,
                     name: name.clone(),
+                    local_ty: local_types.get(root).cloned().unwrap_or_default(),
                     reason: format!(
                         "owned local `{name}` reaches return[bb{block}] with zero \
                          discharges on every path modelling: no terminal drop in \
@@ -7101,7 +7119,15 @@ mod obligation_balance_validator {
             .collect();
         let suspend_kinds = HashMap::new();
         let params = HashSet::new();
-        validate_obligation_balance_with(&elab, &blocks, &suspend_kinds, &tracked, &params)
+        let local_types = BTreeMap::new();
+        validate_obligation_balance_with(
+            &elab,
+            &blocks,
+            &suspend_kinds,
+            &tracked,
+            &local_types,
+            &params,
+        )
     }
 
     use crate::model::NeutralizeAuthority;
@@ -7227,8 +7253,15 @@ mod obligation_balance_validator {
         let tracked: BTreeMap<u32, String> = [(3_u32, "iter".to_string())].into_iter().collect();
         let suspend_kinds = HashMap::new();
         let params: HashSet<u32> = [0_u32].into_iter().collect();
-        let findings =
-            validate_obligation_balance_with(&elab, &blocks, &suspend_kinds, &tracked, &params);
+        let local_types = BTreeMap::new();
+        let findings = validate_obligation_balance_with(
+            &elab,
+            &blocks,
+            &suspend_kinds,
+            &tracked,
+            &local_types,
+            &params,
+        );
         assert!(
             findings.is_empty(),
             "borrow-derived mints never definite-leak: {findings:?}"
@@ -7248,11 +7281,13 @@ mod obligation_balance_validator {
         let tracked: BTreeMap<u32, String> = [(1_u32, "leaky".to_string())].into_iter().collect();
         let suspend_kinds = HashMap::new();
         let params = HashSet::new();
+        let local_types = BTreeMap::new();
         let findings = validate_obligation_balance_capped(
             &elab,
             &blocks,
             &suspend_kinds,
             &tracked,
+            &local_types,
             &params,
             0,
         );

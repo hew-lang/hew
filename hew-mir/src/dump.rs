@@ -1454,6 +1454,7 @@ fn render_mir_check(check: &MirCheck) -> String {
             block,
             name,
             reason,
+            ..
         } => format!("ObligationUnderReleased {function} bb{block} {name} {reason:?}"),
         MirCheck::ObligationOverReleased {
             function,

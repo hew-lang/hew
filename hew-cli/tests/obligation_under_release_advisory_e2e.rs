@@ -212,63 +212,80 @@ fn module_mangled_base64_decode_leak_is_not_suppressed() {
     }
 }
 
-/// (3) The advisory is flushed on the `--format json --dump-mir` path — the
-/// early-return that once dropped it. stdout stays a parseable JSON array
-/// carrying the `warning`-severity under-release; exit 0.
+/// (3) MATRIX — the JSON advisory must survive on EVERY `--format json`
+/// termination path, whatever the exit code. This guards the flush-completeness
+/// CLASS, not one instance: each round of review found one more unflushed exit
+/// (clean, then `--dump-mir`, then the unsupported `--target`). Every leaking
+/// compile below — clean-exit, dump-mir early-return, and the unsupported-target
+/// exit-2 — must emit a parseable JSON diagnostic array on stdout carrying the
+/// under-release at `severity=warning`. A future exit path that drops the flush
+/// fails here regardless of its exit code.
 #[test]
-fn json_dump_mir_flushes_under_release_advisory() {
+fn json_advisory_survives_every_exit_path() {
     require_codegen();
-    let dir = tempdir();
-    let output = compile(
-        dir.path(),
-        USER_DECODE_LEAK_SOURCE,
-        "user_decode_leak_jsondump",
-        &["--format", "json", "--dump-mir", "elab"],
-    );
+    // (label, extra compile args, expected exit code).
+    let cases: &[(&str, &[&str], i32)] = &[
+        ("json_clean_exit", &["--format", "json"], 0),
+        (
+            "json_dump_mir_early_return",
+            &["--format", "json", "--dump-mir", "elab"],
+            0,
+        ),
+        // The reported round-4 hole: lowering accumulates the advisory, then the
+        // unsupported --target exits 2 — the flush must still run. `hew compile`
+        // supports only the native host and wasm32-unknown-unknown, so an
+        // explicit foreign triple takes the unsupported-target exit.
+        (
+            "json_unsupported_target_exit2",
+            &["--format", "json", "--target", "aarch64-apple-darwin"],
+            2,
+        ),
+    ];
 
-    assert!(
-        output.status.success(),
-        "json + dump-mir with an advisory leak must exit 0;\n{}",
-        describe_output(&output)
-    );
-    let severities = json_under_release_severities(&output);
-    assert!(
-        !severities.is_empty(),
-        "the under-release advisory must be present in the JSON diagnostics even \
-         with --dump-mir (it was silently dropped on this exit path before the \
-         flush fix);\n{}",
-        describe_output(&output)
-    );
-    assert!(
-        severities.iter().all(|s| s == "warning"),
-        "every under-release JSON diagnostic must carry severity=warning, got \
-         {severities:?};\n{}",
-        describe_output(&output)
-    );
+    for (label, args, expected_code) in cases {
+        let dir = tempdir();
+        let output = compile(dir.path(), USER_DECODE_LEAK_SOURCE, label, args);
+
+        assert_eq!(
+            output.status.code(),
+            Some(*expected_code),
+            "[{label}] expected exit {expected_code};\n{}",
+            describe_output(&output)
+        );
+        let severities = json_under_release_severities(&output);
+        assert!(
+            !severities.is_empty() && severities.iter().all(|s| s == "warning"),
+            "[{label}] the under-release advisory must be flushed as a \
+             severity=warning JSON entry on THIS exit path (a dropped flush here \
+             is the fail-open the guard closes), got {severities:?};\n{}",
+            describe_output(&output)
+        );
+    }
 }
 
-/// (3b) The plain `--format json` path (no dump) also carries the advisory as a
-/// `warning`-severity entry at exit 0 — the flush-on-clean-exit contract.
+/// (3b) `hew check --format json` reaches the MIR obligation gate and must carry
+/// the advisory on its clean-exit path too (a different command sharing the sink).
 #[test]
-fn json_format_alone_carries_under_release_advisory() {
+fn check_json_carries_under_release_advisory() {
     require_codegen();
     let dir = tempdir();
-    let output = compile(
-        dir.path(),
-        USER_DECODE_LEAK_SOURCE,
-        "user_decode_leak_json",
-        &["--format", "json"],
-    );
+    let src = dir.path().join("check_leak.hew");
+    std::fs::write(&src, USER_DECODE_LEAK_SOURCE).expect("write hew source");
+    let output = Command::new(hew_binary())
+        .args(["check", "--format", "json", src.to_str().expect("utf-8")])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
 
     assert!(
         output.status.success(),
-        "json-format compile with an advisory leak must exit 0;\n{}",
+        "hew check with an advisory leak must exit 0;\n{}",
         describe_output(&output)
     );
     let severities = json_under_release_severities(&output);
     assert!(
         !severities.is_empty() && severities.iter().all(|s| s == "warning"),
-        "plain --format json must carry the under-release advisory as \
+        "hew check --format json must carry the under-release advisory as \
          severity=warning, got {severities:?};\n{}",
         describe_output(&output)
     );

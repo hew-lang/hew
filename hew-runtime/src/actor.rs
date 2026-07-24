@@ -1404,6 +1404,66 @@ impl std::fmt::Debug for HewActor {
 /// Monotonically increasing actor serial counter.
 static NEXT_ACTOR_SERIAL: AtomicU64 = AtomicU64::new(1);
 
+/// The largest serial the spawn allocator will issue.
+///
+/// Native packs the serial into the low 48 bits of the actor id
+/// (`pid::hew_pid_make`), so `pid::MAX_ACTOR_SERIAL` is the last value that
+/// survives the pack. WASM stores the raw serial as the id — nothing is packed,
+/// so the only unrepresentable value is `0` (the invalid-actor sentinel) and the
+/// bound is the last serial short of the `u64` wrap that would reach it.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_SPAWN_SERIAL: u64 = crate::pid::MAX_ACTOR_SERIAL;
+#[cfg(target_arch = "wasm32")]
+const MAX_SPAWN_SERIAL: u64 = u64::MAX - 1;
+
+/// Take the next representable actor serial from `counter`, or `None` once the
+/// serial space is exhausted.
+///
+/// The counter STOPS at `MAX_SPAWN_SERIAL + 1` instead of running on: past that
+/// point every value it could hand out is unrepresentable, so continuing to
+/// increment would only walk toward a `u64` wrap that re-enters the valid range
+/// and re-issues ids already live. Refusing is the only outcome that cannot
+/// alias.
+fn take_actor_serial(counter: &AtomicU64) -> Option<u64> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |serial| {
+            (serial <= MAX_SPAWN_SERIAL).then_some(serial + 1)
+        })
+        .ok()
+}
+
+// Thread-local one-shot seed for the allocator's counter, mirroring
+// `FAIL_ARENA_ALLOC_NEXT`.
+//
+// WHY: the exhaustion boundary is 2^48 allocations away; a test cannot reach it
+// by spawning. Seeding a private counter drives the real `take_actor_serial` at
+// the real boundary without mutating the process-global one (which would race
+// sibling tests under threaded execution).
+// WHEN OBSOLETE: when actor identity stops being a packed 48-bit alias (the
+// Stage 3b compiler aggregate migration named in `pid.rs`), the boundary and
+// this seam both disappear.
+// WHAT THE REAL SOLUTION LOOKS LIKE: a per-runtime serial counter a test can
+// construct directly, instead of one process-global static.
+#[cfg(test)]
+thread_local! {
+    static NEXT_ACTOR_SERIAL_SEED: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+/// Seed the next actor-serial allocation on this thread. One-shot.
+#[cfg(test)]
+fn seed_next_actor_serial(serial: u64) {
+    NEXT_ACTOR_SERIAL_SEED.with(|slot| slot.set(Some(serial)));
+}
+
+/// Allocate the next actor serial, or `None` when the serial space is exhausted.
+fn allocate_actor_serial() -> Option<u64> {
+    #[cfg(test)]
+    if let Some(seed) = NEXT_ACTOR_SERIAL_SEED.with(Cell::take) {
+        return take_actor_serial(&AtomicU64::new(seed));
+    }
+    take_actor_serial(&NEXT_ACTOR_SERIAL)
+}
+
 // PID is now unified with id — actors use location-transparent IDs everywhere.
 
 // ── Live actor tracking (delegated to lifetime::live_actors) ──────────────
@@ -2515,24 +2575,39 @@ struct SpawnIdentity {
     serial: u64,
 }
 
-fn next_spawn_actor_identity() -> SpawnIdentity {
+/// Allocate the next spawn identity, or `None` when the serial space is
+/// exhausted.
+///
+/// Exhaustion is a hard refusal, not a wrap: the packed `id` masks the serial to
+/// 48 bits, so the allocation after `MAX_ACTOR_SERIAL` would mint PID `0` (the
+/// invalid-actor sentinel) and every one after that would alias an id already
+/// issued. The caller turns the `None` into a failed spawn.
+///
+/// The test override is checked FIRST and is deliberately not validated: its
+/// whole purpose is to fabricate the out-of-range serial that proves the
+/// downstream identity checks refuse an aliased `id` (`supervisor.rs`
+/// `role_ask_masked_id_alias_refuses_closed_never_enqueues`).
+fn next_spawn_actor_identity() -> Option<SpawnIdentity> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         #[cfg(test)]
         if let Some((id, serial)) = NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(Cell::take) {
-            return SpawnIdentity { id, serial };
+            return Some(SpawnIdentity { id, serial });
         }
-        let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
-        SpawnIdentity {
-            id: crate::pid::next_actor_id(serial),
+        let serial = allocate_actor_serial()?;
+        Some(SpawnIdentity {
+            id: crate::pid::next_actor_id(serial)?,
             serial,
-        }
+        })
     }
 
+    // WASM stores the raw serial as the `id` rather than packing a route slot,
+    // so `MAX_SPAWN_SERIAL` is the wrap boundary rather than the pack boundary;
+    // the refusal keeps `id == 0` (the invalid-actor sentinel) unreachable.
     #[cfg(target_arch = "wasm32")]
     {
-        let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
-        SpawnIdentity { id: serial, serial }
+        let serial = allocate_actor_serial()?;
+        Some(SpawnIdentity { id: serial, serial })
     }
 }
 
@@ -2752,7 +2827,17 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         unsafe { cleanup_failed_spawn(&config, init_state) };
         return ptr::null_mut();
     }
-    let identity = next_spawn_actor_identity();
+    let Some(identity) = next_spawn_actor_identity() else {
+        crate::set_last_error(
+            "hew_actor_spawn: actor serial space exhausted; refusing to mint an aliased actor id",
+        );
+        // SAFETY: the arena was allocated above and its ownership has not been
+        // transferred to an actor.
+        unsafe { crate::arena::hew_arena_free_all(arena) };
+        // SAFETY: `config` still owns the transferred state/mailbox on this failure path.
+        unsafe { cleanup_failed_spawn(&config, init_state) };
+        return ptr::null_mut();
+    };
     let actor = build_spawned_actor(config, identity, init_state, arena);
     let raw = Box::into_raw(actor);
     register_actor_state_lock(raw);
@@ -2806,7 +2891,17 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         return ptr::null_mut();
     }
 
-    let identity = next_spawn_actor_identity();
+    let Some(identity) = next_spawn_actor_identity() else {
+        crate::set_last_error(
+            "hew_actor_spawn: actor serial space exhausted; refusing to mint an aliased actor id",
+        );
+        // SAFETY: the arena was allocated above and its ownership has not been
+        // transferred to an actor.
+        unsafe { crate::arena::hew_arena_free_all(arena) };
+        // SAFETY: `config` still owns the transferred state/mailbox on this failure path.
+        unsafe { cleanup_failed_spawn(&config, init_state) };
+        return ptr::null_mut();
+    };
     let actor = build_spawned_actor(config, identity, init_state, arena);
     let raw = Box::into_raw(actor);
     register_actor_state_lock(raw);
@@ -7764,8 +7859,8 @@ mod tests {
     }
 
     fn make_tracked_wasm_free_test_actor(initial_state: HewActorState) -> *mut HewActor {
-        let spawn_serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
-        let actor_id = crate::pid::next_actor_id(spawn_serial);
+        let spawn_serial = allocate_actor_serial().expect("serial space is not exhausted");
+        let actor_id = crate::pid::next_actor_id(spawn_serial).expect("serial is representable");
         let actor = Box::into_raw(Box::new(HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
@@ -11799,8 +11894,8 @@ mod tests {
         // Capture the address before transferring ownership to the actor struct.
         let arena_addr = arena as usize;
 
-        let spawn_serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
-        let actor_id = crate::pid::next_actor_id(spawn_serial);
+        let spawn_serial = allocate_actor_serial().expect("serial space is not exhausted");
+        let actor_id = crate::pid::next_actor_id(spawn_serial).expect("serial is representable");
         let actor = Box::into_raw(Box::new(HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
@@ -12150,6 +12245,93 @@ mod tests {
         // SAFETY: ok_actor is a valid pointer from hew_actor_spawn.
         let rc = unsafe { hew_actor_free(ok_actor) };
         assert_eq!(rc, 0, "hew_actor_free on the recovery actor must succeed");
+    }
+
+    // ── actor-serial exhaustion: the packed id must never alias ──────────
+    //
+    // `pid::hew_pid_make` masks the serial to 48 bits, so the allocation after
+    // `MAX_ACTOR_SERIAL` packs to PID 0 (the invalid-actor sentinel that
+    // `hew_node_api_register_by_pid` and the pool lookups read as "no actor")
+    // and every allocation after that re-issues an id already live. The
+    // allocator refuses instead.
+
+    #[test]
+    fn actor_serial_allocator_stops_at_the_representable_boundary() {
+        let counter = AtomicU64::new(MAX_SPAWN_SERIAL);
+        assert_eq!(
+            take_actor_serial(&counter),
+            Some(MAX_SPAWN_SERIAL),
+            "the last representable serial must still be issued"
+        );
+        assert_eq!(
+            take_actor_serial(&counter),
+            None,
+            "the allocation past the boundary must be refused"
+        );
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            MAX_SPAWN_SERIAL + 1,
+            "a refused allocation must not advance the counter — an unbounded \
+             counter wraps back into the live id range"
+        );
+        // Refusal is sticky: it does not clear itself on the next call.
+        assert_eq!(take_actor_serial(&counter), None);
+    }
+
+    #[test]
+    fn spawn_with_exhausted_serial_space_returns_null() {
+        let _guard = crate::runtime_test_guard();
+
+        crate::hew_clear_error();
+        seed_next_actor_serial(MAX_SPAWN_SERIAL + 1);
+        // SAFETY: null state with size=0 is valid; dispatch is a valid fn ptr.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(
+            actor.is_null(),
+            "spawn must refuse once the serial space is exhausted, never mint PID 0"
+        );
+        let err = crate::hew_last_error();
+        assert!(!err.is_null(), "the refusal must record a diagnostic");
+        // SAFETY: `hew_last_error` returned a non-null, NUL-terminated C string
+        // owned by the thread-local slot; it stays valid until the next write.
+        let msg = unsafe { std::ffi::CStr::from_ptr(err) }
+            .to_str()
+            .expect("last-error message is valid UTF-8");
+        assert!(
+            msg.contains("serial space exhausted"),
+            "the refusal must name its cause, got: {msg}"
+        );
+
+        // The seed is one-shot: the very next spawn uses the real counter and
+        // succeeds, so exhaustion cannot leak into sibling tests.
+        // SAFETY: null state with size=0 is valid; dispatch is a valid fn ptr.
+        let ok_actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(
+            !ok_actor.is_null(),
+            "the next spawn must be unaffected by the one-shot seed"
+        );
+        // SAFETY: ok_actor is a valid pointer from hew_actor_spawn.
+        assert_eq!(unsafe { hew_actor_free(ok_actor) }, 0);
+    }
+
+    #[test]
+    fn spawn_at_the_last_representable_serial_still_succeeds() {
+        let _guard = crate::runtime_test_guard();
+
+        seed_next_actor_serial(MAX_SPAWN_SERIAL);
+        // SAFETY: null state with size=0 is valid; dispatch is a valid fn ptr.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null(), "the boundary serial must still spawn");
+        // SAFETY: actor is a live allocation from hew_actor_spawn.
+        let (id, serial) = unsafe { ((*actor).id, (*actor).spawn_serial) };
+        assert_eq!(serial, MAX_SPAWN_SERIAL);
+        assert_ne!(
+            id, 0,
+            "a boundary spawn must not carry the invalid sentinel"
+        );
+        assert_eq!(crate::pid::hew_pid_serial(id), MAX_SPAWN_SERIAL);
+        // SAFETY: actor is a valid pointer from hew_actor_spawn.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
     }
 
     // ── gen_sink CAS-race double-free regression (PR #2401 finding) ──────

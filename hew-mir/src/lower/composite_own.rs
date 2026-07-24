@@ -981,17 +981,31 @@ pub(super) fn proven_borrow_whole_arg_locals(
 /// binder is interpolated would otherwise turn a leak into a hard
 /// `E_NOT_YET_IMPLEMENTED` compile failure.
 ///
-/// Restricting the exemption to string/bit-copy payloads keeps it inside the
-/// shapes the f-string interpolation defect actually covers (`Option<string>`,
-/// `Result<string, string>`, user enums with string payloads) and leaves every
-/// richer composite on its pre-existing fail-closed posture — it keeps leaking,
-/// exactly as before, and still compiles.
+/// ## Why the payload predicate is a POSITIVE bit-copy test
+///
+/// The obvious spelling — "`string`, or anything the heap authority says owns
+/// no heap" — is not a bit-copy predicate and does not bound the clone
+/// synthesis at all. `Stream<i64>` / `Sink<i64>` are pointer-backed IO handles:
+/// [`crate::model::ty_owns_heap_mir`]'s builtin leaf set omits `Stream`/`Sink`
+/// and its generic `Named` arm only recurses into type arguments and layouts,
+/// so with scalar arguments both answer "owns no heap" — while
+/// `hew-mir/src/state_clone.rs` classifies them as `IoHandle`s with no
+/// duplication helper, which clone totality rejects along with every
+/// closure-pair, `#[resource]`, and opaque-handle class. The
+/// `!ty_owns_heap_mir` spelling therefore re-admitted exactly the composites
+/// the bound exists to exclude.
+///
+/// [`ty_is_bit_copy_payload`] is the conservative alternative the payload leaf
+/// actually needs: a scalar leaf, or a tuple/array built only from such leaves.
+/// Every `Named` payload — builtin handle, user record, nested enum, opaque,
+/// resource — answers `false` and keeps its composite on the pre-existing
+/// fail-closed posture (it keeps leaking, exactly as before, and still
+/// compiles).
 ///
 /// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, or any
 /// payload that is neither `string` nor bit-copy answers `false`.
 fn enum_payloads_are_plain_string(
     ty: &ResolvedTy,
-    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
 ) -> bool {
     let ResolvedTy::Named { name, args, .. } = ty else {
@@ -1016,10 +1030,28 @@ fn enum_payloads_are_plain_string(
     }
     layout.variants.iter().all(|variant| {
         variant.field_tys.iter().all(|field_ty| {
-            matches!(field_ty, ResolvedTy::String)
-                || !crate::model::ty_owns_heap_mir(field_ty, record_field_orders, enum_layouts)
+            matches!(field_ty, ResolvedTy::String) || ty_is_bit_copy_payload(field_ty)
         })
     })
+}
+/// True when `ty` is a payload that is copied bit-for-bit and owns nothing: a
+/// scalar leaf, or a tuple / fixed-size array built exclusively from such
+/// leaves.
+///
+/// The scalar leaf set is the shared [`crate::return_provenance::ty_is_scalar_non_heap`]
+/// authority (the same one the audited extern-return table uses to admit a
+/// scalar-return extern), extended here to `char`-sized aggregates of scalars.
+/// Deliberately EXHAUSTIVE-by-rejection: every non-listed form — `Named` (which
+/// covers `Stream`/`Sink`/`Generator`/`CancellationToken`/`Connection`, every
+/// user record and nested enum, every `#[opaque]` handle and `#[resource]`),
+/// `String`, `Bytes`, `Slice`, `Function`, `Closure`, `Pointer`, `Borrow`,
+/// `TraitObject`, `Task`, `TypeParam` — answers `false`.
+fn ty_is_bit_copy_payload(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Tuple(elems) => elems.iter().all(ty_is_bit_copy_payload),
+        ResolvedTy::Array(elem, _) => ty_is_bit_copy_payload(elem),
+        other => crate::return_provenance::ty_is_scalar_non_heap(other),
+    }
 }
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
 /// composite** bindings (`Result<T, string>`, `Option<string>`, any user
@@ -1128,8 +1160,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        all_candidates_are_plain_string_payload &=
-            enum_payloads_are_plain_string(ty, record_field_orders, enum_layouts);
+        all_candidates_are_plain_string_payload &= enum_payloads_are_plain_string(ty, enum_layouts);
         candidate_local_to_binding.insert(local, *binding);
     }
     if candidate_local_to_binding.is_empty() {
@@ -8465,6 +8496,154 @@ mod plain_vec_drop_interior_alias_and_escape {
             allowed.contains(&xs),
             "a fresh sole-owner local Vec must stay admitted for its scope-exit \
              hew_vec_free (the leak the lane closes); allowed: {allowed:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod plain_string_payload_cap {
+    //! The clone-safety cap on the `string_binder_read_is_user_fn_borrow`
+    //! exemption must be a POSITIVE bit-copy predicate, not "owns no heap".
+    //!
+    //! `EnumInPlace` seeds the enum clone/drop helper synthesis, and clone
+    //! totality refuses every `IoHandle` / closure-pair / `#[resource]` /
+    //! opaque-handle class. `Stream<T>` and `Sink<T>` are pointer-backed IO
+    //! handles with no duplication helper — yet the MIR heap authority's builtin
+    //! leaf set omits them and its generic `Named` arm only recurses into type
+    //! arguments, so `Stream<i64>` / `Sink<i64>` answer "owns no heap". The old
+    //! `String || !ty_owns_heap_mir` spelling therefore re-admitted exactly the
+    //! composites the cap exists to exclude, re-opening the clone-synthesis
+    //! refusal.
+    use super::*;
+
+    fn builtin(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args,
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    fn opaque(name: &str) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: true,
+        }
+    }
+
+    /// A two-variant `Result`-shaped layout named for the mangled key the
+    /// lookup resolves, with `ok` in the first variant and `string` in the
+    /// second.
+    fn result_layout(name: &str, ok: Vec<ResolvedTy>) -> crate::model::EnumLayout {
+        crate::model::EnumLayout {
+            name: name.to_string(),
+            tag_width: 1,
+            variants: vec![
+                crate::model::MachineVariantLayout {
+                    name: "Ok".to_string(),
+                    field_tys: ok,
+                    field_names: vec![],
+                },
+                crate::model::MachineVariantLayout {
+                    name: "Err".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        }
+    }
+
+    fn admits(ok: Vec<ResolvedTy>) -> bool {
+        let args = vec![
+            ok.first().cloned().unwrap_or(ResolvedTy::Unit),
+            ResolvedTy::String,
+        ];
+        let ty = builtin("Result", args.clone());
+        let key = crate::lower::mangle_layout_key("Result", &args);
+        enum_payloads_are_plain_string(&ty, &[result_layout(&key, ok)])
+    }
+
+    #[test]
+    fn plain_string_payloads_are_admitted() {
+        assert!(
+            admits(vec![ResolvedTy::String]),
+            "the f-string interpolation fix must survive: `Result<string, string>` \
+             is the shape the exemption exists for"
+        );
+    }
+
+    #[test]
+    fn scalar_payloads_are_admitted() {
+        assert!(
+            admits(vec![ResolvedTy::I64]),
+            "a scalar payload is a genuine bit-copy leaf"
+        );
+        assert!(
+            admits(vec![ResolvedTy::Tuple(vec![
+                ResolvedTy::I64,
+                ResolvedTy::Bool
+            ])]),
+            "a tuple of scalars is bit-copy through"
+        );
+    }
+
+    #[test]
+    fn scalar_argument_io_handle_payloads_are_refused() {
+        // The load-bearing case: SCALAR type arguments, so the heap authority
+        // answers "owns no heap" for both handles. Only a positive bit-copy
+        // predicate rejects them.
+        let stream = builtin("Stream", vec![ResolvedTy::I64]);
+        let sink = builtin("Sink", vec![ResolvedTy::I64]);
+        assert!(
+            !crate::model::ty_owns_heap_mir(&stream, &HashMap::new(), &[]),
+            "guard: the heap authority does NOT see Stream<i64> as heap-owning — \
+             that is exactly why `!ty_owns_heap_mir` was the wrong predicate"
+        );
+        assert!(
+            !admits(vec![ResolvedTy::Tuple(vec![stream, sink])]),
+            "`Result<(Stream<i64>, Sink<i64>), string>` must stay OUT of the \
+             exemption: its `EnumInPlace` drop would seed a clone helper the \
+             IoHandle class cannot synthesise"
+        );
+    }
+
+    #[test]
+    fn string_argument_io_handle_payloads_are_refused() {
+        assert!(
+            !admits(vec![ResolvedTy::Tuple(vec![
+                builtin("Stream", vec![ResolvedTy::String]),
+                builtin("Sink", vec![ResolvedTy::String]),
+            ])]),
+            "the heap-argument spelling stays refused too"
+        );
+    }
+
+    #[test]
+    fn opaque_and_resource_payloads_are_refused() {
+        assert!(
+            !admits(vec![opaque("Value")]),
+            "an `#[opaque]` handle has no duplication helper and must stay refused"
+        );
+        assert!(
+            !admits(vec![builtin("Connection", vec![])]),
+            "a `#[resource]`-class handle must stay refused"
+        );
+        assert!(
+            !admits(vec![builtin("Rec", vec![])]),
+            "a user record payload is not a bit-copy leaf and stays refused \
+             (fail-closed: it keeps leaking, exactly as before, and compiles)"
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_layout_is_refused() {
+        assert!(
+            !enum_payloads_are_plain_string(&builtin("Result", vec![ResolvedTy::String]), &[]),
+            "no layout means no proof"
         );
     }
 }

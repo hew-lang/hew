@@ -4295,18 +4295,32 @@ fn resolve_admission_claim_before_join(
 ///
 /// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
 #[no_mangle]
-#[allow(
-    clippy::too_many_lines,
-    reason = "function handles the full connection teardown and claim retirement protocol"
-)]
 pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
     if mgr.is_null() {
         set_last_error("hew_connmgr_remove: manager is null");
         return -1;
     }
     // SAFETY: caller guarantees `mgr` is valid.
-    let mgr = unsafe { &*mgr };
+    remove_connection(unsafe { &*mgr }, conn_id)
+}
 
+/// The guarded removal/teardown path, as a safe function over a borrowed
+/// manager: [`hew_connmgr_remove`] is the FFI shim over it, and in-crate
+/// callers route through it instead of hand-rolling teardown steps.
+///
+/// It maintains the teardown invariants in one place: cancel the publication,
+/// remove the route, mark `reader_stop` + `transport_closed` BEFORE closing so
+/// the transport is closed exactly once and the woken reader takes the
+/// expected-stop path (no re-entrant removal, no reconnect), drain claimed
+/// sends, unlink the actor, join the reader, then retire the claim, the route
+/// and the cluster membership.
+///
+/// Returns 0 on success, -1 if `conn_id` is not installed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "function handles the full connection teardown and claim retirement protocol"
+)]
+fn remove_connection(mgr: &HewConnMgr, conn_id: c_int) -> c_int {
     // Phase 1: locate the connection and clone the publication handles — without
     // removing the conn from the list yet. Holding only Arc clones here so we
     // release the connections lock before calling into routing/cluster.

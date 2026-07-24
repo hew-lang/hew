@@ -1190,7 +1190,13 @@ pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailboxWasm) -> bool
     let mb = unsafe { &mut *mb };
 
     // SAFETY: stop signals carry no payload.
-    let node = unsafe { msg_node_alloc(-1, ptr::null(), 0) };
+    let node = unsafe {
+        msg_node_alloc(
+            crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL,
+            ptr::null(),
+            0,
+        )
+    };
     if node.is_null() {
         report_stop_enqueue_failure();
         return false;
@@ -1228,23 +1234,58 @@ wasm_no_mangle! {
     pub unsafe extern "C" fn hew_mailbox_try_recv(
         mb: *mut HewMailboxWasm,
     ) -> *mut HewMsgNode {
-        // SAFETY: Caller guarantees `mb` is valid.
-        let mb = unsafe { &mut *mb };
+        // SAFETY: caller upholds the `mb`-valid contract.
+        unsafe { mailbox_try_recv_with_origin(mb) }.node
+    }
+}
 
-        // System messages have priority.
-        if let Some(node) = mb.sys_queue.pop_front() {
-            crate::scheduler_wasm::record_message_received();
-            return node;
-        }
+/// A received WASM node plus the queue it came from — the WASM twin of
+/// [`crate::mailbox::RecvNode`].
+///
+/// The origin bit is load-bearing for the same reason as the native path: the
+/// shutdown sentinel ([`crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL`]) is a
+/// system-queue-only lifecycle signal, disambiguated from an application
+/// message that shares its numeric value by PROVENANCE, not by the value.
+/// `msg_type` is unrestricted `i32` and codegen tags are hashes, so a user
+/// message may legitimately carry `-1`.
+pub(crate) struct RecvNode {
+    pub node: *mut HewMsgNode,
+    pub from_sys: bool,
+}
 
-        // User messages.
-        if let Some(node) = mb.user_queue.pop_front() {
-            mb.count -= 1;
-            crate::scheduler_wasm::record_message_received();
-            return node;
-        }
+/// Single-consumer receive that preserves system-vs-user provenance — the WASM
+/// twin of [`crate::mailbox::mailbox_try_recv_with_origin`]. System messages
+/// keep priority (dequeued first), exactly as [`hew_mailbox_try_recv`].
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer.
+pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailboxWasm) -> RecvNode {
+    // SAFETY: Caller guarantees `mb` is valid.
+    let mb = unsafe { &mut *mb };
 
-        ptr::null_mut()
+    // System messages have priority.
+    if let Some(node) = mb.sys_queue.pop_front() {
+        crate::scheduler_wasm::record_message_received();
+        return RecvNode {
+            node,
+            from_sys: true,
+        };
+    }
+
+    // User messages.
+    if let Some(node) = mb.user_queue.pop_front() {
+        mb.count -= 1;
+        crate::scheduler_wasm::record_message_received();
+        return RecvNode {
+            node,
+            from_sys: false,
+        };
+    }
+
+    RecvNode {
+        node: ptr::null_mut(),
+        from_sys: false,
     }
 }
 

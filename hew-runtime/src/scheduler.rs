@@ -38,9 +38,7 @@ use crate::deterministic::hew_deterministic_set_seed;
 use crate::execution_context::HewExecutionContext;
 use crate::internal::types::HewActorState;
 use crate::lifetime::poison_safe::PoisonSafe;
-use crate::mailbox::{
-    self, hew_mailbox_has_messages, hew_mailbox_try_recv, hew_msg_node_free, HewMailbox,
-};
+use crate::mailbox::{self, hew_mailbox_has_messages, hew_msg_node_free, HewMailbox};
 use crate::set_last_error;
 use crate::util::MutexExt;
 
@@ -1975,8 +1973,46 @@ fn activate_actor(actor: *mut HewActor) {
         // Process up to `budget` messages.
         for _ in 0..budget {
             // SAFETY: mailbox pointer is valid for the lifetime of the actor.
-            let msg = unsafe { hew_mailbox_try_recv(mailbox) };
+            // Receive WITH provenance so a SYSTEM-queue shutdown sentinel is not
+            // confused with an application message that shares its value.
+            let mailbox::RecvNode {
+                node: msg,
+                from_sys,
+            } = unsafe { mailbox::mailbox_try_recv_with_origin(mailbox) };
             if msg.is_null() {
+                break;
+            }
+
+            // Shutdown sentinel: `hew_actor_stop` enqueues a
+            // `HEW_MAILBOX_SHUTDOWN_SENTINEL` (msg_type == -1) *system* message so
+            // a Running actor's next mailbox poll OBSERVES the close request. It
+            // is a lifecycle signal, not an application message — the generated
+            // dispatch `match` has no arm for it, so handing it to the user
+            // trampoline lands on the trapping default arm (`ud2` → SIGILL). This
+            // reproduced ~0.75% of the time when a supervised actor was stopped
+            // while a worker was mid-drain of its mailbox: the settle path saw the
+            // queued sentinel via `hew_mailbox_has_messages`, re-enqueued the
+            // actor Runnable, and the next activation dispatched the sentinel.
+            //
+            // Gate on `from_sys`: the sentinel value is reserved only on the
+            // SYSTEM queue. `msg_type` is unrestricted `i32` in the public C ABI
+            // (`hew_actor_send` / `HewDispatchFn`) and codegen tags are hashes, so
+            // a USER-queue node carrying `-1` is a real message that MUST reach
+            // the handler — it is never intercepted here.
+            //
+            // SAFETY: `msg` is the non-null node just returned, exclusively owned
+            // by this worker.
+            if from_sys && unsafe { (*msg).msg_type } == mailbox::HEW_MAILBOX_SHUTDOWN_SENTINEL {
+                // SAFETY: `msg` is exclusively owned by this worker.
+                unsafe { hew_msg_node_free(msg) };
+                // Drive Running -> Stopping so the post-loop settle finalizes the
+                // Stopping -> Stopped terminal transition (monitors/terminate).
+                let _ = a.actor_state.compare_exchange(
+                    HewActorState::Running as i32,
+                    HewActorState::Stopping as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
                 break;
             }
 
@@ -4254,7 +4290,7 @@ mod tests {
         // Teardown: drain the queued message + free the mailbox safely.
         // SAFETY: single-threaded test; nothing else references the mailbox.
         unsafe {
-            let msg = hew_mailbox_try_recv(mailbox.cast::<HewMailbox>());
+            let msg = mailbox::hew_mailbox_try_recv(mailbox.cast::<HewMailbox>());
             if !msg.is_null() {
                 hew_msg_node_free(msg);
             }
@@ -4720,7 +4756,7 @@ mod tests {
         assert!(unsafe { crate::coro_exec::destroy_parked(&actor) }.is_ok());
         // SAFETY: single-threaded test; mailbox unused afterwards.
         unsafe {
-            let msg = hew_mailbox_try_recv(mailbox.cast::<HewMailbox>());
+            let msg = mailbox::hew_mailbox_try_recv(mailbox.cast::<HewMailbox>());
             if !msg.is_null() {
                 hew_msg_node_free(msg);
             }
@@ -4797,7 +4833,7 @@ mod tests {
         // SAFETY: single-threaded test; mailbox unused afterwards.
         unsafe {
             loop {
-                let msg = hew_mailbox_try_recv(mailbox.cast::<HewMailbox>());
+                let msg = mailbox::hew_mailbox_try_recv(mailbox.cast::<HewMailbox>());
                 if msg.is_null() {
                     break;
                 }

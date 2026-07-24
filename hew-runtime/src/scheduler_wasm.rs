@@ -265,16 +265,8 @@ const _: () = {
 
 #[cfg(target_arch = "wasm32")]
 extern "C" {
-    fn hew_mailbox_try_recv(mb: *mut c_void) -> *mut HewMsgNode;
     fn hew_mailbox_has_messages(mb: *mut c_void) -> i32;
     fn hew_msg_node_free(node: *mut HewMsgNode);
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-unsafe fn hew_mailbox_try_recv(mb: *mut c_void) -> *mut HewMsgNode {
-    // SAFETY: Tests pass a mailbox allocated by mailbox_wasm with the same
-    // message-node layout as scheduler_wasm's local copy.
-    unsafe { crate::mailbox_wasm::hew_mailbox_try_recv(mb.cast()).cast() }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1574,8 +1566,44 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         // Process up to `budget` messages.
         for _ in 0..budget {
             // SAFETY: mailbox pointer is valid for the lifetime of the actor.
-            let msg = unsafe { hew_mailbox_try_recv(mailbox) };
+            // Receive WITH provenance so a SYSTEM-queue shutdown sentinel is not
+            // confused with an application message sharing its value. Mirrors the
+            // native `mailbox::mailbox_try_recv_with_origin` path (sync parity).
+            let recv = unsafe { crate::mailbox_wasm::mailbox_try_recv_with_origin(mailbox.cast()) };
+            let from_sys = recv.from_sys;
+            let msg = recv.node.cast::<HewMsgNode>();
             if msg.is_null() {
+                break;
+            }
+
+            // Shutdown sentinel: `hew_actor_stop` enqueues a
+            // `HEW_MAILBOX_SHUTDOWN_SENTINEL` (msg_type == -1) *system* message so
+            // a Running actor's next mailbox poll OBSERVES the close request. It
+            // is a lifecycle signal, not an application message — the generated
+            // dispatch `match` has no arm for it, so handing it to the user
+            // trampoline lands on the trapping default arm (`ud2`). On WASM this
+            // fires DETERMINISTICALLY (no concurrency): a handler that calls
+            // `hew_actor_stop(self)` leaves the actor Running, queues the
+            // sentinel, and the next loop iteration would dispatch it.
+            //
+            // Gate on `from_sys`: the sentinel value is reserved only on the
+            // SYSTEM queue; a USER-queue node carrying `-1` is a real message that
+            // MUST reach the handler.
+            //
+            // SAFETY: `msg` is the non-null node just returned, exclusively owned
+            // by this scheduler tick.
+            let msg_type = unsafe { (*msg).msg_type };
+            if from_sys && msg_type == crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL {
+                // SAFETY: `msg` is exclusively owned by this scheduler tick.
+                unsafe { hew_msg_node_free(msg) };
+                // Drive Running -> Stopping so the post-loop settle finalizes the
+                // Stopping -> Stopped terminal transition (terminate callback).
+                let _ = a.actor_state.compare_exchange(
+                    HewActorState::Running as i32,
+                    HewActorState::Stopping as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
                 break;
             }
 
@@ -2886,6 +2914,133 @@ mod tests {
             "crashed actor should remain crashed"
         );
 
+        hew_sched_shutdown();
+    }
+
+    // WASM twin of the native `shutdown_sentinel_is_never_delivered_to_handler`.
+    // Fails on the pre-fix wasm path (the sentinel was dispatched to the handler
+    // and the actor stayed Running).
+    #[test]
+    fn wasm_shutdown_sentinel_is_never_delivered_to_handler() {
+        static SAW_SENTINEL: AtomicI32 = AtomicI32::new(0);
+        unsafe extern "C-unwind" fn sentinel_probe_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
+            _state: *mut c_void,
+            msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+            _borrow_mode: i32,
+        ) -> *mut c_void {
+            if msg_type == crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL {
+                SAW_SENTINEL.fetch_add(1, Ordering::Relaxed);
+            }
+            std::ptr::null_mut()
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        SAW_SENTINEL.store(0, Ordering::Relaxed);
+
+        // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        let mut a = stub_actor();
+        a.dispatch = Some(sentinel_probe_dispatch);
+        a.mailbox = mailbox.cast();
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        let a_ptr: *mut HewActor = (&raw mut a);
+
+        // `hew_actor_stop` on a Running actor enqueues the -1 sentinel on the
+        // SYSTEM queue. Enqueue it directly — on wasm this reproduces
+        // deterministically (no concurrency needed).
+        // SAFETY: mailbox is a valid live wasm mailbox.
+        assert!(unsafe { crate::mailbox_wasm::mailbox_send_stop_sys_once(mailbox) });
+
+        // SAFETY: actor is valid and Runnable.
+        unsafe { activate_actor_wasm(a_ptr) };
+
+        assert_eq!(
+            SAW_SENTINEL.load(Ordering::Relaxed),
+            0,
+            "the system shutdown sentinel must be observed as a self-stop, never dispatched"
+        );
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Stopped as i32,
+            "observing the shutdown sentinel must self-stop the actor"
+        );
+
+        // SAFETY: actor is terminal; the mailbox is drained and freed once.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
+        hew_sched_shutdown();
+    }
+
+    // WASM twin of the native
+    // `user_msg_type_minus_one_reaches_handler_and_does_not_terminate`: a
+    // USER-queue send of `-1` (no stop) must reach the handler and leave the
+    // actor live. Fails on the pre-fix wasm path (value-only interception would
+    // drop it and stop the actor) — here it also proves the provenance gate.
+    #[test]
+    fn wasm_user_msg_type_minus_one_reaches_handler_and_does_not_terminate() {
+        static USER_HANDLED: AtomicI32 = AtomicI32::new(0);
+        unsafe extern "C-unwind" fn user_minus_one_probe_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
+            _state: *mut c_void,
+            msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+            _borrow_mode: i32,
+        ) -> *mut c_void {
+            if msg_type == -1 {
+                USER_HANDLED.fetch_add(1, Ordering::Relaxed);
+            }
+            std::ptr::null_mut()
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        USER_HANDLED.store(0, Ordering::Relaxed);
+
+        // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        let mut a = stub_actor();
+        a.dispatch = Some(user_minus_one_probe_dispatch);
+        a.mailbox = mailbox.cast();
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        let a_ptr: *mut HewActor = (&raw mut a);
+
+        // A USER-queue send (hew_mailbox_send routes to the user queue) carrying
+        // the reserved sentinel VALUE — a legitimate application message.
+        // SAFETY: mailbox is valid; null payload with size 0.
+        let rc =
+            unsafe { crate::mailbox_wasm::hew_mailbox_send(mailbox, -1, std::ptr::null_mut(), 0) };
+        assert_eq!(
+            rc, 0,
+            "user send of msg_type == -1 must enqueue successfully"
+        );
+
+        // SAFETY: actor is valid and Runnable.
+        unsafe { activate_actor_wasm(a_ptr) };
+
+        assert_eq!(
+            USER_HANDLED.load(Ordering::Relaxed),
+            1,
+            "a user-queue message with msg_type == -1 must reach the handler, \
+             not be intercepted as a shutdown signal"
+        );
+        let state = a.actor_state.load(Ordering::Relaxed);
+        assert!(
+            state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32,
+            "delivering a user-queue msg_type == -1 must not terminate the actor (state={state})"
+        );
+
+        // SAFETY: mailbox is drained and freed once.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
         hew_sched_shutdown();
     }
 

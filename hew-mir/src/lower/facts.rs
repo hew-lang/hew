@@ -4130,13 +4130,137 @@ mod analyzed_freshness_strictness {
         );
     }
 
-    #[test]
-    fn an_analyzed_true_row_is_fresh() {
-        let fresh = HashMap::from([(hew_hir::ItemId(7), true)]);
+    /// Lower `source`, run the REAL fixpoints exactly as `lower_module` does,
+    /// and report `(coarse verdict, strict verdict)` for the function `name`.
+    ///
+    /// This deliberately never seeds a row. A test that inserts the fact it
+    /// means to test proves nothing about DERIVATION, and derivation is the
+    /// whole defect: the coarse fixpoint classifies every body-less resolved
+    /// item — a declared extern included — as fresh, so the `true` a wrapper
+    /// inherits is `true` for a reason that has nothing to do with the wrapper.
+    fn freshness_verdicts(source: &str, name: &str) -> (bool, bool) {
+        let module = crate::return_provenance::tests::lower_source(source);
+        let origin_fns: HashMap<hew_hir::ItemId, &HirFn> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(f) => Some((f.id, f)),
+                _ => None,
+            })
+            .collect();
+        let Some((&id, _)) = origin_fns.iter().find(|(_, f)| f.name == name) else {
+            panic!("no function named `{name}` in the lowered module");
+        };
+
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        let provenance = crate::return_provenance::build_call_scrutinee_provenance(
+            &module,
+            &origin_fns,
+            &coarse,
+        );
+        (
+            coarse[&id],
+            callee_returns_analyzed_fresh_owner(
+                &item_callee(id.0),
+                &provenance.extern_aware_fresh_returns,
+            ),
+        )
+    }
+
+    /// The strict verdict, guarded so the case genuinely exercises the strict
+    /// variant's extra work rather than riding on a coarse decline.
+    fn analyzed_fresh_for(source: &str, name: &str) -> bool {
+        let (coarse, strict) = freshness_verdicts(source, name);
         assert!(
-            callee_returns_analyzed_fresh_owner(&item_callee(7), &fresh),
+            coarse,
+            "guard: the coarse summary must say `{name}` is fresh, otherwise \
+             this case never exercises the strict variant's extra work"
+        );
+        strict
+    }
+
+    const EXTERN_DECL: &str = "extern \"C\" {\n    fn host_string() -> string;\n}\n";
+
+    #[test]
+    fn a_constructed_fresh_producer_is_fresh() {
+        assert!(
+            analyzed_fresh_for("fn mk(i: i64) -> string { f\"tok{i}\" }", "mk"),
             "the leak fix must survive: `fn mk(i: i64) -> string {{ f\"tok{{i}}\" }}` \
              is analyzed fresh and keeps its caller-side temp mint"
+        );
+    }
+
+    #[test]
+    fn a_direct_extern_wrapper_is_not_fresh() {
+        let src = format!("{EXTERN_DECL}fn wrapper() -> string {{ unsafe {{ host_string() }} }}");
+        assert!(
+            !analyzed_fresh_for(&src, "wrapper"),
+            "a Hew frame around an opaque extern return must not launder it into \
+             a freshness proof — the caller would mint a release obligation over \
+             an un-audited foreign handle"
+        );
+    }
+
+    #[test]
+    fn a_wrapper_of_a_wrapper_is_not_fresh() {
+        let src = format!(
+            "{EXTERN_DECL}fn wrapper() -> string {{ unsafe {{ host_string() }} }}\n\
+             fn wrapper2() -> string {{ wrapper() }}"
+        );
+        assert!(
+            !analyzed_fresh_for(&src, "wrapper2"),
+            "the veto is a fixpoint, so it must be TRANSITIVE across an arbitrary \
+             chain of Hew frames"
+        );
+    }
+
+    #[test]
+    fn a_generic_wrapper_is_not_fresh() {
+        let src =
+            format!("{EXTERN_DECL}fn gwrap<T>(t: T) -> string {{ unsafe {{ host_string() }} }}");
+        assert!(
+            !analyzed_fresh_for(&src, "gwrap"),
+            "a monomorphisation's callee resolves to the generic ORIGIN item, so \
+             the origin's row must carry the veto too"
+        );
+    }
+
+    #[test]
+    fn an_argument_launderer_is_not_fresh() {
+        let src = format!(
+            "{EXTERN_DECL}fn forward(s: string) -> string {{ s }}\n\
+             fn launder() -> string {{ forward(unsafe {{ host_string() }}) }}"
+        );
+        assert!(
+            !analyzed_fresh_for(&src, "launder"),
+            "an opaque extern result passed THROUGH a pass-through Hew fn is \
+             still an opaque extern result"
+        );
+    }
+
+    #[test]
+    fn a_recursive_wrapper_is_not_fresh() {
+        let src = format!(
+            "{EXTERN_DECL}fn rec(n: i64) -> string {{ \
+             if n > 0 {{ rec(n - 1) }} else {{ unsafe {{ host_string() }} }} }}"
+        );
+        let (coarse, strict) = freshness_verdicts(&src, "rec");
+        assert!(
+            !strict,
+            "a cycle must fail closed: the taint fixpoint only ever adds, so a \
+             recursive path back to the extern taints the whole cycle"
+        );
+        // Defence in depth, and an honest note about WHICH guard fires here: the
+        // coarse fixpoint is a LEAST-fixpoint needing positive proof, so a
+        // self-recursive producer never reaches `true` there in the first place
+        // (a pure recursive `f"base"` producer reads false too). The veto is
+        // redundant for this shape rather than load-bearing — but it must still
+        // hold, because the coarse verdict is not this gate's authority.
+        assert!(
+            !coarse,
+            "guard: this shape is expected to be declined by the coarse fixpoint \
+             as well; if that ever changes the veto becomes load-bearing here and \
+             this test must keep passing"
         );
     }
 

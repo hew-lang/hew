@@ -16,6 +16,8 @@ mod conditional_move_drop;
 mod cstring_container_domain_canary;
 #[path = "lowering_expr/elaborate.rs"]
 mod elaborate;
+#[path = "lowering_expr/extern_wrapper_result_opacity.rs"]
+mod extern_wrapper_result_opacity;
 #[path = "lowering_expr/forawait_loopvar_release.rs"]
 mod forawait_loopvar_release;
 #[path = "lowering_expr/fresh_vec_projection_owner.rs"]

@@ -1235,23 +1235,46 @@ fn publish_identity_connection_established(
     // frames. Its actor tears down via the normal reader-exit path.
     if let Some(superseded) = superseded {
         if superseded.state == ClaimState::Published && superseded.conn_id != conn_id {
-            close_installed_connection_once(mgr, superseded.conn_id);
+            close_superseded_connection_once(mgr, superseded.conn_id, superseded.publication_token);
         }
     }
 }
 
-/// Close a connection that is (or may be) installed, exactly once.
+/// Close a superseded connection's transport at most once, and only while that
+/// exact admission is still installed.
+///
+/// Two things make this safe, and both are refusals to act on an assumption:
+///
+/// - The close is ACQUIRED, never announced. A teardown already inside this
+///   connection's close owns the one-shot handle; this call loses the claim and
+///   leaves it alone.
+/// - An ABSENT actor is treated as ALREADY CLOSED. It is not evidence that the
+///   transport was never closed — it is the opposite. This helper runs only for
+///   a previously `Published` connection, and every path that removes an
+///   installed actor claims and performs its close FIRST: `remove_connection`
+///   closes before its `swap_remove`, and manager free closes before it drains
+///   the list. So a missing actor means the close has been claimed by whoever
+///   removed it, and the numeric `conn_id` may already have been reissued to a
+///   fresh admission. Closing here would free a freed handle — or a live
+///   stranger's. Fail closed: if we cannot establish that the transport is
+///   still open, we do not close it.
+///
+/// Matching the publication token as well as the id is what makes "still
+/// installed" mean "*this* admission is still installed", so a successor that
+/// reused the id is never closed by its predecessor's supersede.
 ///
 /// Deliberately leaves `reader_stop` alone: this is the supersede path, where
 /// the point is that the superseded connection's reader wakes on an
 /// *unexpected* drop and tears itself down through the ordinary reader-exit
 /// route. Only the close is claimed, so the removal that reader triggers — and
 /// the actor's own `Drop` — cannot free the one-shot handle a second time.
-fn close_installed_connection_once(mgr: &HewConnMgr, conn_id: c_int) {
+fn close_superseded_connection_once(mgr: &HewConnMgr, conn_id: c_int, publication_token: u64) {
     let claim = mgr.connections.access(|connections| {
         connections
             .iter()
-            .find(|connection| connection.conn_id == conn_id)
+            .find(|connection| {
+                connection.conn_id == conn_id && connection.publication_token == publication_token
+            })
             .map(|connection| {
                 (
                     connection.transport_close.claim(),
@@ -1259,20 +1282,14 @@ fn close_installed_connection_once(mgr: &HewConnMgr, conn_id: c_int) {
                 )
             })
     });
-    match claim {
-        Some((true, transport_close)) => {
-            // SAFETY: mgr.transport is valid while the manager is alive.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-            transport_close.finish();
-        }
-        // Another teardown path owns this connection's close; leave the handle
-        // to it rather than closing something we do not own.
-        Some((false, _)) => {}
-        None => {
-            // Not installed: no actor exists to own the close, so this call does.
-            // SAFETY: mgr.transport is valid while the manager is alive.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-        }
+    // `Some((false, _))`: another teardown path owns this connection's close.
+    // `None`: the actor is gone, so its close already happened (or is happening
+    // under someone else's claim) and the id may belong to a successor.
+    // Neither may close here.
+    if let Some((true, transport_close)) = claim {
+        // SAFETY: mgr.transport is valid while the manager is alive.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        transport_close.finish();
     }
 }
 

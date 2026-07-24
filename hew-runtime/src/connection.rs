@@ -442,6 +442,11 @@ enum TransportCloseState {
 struct TransportClose {
     state: Mutex<TransportCloseState>,
     closed: Condvar,
+    /// Callers currently parked in [`TransportClose::wait_closed`] behind the
+    /// owner's close. Observability only — the teardown-race tests use it to
+    /// tell "the racing teardown is blocked behind the claim" apart from "the
+    /// racing teardown has not arrived yet" without guessing at a sleep.
+    waiters: AtomicUsize,
 }
 
 impl TransportClose {
@@ -474,9 +479,16 @@ impl TransportClose {
     /// close it) or when the close already landed.
     fn wait_closed(&self) {
         let mut state = self.state.lock_or_recover();
+        self.waiters.fetch_add(1, Ordering::Release);
         while *state == TransportCloseState::Claimed {
             state = self.closed.wait_or_recover(state);
         }
+        self.waiters.fetch_sub(1, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn waiters(&self) -> usize {
+        self.waiters.load(Ordering::Acquire)
     }
 }
 
@@ -9021,6 +9033,495 @@ mod tests {
             ));
         }
         drop(ops);
+    }
+
+    // ---- teardown is exactly-once under concurrent close paths -------------
+
+    /// Route slot the refused peer occupies. It is also the harness routing
+    /// table's own local slot, which is what makes `hew_routing_add_route`
+    /// refuse the route and drive publication into the refusal path.
+    const RACE_ROUTE_SLOT: u16 = 2;
+
+    /// A transport whose `close_conn` records every close it is handed and
+    /// holds the FIRST close of one chosen connection open until the test
+    /// releases it.
+    ///
+    /// That park is the interleaving seam. Every teardown path closes while the
+    /// actor is still installed, so sitting inside the close leaves a second
+    /// path a real window in which it finds the connection, concludes it is
+    /// closing it, and frees the same one-shot handle.
+    struct RacingCloseTransport {
+        /// Every `conn_id` handed to `close_conn`, in call order.
+        closes: Mutex<Vec<c_int>>,
+        park_conn: c_int,
+        entered_park: std::sync::mpsc::Sender<()>,
+        release_park: Mutex<std::sync::mpsc::Receiver<()>>,
+        /// Mirrors a real transport: a close unblocks that connection's reader.
+        readers: Mutex<HashMap<c_int, std::sync::mpsc::Sender<()>>>,
+    }
+
+    impl RacingCloseTransport {
+        fn closes_of(&self, conn_id: c_int) -> usize {
+            self.closes
+                .lock_or_recover()
+                .iter()
+                .filter(|closed| **closed == conn_id)
+                .count()
+        }
+    }
+
+    unsafe extern "C" fn racing_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+        // SAFETY: the teardown-race tests install a RacingCloseTransport as the
+        // transport impl payload and keep it alive past every close.
+        let transport = unsafe { &*(impl_ptr.cast::<RacingCloseTransport>()) };
+        let first_close_of_conn = {
+            let mut closes = transport.closes.lock_or_recover();
+            let first = !closes.contains(&conn_id);
+            closes.push(conn_id);
+            first
+        };
+        if conn_id == transport.park_conn && first_close_of_conn {
+            let _ = transport.entered_park.send(());
+            let _ = transport.release_park.lock_or_recover().recv();
+        }
+        if let Some(reader) = transport.readers.lock_or_recover().get(&conn_id) {
+            let _ = reader.send(());
+        }
+    }
+
+    struct TeardownRace {
+        mgr: *mut HewConnMgr,
+        cluster: *mut crate::cluster::HewCluster,
+        routing_table: *mut HewRoutingTable,
+        transport: *mut HewTransport,
+        transport_impl: *mut RacingCloseTransport,
+        ops: Box<crate::transport::HewTransportOps>,
+        entered_park: std::sync::mpsc::Receiver<()>,
+        release_park: std::sync::mpsc::Sender<()>,
+    }
+
+    struct StagedConn {
+        token: u64,
+        publication_sync: Arc<Mutex<()>>,
+        publication_removed: Arc<AtomicBool>,
+        superseded: Option<LiveClaim>,
+        claimed_send_lifecycle: Arc<ReaderLifecycle>,
+        reader_done: Option<std::sync::mpsc::Receiver<()>>,
+    }
+
+    /// Stage the production refusal shape: a cluster the peer has joined, a
+    /// routing table whose local slot collides with the peer's (so publication
+    /// refuses the route), reconnect armed, and a transport that parks the
+    /// first close of `park_conn`.
+    fn stage_teardown_race(park_conn: c_int) -> TeardownRace {
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: `cluster_config` is a live local for the duration of the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cluster_config) };
+        assert!(!cluster.is_null());
+        // SAFETY: `cluster` was just allocated.
+        let joined = unsafe {
+            crate::cluster::hew_cluster_join(cluster, RACE_ROUTE_SLOT, c"10.0.0.2:9000".as_ptr())
+        };
+        assert_eq!(joined, 0);
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let transport_impl = Box::into_raw(Box::new(RacingCloseTransport {
+            closes: Mutex::new(Vec::new()),
+            park_conn,
+            entered_park: entered_tx,
+            release_park: Mutex::new(release_rx),
+            readers: Mutex::new(HashMap::new()),
+        }));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(racing_close_conn),
+            destroy: None,
+        });
+        let transport = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: transport_impl.cast::<std::ffi::c_void>(),
+        }));
+
+        // SAFETY: the routing table, cluster and transport above are live and
+        // outlive the manager, which every test frees before `finish`.
+        let (routing_table, mgr) = unsafe {
+            let routing_table = crate::routing::hew_routing_table_new_for_test(RACE_ROUTE_SLOT);
+            assert!(!routing_table.is_null());
+            let mgr = hew_connmgr_new(transport, None, routing_table, cluster, 1);
+            assert!(!mgr.is_null());
+            // Arm reconnect so a refusal mistaken for an unexpected drop would
+            // schedule a retry of the rejected peer.
+            (&*mgr).reconnect_enabled.store(true, Ordering::Release);
+            (routing_table, mgr)
+        };
+
+        TeardownRace {
+            mgr,
+            cluster,
+            routing_table,
+            transport,
+            transport_impl,
+            ops,
+            entered_park: entered_rx,
+            release_park: release_tx,
+        }
+    }
+
+    impl TeardownRace {
+        fn transport_impl(&self) -> &RacingCloseTransport {
+            // SAFETY: allocated in `stage_teardown_race`, freed only in `finish`.
+            unsafe { &*self.transport_impl }
+        }
+
+        fn mgr(&self) -> &HewConnMgr {
+            // SAFETY: the manager is live until the test frees it.
+            unsafe { &*self.mgr }
+        }
+
+        /// Install a hand-built actor the way `hew_connmgr_add` would, with a
+        /// reserved identity claim and (optionally) a reader parked in `recv()`
+        /// until a close wakes it into the real `reader_cleanup`.
+        fn stage_connection(&self, conn_id: c_int, route_slot: u16, reader: bool) -> StagedConn {
+            let mgr = self.mgr();
+            let mut actor = ConnectionActor::new(conn_id);
+            let token = next_publication_token(mgr);
+            actor.publication_token = token;
+            actor.peer_node_id = route_slot;
+            actor.transport = self.transport;
+            actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            actor.reconnect = Some(ReconnectSettings {
+                target_addr: "10.0.0.2:9000".to_owned(),
+                max_retries: 3,
+                expected_node_id: Some(route_slot),
+            });
+            let publication_sync = Arc::clone(&actor.publication_sync);
+            let publication_removed = Arc::clone(&actor.publication_removed);
+            let claimed_send_lifecycle = Arc::clone(&actor.claimed_send_lifecycle);
+            let reader_done = reader.then(|| {
+                let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+                let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+                self.transport_impl()
+                    .readers
+                    .lock_or_recover()
+                    .insert(conn_id, wake_tx);
+                let reader_stop = Arc::clone(&actor.reader_stop);
+                let mgr_send = SendConnMgr(self.mgr);
+                actor.reader_handle = Some(std::thread::spawn(move || {
+                    let mgr_send = mgr_send;
+                    let _ = wake_rx.recv();
+                    reader_cleanup(mgr_send.0, conn_id, &reader_stop);
+                    let _ = done_tx.send(());
+                }));
+                done_rx
+            });
+            mgr.connections.access(|conns| conns.push(actor));
+            let superseded = test_reserve_unverified(mgr, route_slot, conn_id, token);
+            StagedConn {
+                token,
+                publication_sync,
+                publication_removed,
+                superseded,
+                claimed_send_lifecycle,
+                reader_done,
+            }
+        }
+
+        /// Block until the racing teardown has reached the close of `conn_id`:
+        /// either parked behind the owner's claim, or — if the claim were a
+        /// plain store again — straight through it with a close of its own.
+        /// Either way the window is real when the park is released.
+        fn await_racing_close(&self, conn_id: c_int) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let waiting = self.mgr().connections.access(|connections| {
+                    connections
+                        .iter()
+                        .find(|connection| connection.conn_id == conn_id)
+                        .map_or(0, |connection| connection.transport_close.waiters())
+                });
+                if waiting > 0 || self.transport_impl().closes_of(conn_id) > 1 {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the racing teardown never reached the close of conn {conn_id}"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        fn await_park_entered(&self) {
+            self.entered_park
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("a teardown path must take the close and park inside it");
+        }
+
+        fn release_park(&self) {
+            self.release_park
+                .send(())
+                .expect("the parked close must still be waiting");
+        }
+
+        /// Free everything the harness owns.
+        ///
+        /// # Safety
+        ///
+        /// The manager must already have been freed by the caller.
+        unsafe fn finish(self) {
+            // SAFETY: all four were allocated in `stage_teardown_race` and the
+            // manager that referenced them is gone.
+            unsafe {
+                crate::cluster::hew_cluster_free(self.cluster);
+                crate::routing::hew_routing_table_free(self.routing_table);
+                drop(Box::from_raw(self.transport));
+                drop(Box::from_raw(self.transport_impl));
+            }
+            drop(self.ops);
+        }
+    }
+
+    /// (a) A refusal and an ordinary `hew_connmgr_remove` reach the same
+    /// connection together. Both find it installed, both conclude it is theirs
+    /// to tear down — and the transport handle is one-shot. The production
+    /// transport must see EXACTLY ONE close.
+    ///
+    /// Counterfactual: with the close announced rather than acquired
+    /// (`transport_closed.store(true)` followed by an unconditional
+    /// `close_transport_conn`, as on main), the remove that arrives while the
+    /// refusal is inside the close stores a flag nobody reads and frees the
+    /// handle a second time — this asserts 2 closes instead of 1.
+    #[test]
+    fn refusal_racing_remove_closes_the_transport_exactly_once() {
+        const CONN: c_int = 41;
+
+        let race = stage_teardown_race(CONN);
+        let staged = race.stage_connection(CONN, RACE_ROUTE_SLOT, true);
+
+        let refusal_mgr = SendConnMgr(race.mgr);
+        let token = staged.token;
+        let publication_sync = Arc::clone(&staged.publication_sync);
+        let publication_removed = Arc::clone(&staged.publication_removed);
+        let superseded = staged.superseded;
+        let refusal = std::thread::spawn(move || {
+            let refusal_mgr = refusal_mgr;
+            // SAFETY: the manager outlives both racing threads.
+            let mgr = unsafe { &*refusal_mgr.0 };
+            publish_connection_established(
+                mgr,
+                RACE_ROUTE_SLOT,
+                CONN,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                token,
+                &publication_sync,
+                &publication_removed,
+                superseded,
+            );
+        });
+        race.await_park_entered();
+
+        let remove_mgr = SendConnMgr(race.mgr);
+        let remove = std::thread::spawn(move || {
+            let remove_mgr = remove_mgr;
+            // SAFETY: the manager outlives both racing threads.
+            unsafe { hew_connmgr_remove(remove_mgr.0, CONN) }
+        });
+        race.await_racing_close(CONN);
+        race.release_park();
+
+        refusal.join().expect("refusal thread should not panic");
+        assert_eq!(
+            remove.join().expect("remove thread should not panic"),
+            0,
+            "the racing remove must report the connection removed"
+        );
+        staged
+            .reader_done
+            .expect("the refused connection is staged with a reader")
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the woken reader must have run its cleanup");
+
+        assert_eq!(
+            race.transport_impl().closes_of(CONN),
+            1,
+            "a refusal racing a remove must close the one-shot transport exactly once"
+        );
+        // SAFETY: the manager is still live.
+        assert_eq!(unsafe { hew_connmgr_count(race.mgr) }, 0);
+        assert_eq!(
+            race.mgr().reconnect_workers.access(|workers| workers.len()),
+            0,
+            "a refused peer must never be scheduled for reconnect"
+        );
+
+        // SAFETY: the manager is live and is not used again.
+        unsafe { hew_connmgr_free(race.mgr) };
+        assert_eq!(
+            race.transport_impl().closes_of(CONN),
+            1,
+            "manager free must not close an already-torn-down connection again"
+        );
+        // SAFETY: the manager has been freed.
+        unsafe { race.finish() };
+    }
+
+    /// (b) The same connection is refused twice concurrently — the shape a
+    /// reader-driven removal racing a publication refusal produces. Only one
+    /// refusal may own the close.
+    ///
+    /// Counterfactual: with the close announced rather than acquired, the
+    /// second refusal marks and closes on its own while the first is still
+    /// inside `close_conn` — this asserts 2 closes instead of 1.
+    #[test]
+    fn duplicate_refusal_closes_the_transport_exactly_once() {
+        const CONN: c_int = 42;
+
+        let race = stage_teardown_race(CONN);
+        let staged = race.stage_connection(CONN, RACE_ROUTE_SLOT, true);
+        // Publish the peer into the cluster under this token, so both refusals
+        // have live membership to retire, not just a connection to unlink.
+        // SAFETY: the cluster is live for the whole test.
+        let established = unsafe {
+            crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+                race.cluster,
+                RACE_ROUTE_SLOT,
+                1,
+                staged.token,
+                &staged.publication_sync,
+                &staged.publication_removed,
+            )
+        };
+        assert_eq!(established, 1);
+
+        let token = staged.token;
+        let refusals = (0..2)
+            .map(|_| {
+                let refusal_mgr = SendConnMgr(race.mgr);
+                std::thread::spawn(move || {
+                    let refusal_mgr = refusal_mgr;
+                    // SAFETY: the manager outlives both racing threads.
+                    let mgr = unsafe { &*refusal_mgr.0 };
+                    refuse_established_publication(mgr, RACE_ROUTE_SLOT, CONN, token);
+                })
+            })
+            .collect::<Vec<_>>();
+        race.await_park_entered();
+        race.await_racing_close(CONN);
+        race.release_park();
+
+        for refusal in refusals {
+            refusal.join().expect("refusal thread should not panic");
+        }
+        staged
+            .reader_done
+            .expect("the refused connection is staged with a reader")
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the woken reader must have run its cleanup");
+
+        assert_eq!(
+            race.transport_impl().closes_of(CONN),
+            1,
+            "two refusals of one connection must close the one-shot transport exactly once"
+        );
+        // SAFETY: the manager is still live.
+        assert_eq!(unsafe { hew_connmgr_count(race.mgr) }, 0);
+
+        // SAFETY: the manager is live and is not used again.
+        unsafe { hew_connmgr_free(race.mgr) };
+        assert_eq!(race.transport_impl().closes_of(CONN), 1);
+        // SAFETY: the manager has been freed.
+        unsafe { race.finish() };
+    }
+
+    /// (c) A refusal is inside the transport close when the manager is torn
+    /// down. Manager free walks every installed connection and closes it, so it
+    /// reaches the refused connection while the refusal still owns its close.
+    ///
+    /// A second connection holds a claimed send in flight, which parks free
+    /// after its close phase — that keeps free from dropping the manager out
+    /// from under the refusal still running on it, without weakening the close
+    /// race the test is about.
+    ///
+    /// Counterfactual: with the close announced rather than acquired, free's
+    /// walk stores the flag and frees the refused connection's handle behind
+    /// the refusal — this asserts 2 closes of the refused connection instead
+    /// of 1.
+    #[test]
+    fn refusal_during_manager_free_closes_the_transport_exactly_once() {
+        const REFUSED: c_int = 43;
+        const OTHER: c_int = 44;
+        const OTHER_ROUTE_SLOT: u16 = 3;
+
+        let race = stage_teardown_race(REFUSED);
+        let refused = race.stage_connection(REFUSED, RACE_ROUTE_SLOT, true);
+        let other = race.stage_connection(OTHER, OTHER_ROUTE_SLOT, false);
+        let in_flight_send = other.claimed_send_lifecycle.register();
+
+        let refusal_mgr = SendConnMgr(race.mgr);
+        let token = refused.token;
+        let publication_sync = Arc::clone(&refused.publication_sync);
+        let publication_removed = Arc::clone(&refused.publication_removed);
+        let superseded = refused.superseded;
+        let refusal = std::thread::spawn(move || {
+            let refusal_mgr = refusal_mgr;
+            // SAFETY: the in-flight claimed send parks manager free before it
+            // can drop the manager, so it is live for this whole thread.
+            let mgr = unsafe { &*refusal_mgr.0 };
+            publish_connection_established(
+                mgr,
+                RACE_ROUTE_SLOT,
+                REFUSED,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                token,
+                &publication_sync,
+                &publication_removed,
+                superseded,
+            );
+        });
+        race.await_park_entered();
+
+        let free_mgr = SendConnMgr(race.mgr);
+        let free = std::thread::spawn(move || {
+            let free_mgr = free_mgr;
+            // SAFETY: the manager is handed over exactly once, here.
+            unsafe { hew_connmgr_free(free_mgr.0) };
+        });
+        race.await_racing_close(REFUSED);
+        race.release_park();
+
+        refusal.join().expect("refusal thread should not panic");
+        refused
+            .reader_done
+            .expect("the refused connection is staged with a reader")
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the woken reader must have run its cleanup");
+
+        assert_eq!(
+            race.transport_impl().closes_of(REFUSED),
+            1,
+            "a refusal in flight during manager free must close the one-shot transport exactly once"
+        );
+        assert_eq!(
+            race.transport_impl().closes_of(OTHER),
+            1,
+            "the connection only manager free tears down must also close exactly once"
+        );
+
+        // Release the in-flight claimed send so free can finish; the refusal is
+        // already done with the manager.
+        drop(in_flight_send);
+        free.join().expect("manager free thread should not panic");
+        assert_eq!(race.transport_impl().closes_of(REFUSED), 1);
+        assert_eq!(race.transport_impl().closes_of(OTHER), 1);
+        // SAFETY: the free thread above took the manager.
+        unsafe { race.finish() };
     }
 
     // ---- issue #2652 · Slice 4 · NodeId claim state machine ----------------

@@ -76,6 +76,19 @@ out/
 tests/hew/hew_test_*.hew
 tests/hew/hew_test_emit_*/
 
+# Root-level compiled scratch outputs. `hew build` at the repo root drops a
+# bare executable plus its `.o`/`.ll` next to it; these are never source and
+# must not land in history. Root-anchored so legitimate `.o`/`.ll` elsewhere
+# (and any tracked executable) are unaffected.
+/*.o
+/*.ll
+/dist_node
+/let_else_tuple_payload
+/owned_nested_tuple_record
+/sort_prog
+/stdlib_io_scanner_file_oracle
+/wire_json_vec_option_roundtrip
+
 # Retired local C++/MLIR codegen checkout and clangd residue. The active v0.5
 # compiler substrate is `hew-codegen-rs`; keep any machine-local `hew-codegen/`
 # directory untracked without deleting it.

@@ -410,6 +410,10 @@ pub struct HewCluster {
     /// `None` (the default) means no queues are registered and the
     /// fan-out is a no-op — backward-compatible with all existing callers.
     partition_registry: Option<Arc<PartitionRegistry>>,
+    /// Test-only park point between a guarded transition's authorization and
+    /// its emission (see `guarded_emission_rendezvous`).
+    #[cfg(test)]
+    guarded_emission_probe: Mutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 /// Maximum number of gossip events to retain.
@@ -804,6 +808,8 @@ impl HewCluster {
             protocol: Box::new(SimpleSwim::new()),
             detectors: Mutex::new(HashMap::new()),
             partition_registry: None,
+            #[cfg(test)]
+            guarded_emission_probe: Mutex::new(None),
         }
     }
 
@@ -1016,6 +1022,28 @@ impl HewCluster {
         true
     }
 
+    /// Test-only rendezvous in the window between a guarded transition's
+    /// authorization and the claim that emits it — the window the stale-ALIVE
+    /// finding is about. Parks the draining thread there so another thread can
+    /// retire the token underneath it.
+    #[cfg(test)]
+    fn guarded_emission_rendezvous(&self) {
+        let probe = self.guarded_emission_probe.lock_or_recover().clone();
+        if let Some(barrier) = probe {
+            // Announce that the transition is authorized but unemitted, then
+            // hold here until the test has finished racing it.
+            barrier.wait();
+            barrier.wait();
+        }
+    }
+
+    /// Park every guarded transition between authorization and emission on
+    /// `barrier` (two parties: the draining thread and the test).
+    #[cfg(test)]
+    pub(crate) fn set_guarded_emission_probe(&self, barrier: Option<Arc<std::sync::Barrier>>) {
+        *self.guarded_emission_probe.lock_or_recover() = barrier;
+    }
+
     fn deliver_member_transition(&self, transition: &MemberTransition) {
         let membership_event = transition.membership_event();
         let deliver = match &transition.publication {
@@ -1056,6 +1084,8 @@ impl HewCluster {
                 ) {
                     return;
                 }
+                #[cfg(test)]
+                self.guarded_emission_rendezvous();
                 // Phase 2 — CLAIM. The window between the two phases is exactly
                 // where a refusal retires the token this transition was
                 // authorized against, so the authorization is re-taken here

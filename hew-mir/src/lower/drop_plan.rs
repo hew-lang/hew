@@ -7065,6 +7065,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
+            extern_aware_fresh_returns: HashMap::new(),
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -7108,6 +7109,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
+            extern_aware_fresh_returns: HashMap::new(),
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -7145,6 +7147,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
+            extern_aware_fresh_returns: HashMap::new(),
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -7182,6 +7185,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
+            extern_aware_fresh_returns: HashMap::new(),
         });
         let callee = expr(
             HirExprKind::BindingRef {

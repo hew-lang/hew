@@ -3074,9 +3074,12 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // ONCE and threaded (as `Rc`) into every body-lowering builder so the
     // preflight admission classifier rejects a forwarded borrowed-parameter
     // scrutinee before the from-call owner mint fires.
-    let call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance> = Rc::new(
-        crate::return_provenance::build_call_scrutinee_provenance(module, &origin_fns),
-    );
+    let call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance> =
+        Rc::new(crate::return_provenance::build_call_scrutinee_provenance(
+            module,
+            &origin_fns,
+            &funcupdate_fn_returns_fresh,
+        ));
     // Module-global RAII-2 (#1295) param-ownership facts: which affine
     // `#[resource]` free-fn value params are CONSUME vs BORROW, and the
     // call-arg `SiteId`s whose over-stamped `Consume` intent is downgraded to a

@@ -506,12 +506,19 @@ impl Builder {
     ///   pointer would be released a second time by the minted owner;
     /// * a user callee must satisfy [`callee_returns_analyzed_fresh_owner`] —
     ///   the module-global least-fixpoint verdict of a body this module actually
-    ///   ANALYZED (generic origins included). The `unwrap_or(true)` cross-ABI
-    ///   fallback of [`callee_returns_fresh_owner`] is deliberately NOT
-    ///   inherited: a body-less resolved item is not a proof of freshness. A
-    ///   callee that forwards, projects, or launders a by-value parameter on ANY
-    ///   return path (`fn passthru(s: string) -> string { s }`) is `false` and
-    ///   stays unminted — a leak, never a caller-side double-free.
+    ///   ANALYZED (generic origins included), read from the TABLE-AWARE summary
+    ///   (`call_scrutinee_provenance.extern_aware_fresh_returns`). The
+    ///   `unwrap_or(true)` cross-ABI fallback of
+    ///   [`callee_returns_fresh_owner`] is deliberately NOT inherited: a
+    ///   body-less resolved item is not a proof of freshness. Neither is a
+    ///   `true` row in the PLAIN summary, which is built independently of the
+    ///   extern table and launders a body-less extern into `Fresh` — so a Hew
+    ///   wrapper (`fn w() -> string { unsafe { host_string() } }`), a wrapper of
+    ///   a wrapper, a generic wrapper and a recursive-looking wrapper would all
+    ///   restore the forbidden caller drop through one visible frame. A callee
+    ///   that forwards, projects, or launders a by-value parameter on ANY return
+    ///   path (`fn passthru(s: string) -> string { s }`) is `false` and stays
+    ///   unminted — a leak, never a caller-side double-free.
     ///
     /// Registration alone still never forces a release: the minted local flows
     /// through `derive_cow_sole_owner` / `derive_cow_fresh_borrowed_owner`,
@@ -531,7 +538,10 @@ impl Builder {
         if self.callee_is_ownership_opaque_extern(symbol) {
             return false;
         }
-        callee_returns_analyzed_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
+        callee_returns_analyzed_fresh_owner(
+            callee,
+            &self.call_scrutinee_provenance.extern_aware_fresh_returns,
+        )
     }
     /// True when `symbol` names a declared `extern "C"` fn with no audited
     /// fresh-owner return contract — an ownership-OPAQUE callee.    ///

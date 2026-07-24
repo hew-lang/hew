@@ -2104,6 +2104,17 @@ fn fn_body_returns_fresh_owner(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, bool>
 /// reassign consumers unchanged while #2648's Precise driver consumes the same
 /// walk under a different policy. Pinned byte-identical by the
 /// `coarse_verdict_differential` frozen-reference test.
+///
+/// # This proof is not a release licence
+///
+/// It cannot see an extern at all: a declared `extern "C"` fn is body-less, so
+/// `callee_returns_fresh_owner`'s `unwrap_or(true)` classifies it fresh and a
+/// Hew wrapper around one inherits that verdict. A consumer that mints a
+/// caller-side RELEASE obligation must additionally apply the veto of
+/// [`crate::return_provenance::compute_fn_return_launders_opaque_extern`] — the
+/// two are combined once into
+/// `CallScrutineeProvenance::extern_aware_fresh_returns`, which is what
+/// [`callee_returns_analyzed_fresh_owner`] reads.
 fn return_value_may_alias_borrow(
     expr: &HirExpr,
     body: &hew_hir::HirBlock,
@@ -2148,7 +2159,8 @@ pub(super) fn callee_returns_fresh_owner(
 }
 /// The OWNERSHIP-SAFE sibling of [`callee_returns_fresh_owner`]: `true` only
 /// when `callee` resolves to a function body this module's freshness fixpoint
-/// actually ANALYZED and proved fresh.
+/// actually ANALYZED, proved fresh, AND proved free of any ownership-opaque
+/// extern on every return path.
 ///
 /// [`callee_returns_fresh_owner`] answers `true` for a resolved item that is
 /// ABSENT from the summary (`unwrap_or(true)`) — the cross-ABI owned-return
@@ -2162,13 +2174,36 @@ pub(super) fn callee_returns_fresh_owner(
 /// use this variant: an absent row is NOT fresh. Worst case is a leak; the
 /// fallback's worst case is a double release.
 ///
+/// # The row must be TABLE-DERIVED, not merely present
+///
+/// Requiring a `true` row in the plain summary is not enough, because that
+/// summary is built before and independently of the extern contract table and
+/// its own leaf policy launders a body-less extern into `Fresh`. A single Hew
+/// frame is then enough to restore the forbidden caller drop:
+///
+/// ```hew
+/// extern "C" { fn host_string() -> string; }
+/// fn wrapper() -> string { unsafe { host_string() } }   // plain summary: true
+/// ```
+///
+/// So the row read here comes from
+/// `CallScrutineeProvenance::extern_aware_fresh_returns`, which is the coarse
+/// proof CONJOINED with the veto of
+/// [`crate::return_provenance::compute_fn_return_launders_opaque_extern`] — a
+/// fixpoint that resolves every declared extern through the audited
+/// [`ExternContractTable`]. That makes the answer transitive: a wrapper of a
+/// wrapper, a generic wrapper and a recursive-looking wrapper all inherit the
+/// `false` row.
+///
 /// Generic origins are included: a monomorphisation's callee resolves to the
 /// generic ORIGIN `ItemId`, and the fixpoint is computed over `origin_fns`
 /// (every `HirItem::Function`, generic or not), so a proven-fresh generic still
 /// answers `true` here.
+///
+/// [`ExternContractTable`]: crate::return_provenance::ExternContractTable
 pub(super) fn callee_returns_analyzed_fresh_owner(
     callee: &HirExpr,
-    fresh: &HashMap<hew_hir::ItemId, bool>,
+    extern_aware_fresh: &HashMap<hew_hir::ItemId, bool>,
 ) -> bool {
     let HirExprKind::BindingRef {
         resolved: ResolvedRef::Item(item_id),
@@ -2177,7 +2212,7 @@ pub(super) fn callee_returns_analyzed_fresh_owner(
     else {
         return false;
     };
-    fresh.get(item_id) == Some(&true)
+    extern_aware_fresh.get(item_id) == Some(&true)
 }
 /// True when `callee` names a statically-resolved Item — a free function (whose
 /// body the freshness fixpoint analyzed), an extern / runtime primitive, or an

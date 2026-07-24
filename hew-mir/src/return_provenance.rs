@@ -628,6 +628,213 @@ pub fn coarse_may_alias_borrow_in_body(
 }
 
 // ---------------------------------------------------------------------------
+// Opaque-extern laundering summary — the table veto on the freshness fact
+// ---------------------------------------------------------------------------
+
+/// The `LeafPolicy` that answers ONE question about a return value: can it be
+/// (or embed, or project, or launder) the result of an ownership-OPAQUE extern?
+///
+/// # Why the freshness summary needs this veto
+///
+/// [`CoarsePolicy`] answers a different question — may this return value alias a
+/// by-value heap PARAMETER of the returning function — and for a body-less
+/// resolved item it answers "no" through `unwrap_or(true)`. That is sound for
+/// its own consumers (a foreign return does not alias a Hew parameter) and it is
+/// pinned byte-identical by the frozen-reference differential.
+///
+/// It is not a proof that the caller may RELEASE the value. A declared
+/// `extern "C" fn host() -> string` is body-less, so `unwrap_or(true)` marks it
+/// fresh and a Hew WRAPPER inherits that verdict:
+///
+/// ```hew
+/// extern "C" { fn host_string() -> string; }
+/// fn wrapper() -> string { unsafe { host_string() } }   // coarse: FRESH
+/// fn main() -> i64 { println(f"value={wrapper()}"); 0 }
+/// ```
+///
+/// The wrapper's row then licenses a caller-side owner over an un-audited
+/// foreign handle through ONE visible Hew frame. That is observable, not
+/// theoretical: an extern declared in a module with stdlib provenance is
+/// classified `HeaderAware` ([`crate::model::classify_extern_string_ownership`]),
+/// so codegen does NOT adopt-and-copy its return and the minted release lands on
+/// the host's own live handle.
+///
+/// # The transfer
+///
+/// The bits produced here mean "tainted by an opaque extern", not "aliases a
+/// parameter", so the clauses read differently from `CoarsePolicy`:
+///
+/// 1. a non-item callee (closure, fn-pointer param, dynamic dispatch) can hand
+///    back anything, including a value it obtained from a host → `Opaque`;
+/// 2. a DECLARED EXTERN — claimed by NAME *and* by declaration id, ahead of every
+///    id lookup — is clean ONLY with an audited fresh-`+1`-return row, and
+///    `Opaque` otherwise. The name is the primary key because an extern call
+///    site's `ResolvedRef::Item` carries a placeholder id rather than the
+///    declaration's; the id is checked too so a future lowering that resolves the
+///    real id cannot slip past;
+/// 3. an ANALYZED module body reads its own row in the taint set under
+///    construction — this is the TRANSITIVE step. An already-tainted callee is
+///    `Opaque`; an as-yet-clean callee is `ParamSubst`, which keeps walking its
+///    ARGUMENTS, so `fn c() -> string {{ forward(unsafe {{ ext() }}) }}` is
+///    tainted through the argument even when `forward` itself is clean;
+/// 4. a body-less NON-extern resolved item (an aggregate constructor, the minted
+///    `string_concat` shim an f-string tail lowers to, a runtime primitive) keeps
+///    the cross-ABI owned-return treatment through
+///    [`bodyless_item_is_audited_owned_return`] — the one explicit carve-out,
+///    unreachable for anything clause 2 owns.
+///
+/// A non-`Call` leaf contributes NOTHING (`EMPTY`): a literal, an index, a
+/// binding are not extern results. That is not a hole, because this summary is
+/// only ever read as a VETO on top of the coarse freshness proof, and the coarse
+/// proof already fails closed (`OPAQUE`) on every leaf its walk reaches. A path
+/// the coarse proof admits therefore consists exclusively of the structural arms
+/// and `Call`s this walk classifies — the two walks visit the same nodes.
+#[derive(Debug)]
+pub struct OpaqueExternTaintPolicy<'a> {
+    /// The audited extern owned-return contract table — the authority for every
+    /// declared `extern "C"` callee.
+    pub extern_table: &'a ExternContractTable,
+    /// The `ItemId`s of the module bodies the summary analyzes.
+    pub analyzed: &'a HashSet<hew_hir::ItemId>,
+    /// The taint set under construction (the fixpoint state).
+    pub tainted: &'a HashSet<hew_hir::ItemId>,
+}
+
+impl LeafPolicy for OpaqueExternTaintPolicy<'_> {
+    fn classify_call(&self, callee: &HirExpr) -> CallClass {
+        // Clause 1 — an indirect/closure/dynamic callee can hand back anything.
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Item(item_id),
+            ..
+        } = &callee.kind
+        else {
+            return CallClass::Opaque;
+        };
+        // Clause 2 — the audited extern authority, ahead of every id lookup.
+        if self.extern_table.is_extern_name(name) || self.extern_table.is_extern_id(*item_id) {
+            return if self.extern_table.extern_return_is_audited_fresh_owner(name) {
+                CallClass::Fresh
+            } else {
+                CallClass::Opaque
+            };
+        }
+        // Clause 3 — an analyzed module body: the transitive step.
+        if self.analyzed.contains(item_id) {
+            return if self.tainted.contains(item_id) {
+                CallClass::Opaque
+            } else {
+                CallClass::ParamSubst
+            };
+        }
+        // Clause 4 — the explicit body-less carve-out.
+        if bodyless_item_is_audited_owned_return(name, *item_id, self.extern_table) {
+            CallClass::Fresh
+        } else {
+            CallClass::Opaque
+        }
+    }
+
+    fn leaf_bits(&self, _expr: &HirExpr) -> AliasBits {
+        // A non-call leaf is not an extern result. See the type doc: this
+        // summary is a veto on top of a coarse proof that already fails closed
+        // on every leaf it reaches.
+        AliasBits::EMPTY
+    }
+
+    fn missing_position_bits(&self, _enclosing: &HirExpr) -> AliasBits {
+        // An absent value position carries no value at all, so it carries no
+        // foreign value either. Same reasoning as `leaf_bits`.
+        AliasBits::EMPTY
+    }
+}
+
+/// The ONE explicit path by which a body-less resolved item keeps the cross-ABI
+/// owned-return treatment in [`OpaqueExternTaintPolicy`] (clause 4).
+///
+/// The class it covers is the compiler's OWN body-less items: aggregate
+/// constructors, the minted stdlib shims an f-string tail lowers to
+/// (`string_concat`), and the runtime primitives behind `RecordCloneCall` /
+/// `Index` / `Slice`. Every one of them is emitted by this compiler under the
+/// owned-return contract — the same trust the walk's fresh structural leaves
+/// already extend, and the treatment the coarse policy gives them today.
+///
+/// It is NOT a place to admit a foreign callee, and it does not widen the
+/// audited set. A declared extern can never reach here: clause 2 claims every
+/// extern by NAME and by declaration ID first, both answered from the
+/// [`ExternContractTable`] built from the module's `HirItem::ExternFn`
+/// declarations, imports included. Widening this predicate to cover an extern —
+/// or widening the table's audited fresh-return set so an extern reaches clause
+/// 2's clean arm — reopens exactly the laundering this summary exists to close.
+#[must_use]
+fn bodyless_item_is_audited_owned_return(
+    name: &str,
+    id: hew_hir::ItemId,
+    extern_table: &ExternContractTable,
+) -> bool {
+    !extern_table.is_extern_name(name) && !extern_table.is_extern_id(id)
+}
+
+/// The module-global OPAQUE-EXTERN LAUNDERING summary: every `ItemId` whose
+/// function can hand back a value that crossed an ownership-opaque extern.
+///
+/// This is the veto a RELEASE mint must apply on top of the coarse freshness
+/// proof (`compute_fn_returns_fresh_owner`), which cannot see externs at all.
+/// Membership is TRANSITIVE by construction: every callee's row is read out of
+/// the set being built, so a wrapper, a wrapper of a wrapper, a generic wrapper
+/// (analyzed once at its origin `ItemId`, which is what a monomorphisation
+/// resolves to) and a recursive-looking wrapper all end up in it.
+///
+/// Monotone least-fixpoint from the EMPTY set, growing only: taint is injected
+/// by non-recursive transfers (an opaque extern callee, an indirect callee) and
+/// propagated by union, so a cycle that touches an extern anywhere taints every
+/// member, while a cycle that touches none stays clean. The set is finite and a
+/// pass only ever adds, so it converges.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "built once over the pipeline's default-hasher origin_fns map"
+)]
+pub fn compute_fn_return_launders_opaque_extern(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    extern_table: &ExternContractTable,
+) -> HashSet<hew_hir::ItemId> {
+    let analyzed: HashSet<hew_hir::ItemId> = fns.keys().copied().collect();
+    let mut tainted: HashSet<hew_hir::ItemId> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            if tainted.contains(&id) {
+                continue;
+            }
+            let policy = OpaqueExternTaintPolicy {
+                extern_table,
+                analyzed: &analyzed,
+                tainted: &tainted,
+            };
+            let mut return_values: Vec<&HirExpr> = Vec::new();
+            crate::lower::collect_return_values_in_block(&f.body, &mut return_values);
+            if let Some(tail) = &f.body.tail {
+                if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+                    return_values.push(tail);
+                }
+            }
+            if return_values
+                .iter()
+                .any(|e| !return_alias_bits_in_block(e, &f.body, &policy).is_fresh())
+            {
+                tainted.insert(id);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    tainted
+}
+
+// ---------------------------------------------------------------------------
 // Type short-circuit — the scalar non-heap leaf (needs no layout registry)
 // ---------------------------------------------------------------------------
 
@@ -764,6 +971,16 @@ pub struct ExternContractTable {
     /// `string` PARAMETER is a pointer the host may retain or release no matter
     /// what the declaration says.
     borrowing_arg_names: HashSet<String>,
+    /// Every declared `extern "C"` fn DECLARATION id.
+    ///
+    /// The name set above is the primary key (an extern call site's
+    /// `ResolvedRef::Item` carries a placeholder id today), but a summary that
+    /// mints a RELEASE obligation must not depend on that staying true: if a
+    /// future lowering resolves an extern call to its real declaration id, the
+    /// name lookup alone would still answer correctly while an id-keyed consumer
+    /// would not. Both keys are therefore checked, and either one claims the
+    /// callee for the extern contract.
+    decl_ids: HashSet<hew_hir::ItemId>,
 }
 
 impl ExternContractTable {
@@ -773,6 +990,14 @@ impl ExternContractTable {
     #[must_use]
     pub fn is_extern_name(&self, name: &str) -> bool {
         self.names.contains(name)
+    }
+
+    /// True when `id` is a declared `extern "C"` fn's DECLARATION id — the
+    /// id-keyed companion of [`ExternContractTable::is_extern_name`]. See
+    /// `decl_ids` for why both keys are checked by the ownership consumers.
+    #[must_use]
+    pub fn is_extern_id(&self, id: hew_hir::ItemId) -> bool {
+        self.decl_ids.contains(&id)
     }
 
     /// True when `name` is a declared extern whose RETURN carries an audited
@@ -839,9 +1064,11 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
     let mut rows: HashMap<hew_hir::ItemId, ReturnProvenance> = HashMap::new();
     let mut names: HashSet<String> = HashSet::new();
     let mut fresh_return_names: HashSet<String> = HashSet::new();
+    let mut decl_ids: HashSet<hew_hir::ItemId> = HashSet::new();
     for item in &module.items {
         if let hew_hir::HirItem::ExternFn(ef) = item {
             names.insert(ef.name.clone());
+            decl_ids.insert(ef.id);
             if ty_is_scalar_non_heap(&ef.return_ty) {
                 rows.insert(ef.id, AliasBits::EMPTY);
                 fresh_return_names.insert(ef.name.clone());
@@ -853,6 +1080,7 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
         names,
         fresh_return_names,
         borrowing_arg_names: HashSet::new(),
+        decl_ids,
     }
 }
 
@@ -895,6 +1123,29 @@ pub struct CallScrutineeProvenance {
     /// arg-scan's fresh-local admit additionally requires an entry in the
     /// freshness map, so an empty context never widens an admit.
     pub may_mutate: HashMap<hew_hir::ItemId, bool>,
+    /// The TABLE-AWARE freshness summary: `ItemId → does every return path of
+    /// this function hand back a fresh owner that never crossed an
+    /// ownership-opaque extern`.
+    ///
+    /// This is the row a consumer must read before minting a caller-side RELEASE
+    /// obligation for a call result. It is the CONJUNCTION of two facts that no
+    /// single existing summary carries:
+    ///
+    /// * the coarse freshness proof (`compute_fn_returns_fresh_owner`), which
+    ///   answers the narrower may-alias-a-by-value-parameter question; and
+    /// * the veto of [`compute_fn_return_launders_opaque_extern`], because the
+    ///   coarse proof is built before and independently of the extern contract
+    ///   table and classifies EVERY body-less resolved item — a declared extern
+    ///   included — as fresh, so a Hew wrapper around an extern inherits a `true`
+    ///   row there.
+    ///
+    /// Both halves are transitive fixpoints, so a wrapper, a wrapper of a
+    /// wrapper, a generic wrapper and a recursive-looking wrapper all read
+    /// `false` here.
+    ///
+    /// Empty default fails SAFE: an absent row is not a freshness proof, so the
+    /// mint declines (a leak, never a release).
+    pub extern_aware_fresh_returns: HashMap<hew_hir::ItemId, bool>,
 }
 
 /// Build the module-global preflight context: the precise return-provenance
@@ -908,6 +1159,7 @@ pub struct CallScrutineeProvenance {
 pub fn build_call_scrutinee_provenance(
     module: &hew_hir::HirModule,
     origin_fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    coarse_fresh_returns: &HashMap<hew_hir::ItemId, bool>,
 ) -> CallScrutineeProvenance {
     let extern_table = build_extern_contract_table(module);
     let extern_names: HashSet<String> = module
@@ -921,11 +1173,21 @@ pub fn build_call_scrutinee_provenance(
     let may_mutate = compute_may_mutate_heap_param(origin_fns);
     let provenance =
         compute_call_scrutinee_return_provenance(origin_fns, &extern_table, &may_mutate);
+    // The table-aware freshness fact: the coarse proof MINUS everything the
+    // opaque-extern laundering summary vetoes. The coarse map is passed in
+    // rather than recomputed so both consumers read one fixpoint.
+    let launders_opaque_extern =
+        compute_fn_return_launders_opaque_extern(origin_fns, &extern_table);
+    let extern_aware_fresh_returns: HashMap<hew_hir::ItemId, bool> = coarse_fresh_returns
+        .iter()
+        .map(|(&id, &fresh)| (id, fresh && !launders_opaque_extern.contains(&id)))
+        .collect();
     CallScrutineeProvenance {
         provenance,
         extern_names,
         extern_table,
         may_mutate,
+        extern_aware_fresh_returns,
     }
 }
 

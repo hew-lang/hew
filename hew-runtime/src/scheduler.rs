@@ -1408,13 +1408,155 @@ pub unsafe extern "C" fn hew_actor_park_lifecycle_cont(
     true
 }
 
+/// Cancel a parked continuation because an out-of-band stop was latched, and
+/// finalize the activation through the ordinary `Stopping → Stopped` settle.
+///
+/// The caller must already have published `Stopping` (from `Running` or
+/// `Suspended`) so no other worker can drive this actor, and must own the
+/// activation. Destroys the parked frame exactly once (FG1 — the `… →
+/// Destroyed` CAS also serialises against a concurrent resume, FG2), re-arms
+/// the tag so a later park is still possible, drops the suspend-edge stashes
+/// the continuation will never read, resets the per-activation arena, and hands
+/// off to [`settle_after_activation`], which runs the monitors + terminate
+/// callback for `Stopping`.
+///
+/// # Safety
+///
+/// `actor` is owned by the calling activation frame and is in `Stopping`.
+unsafe fn cancel_parked_activation_for_stop(actor: *mut HewActor) {
+    // SAFETY: caller owns `actor`.
+    let a = unsafe { &*actor };
+    // SAFETY: the caller owns the activation and has published `Stopping`, so
+    // no concurrent resume can be driving this frame.
+    let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+    let _ = crate::coro_exec::re_arm(a);
+    // The continuation is gone: nothing will ever read the stashed reply
+    // channel or the suspend-edge cancel token again. Clear both so a re-armed
+    // actor cannot resume against a freed channel.
+    a.suspended_reply_channel
+        .store(std::ptr::null_mut(), Ordering::Release);
+    clear_suspended_cancel_token(a);
+    if !a.arena.is_null() {
+        // SAFETY: arena was created at spawn; the cancelled activation is over.
+        unsafe { crate::arena::hew_arena_reset(a.arena) };
+    }
+    settle_after_activation(actor, 0);
+}
+
+/// Settle a resumed activation whose continuation suspended AGAIN
+/// (`ResumePoll::Pending`).
+///
+/// Normally this re-parks: CAS `Running -> Suspended` (the handle stays parked,
+/// the tag is already back to `Parked`), draining a wake that fired during the
+/// resume window so it is not lost (FG3).
+///
+/// It also consults the out-of-band stop latch, which nothing else on this path
+/// does. `activate_actor` returns immediately after `resume_suspended_activation`
+/// for a live parked continuation, so its loop-top latch check is on the
+/// fresh-dispatch path only. Without the two checks below, a continuation that
+/// was `Running` when `hew_actor_stop` latched and then hit another await would
+/// be re-parked `Suspended` with `stop_requested` still set: if the awaited
+/// operation never wakes again the actor never reaches `Stopped` and never runs
+/// its terminate callback, and every later wake takes this same
+/// resume-before-loop path.
+///
+/// Cancel rather than re-enqueue: re-enqueuing would drive the actor straight
+/// back into a resume that re-parks, a busy loop with no external wake behind it.
+///
+/// # Safety
+///
+/// `actor` is owned by the calling activation frame, which holds the `Running`
+/// CAS, and its parked continuation just reported `Pending`.
+unsafe fn settle_pending_resume(actor: *mut HewActor) {
+    // SAFETY: caller owns `actor`.
+    let a = unsafe { &*actor };
+    let mailbox = a.mailbox.cast::<HewMailbox>();
+    // Latch check BEFORE re-parking: the stopper observed `Running` while the
+    // continuation was executing.
+    // SAFETY: the mailbox pointer is valid for the actor's lifetime
+    // (null-tolerant).
+    if unsafe { mailbox::mailbox_stop_requested(mailbox) }
+        && a.actor_state
+            .compare_exchange(
+                HewActorState::Running as i32,
+                HewActorState::Stopping as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    {
+        // SAFETY: this frame owns the activation and just published `Stopping`.
+        unsafe { cancel_parked_activation_for_stop(actor) };
+        return;
+    }
+
+    // Re-park: the continuation suspended again. CAS back to Suspended.
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Running as i32,
+            HewActorState::Suspended as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        crate::observe::record_coroutine_suspend();
+        crate::observe::hew_observe_probe_suspend(
+            a.dispatch
+                .map_or(std::ptr::null(), |f| f as *const std::ffi::c_void),
+        );
+        // FG3: a wake during the resume window must not be lost.
+        if crate::coro_exec::take_pending_wake(a)
+            && a.actor_state
+                .compare_exchange(
+                    HewActorState::Suspended as i32,
+                    HewActorState::Runnable as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        {
+            sched_enqueue(actor);
+            return;
+        }
+        // Latch re-check AFTER publishing `Suspended`, mirroring the FG3 drain
+        // above. Closes the window where the stopper observed `Running`, we
+        // passed the check at the top, and the latch landed before the CAS. The
+        // stopper's own latch-then-recheck covers the remaining direction (it
+        // observed `Running`, we published `Suspended`, and it latched after
+        // this load) by waking the actor so this path runs again.
+        // SAFETY: the mailbox pointer is valid for the actor's lifetime.
+        if unsafe { mailbox::mailbox_stop_requested(mailbox) }
+            && a.actor_state
+                .compare_exchange(
+                    HewActorState::Suspended as i32,
+                    HewActorState::Stopping as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        {
+            // SAFETY: winning the `Suspended -> Stopping` CAS makes this frame
+            // the sole owner: a resume would have had to win
+            // `Suspended -> Runnable` first.
+            unsafe { cancel_parked_activation_for_stop(actor) };
+        }
+    } else {
+        // Stopped/crashed under us -- destroy the parked frame once.
+        // SAFETY: no concurrent resume; we just observed Pending.
+        let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+    }
+}
+
 /// The RESUME re-entry: drive the actor's parked continuation to its next
 /// suspend (or completion) and settle the activation.
 ///
 /// - `ResumePoll::Pending` → the continuation suspended again. Re-park: CAS
 ///   `Running → Suspended` (the handle stays parked, tag already back to
 ///   `Parked`), and if a wake fired in the meantime drain it and re-enqueue.
-///   The actor is left `Suspended`, awaiting the next wake.
+///   The actor is left `Suspended`, awaiting the next wake. If an out-of-band
+///   stop was latched while the continuation was running, cancel the park
+///   instead of re-parking — see [`cancel_parked_activation_for_stop`].
 /// - `ResumePoll::Ready` → the continuation completed. Destroy it exactly once
 ///   (FG1) — which nulls the slot in the same critical section (FG4) — then
 ///   fall through to the standard idle/requeue settle so queued messages are
@@ -1529,39 +1671,8 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
 
     match poll {
         Some(crate::cont::ResumePoll::Pending) => {
-            // Re-park: the continuation suspended again. CAS back to Suspended.
-            if a.actor_state
-                .compare_exchange(
-                    HewActorState::Running as i32,
-                    HewActorState::Suspended as i32,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                crate::observe::record_coroutine_suspend();
-                crate::observe::hew_observe_probe_suspend(
-                    a.dispatch
-                        .map_or(std::ptr::null(), |f| f as *const std::ffi::c_void),
-                );
-                // FG3: a wake during the resume window must not be lost.
-                if crate::coro_exec::take_pending_wake(a)
-                    && a.actor_state
-                        .compare_exchange(
-                            HewActorState::Suspended as i32,
-                            HewActorState::Runnable as i32,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .is_ok()
-                {
-                    sched_enqueue(actor);
-                }
-            } else {
-                // Stopped/crashed under us — destroy the parked frame once.
-                // SAFETY: no concurrent resume; we just observed Pending.
-                let _ = unsafe { crate::coro_exec::destroy_parked(a) };
-            }
+            // SAFETY: this frame still owns the activation.
+            unsafe { settle_pending_resume(actor) };
         }
         Some(crate::cont::ResumePoll::Ready) | None => {
             // Completed (or refused: nothing live). Destroy exactly once (FG1),
@@ -1967,6 +2078,25 @@ fn activate_actor(actor: *mut HewActor) {
     // scratch; on completion destroy it exactly once and fall through to the
     // normal requeue/idle CAS so any queued messages are still served.
     if crate::coro_exec::has_live_parked_cont(a) {
+        // OUT-OF-BAND STOP, checked BEFORE the resume so a stopping actor never
+        // runs another slice of user code. The loop-top check below is on the
+        // fresh-dispatch path only — this activation returns before reaching it.
+        // SAFETY: mailbox pointer is valid for the lifetime of the actor.
+        if unsafe { mailbox::mailbox_stop_requested(a.mailbox.cast::<HewMailbox>()) }
+            && a.actor_state
+                .compare_exchange(
+                    HewActorState::Running as i32,
+                    HewActorState::Stopping as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        {
+            // SAFETY: this frame owns the activation (Running CAS held) and
+            // just published `Stopping`.
+            unsafe { cancel_parked_activation_for_stop(actor) };
+            return;
+        }
         // SAFETY: `actor` is owned by this frame (we hold the Running CAS); the
         // parked handle is the executor-owned frame the suspend edge stored.
         unsafe { resume_suspended_activation(actor) };
@@ -5140,6 +5270,130 @@ mod tests {
 
         // SAFETY: single-threaded test; mailbox unused afterwards.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
+    }
+
+    /// The actor whose stop the re-parking resume outline latches, and the
+    /// terminate-callback counter it must end up firing.
+    static STOP_ON_RESUME_ACTOR: AtomicPtr<HewActor> = AtomicPtr::new(ptr::null_mut());
+    static STOP_ON_RESUME_TERMINATED: AtomicU64 = AtomicU64::new(0);
+
+    /// A resume outline that models the reported race: the continuation is
+    /// executing in `Running` when another thread calls `hew_actor_stop` (which
+    /// observes `Running` and latches the out-of-band flag), and then hits
+    /// another await. It leaves the frame's resume slot non-null, so
+    /// `hew_cont_poll` reports `Pending` and the executor would re-park it.
+    ///
+    /// Latching from inside the outline is the deterministic single-threaded
+    /// equivalent of the concurrent stop: the actor is `Running` at exactly the
+    /// instant `hew_actor_stop` reads its state, which is the only interleaving
+    /// in which the flag is taken.
+    unsafe extern "C" fn stop_during_resume_outline(_frame: *mut std::ffi::c_void) {
+        let actor = STOP_ON_RESUME_ACTOR.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !actor.is_null() {
+            // SAFETY: the actor is live for the duration of the activation that
+            // is driving this resume.
+            unsafe { crate::actor::hew_actor_stop(actor) };
+        }
+    }
+
+    unsafe extern "C" fn stop_on_resume_terminate(_state: *mut std::ffi::c_void) {
+        STOP_ON_RESUME_TERMINATED.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Regression: an out-of-band stop must not be STRANDED by a resumed
+    /// continuation that re-parks.
+    ///
+    /// `activate_actor` returns immediately after `resume_suspended_activation`
+    /// when a live parked continuation is present, so the loop-top stop-latch
+    /// check is on the fresh-dispatch path only — a resumed activation never
+    /// reaches it. Before this fix, a continuation that was `Running` when
+    /// `hew_actor_stop` latched and then returned `Pending` was CAS'd back to
+    /// `Suspended` with `stop_requested` still set: if the awaited operation
+    /// never woke again the actor never reached `Stopped` and never ran its
+    /// terminate callback, and every later wake took the same
+    /// resume-before-loop path.
+    ///
+    /// Bite-proof: without the resume-path latch consult the actor ends
+    /// `Suspended` with a live parked frame and `terminated == 0`, so all three
+    /// assertions below fail closed. The companion coverage — an ORDINARY
+    /// handler held in `Running` across the stop — is
+    /// `actor::tests::…allocation-failure…`, which is why this path was
+    /// uncovered.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn stop_latched_during_resume_terminates_a_reparking_continuation() {
+        let _sched = NoWorkerSchedulerForTest::install();
+        STOP_ON_RESUME_TERMINATED.store(0, Ordering::Release);
+
+        // SAFETY: fresh mailbox owned by this test.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        // `call_terminate_fn` skips a null-state actor, so give it real state.
+        // SAFETY: malloc returns a valid 8-byte allocation or null.
+        let state = unsafe { libc::malloc(8) };
+        assert!(!state.is_null());
+
+        let mut stub = stub_actor();
+        stub.mailbox = mailbox.cast();
+        stub.state = state;
+        stub.state_size = 8;
+        stub.terminate_fn = Some(stop_on_resume_terminate);
+        stub.actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        let actor = TrackedTestActor::install(stub);
+        let actor_ptr = actor.ptr();
+        STOP_ON_RESUME_ACTOR.store(actor_ptr, Ordering::Release);
+
+        // Park a continuation that never completes. `suspends_before_done` is
+        // irrelevant here because the outline is replaced — the frame's resume
+        // slot is never nulled, so every poll reports `Pending`.
+        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(u32::MAX));
+        frame.resume = Some(stop_during_resume_outline);
+        let handle = Box::into_raw(frame).cast::<std::ffi::c_void>();
+        // SAFETY: the actor is live and owned by this test thread.
+        unsafe {
+            assert!(crate::coro_exec::begin_park(&actor).is_ok());
+            crate::coro_exec::finish_park(&actor, handle);
+            assert!(crate::coro_exec::has_live_parked_cont(&actor));
+        }
+
+        // Wake it, then run the activation. It takes the resume-before-loop
+        // path; the outline latches the stop; the poll reports `Pending`.
+        // SAFETY: the actor is live (tracked) and `handle` is its parked frame.
+        unsafe { enqueue_resume(actor_ptr, handle) };
+        activate_actor(actor_ptr);
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32,
+            "a stop latched during the resume must drive the actor terminal, \
+             not leave it Suspended with the request stranded"
+        );
+        assert_eq!(
+            STOP_ON_RESUME_TERMINATED.load(Ordering::Acquire),
+            1,
+            "the terminate callback must run exactly once"
+        );
+        assert!(
+            actor.suspended_cont.load(Ordering::Acquire).is_null(),
+            "FG4: the cancelled park's slot is nulled"
+        );
+
+        // SAFETY: `handle` is the frame `Box::into_raw`'d above; the destroy
+        // outline freed only its `heap_guard`, not the frame struct.
+        let frame =
+            unsafe { Box::from_raw(handle.cast::<crate::coro_exec::test_support::ScratchFrame>()) };
+        assert_eq!(
+            frame.destroyed.load(Ordering::Acquire),
+            1,
+            "the cancelled continuation is destroyed exactly once"
+        );
+        drop(frame);
+        // SAFETY: single-threaded test; both allocations unused afterwards.
+        unsafe {
+            libc::free(state);
+            mailbox::hew_mailbox_free(mailbox);
+        }
     }
 
     /// D-4 Ready-immediately: a run-to-completion dispatch (the trampoline drove

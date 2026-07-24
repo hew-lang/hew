@@ -3945,8 +3945,12 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 /// Closes the mailbox, transitions idle actors directly to `Stopped`, and for
 /// an actor that is already `Running` latches the mailbox's out-of-band stop
 /// flag so its dispatch loop observes the request at the top of its next
-/// iteration. Runnable actors already have a queued activation, so closing
-/// their mailbox is enough to let that activation drain naturally to `Stopped`.
+/// iteration. A `Suspended` actor — one parked at an `await` with a live
+/// continuation — is latched and then WOKEN, so a scheduler activation reaches
+/// the resume path's latch check and cancels the park; otherwise a stop of an
+/// actor whose awaited operation never completes would never be observed at
+/// all. Runnable actors already have a queued activation, so closing their
+/// mailbox is enough to let that activation drain naturally to `Stopped`.
 ///
 /// The stop is a FLAG, not a queued message: latching it allocates nothing and
 /// cannot fail, so the request can never be lost under memory pressure.
@@ -3982,16 +3986,39 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     }
 
     let state = a.actor_state.load(Ordering::Acquire);
-    if state != HewActorState::Running as i32 {
+    if state != HewActorState::Running as i32 && state != HewActorState::Suspended as i32 {
         return;
     }
 
     // Running actors are already inside a dispatch; latch the stop request so
-    // the next loop iteration observes the close request. This is an atomic
+    // the next loop iteration — or, for a resumed continuation, the resume
+    // path's own latch check — observes the close request. This is an atomic
     // store — no node allocation, hence no failure mode on which the request is
     // silently dropped.
     // SAFETY: Mailbox is valid for the actor's lifetime (null-tolerant).
     unsafe { mailbox::mailbox_request_stop(mb) };
+
+    // Latch-then-recheck. Between the load above and this store a `Running`
+    // continuation can have hit another await and re-parked itself
+    // `Suspended`, passing both latch checks on the resume path. Nothing
+    // consults the flag again until something wakes the actor, so if the
+    // awaited operation never completes the stop is stranded and the terminate
+    // callback never runs. Re-read here and, when the actor is now (or already
+    // was) parked, wake it: that activation takes the resume path, observes the
+    // latch, and cancels the park. Fail-closed — losing the CAS means another
+    // delivery is already in flight and will drive the same path.
+    if a.actor_state.load(Ordering::Acquire) == HewActorState::Suspended as i32
+        && a.actor_state
+            .compare_exchange(
+                HewActorState::Suspended as i32,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    {
+        crate::scheduler::sched_enqueue(actor);
+    }
 }
 
 /// Free an actor and all associated resources.

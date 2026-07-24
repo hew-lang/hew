@@ -337,6 +337,7 @@ pub(super) fn derive_cow_sole_owner(
     parameter_locals: &HashSet<u32>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) -> StringDropDerivation {
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
@@ -618,7 +619,12 @@ pub(super) fn derive_cow_sole_owner(
 
         match &block.terminator {
             Terminator::Call { callee, .. }
-                if string_call_borrows(callee, module_fn_names, module_generic_fn_names) => {}
+                if string_call_borrows(
+                    callee,
+                    module_fn_names,
+                    module_generic_fn_names,
+                    extern_contracts,
+                ) => {}
             other => {
                 for place in terminator_source_places(other, suspend_kinds.get(&block.id)) {
                     if let Some(local) = base_local(place) {
@@ -1604,11 +1610,17 @@ fn cow_owned_string_terminator_escapes(
     local: u32,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) -> bool {
     match term {
         Terminator::Call { callee, args, .. } => {
             args.iter().any(|p| place_refs_local(*p, local))
-                && !string_call_borrows(callee, module_fn_names, module_generic_fn_names)
+                && !string_call_borrows(
+                    callee,
+                    module_fn_names,
+                    module_generic_fn_names,
+                    extern_contracts,
+                )
         }
         _ => generator_yield_terminator_escapes(term, suspend_kind, local),
     }
@@ -1616,23 +1628,35 @@ fn cow_owned_string_terminator_escapes(
 /// True when calling `callee` BORROWS its `string` arguments rather than
 /// consuming them.
 ///
-/// Three sources of authority, in fail-closed order:
+/// Four sources of authority, in fail-closed order:
 /// 1. an explicit runtime `borrows_string_call_args` ownership contract;
 /// 2. any other known runtime symbol is treated as CONSUMING (`hew_string_drop`
 ///    named first for documentation value) — a runtime op with no borrow row is
 ///    assumed to take ownership;
-/// 3. a Hew-bodied callee (`module_fn_names` / `module_generic_fn_names`)
+/// 3. a declared `extern "C"` callee borrows ONLY with an audited argument
+///    contract (`extern_borrows_audited_heap_args`, interim always `false`).
+///    An extern's behaviour at its parameters is unknowable: the host may
+///    retain the handle or release it with `hew_string_drop`, and a caller that
+///    kept a drop obligation on top of that releases the buffer twice. This
+///    check runs BEFORE the Hew-bodied rule below because `module_fn_names` —
+///    the CALL-DISPATCH set — deliberately carries every `HirItem::ExternFn`
+///    so extern calls lower as `Terminator::Call`; dispatch membership is not
+///    an ownership fact and must never stand in for one;
+/// 4. a Hew-BODIED callee (`module_fn_names` / `module_generic_fn_names`)
 ///    borrows, because `lower_params` ratifies that a by-value `string`
 ///    parameter is registered in `borrowed_string_param_locals` — the callee
-///    never releases it, so the caller keeps the sole drop obligation.
+///    never releases it, so the caller keeps the sole drop obligation. That
+///    ratification is a statement about a LOWERED body, which is exactly what
+///    an extern does not have.
 ///
-/// Anything else (an `extern` FFI symbol with no Hew body, a callee this module
-/// cannot see) answers `false` — the caller assumes the value was consumed and
-/// declines to drop it. That is a leak, never a double release.
+/// Anything else (a callee this module cannot see) answers `false` — the caller
+/// assumes the value was consumed and declines to drop it. That is a leak,
+/// never a double release.
 pub(super) fn string_call_borrows(
     callee: &str,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) -> bool {
     let contract = crate::runtime_symbols::callee_ownership_contract(callee);
     if contract.borrows_string_call_args() {
@@ -1640,6 +1664,9 @@ pub(super) fn string_call_borrows(
     }
     if callee == "hew_string_drop" || crate::runtime_symbols::is_known_runtime_symbol(callee) {
         return false;
+    }
+    if extern_contracts.is_extern_name(callee) {
+        return extern_contracts.extern_borrows_audited_heap_args(callee);
     }
     if module_fn_names.contains(callee) || module_generic_fn_names.contains(callee) {
         return true;
@@ -1692,6 +1719,15 @@ pub(super) fn string_call_borrows(
 ///
 /// LESSONS: boundary-fail-closed (P0), cleanup-all-exits, raii-null-after-move.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the derivation takes the function's MIR (blocks, suspend_kinds), \
+              the binding registries, and the two authorities a borrow proof \
+              needs: the call-DISPATCH sets and the extern ownership contract \
+              table, which must stay separate because dispatch membership is \
+              not an ownership fact; bundling them would only relocate the \
+              same fields"
+)]
 pub(super) fn derive_cow_fresh_borrowed_owner(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
@@ -1700,6 +1736,7 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     locals: &[ResolvedTy],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) -> HashSet<BindingId> {
     // 1. Fresh-owner locals: the dest of a known fresh `string` producer,
     //    propagated forward through `Move` (a `let y = <producer temp>` rebind
@@ -1802,6 +1839,7 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
                     local,
                     module_fn_names,
                     module_generic_fn_names,
+                    extern_contracts,
                 )
         });
         if all_uses_borrow {
@@ -1827,6 +1865,7 @@ pub(super) fn finalize_string_ownership(
         &builder.parameter_locals,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
     );
     derivation.allowed.extend(derive_cow_fresh_borrowed_owner(
         &raw.blocks,
@@ -1836,6 +1875,7 @@ pub(super) fn finalize_string_ownership(
         &builder.locals,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
     ));
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
@@ -4136,6 +4176,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
         )
         .allowed;
         assert!(
@@ -4191,6 +4232,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
         )
         .allowed;
         assert!(
@@ -4243,6 +4285,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
         )
         .allowed;
         assert!(
@@ -4289,6 +4332,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
         );
         assert!(
             derivation.allowed.contains(&src) && derivation.allowed.contains(&dst),
@@ -4338,6 +4382,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
         );
         assert!(derivation.allowed.contains(&source));
         assert_eq!(
@@ -4371,6 +4416,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
         );
         assert_eq!(
             derivation.retain_sites,
@@ -4414,6 +4460,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::from(["hew_string_drop".to_string()]),
             &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
         );
         assert!(
             !derivation.allowed.contains(&binding),
@@ -4495,6 +4542,133 @@ mod call_args_borrow_safe_bytes_append_pins {
             !call_args_borrow_safe(c, &args, 9),
             "a non-borrowing callee with the tracked local as a by-value arg \
              must stay unproven (fail-closed leak, never re-admitted)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod extern_string_arg_opacity {
+    //! The string-argument BORROW authority must not read call-DISPATCH
+    //! membership as an ownership fact.
+    //!
+    //! `Builder::module_fn_names` deliberately carries every `HirItem::ExternFn`
+    //! so an extern call lowers as `Terminator::Call` instead of through the
+    //! runtime-ABI path. Answering "borrows" from that membership let the
+    //! payload-binder exemption clear a read whose callee is an FFI host — and
+    //! a host that consumes the handle (`hew_string_drop`) or retains it is then
+    //! released a SECOND time by the composite's `EnumInPlace` scope-exit drop.
+    use super::*;
+    use crate::return_provenance::ExternContractTable;
+
+    /// The dispatch set as lowering builds it: the Hew-bodied function AND the
+    /// declared extern, exactly as `hew-mir/src/lower/mod.rs` seeds it.
+    fn dispatch_names() -> HashSet<String> {
+        HashSet::from(["hew_bodied".to_string(), "host_sink".to_string()])
+    }
+
+    fn extern_table(source: &str) -> ExternContractTable {
+        crate::return_provenance::build_extern_contract_table(
+            &crate::return_provenance::tests::lower_source(source),
+        )
+    }
+
+    const HOST_SINK: &str = r#"extern "C" {
+    fn host_sink(s: string);
+}
+fn hew_bodied(s: string) {}
+fn main() {}
+"#;
+
+    #[test]
+    fn declared_extern_does_not_borrow_its_string_arguments() {
+        let table = extern_table(HOST_SINK);
+        assert!(
+            table.is_extern_name("host_sink"),
+            "guard: the fixture must declare `host_sink` as an extern"
+        );
+        assert!(
+            !string_call_borrows("host_sink", &dispatch_names(), &HashSet::new(), &table,),
+            "a declared extern is in the call-DISPATCH set but has no audited \
+             argument contract; it must answer NON-borrowing so the caller \
+             declines its drop obligation (a leak, never a double release)"
+        );
+    }
+
+    #[test]
+    fn hew_bodied_callee_still_borrows_its_string_arguments() {
+        assert!(
+            string_call_borrows(
+                "hew_bodied",
+                &dispatch_names(),
+                &HashSet::new(),
+                &extern_table(HOST_SINK),
+            ),
+            "the extern veto must not disturb a Hew-BODIED callee, whose \
+             by-value `string` parameter `lower_params` ratifies as a \
+             caller-owned borrow"
+        );
+    }
+
+    #[test]
+    fn no_extern_carries_an_audited_borrowing_argument_contract() {
+        let table = extern_table(HOST_SINK);
+        assert!(
+            !table.extern_borrows_audited_heap_args("host_sink"),
+            "the audited ARGUMENT contract table is EMPTY in the interim: no \
+             audit can prove a host borrows rather than retains or releases a \
+             heap handle it is passed"
+        );
+    }
+
+    #[test]
+    fn payload_binder_read_by_an_extern_is_not_a_proven_borrow() {
+        // The `Some(s) => host_sink(s)` shape: the binder is exactly `string`
+        // and its only use in the terminator is the call argument, so the other
+        // two conjuncts of `string_binder_read_is_user_fn_borrow` hold. Only the
+        // callee-borrow conjunct can reject it — and it must.
+        let term = Terminator::Call {
+            callee: "host_sink".to_string(),
+            args: vec![Place::Local(9)],
+            dest: None,
+            next: 1,
+            builtin: None,
+        };
+        assert!(
+            !crate::lower::string_binder_read_is_user_fn_borrow(
+                &term,
+                None,
+                9,
+                Some(&ResolvedTy::String),
+                &dispatch_names(),
+                &HashSet::new(),
+                &extern_table(HOST_SINK),
+            ),
+            "an extern consumer must leave the payload binder classified as an \
+             escape, so the enum keeps NO scope-exit drop for it"
+        );
+    }
+
+    #[test]
+    fn payload_binder_read_by_a_hew_body_stays_a_proven_borrow() {
+        let term = Terminator::Call {
+            callee: "hew_bodied".to_string(),
+            args: vec![Place::Local(9)],
+            dest: None,
+            next: 1,
+            builtin: None,
+        };
+        assert!(
+            crate::lower::string_binder_read_is_user_fn_borrow(
+                &term,
+                None,
+                9,
+                Some(&ResolvedTy::String),
+                &dispatch_names(),
+                &HashSet::new(),
+                &extern_table(HOST_SINK),
+            ),
+            "the f-string interpolation fix must survive: a Hew-bodied callee \
+             (the stdlib `impl Display for string`) still clears the read"
         );
     }
 }

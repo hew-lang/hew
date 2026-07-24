@@ -744,6 +744,26 @@ pub struct ExternContractTable {
     /// summary, the jwt/encrypt contamination). The Precise walk therefore
     /// checks the callee NAME here BEFORE any id lookup.
     names: HashSet<String>,
+    /// The NAME-keyed mirror of the audited owned-return allowlist: an extern
+    /// whose RETURN is proved a fresh `+1` owner (interim: the scalar-return
+    /// externs — a scalar owns nothing and aliases nothing). Name-keyed
+    /// because an extern call site cannot be resolved by id (see `names`).
+    ///
+    /// Every heap-returning extern is ABSENT — that is the whole point of the
+    /// interim table (`evil() -> string` returning an interior pointer).
+    fresh_return_names: HashSet<String>,
+    /// The NAME-keyed audited ARGUMENT contract: an extern proved to BORROW the
+    /// heap arguments it is handed rather than to consume or retain them.
+    ///
+    /// # Interim: EMPTY / fail-closed
+    ///
+    /// No marker-backed argument audit exists (the same trusted-root precursor
+    /// that gates the owned-RETURN rows gates these), so every declared extern
+    /// is a potential consumer of every heap argument it receives. There is no
+    /// `return_ty`-shaped shortcut here as there is for scalar returns: a
+    /// `string` PARAMETER is a pointer the host may retain or release no matter
+    /// what the declaration says.
+    borrowing_arg_names: HashSet<String>,
 }
 
 impl ExternContractTable {
@@ -753,6 +773,35 @@ impl ExternContractTable {
     #[must_use]
     pub fn is_extern_name(&self, name: &str) -> bool {
         self.names.contains(name)
+    }
+
+    /// True when `name` is a declared extern whose RETURN carries an audited
+    /// fresh-`+1`-owner contract. A declared extern that is NOT in the audited
+    /// set is ownership-OPAQUE: its result is neither provably fresh nor
+    /// provably borrowed, so no caller-side release obligation may be minted
+    /// for it.
+    ///
+    /// This is the ownership authority for an extern callee. Membership in the
+    /// call-DISPATCH set (`Builder::module_fn_names`, which deliberately
+    /// carries every `HirItem::ExternFn` so its calls lower as
+    /// `Terminator::Call`) says NOTHING about ownership and must never be
+    /// consulted in its place.
+    #[must_use]
+    pub fn extern_return_is_audited_fresh_owner(&self, name: &str) -> bool {
+        self.fresh_return_names.contains(name)
+    }
+
+    /// True when `name` is a declared extern with an audited ARGUMENT contract
+    /// proving it BORROWS the heap arguments it is passed. Interim: always
+    /// `false` — an extern's ownership behaviour at its parameters is
+    /// unknowable, so the caller must assume the handle was consumed or
+    /// retained and must NOT keep a release obligation for it.
+    ///
+    /// Fail-closed direction: `false` costs a leak; `true` on a consuming host
+    /// costs a double release (heap corruption).
+    #[must_use]
+    pub fn extern_borrows_audited_heap_args(&self, name: &str) -> bool {
+        self.borrowing_arg_names.contains(name)
     }
 
     /// Return-provenance of a resolved extern `ItemId`. An extern absent from the
@@ -781,19 +830,30 @@ impl ExternContractTable {
 /// `extern "C"` declarations: scalar-return externs → Fresh; every
 /// heap-returning extern is omitted (→ `{OPAQUE}` on lookup). Zero marker-backed
 /// rows — the trusted-root precursor is required for those (S4b).
+///
+/// The audited ARGUMENT contract (`borrowing_arg_names`) is unconditionally
+/// EMPTY: no audit exists that could prove a host borrows rather than consumes
+/// a heap argument.
 #[must_use]
 pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContractTable {
     let mut rows: HashMap<hew_hir::ItemId, ReturnProvenance> = HashMap::new();
     let mut names: HashSet<String> = HashSet::new();
+    let mut fresh_return_names: HashSet<String> = HashSet::new();
     for item in &module.items {
         if let hew_hir::HirItem::ExternFn(ef) = item {
             names.insert(ef.name.clone());
             if ty_is_scalar_non_heap(&ef.return_ty) {
                 rows.insert(ef.id, AliasBits::EMPTY);
+                fresh_return_names.insert(ef.name.clone());
             }
         }
     }
-    ExternContractTable { rows, names }
+    ExternContractTable {
+        rows,
+        names,
+        fresh_return_names,
+        borrowing_arg_names: HashSet::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2648,13 +2708,13 @@ impl crate::model::HeapOwnershipLayouts for EmptyLayouts {
 mod frozen_reference;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::frozen_reference::compute_fn_returns_fresh_owner_ref;
     use super::*;
     use crate::lower::compute_fn_returns_fresh_owner;
 
     /// Front-end-lower a `.hew` source string to a `HirModule`.
-    fn lower_source(source: &str) -> hew_hir::HirModule {
+    pub(crate) fn lower_source(source: &str) -> hew_hir::HirModule {
         let parsed = hew_parser::parse(source);
         assert!(
             parsed.errors.is_empty(),
@@ -3645,5 +3705,86 @@ mod tests {
         assert!(!ty_is_scalar_non_heap(&ResolvedTy::String));
         assert!(!ty_is_scalar_non_heap(&ResolvedTy::Bytes));
         assert!(!ty_is_scalar_non_heap(&ResolvedTy::CancellationToken));
+    }
+}
+
+#[cfg(test)]
+mod extern_ownership_opacity {
+    //! An extern's ownership behaviour is unknowable, so the authority answers
+    //! from an explicit audited contract or not at all.
+    //!
+    //! This is deliberately NOT `Builder::module_fn_names`. That set carries
+    //! every `HirItem::ExternFn` so extern calls lower as `Terminator::Call`
+    //! rather than through the runtime-ABI path — it is a call-DISPATCH fact and
+    //! says nothing about who owns a returned or passed heap handle.
+    use super::*;
+
+    const SOURCE: &str = r#"extern "C" {
+    fn host_string() -> string;
+    fn host_bytes() -> bytes;
+    fn host_len(s: string) -> i64;
+    fn host_sink(s: string);
+}
+fn hew_mk() -> string { "x" }
+fn main() {}
+"#;
+
+    fn table() -> ExternContractTable {
+        build_extern_contract_table(&tests::lower_source(SOURCE))
+    }
+
+    #[test]
+    fn every_declared_extern_is_recognised_as_extern() {
+        let t = table();
+        for name in ["host_string", "host_bytes", "host_len", "host_sink"] {
+            assert!(t.is_extern_name(name), "`{name}` must be a known extern");
+        }
+        assert!(
+            !t.is_extern_name("hew_mk"),
+            "a Hew-bodied function is not an extern"
+        );
+    }
+
+    #[test]
+    fn a_heap_returning_extern_is_never_an_audited_fresh_owner() {
+        let t = table();
+        for name in ["host_string", "host_bytes"] {
+            assert!(
+                !t.extern_return_is_audited_fresh_owner(name),
+                "`{name}` returns a heap handle whose provenance is unknowable: \
+                 the host may hand back an interior or borrowed pointer and \
+                 release it itself. Minting a caller-side owner here is the \
+                 second release."
+            );
+        }
+    }
+
+    #[test]
+    fn a_scalar_returning_extern_carries_no_release_obligation() {
+        assert!(
+            table().extern_return_is_audited_fresh_owner("host_len"),
+            "an `-> i64` return has no heap handle at all, so the audited row \
+             is vacuously safe and the summary stays usable"
+        );
+    }
+
+    #[test]
+    fn no_extern_borrows_its_heap_arguments() {
+        let t = table();
+        for name in ["host_string", "host_bytes", "host_len", "host_sink"] {
+            assert!(
+                !t.extern_borrows_audited_heap_args(name),
+                "the audited ARGUMENT table is empty: nothing proves `{name}` \
+                 borrows rather than retains or drops the handle it is passed"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_name_answers_nothing() {
+        let t = table();
+        assert!(!t.is_extern_name("not_declared"));
+        assert!(!t.extern_return_is_audited_fresh_owner("not_declared"));
+        assert!(!t.extern_borrows_audited_heap_args("not_declared"));
     }
 }

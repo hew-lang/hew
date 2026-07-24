@@ -2146,6 +2146,39 @@ pub(super) fn callee_returns_fresh_owner(
         false
     }
 }
+/// The OWNERSHIP-SAFE sibling of [`callee_returns_fresh_owner`]: `true` only
+/// when `callee` resolves to a function body this module's freshness fixpoint
+/// actually ANALYZED and proved fresh.
+///
+/// [`callee_returns_fresh_owner`] answers `true` for a resolved item that is
+/// ABSENT from the summary (`unwrap_or(true)`) — the cross-ABI owned-return
+/// fallback that covers aggregate constructors and runtime primitives. A
+/// declared `extern "C"` fn is also body-less, so that fallback silently
+/// classifies an un-audited host as a fresh-owner producer; and because an
+/// extern's declaration id never matches its call site's resolved id, the
+/// lookup is an id COLLISION against the module-fn summary space as well.
+///
+/// A consumer that mints a caller-side RELEASE obligation from the answer must
+/// use this variant: an absent row is NOT fresh. Worst case is a leak; the
+/// fallback's worst case is a double release.
+///
+/// Generic origins are included: a monomorphisation's callee resolves to the
+/// generic ORIGIN `ItemId`, and the fixpoint is computed over `origin_fns`
+/// (every `HirItem::Function`, generic or not), so a proven-fresh generic still
+/// answers `true` here.
+pub(super) fn callee_returns_analyzed_fresh_owner(
+    callee: &HirExpr,
+    fresh: &HashMap<hew_hir::ItemId, bool>,
+) -> bool {
+    let HirExprKind::BindingRef {
+        resolved: ResolvedRef::Item(item_id),
+        ..
+    } = &callee.kind
+    else {
+        return false;
+    };
+    fresh.get(item_id) == Some(&true)
+}
 /// True when `callee` names a statically-resolved Item — a free function (whose
 /// body the freshness fixpoint analyzed), an extern / runtime primitive, or an
 /// aggregate constructor. False for a closure value, a function-pointer
@@ -4005,5 +4038,83 @@ mod call_param_verdict_tests {
         assert!(v[&(ItemId(10), 0)].is_consume());
         assert!(v[&(ItemId(20), 0)].is_consume());
         assert!(!v[&(ItemId(30), 0)].is_consume());
+    }
+}
+
+#[cfg(test)]
+mod analyzed_freshness_strictness {
+    //! [`callee_returns_analyzed_fresh_owner`] must not inherit
+    //! [`callee_returns_fresh_owner`]'s `unwrap_or(true)` cross-ABI fallback.
+    //!
+    //! That fallback exists so an aggregate constructor / runtime primitive
+    //! (a resolved item with no body in this module) reads as an owned return.
+    //! A declared `extern "C"` fn is body-less too, so any consumer that mints a
+    //! caller-side RELEASE obligation from the answer would hand a drop to an
+    //! un-audited host — the double-release the strict variant closes.
+    use super::*;
+
+    fn callee_with(resolved: ResolvedRef) -> HirExpr {
+        HirExpr {
+            node: hew_hir::HirNodeId(0),
+            site: hew_hir::SiteId(0),
+            ty: ResolvedTy::String,
+            value_class: hew_hir::ValueClass::CowValue,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: "callee".to_string(),
+                resolved,
+            },
+            span: hew_parser::ast::Span::default(),
+        }
+    }
+
+    fn item_callee(id: u32) -> HirExpr {
+        callee_with(ResolvedRef::Item(hew_hir::ItemId(id)))
+    }
+
+    #[test]
+    fn an_absent_row_is_not_fresh() {
+        let fresh: HashMap<hew_hir::ItemId, bool> = HashMap::new();
+        assert!(
+            callee_returns_fresh_owner(&item_callee(7), &fresh),
+            "guard: the legacy fallback classifies a body-less resolved item fresh"
+        );
+        assert!(
+            !callee_returns_analyzed_fresh_owner(&item_callee(7), &fresh),
+            "the strict variant must require a body this module ANALYZED; an \
+             absent row (an extern, a cross-module item) is NOT a freshness proof"
+        );
+    }
+
+    #[test]
+    fn an_analyzed_false_row_is_not_fresh() {
+        let fresh = HashMap::from([(hew_hir::ItemId(7), false)]);
+        assert!(
+            !callee_returns_analyzed_fresh_owner(&item_callee(7), &fresh),
+            "a forwarder the fixpoint proved non-fresh stays non-fresh"
+        );
+    }
+
+    #[test]
+    fn an_analyzed_true_row_is_fresh() {
+        let fresh = HashMap::from([(hew_hir::ItemId(7), true)]);
+        assert!(
+            callee_returns_analyzed_fresh_owner(&item_callee(7), &fresh),
+            "the leak fix must survive: `fn mk(i: i64) -> string {{ f\"tok{{i}}\" }}` \
+             is analyzed fresh and keeps its caller-side temp mint"
+        );
+    }
+
+    #[test]
+    fn an_indirect_callee_fails_closed() {
+        let callee = callee_with(ResolvedRef::Binding(hew_hir::BindingId(3)));
+        assert!(
+            !callee_returns_analyzed_fresh_owner(
+                &callee,
+                &HashMap::from([(hew_hir::ItemId(7), true)])
+            ),
+            "a closure value / fn-pointer parameter is not a resolved item and \
+             must fail closed"
+        );
     }
 }

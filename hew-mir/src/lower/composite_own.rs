@@ -1099,6 +1099,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value (string/Bytes/owning aggregate or a
     // nested heap-owning enum) iff its registered type says so. Bitcopy payload
@@ -1604,6 +1605,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             local_tys.get(l as usize),
                             module_fn_names,
                             module_generic_fn_names,
+                            extern_contracts,
                         ));
                     if !read_is_borrow {
                         note_payload_escape(
@@ -7033,6 +7035,7 @@ mod enum_composite_field_drop_exemption {
             &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
         );
         (b, allowed)
     }

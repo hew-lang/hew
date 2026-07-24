@@ -1,7 +1,7 @@
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
-    callee_returns_fresh_owner, machine_layout_name_matches, mangle_layout_key,
-    monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
+    callee_returns_analyzed_fresh_owner, callee_returns_fresh_owner, machine_layout_name_matches,
+    mangle_layout_key, monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
@@ -361,7 +361,15 @@ impl Builder {
                     // composite callee's temp is never double-registered, and a
                     // fresh result that ESCAPES is still excluded by the sole-owner
                     // prover exactly as for the named `let x = mk(); g(x)` shape.
-                    callee_returns_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
+                    //
+                    // A declared `extern "C"` callee is vetoed FIRST. It is
+                    // body-less, so `callee_returns_fresh_owner`'s `unwrap_or(true)`
+                    // cross-ABI fallback — written for aggregate constructors and
+                    // runtime primitives, which are kept — would otherwise classify
+                    // an un-audited host as a fresh-owner producer. The constructor
+                    // fallback survives because only extern NAMES are vetoed.
+                    !self.callee_is_ownership_opaque_extern(Self::callee_symbol_name(callee))
+                        && callee_returns_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
                 }
             }
             _ => false,
@@ -456,6 +464,22 @@ impl Builder {
         };
         crate::runtime_symbols::callee_ownership_contract(symbol).produces_fresh_owned_string()
     }
+    /// The symbol a direct-`Call` callee is keyed by: a `ResolvedRef::Builtin`
+    /// family via its catalog `c_symbol()`, every other resolved callee via the
+    /// checker-minted callee name. `""` for a callee that is not a `BindingRef`
+    /// (a closure value, a fn-pointer parameter, any indirect dispatch) — no
+    /// declared extern can carry the empty name, so an opacity lookup on it
+    /// answers `false` and the caller's own resolved-item gate stays the
+    /// authority for those shapes.
+    fn callee_symbol_name(callee: &HirExpr) -> &str {
+        let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
+            return "";
+        };
+        match resolved {
+            ResolvedRef::Builtin(family) => family.c_symbol(),
+            _ => name.as_str(),
+        }
+    }
     /// Whether a `string`-returning direct-`Call` callee is a USER function the
     /// module freshness fixpoint proves hands back a fresh sole owner.
     ///
@@ -468,18 +492,26 @@ impl Builder {
     /// `string::fmt` with no `let` to anchor a scope-exit drop and the buffer
     /// leaked once per evaluation.
     ///
-    /// Fail-closed on both halves:
+    /// Fail-closed on three halves:
     ///
     /// * a KNOWN runtime symbol is rejected here outright, so the runtime
     ///   contract keeps its veto — a catalogued callee returning a BORROWED or
-    ///   receiver-interior-alias string can never be laundered into a mint by
-    ///   the fixpoint's "resolved item with no body is fresh by the owned-return
-    ///   ABI" rule;
-    /// * a user callee must satisfy [`callee_returns_fresh_owner`], the same
-    ///   module-global least-fixpoint the composite arm consults. A callee that
-    ///   forwards, projects, or launders a by-value parameter on ANY return path
-    ///   (`fn passthru(s: string) -> string { s }`) is `false` and stays
-    ///   unminted — a leak, never a caller-side double-free.
+    ///   receiver-interior-alias string can never be laundered into a mint;
+    /// * a declared `extern "C"` callee is rejected unless the audited extern
+    ///   contract table proves its return is a fresh `+1` owner. Interim, no
+    ///   heap-returning extern carries such a row, so every one of them is
+    ///   ownership-OPAQUE here. An extern is in `module_fn_names` purely so its
+    ///   calls lower as `Terminator::Call`; that CALL-DISPATCH membership is not
+    ///   an ownership fact, and a host that hands back an interior or retained
+    ///   pointer would be released a second time by the minted owner;
+    /// * a user callee must satisfy [`callee_returns_analyzed_fresh_owner`] —
+    ///   the module-global least-fixpoint verdict of a body this module actually
+    ///   ANALYZED (generic origins included). The `unwrap_or(true)` cross-ABI
+    ///   fallback of [`callee_returns_fresh_owner`] is deliberately NOT
+    ///   inherited: a body-less resolved item is not a proof of freshness. A
+    ///   callee that forwards, projects, or launders a by-value parameter on ANY
+    ///   return path (`fn passthru(s: string) -> string { s }`) is `false` and
+    ///   stays unminted — a leak, never a caller-side double-free.
     ///
     /// Registration alone still never forces a release: the minted local flows
     /// through `derive_cow_sole_owner` / `derive_cow_fresh_borrowed_owner`,
@@ -496,7 +528,24 @@ impl Builder {
         if crate::runtime_symbols::is_known_runtime_symbol(symbol) {
             return false;
         }
-        callee_returns_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
+        if self.callee_is_ownership_opaque_extern(symbol) {
+            return false;
+        }
+        callee_returns_analyzed_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
+    }
+    /// True when `symbol` names a declared `extern "C"` fn with no audited
+    /// fresh-owner return contract — an ownership-OPAQUE callee.    ///
+    /// The single authority is the module's [`ExternContractTable`], which is
+    /// built from the `HirItem::ExternFn` declarations and carries the audited
+    /// allowlist. It is deliberately consulted instead of `module_fn_names`:
+    /// that set is the CALL-DISPATCH membership test and contains every extern
+    /// by design (`hew-mir/src/lower/mod.rs`, so extern calls lower as
+    /// `Terminator::Call` rather than through the runtime-ABI path).
+    ///
+    /// [`ExternContractTable`]: crate::return_provenance::ExternContractTable
+    pub(crate) fn callee_is_ownership_opaque_extern(&self, symbol: &str) -> bool {
+        let table = &self.call_scrutinee_provenance.extern_table;
+        table.is_extern_name(symbol) && !table.extern_return_is_audited_fresh_owner(symbol)
     }
     /// #2648 preflight admission classifier — pure HIR, run at the TOP of every
     /// call-scrutinee consumer BEFORE `lower_value`/CFG allocation. Returns the

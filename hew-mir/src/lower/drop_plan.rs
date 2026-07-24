@@ -360,6 +360,7 @@ pub(super) fn elaborate(
             &builder.parameter_locals,
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
+            &builder.call_scrutinee_provenance.extern_table,
         )
         .allowed;
         derived.extend(derive_cow_fresh_borrowed_owner(
@@ -370,6 +371,7 @@ pub(super) fn elaborate(
             &builder.locals,
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
+            &builder.call_scrutinee_provenance.extern_table,
         ));
         for states in dataflow_result.exit_states.values() {
             for (binding, state) in states {
@@ -404,6 +406,7 @@ pub(super) fn elaborate(
         &builder.proven_borrow_call_args,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
     );
 
     // W5.016 — owned-element `Vec<T>` scope-exit drop allow-set. An owned Vec
@@ -5165,6 +5168,7 @@ pub(super) fn string_binder_read_is_user_fn_borrow(
     binder_ty: Option<&ResolvedTy>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) -> bool {
     if !matches!(binder_ty, Some(ResolvedTy::String)) {
         return false;
@@ -5172,7 +5176,12 @@ pub(super) fn string_binder_read_is_user_fn_borrow(
     let Terminator::Call { callee, args, .. } = term else {
         return false;
     };
-    if !string_call_borrows(callee, module_fn_names, module_generic_fn_names) {
+    if !string_call_borrows(
+        callee,
+        module_fn_names,
+        module_generic_fn_names,
+        extern_contracts,
+    ) {
         return false;
     }
     // Every read of the binder here must be one of the borrowed arguments; a

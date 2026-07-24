@@ -1,7 +1,7 @@
 //! End-to-end proof that a declared `extern` is treated as OWNERSHIP-OPAQUE by
 //! the f-string interpolation temp-drop gates.
 //!
-//! The lane those gates belong to fixes a LEAK. The failure mode these tests
+//! Those gates exist to fix a LEAK. The failure mode these tests
 //! guard is strictly worse than the leak: a DOUBLE RELEASE. Both gates used to
 //! read `Builder::module_fn_names` as an ownership authority, but that set is
 //! seeded with every `HirItem::ExternFn` purely so extern calls lower as
@@ -256,7 +256,7 @@ pub extern "C" fn host_handed_out() -> i64 {
 
 /// The Hew-bodied CONTROL for the same shape: everything about the program is
 /// identical except that the payload producer and the consumer are ordinary
-/// Hew functions. This must keep working exactly as the lane's leak fix
+/// Hew functions. This must keep working exactly as the leak fix
 /// intends -- the extern veto must not have widened into Hew-bodied calls.
 const ENUM_PAYLOAD_TO_HEW_SINK: &str = r#"fn mkopt(i: i64) -> Option<string> {
     Some(f"payload{i}")
@@ -507,7 +507,7 @@ fn extern_returned_string_interpolation_releases_exactly_once() {
     );
 }
 
-/// The lane's actual fix must survive the extern veto: the same payload shape
+/// The leak fix itself must survive the extern veto: the same payload shape
 /// with a Hew-BODIED producer and consumer still lowers, runs, and exits
 /// cleanly. `lower_params` ratifies a by-value heap parameter as a borrow, so
 /// the caller keeps the drop and the interpolation temp is still freed.
@@ -619,5 +619,45 @@ fn resource_payload_beside_an_interpolated_string_closes_exactly_once() {
         errs,
         vec!["err=refused1", "err=refused3", "err=refused5"],
         "every `Err` payload must have been interpolated intact:\n{stdout}"
+    );
+}
+
+/// A returned channel pair must NOT be closed by the producer's own scope-exit
+/// drop.
+///
+/// `channel.new` unwraps a `Result<(Sender, Receiver), string>` and MOVES the
+/// `Ok` payload into its return value. `Sender` and `Receiver` are resource
+/// handles released by `hew_channel_sender_close` / `hew_channel_receiver_close`
+/// with no duplication helper, so an `EnumInPlace` drop on that `Result` closes
+/// a pair the caller has just been handed. The old `!ty_owns_heap_mir` cap read
+/// the pair as "owns no heap" and admitted it; this program then segfaulted
+/// unconditionally, with no allocator poisoning required.
+///
+/// The pin is the whole program: it must run, print the message it sent
+/// through the channel, and exit cleanly.
+const RETURNED_CHANNEL_PAIR: &str = r#"import std::channel::channel;
+
+fn main() -> i64 {
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+    tx.send(f"ready-{1}");
+    match rx.try_recv() {
+        Some(msg) => { println(f"got={msg}"); }
+        None => { println("empty"); }
+    }
+    0
+}
+"#;
+
+#[test]
+fn a_returned_channel_pair_is_not_closed_by_its_producer() {
+    require_codegen();
+    let dir = tempdir();
+    let stdout = build_and_run(dir.path(), "channel_pair", RETURNED_CHANNEL_PAIR, None);
+    assert_eq!(
+        stdout.trim(),
+        "got=ready-1",
+        "the receiver must still be open when the caller reads it; a \
+         producer-side in-place drop of the `Result<(Sender, Receiver), string>` \
+         closes handles the caller owns:\n{stdout}"
     );
 }

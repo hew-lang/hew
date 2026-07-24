@@ -1593,7 +1593,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
             // SAFETY: `msg` is the non-null node just returned, exclusively owned
             // by this scheduler tick.
             let msg_type = unsafe { (*msg).msg_type };
-            if from_sys && msg_type == crate::mailbox::HEW_MAILBOX_SHUTDOWN_SENTINEL {
+            if from_sys && msg_type == crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL {
                 // SAFETY: `msg` is exclusively owned by this scheduler tick.
                 unsafe { hew_msg_node_free(msg) };
                 // Drive Running -> Stopping so the post-loop settle finalizes the
@@ -2931,7 +2931,7 @@ mod tests {
             _data_size: usize,
             _borrow_mode: i32,
         ) -> *mut c_void {
-            if msg_type == crate::mailbox::HEW_MAILBOX_SHUTDOWN_SENTINEL {
+            if msg_type == crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL {
                 SAW_SENTINEL.fetch_add(1, Ordering::Relaxed);
             }
             std::ptr::null_mut()

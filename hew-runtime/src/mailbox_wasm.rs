@@ -1192,7 +1192,7 @@ pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailboxWasm) -> bool
     // SAFETY: stop signals carry no payload.
     let node = unsafe {
         msg_node_alloc(
-            crate::mailbox::HEW_MAILBOX_SHUTDOWN_SENTINEL,
+            crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL,
             ptr::null(),
             0,
         )
@@ -1243,7 +1243,7 @@ wasm_no_mangle! {
 /// [`crate::mailbox::RecvNode`].
 ///
 /// The origin bit is load-bearing for the same reason as the native path: the
-/// shutdown sentinel ([`crate::mailbox::HEW_MAILBOX_SHUTDOWN_SENTINEL`]) is a
+/// shutdown sentinel ([`crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL`]) is a
 /// system-queue-only lifecycle signal, disambiguated from an application
 /// message that shares its numeric value by PROVENANCE, not by the value.
 /// `msg_type` is unrestricted `i32` and codegen tags are hashes, so a user

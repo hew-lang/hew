@@ -27,6 +27,20 @@ pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_B: u32 = 1 << 8;
 /// All bits at or above bit 9 must read zero on every header load.
 pub const HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK: u32 = !((1u32 << 9) - 1);
 
+/// System `msg_type` reserved for the shutdown sentinel that a mailbox enqueues
+/// onto a Running actor's system queue (native `mailbox::mailbox_send_stop_sys_once`
+/// and `mailbox_wasm::mailbox_send_stop_sys_once`).
+///
+/// It is a **lifecycle signal**, not an application message: each scheduler must
+/// OBSERVE it as a self-stop request (gated on system-queue provenance) and free
+/// it, never hand it to the actor's user dispatch trampoline. The generated
+/// dispatch `match` has no arm for it, so dispatching it lands on the trapping
+/// default arm (`ud2`). Lives here — the target-independent header module
+/// compiled on BOTH native and wasm32 — so the native (`mailbox.rs`) and WASM
+/// (`mailbox_wasm.rs`) paths share ONE authority and cannot drift (D159); the
+/// native `mailbox` module is `#[cfg(not(wasm32))]` and unavailable on wasm32.
+pub(crate) const HEW_MAILBOX_SHUTDOWN_SENTINEL: i32 = -1;
+
 /// Validate that reserved header bits are zero.
 ///
 /// A newer runtime assigning one of these bits would otherwise let an older

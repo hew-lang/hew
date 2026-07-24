@@ -2311,15 +2311,13 @@ unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// System `msg_type` reserved for the shutdown sentinel that
-/// [`mailbox_send_stop_sys_once`] enqueues onto a Running actor's system queue.
-///
-/// It is a **lifecycle signal**, not an application message: the scheduler must
-/// OBSERVE it as a self-stop request and free it, never hand it to the actor's
-/// user dispatch trampoline. The generated dispatch `match` has no arm for it,
-/// so dispatching it lands on the trapping default arm (`ud2` → SIGILL). See the
-/// interception in `scheduler::activate_actor`.
-pub(crate) const HEW_MAILBOX_SHUTDOWN_SENTINEL: i32 = -1;
+/// Shutdown sentinel `msg_type` — re-exported from the target-independent
+/// [`crate::mailbox_header`] module (the single authority, shared with the WASM
+/// mailbox so the two cannot drift; the native `mailbox` module is
+/// `#[cfg(not(wasm32))]` and unavailable on wasm32). See
+/// [`mailbox_send_stop_sys_once`] and the interception in
+/// `scheduler::activate_actor`.
+pub(crate) use crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL;
 
 pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailbox) -> bool {
     if mb.is_null() {

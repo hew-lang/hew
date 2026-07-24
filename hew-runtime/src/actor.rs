@@ -7238,26 +7238,31 @@ mod tests {
     unsafe extern "C-unwind" fn drain_trap_on_stop_dispatch(
         _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
-        msg_type: i32,
+        _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        if msg_type == -1 {
-            // SAFETY: this runs on the actor's own dispatch thread while its context is installed.
-            unsafe { hew_actor_trap(hew_actor_self(), 77) };
-            return std::ptr::null_mut();
-        }
         DRAIN_TRAP_ON_STOP_STARTED.store(true, Ordering::Release);
-        // Hold in Running until the test sets the release flag. This prevents
-        // the dispatch from finishing before drain_actors calls hew_actor_stop,
-        // which would let the actor transition Running→Idle→Stopped instead of
-        // Running→Crashed, causing drain to return Drained rather than
+        // Hold in Running until the test's release thread observes that
+        // drain_actors has called hew_actor_stop (the shutdown system message is
+        // queued). This prevents the dispatch from finishing before the stop is
+        // requested, which would let the actor transition Running→Idle→Stopped
+        // instead of crashing mid-drain and yield Drained rather than
         // Incomplete{crashed}.
         while !DRAIN_TRAP_ON_STOP_RELEASE.load(Ordering::Acquire) {
             std::hint::spin_loop();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+
+        // Crash from within this still-Running dispatch, modelling an actor that
+        // faults as it is being drained. The crash trigger is a self-trap rather
+        // than handling the shutdown sentinel: the scheduler now intercepts the
+        // `msg_type == -1` shutdown signal as a clean self-stop and never
+        // delivers it to a handler (a real codegen actor has no arm for it and
+        // would trap on the dispatch default arm).
+        // SAFETY: this runs on the actor's own dispatch thread while its context is installed.
+        unsafe { hew_actor_trap(hew_actor_self(), 77) };
 
         std::ptr::null_mut()
     }

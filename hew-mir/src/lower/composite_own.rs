@@ -3534,6 +3534,27 @@ pub(super) fn derive_returned_aggregate_member_bindings(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
 ) -> HashSet<BindingId> {
+    let flows_to_return = compute_returned_flow_locals(blocks);
+    // Map member locals back to their owned bindings.
+    let mut returned_members = HashSet::new();
+    for (binding, _name, _ty) in owned_locals {
+        if let Some(place) = binding_locals.get(binding) {
+            if let Some(local) = base_local(*place) {
+                if flows_to_return.contains(&local) {
+                    returned_members.insert(*binding);
+                }
+            }
+        }
+    }
+    returned_members
+}
+
+/// The set of backing locals that whole-value flow into this function's
+/// `ReturnSlot` — either directly or as a member of an aggregate that does.
+/// Shared by [`derive_returned_aggregate_member_bindings`] (which maps the set
+/// back to owned bindings) and [`derive_returned_member_transfer_blocks`]
+/// (which locates the block where each member enters the flow).
+fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
     // Seed: every owned hand-off slot (Local or handle place) whole-value
     // moved into the ReturnSlot.
     let mut flows_to_return: HashSet<u32> = HashSet::new();
@@ -3646,18 +3667,113 @@ pub(super) fn derive_returned_aggregate_member_bindings(
         }
     }
 
-    // Map member locals back to their owned bindings.
-    let mut returned_members = HashSet::new();
+    flows_to_return
+}
+
+/// Per-member map from a returned-aggregate member binding to the set of blocks
+/// where its value ENTERS the return flow — i.e. the block(s) containing the
+/// instruction that hands its local to the caller (a `Move` to the `ReturnSlot`,
+/// a rebind/variant store into a return-bound local, or an unretained placement
+/// into a `RecordInit`/`TupleConstruct`/`ClosureEnvInit` whose dest reaches the
+/// return).
+///
+/// [`derive_returned_aggregate_member_bindings`] removes these members from the
+/// scope-exit drop plan on EVERY exit — path-insensitively — because on the
+/// return path the caller now owns the value. But a guard early-return that
+/// exits BEFORE the aggregate is constructed still owns the member locally and
+/// must release it, so the path-insensitive removal leaks it there (the
+/// `semver::try_parse` guard-return / `base64::decode` reject-path family). The
+/// drop elaborator uses this map to re-admit a member's scope-exit drop at
+/// exactly the `Return` exits its transfer site provably cannot reach — the
+/// paths where the value is still the live sole owner.
+///
+/// Fail-closed: a member for which no transfer site is located maps to the empty
+/// set and is left under the path-insensitive removal (leak, never a re-admitted
+/// double-free). Over-recording a transfer block only suppresses re-admission on
+/// more exits (leak), so the direction of any imprecision is always leak-safe.
+pub(super) fn derive_returned_member_transfer_blocks(
+    blocks: &[BasicBlock],
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashMap<BindingId, HashSet<u32>> {
+    let flows_to_return = compute_returned_flow_locals(blocks);
+    if flows_to_return.is_empty() {
+        return HashMap::new();
+    }
+    // local -> owning binding, restricted to owned locals that are returned
+    // members (the only bindings the drop elaborator re-admits).
+    let mut local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, _ty) in owned_locals {
         if let Some(place) = binding_locals.get(binding) {
             if let Some(local) = base_local(*place) {
                 if flows_to_return.contains(&local) {
-                    returned_members.insert(*binding);
+                    local_to_binding.insert(local, *binding);
                 }
             }
         }
     }
-    returned_members
+    let mut transfer_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+    let record = |src: &Place, block_id: u32, out: &mut HashMap<BindingId, HashSet<u32>>| {
+        if let Some(local) = base_local(*src) {
+            if let Some(binding) = local_to_binding.get(&local) {
+                out.entry(*binding).or_default().insert(block_id);
+            }
+        }
+    };
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            match instr {
+                // Whole-value return: `Move { dest: ReturnSlot, src }`.
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src,
+                } => {
+                    record(src, block.id, &mut transfer_blocks);
+                }
+                // Rebind / variant payload store into a return-bound local: the
+                // source enters the return flow here.
+                Instr::Move { dest, src }
+                    if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                {
+                    record(src, block.id, &mut transfer_blocks);
+                }
+                // Aggregate constructor whose dest reaches the return: each
+                // non-retained element/field source is handed off here.
+                Instr::TupleConstruct { elements, dest }
+                    if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                {
+                    let retained = retained_string_values_before(block, instr_index);
+                    for elem in elements {
+                        if !retained.contains(elem) {
+                            record(elem, block.id, &mut transfer_blocks);
+                        }
+                    }
+                }
+                Instr::RecordInit { fields, dest, .. }
+                    if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                {
+                    let retained = retained_string_values_before(block, instr_index);
+                    for (_offset, field) in fields {
+                        if !retained.contains(field) {
+                            record(field, block.id, &mut transfer_blocks);
+                        }
+                    }
+                }
+                Instr::ClosureEnvInit { fields, dest, .. }
+                    if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                {
+                    for field in fields
+                        .iter()
+                        .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+                    {
+                        record(&field.src, block.id, &mut transfer_blocks);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    transfer_blocks
 }
 /// Fail-closed value-flow derivation of the owned-handle member bindings whose
 /// handle is moved into a LOCALLY-constructed aggregate and then extracted-and-

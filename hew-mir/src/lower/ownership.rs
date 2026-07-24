@@ -1058,6 +1058,29 @@ impl Builder {
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
     }
+    /// The owned-locals whose release obligation is still SOLE-OWNED per binding —
+    /// either scope-exit-live (`ScopeExit`) or retracted only by a consume that
+    /// transfers the value out (`ConsumedAt`). A binding in this view is a
+    /// candidate for the path-sensitive returned-member re-admission in
+    /// `elaborate`: a value returned/handed-off on SOME paths (so it is either an
+    /// aggregate member the return handoff removes, or a whole-value return that
+    /// retracts it to `ConsumedAt`) can still be the live sole owner on a guard
+    /// early-return, where its scope-exit drop must be restored. `BodyEndReleased`
+    /// / `ScopeReleased` (already released mid-body) and `AliasOf` (a non-owning
+    /// interior alias — never its own drop) are excluded, so the re-admission
+    /// never resurrects a drop those dispositions deliberately elide.
+    pub(crate) fn owned_locals_returned_candidates(&self) -> Vec<(BindingId, String, ResolvedTy)> {
+        self.owned_locals
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.disposition,
+                    Disposition::ScopeExit | Disposition::ConsumedAt { .. }
+                )
+            })
+            .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
+            .collect()
+    }
     /// The WHOLE per-function owned-locals ledger — every entry regardless of
     /// disposition, in registration order — including bindings retracted off the
     /// scope-exit-live set by a [`Builder::set_owned_local_disposition`] write.

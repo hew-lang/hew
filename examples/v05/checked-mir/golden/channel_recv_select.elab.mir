@@ -296,7 +296,7 @@ fn channel$try_new -> Result<(Sender, Receiver), string>
     branch[bb13: bb14/bb15] ->
       (none)
     return[bb14] ->
-      (none)
+      drop _18 ty=string kind=cow_heap(hew_string_drop)
     goto[bb15->bb16] ->
       (none)
     return[bb16] ->
@@ -552,5 +552,3 @@ fn duration::fmt -> string
     return[bb1] ->
       (none)
 
-diagnostics:
-  diagnostic: ObligationUnderReleased channel$try_new bb14 detail "owned local `detail` reaches return[bb14] with zero discharges on every path modelling: no terminal drop in this exit's plan and no ownership transfer before the exit (mint without discharge = leak)" — "every heap-owning owned value must be released exactly once on every reachable exit path; this exit path never discharges the mint (leak). This is an advisory warning, not a build error — fix the drop plan (release on every exit) to silence it"

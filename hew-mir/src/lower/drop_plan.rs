@@ -2,11 +2,12 @@
 use super::*;
 #[cfg(not(test))]
 use super::{
-    base_local, check_duplex_split_state, compute_collection_interior_alias_taint,
-    compute_projection_alias_taint, dataflow, derive_consumed_local_aggregate_member_bindings,
-    derive_cow_fresh_borrowed_owner, derive_cow_sole_owner, derive_enum_composite_drop_allowed,
-    derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
-    derive_owned_record_drop_allowed, derive_returned_aggregate_member_bindings,
+    base_local, blocks_reachable_from, check_duplex_split_state,
+    compute_collection_interior_alias_taint, compute_projection_alias_taint, dataflow,
+    derive_consumed_local_aggregate_member_bindings, derive_cow_fresh_borrowed_owner,
+    derive_cow_sole_owner, derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
+    derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
+    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
     derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
     instr_source_places, mangle_layout_key, place_is_interior_projection, place_refs_local,
     retained_string_terminator_drop_safe, short_name, terminator_is_suspend_carrier,
@@ -750,6 +751,21 @@ pub(super) fn elaborate(
         &owned_locals_snapshot,
         &builder.binding_locals,
     );
+    // Path-sensitive re-admission map for values handed to the caller through the
+    // return flow. The blanket exclusion (an aggregate member the return handoff
+    // removes, `semver::try_parse`; or a whole-value return that retracts its
+    // binding to `ConsumedAt`, `base64::decode`) is correct on the return path but
+    // leaks the value on a guard early-return that exits BEFORE the hand-off and
+    // still owns it locally. Sourced from the returned-candidate view (scope-exit
+    // OR consume-retracted owners) so BOTH shapes are covered; this locates where
+    // each candidate enters the return flow so the elaborator can restore its
+    // scope-exit drop on exactly the `Return` exits that transfer cannot reach.
+    let returned_member_candidates = builder.owned_locals_returned_candidates();
+    let returned_member_transfer_blocks = derive_returned_member_transfer_blocks(
+        &checked.blocks,
+        &returned_member_candidates,
+        &builder.binding_locals,
+    );
 
     // W3.053 — owned-handle members moved into a LOCAL aggregate and then
     // extracted-and-consumed back out (for-in / `let` extraction) by a downstream
@@ -919,6 +935,88 @@ pub(super) fn elaborate(
             }
             if let Some(drop) = lifo_drops.iter().find(|drop| drop.place == *place) {
                 plan.drops.push(drop.clone());
+            }
+        }
+    }
+
+    // Path-sensitive re-admission of returned-aggregate member drops. A member
+    // handed to the caller through the `ReturnSlot` is removed from EVERY drop
+    // class (`build_lifo_drops` skips `returned_aggregate_members` before any
+    // arm) because on the return path the caller owns it. But a guard
+    // early-return that exits BEFORE the aggregate is constructed still owns the
+    // member locally and must release it — the `semver::try_parse` guard-return
+    // and `base64::decode` reject-path leaks. Restore the scope-exit drop on
+    // exactly the `Return` exits the member's transfer site provably cannot
+    // reach (the value is not yet handed off), and only where the dataflow
+    // proves it definitely `Live` (owned) at that exit. This is purely additive:
+    // it never removes an existing drop, and it emits one only where the value
+    // is provably the still-live sole owner, so it can leak-fix without any
+    // double-free. Scoped to leaf CoW values (`string` / `bytes`) whose release
+    // is the unconditional `drop_kind_for` kind with no descriptor or
+    // path-flag; a member of any other type stays under the path-insensitive
+    // removal (leak, never a re-admitted double-free — fail-closed).
+    // LESSONS: cleanup-all-exits, raii-null-after-move, boundary-fail-closed,
+    // drop-allowset-from-value-flow.
+    if !returned_member_transfer_blocks.is_empty() {
+        let owned_ty_by_binding: HashMap<BindingId, &ResolvedTy> = returned_member_candidates
+            .iter()
+            .map(|(binding, _name, ty)| (*binding, ty))
+            .collect();
+        // Blocks each member's hand-off can reach (inclusive of the transfer
+        // block itself). A `Return` exit inside this set is at or downstream of
+        // the hand-off, so the caller owns the value there — no re-admission.
+        let mut member_transfer_reach: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, transfer_blocks) in &returned_member_transfer_blocks {
+            if transfer_blocks.is_empty() {
+                continue;
+            }
+            let mut reach: HashSet<u32> = HashSet::new();
+            for &transfer_block in transfer_blocks {
+                reach.insert(transfer_block);
+                reach.extend(blocks_reachable_from(&checked.blocks, transfer_block));
+            }
+            member_transfer_reach.insert(*binding, reach);
+        }
+        for (exit, plan) in &mut drop_plans {
+            let ExitPath::Return { block } = exit else {
+                continue;
+            };
+            let Some(state_map) = dataflow_result.exit_states.get(block) else {
+                continue;
+            };
+            for (binding, reach) in &member_transfer_reach {
+                // This exit is at or after the hand-off: caller owns the value.
+                if reach.contains(block) {
+                    continue;
+                }
+                // Only re-admit where the value is definitely still owned. A
+                // `MaybeConsumed`/`Uninit`/`Consumed` state at this exit is
+                // ambiguous or already discharged — skip (fail-closed).
+                if !matches!(
+                    state_map.get(binding).copied(),
+                    Some(dataflow::BindingState::Live)
+                ) {
+                    continue;
+                }
+                let Some(ty) = owned_ty_by_binding.get(binding).copied() else {
+                    continue;
+                };
+                if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+                    continue;
+                }
+                let Some(&place) = builder.binding_locals.get(binding) else {
+                    continue;
+                };
+                if plan.drops.iter().any(|drop| drop.place == place) {
+                    continue;
+                }
+                plan.drops.push(ElabDrop {
+                    place,
+                    ty: ty.clone(),
+                    drop_fn: None,
+                    kind: drop_kind_for(place, ty, None),
+                    guard: None,
+                });
             }
         }
     }

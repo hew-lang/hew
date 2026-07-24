@@ -94,6 +94,27 @@ pub extern "C" fn hew_pid_serial(pid: u64) -> u64 {
 /// `LOCAL_NODE_ID` which defaulted to 0. This preserves the always-available
 /// semantics for callers that check locality before `hew_sched_init` or after
 /// teardown. The mutate path (`hew_pid_set_local_node`) stays fail-closed.
+///
+/// # Why route slot 0 answers local unconditionally
+///
+/// Route slot `0` is the local-dispatch reservation, not an addressable node.
+/// Actors spawned before `hew_node_start` publishes this process's slot
+/// (`hew_node.rs`, `hew_pid_set_local_node(node.route_slot)`) carry `0` in the
+/// high half and are still local afterwards, so the clause is load-bearing —
+/// dropping it strands every pre-node-start pid.
+///
+/// It is sound because a remote actor cannot be spelled with route slot `0`, and
+/// cannot be spelled with this node's slot either:
+///
+/// - No packed pid crosses the wire. The distributed vocabulary is
+///   `node_identity::Location` (`NodeId` + actor slot + session incarnation),
+///   whose decoder refuses actor slot `0` (`Location::new`); the packed form is
+///   minted receiver-side by `routing::hew_routing_lookup_location` and the
+///   `connection.rs` ingress handlers.
+/// - Those mint sites take the high half from a registered route slot, and
+///   `routing::hew_routing_add_route` refuses both `0` and the table's own
+///   `local_route_slot`. `peer_binding::PeerAuthSnapshot::validate` refuses the
+///   same collision one layer earlier, at node start.
 #[no_mangle]
 pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
     let pid_node = hew_pid_node(pid);

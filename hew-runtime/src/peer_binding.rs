@@ -763,7 +763,18 @@ impl PeerAuthSnapshot {
     ///
     /// * strict (`bindings` non-empty) requires a local route slot;
     /// * explicit opt-out (`unverified == true`) requires empty `bindings`;
-    /// * `unconfigured` (`unverified == false`, empty bindings) is legal.
+    /// * `unconfigured` (`unverified == false`, empty bindings) is legal;
+    /// * no peer may be bound to the local route slot.
+    ///
+    /// The last rule is an identity rule, not a tidiness rule. The local route
+    /// slot is the high half of every locally-minted actor id, so a peer sharing
+    /// it produces remote actor ids that `pid::hew_pid_is_local` reports as
+    /// LOCAL, and `routing::hew_routing_conn_for_route_slot` refuses to route to
+    /// it — the peer would be both mislabelled and unreachable. Slot `0` is
+    /// already reserved for local dispatch by [`PeerAuthConfig::pin_peer`].
+    /// `Node::start`'s own slot selection avoids bound slots
+    /// (`hew_node::select_local_route_slot`); this is the check that holds when
+    /// the slot is supplied rather than selected.
     ///
     /// # Errors
     ///
@@ -782,6 +793,15 @@ impl PeerAuthSnapshot {
                  (fail-closed)"
                     .to_string(),
             );
+        }
+        if let Some(local) = self.inner.local_route_slot {
+            if self.inner.bindings.contains_key(&local.get()) {
+                return Err(format!(
+                    "hew_node_start: peer binding occupies the local route slot {} — a peer \
+                     cannot share this node's route slot (fail-closed)",
+                    local.get()
+                ));
+            }
         }
         Ok(())
     }
@@ -1171,6 +1191,32 @@ mod tests {
     #[test]
     fn validate_snapshot_accepts_unconfigured() {
         assert!(PeerAuthSnapshot::unconfigured().validate().is_ok());
+    }
+
+    /// A peer bound to the local route slot would share the high half of every
+    /// locally-minted actor id, so its remote actors would answer
+    /// `pid::hew_pid_is_local` as local. The node refuses to start instead.
+    #[test]
+    fn validate_snapshot_rejects_peer_on_the_local_route_slot() {
+        let mut cfg = bound_config(&[(42, noise(0xBB))]);
+        cfg.local_route_slot = nz(42);
+        let err = cfg
+            .snapshot()
+            .validate()
+            .expect_err("a peer on the local route slot must be refused");
+        assert!(
+            err.contains("local route slot 42"),
+            "the refusal must name the colliding slot, got: {err}"
+        );
+    }
+
+    /// The refusal is exact: a distinct local slot alongside the same binding
+    /// stays valid, so the rule cannot degrade into "strict configs never start".
+    #[test]
+    fn validate_snapshot_accepts_local_route_slot_beside_a_peer_slot() {
+        let mut cfg = bound_config(&[(42, noise(0xBB))]);
+        cfg.local_route_slot = nz(43);
+        assert!(cfg.snapshot().validate().is_ok());
     }
 
     #[test]

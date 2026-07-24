@@ -98,6 +98,16 @@ pub(crate) unsafe fn hew_routing_table_free(table: *mut HewRoutingTable) {
 /// Reusing a receiver-local route slot for a different `NodeId` tombstones the
 /// prior identity before the replacement becomes visible.
 ///
+/// # Reserved route slots
+///
+/// Slot `0` is local dispatch and the table's own `local_route_slot` names this
+/// process. Registering a peer on either is refused, because this function is
+/// what makes `LocationRoute::Remote`'s packed actor id: `hew_pid_make(slot, ..)`
+/// on a reserved slot yields a pid that `hew_pid_is_local` reports as LOCAL for
+/// an actor that lives on another node — and `hew_routing_conn_for_route_slot`
+/// would refuse to route to it, so the peer would also be silently unreachable.
+/// Refusing the registration is what keeps that pid unrepresentable.
+///
 /// # Safety
 ///
 /// `table` must point to a live routing table.
@@ -113,6 +123,9 @@ pub(crate) unsafe fn hew_routing_add_route(
     }
     // SAFETY: caller guarantees `table` validity.
     let table = unsafe { &*table };
+    if route_slot == table.local_route_slot {
+        return false;
+    }
     let mut state = table.state.write_or_recover();
 
     if let Some(previous_node) = state.by_slot.get(&route_slot).copied() {
@@ -396,5 +409,78 @@ mod tests {
             );
             hew_routing_table_free(table);
         }
+    }
+
+    /// A peer on the local route slot would mint `LocationRoute::Remote` actor
+    /// ids whose high half is this node's own slot, so `hew_pid_is_local` would
+    /// report a remote actor as local. Registration is refused, and the peer
+    /// stays classified `Partition` rather than acquiring an aliased identity.
+    #[test]
+    fn peer_on_the_local_route_slot_is_refused() {
+        let local = node(1);
+        let remote = node(2);
+        let table = hew_routing_table_new(7, Some(local), Some(11), &[(7, remote)]);
+
+        // SAFETY: table is live for the test.
+        unsafe {
+            assert!(
+                !hew_routing_add_route(table, remote, 7, 5, 55),
+                "a peer must not register on the local route slot"
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 5)),
+                LocationRoute::Partition,
+                "the refused peer must stay unrouted, never resolve to an aliased id"
+            );
+            // The neighbouring slot is unaffected: the refusal is exact, not a
+            // blanket rejection that would strand every peer.
+            assert!(hew_routing_add_route(table, remote, 8, 5, 55));
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 5)),
+                LocationRoute::Remote {
+                    actor_id: crate::pid::hew_pid_make(8, 42),
+                    route_slot: 8,
+                    conn: 55
+                }
+            );
+            hew_routing_table_free(table);
+        }
+    }
+
+    /// Every route slot a registration accepts yields a pid that
+    /// `hew_pid_is_local` classifies as remote — the property the reservation
+    /// exists to hold, asserted over the reserved values and a live one.
+    #[test]
+    fn accepted_route_slots_never_mint_a_locally_classified_pid() {
+        let _rt = crate::runtime_test_guard();
+        crate::pid::hew_pid_set_local_node(7);
+
+        let local = node(1);
+        let remote = node(2);
+        let table = hew_routing_table_new(7, Some(local), Some(11), &[(8, remote)]);
+
+        // SAFETY: table is live for the test.
+        unsafe {
+            for reserved in [0_u16, 7] {
+                assert!(
+                    !hew_routing_add_route(table, remote, reserved, 5, 55),
+                    "route slot {reserved} is reserved and must not be registrable"
+                );
+            }
+            assert!(hew_routing_add_route(table, remote, 8, 5, 55));
+            let LocationRoute::Remote { actor_id, .. } =
+                hew_routing_lookup_location(table, location(remote, 42, 5))
+            else {
+                panic!("the registered peer must resolve to a remote route");
+            };
+            assert_eq!(
+                crate::pid::hew_pid_is_local(actor_id),
+                0,
+                "a remote actor's pid must never classify as local"
+            );
+            hew_routing_table_free(table);
+        }
+
+        crate::pid::hew_pid_set_local_node(0);
     }
 }

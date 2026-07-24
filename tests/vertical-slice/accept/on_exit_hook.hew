@@ -7,7 +7,7 @@
 //   - HIR lowers it as HirLifecycleHookKind::Exit
 //   - MIR emits `Watcher__on_exit` with the two-field ABI (actor_id, kind_tag)
 //     and a prologue that rebuilds `note = CrashNotification { actor_id, kind }`
-//   - codegen routes SYS_MSG_EXIT in the actor dispatch trampoline to __on_exit,
+//   - codegen routes HewSysMsg::Exit in the actor dispatch trampoline to __on_exit,
 //     unpacking the delivered ExitMessage payload
 //   - the supervisor boots; main returns 42.
 //

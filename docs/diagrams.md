@@ -52,14 +52,14 @@ stateDiagram-v2
     Idle --> Runnable: message arrives / timer fires
     Runnable --> Running: scheduler picks actor<br/>(worker thread)
     Running --> Idle: budget exhausted /<br/>no more messages
-    Running --> Stopping: self.stop() /<br/>supervisor shutdown (SYS_MSG_SUPERVISOR_STOP)
+    Running --> Stopping: self.stop() /<br/>supervisor shutdown (SupervisorStop)
     Stopping --> Stopped: cleanup complete
 
     Running --> Crashed: unrecoverable trap
     Idle --> Crashed: unrecoverable trap
     Stopping --> Crashed: unrecoverable trap
 
-    Crashed --> Stopped: crash finalized,<br/>supervisor notified (SYS_MSG_CHILD_CRASHED)
+    Crashed --> Stopped: crash finalized,<br/>supervisor notified (ChildCrashed)
 
     Stopped --> [*]
 ```
@@ -344,7 +344,7 @@ stateDiagram-v2
 
     Healthy --> Stopped: all children stopped normally
     Escalating --> Stopped: no parent supervisor
-    Escalating --> Escalating: escalate to parent<br/>(SYS_MSG_CHILD_CRASHED)
+    Escalating --> Escalating: escalate to parent<br/>(ChildSupervisorEscalated)
 
     Stopped --> [*]
 
@@ -367,15 +367,23 @@ stateDiagram-v2
 | `RESTART_TRANSIENT` | 1     | Restart only on crash (not normal stop) |
 | `RESTART_TEMPORARY` | 2     | Never restart                           |
 
-**System messages:**
+**System messages** (`HewSysMsg`, `hew-runtime/src/mailbox_header.rs`):
 
-| Message                   | Value | Trigger                     |
-| ------------------------- | ----- | --------------------------- |
-| `SYS_MSG_CHILD_STOPPED`   | 100   | Child stopped normally      |
-| `SYS_MSG_CHILD_CRASHED`   | 101   | Child crashed               |
-| `SYS_MSG_SUPERVISOR_STOP` | 102   | Supervisor shutdown command |
-| `SYS_MSG_EXIT`            | 103   | Exit signal                 |
-| `SYS_MSG_DOWN`            | 104   | Monitored actor down        |
+These travel on a mailbox's system queue and are delivered through a dispatch
+entry point separate from the application trampoline, so they share no
+namespace with application message tags — an application `msg_type` is
+unrestricted over the full `i32` range and cannot express a lifecycle signal.
+
+| Variant                    | Trigger                                       |
+| -------------------------- | --------------------------------------------- |
+| `Shutdown`                 | Self-stop request; consumed by the scheduler   |
+| `ChildStopped`             | Child stopped normally                        |
+| `ChildCrashed`             | Child crashed                                 |
+| `SupervisorStop`           | Supervisor shutdown command                   |
+| `Exit`                     | Exit signal from a linked actor               |
+| `Down`                     | Monitored actor down                          |
+| `DelayedRestart`           | Timer thread → supervisor restart handoff     |
+| `ChildSupervisorEscalated` | Child supervisor exhausted its restart budget |
 
 ---
 

@@ -1694,12 +1694,12 @@ run_accept_expect_status "on_crash_escalate_root" 0
 
 # Accept: #[on(exit)] linked-actor exit hook compiles end-to-end (M-7-R). The
 # checker accepts `fn on_peer_exit(note: CrashNotification)`; MIR emits
-# Watcher__on_exit; codegen routes SYS_MSG_EXIT to it in the dispatch
+# Watcher__on_exit; codegen routes HewSysMsg::Exit to it in the dispatch
 # trampoline; the supervisor boots; main exits 42.
 run_accept_expect_status "on_exit_hook" 42
 
 # Typed monitor terminal hook: checker/HIR/MIR/codegen reconstruct the canonical
-# DownNotification payload and route SYS_MSG_DOWN through actor dispatch.
+# DownNotification payload and route HewSysMsg::Down through actor dispatch.
 run_accept_expect_status "on_down_hook" 42
 
 # `#[max_heap(N)]` wire-through — direct spawn path:

@@ -194,7 +194,7 @@ impl ActorMsg for IdentityProbe {
 // dies (clean exit, crash, or partition) the LOCAL linked actor CRASHES too.
 //
 // The headline divergence from monitor: a `CrashLinked` link-down lands in the
-// local actor's MAILBOX as a SYS_MSG_EXIT and crashes a non-trapping actor — it
+// local actor's MAILBOX as a HewSysMsg::Exit and crashes a non-trapping actor — it
 // does NOT land in a monitor recv slot (a link that reused the monitor recv-slot
 // delivery would fail-OPEN: the linked actor would never crash). The fixture
 // proves the crash by LOCALLY monitoring the linker actor from `main`: when the
@@ -568,7 +568,7 @@ actor MonitorProbe {
     // Spawn a Linker, send it to establish the cross-node link (capturing its actor
     // id from the reply), drive the remote actor to a terminal state, then poll the
     // linker's terminal state. With CrashLinked the linker must reach Crashed (5):
-    // the cross-node link-down landed in its mailbox as a SYS_MSG_EXIT and crashed
+    // the cross-node link-down landed in its mailbox as a HewSysMsg::Exit and crashed
     // it. `policy_sel` 0 = CrashLinked. `drive` selects how the remote dies.
 
     // Establish the link from inside the linker's own handler; the reply is its

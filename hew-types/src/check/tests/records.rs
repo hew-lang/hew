@@ -1745,6 +1745,62 @@ mod assoc_types_slice2 {
         }
     }
 
+    /// The SYSTEM-LANE provenance boundary. The sys/user channel split makes
+    /// provenance structural inside the mailbox — a user-queue node can never
+    /// be dispatched as a system message — but the classification table is the
+    /// other ingress authority. Every runtime export that mints a system-queue
+    /// node, drains one, or installs an actor's system dispatch pointer must
+    /// therefore be rejected in `extern "rt"`; a `stable` classification would
+    /// re-open by symbol exactly what the queue split closes by type.
+    ///
+    /// Each of these was `stable` before the audit:
+    ///
+    /// - `hew_actor_set_sys_dispatch` installs the system entry point with a
+    ///   non-atomic store whose contract requires exclusive post-spawn
+    ///   registration (writing `None` after registration silently drops every
+    ///   later lifecycle signal).
+    /// - `hew_mailbox_send_sys` mints an arbitrary `HewSysMsg` node on any
+    ///   mailbox; `hew_mailbox_try_recv_sys` pops one out from under the
+    ///   scheduler (the queue's only legitimate consumer); `hew_mailbox_sys_len`
+    ///   observes the private lane.
+    /// - `hew_supervisor_notify_child_actor_event`, its escalation sibling, and
+    ///   `hew_supervisor_handle_crash` put a caller-composed `ChildEvent` on a
+    ///   supervisor's system queue, whose dispatch frees the LIVE child named by
+    ///   the caller-supplied index.
+    /// - `hew_supervisor_add_child_spec` / `_dynamic` carry a caller-supplied
+    ///   `HewChildSpec.sys_dispatch` into `hew_actor_set_sys_dispatch`.
+    #[test]
+    fn extern_rt_system_lane_symbols_rejected() {
+        for sym in [
+            "hew_actor_set_sys_dispatch",
+            "hew_mailbox_send_sys",
+            "hew_mailbox_sys_len",
+            "hew_mailbox_try_recv_sys",
+            "hew_supervisor_add_child_dynamic",
+            "hew_supervisor_add_child_spec",
+            "hew_supervisor_handle_crash",
+            "hew_supervisor_notify_child_actor_event",
+            "hew_supervisor_notify_child_supervisor_escalation",
+        ] {
+            let extern_item = make_extern_rt_block(&[sym]);
+            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+            let output = checker.check_program(&Program {
+                items: vec![(extern_item, 0..60)],
+                module_doc: None,
+                module_graph: None,
+            });
+            assert!(
+                output.errors.iter().any(|e| matches!(&e.kind,
+                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                    if symbol_name == sym
+                )),
+                "system-lane symbol {sym} must be rejected in extern \"rt\"; \
+                 got: {:?}",
+                output.errors
+            );
+        }
+    }
+
     /// The stream/sink error channel splits producer from consumer: the
     /// `set_last_error` setters are `internal` (AOT-only, called by hew-cabi
     /// forwarders in native packages) and MUST be rejected in `extern "rt"` — a

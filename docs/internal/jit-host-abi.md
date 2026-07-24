@@ -55,13 +55,41 @@ later with an explicit review.
 ## Classification decision flowchart
 
 ```
-Is this symbol named by user extern "rt" blocks?
-  Yes → stable
+Does this symbol produce a system-queue node, consume one, or install
+an actor's system dispatch pointer?
+  Yes → NOT stable (codegen-stable if the compiler emits it, else internal)
   No  →
-    Is this symbol emitted by the Hew compiler into IR?
-      Yes → codegen-stable
-      No  → internal
+    Is this symbol named by user extern "rt" blocks?
+      Yes → stable
+      No  →
+        Is this symbol emitted by the Hew compiler into IR?
+          Yes → codegen-stable
+          No  → internal
 ```
+
+## The system lane is not user-declarable
+
+The system message queue is the privileged half of the sys/user channel split:
+nodes dequeued with `Origin::Sys` are routed to the actor's `sys_dispatch`
+entry point, which reclaims children, restarts them, and delivers `Exit` /
+`Down`. The split makes provenance STRUCTURAL inside the queue — a user-queue
+node can never be dispatched as a system message — but the queue is not the
+only ingress. This classification table is the other one: a symbol in `stable`
+can be named by an `extern "rt"` declaration and called directly from a Hew
+program, so a privileged operation classified `stable` re-opens by symbol
+exactly what the queue split closed by type.
+
+The rule is therefore a first-class part of the provenance boundary and takes
+precedence over the rest of the flowchart:
+
+> No `stable` symbol may mint a system node, drain one, or install a system
+> dispatch pointer.
+
+Validating that a caller picked one of the seven `HewSysMsg` kinds checks the
+VALUE, not the ORIGIN, and is not a substitute. The legitimate producers are
+runtime paths whose event is authenticated by a transition they perform
+themselves — `hew_actor_trap` CAS-transitions the child terminal before
+notifying its supervisor — not entry points that accept a composed event.
 
 ## JIT host requirements
 

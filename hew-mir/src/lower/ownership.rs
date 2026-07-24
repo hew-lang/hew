@@ -335,9 +335,20 @@ impl Builder {
             // never a caller-side double-free). Registration alone never forces
             // the drop — the SAME string sole-owner prover then gates it, so a
             // fresh result that ESCAPES (consumed/returned) is still excluded.
+            //
+            // A string-returning USER function has no runtime contract row, so
+            // the runtime discriminator alone leaves its result temp unminted —
+            // `println(f"v={mk(i)}")` lowers the interpolation operand to
+            // `mk(i)`'s result passed straight into the `Display::fmt` shim, a
+            // fresh rc==1 buffer nobody owned. The composite arm below already
+            // consults the module freshness fixpoint for exactly this question;
+            // `user_call_produces_fresh_owned_string` gives the string arm the
+            // same authority, with the runtime contract keeping its veto so a
+            // catalogued borrowed/interior-alias result can never be minted.
             HirExprKind::Call { callee, .. } => {
                 if matches!(ty, ResolvedTy::String) {
                     Self::call_produces_fresh_owned_string(callee)
+                        || self.user_call_produces_fresh_owned_string(callee)
                 } else {
                     // A composite (record/tuple/enum) result: admit a PROVEN-fresh
                     // producer, gated by the SAME module sole-owner prover the push
@@ -444,6 +455,48 @@ impl Builder {
             _ => name.as_str(),
         };
         crate::runtime_symbols::callee_ownership_contract(symbol).produces_fresh_owned_string()
+    }
+    /// Whether a `string`-returning direct-`Call` callee is a USER function the
+    /// module freshness fixpoint proves hands back a fresh sole owner.
+    ///
+    /// The runtime `produces_fresh_owned_string` contract only covers catalogued
+    /// symbols; a user function (`fn mk(i: i64) -> string { f"tok{i}" }`, a
+    /// `Display::fmt` impl, a generic monomorphisation) has no row and reads as
+    /// `FAIL_CLOSED`. That left the caller-side mint blind to every user-produced
+    /// string temp passed straight into a borrowing parameter — the shape
+    /// `println(f"v={mk(i)}")` produces, where the interpolation operand feeds
+    /// `string::fmt` with no `let` to anchor a scope-exit drop and the buffer
+    /// leaked once per evaluation.
+    ///
+    /// Fail-closed on both halves:
+    ///
+    /// * a KNOWN runtime symbol is rejected here outright, so the runtime
+    ///   contract keeps its veto — a catalogued callee returning a BORROWED or
+    ///   receiver-interior-alias string can never be laundered into a mint by
+    ///   the fixpoint's "resolved item with no body is fresh by the owned-return
+    ///   ABI" rule;
+    /// * a user callee must satisfy [`callee_returns_fresh_owner`], the same
+    ///   module-global least-fixpoint the composite arm consults. A callee that
+    ///   forwards, projects, or launders a by-value parameter on ANY return path
+    ///   (`fn passthru(s: string) -> string { s }`) is `false` and stays
+    ///   unminted — a leak, never a caller-side double-free.
+    ///
+    /// Registration alone still never forces a release: the minted local flows
+    /// through `derive_cow_sole_owner` / `derive_cow_fresh_borrowed_owner`,
+    /// which drop it only when it is a proven fresh, untainted owner whose every
+    /// use is a verified borrow.
+    fn user_call_produces_fresh_owned_string(&self, callee: &HirExpr) -> bool {
+        let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
+            return false;
+        };
+        let symbol = match resolved {
+            ResolvedRef::Builtin(family) => family.c_symbol(),
+            _ => name.as_str(),
+        };
+        if crate::runtime_symbols::is_known_runtime_symbol(symbol) {
+            return false;
+        }
+        callee_returns_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
     }
     /// #2648 preflight admission classifier — pure HIR, run at the TOP of every
     /// call-scrutinee consumer BEFORE `lower_value`/CFG allocation. Returns the

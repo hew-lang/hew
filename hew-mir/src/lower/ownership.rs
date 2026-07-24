@@ -557,6 +557,56 @@ impl Builder {
         let table = &self.call_scrutinee_provenance.extern_table;
         table.is_extern_name(symbol) && !table.extern_return_is_audited_fresh_owner(symbol)
     }
+    /// The ARGUMENT-side sibling of
+    /// [`Builder::callee_is_ownership_opaque_extern`]: `true` when `symbol` names
+    /// a declared `extern "C"` fn with no audited contract proving it BORROWS the
+    /// heap arguments it is handed.
+    ///
+    /// The two questions are different and must not be substituted for one
+    /// another. A `-> ()` extern carries a vacuous audited fresh-RETURN row (it
+    /// returns no handle at all), which says nothing whatsoever about what it
+    /// does with the `string` it is PASSED — the host may retain it or release it
+    /// with `hew_string_drop`. `extern_borrows_audited_heap_args` is the argument
+    /// authority, and it is unconditionally empty today.
+    ///
+    /// This is the same veto, from the same table, that
+    /// [`crate::lower::temp_drop::string_call_borrows`] applies ahead of its
+    /// `module_fn_names` clause.
+    pub(crate) fn callee_is_arg_ownership_opaque_extern(&self, symbol: &str) -> bool {
+        let table = &self.call_scrutinee_provenance.extern_table;
+        table.is_extern_name(symbol) && !table.extern_borrows_audited_heap_args(symbol)
+    }
+
+    /// `true` when `symbol` is an analyzed Hew function whose `string` argument a
+    /// caller may still hold a sole-owner release obligation over.
+    ///
+    /// This replaces a residual DISPATCH-SET check in `lower_direct_call`'s
+    /// synthetic temp-arg mint. `module_fn_names` is the call-dispatch set: it
+    /// deliberately carries every `HirItem::ExternFn` so extern calls lower as a
+    /// `Terminator::Call`. Answering an OWNERSHIP question from it registers a
+    /// caller-side owner for a temporary handed to an extern purely because the
+    /// extern is dispatchable — a second, dispatch-shaped ownership answer over a
+    /// handle whose real ownership behaviour is unknowable. So the audited
+    /// [`ExternContractTable`] is consulted FIRST, exactly as at the payload gate
+    /// ([`crate::lower::temp_drop::string_call_borrows`]), and only then does the
+    /// Hew-body dispatch fallback apply.
+    ///
+    /// The veto reads the ARGUMENT authority
+    /// ([`Builder::callee_is_arg_ownership_opaque_extern`]), not the return-side
+    /// one: the question here is what the callee does with the handle it is
+    /// GIVEN, and a `-> ()` extern's vacuous audited fresh-RETURN row proves
+    /// nothing about that.
+    ///
+    /// Final string ownership re-checks the terminator through the same table and
+    /// excludes an escaping argument, so this was never the only guard — but a
+    /// preliminary ownership answer must come from the one authority too.
+    ///
+    /// [`ExternContractTable`]: crate::return_provenance::ExternContractTable
+    pub(crate) fn callee_is_analyzed_hew_arg_sink(&self, symbol: &str) -> bool {
+        !self.callee_is_arg_ownership_opaque_extern(symbol)
+            && (self.module_fn_names.contains(symbol)
+                || self.module_generic_fn_names.contains(symbol))
+    }
     /// #2648 preflight admission classifier — pure HIR, run at the TOP of every
     /// call-scrutinee consumer BEFORE `lower_value`/CFG allocation. Returns the
     /// admission token the from-call owner mint and the #2523 origin consume, or

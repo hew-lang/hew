@@ -7844,10 +7844,10 @@ impl Builder {
                 // not, so that contract is the exact discriminator. The string
                 // sole-owner prover then gates the actual drop (borrow admits,
                 // consume/escape excludes), as for the named `let s = a+b; h(s)`.
+                // Extern veto + dispatch-set test: see `callee_is_analyzed_hew_arg_sink`.
                 !crate::runtime_symbols::callee_ownership_contract(callee_symbol)
                     .borrows_string_call_args()
-                    && (self.module_fn_names.contains(callee_symbol)
-                        || self.module_generic_fn_names.contains(callee_symbol))
+                    && self.callee_is_analyzed_hew_arg_sink(callee_symbol)
             } else {
                 proven_borrow_args.contains(&index)
             };

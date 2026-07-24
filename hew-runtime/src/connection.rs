@@ -1067,7 +1067,19 @@ fn publish_identity_connection_established(
             )
         };
         if result < 0 {
-            let _ = retire_identity_claim(mgr, peer_identity, conn_id, publication_token);
+            // Fail closed, the same way the reserved-slot refusal below does.
+            // The cluster rejected this admission outright — a session
+            // regression on the peer's route slot, or a member already buried
+            // as DEAD/LEFT — so it will never be published. Retiring only the
+            // claim would leave the connection installed and its transport
+            // open: an unroutable, unowned peer that still reads frames and
+            // that manager free would close later. Tear it down now.
+            refuse_established_publication(mgr, peer_route_slot, conn_id, publication_token);
+            set_last_error(format!(
+                "connection publication refused for peer {peer_identity} on conn {conn_id}: \
+                 the cluster rejected session {peer_session_incarnation} on route slot \
+                 {peer_route_slot}"
+            ));
             return;
         }
         result == 1
@@ -8642,6 +8654,223 @@ mod tests {
         unsafe {
             drop(Box::from_raw(transport_ptr));
             drop(Box::from_raw(close_impl.cast::<RefusalTransport>()));
+        }
+        drop(ops);
+    }
+
+    /// The cluster can refuse an admission outright — a session regression on
+    /// the peer's route slot, or a member already buried DEAD/LEFT — and that
+    /// happens BEFORE route registration. Publication must fail closed there
+    /// too: retiring only the claim would leave the connection installed with
+    /// an open transport, reading frames as an unroutable, unowned peer. Assert
+    /// the refused connection is torn down exactly once through the guarded
+    /// path, and that the token guard keeps the refusal from touching the peer
+    /// that legitimately holds the slot.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages an established publication and the refused successor in one place"
+    )]
+    fn publication_refuses_peer_the_cluster_rejects() {
+        unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
+            // SAFETY: test installs a Sender<c_int> as the transport impl payload.
+            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<c_int>>()) };
+            tx.send(conn_id).expect("close signal send should succeed");
+        }
+
+        const ROUTE_SLOT: u16 = 2;
+        const ESTABLISHED_CONN: c_int = 41;
+        const REFUSED_CONN: c_int = 42;
+
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<c_int>();
+        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: Some(signal_close_conn),
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: close_impl,
+        }));
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+
+        // SAFETY: every raw pointer below is allocated in this test and stays
+        // valid until the matching free calls.
+        unsafe {
+            let routing_table = crate::routing::hew_routing_table_new_for_test(1);
+            let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
+            assert!(!routing_table.is_null() && !cluster.is_null());
+            assert_eq!(
+                crate::cluster::hew_cluster_join(cluster, ROUTE_SLOT, c"10.0.0.2:9000".as_ptr()),
+                0
+            );
+
+            let mgr = hew_connmgr_new(transport_ptr, None, routing_table, cluster, 1);
+            assert!(!mgr.is_null());
+
+            // The peer that legitimately owns the slot, at session 5.
+            let established_identity = NodeId::from_bytes([5; 16]);
+            let mut established = ConnectionActor::new(ESTABLISHED_CONN);
+            let established_token = next_publication_token(&*mgr);
+            established.publication_token = established_token;
+            established.peer_node_id = ROUTE_SLOT;
+            established.peer_identity = Some(established_identity);
+            established.peer_session_incarnation = 5;
+            established
+                .state
+                .store(CONN_STATE_ACTIVE, Ordering::Release);
+            let established_sync = Arc::clone(&established.publication_sync);
+            let established_removed = Arc::clone(&established.publication_removed);
+            (&*mgr).connections.access(|conns| conns.push(established));
+            let superseded = reserve_unverified_identity_claim(
+                &*mgr,
+                established_identity,
+                ROUTE_SLOT,
+                5,
+                ESTABLISHED_CONN,
+                established_token,
+            );
+            publish_identity_connection_established(
+                &*mgr,
+                established_identity,
+                ROUTE_SLOT,
+                5,
+                ESTABLISHED_CONN,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                established_token,
+                &established_sync,
+                &established_removed,
+                superseded,
+            );
+            assert_eq!(
+                crate::routing::hew_routing_lookup(
+                    routing_table,
+                    crate::pid::hew_pid_make(ROUTE_SLOT, 0)
+                ),
+                ESTABLISHED_CONN,
+                "the established peer must own the route"
+            );
+
+            // A pending gossip event that a successful publication would drain.
+            (&*cluster).emit_registry_add(
+                "counter",
+                crate::node_identity::Location::new(NodeId::from_bytes([7; 16]), 9, 3)
+                    .expect("test location should be valid"),
+            );
+            assert_eq!((&*cluster).registry_gossip_count(), 1);
+
+            // A different NodeId lands on the same route slot with an older
+            // session, so the cluster refuses the publication outright.
+            let refused_identity = NodeId::from_bytes([6; 16]);
+            let mut refused = ConnectionActor::new(REFUSED_CONN);
+            let refused_token = next_publication_token(&*mgr);
+            refused.publication_token = refused_token;
+            refused.peer_node_id = ROUTE_SLOT;
+            refused.peer_identity = Some(refused_identity);
+            refused.peer_session_incarnation = 3;
+            refused.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let refused_sync = Arc::clone(&refused.publication_sync);
+            let refused_removed = Arc::clone(&refused.publication_removed);
+            (&*mgr).connections.access(|conns| conns.push(refused));
+            let refused_superseded = reserve_unverified_identity_claim(
+                &*mgr,
+                refused_identity,
+                ROUTE_SLOT,
+                3,
+                REFUSED_CONN,
+                refused_token,
+            );
+            publish_identity_connection_established(
+                &*mgr,
+                refused_identity,
+                ROUTE_SLOT,
+                3,
+                REFUSED_CONN,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                refused_token,
+                &refused_sync,
+                &refused_removed,
+                refused_superseded,
+            );
+
+            let reported_ptr = crate::hew_last_error();
+            assert!(!reported_ptr.is_null());
+            let reported = std::ffi::CStr::from_ptr(reported_ptr)
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                reported.contains("the cluster rejected session 3"),
+                "the cluster refusal must be reported, got: {reported}"
+            );
+            assert_eq!(
+                close_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("the refused connection must be closed"),
+                REFUSED_CONN
+            );
+            assert!(
+                close_rx.try_recv().is_err(),
+                "the refused transport must be closed exactly once"
+            );
+            assert_eq!(
+                hew_connmgr_count(mgr),
+                1,
+                "only the refused connection may be unlinked"
+            );
+            assert_eq!(
+                authenticated_peer_node_id_for_conn(&*mgr, REFUSED_CONN),
+                0,
+                "the refused claim must be retired"
+            );
+            assert_eq!((&*cluster).registry_gossip_count(), 1);
+
+            // The token guard keeps the refusal local to the refused
+            // admission: the peer that legitimately owns the slot keeps its
+            // route, its published owner and its alive membership.
+            assert_eq!(
+                crate::routing::hew_routing_lookup(
+                    routing_table,
+                    crate::pid::hew_pid_make(ROUTE_SLOT, 0)
+                ),
+                ESTABLISHED_CONN
+            );
+            assert_eq!(
+                authenticated_peer_node_id_for_conn(&*mgr, ESTABLISHED_CONN),
+                ROUTE_SLOT
+            );
+            assert_eq!(
+                crate::cluster::hew_cluster_member_state(cluster, ROUTE_SLOT),
+                crate::cluster::MEMBER_ALIVE
+            );
+            assert_eq!(crate::cluster::hew_cluster_alive_count(cluster), 1);
+
+            hew_connmgr_free(mgr);
+            assert_eq!(
+                close_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("manager free must close the established connection"),
+                ESTABLISHED_CONN
+            );
+            assert!(close_rx.try_recv().is_err());
+            crate::cluster::hew_cluster_free(cluster);
+            crate::routing::hew_routing_table_free(routing_table);
+        }
+
+        // SAFETY: transport_ptr and close_impl were allocated above and are no
+        // longer referenced after manager teardown.
+        unsafe {
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(
+                close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
+            ));
         }
         drop(ops);
     }

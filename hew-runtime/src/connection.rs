@@ -9685,6 +9685,109 @@ mod tests {
         }
     }
 
+    /// (e) The supersede path arrives after the superseded connection's own
+    /// removal has already finished. A same-credential reconnect reserves the
+    /// published connection's claim and keeps it as `superseded`; the ordinary
+    /// removal of that published connection then wins outright — it claims the
+    /// close, closes the transport and unlinks the actor — and only afterwards
+    /// does the reconnect complete its publication and reach the supersede
+    /// close. The one-shot handle must still have been closed exactly once.
+    ///
+    /// The reconnect's route slot is NOT the harness routing table's own slot,
+    /// so its publication genuinely completes and reaches the supersede branch
+    /// rather than being refused before it.
+    ///
+    /// Counterfactual: with an absent actor read as "then nobody has closed
+    /// this yet" (the raw fallback this replaces), the completing publication
+    /// frees the removed connection's handle a second time — this observes 2
+    /// closes of the superseded connection instead of 1.
+    #[test]
+    fn supersede_after_removal_leaves_the_closed_transport_alone() {
+        const SUPERSEDED: c_int = 46;
+        const RECONNECT: c_int = 47;
+        /// Not the harness routing table's local slot, so the reconnect's route
+        /// registers and its publication completes.
+        const ROUTE_SLOT: u16 = 6;
+
+        // Nothing is parked inside a close here: the interleaving is that the
+        // removal COMPLETES first, not that it is caught mid-close.
+        let race = stage_teardown_race(0);
+        let superseded = race.stage_connection(SUPERSEDED, ROUTE_SLOT, true);
+        assert!(
+            publish_claim(race.mgr(), ROUTE_SLOT, SUPERSEDED, superseded.token),
+            "the connection to be superseded must be published first"
+        );
+
+        // The same-credential reconnect reserves the published claim and keeps
+        // it — this is the `superseded` its publication will act on later.
+        let reconnect = race.stage_connection(RECONNECT, ROUTE_SLOT, false);
+        let retained = reconnect
+            .superseded
+            .clone()
+            .expect("the reconnect must supersede the published claim");
+        assert_eq!(retained.state, ClaimState::Published);
+        assert_eq!(retained.conn_id, SUPERSEDED);
+        assert_eq!(retained.publication_token, superseded.token);
+
+        // The superseded connection's own removal wins: it claims the close,
+        // closes the transport, and unlinks the actor.
+        // SAFETY: the manager is live.
+        assert_eq!(unsafe { hew_connmgr_remove(race.mgr, SUPERSEDED) }, 0);
+        superseded
+            .reader_done
+            .expect("the superseded connection is staged with a reader")
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the woken reader must have run its cleanup");
+        assert_eq!(
+            race.transport_impl().closes_of(SUPERSEDED),
+            1,
+            "the removal itself must close the transport exactly once"
+        );
+        assert!(
+            race.mgr().connections.access(|connections| !connections
+                .iter()
+                .any(|connection| connection.conn_id == SUPERSEDED)),
+            "the removal must have unlinked the superseded actor before the \
+             publication below runs"
+        );
+
+        // Only now does the reconnect finish publishing and reach the supersede
+        // close, with no actor left to consult.
+        publish_connection_established(
+            race.mgr(),
+            ROUTE_SLOT,
+            RECONNECT,
+            HEW_FEATURE_SUPPORTS_GOSSIP,
+            reconnect.token,
+            &reconnect.publication_sync,
+            &reconnect.publication_removed,
+            Some(retained),
+        );
+
+        assert_eq!(
+            race.transport_impl().closes_of(SUPERSEDED),
+            1,
+            "a supersede must not close a transport whose removal already closed it"
+        );
+        // SAFETY: the manager is still live.
+        assert_eq!(unsafe { hew_connmgr_count(race.mgr) }, 1);
+
+        // SAFETY: the manager is live and is not used again.
+        unsafe { hew_connmgr_free(race.mgr) };
+        assert_eq!(
+            race.transport_impl().closes_of(SUPERSEDED),
+            1,
+            "manager free must not close the superseded connection again either"
+        );
+        assert_eq!(
+            race.transport_impl().closes_of(RECONNECT),
+            1,
+            "the surviving connection is closed once, by manager free"
+        );
+        // SAFETY: the manager has been freed.
+        unsafe { race.finish() };
+    }
+
     // ---- issue #2652 · Slice 4 · NodeId claim state machine ----------------
 
     /// Build a minimal manager for claim-machine unit tests: a stub transport

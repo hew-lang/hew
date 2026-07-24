@@ -10640,6 +10640,150 @@ fn dispatch_trampoline_fails_closed_on_uncarried_predicate() {
     );
 }
 
+/// The APPLICATION dispatch trampoline must contain no lifecycle-signal arm,
+/// and the SYSTEM trampoline must bounds-check every payload it reads.
+///
+/// This is the emitted-IR half of the sys/user channel split. Before it, one
+/// switch keyed on a raw `i32` carried both namespaces, so a public C-ABI
+/// `hew_actor_send(actor, 103, null, 0)` reached the EXIT arm, which read a
+/// 16-byte `ExitMessage` out of the attacker's pointer — `data_size` was never
+/// read anywhere in the function — and called `hew_actor_exit_unhandled` with
+/// the loaded reason.
+#[test]
+fn actor_dispatch_channels_are_split_and_the_system_payloads_are_bounds_checked() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("channel_split_test");
+    let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+    let target_data = host_target_data();
+
+    let symbol = "SplitActor__recv__work";
+    let mut handler_fn = run_to_completion_handler_fn(symbol);
+    handler_fn.source_origin = SourceOrigin::SynthesizedActorHandler {
+        kind: ActorHandlerKind::Receive,
+        actor_layout_key: "SplitActor".to_string(),
+    };
+    let mut fn_symbols: FnSymbolMap = HashMap::new();
+    let sym = declare_function(
+        &ctx,
+        &llvm_mod,
+        &target_data,
+        &handler_fn,
+        &record_layouts,
+        &[],
+        false,
+    )
+    .expect("declare synthetic handler");
+    fn_symbols.insert(symbol.to_string(), sym);
+
+    let actor = ActorLayout {
+        name: "SplitActor".to_string(),
+        defining_module: None,
+        state_field_names: vec![],
+        state_field_tys: vec![],
+        state_field_defaults: vec![],
+        init_param_names: vec![],
+        init_param_tys: vec![],
+        init_symbol: None,
+        on_start_symbol: None,
+        on_stop_symbols: vec![],
+        on_crash_symbol: None,
+        on_exit_symbol: None,
+        on_down_symbol: None,
+        max_heap_bytes: None,
+        cycle_capable: false,
+        mailbox_capacity: None,
+        overflow_policy: None,
+        coalesce_key_plan: None,
+        handlers: vec![unit_suspendable_layout(symbol, 9)],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
+    };
+
+    crate::thunks::emit_actor_dispatch_trampoline(
+        &ctx,
+        &llvm_mod,
+        &target_data,
+        &actor,
+        &[Some(false)],
+        &fn_symbols,
+        &record_layouts,
+        &[],
+    )
+    .expect("emit user dispatch trampoline");
+    crate::thunks::emit_actor_sys_dispatch_trampoline(
+        &ctx,
+        &llvm_mod,
+        &target_data,
+        &actor,
+        &fn_symbols,
+        &record_layouts,
+    )
+    .expect("emit system dispatch trampoline");
+
+    let user_fn = llvm_mod
+        .get_function("__hew_actor_dispatch_SplitActor")
+        .expect("user trampoline emitted");
+    let user_ir = {
+        use inkwell::values::AnyValue;
+        user_fn.print_to_string().to_string()
+    };
+    for forbidden in ["msg_sys_exit", "msg_sys_down", "hew_actor_exit_unhandled"] {
+        assert!(
+            !user_ir.contains(forbidden),
+            "the application dispatch trampoline must carry no lifecycle-signal \
+             arm, but it contains `{forbidden}`:\n{user_ir}"
+        );
+    }
+
+    let sys_fn = llvm_mod
+        .get_function("__hew_actor_sys_dispatch_SplitActor")
+        .expect("system trampoline emitted for every actor, hooks or not");
+    let sys_ir = {
+        use inkwell::values::AnyValue;
+        sys_fn.print_to_string().to_string()
+    };
+    // An unhandled EXIT must still crash a non-trapping actor.
+    assert!(
+        sys_ir.contains("hew_actor_exit_unhandled"),
+        "an actor without #[on(exit)] must still crash on an unhandled EXIT:\n{sys_ir}"
+    );
+    // Both payload-reading arms guard on size AND nullness, and refuse by
+    // branching to the exit block rather than reading.
+    for guard in ["sys_exit_guard:", "sys_down_guard:"] {
+        let block = sys_ir
+            .split(guard)
+            .nth(1)
+            .unwrap_or_else(|| panic!("missing guard block `{guard}`:\n{sys_ir}"))
+            .split("\n\n")
+            .next()
+            .expect("guard block body");
+        assert!(
+            block.contains("icmp uge"),
+            "`{guard}` must bounds-check data_size against the payload size:\n{sys_ir}"
+        );
+        assert!(
+            block.contains("icmp ne ptr"),
+            "`{guard}` must reject a null payload:\n{sys_ir}"
+        );
+        assert!(
+            block.contains("sys_dispatch_done"),
+            "`{guard}` must refuse (branch to the exit block) rather than read \
+             an undersized payload:\n{sys_ir}"
+        );
+    }
+    // The guard dominates the read: the ExitMessage GEP lives in the
+    // guard-success block, never in the switch target.
+    let exit_read_block = sys_ir
+        .split("sys_exit_payload_ok:")
+        .nth(1)
+        .expect("the EXIT read lives in the guard-success block");
+    assert!(
+        exit_read_block.contains("exit_reason_ptr"),
+        "the ExitMessage read must be dominated by its size guard:\n{sys_ir}"
+    );
+}
+
 /// Native + wasm32 parity: the trampoline-bearing module with a suspendable
 /// handler builds + CoroSplits clean for both triples (E9 — the wasm
 /// deliverable is IR parity; actors are wasm-rejected from SOURCE but the
@@ -11930,7 +12074,7 @@ fn hew_child_spec_struct_matches_runtime_abi() {
     // (Rust offset_of, LLVM element index) for every field, in declaration
     // order. The pairing IS the ABI contract: element N of the LLVM struct
     // must land at the same byte offset as the matching Rust field.
-    let fields: [(usize, u32, &str); 17] = [
+    let fields: [(usize, u32, &str); 18] = [
         (std::mem::offset_of!(HewChildSpec, name), 0, "name"),
         (
             std::mem::offset_of!(HewChildSpec, init_state),
@@ -11992,6 +12136,11 @@ fn hew_child_spec_struct_matches_runtime_abi() {
             std::mem::offset_of!(HewChildSpec, message_drop_fn),
             16,
             "message_drop_fn",
+        ),
+        (
+            std::mem::offset_of!(HewChildSpec, sys_dispatch),
+            17,
+            "sys_dispatch",
         ),
     ];
 

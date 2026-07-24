@@ -88,6 +88,7 @@ stable = [
   "hew_actor_set_reductions",
   "hew_actor_set_state_clone",
   "hew_actor_set_state_drop",
+  "hew_actor_set_sys_dispatch",
   "hew_actor_set_terminate",
   "hew_actor_spawn",
   "hew_actor_spawn_bounded",
@@ -604,7 +605,8 @@ stable = [
   "hew_supervisor_is_running",
   "hew_supervisor_new",
   "hew_supervisor_nested_get",
-  "hew_supervisor_notify_child_event",
+  "hew_supervisor_notify_child_actor_event",
+  "hew_supervisor_notify_child_supervisor_escalation",
   "hew_supervisor_remove_child",
   "hew_supervisor_restart_await_blocking",
   "hew_supervisor_restart_await_detach",
@@ -4938,5 +4940,26 @@ discharge-depth = "none"
 symbol = "hew_join_branch_failed"
 result = "none"
 params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/actor.rs: stores the caller's system dispatch function
+# pointer into the actor's `sys_dispatch` slot. The actor handle stays
+# caller-owned; the function pointer is a static code address with no
+# allocation behind it, so nothing is transferred and nothing is released.
+[[ownership.contracts]]
+symbol = "hew_actor_set_sys_dispatch"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/supervisor.rs: builds a ChildSupervisorEscalation on the
+# stack and copies it into a system-queue node; the supervisor handle stays
+# caller-owned and the scalar arguments carry no allocation.
+[[ownership.contracts]]
+symbol = "hew_supervisor_notify_child_supervisor_escalation"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"

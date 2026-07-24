@@ -799,7 +799,7 @@ fn lower_actor_lifecycle_handlers(
             }
             HirLifecycleHookKind::Exit => {
                 // M-7-R: `#[on(exit)]` linked-actor exit hook. The runtime
-                // delivers a peer's `CrashNotification` on SYS_MSG_EXIT as two
+                // delivers a peer's `CrashNotification` on HewSysMsg::Exit as two
                 // raw ABI params (`__exit_actor_id: u64`, `__exit_kind_tag: i32`);
                 // the prologue rebuilds `note = CrashNotification { actor_id,
                 // kind }`. Returns `()` (the hook reacts; it does not steer).

@@ -837,11 +837,11 @@ pub struct ActorLayout {
     pub on_crash_symbol: Option<String>,
     /// `#[on(exit)]` linked-actor exit-hook symbol (M-7-R). `None` when the
     /// actor has no exit hook. When `Some`, the dispatch trampoline routes
-    /// `SYS_MSG_EXIT` (103) to it, unpacking the delivered `CrashNotification`
+    /// `HewSysMsg::Exit` to it, unpacking the delivered `CrashNotification`
     /// (`actor_id`, `crash_kind` tag) from the `ExitMessage` payload.
     pub on_exit_symbol: Option<String>,
     /// `#[on(down)]` monitor terminal hook symbol. `None` when the actor has no
-    /// DOWN hook. Dispatch consumes `SYS_MSG_DOWN` in either case.
+    /// DOWN hook. Dispatch consumes `HewSysMsg::Down` in either case.
     pub on_down_symbol: Option<String>,
     /// Per-actor arena cap in bytes from `#[max_heap(N)]`. `None` means no
     /// annotation (unbounded arena). Codegen reads this to select

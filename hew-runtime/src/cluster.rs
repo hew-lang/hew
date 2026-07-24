@@ -143,6 +143,18 @@ pub struct RegistryEvent {
 struct ConnectionTokens {
     current: HashMap<u16, u64>,
     visible: HashMap<u16, u64>,
+    /// Guarded transitions that have passed their guard but have not emitted
+    /// yet, keyed by peer.
+    ///
+    /// A guarded transition cannot emit while holding the token lock — the
+    /// emit runs user callbacks — so between authorization and emission there
+    /// is a window in which a refusal can retire the very token the transition
+    /// was authorized against. Recording the authorization here makes it
+    /// revocable: retirement takes it away under this same lock, and the
+    /// emission has to claim it back before it may emit. Exactly one of the
+    /// two wins, so an authorized-but-unemitted ALIVE can never outlive the
+    /// retirement that supersedes it.
+    pending_emissions: HashMap<u16, u64>,
 }
 
 #[derive(Debug)]
@@ -913,6 +925,97 @@ impl HewCluster {
         }
     }
 
+    /// Evaluate a guarded transition's guard and, if it passes, record a
+    /// revocable authorization to emit.
+    ///
+    /// Lock order: `publication_sync` -> `connection_tokens` -> `members`, all
+    /// released on return. Nothing is emitted here, because an emit runs user
+    /// callbacks and must hold no cluster lock.
+    fn authorize_guarded_emission(
+        &self,
+        transition: &MemberTransition,
+        publication_token: u64,
+        publication_sync: &Mutex<()>,
+        publication_removed: &AtomicBool,
+    ) -> bool {
+        let _publication = publication_sync.lock_or_recover();
+        let mut tokens = self.connection_tokens.lock_or_recover();
+        let should_deliver = if publication_removed.load(Ordering::Acquire) {
+            false
+        } else {
+            match tokens.current.get(&transition.node_id) {
+                Some(current) if *current == publication_token => {
+                    let members = self.members.lock_or_recover();
+                    matches!(
+                        members.iter().find(|m| m.node_id == transition.node_id),
+                        Some(member)
+                            if member.state == transition.state
+                                && member.incarnation == transition.incarnation
+                    )
+                }
+                _ => false,
+            }
+        };
+        if should_deliver {
+            // Authorized, not yet observable: the emission still has to claim
+            // this back, and a retirement arriving first revokes it.
+            tokens
+                .pending_emissions
+                .insert(transition.node_id, publication_token);
+            return true;
+        }
+        if matches!(
+            tokens.current.get(&transition.node_id),
+            Some(current) if *current == publication_token
+        ) {
+            tokens.current.remove(&transition.node_id);
+        }
+        if matches!(
+            tokens.visible.get(&transition.node_id),
+            Some(current) if *current == publication_token
+        ) {
+            tokens.visible.remove(&transition.node_id);
+        }
+        if matches!(
+            tokens.pending_emissions.get(&transition.node_id),
+            Some(pending) if *pending == publication_token
+        ) {
+            tokens.pending_emissions.remove(&transition.node_id);
+        }
+        false
+    }
+
+    /// Take back the authorization a guarded transition recorded when it passed
+    ///
+    /// Returns `true` only while the authorization is still live. A refusal
+    /// that retires this token in the window since the guard passed revokes it,
+    /// and a superseding admission moves `current` on. In both cases the ALIVE
+    /// this transition would have emitted is not emitted at all — it is not
+    /// merely emitted late, which is the whole point: an observer must never
+    /// see a peer alive after the retirement that superseded it.
+    ///
+    /// `visible` is published HERE, not at authorization, so a peer is only
+    /// ever recorded as observably alive if its ALIVE is genuinely about to be
+    /// emitted.
+    fn claim_guarded_emission(&self, node_id: u16, publication_token: u64) -> bool {
+        let mut tokens = self.connection_tokens.lock_or_recover();
+        if !matches!(
+            tokens.pending_emissions.get(&node_id),
+            Some(pending) if *pending == publication_token
+        ) {
+            return false;
+        }
+        tokens.pending_emissions.remove(&node_id);
+        if !matches!(
+            tokens.current.get(&node_id),
+            Some(current) if *current == publication_token
+        ) {
+            return false;
+        }
+        tokens.visible.insert(node_id, publication_token);
+        true
+    }
+
     fn deliver_member_transition(&self, transition: &MemberTransition) {
         let membership_event = transition.membership_event();
         let deliver = match &transition.publication {
@@ -944,44 +1047,20 @@ impl HewCluster {
                 publication_sync,
                 publication_removed,
             } => {
-                let _publication = publication_sync.lock_or_recover();
-                let mut tokens = self.connection_tokens.lock_or_recover();
-                let should_deliver = if publication_removed.load(Ordering::Acquire) {
-                    false
-                } else {
-                    match tokens.current.get(&transition.node_id) {
-                        Some(current) if *current == *publication_token => {
-                            let members = self.members.lock_or_recover();
-                            matches!(
-                                members.iter().find(|m| m.node_id == transition.node_id),
-                                Some(member)
-                                    if member.state == transition.state
-                                        && member.incarnation == transition.incarnation
-                            )
-                        }
-                        _ => false,
-                    }
-                };
-                if should_deliver {
-                    tokens
-                        .visible
-                        .insert(transition.node_id, *publication_token);
-                    true
-                } else {
-                    if matches!(
-                        tokens.current.get(&transition.node_id),
-                        Some(current) if *current == *publication_token
-                    ) {
-                        tokens.current.remove(&transition.node_id);
-                    }
-                    if matches!(
-                        tokens.visible.get(&transition.node_id),
-                        Some(current) if *current == *publication_token
-                    ) {
-                        tokens.visible.remove(&transition.node_id);
-                    }
-                    false
+                // Phase 1 — AUTHORIZE.
+                if !self.authorize_guarded_emission(
+                    transition,
+                    *publication_token,
+                    publication_sync,
+                    publication_removed,
+                ) {
+                    return;
                 }
+                // Phase 2 — CLAIM. The window between the two phases is exactly
+                // where a refusal retires the token this transition was
+                // authorized against, so the authorization is re-taken here
+                // rather than assumed.
+                self.claim_guarded_emission(transition.node_id, *publication_token)
             }
             PublicationTransition::TokenLost(publication_token) => {
                 let mut tokens = self.connection_tokens.lock_or_recover();
@@ -1503,10 +1582,26 @@ impl HewCluster {
     fn notify_connection_lost_if_current(&self, node_id: u16, publication_token: u64) {
         let mut should_drain = false;
         let known_member = {
+            // Lock order: connection_tokens -> members, both released before
+            // the drain below. Serializing the revocation with the guarded
+            // emission claim under `connection_tokens` is what keeps an
+            // authorized-but-unemitted ALIVE from outliving this retirement;
+            // the drain lock is deliberately not held across either, because
+            // holding it across an emit deadlocks.
             let mut tokens = self.connection_tokens.lock_or_recover();
             match tokens.current.get(&node_id) {
                 Some(current) if *current == publication_token => {
                     tokens.current.remove(&node_id);
+                    // Revoke a guarded transition for this exact token that has
+                    // passed its guard but not yet emitted. It was authorized
+                    // against the token being retired here, so its ALIVE is
+                    // superseded, not merely late.
+                    if matches!(
+                        tokens.pending_emissions.get(&node_id),
+                        Some(pending) if *pending == publication_token
+                    ) {
+                        tokens.pending_emissions.remove(&node_id);
+                    }
                 }
                 _ => return,
             }

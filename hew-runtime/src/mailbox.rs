@@ -696,14 +696,18 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
 
 /// `msg_type` stamped on the MPSC stable stub.
 ///
+/// This value is ARBITRARY and carries no invariant. The whole `i32` space is
+/// live and user-reachable, so no number here could be a sentinel: the public
+/// mailbox contract leaves `msg_type` an unrestricted `i32` that
+/// [`hew_mailbox_send`] forwards verbatim, [`msg_node_alloc`] copies the
+/// caller's value unchanged, and protocol tags are the low 32 bits of a
+/// `SipHash` reinterpreted bit-for-bit as `i32` — a hash ending in
+/// `0x8000_0000` yields exactly `i32::MIN`. A C-ABI caller can enqueue a real
+/// message stamped with this constant today, and that is fine.
+///
 /// The stub is told apart from a real message by POINTER IDENTITY
-/// ([`MpscQueue::stub_ptr`]) and never by this value — no code anywhere reads
-/// a stub's `msg_type`. It is nonetheless chosen so that two independent
-/// invariants do not share one number on the same queue: `-1` is
-/// [`HEW_MAILBOX_SHUTDOWN_SENTINEL`], which the system queue genuinely
-/// transports, and `0` is the by-convention `msg_type` of a reply envelope.
-/// `i32::MIN` is claimed by neither, so a stamp read by mistake matches no
-/// live protocol value rather than impersonating the stop signal.
+/// ([`MpscQueue::stub_ptr`]) alone. No code anywhere reads a stub's
+/// `msg_type`, and correctness must never come to depend on it.
 const MPSC_STUB_MSG_TYPE: i32 = i32::MIN;
 
 /// Allocate the stable stub node for an intrusive MPSC queue.
@@ -3884,25 +3888,51 @@ mod tests {
     }
 
     /// The MPSC stable stub is disambiguated from a real message by POINTER
-    /// IDENTITY, never by its `msg_type`. That stamp must nonetheless alias no
-    /// value that carries meaning on the queues the stub lives in: `-1` is the
-    /// shutdown signal ([`HEW_MAILBOX_SHUTDOWN_SENTINEL`]) that the system
-    /// queue genuinely transports, and `0` is the by-convention `msg_type` of a
-    /// reply envelope. Two independent invariants must not share a number.
+    /// IDENTITY, never by its `msg_type`. `MPSC_STUB_MSG_TYPE` is an arbitrary
+    /// stamp with no reserved status: the whole `i32` space is live and
+    /// user-reachable, so a real message may legitimately carry exactly that
+    /// value. This pins the property that actually holds — a message stamped
+    /// identically to the stub still round-trips as an ordinary node and is
+    /// never mistaken for the stub, and the stub is never handed out.
     #[test]
-    fn stub_stamp_aliases_no_meaningful_msg_type() {
+    fn stub_stamp_value_is_not_reserved_against_real_messages() {
         let q = MpscQueue::new().expect("queue allocation should succeed");
+        let stub = q.stub_ptr();
         // SAFETY: the stub stays live for the queue's lifetime and this thread
         // exclusively owns `q`.
-        let stamp = unsafe { (*q.stub_ptr()).msg_type };
-        assert_ne!(
-            stamp, HEW_MAILBOX_SHUTDOWN_SENTINEL,
-            "stub stamp must not equal the shutdown signal carried on the same queue"
-        );
-        assert_ne!(
-            stamp, 0,
-            "stub stamp must not equal the reply-envelope msg_type"
-        );
+        let stamp = unsafe { (*stub).msg_type };
+
+        for _round in 0..3 {
+            // A real message carrying the stub's own stamp: legal on the public
+            // ABI, and the queue must treat it as any other message.
+            // SAFETY: null payload + zero size is a valid message.
+            let node = unsafe { msg_node_alloc(stamp, ptr::null(), 0, ptr::null_mut()) };
+            assert!(!node.is_null(), "message allocation must succeed");
+            assert_ne!(node, stub, "a real node is never the stub allocation");
+            // SAFETY: freshly allocated and exclusively owned until publish.
+            unsafe { q.enqueue(node) };
+
+            // SAFETY: this thread is the sole consumer.
+            let received = unsafe { q.try_dequeue() };
+            assert_eq!(
+                received, node,
+                "a message stamped like the stub must still be delivered"
+            );
+            assert_ne!(
+                received, stub,
+                "disambiguation is by pointer identity, so the stub is not returned"
+            );
+            // SAFETY: the queue handed ownership of `received` to the consumer.
+            unsafe { hew_msg_node_free(received) };
+
+            // SAFETY: this thread is the sole consumer.
+            let drained = unsafe { q.try_dequeue() };
+            assert!(
+                drained.is_null(),
+                "queue must read empty once the message is consumed"
+            );
+        }
+
         // SAFETY: the queue is exclusively owned and holds only the stub.
         unsafe { q.drain_and_free(None) };
     }

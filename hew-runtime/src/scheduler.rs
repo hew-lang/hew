@@ -36,9 +36,10 @@ use crate::actor::{self, HewActor, HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET};
 use crate::deque::{GlobalQueue, WorkDeque, WorkStealer};
 use crate::deterministic::hew_deterministic_set_seed;
 use crate::execution_context::HewExecutionContext;
-use crate::internal::types::HewActorState;
+use crate::internal::types::{HewActorState, HewDispatchFn, HewSysDispatchFn};
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox::{self, hew_mailbox_has_messages, hew_msg_node_free, HewMailbox};
+use crate::mailbox_header::{HewSysMsg, Origin};
 use crate::set_last_error;
 use crate::util::MutexExt;
 
@@ -1872,6 +1873,19 @@ impl Drop for ActivationOwnership<'_> {
     }
 }
 
+/// The dispatch entry point selected for one dequeued message.
+///
+/// Built from the node's [`Origin`] BEFORE any handler runs, so the choice of
+/// callee is the provenance decision itself. There is no path that constructs
+/// `Sys` from a user-queue node or `User` from a system-queue node.
+#[derive(Clone, Copy)]
+enum DispatchTarget {
+    /// An application message for the actor's user trampoline.
+    User(HewDispatchFn),
+    /// A runtime lifecycle signal for the actor's system entry point.
+    Sys(HewSysDispatchFn, HewSysMsg),
+}
+
 /// Activate an actor: CAS state to `Running`, drain messages up to budget,
 /// then transition back to `Idle` or re-enqueue as `Runnable`.
 #[expect(
@@ -1995,49 +2009,76 @@ fn activate_actor(actor: *mut HewActor) {
             // SAFETY: mailbox pointer is valid for the lifetime of the actor.
             // Receive WITH provenance so a SYSTEM-queue shutdown sentinel is not
             // confused with an application message that shares its value.
-            let mailbox::RecvNode {
-                node: msg,
-                from_sys,
-            } = unsafe { mailbox::mailbox_try_recv_with_origin(mailbox) };
+            let mailbox::RecvNode { node: msg, origin } =
+                unsafe { mailbox::mailbox_try_recv_with_origin(mailbox) };
             if msg.is_null() {
                 break;
             }
 
-            // Shutdown sentinel: `hew_actor_stop` enqueues a
-            // `HEW_MAILBOX_SHUTDOWN_SENTINEL` (msg_type == -1) *system* message so
-            // a Running actor's next mailbox poll OBSERVES the close request. It
-            // is a lifecycle signal, not an application message — the generated
-            // dispatch `match` has no arm for it, so handing it to the user
-            // trampoline lands on the trapping default arm (`ud2` → SIGILL). This
-            // reproduced ~0.75% of the time when a supervised actor was stopped
-            // while a worker was mid-drain of its mailbox: the settle path saw the
-            // queued sentinel via `hew_mailbox_has_messages`, re-enqueued the
-            // actor Runnable, and the next activation dispatched the sentinel.
+            // Route by the node's TYPED provenance. An exhaustive `match` — the
+            // shutdown case is `Origin::Sys(HewSysMsg::Shutdown)`, a pattern
+            // with no value to compare, so it cannot be silently weakened into
+            // a value test the way the previous `from_sys && msg_type == -1`
+            // conjunct could be by dropping one term.
             //
-            // Gate on `from_sys`: the sentinel value is reserved only on the
-            // SYSTEM queue. `msg_type` is unrestricted `i32` in the public C ABI
-            // (`hew_actor_send` / `HewDispatchFn`) and codegen tags are hashes, so
-            // a USER-queue node carrying `-1` is a real message that MUST reach
-            // the handler — it is never intercepted here.
+            // `hew_actor_stop` enqueues the Shutdown signal onto a Running
+            // actor's SYSTEM queue so its next mailbox poll OBSERVES the close
+            // request. It is a lifecycle signal, not an application message —
+            // the generated user trampoline has no arm for it, so handing it
+            // there would land on the trapping default arm (`ud2` → SIGILL).
+            // This reproduced ~0.75% of the time when a supervised actor was
+            // stopped while a worker was mid-drain of its mailbox.
             //
-            // SAFETY: `msg` is the non-null node just returned, exclusively owned
-            // by this worker.
-            if from_sys && unsafe { (*msg).msg_type } == mailbox::HEW_MAILBOX_SHUTDOWN_SENTINEL {
-                // SAFETY: `msg` is exclusively owned by this worker.
-                unsafe { hew_msg_node_free(msg) };
-                // Drive Running -> Stopping so the post-loop settle finalizes the
-                // Stopping -> Stopped terminal transition (monitors/terminate).
-                let _ = a.actor_state.compare_exchange(
-                    HewActorState::Running as i32,
-                    HewActorState::Stopping as i32,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
-                break;
-            }
+            // A USER-queue node is never intercepted here whatever its
+            // `msg_type`: application tags are unrestricted `i32` in the public
+            // C ABI (`hew_actor_send`) and are `SipHash` values in generated
+            // code, so a user message carrying a `HewSysMsg` discriminant is a
+            // real message that MUST reach the handler.
+            let dispatch_target = match origin {
+                Origin::Sys(HewSysMsg::Shutdown) => {
+                    // SAFETY: `msg` is exclusively owned by this worker.
+                    unsafe { hew_msg_node_free(msg) };
+                    // Drive Running -> Stopping so the post-loop settle finalizes
+                    // the Stopping -> Stopped terminal transition
+                    // (monitors/terminate).
+                    let _ = a.actor_state.compare_exchange(
+                        HewActorState::Running as i32,
+                        HewActorState::Stopping as i32,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    break;
+                }
+                Origin::Sys(kind) => {
+                    let Some(sys_dispatch) = a.sys_dispatch else {
+                        // Fail-closed: this actor registered no system entry
+                        // point, so the signal has nowhere legitimate to go. It
+                        // is NOT downgraded onto the user trampoline.
+                        eprintln!(
+                            "[scheduler] actor {} received system signal {kind:?} but \
+                             registered no system dispatch; dropping",
+                            a.id
+                        );
+                        // SAFETY: `msg` is exclusively owned by this worker.
+                        unsafe { hew_msg_node_free(msg) };
+                        continue;
+                    };
+                    DispatchTarget::Sys(sys_dispatch, kind)
+                }
+                Origin::User => {
+                    let Some(dispatch) = a.dispatch else {
+                        // SAFETY: `msg` is exclusively owned by this worker.
+                        unsafe { hew_msg_node_free(msg) };
+                        msgs_processed += 1;
+                        continue;
+                    };
+                    DispatchTarget::User(dispatch)
+                }
+            };
 
             // Dispatch the message (with profiling and crash recovery).
-            if let Some(dispatch) = a.dispatch {
+            {
+                let dispatch = dispatch_target;
                 let t0 = std::time::Instant::now();
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
@@ -2247,23 +2288,52 @@ fn activate_actor(actor: *mut HewActor) {
                     // a handler suspended. The handle is captured here; the
                     // production park edge consumes a non-null handle to park the
                     // activation.
-                    let dispatch_result = catch_unwind(AssertUnwindSafe(|| unsafe {
-                        dispatch(
-                            ec_ptr,
-                            a.state,
-                            msg_ref.msg_type,
-                            dispatch_data,
-                            dispatch_size,
-                            // P5-RX sub-stage 1: copy-mode receipt only. Only
-                            // copy-mode nodes (`msg_ref.envelope.is_null()`)
-                            // reach this dispatch — envelope-mode nodes fail
-                            // closed at the guard above before this point — so
-                            // borrow_mode is unconditionally 0 here. The live
-                            // envelope-mode receipt (passing 1 + the envelope
-                            // pointer as `dispatch_data`) lands with guard
-                            // removal in a later sub-stage.
-                            0,
-                        )
+                    // The ONE call site, with the entry point already chosen by
+                    // the node's typed origin. A system signal cannot reach the
+                    // user trampoline and an application message cannot reach
+                    // the system entry point — the discriminator is which arm
+                    // of `DispatchTarget` was built, not a value either callee
+                    // inspects.
+                    let dispatch_result = catch_unwind(AssertUnwindSafe(|| match dispatch {
+                        DispatchTarget::User(user_dispatch) =>
+                        // SAFETY: `user_dispatch` is the actor's registered
+                        // application trampoline; the arguments come from a
+                        // well-formed copy-mode `HewMsgNode`.
+                        unsafe {
+                            user_dispatch(
+                                ec_ptr,
+                                a.state,
+                                msg_ref.msg_type,
+                                dispatch_data,
+                                dispatch_size,
+                                // P5-RX sub-stage 1: copy-mode receipt only.
+                                // Only copy-mode nodes
+                                // (`msg_ref.envelope.is_null()`) reach this
+                                // dispatch — envelope-mode nodes fail closed at
+                                // the guard above before this point — so
+                                // borrow_mode is unconditionally 0 here. The
+                                // live envelope-mode receipt (passing 1 + the
+                                // envelope pointer as `dispatch_data`) lands
+                                // with guard removal in a later sub-stage.
+                                0,
+                            )
+                        },
+                        DispatchTarget::Sys(sys_dispatch, kind) => {
+                            // SAFETY: `sys_dispatch` is the actor's registered
+                            // system entry point and `kind` decoded from the
+                            // system queue. System handlers run to completion,
+                            // so there is no continuation handle to park.
+                            unsafe {
+                                sys_dispatch(
+                                    ec_ptr,
+                                    a.state,
+                                    kind.as_i32(),
+                                    dispatch_data,
+                                    dispatch_size,
+                                );
+                            }
+                            std::ptr::null_mut()
+                        }
                     }));
 
                     // SAFETY: `execution_context.lock_seat` was initialized from the
@@ -2588,11 +2658,6 @@ fn activate_actor(actor: *mut HewActor) {
                     crashed = true;
                     break;
                 }
-            } else {
-                // No dispatch function - just free the message
-                // SAFETY: `msg` was returned by `hew_mailbox_try_recv` and is
-                // now exclusively owned by this worker.
-                unsafe { hew_msg_node_free(msg) };
             }
 
             // If actor self-stopped during dispatch, stop processing.
@@ -3370,6 +3435,7 @@ mod tests {
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
+            sys_dispatch: None,
         }
     }
 
@@ -4405,6 +4471,7 @@ mod tests {
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 0,
+            sys_dispatch: None,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -5899,6 +5966,7 @@ mod tests {
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 0,
+            sys_dispatch: None,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

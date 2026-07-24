@@ -52,6 +52,35 @@ pub type HewDispatchFn = unsafe extern "C-unwind" fn(
     borrow_mode: i32,
 ) -> *mut std::ffi::c_void;
 
+/// Dispatch entry point for runtime lifecycle signals.
+///
+/// The SECOND entry point, distinct from [`HewDispatchFn`]. The scheduler
+/// selects between them by the dequeued node's
+/// [`crate::mailbox_header::Origin`], so a system message is unrepresentable on
+/// the user path and an application message is unrepresentable on the system
+/// path — the two `msg_type` namespaces do not overlap because they are not the
+/// same namespace.
+///
+/// `sys_msg` is always a [`crate::mailbox_header::HewSysMsg`] discriminant
+/// produced by `HewSysMsg::as_i32` and already validated by
+/// `HewSysMsg::from_raw` at the mailbox boundary.
+///
+/// `data` / `data_size` describe the variant's payload. The callee MUST check
+/// `data_size` against the payload type it is about to read: the runtime
+/// guarantees the pair is self-consistent, but a hand-built or embedder-issued
+/// system send can under-size it.
+///
+/// System handlers run to completion — there is no suspend point in a
+/// lifecycle signal — so unlike `HewDispatchFn` there is no continuation
+/// handle to return.
+pub type HewSysDispatchFn = unsafe extern "C-unwind" fn(
+    ctx: *mut HewExecutionContext,
+    state: *mut std::ffi::c_void,
+    sys_msg: i32,
+    data: *mut std::ffi::c_void,
+    data_size: usize,
+);
+
 /// Crash handler function signature for supervised actors.
 ///
 /// Called by the supervisor when a child actor crashes, before the restart

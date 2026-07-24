@@ -80,8 +80,8 @@ pub const CTRL_LINK_REQ: u64 = 6;
 /// Control-frame kind for a cross-node link DOWN notification.
 ///
 /// Sent to a linked node when its remote peer reaches a terminal state. Unlike
-/// a `CTRL_MONITOR_DOWN` (which queues typed `SYS_MSG_DOWN`), a `CrashLinked`
-/// `CTRL_LINK_DOWN` synthesizes a `SYS_MSG_EXIT` into the local linked actor's
+/// a `CTRL_MONITOR_DOWN` (which queues typed `HewSysMsg::Down`), a `CrashLinked`
+/// `CTRL_LINK_DOWN` synthesizes a `HewSysMsg::Exit` into the local linked actor's
 /// mailbox and crashes it (the OTP fail-together semantic).
 /// Carries the linked node's `ref_id` and the terminal reason code.
 pub const CTRL_LINK_DOWN: u64 = 7;

@@ -108,6 +108,13 @@ pub type DispatchFn = unsafe extern "C-unwind" fn(
     i32,
 ) -> *mut c_void;
 
+/// `extern "C-unwind"` SYSTEM dispatch callback signature. Mirrors
+/// `HewSysDispatchFn` — the second, disjoint dispatch channel that carries
+/// runtime lifecycle signals (`HewSysMsg` discriminants), unreachable from the
+/// user queue.
+pub type SysDispatchFn =
+    unsafe extern "C-unwind" fn(*mut HewExecutionContext, *mut c_void, i32, *mut c_void, usize);
+
 /// Initialise the runtime scheduler exactly once across all tests in the
 /// process.
 ///
@@ -173,6 +180,24 @@ impl TestActor {
             unsafe { hew_runtime::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(dispatch)) };
         assert!(!ptr.is_null(), "hew_actor_spawn returned null");
         Self { ptr }
+    }
+
+    /// Spawn a stateless actor with both dispatch entry points registered.
+    ///
+    /// The system entry point receives `#[on(exit)]` / `#[on(down)]`-class
+    /// lifecycle signals; the user entry point receives application messages.
+    /// Nothing sent through `hew_actor_send` can reach the system one.
+    ///
+    /// # Panics
+    /// Panics if the runtime returns a null pointer (allocation failure).
+    pub fn spawn_with_sys(dispatch: DispatchFn, sys_dispatch: SysDispatchFn) -> Self {
+        let actor = Self::spawn(dispatch);
+        // SAFETY: `actor.ptr` is the freshly spawned actor this handle owns; no
+        // other thread can observe it yet.
+        unsafe {
+            hew_runtime::actor::hew_actor_set_sys_dispatch(actor.ptr, Some(sys_dispatch));
+        }
+        actor
     }
 
     /// Spawn an actor whose initial state is the byte representation of

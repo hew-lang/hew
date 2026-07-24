@@ -23,7 +23,9 @@ use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 use std::thread::ThreadId;
 
 use crate::execution_context::HewExecutionContext;
-use crate::internal::types::{AskError, HewActorState, HewDispatchFn, HewError, HewOverflowPolicy};
+use crate::internal::types::{
+    AskError, HewActorState, HewDispatchFn, HewError, HewOverflowPolicy, HewSysDispatchFn,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mailbox::{self, HewMailbox};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1043,7 +1045,9 @@ pub struct HewActor {
     /// Size of the state allocation.
     pub state_size: usize,
 
-    /// Dispatch function (context-leading canonical signature).
+    /// Dispatch function for APPLICATION messages (context-leading canonical
+    /// signature). Reached only by nodes dequeued with
+    /// [`crate::mailbox_header::Origin::User`].
     pub dispatch: Option<HewDispatchFn>,
 
     /// Pointer to the actor's mailbox.
@@ -1354,6 +1358,21 @@ pub struct HewActor {
     /// Runtime-internal; not mirrored by codegen. Appended at the struct tail so
     /// no codegen-mirrored offset (`id` at 8, `state` at 16) moves.
     pub spawn_serial: u64,
+
+    /// Dispatch entry point for runtime lifecycle signals — the second,
+    /// disjoint channel. Reached only by nodes dequeued with
+    /// [`crate::mailbox_header::Origin::Sys`], so no application `msg_type`
+    /// can express a lifecycle signal and no lifecycle signal can be
+    /// mistaken for an application message.
+    ///
+    /// `None` for actors that declare no `#[on(exit)]` / `#[on(down)]` hook
+    /// and are not supervisors: an arriving system signal is then freed with
+    /// a diagnostic instead of being routed anywhere (fail-closed).
+    ///
+    /// **ABI note**: appended at the struct tail, after `spawn_serial`, so no
+    /// previously-mirrored offset moves. Registered post-spawn via
+    /// [`hew_actor_set_sys_dispatch`], never through the spawn arg list.
+    pub sys_dispatch: Option<HewSysDispatchFn>,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -2643,6 +2662,7 @@ struct ActorSpawnConfig {
     state: *mut c_void,
     state_size: usize,
     dispatch: Option<HewDispatchFn>,
+    sys_dispatch: Option<HewSysDispatchFn>,
     mailbox: *mut c_void,
     budget: i32,
     coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
@@ -2814,6 +2834,7 @@ fn build_spawned_actor(
         gen_sink: AtomicPtr::new(ptr::null_mut()),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         spawn_serial: identity.serial,
+        sys_dispatch: config.sys_dispatch,
     })
 }
 
@@ -3099,6 +3120,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
             state: actor_state,
             state_size,
             dispatch,
+            sys_dispatch: None,
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
@@ -3160,6 +3182,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
             state: actor_state,
             state_size: opts.state_size,
             dispatch: opts.dispatch,
+            sys_dispatch: None,
             mailbox: mailbox.cast(),
             budget,
             coalesce_key_fn: opts.coalesce_key_fn,
@@ -3257,6 +3280,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
             state: cloned_state,
             state_size: opts.state_size,
             dispatch: opts.dispatch,
+            sys_dispatch: None,
             mailbox: mailbox.cast(),
             budget,
             coalesce_key_fn: opts.coalesce_key_fn,
@@ -3319,6 +3343,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
             state: cloned_state,
             state_size: opts.state_size,
             dispatch: opts.dispatch,
+            sys_dispatch: None,
             mailbox,
             budget,
             coalesce_key_fn: opts.coalesce_key_fn,
@@ -3361,6 +3386,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
             state: actor_state,
             state_size,
             dispatch,
+            sys_dispatch: None,
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
@@ -4767,6 +4793,38 @@ pub unsafe extern "C" fn hew_actor_get_budget(actor: *const HewActor) -> u32 {
     result
 }
 
+/// Register the actor's SYSTEM dispatch entry point.
+///
+/// The second dispatch channel: nodes dequeued with
+/// [`crate::mailbox_header::Origin::Sys`] are routed here, and nodes dequeued
+/// with `Origin::User` are routed to `dispatch`. Neither can reach the other,
+/// so the application `msg_type` namespace and the lifecycle-signal namespace
+/// are disjoint by construction rather than by a reserved-value convention.
+///
+/// Generated code emits this immediately after `hew_actor_spawn` /
+/// `hew_actor_spawn_opts` for every actor type, alongside the state
+/// clone/drop registration. Passing `None` leaves the actor with no system
+/// entry point, in which case an arriving lifecycle signal is dropped with a
+/// diagnostic (fail-closed) rather than routed to the user trampoline.
+///
+/// # Safety
+///
+/// - `actor` may be null (no-op); if non-null it must be a valid pointer
+///   returned by a spawn function.
+/// - `sys_dispatch` must match [`HewSysDispatchFn`] exactly.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_set_sys_dispatch(
+    actor: *mut HewActor,
+    sys_dispatch: Option<HewSysDispatchFn>,
+) {
+    cabi_guard!(actor.is_null());
+    // SAFETY: caller guarantees `actor` is valid and exclusively owned during
+    // post-spawn registration.
+    unsafe {
+        (*actor).sys_dispatch = sys_dispatch;
+    }
+}
+
 /// Register a terminate callback on an actor.
 ///
 /// The terminate function is called with the actor's state pointer when
@@ -5989,17 +6047,23 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     // Wake any actor group condvars waiting on this actor.
     crate::actor_group::notify_actor_death(actor_id);
 
-    // Notify supervisor if one exists.
+    // Notify supervisor if one exists. An actor whose supervisor index was
+    // never assigned (the `-1` initial value) is not a supervised child, so
+    // there is nothing to notify — the `u32` parameter makes that case a
+    // conversion failure here rather than a negative index the supervisor has
+    // to reinterpret.
     if !supervisor.is_null() {
-        // SAFETY: supervisor back-pointer was set by hew_supervisor_add_child.
-        unsafe {
-            crate::supervisor::hew_supervisor_notify_child_event(
-                supervisor.cast(),
-                supervisor_child_index,
-                actor_id,
-                terminal,
-                error_code,
-            );
+        if let Ok(child_index) = u32::try_from(supervisor_child_index) {
+            // SAFETY: supervisor back-pointer was set by hew_supervisor_add_child.
+            unsafe {
+                crate::supervisor::hew_supervisor_notify_child_actor_event(
+                    supervisor.cast(),
+                    child_index,
+                    actor_id,
+                    terminal,
+                    error_code,
+                );
+            }
         }
     }
 }
@@ -6036,7 +6100,7 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
 ///
 /// A linked actor that does NOT trap exits (`#[on(exit)]`) must CRASH when its
 /// linked peer dies — the OTP fail-together semantic. The dispatch trampoline
-/// routes a `SYS_MSG_EXIT` (103) with no `#[on(exit)]` hook here instead of the
+/// routes a `HewSysMsg::Exit` with no `#[on(exit)]` hook here instead of the
 /// exhaustiveness `llvm.trap` default (which is UB — it SIGILLs on Linux and
 /// only accidentally produced a terminal state on macOS). This drives the SAME
 /// controlled crash path a handler panic uses, with the carried reason stamped
@@ -6061,7 +6125,7 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
 /// crashes the non-trapping linked actor (a cleanly-exited linked peer still
 /// takes it down, OTP-style). `hew_trap_with_code` does not return when called
 /// inside dispatch; outside an actor context there is no recovery seam, where
-/// the trampoline's `llvm.trap` is unreachable because a `SYS_MSG_EXIT` only
+/// the trampoline's `llvm.trap` is unreachable because a `HewSysMsg::Exit` only
 /// arrives at a scheduler-driven dispatch.
 #[no_mangle]
 pub extern "C" fn hew_actor_exit_unhandled(reason: i32) {
@@ -6312,6 +6376,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
             state: actor_state,
             state_size,
             dispatch,
+            sys_dispatch: None,
             mailbox,
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
@@ -6349,6 +6414,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
             state: actor_state,
             state_size,
             dispatch,
+            sys_dispatch: None,
             mailbox,
             budget: HEW_MSG_BUDGET,
             coalesce_key_fn: None,
@@ -6414,6 +6480,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
             state: actor_state,
             state_size: opts.state_size,
             dispatch: opts.dispatch,
+            sys_dispatch: None,
             mailbox,
             budget,
             coalesce_key_fn: opts.coalesce_key_fn,
@@ -7107,6 +7174,176 @@ mod tests {
 
     // Probe for `user_msg_type_minus_one_reaches_handler_and_does_not_terminate`.
     static USER_MINUS_ONE_HANDLED: AtomicBool = AtomicBool::new(false);
+
+    // Probes for `user_queue_system_values_never_reach_the_system_dispatch`.
+    // Every former reserved value is sent on the USER queue; the user probe
+    // must see them all as ordinary application messages and the system probe
+    // must never fire.
+    static USER_PROBE_SEEN: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+    static SYS_PROBE_SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static SYS_PROBE_LAST_KIND: AtomicI32 = AtomicI32::new(-1);
+
+    unsafe extern "C-unwind" fn channel_split_user_probe(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        USER_PROBE_SEEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(msg_type);
+        std::ptr::null_mut()
+    }
+
+    unsafe extern "C-unwind" fn channel_split_sys_probe(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        sys_msg: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        SYS_PROBE_LAST_KIND.store(sys_msg, Ordering::Release);
+        SYS_PROBE_SEEN.fetch_add(1, Ordering::Release);
+    }
+
+    /// No value sent on the USER queue can reach the SYSTEM dispatch entry
+    /// point, and every such value is delivered to the user handler as an
+    /// ordinary application message.
+    ///
+    /// This is the structural closure of the forged-EXIT defect. Before the
+    /// split there was ONE dispatch function and the scheduler handed it the
+    /// raw `msg_type` regardless of provenance, so `hew_actor_send(actor, 103,
+    /// null, 0)` — a legal public C-ABI call — arrived byte-for-byte as a
+    /// runtime-originated EXIT signal: the generated trampoline's EXIT arm
+    /// read a 16-byte `ExitMessage` out of the null payload (no `data_size`
+    /// guard existed) and called `hew_actor_exit_unhandled` with the loaded
+    /// reason. There is now no shared namespace to collide in: the system
+    /// entry point takes `HewSysMsg` discriminants and is reachable only from
+    /// the system queue.
+    #[test]
+    fn user_queue_system_values_never_reach_the_system_dispatch() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        USER_PROBE_SEEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        SYS_PROBE_SEEN.store(0, Ordering::Release);
+        SYS_PROBE_LAST_KIND.store(-1, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(channel_split_user_probe)) };
+        assert!(!actor.is_null());
+        // SAFETY: `actor` is the freshly spawned actor this test owns.
+        unsafe { hew_actor_set_sys_dispatch(actor, Some(channel_split_sys_probe)) };
+
+        // Every `HewSysMsg` discriminant plus the whole former reserved block
+        // (100..=105) and the former shutdown sentinel (-1), forged on the
+        // public C ABI with a NULL payload and a zero size — the exact call
+        // that produced the out-of-bounds read and the forged terminal Crashed.
+        let forged: Vec<i32> = (0..=7)
+            .chain(100..=105)
+            .chain(std::iter::once(-1))
+            .collect();
+        for &msg_type in &forged {
+            // SAFETY: actor is a valid live actor pointer returned by spawn.
+            unsafe { hew_actor_send(actor, msg_type, ptr::null_mut(), 0) };
+        }
+
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(5), || {
+                USER_PROBE_SEEN
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+                    == forged.len()
+            }),
+            "every user-queue send must reach the application handler, whatever \
+             its value (saw {:?})",
+            USER_PROBE_SEEN
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        );
+
+        let mut seen = USER_PROBE_SEEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        seen.sort_unstable();
+        let mut expected = forged.clone();
+        expected.sort_unstable();
+        assert_eq!(
+            seen, expected,
+            "the user handler must receive exactly the values sent, unfiltered"
+        );
+
+        assert_eq!(
+            SYS_PROBE_SEEN.load(Ordering::Acquire),
+            0,
+            "a user-queue send reached the SYSTEM dispatch entry point (kind {})",
+            SYS_PROBE_LAST_KIND.load(Ordering::Acquire)
+        );
+
+        // No forged send may terminate the actor.
+        // SAFETY: actor remains tracked until the explicit free below.
+        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert!(
+            state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32,
+            "a forged user-queue lifecycle value terminated the actor (state={state})"
+        );
+
+        // SAFETY: actor is live and tracked; stop then free it exactly once.
+        unsafe {
+            hew_actor_stop(actor);
+            let _ = hew_actor_free(actor);
+        }
+    }
+
+    /// The shutdown path still self-stops through the SYSTEM channel, and the
+    /// stop is observed structurally (`Origin::Sys(Shutdown)`) rather than by
+    /// comparing a value, so an actor that registers a system dispatch does not
+    /// see it either.
+    #[test]
+    fn shutdown_signal_stops_the_actor_and_bypasses_the_system_dispatch() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        SYS_PROBE_SEEN.store(0, Ordering::Release);
+        SYS_PROBE_LAST_KIND.store(-1, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(channel_split_user_probe)) };
+        assert!(!actor.is_null());
+        // SAFETY: `actor` is the freshly spawned actor this test owns.
+        unsafe { hew_actor_set_sys_dispatch(actor, Some(channel_split_sys_probe)) };
+
+        // SAFETY: actor is live; stop enqueues the Shutdown signal.
+        unsafe { hew_actor_stop(actor) };
+
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(5), || {
+                // SAFETY: actor remains tracked until the free below.
+                let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+                state == HewActorState::Stopped as i32
+            }),
+            "the shutdown signal must drive the actor to a clean terminal Stopped"
+        );
+        assert_eq!(
+            SYS_PROBE_SEEN.load(Ordering::Acquire),
+            0,
+            "the shutdown signal must be consumed by the scheduler, never handed \
+             to a registered system dispatch"
+        );
+
+        // SAFETY: actor is tracked; free it exactly once.
+        unsafe {
+            let _ = hew_actor_free(actor);
+        }
+    }
 
     /// Handler that records receiving `msg_type == -1`. Used to prove that a
     /// USER-queue message carrying the shutdown-sentinel VALUE is delivered
@@ -7968,6 +8205,7 @@ mod tests {
                 gen_sink: AtomicPtr::new(ptr::null_mut()),
                 local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
                 spawn_serial: id,
+                sys_dispatch: None,
             }));
             (actor, mailbox)
         }
@@ -8073,6 +8311,7 @@ mod tests {
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial,
+            sys_dispatch: None,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
@@ -12109,6 +12348,7 @@ mod tests {
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial,
+            sys_dispatch: None,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });

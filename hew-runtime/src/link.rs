@@ -20,7 +20,7 @@ use crate::lifetime::live_actors::pin_actor_by_id;
 use crate::lifetime::local_handles::{resolve_current_actor, HewLocalPidId};
 use crate::lifetime::PoisonSafeRw;
 use crate::mailbox;
-use crate::supervisor::SYS_MSG_EXIT;
+use crate::mailbox_header::HewSysMsg;
 
 /// Number of shards for link table to reduce contention.
 const LINK_SHARDS: usize = 16;
@@ -289,12 +289,7 @@ fn send_exit_signal(linked_actor_id: u64, crashed_actor_id: u64, reason: i32) {
 
             // SAFETY: the ActorId pin keeps the linked actor and mailbox live.
             unsafe {
-                mailbox::hew_mailbox_send_sys(
-                    mailbox,
-                    SYS_MSG_EXIT,
-                    data_ptr.cast_mut(),
-                    data_size,
-                );
+                mailbox::mailbox_send_sys(mailbox, HewSysMsg::Exit, data_ptr.cast_mut(), data_size);
             }
 
             if linked_actor_ref
@@ -371,7 +366,7 @@ pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
 ///
 /// This is the cross-node mirror of [`send_exit_signal`]: when a remote linked
 /// peer reaches a terminal state, a `CrashLinked` link must synthesize a
-/// `SYS_MSG_EXIT` into the LOCAL linked actor's MAILBOX and crash it — the OTP
+/// `HewSysMsg::Exit` into the LOCAL linked actor's MAILBOX and crash it — the OTP
 /// fail-together semantic. Local and cross-node link state stores actor
 /// identities only, so delivery resolves and pins the live allocation by id.
 ///
@@ -401,7 +396,7 @@ pub(crate) fn deliver_cross_node_link_exit(
     if crate::lifetime::live_actors::get_actor_ptr_by_id(local_actor_id).is_none() {
         return false;
     }
-    // Reuse the proven local EXIT-synthesis path (same SYS_MSG_EXIT + CrashKind
+    // Reuse the proven local EXIT-synthesis path (same HewSysMsg::Exit + CrashKind
     // projection + Idle→Runnable wake), so supervision / exit-trapping behaves
     // identically to a local link EXIT. `send_exit_signal` re-validates and pins
     // liveness before dereferencing the allocation.
@@ -521,7 +516,7 @@ struct ExitMessage {
 //
 // The cross-node link fixtures need to confirm a LOCAL linked actor actually
 // CRASHED (terminal Crashed) after a cross-node link-down — proving the link-down
-// landed in the mailbox as a SYS_MSG_EXIT and applied link policy, rather than
+// landed in the mailbox as a HewSysMsg::Exit and applied link policy, rather than
 // being mistaken for a typed monitor DOWN. A crashed actor is freed, so the death
 // must be recorded somewhere it survives the free. This ledger does that, gated
 // by HEW_LINK_PROBE so production pays nothing (the env is read once into a
@@ -656,6 +651,7 @@ mod tests {
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,
+            sys_dispatch: None,
         }
     }
 
@@ -1015,7 +1011,7 @@ mod tests {
             let mailbox = (*linked_actor).mailbox.cast::<mailbox::HewMailbox>();
             let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
             assert!(!node.is_null());
-            assert_eq!((*node).msg_type, SYS_MSG_EXIT);
+            assert_eq!((*node).msg_type, HewSysMsg::Exit.as_i32());
             let payload = &*((*node).data.cast::<ExitMessage>());
             assert_eq!(payload.crashed_actor_id, target_id);
             assert_eq!(payload.reason, 91);

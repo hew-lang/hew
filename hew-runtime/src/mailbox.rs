@@ -30,11 +30,12 @@ use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
-use crate::mailbox_header::{header_validate, normalize_coalesce_fallback};
+use crate::mailbox_header::{header_validate, normalize_coalesce_fallback, Origin};
 use crate::scheduler::{MESSAGES_RECEIVED, MESSAGES_SENT};
 use crate::set_last_error;
 use crate::tracing::HewTraceContext;
 
+pub use crate::mailbox_header::HewSysMsg;
 pub use crate::mailbox_header::{
     HEW_MSG_ENVELOPE_ALIAS_ACTIVE, HEW_MSG_ENVELOPE_ARENA_BACKED,
     HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER, HEW_MSG_ENVELOPE_FORKED,
@@ -2287,7 +2288,12 @@ pub(crate) unsafe fn hew_mailbox_send_guaranteed(
     HewError::Ok as i32
 }
 
-/// Send a system message, bypassing capacity limits.
+/// Send a runtime lifecycle signal, bypassing capacity limits.
+///
+/// `sys_msg` must be a [`HewSysMsg`] discriminant; any other value is refused
+/// (fail-closed) rather than enqueued, so the system queue can only ever carry
+/// members of the closed set. This is the privileged entry point — it is not
+/// reachable from `hew_actor_send`, which routes to the USER queue.
 ///
 /// # Safety
 ///
@@ -2295,24 +2301,37 @@ pub(crate) unsafe fn hew_mailbox_send_guaranteed(
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_send_sys(
     mb: *mut HewMailbox,
-    msg_type: i32,
+    sys_msg: i32,
     data: *mut c_void,
     size: usize,
 ) {
+    let Some(kind) = HewSysMsg::from_raw(sys_msg) else {
+        set_last_error(format!(
+            "hew_mailbox_send_sys: refusing system message with unknown kind {sys_msg}"
+        ));
+        eprintln!(
+            "hew_mailbox_send_sys: refusing system message with unknown kind {sys_msg} \
+             (the system queue carries only the closed HewSysMsg set)"
+        );
+        return;
+    };
     // SAFETY: forwarded caller contract.
-    let _ = unsafe { hew_mailbox_send_sys_checked(mb, msg_type, data, size) };
+    let _ = unsafe { mailbox_send_sys_checked(mb, kind, data, size) };
 }
 
 /// Internal checked system send. Returns false when the message node cannot be
 /// allocated; callers that claim one-shot delivery can then take an explicit
 /// controlled-failure path instead of silently losing the message.
 ///
+/// Takes the typed kind: no caller inside the runtime can put a value on the
+/// system queue that is not a lifecycle signal.
+///
 /// # Safety
 ///
 /// Same requirements as [`hew_mailbox_send`].
-pub(crate) unsafe fn hew_mailbox_send_sys_checked(
+pub(crate) unsafe fn mailbox_send_sys_checked(
     mb: *mut HewMailbox,
-    msg_type: i32,
+    sys_msg: HewSysMsg,
     data: *mut c_void,
     size: usize,
 ) -> bool {
@@ -2324,13 +2343,13 @@ pub(crate) unsafe fn hew_mailbox_send_sys_checked(
     // root must be minted only on the supervisor-dispatch side (via
     // `ensure_supervisor_trace_root`), never in or under the `hew_actor_trap`
     // signal-handler context that originates child-crash notifications.
-    let node = unsafe { msg_node_alloc_sys(msg_type, data, size, ptr::null_mut()) };
+    let node = unsafe { msg_node_alloc_sys(sys_msg.as_i32(), data, size, ptr::null_mut()) };
     if node.is_null() {
         set_last_error(format!(
-            "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"
+            "hew_mailbox_send_sys: failed to deliver system message ({sys_msg:?}, size={size})"
         ));
         eprintln!(
-            "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"
+            "hew_mailbox_send_sys: failed to deliver system message ({sys_msg:?}, size={size})"
         );
         return false;
     }
@@ -2338,6 +2357,21 @@ pub(crate) unsafe fn hew_mailbox_send_sys_checked(
     // SAFETY: `node` is freshly allocated and owned by this mailbox send.
     unsafe { enqueue_sys_node(mb, node) };
     true
+}
+
+/// Typed system send that ignores allocation failure.
+///
+/// # Safety
+///
+/// Same requirements as [`hew_mailbox_send`].
+pub(crate) unsafe fn mailbox_send_sys(
+    mb: *mut HewMailbox,
+    sys_msg: HewSysMsg,
+    data: *mut c_void,
+    size: usize,
+) {
+    // SAFETY: forwarded caller contract.
+    let _ = unsafe { mailbox_send_sys_checked(mb, sys_msg, data, size) };
 }
 
 unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {
@@ -2350,14 +2384,6 @@ unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Shutdown sentinel `msg_type` — re-exported from the target-independent
-/// [`crate::mailbox_header`] module (the single authority, shared with the WASM
-/// mailbox so the two cannot drift; the native `mailbox` module is
-/// `#[cfg(not(wasm32))]` and unavailable on wasm32). See
-/// [`mailbox_send_stop_sys_once`] and the interception in
-/// `scheduler::activate_actor`.
-pub(crate) use crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL;
-
 pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailbox) -> bool {
     if mb.is_null() {
         return false;
@@ -2368,7 +2394,7 @@ pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailbox) -> bool {
     // SAFETY: stop signals carry no payload.
     let node = unsafe {
         msg_node_alloc(
-            HEW_MAILBOX_SHUTDOWN_SENTINEL,
+            HewSysMsg::Shutdown.as_i32(),
             ptr::null(),
             0,
             ptr::null_mut(),
@@ -2480,18 +2506,21 @@ pub unsafe extern "C" fn hew_mailbox_try_recv(mb: *mut HewMailbox) -> *mut HewMs
     unsafe { mailbox_try_recv_with_origin(mb) }.node
 }
 
-/// A received node plus the queue it came from.
+/// A received node plus the typed provenance of the queue it came from.
 ///
-/// The origin bit is load-bearing: the shutdown sentinel
-/// ([`HEW_MAILBOX_SHUTDOWN_SENTINEL`]) is disambiguated from an application
-/// message that merely shares its numeric value by which queue it arrived on,
-/// NOT by the value. `msg_type` is unrestricted `i32` in the public C ABI
-/// ([`hew_actor_send`] / `HewDispatchFn`) and codegen message tags are hashes,
-/// so a user message may legitimately carry `-1`; only a node dequeued from the
-/// **system** queue is the internal shutdown signal.
+/// The origin is the discriminator, and it is a TYPE: a lifecycle signal is
+/// `Origin::Sys(kind)` because of the queue it arrived on, never because its
+/// `msg_type` equals some reserved integer. `msg_type` is unrestricted `i32` in
+/// the public C ABI ([`hew_actor_send`] / `HewDispatchFn`) and codegen message
+/// tags are `SipHash` values, so a user message may legitimately carry any value
+/// including a `HewSysMsg` discriminant — it is still `Origin::User` and still
+/// goes to the user trampoline.
+///
+/// A system-queue node whose stored kind does not decode is refused
+/// (`Origin::User` is NOT the fallback; see `mailbox_try_recv_with_origin`).
 pub(crate) struct RecvNode {
     pub node: *mut HewMsgNode,
-    pub from_sys: bool,
+    pub origin: Origin,
 }
 
 /// Single-consumer receive that preserves system-vs-user provenance.
@@ -2513,9 +2542,28 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
     if !sys_node.is_null() {
         mb.sys_count.fetch_sub(1, Ordering::AcqRel);
         MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: `sys_node` is the non-null node just dequeued and is owned here.
+        let raw = unsafe { (*sys_node).msg_type };
+        let Some(kind) = HewSysMsg::from_raw(raw) else {
+            // Fail-closed: a system-queue node whose kind does not decode is
+            // NOT downgraded to a user message (that would hand it to the
+            // application trampoline). Every runtime producer goes through the
+            // typed `mailbox_send_sys*`, and the C entry point validates, so
+            // reaching here means memory corruption. Drop it and report.
+            eprintln!(
+                "[mailbox] refusing system-queue node with undecodable kind {raw} \
+                 (mailbox {mb:p}); dropping"
+            );
+            // SAFETY: `sys_node` is exclusively owned here and not published.
+            unsafe { hew_msg_node_free(sys_node) };
+            return RecvNode {
+                node: ptr::null_mut(),
+                origin: Origin::User,
+            };
+        };
         return RecvNode {
             node: sys_node,
-            from_sys: true,
+            origin: Origin::Sys(kind),
         };
     }
 
@@ -2529,7 +2577,7 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
             mb.not_full.notify_one();
             return RecvNode {
                 node,
-                from_sys: false,
+                origin: Origin::User,
             };
         }
     } else {
@@ -2540,14 +2588,14 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             return RecvNode {
                 node,
-                from_sys: false,
+                origin: Origin::User,
             };
         }
     }
 
     RecvNode {
         node: ptr::null_mut(),
-        from_sys: false,
+        origin: Origin::User,
     }
 }
 

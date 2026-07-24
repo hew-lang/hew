@@ -2227,7 +2227,7 @@ fn handle_unlink_frame(
 
 /// Handle an inbound `CTRL_LINK_DOWN`: the node owning an actor we LINK
 /// reports it reached a terminal state. Fire the cross-node link cascade —
-/// synthesize a `SYS_MSG_EXIT` into the LOCAL linked actor's mailbox and crash it
+/// synthesize a `HewSysMsg::Exit` into the LOCAL linked actor's mailbox and crash it
 /// (for `CrashLinked`). A monitor DOWN queues a typed mailbox notification,
 /// while a link DOWN queues EXIT and applies the link policy. Fail-closed on
 /// malformed input; the EXIT fires exactly once and ONLY for a link entry

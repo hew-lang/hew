@@ -23,8 +23,8 @@ use crate::lifetime::live_actors::pin_actor_by_id;
 use crate::lifetime::local_handles::{resolve_current_actor, HewLocalPidId};
 use crate::lifetime::poison_safe::PoisonSafeRw;
 use crate::mailbox;
+use crate::mailbox_header::HewSysMsg;
 use crate::node_identity::{Location, NodeId};
-use crate::supervisor::SYS_MSG_DOWN;
 
 /// Number of shards for monitor table to reduce contention.
 const MONITOR_SHARDS: usize = 16;
@@ -834,9 +834,9 @@ pub(crate) fn deliver_down_message(watcher_actor_id: u64, down_data: HewDownMess
 
                 // SAFETY: LIVE_ACTORS keeps the monitoring actor and mailbox live.
                 let sent = unsafe {
-                    mailbox::hew_mailbox_send_sys_checked(
+                    mailbox::mailbox_send_sys_checked(
                         mailbox,
-                        SYS_MSG_DOWN,
+                        HewSysMsg::Down,
                         data_ptr.cast_mut(),
                         data_size,
                     )
@@ -1624,6 +1624,7 @@ mod tests {
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,
+            sys_dispatch: None,
         }
     }
 
@@ -1921,7 +1922,7 @@ mod tests {
             let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
             let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
             assert!(!node.is_null());
-            assert_eq!((*node).msg_type, SYS_MSG_DOWN);
+            assert_eq!((*node).msg_type, HewSysMsg::Down.as_i32());
             let payload = &*((*node).data.cast::<HewDownMessage>());
             assert_eq!(payload.monitor_id, ref_id);
             assert_eq!(payload.target_kind, DOWN_TARGET_LOCAL);

@@ -28,7 +28,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, 
 #[cfg(test)]
 use crate::actor::HEW_PRIORITY_NORMAL;
 use crate::actor::{HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET, HEW_PRIORITY_HIGH, HEW_PRIORITY_LOW};
-use crate::internal::types::{HewActorState, HewDispatchFn};
+use crate::internal::types::{HewActorState, HewDispatchFn, HewSysDispatchFn};
+use crate::mailbox_header::{HewSysMsg, Origin};
 use crate::timer_wheel::{
     hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_remove,
     hew_timer_wheel_schedule_handle, timer_wheel_tick_to, HewTimerHandle, HewTimerWheel,
@@ -148,6 +149,20 @@ pub struct HewActor {
     // role ask that consumes it is native-only), but present for size/offset
     // parity with the native `HewActor`.
     pub spawn_serial: u64,
+    // The SYSTEM dispatch entry point; mirrors the canonical tail so the
+    // layout parity this module asserts holds.
+    pub sys_dispatch: Option<crate::internal::types::HewSysDispatchFn>,
+}
+
+/// The dispatch entry point selected for one dequeued message — the WASM twin
+/// of `crate::scheduler::DispatchTarget`. Built from the node's [`Origin`]
+/// before any handler runs.
+#[derive(Clone, Copy)]
+enum DispatchTarget {
+    /// An application message for the actor's user trampoline.
+    User(HewDispatchFn),
+    /// A runtime lifecycle signal for the actor's system entry point.
+    Sys(HewSysDispatchFn, HewSysMsg),
 }
 
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
@@ -214,6 +229,7 @@ const _: () = {
     assert!(offset_of!(W, gen_sink) == offset_of!(N, gen_sink));
     assert!(offset_of!(W, local_pid_id) == offset_of!(N, local_pid_id));
     assert!(offset_of!(W, spawn_serial) == offset_of!(N, spawn_serial));
+    assert!(offset_of!(W, sys_dispatch) == offset_of!(N, sys_dispatch));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -1576,44 +1592,55 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
             // confused with an application message sharing its value. Mirrors the
             // native `mailbox::mailbox_try_recv_with_origin` path (sync parity).
             let recv = unsafe { crate::mailbox_wasm::mailbox_try_recv_with_origin(mailbox.cast()) };
-            let from_sys = recv.from_sys;
+            let origin = recv.origin;
             let msg = recv.node.cast::<HewMsgNode>();
             if msg.is_null() {
                 break;
             }
 
-            // Shutdown sentinel: `hew_actor_stop` enqueues a
-            // `HEW_MAILBOX_SHUTDOWN_SENTINEL` (msg_type == -1) *system* message so
-            // a Running actor's next mailbox poll OBSERVES the close request. It
-            // is a lifecycle signal, not an application message — the generated
-            // dispatch `match` has no arm for it, so handing it to the user
-            // trampoline lands on the trapping default arm (`ud2`). On WASM this
-            // fires DETERMINISTICALLY (no concurrency): a handler that calls
-            // `hew_actor_stop(self)` leaves the actor Running, queues the
-            // sentinel, and the next loop iteration would dispatch it.
+            // Route by the node's TYPED provenance — the exact native shape
+            // (sync parity). The shutdown case is a pattern with no value to
+            // compare, so it cannot be weakened into a value test.
             //
-            // Gate on `from_sys`: the sentinel value is reserved only on the
-            // SYSTEM queue; a USER-queue node carrying `-1` is a real message that
-            // MUST reach the handler.
+            // `hew_actor_stop` enqueues the Shutdown signal onto a Running
+            // actor's SYSTEM queue so its next mailbox poll OBSERVES the close
+            // request. On WASM this fires DETERMINISTICALLY (no concurrency): a
+            // handler that calls `hew_actor_stop(self)` leaves the actor
+            // Running, queues the signal, and the next loop iteration would
+            // otherwise dispatch it.
             //
-            // SAFETY: `msg` is the non-null node just returned, exclusively owned
-            // by this scheduler tick.
-            let msg_type = unsafe { (*msg).msg_type };
-            if from_sys && msg_type == crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL {
-                // SAFETY: `msg` is exclusively owned by this scheduler tick.
-                unsafe { hew_msg_node_free(msg) };
-                // Drive Running -> Stopping so the post-loop settle finalizes the
-                // Stopping -> Stopped terminal transition (terminate callback).
-                let _ = a.actor_state.compare_exchange(
-                    HewActorState::Running as i32,
-                    HewActorState::Stopping as i32,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
-                break;
-            }
+            // A USER-queue node is never intercepted here whatever its
+            // `msg_type`.
+            let dispatch_target = match origin {
+                Origin::Sys(HewSysMsg::Shutdown) => {
+                    // SAFETY: `msg` is exclusively owned by this scheduler tick.
+                    unsafe { hew_msg_node_free(msg) };
+                    // Drive Running -> Stopping so the post-loop settle finalizes
+                    // the Stopping -> Stopped terminal transition (terminate
+                    // callback).
+                    let _ = a.actor_state.compare_exchange(
+                        HewActorState::Running as i32,
+                        HewActorState::Stopping as i32,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    break;
+                }
+                Origin::Sys(kind) => {
+                    let Some(sys_dispatch) = a.sys_dispatch else {
+                        // Fail-closed: no system entry point registered, so the
+                        // signal is dropped rather than downgraded onto the user
+                        // trampoline.
+                        // SAFETY: `msg` is exclusively owned by this scheduler tick.
+                        unsafe { hew_msg_node_free(msg) };
+                        continue;
+                    };
+                    Some(DispatchTarget::Sys(sys_dispatch, kind))
+                }
+                Origin::User => a.dispatch.map(DispatchTarget::User),
+            };
 
-            if let Some(dispatch) = a.dispatch {
+            if let Some(dispatch) = dispatch_target {
                 // Reset reduction counter for this dispatch.
                 a.reductions
                     .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
@@ -1661,19 +1688,39 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 // substrate is dormant), or the `coro.begin` handle when a
                 // handler suspended. The handle is captured here; the production
                 // wasm park edge (commit 4) consumes a non-null handle.
-                let dispatch_result = catch_unwind(AssertUnwindSafe(|| unsafe {
-                    dispatch(
-                        &raw mut execution_context,
-                        a.state,
-                        msg_ref.msg_type,
-                        msg_ref.data,
-                        msg_ref.data_size,
-                        // P5-RX sub-stage 1: copy-mode receipt only.
-                        // WASM-TODO(#1451): envelope-mode (aliased) receive
-                        // routing on the WASM scheduler is deferred to the
-                        // WASM send gate; this path stays copy-mode (0).
-                        0,
-                    )
+                let dispatch_result = catch_unwind(AssertUnwindSafe(|| match dispatch {
+                    DispatchTarget::User(user_dispatch) =>
+                    // SAFETY: `user_dispatch` is the actor's registered
+                    // application trampoline; message fields come from a
+                    // well-formed `HewMsgNode`.
+                    unsafe {
+                        user_dispatch(
+                            &raw mut execution_context,
+                            a.state,
+                            msg_ref.msg_type,
+                            msg_ref.data,
+                            msg_ref.data_size,
+                            // P5-RX sub-stage 1: copy-mode receipt only.
+                            // WASM-TODO(#1451): envelope-mode (aliased) receive
+                            // routing on the WASM scheduler is deferred to the
+                            // WASM send gate; this path stays copy-mode (0).
+                            0,
+                        )
+                    },
+                    DispatchTarget::Sys(sys_dispatch, kind) => {
+                        // SAFETY: `sys_dispatch` is the actor's registered system
+                        // entry point and `kind` decoded from the system queue.
+                        unsafe {
+                            sys_dispatch(
+                                &raw mut execution_context,
+                                a.state,
+                                kind.as_i32(),
+                                msg_ref.data,
+                                msg_ref.data_size,
+                            );
+                        }
+                        std::ptr::null_mut()
+                    }
                 }));
                 // D-A.2: the suspend handle the trampoline returned (null on the
                 // run-to-completion path — every handler today). A non-null
@@ -2271,6 +2318,7 @@ mod tests {
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
+            sys_dispatch: None,
         }
     }
 
@@ -2938,7 +2986,7 @@ mod tests {
             _data_size: usize,
             _borrow_mode: i32,
         ) -> *mut c_void {
-            if msg_type == crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL {
+            if msg_type == HewSysMsg::Shutdown.as_i32() {
                 SAW_SENTINEL.fetch_add(1, Ordering::Relaxed);
             }
             std::ptr::null_mut()
@@ -5421,6 +5469,7 @@ mod tests {
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 99,
+            sys_dispatch: None,
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

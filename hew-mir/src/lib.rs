@@ -18,11 +18,13 @@ pub mod return_provenance;
 pub mod runtime_call;
 pub mod runtime_symbols;
 pub mod state_clone;
+pub mod thunk_requirements;
 
 pub use dataflow::local_is_written_in_body;
 pub use lower::{
-    bracket_actor_handler_blocks, build_const_descriptors, instr_source_places, lower_hir_module,
-    lower_hir_module_with_facts, terminator_source_places, validate_outbound_actor_modes,
+    bracket_actor_handler_blocks, build_const_descriptors, instr_source_places, is_string_const_ty,
+    lower_hir_module, lower_hir_module_with_facts, terminator_source_places,
+    validate_outbound_actor_modes,
 };
 
 /// Test-only access to the per-Place + per-`ResolvedTy` drop-kind
@@ -50,17 +52,18 @@ pub use dump::{dump_mir, DumpStage};
 pub use hew_hir::sanitize_for_symbol;
 pub use hew_types::short_name;
 pub use model::{
-    classify_extern_string_ownership, container_ingress_is_copy_in, machine_enum_view,
-    machine_enum_views, mangle_dyn_drop_in_place_symbol, mangle_dyn_thunk_symbol,
-    mangle_dyn_vtable_symbol, ty_contains_closure_value, ty_contains_heap_owning,
-    ty_contains_unclonable_opaque, ty_contains_unclonable_opaque_with_names, ty_heap_ownership,
-    ty_owns_heap, ty_owns_heap_mir, validate_context_markers, ActorHandlerKind, ActorHandlerLayout,
-    ActorLayout, ActorStateLoadMode, AggregateOwner, BasicBlock, BlockKind, BorrowKind,
-    CaptureKind, CheckedMirFunction, ChildInitArg, ClosureEnvAllocation, ClosureEnvFieldInit,
+    classify_extern_string_ownership, container_ingress_is_copy_in, is_indirect_enum,
+    machine_enum_view, machine_enum_views, mangle_dyn_drop_in_place_symbol,
+    mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol, ty_contains_closure_value,
+    ty_contains_heap_owning, ty_contains_unclonable_opaque,
+    ty_contains_unclonable_opaque_with_names, ty_heap_ownership, ty_owns_heap, ty_owns_heap_mir,
+    validate_context_markers, ActorHandlerKind, ActorHandlerLayout, ActorLayout,
+    ActorStateLoadMode, AggregateOwner, BasicBlock, BlockKind, BorrowKind, CaptureKind,
+    CheckedMirFunction, ChildInitArg, ClosureEnvAllocation, ClosureEnvFieldInit,
     ClosureEnvFieldOwnership, ClosureEnvMode, CmpPred, CooperateKind, CooperateSite,
-    CoroutineSchema, DecisionFact, Direction, DropFnSpec, DropKind, DropPlan, DynVtableInstance,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, ExternDecl,
-    ExternStringOwnership, FieldAddr, FieldOffset, FloatWidth, FunctionCallConv,
+    CoroutineFacts, CoroutineSchema, DecisionFact, Direction, DropFnSpec, DropKind, DropPlan,
+    DynVtableInstance, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
+    ExternDecl, ExternStringOwnership, FieldAddr, FieldOffset, FloatWidth, FunctionCallConv,
     GeneratorEnvFieldPlan, GeneratorEnvPlan, HeapOwnership, HeapOwnershipLayouts, Instr,
     IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaActorShape, LambdaCapture,
     LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirCheck, MirConst, MirConstValue,
@@ -70,7 +73,7 @@ pub use model::{
     RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, SourceOrigin,
     SpawnEnvFieldOwnership, StableActorRole, Strategy, SupervisorChildLayout,
     SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator, ThirFunction,
-    TraitObjectStorage, TrapKind, WitnessOperand,
+    TraitObjectStorage, TrapKind, WitnessOperand, GEN_BODY_PREFIX,
 };
 pub use ownership::{
     AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf,
@@ -86,3 +89,4 @@ pub use state_clone::{
     classify_state_field_with_resource_handles, mangle_actor_state_clone_fn,
     mangle_actor_state_drop_fn, ClassificationError, IoHandleKind, StateFieldCloneKind,
 };
+pub use thunk_requirements::ThunkSynthesisRequirements;

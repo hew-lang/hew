@@ -138,7 +138,7 @@ fn main() -> () [conv=default]
   bb9:
     _18 = call_rt hew_vec_get_layout(_14, _15)
     _40 = move _18
-    neutralize_payload _18
+    neutralize_payload _18 -> _40 [SendTransferLastUse]
     _19 = call checked_mir_colour_tag(_40) -> bb10
   bb10:
     call println_i64(_19) -> bb11

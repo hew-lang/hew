@@ -9,13 +9,14 @@ use super::{
     derive_owned_record_drop_allowed, derive_returned_aggregate_member_bindings,
     derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
     instr_source_places, mangle_layout_key, place_is_interior_projection, place_refs_local,
-    retained_string_terminator_drop_safe, short_name, terminator_source_places,
-    user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId,
-    BlockKind, Builder, BuiltinType, CheckedMirFunction, ClosurePairRhs, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind,
-    Instr, IntentKind, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    Place, ResolvedRef, ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator,
-    TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
+    retained_string_terminator_drop_safe, short_name, terminator_is_suspend_carrier,
+    terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
+    BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction, ClosurePairRhs,
+    Disposition, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap,
+    HashSet, HirExpr, HirExprKind, Instr, IntentKind, LambdaCapture, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, ResolvedRef, ResolvedTy,
+    ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage, ValueClass,
+    ENTRY_BLOCK_ID,
 };
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
@@ -101,6 +102,55 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                    partial drop plan (LESSONS cleanup-all-exits)"
                 .to_string(),
         }),
+        MirCheck::ObligationUnderReleased {
+            function,
+            block,
+            name,
+            reason,
+            ..
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::ObligationUnderReleased {
+                function: function.clone(),
+                block: *block,
+                name: name.clone(),
+                reason: reason.clone(),
+            },
+            note: "every heap-owning owned value must be released exactly once \
+                   on every reachable exit path; this exit path never \
+                   discharges the mint (leak). This is an advisory warning, not \
+                   a build error — fix the drop plan (release on every exit) to \
+                   silence it"
+                .to_string(),
+        }),
+        MirCheck::ObligationOverReleased {
+            function,
+            block,
+            name,
+            reason,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::ObligationOverReleased {
+                function: function.clone(),
+                block: *block,
+                name: name.clone(),
+                reason: reason.clone(),
+            },
+            note: "every heap-owning owned value must be released exactly once \
+                   on every reachable exit path; this path releases it two or \
+                   more times (double-free). Over-release is memory-unsafe and \
+                   carries no allowlist escape"
+                .to_string(),
+        }),
+        MirCheck::ObligationBalanceUnverified { function, reason } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::ObligationBalanceUnverified {
+                function: function.clone(),
+                reason: reason.clone(),
+            },
+            note: "the obligation-balance fixpoint could not reach a verdict for \
+                   this function; the gate fails closed rather than certify an \
+                   unverified body as leak- and double-free-free. This is a \
+                   modelling invariant, not a user error"
+                .to_string(),
+        }),
         MirCheck::ContextBoundaryViolation {
             function,
             block,
@@ -121,6 +171,42 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                 block: *block,
             },
             note: "context-derived MIR place escapes past ExitContext".to_string(),
+        }),
+        MirCheck::DischargeAuthorityMissing {
+            function,
+            block,
+            authority,
+            reason,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::DischargeAuthorityMissing {
+                function: function.clone(),
+                block: *block,
+                authority: *authority,
+                reason: reason.clone(),
+            },
+            note: "a payload-slot neutralize whose discharge authority takes \
+                   ownership into a destination reached elaboration with no \
+                   transferee recorded; the discharge fact is defective. This is \
+                   a lowering invariant (close-by-construction), not a user error"
+                .to_string(),
+        }),
+        MirCheck::DischargeAuthorityDrift {
+            function,
+            block,
+            name,
+            reason,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::DischargeAuthorityDrift {
+                function: function.clone(),
+                block: *block,
+                name: name.clone(),
+                reason: reason.clone(),
+            },
+            note: "a carried discharge authority disagrees with the \
+                   independently re-derived discharge set (dual-carrier drift); \
+                   the two carriers of one ownership-transfer fact must agree. \
+                   This is a lowering invariant, not a user error"
+                .to_string(),
         }),
         MirCheck::OwnedHandleAggregateDoubleFree {
             name,
@@ -1002,6 +1088,1256 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
     validate_lambda_captures(&elab.lambda_captures, &mut findings);
     findings
 }
+// ============================================================================
+// S1 — lite obligation-balance validator
+// ============================================================================
+//
+// `validate_obligation_balance` is the SIBLING pass to `validate_drop_plan`:
+// that pass owns KIND coherence (place ↔ DropKind), this pass owns BALANCE —
+// for every heap-owning owned local (the MINT set, read off the type-directed
+// registration ledger), every reachable `Return` exit path must carry exactly
+// one DISCHARGE. Discharge count 0 on a path = under-release (leak); 2+ on a
+// path = over-release (double-free).
+//
+// INDEPENDENCE INVARIANT: the discharge set is re-derived from the primitive
+// `Instr` stream + the raw CFG + the per-exit `DropPlan`s (the elaborator's
+// OUTPUT). It never consults the elaborator's `Disposition` ledger — the
+// dispositions are the component under test (a bad `ConsumedAt` /
+// terminal-drop cancellation writes the leak INTO that ledger, so a validator
+// reading it back would certify the bug). The mint fact is type-directed and
+// orthogonal to the balance bug, so reading it from the ledger is sound;
+// `Disposition::AliasOf` (interior byte-copy aliases) is trusted for MINT-SET
+// EXCLUSION only.
+//
+// MODEL (whole-local granularity, interval dataflow):
+//   - state per tracked local = a discharge-count interval `[lo, hi]`
+//     (saturating at 2) + a payload-neutralization flag, per CFG point;
+//     a local absent from the state map is UNMINTED on every reaching path.
+//   - DEFINITE discharges (`lo` and `hi`): a terminal/inline drop of the
+//     local, a return-transfer (`Move`/`WitnessMove` into `ReturnSlot`), a
+//     payload-slot neutralization after move-out, a `ValueSnapshotDrop`, a
+//     send/ask transfer terminator, a spawn-consumed state record, a
+//     generator/lambda-actor env consumed at construction, and the
+//     `*_owned_move` runtime copy-ins.
+//   - AMBIGUOUS discharges (`hi` only): shapes whose single-owner resolution
+//     belongs to another authority (whole-local rebinds resolved by the alias
+//     machinery, call arguments not proven borrow, aggregation/capture
+//     operands resolved by the W3.053 prover family, guarded exit drops).
+//     Ambiguity can only WIDEN the interval, so it can never manufacture a
+//     definite verdict in either direction — a finding is reported only when
+//     EVERY modelling of the path is unbalanced.
+//   - verdict per `(Return exit, local)` after folding in the exit plan's
+//     drops: `hi == 0` → under-release; `lo >= 2` → over-release.
+//
+// WHAT THIS PASS DOES NOT DO (A278 / S1875): it counts DISCHARGES, not USES.
+// A balanced value used after a transfer is the move-checker's concern; this
+// pass never re-introduces move errors for function calls (the
+// `forward_param` shape passes — by-value params are caller-retained CoW
+// borrows and are excluded from the mint set entirely).
+//
+// SCOPE EXCLUSION: functions whose CFG carries a suspend terminator
+// (coroutine ramps) are excluded — across a suspend point ownership moves
+// through the coro frame and the single teardown outline, which the lite
+// whole-local model does not carry. The S2/OWN-V1 stages own that extension.
+//
+// LESSONS: lifecycle-symmetry (the invariant IS the row), checker-authority
+// (with the independence twist above), boundary-fail-closed (findings reject
+// before codegen), exhaustive-coverage (an unrecognised consuming instruction
+// defaults to borrow-not-discharge, which biases toward loud under-release
+// reports for triage — never toward an assumed-discharged silent suppress).
+
+/// Per-path payload-neutralization state for one tracked local. A
+/// `NeutralizePayloadSlot` on a carrier's variant projection transfers the
+/// payload's heap to a new owner and nulls the slot, making every later drop
+/// walk over that slot a null-tolerant no-op — so drops observed after a
+/// neutralization must not count as discharges on that path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PayloadNeutralized {
+    /// No neutralization on any reaching path.
+    No,
+    /// Neutralized on every reaching path: later drops of the local no-op.
+    Yes,
+    /// Neutralized on some-but-not-all reaching paths: later drops are
+    /// ambiguous (fire on the un-neutralized paths only).
+    Maybe,
+}
+
+impl PayloadNeutralized {
+    fn meet(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else {
+            PayloadNeutralized::Maybe
+        }
+    }
+}
+
+/// Discharge counts saturate here: 0, 1, and "2 or more" are the only
+/// balance-relevant magnitudes.
+const OBLIGATION_COUNT_SATURATION: u8 = 2;
+
+/// Discharge-count interval for one tracked local over the CFG paths
+/// reaching a program point. `lo` = minimum possible discharges along any
+/// reaching path, `hi` = maximum; `max_definite` = the maximum number of
+/// DEFINITE (unambiguous) discharges on any single reaching path. All three
+/// saturate at [`OBLIGATION_COUNT_SATURATION`].
+///
+/// The two release verdicts read different components so each fails in the
+/// safe direction:
+///   - UNDER-release (leak) requires EVERY path to under-discharge, so it
+///     reads `hi == 0` (no discharge — definite or ambiguous — on any path);
+///   - OVER-release (double-free) is memory-unsafe on ANY path, so it reads
+///     `max_definite >= SATURATION` (some single path definitely discharges
+///     twice). Reading `lo` (the per-path MINIMUM) here would path-dilute a
+///     branch-conditional double-free away: a double-free on one arm but not
+///     another leaves `lo == 1` and silently certifies. Ambiguous discharges
+///     never raise `max_definite`, so widen-only events (mirrored plan drops,
+///     aggregation operands, single-owner-resolved-elsewhere transfers)
+///     cannot manufacture a false over-release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObligationState {
+    lo: u8,
+    hi: u8,
+    /// Per-path maximum of DEFINITE discharges. `meet` takes the max across
+    /// joining paths; only [`ObligationState::definite_discharge`] raises it.
+    max_definite: u8,
+    neutralized: PayloadNeutralized,
+}
+
+impl ObligationState {
+    fn minted() -> Self {
+        Self {
+            lo: 0,
+            hi: 0,
+            max_definite: 0,
+            neutralized: PayloadNeutralized::No,
+        }
+    }
+
+    fn meet(self, other: Self) -> Self {
+        Self {
+            lo: self.lo.min(other.lo),
+            hi: self.hi.max(other.hi),
+            max_definite: self.max_definite.max(other.max_definite),
+            neutralized: self.neutralized.meet(other.neutralized),
+        }
+    }
+
+    /// A discharge that fires on every modelling of the current path.
+    fn definite_discharge(&mut self) {
+        self.lo = self.lo.saturating_add(1).min(OBLIGATION_COUNT_SATURATION);
+        self.hi = self.hi.saturating_add(1).min(OBLIGATION_COUNT_SATURATION);
+        self.max_definite = self
+            .max_definite
+            .saturating_add(1)
+            .min(OBLIGATION_COUNT_SATURATION);
+    }
+
+    /// A discharge whose single-owner resolution belongs to another
+    /// authority: widens the interval upward only, so it can never produce
+    /// a definite under- or over-release verdict by itself.
+    fn ambiguous_discharge(&mut self) {
+        self.hi = self.hi.saturating_add(1).min(OBLIGATION_COUNT_SATURATION);
+    }
+
+    /// A drop observed on this local (inline `Instr::Drop` or an exit-plan
+    /// terminal drop): a real release on un-neutralized paths, a
+    /// null-tolerant no-op on neutralized ones.
+    fn drop_discharge(&mut self) {
+        match self.neutralized {
+            PayloadNeutralized::No => self.definite_discharge(),
+            PayloadNeutralized::Yes => {}
+            PayloadNeutralized::Maybe => self.ambiguous_discharge(),
+        }
+    }
+}
+
+/// Per-block obligation state: tracked local (root) → interval. Absent key =
+/// unminted on every path reaching the point.
+type ObligationMap = BTreeMap<u32, ObligationState>;
+
+/// The local id a place addresses AS A WHOLE OWNED VALUE — the granularity
+/// the balance model counts at. Half-handles are direction sub-objects (the
+/// duplex split checker owns their exactly-once story) and projections are
+/// sub-object reads; neither is a whole-owner address.
+fn whole_owner_local(place: Place) -> Option<u32> {
+    match place {
+        Place::Local(n)
+        | Place::DuplexHandle(n)
+        | Place::LambdaActorHandle(n)
+        | Place::ActorHandle(n) => Some(n),
+        Place::SendHalf(_)
+        | Place::RecvHalf(_)
+        | Place::MachineTag(_)
+        | Place::EnumTag(_)
+        | Place::MachineVariant { .. }
+        | Place::EnumVariant { .. }
+        | Place::ReturnSlot => None,
+    }
+}
+
+/// The carrier local behind an enum/machine payload-slot projection — the
+/// address shape `NeutralizePayloadSlot` and variant-slot drops use.
+fn payload_carrier_local(place: Place) -> Option<u32> {
+    match place {
+        Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. } => Some(local),
+        Place::Local(_)
+        | Place::DuplexHandle(_)
+        | Place::LambdaActorHandle(_)
+        | Place::ActorHandle(_)
+        | Place::SendHalf(_)
+        | Place::RecvHalf(_)
+        | Place::MachineTag(_)
+        | Place::EnumTag(_)
+        | Place::ReturnSlot => None,
+    }
+}
+
+/// The local a WRITE to `place` (re-)mints. Whole-owner writes re-initialise
+/// the slot; a tag write is the construction anchor for enum/machine carriers
+/// (their storage is written through `EnumTag`/`MachineTag` +
+/// variant-projection stores, never a whole `Local` write).
+fn mint_target_local(place: Place) -> Option<u32> {
+    match place {
+        Place::Local(n)
+        | Place::DuplexHandle(n)
+        | Place::LambdaActorHandle(n)
+        | Place::ActorHandle(n)
+        | Place::EnumTag(n)
+        | Place::MachineTag(n) => Some(n),
+        Place::SendHalf(_)
+        | Place::RecvHalf(_)
+        | Place::MachineVariant { .. }
+        | Place::EnumVariant { .. }
+        | Place::ReturnSlot => None,
+    }
+}
+
+/// Runtime-ABI symbols that CONSUME (take ownership of) exactly one argument:
+/// the `*_move` copy-in family byte-transfers the element's heap into the
+/// collection. Returns the consumed argument's index in C-ABI order.
+fn runtime_consumed_arg_index(symbol: &str) -> Option<usize> {
+    match symbol {
+        // hew_vec_push_owned_move(v, data): `data`'s heap moves into the Vec.
+        "hew_vec_push_owned_move" => Some(1),
+        // hew_vec_set_owned_move(v, index, data): `data`'s heap moves in.
+        "hew_vec_set_owned_move" => Some(2),
+        _ => None,
+    }
+}
+
+/// Shared read-only context for the balance transfer functions.
+struct ObligationCtx<'a> {
+    /// Tracked mint set: root local → source-level name.
+    tracked: &'a BTreeMap<u32, String>,
+    /// Payload binder → carrier root, for move-outs of NON-neutralized
+    /// carriers (see [`collect_payload_alias_map`]). Discharges of the binder
+    /// attribute to the carrier's obligation.
+    alias_to: &'a HashMap<u32, u32>,
+    /// Parameter slots (`Builder::parameter_locals`): caller-retained
+    /// borrows. A whole-local rebind FROM a parameter is a borrow alias, so
+    /// the rebound dest mints with the hi-credit.
+    parameter_locals: &'a HashSet<u32>,
+}
+
+impl ObligationCtx<'_> {
+    /// Resolve a local through the payload-alias chain (hop-capped: the map
+    /// is acyclic by construction, the cap is defensive).
+    fn root_of(&self, local: u32) -> u32 {
+        let mut cur = local;
+        for _ in 0..32 {
+            match self.alias_to.get(&cur) {
+                Some(&next) => cur = next,
+                None => break,
+            }
+        }
+        cur
+    }
+
+    /// The tracked root a whole-owner place addresses, if any.
+    fn tracked_root(&self, place: Place) -> Option<u32> {
+        let root = self.root_of(whole_owner_local(place)?);
+        self.tracked.contains_key(&root).then_some(root)
+    }
+
+    /// The tracked carrier root a variant-projection place addresses, if any.
+    fn tracked_carrier(&self, place: Place) -> Option<u32> {
+        let root = self.root_of(payload_carrier_local(place)?);
+        self.tracked.contains_key(&root).then_some(root)
+    }
+}
+
+fn obligation_entry(state: &mut ObligationMap, root: u32) -> &mut ObligationState {
+    state.entry(root).or_insert_with(ObligationState::minted)
+}
+
+/// Fold one elaborated plan drop into the state: guard-gated closes are
+/// path-sensitive at runtime (widen-only), unguarded drops discharge per the
+/// neutralization flag, and a drop on an UNMINTED local belongs to paths
+/// that never reach here with a live mint (skip rather than phantom-mint).
+///
+/// `inline_dropped` carries every place released by an inline `Instr::Drop`
+/// anywhere in the function: an exit plan can MIRROR an inline drop (one
+/// runtime release rendered on both surfaces — the inline release
+/// null-clears the storage, so the plan copy is a null-tolerant no-op on
+/// paths through it, and real only on paths that bypass it). Path-exact
+/// resolution would need per-place release sets; the widen-only treatment
+/// is AMBIGUOUS, which can neither certify balance nor manufacture a
+/// definite verdict on either kind of path.
+fn apply_plan_drop(
+    state: &mut ObligationMap,
+    drop: &ElabDrop,
+    inline_dropped: &HashSet<Place>,
+    cx: &ObligationCtx<'_>,
+) {
+    let Some(root) = cx
+        .tracked_root(drop.place)
+        .or_else(|| cx.tracked_carrier(drop.place))
+    else {
+        return;
+    };
+    let Some(entry) = state.get_mut(&root) else {
+        return;
+    };
+    if drop.guard.is_some() || inline_dropped.contains(&drop.place) {
+        entry.ambiguous_discharge();
+    } else {
+        entry.drop_discharge();
+    }
+}
+
+/// Meet two per-block obligation maps. A local absent on one side is
+/// unminted on that side's paths — no obligation there — so the present
+/// side's interval carries through unchanged (identity meet).
+fn meet_obligation_maps(a: &ObligationMap, b: &ObligationMap) -> ObligationMap {
+    let mut out = a.clone();
+    for (&local, &st) in b {
+        out.entry(local)
+            .and_modify(|cur| *cur = cur.meet(st))
+            .or_insert(st);
+    }
+    out
+}
+
+/// Pre-scan: map payload-binder locals to their carrier root for move-outs
+/// of payload slots that carry NO `NeutralizePayloadSlot`. Without a
+/// neutralize on THAT slot, the binder's storage is a byte-copy of the
+/// carrier's payload slot with two live release paths — one obligation, so
+/// the binder's discharges must attribute to the carrier (this is exactly the
+/// S1882 `move_out_arm` double-free shape). When a neutralize IS present on
+/// the moved slot, the transfer is modelled path-sensitively by the
+/// neutralize instruction itself and the binder is an independent mint.
+///
+/// Neutralization is keyed PER SLOT, not per carrier: since #2784 a
+/// whole-carrier scrutinee neutralizes exactly the variant slot whose
+/// ownership leaves, on the arm where it leaves. A move-out arm nulls its own
+/// slot (`Ok(x) => x`) while a read-only sibling arm (`Err(y) => ..`) leaves
+/// its slot live for the carrier's terminal drop. Keying on the carrier local
+/// would let one arm's neutralize strip the read-only sibling's binder out of
+/// the alias fold, leaving it a phantom independent mint that the shell drop
+/// actually discharges — a false under-release on the sibling arm's exits.
+fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
+    let mut neutralized_slots: HashSet<Place> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::NeutralizePayloadSlot { place, .. } = instr {
+                neutralized_slots.insert(*place);
+            }
+        }
+    }
+    let mut alias_to: HashMap<u32, u32> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let (dest, src) = match instr {
+                Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => (*dest, *src),
+                _ => continue,
+            };
+            let Some(carrier) = payload_carrier_local(src) else {
+                continue;
+            };
+            let Some(binder) = whole_owner_local(dest) else {
+                continue;
+            };
+            // The fold applies whether or not the carrier is itself tracked:
+            // an EPHEMERAL scrutinee temp (a clone-getter `Option` result)
+            // may sit outside the mint set, and its payload binder's storage
+            // still traces to the carrier's slot — the binder is then also
+            // outside the balance (its ownership story is the carrier's).
+            if !neutralized_slots.contains(&src) && binder != carrier {
+                alias_to.insert(binder, carrier);
+            }
+        }
+    }
+    alias_to
+}
+
+/// Forward transfer of one instruction: discharge events first, then mint
+/// (whole-slot write) resets.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive discharge-vocabulary classification; each arm is \
+              a single distinct ownership decision and splitting scatters the \
+              vocabulary the OWN-0 lesson requires to be reviewable in one place"
+)]
+#[allow(
+    clippy::match_same_arms,
+    reason = "arms sharing the ambiguous-discharge body model semantically \
+              distinct transfer classes (aggregation vs capture vs dispatch); \
+              merging them would erase the per-class rationale comments"
+)]
+fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &ObligationCtx<'_>) {
+    // Derived mints take an hi-credit of 1 ("another owner's release may be
+    // mine"), applied after the generic mint below:
+    //   - a whole-local rebind FROM a tracked local (`let m2 = m;` — which
+    //     slot's drop pays the one obligation is the alias machinery's
+    //     decision) or FROM a parameter (a caller-retained borrow alias);
+    //   - a whole-local minted by a field/tuple/env load (a byte-copy or
+    //     handle transfer out of a base whose composite release may cover
+    //     it — the `FieldLoadClass` fact is not re-derived here);
+    //   - an actor-state load in `Borrowed` mode (a bare byte-copy alias;
+    //     `Owned` mode retains a fresh owner and earns NO credit).
+    // A fresh-producer mint (literal, call result, constructor) earns no
+    // credit — those are the shapes the under-release net must keep.
+    let credit_dest = |dest: &Place| {
+        whole_owner_local(*dest)
+            .filter(|d| cx.tracked.contains_key(d) && !cx.alias_to.contains_key(d))
+    };
+    let rebind_credit_dest = match instr {
+        Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => whole_owner_local(*src)
+            .filter(|s| cx.parameter_locals.contains(s) || cx.tracked.contains_key(&cx.root_of(*s)))
+            .and_then(|_| credit_dest(dest)),
+        Instr::RecordFieldLoad { dest, .. }
+        | Instr::TupleFieldLoad { dest, .. }
+        | Instr::ClosureEnvFieldLoad { dest, .. } => credit_dest(dest),
+        Instr::ActorStateFieldLoad {
+            dest,
+            mode: crate::model::ActorStateLoadMode::Borrowed,
+            ..
+        } => credit_dest(dest),
+        _ => None,
+    };
+    match instr {
+        Instr::Drop { place, .. } => {
+            if let Some(root) = cx
+                .tracked_root(*place)
+                .or_else(|| cx.tracked_carrier(*place))
+            {
+                obligation_entry(state, root).drop_discharge();
+            }
+        }
+        Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
+            if let Some(root) = cx.tracked_root(*src) {
+                if matches!(dest, Place::ReturnSlot) {
+                    // Return-transfer: the caller receives the one owner.
+                    obligation_entry(state, root).definite_discharge();
+                } else {
+                    // Whole-local rebind: the payload pointer hands over with
+                    // no retain, and WHICH slot carries the terminal drop is
+                    // the alias machinery's decision — ambiguous here.
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+            // A move OUT of a variant projection is either alias-folded (no
+            // neutralize anywhere — see `collect_payload_alias_map`) or paid
+            // by the `NeutralizePayloadSlot` that follows it; no event here.
+        }
+        Instr::NeutralizePayloadSlot { place, .. } => {
+            if let Some(root) = cx.tracked_carrier(*place) {
+                let entry = obligation_entry(state, root);
+                match entry.neutralized {
+                    PayloadNeutralized::No => {
+                        // The payload's heap transferred to a new owner: the
+                        // carrier's obligation discharges here; later drops
+                        // of the carrier walk a nulled slot (no-ops).
+                        entry.definite_discharge();
+                        entry.neutralized = PayloadNeutralized::Yes;
+                    }
+                    // Re-nulling an already-nulled slot is idempotent.
+                    PayloadNeutralized::Yes => {}
+                    PayloadNeutralized::Maybe => {
+                        entry.ambiguous_discharge();
+                        entry.neutralized = PayloadNeutralized::Yes;
+                    }
+                }
+            }
+        }
+        Instr::ValueSnapshotDrop { value, .. } => {
+            if let Some(root) = cx.tracked_root(*value) {
+                obligation_entry(state, root).definite_discharge();
+            }
+        }
+        Instr::SpawnActor {
+            state: spawn_state,
+            init_args,
+            ..
+        } => {
+            // The initial-state record is consumed by the spawn (the actor's
+            // `state_drop_fn` becomes the single free site).
+            if let Some(root) = spawn_state.as_ref().and_then(|p| cx.tracked_root(*p)) {
+                obligation_entry(state, root).definite_discharge();
+            }
+            for arg in init_args {
+                if let Some(root) = cx.tracked_root(*arg) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+        Instr::CallRuntimeAbi(call) => {
+            let consumed = runtime_consumed_arg_index(call.symbol());
+            for (i, arg) in call.args().iter().enumerate() {
+                if let Some(root) = cx.tracked_root(*arg) {
+                    if consumed == Some(i) {
+                        obligation_entry(state, root).definite_discharge();
+                    } else {
+                        // Runtime calls outside the consuming table borrow
+                        // their heap args; widen only (a symbol this table
+                        // does not know can never certify a leak away).
+                        obligation_entry(state, root).ambiguous_discharge();
+                    }
+                }
+            }
+        }
+        // Aggregation / capture / dispatch operands: single-owner resolution
+        // for these belongs to the W3.053 prover family and the escape scans;
+        // balance models each tracked whole-local operand as an AMBIGUOUS
+        // transfer.
+        Instr::RecordInit { fields, .. } => {
+            for (_, place) in fields {
+                if let Some(root) = cx.tracked_root(*place) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+        Instr::ClosureEnvInit { fields, .. } => {
+            for field in fields {
+                if let Some(root) = cx.tracked_root(field.src) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+        Instr::TupleConstruct { elements, .. } => {
+            for place in elements {
+                if let Some(root) = cx.tracked_root(*place) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+        Instr::RecordFieldStore { src, .. }
+        | Instr::ActorStateFieldStore { src, .. }
+        | Instr::ClosureEnvFieldStore { src, .. } => {
+            if let Some(root) = cx.tracked_root(*src) {
+                obligation_entry(state, root).ambiguous_discharge();
+            }
+        }
+        Instr::MakeClosure { env, .. } => {
+            if let Some(root) = cx.tracked_root(*env) {
+                obligation_entry(state, root).ambiguous_discharge();
+            }
+        }
+        Instr::CallClosure { args, .. } => {
+            for arg in args {
+                if let Some(root) = cx.tracked_root(*arg) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+        Instr::CallTraitMethod { args, .. } => {
+            for arg in args {
+                if let Some(root) = cx.tracked_root(*arg) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+        Instr::CoerceToDynTrait { value, .. } => {
+            if let Some(root) = cx.tracked_root(*value) {
+                obligation_entry(state, root).ambiguous_discharge();
+            }
+        }
+        Instr::MachineEmitPlaceholder { payload, .. } => {
+            for place in payload {
+                if let Some(root) = cx.tracked_root(*place) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+        Instr::SpawnTaskDirect { task, .. } => {
+            if let Some(root) = cx.tracked_root(*task) {
+                obligation_entry(state, root).ambiguous_discharge();
+            }
+        }
+        Instr::SpawnTaskClosure { task, env, .. } => {
+            for place in [*task, *env] {
+                if let Some(root) = cx.tracked_root(place) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+        // Sub-object releases of a tracked base: a destructured composite is
+        // discharged through per-field in-place releases with its whole-root
+        // composite drop SUPPRESSED (the exactly-once pairing is
+        // `validate_field_drop_in_place`'s authority). Model each as an
+        // AMBIGUOUS discharge of the base so a fully field-released root is
+        // never a definite leak, while never certifying balance either.
+        Instr::FieldDropInPlace { base, .. } | Instr::RecordFieldDrop { record: base, .. } => {
+            if let Some(root) = cx.tracked_root(*base) {
+                obligation_entry(state, root).ambiguous_discharge();
+            }
+        }
+        // Field/tuple loads out of a tracked base: a `HandleTransfer`-class
+        // load moves the base's single owned heap leaf into the binder (a
+        // discharge of the base), while a `Retained` load clones and a
+        // `ByteCopyAlias` load borrows. The class is a type-layout fact this
+        // pass does not re-derive — ambiguous (widen-only).
+        Instr::RecordFieldLoad { record: base, .. } | Instr::TupleFieldLoad { tuple: base, .. } => {
+            if let Some(root) = cx.tracked_root(*base) {
+                obligation_entry(state, root).ambiguous_discharge();
+            }
+        }
+        // Everything else — arithmetic, comparisons, literals, casts, retains
+        // (the co-owner mints on the OTHER side), in-place clones (source
+        // borrowed), `GeneratorNext` (ctx borrowed), wire codecs, auto-locks,
+        // context markers — reads no whole-value ownership out of a tracked
+        // local: CoW reads are borrows (A278). A NEW consuming instruction
+        // must be classified above; this default biases toward loud
+        // UNDER-release reports for triage, never toward an
+        // assumed-discharged suppress.
+        _ => {}
+    }
+    let (_, writes) = dataflow::instr_reads_writes(instr);
+    for write in writes {
+        if let Some(local) = mint_target_local(write) {
+            // The defining write of a payload-alias binder is the transfer
+            // moment of its carrier's payload, not a fresh mint.
+            if cx.alias_to.contains_key(&local) {
+                continue;
+            }
+            if cx.tracked.contains_key(&local) {
+                state.insert(local, ObligationState::minted());
+            }
+        }
+    }
+    if let Some(dest) = rebind_credit_dest {
+        if let Some(entry) = state.get_mut(&dest) {
+            entry.hi = entry.hi.max(1);
+        }
+    }
+}
+
+/// Write (def) slots of a terminator that mint a tracked local: a call's
+/// result dest, ask reply slots, generator/lambda-actor handle dests,
+/// select-arm bindings, a join's result tuple.
+fn terminator_mint_places(term: &Terminator) -> Vec<Place> {
+    match term {
+        Terminator::Call { dest, .. } => dest.iter().copied().collect(),
+        Terminator::Ask {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        }
+        | Terminator::RemoteAsk {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        } => vec![*result_dest, *reply_dest, *error_dest],
+        Terminator::MakeGenerator { dest, .. } | Terminator::MakeLambdaActor { dest, .. } => {
+            vec![*dest]
+        }
+        Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
+            arms.iter().filter_map(|arm| arm.binding).collect()
+        }
+        Terminator::Join { result, .. } => vec![*result],
+        // No write slots (suspending carriers park state in the coro frame;
+        // functions containing them are excluded from this pass wholesale).
+        _ => Vec::new(),
+    }
+}
+
+/// Forward transfer of a block's terminator: discharge events, then mints.
+fn apply_balance_terminator(
+    state: &mut ObligationMap,
+    block: &BasicBlock,
+    suspend: Option<&SuspendKind>,
+    cx: &ObligationCtx<'_>,
+) {
+    match &block.terminator {
+        Terminator::Call { args, .. } => {
+            // Consume-vs-borrow is a cross-function contract this LOCAL pass
+            // does not verify (S2/OWN-V1's target): every tracked whole arg
+            // is an ambiguous transfer. Deliberately NOT refined by the
+            // `proven_borrow_call_args` summary — that summary also records
+            // by-value `self` receiver slots whose method may be declared
+            // `consuming` (the linear inherent-consume shape), so treating
+            // it as a definite non-discharge manufactures phantom leaks.
+            for arg in args {
+                if let Some(root) = cx.tracked_root(*arg) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+        Terminator::Send { value, .. }
+        | Terminator::Ask { value, .. }
+        | Terminator::RemoteAsk { value, .. } => {
+            // Whether transport consumes the outbound value is per-argument
+            // (`SendAliasMode`): a prepared snapshot owner transfers, while a
+            // `Copy`-mode handle payload (an actor ref forwarded by value)
+            // stays caller-owned and keeps its scope-exit drop. Ambiguous
+            // (widen-only) — the mode-exact refinement is S2 territory.
+            if let Some(root) = cx.tracked_root(*value) {
+                obligation_entry(state, root).ambiguous_discharge();
+            }
+        }
+        Terminator::MakeLambdaActor {
+            env: Some(env_place),
+            ..
+        } => {
+            // The materialised capture-env record is heap-boxed and consumed
+            // by the spawn; the synthesized state_drop_fn is its free site.
+            if let Some(root) = cx.tracked_root(*env_place) {
+                obligation_entry(state, root).definite_discharge();
+            }
+        }
+        Terminator::MakeGenerator {
+            env: Some(plan), ..
+        } => {
+            // The synthetic env shell is consumed by the generator ramp.
+            if let Some(root) = cx.tracked_root(plan.place) {
+                obligation_entry(state, root).definite_discharge();
+            }
+        }
+        Terminator::Return
+        | Terminator::Goto { .. }
+        | Terminator::Branch { .. }
+        | Terminator::Trap { .. }
+        | Terminator::MakeGenerator { env: None, .. }
+        | Terminator::MakeLambdaActor { env: None, .. } => {}
+        // Yield / Select / Join and any future terminator: every source
+        // operand is an ambiguous transfer (widen-only).
+        other => {
+            for place in terminator_source_places(other, suspend) {
+                if let Some(root) = cx.tracked_root(place) {
+                    obligation_entry(state, root).ambiguous_discharge();
+                }
+            }
+        }
+    }
+    for write in terminator_mint_places(&block.terminator) {
+        if let Some(local) = mint_target_local(write) {
+            if cx.alias_to.contains_key(&local) {
+                continue;
+            }
+            if cx.tracked.contains_key(&local) {
+                state.insert(local, ObligationState::minted());
+            }
+        }
+    }
+}
+
+/// The mint set: every heap-owning owned local from the per-function
+/// registration ledger (INCLUDING entries dispositioned off `ScopeExit` —
+/// the dispositions are under test), minus the trusted exclusions:
+/// `Disposition::AliasOf` interior aliases (not independent mints) and
+/// parameter slots (by-value params are caller-retained `CoW` borrows — the
+/// caller owns the release; A278).
+fn tracked_obligation_locals(builder: &Builder) -> BTreeMap<u32, String> {
+    let mut tracked: BTreeMap<u32, String> = BTreeMap::new();
+    for entry in builder.owned_locals_ledger() {
+        if matches!(entry.disposition, Disposition::AliasOf) {
+            continue;
+        }
+        // Re-apply the heap-ownership authority: the seed test admits every
+        // non-BitCopy value class, which includes heap-free direct enums
+        // (`Result<i64, AskError>`, `Colour`) that carry NO release
+        // obligation. Track a binding only when its type transitively owns
+        // heap (`ty_owns_heap` — the single structural authority) or its
+        // class carries a non-heap drop ritual (`@resource` close /
+        // `@linear` consume — the all-bitcopy resource record case).
+        let class = ValueClass::of_ty(&entry.ty, &builder.type_classes);
+        let owns_heap = crate::model::ty_owns_heap_mir(
+            &entry.ty,
+            &builder.record_field_orders,
+            &builder.enum_layouts,
+        );
+        if !owns_heap && !matches!(class, ValueClass::AffineResource | ValueClass::Linear) {
+            continue;
+        }
+        let Some(place) = builder.binding_locals.get(&entry.binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        if builder.parameter_locals.contains(&local) {
+            continue;
+        }
+        tracked.entry(local).or_insert_with(|| entry.name.clone());
+    }
+    tracked
+}
+
+/// S1 obligation-balance validation over one elaborated function. See the
+/// module-section comment above for the model; called at the `mod.rs` gate
+/// site immediately after `validate_drop_plan`. Additive sibling pass —
+/// `validate_drop_plan` is not consulted or modified.
+#[must_use]
+pub(super) fn validate_obligation_balance(
+    elab: &ElaboratedMirFunction,
+    raw: &RawMirFunction,
+    builder: &Builder,
+) -> Vec<MirCheck> {
+    let mut tracked = tracked_obligation_locals(builder);
+    // Structural parameter exclusion: `locals[0..params.len()]` ARE the
+    // parameter slots (the RawMirFunction invariant). Synthesized bodies can
+    // register a param-backed binding without a `parameter_locals` entry;
+    // by-value params are caller-retained borrows either way.
+    let n_params = u32::try_from(raw.params.len()).unwrap_or(u32::MAX);
+    tracked.retain(|local, _| *local >= n_params);
+    if tracked.is_empty() {
+        return Vec::new();
+    }
+    // Rendered types of the tracked locals, keyed by root, for the registry
+    // scoping discriminator carried on each under-release finding. The type
+    // narrows an allowlist entry to its minting site so a same-named local of
+    // a different type in another compilation unit cannot ride it.
+    let local_types: BTreeMap<u32, String> = tracked
+        .keys()
+        .filter_map(|&root| {
+            raw.locals
+                .get(root as usize)
+                .map(|ty| (root, format!("{ty}")))
+        })
+        .collect();
+    validate_obligation_balance_with(
+        elab,
+        &raw.blocks,
+        &raw.suspend_kinds,
+        &tracked,
+        &local_types,
+        &builder.parameter_locals,
+    )
+}
+
+/// Decomposed core of [`validate_obligation_balance`] — the unit-test entry
+/// (hand-constructed blocks + drop plans + tracked set, no `Builder`).
+/// Computes the default fixpoint iteration cap and forwards to
+/// [`validate_obligation_balance_capped`].
+fn validate_obligation_balance_with(
+    elab: &ElaboratedMirFunction,
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    tracked_in: &BTreeMap<u32, String>,
+    local_types: &BTreeMap<u32, String>,
+    parameter_locals: &HashSet<u32>,
+) -> Vec<MirCheck> {
+    // Iteration cap for the monotone worklist. The lattice is finite and the
+    // transfer monotone, so convergence is guaranteed well within this bound;
+    // the cap is a defensive ceiling whose exhaustion fails CLOSED (see the
+    // capped core).
+    let iteration_cap = blocks.len().saturating_mul(64).saturating_add(1024);
+    validate_obligation_balance_capped(
+        elab,
+        blocks,
+        suspend_kinds,
+        tracked_in,
+        local_types,
+        parameter_locals,
+        iteration_cap,
+    )
+}
+
+/// Balance-verdict core with an explicit fixpoint iteration cap. Split out so
+/// the fail-closed cap-exhaustion path is unit-testable (a tiny cap forces the
+/// unverified verdict a converging body would never reach).
+#[allow(
+    clippy::too_many_lines,
+    reason = "single fixpoint + exit-verdict walk; splitting would obscure \
+              the dataflow (mirrors validate_cross_block_split_consume)"
+)]
+fn validate_obligation_balance_capped(
+    elab: &ElaboratedMirFunction,
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    tracked_in: &BTreeMap<u32, String>,
+    local_types: &BTreeMap<u32, String>,
+    parameter_locals: &HashSet<u32>,
+    iteration_cap: usize,
+) -> Vec<MirCheck> {
+    use std::collections::VecDeque;
+
+    let mut findings = Vec::new();
+    if blocks.is_empty() || tracked_in.is_empty() {
+        return findings;
+    }
+    // Coroutine ramps park ownership in the coro frame across suspend
+    // points; the lite whole-local model excludes them (S2/OWN-V1 scope).
+    if blocks
+        .iter()
+        .any(|b| terminator_is_suspend_carrier(&b.terminator))
+    {
+        return findings;
+    }
+
+    let alias_to = collect_payload_alias_map(blocks);
+    // A payload-alias binder's discharges fold into its carrier; the binder
+    // is not an independent obligation.
+    let mut tracked = tracked_in.clone();
+    for binder in alias_to.keys() {
+        tracked.remove(binder);
+    }
+    // Two teardown surfaces live OUTSIDE the modelled streams and their
+    // locals are therefore not balanceable here:
+    //   - select-arm bindings: per-arm winner/loser cleanup is emitted at
+    //     the codegen select join-dispatch, not in the `DropPlan`s;
+    //   - stack/null-env closure pairs: the pair owns no heap (the env is a
+    //     frame alloca or null) — the type-level mint fact over-approximates
+    //     (only a `HeapBox` env pair carries a release obligation).
+    // A third surface joins them: collection accessors whose result-payload
+    // release choreography is emitted by the codegen callee intercept
+    // (empirically leak-clean under `leaks --atExit` with NO release visible
+    // in either MIR stream). Closed table — string/bytes producers (slice,
+    // concat, to_upper, ...) mint fresh owners and deliberately stay
+    // balance-checked.
+    let mut excluded: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        match &block.terminator {
+            Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
+                for arm in arms {
+                    if let Some(local) = arm.binding.and_then(whole_owner_local) {
+                        excluded.insert(local);
+                    }
+                }
+            }
+            Terminator::Call {
+                callee,
+                dest: Some(dest),
+                ..
+            } if matches!(
+                callee.as_str(),
+                "hew_hashmap_get_layout"
+                    | "hew_hashmap_get_clone_layout"
+                    | "hew_hashmap_remove_take_layout"
+            ) =>
+            {
+                if let Some(local) = whole_owner_local(*dest) {
+                    excluded.insert(local);
+                }
+            }
+            _ => {}
+        }
+        for instr in &block.instructions {
+            if let Instr::MakeClosure { dest, env_mode, .. } = instr {
+                if !matches!(env_mode, crate::model::ClosureEnvMode::HeapBox) {
+                    if let Some(local) = whole_owner_local(*dest) {
+                        excluded.insert(local);
+                    }
+                }
+            }
+        }
+    }
+    // Propagate the exclusion through whole-local rebinds (`let f = <pair>`
+    // moves the pair through a temp): a copy of a no-obligation value is
+    // itself no obligation. Bounded fixpoint over the finite local set.
+    loop {
+        let mut grew = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                let (dest, src) = match instr {
+                    Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
+                        (*dest, *src)
+                    }
+                    _ => continue,
+                };
+                if let (Some(d), Some(s)) = (whole_owner_local(dest), whole_owner_local(src)) {
+                    if excluded.contains(&s) && excluded.insert(d) {
+                        grew = true;
+                    }
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    for local in &excluded {
+        tracked.remove(local);
+    }
+    let cx = ObligationCtx {
+        tracked: &tracked,
+        alias_to: &alias_to,
+        parameter_locals,
+    };
+
+    // Scope-exit releases ride the NORMAL-continuation exit plans (a
+    // `goto[bbN->bbM]` edge closing an inner scope carries real drops), so
+    // those plans participate in the dataflow at their owning block.
+    // Exception edges (`Panic` / `Cancel`) fire only on unwind and `Return`
+    // plans are folded at the verdict — neither applies here.
+    let mut edge_drops: HashMap<u32, Vec<&ElabDrop>> = HashMap::new();
+    for (exit, plan) in &elab.drop_plans {
+        if matches!(
+            exit,
+            ExitPath::Return { .. } | ExitPath::Panic { .. } | ExitPath::Cancel { .. }
+        ) {
+            continue;
+        }
+        edge_drops
+            .entry(exit_block_id(exit))
+            .or_default()
+            .extend(plan.drops.iter());
+    }
+    // Every place inline-dropped anywhere in the function, for the
+    // mirrored-plan widening in `apply_plan_drop`.
+    let mut inline_dropped: HashSet<Place> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Drop { place, .. } = instr {
+                inline_dropped.insert(*place);
+            }
+        }
+    }
+
+    // Forward interval fixpoint over the raw CFG. Monotone: `lo` only
+    // decreases, `hi` only increases, `neutralized` only coarsens — all
+    // bounded, so the worklist terminates (loops included).
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+    let preds = dataflow::build_preds(blocks);
+    let reachable = dataflow::reachable_from_entry(blocks);
+    let mut exit_states: HashMap<u32, ObligationMap> = HashMap::new();
+    let mut worklist: VecDeque<u32> = dataflow::compute_rpo(blocks).into();
+    let mut iterations: usize = 0;
+    while let Some(bb_id) = worklist.pop_front() {
+        iterations += 1;
+        if iterations > iteration_cap {
+            // The lattice is finite and the transfer monotone, so convergence
+            // is guaranteed within the cap; reaching it means the model is
+            // defective. Fail CLOSED — a balance gate that cannot decide must
+            // NOT certify the body as leak- and double-free-free. Emit an
+            // unverified hard error (no allowlist escape) rather than the old
+            // silent `return Vec::new()`, which certified the function as
+            // balanced on the exact path where the verdict is unknown.
+            return vec![MirCheck::ObligationBalanceUnverified {
+                function: elab.name.clone(),
+                reason: format!(
+                    "discharge-interval fixpoint exceeded its iteration cap \
+                     ({iteration_cap}) over {n} blocks before converging; the \
+                     balance of this function is undecided",
+                    n = blocks.len(),
+                ),
+            }];
+        }
+        let Some(block) = by_id.get(&bb_id) else {
+            continue;
+        };
+        let empty = Vec::new();
+        let entry = preds
+            .get(&bb_id)
+            .unwrap_or(&empty)
+            .iter()
+            .filter(|p| reachable.contains(p))
+            .filter_map(|p| exit_states.get(p))
+            .fold(None::<ObligationMap>, |acc, m| match acc {
+                None => Some(m.clone()),
+                Some(cur) => Some(meet_obligation_maps(&cur, m)),
+            })
+            .unwrap_or_default();
+        let mut state = entry;
+        for instr in &block.instructions {
+            apply_balance_instr(&mut state, instr, &cx);
+        }
+        apply_balance_terminator(&mut state, block, suspend_kinds.get(&bb_id), &cx);
+        if let Some(drops) = edge_drops.get(&bb_id) {
+            for drop in drops {
+                apply_plan_drop(&mut state, drop, &inline_dropped, &cx);
+            }
+        }
+        let changed = exit_states.get(&bb_id) != Some(&state);
+        exit_states.insert(bb_id, state);
+        if changed {
+            for succ in block.successors() {
+                worklist.push_back(succ);
+            }
+        }
+    }
+
+    // Verdict per (Return exit, tracked local): fold the exit plan's drops
+    // into the exit block's post-terminator state, then check the interval.
+    for (exit, plan) in &elab.drop_plans {
+        let ExitPath::Return { block } = exit else {
+            continue;
+        };
+        if !reachable.contains(block) {
+            continue;
+        }
+        let Some(block_state) = exit_states.get(block) else {
+            continue;
+        };
+        let mut state = block_state.clone();
+        for drop in &plan.drops {
+            apply_plan_drop(&mut state, drop, &inline_dropped, &cx);
+        }
+        for (root, ob) in &state {
+            let name = tracked
+                .get(root)
+                .cloned()
+                .unwrap_or_else(|| format!("local_{root}"));
+            if ob.hi == 0 {
+                findings.push(MirCheck::ObligationUnderReleased {
+                    function: elab.name.clone(),
+                    block: *block,
+                    name: name.clone(),
+                    local_ty: local_types.get(root).cloned().unwrap_or_default(),
+                    reason: format!(
+                        "owned local `{name}` reaches return[bb{block}] with zero \
+                         discharges on every path modelling: no terminal drop in \
+                         this exit's plan and no ownership transfer before the \
+                         exit (mint without discharge = leak)"
+                    ),
+                });
+            } else if ob.max_definite >= OBLIGATION_COUNT_SATURATION {
+                findings.push(MirCheck::ObligationOverReleased {
+                    function: elab.name.clone(),
+                    block: *block,
+                    name: name.clone(),
+                    reason: format!(
+                        "owned local `{name}` accumulates {max_def}+ definite \
+                         discharges on a single path reaching return[bb{block}] \
+                         (discharge interval [{lo}, {hi}], per-path definite max \
+                         {max_def}): double release",
+                        max_def = ob.max_definite,
+                        lo = ob.lo,
+                        hi = ob.hi,
+                    ),
+                });
+            }
+        }
+    }
+    findings
+}
+
+// ============================================================================
+// A — discharge-authority carriage (D159/U229)
+// ============================================================================
+
+/// Fail-closed discharge-authority backstop: every `NeutralizePayloadSlot`
+/// whose [`crate::model::NeutralizeAuthority`] structurally owns a destination
+/// (`SendTransferLastUse` / `WholeCarrierConsume`) MUST carry a `transferee`. A
+/// `None` on such an authority is a fact-erased site that slipped a defaulted
+/// authority past the `set_owned_local_consumed`/emit chokepoints — reject
+/// before codegen (boundary-fail-closed, L49). The passing corpus has none; the
+/// check exists so a future emit site that drops the fact fails closed rather
+/// than silently reintroducing the erasure A removes.
+pub(super) fn validate_discharge_authority(
+    elab: &ElaboratedMirFunction,
+    raw: &RawMirFunction,
+) -> Vec<MirCheck> {
+    validate_discharge_authority_over(&elab.name, &raw.blocks)
+}
+
+/// Testable core of [`validate_discharge_authority`] — hand-constructed blocks,
+/// no `RawMirFunction`.
+fn validate_discharge_authority_over(function: &str, blocks: &[BasicBlock]) -> Vec<MirCheck> {
+    let mut findings = Vec::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let Instr::NeutralizePayloadSlot {
+                authority,
+                transferee,
+                ..
+            } = instr
+            else {
+                continue;
+            };
+            if authority.requires_transferee() && transferee.is_none() {
+                findings.push(MirCheck::DischargeAuthorityMissing {
+                    function: function.to_string(),
+                    block: block.id,
+                    authority: *authority,
+                    reason: format!(
+                        "NeutralizePayloadSlot carries authority {authority:?}, which moves \
+                         ownership into a destination local, but no transferee was recorded — \
+                         the discharge fact was erased at the emit site"
+                    ),
+                });
+            }
+        }
+    }
+    findings
+}
+
+/// Discharge-authority corroboration pin (D159 dual-carrier / L211). INDEPENDENT
+/// of the carried authority: it re-derives, from the primitive `Instr` stream
+/// ALONE, whether each named `transferee` is a real destination the routing
+/// actually writes, and reports drift when the two carriers of the one
+/// ownership-transfer fact disagree.
+///
+/// S1's [`validate_obligation_balance`] does NOT read these facts — it re-derives
+/// the discharge set from the primitive stream and never consults the carried
+/// authority (independence preserved; a ledger-trusting validator inherits ledger
+/// bugs). This is a THIRD pass comparing the carried authority against a
+/// from-primitives re-derivation. A `transferee` the stream never writes is a
+/// fabricated transfer — the routing-vs-disposition drift class (S1889-F3).
+pub(super) fn validate_discharge_authority_corroboration(
+    elab: &ElaboratedMirFunction,
+    raw: &RawMirFunction,
+) -> Vec<MirCheck> {
+    validate_discharge_authority_corroboration_over(&elab.name, &raw.blocks)
+}
+
+/// Testable core of [`validate_discharge_authority_corroboration`] — hand-
+/// constructed blocks, no `RawMirFunction`.
+fn validate_discharge_authority_corroboration_over(
+    function: &str,
+    blocks: &[BasicBlock],
+) -> Vec<MirCheck> {
+    // Carrier 2 (independent): every local the primitive stream writes as a
+    // Move/WitnessMove destination — a real ownership-receiving slot. Derived
+    // WITHOUT reading any NeutralizePayloadSlot authority.
+    let mut move_destinations: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let dest = match instr {
+                Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. } => *dest,
+                _ => continue,
+            };
+            if let Some(local) = whole_owner_local(dest) {
+                move_destinations.insert(local);
+            }
+        }
+    }
+    let mut findings = Vec::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            // Carrier 1: the carried transferee fact.
+            let Instr::NeutralizePayloadSlot {
+                transferee: Some(transferee),
+                authority,
+                ..
+            } = instr
+            else {
+                continue;
+            };
+            let Some(dest_local) = whole_owner_local(*transferee) else {
+                continue;
+            };
+            if !move_destinations.contains(&dest_local) {
+                findings.push(MirCheck::DischargeAuthorityDrift {
+                    function: function.to_string(),
+                    block: block.id,
+                    name: format!("local_{dest_local}"),
+                    reason: format!(
+                        "NeutralizePayloadSlot ({authority:?}) names transferee local_{dest_local} \
+                         as the new owner of the neutralized slot, but the primitive instruction \
+                         stream never moves any value into local_{dest_local}: the carried \
+                         transfer fact and the actual routing disagree (dual-carrier drift)"
+                    ),
+                });
+            }
+        }
+    }
+    findings
+}
+
 fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
     match drop.kind {
         // owned-aggregate record drops are keyed by both kind and `ElabDrop::ty`:
@@ -2258,7 +3594,7 @@ fn dedup_whole_value_handoff(
         .iter()
         .flat_map(|block| block.instructions.iter())
         .filter_map(|instr| match instr {
-            Instr::NeutralizePayloadSlot { place } => Some(*place),
+            Instr::NeutralizePayloadSlot { place, .. } => Some(*place),
             _ => None,
         })
         .collect();
@@ -5693,6 +7029,728 @@ mod twin_gate_classifier {
         assert!(
             is_ephemeral(&b.classify_scrutinee_origin(&call)),
             "a fresh-summary call scrutinee is an ephemeral fresh owner"
+        );
+    }
+}
+#[cfg(test)]
+mod obligation_balance_validator {
+    //! S1 obligation-balance unit fixtures — the plan's red-first validation
+    //! candidates as hand-constructed MIR (the `validate_drop_plan_*` /
+    //! `drop_kind_for_*` unit style). Each accept/reject decision below is a
+    //! pin: the branch-around leak (S1886 round-4 shape), the `move_out_arm`
+    //! double-free (S1882), and the transfer negative controls proving the
+    //! pass does not re-introduce move-checker liveness rejection (A278 /
+    //! S1875).
+    use super::*;
+
+    fn ret_ty() -> ResolvedTy {
+        ResolvedTy::Unit
+    }
+
+    fn elab_with_plans(plans: Vec<(ExitPath, DropPlan)>) -> ElaboratedMirFunction {
+        ElaboratedMirFunction {
+            name: "obligation_fixture".to_string(),
+            return_ty: ret_ty(),
+            statements: Vec::new(),
+            decisions: Vec::new(),
+            blocks: Vec::new(),
+            drop_plans: plans,
+            coroutine: None,
+            lambda_captures: Vec::new(),
+        }
+    }
+
+    fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: Vec::new(),
+            instructions,
+            terminator,
+        }
+    }
+
+    fn mint(local: u32) -> Instr {
+        // Any whole-slot write is a mint; the value is irrelevant.
+        Instr::ConstI64 {
+            dest: Place::Local(local),
+            value: 0,
+        }
+    }
+
+    fn mint_enum(local: u32) -> Instr {
+        Instr::ConstI64 {
+            dest: Place::EnumTag(local),
+            value: 0,
+        }
+    }
+
+    fn plain_drop(place: Place) -> ElabDrop {
+        ElabDrop {
+            place,
+            ty: ResolvedTy::String,
+            drop_fn: None,
+            kind: DropKind::Resource,
+            guard: None,
+        }
+    }
+
+    fn variant_place(local: u32) -> Place {
+        Place::EnumVariant {
+            local,
+            variant_idx: 0,
+            field_idx: 0,
+        }
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "fixture helper: taking ownership keeps the call sites free \
+                  of borrow noise"
+    )]
+    fn run(
+        blocks: Vec<BasicBlock>,
+        plans: Vec<(ExitPath, DropPlan)>,
+        tracked: &[(u32, &str)],
+    ) -> Vec<MirCheck> {
+        let elab = elab_with_plans(plans);
+        let tracked: BTreeMap<u32, String> = tracked
+            .iter()
+            .map(|(local, name)| (*local, (*name).to_string()))
+            .collect();
+        let suspend_kinds = HashMap::new();
+        let params = HashSet::new();
+        let local_types = BTreeMap::new();
+        validate_obligation_balance_with(
+            &elab,
+            &blocks,
+            &suspend_kinds,
+            &tracked,
+            &local_types,
+            &params,
+        )
+    }
+
+    use crate::model::NeutralizeAuthority;
+
+    #[test]
+    fn discharge_authority_missing_fails_closed() {
+        // A SendTransferLastUse neutralize structurally owns a destination, so a
+        // `transferee: None` is a fact-erased site — reject fail-closed.
+        let blocks = vec![block(
+            0,
+            vec![Instr::NeutralizePayloadSlot {
+                place: variant_place(1),
+                transferee: None,
+                authority: NeutralizeAuthority::SendTransferLastUse,
+            }],
+            Terminator::Return,
+        )];
+        let findings = validate_discharge_authority_over("f", &blocks);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::DischargeAuthorityMissing {
+                    authority: NeutralizeAuthority::SendTransferLastUse,
+                    ..
+                }]
+            ),
+            "a requires-transferee authority with no transferee must fail closed, got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn discharge_authority_missing_allows_move_out_arm_without_transferee() {
+        // A MoveOutArmConsume neutralize consumes into an in-flight expression
+        // with no destination local, so `transferee: None` is legitimate.
+        let blocks = vec![block(
+            0,
+            vec![Instr::NeutralizePayloadSlot {
+                place: variant_place(1),
+                transferee: None,
+                authority: NeutralizeAuthority::MoveOutArmConsume,
+            }],
+            Terminator::Return,
+        )];
+        assert!(
+            validate_discharge_authority_over("f", &blocks).is_empty(),
+            "a move-out-arm authority does not structurally require a transferee"
+        );
+    }
+
+    #[test]
+    fn discharge_authority_corroboration_flags_fabricated_transferee() {
+        // The neutralize names local 9 as the new owner, but the primitive
+        // stream never moves any value into local 9 — the carried transfer fact
+        // and the actual routing disagree (dual-carrier drift).
+        let blocks = vec![block(
+            0,
+            vec![Instr::NeutralizePayloadSlot {
+                place: variant_place(1),
+                transferee: Some(Place::Local(9)),
+                authority: NeutralizeAuthority::WholeCarrierConsume,
+            }],
+            Terminator::Return,
+        )];
+        let findings = validate_discharge_authority_corroboration_over("f", &blocks);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::DischargeAuthorityDrift { .. }]
+            ),
+            "a transferee the stream never writes must drift, got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn discharge_authority_corroboration_accepts_real_transfer() {
+        // The well-formed emit shape: the carrier is moved into the destination
+        // immediately before the neutralize names it as the transferee. The two
+        // carriers agree, so no drift.
+        let blocks = vec![block(
+            0,
+            vec![
+                Instr::Move {
+                    dest: Place::Local(9),
+                    src: variant_place(1),
+                },
+                Instr::NeutralizePayloadSlot {
+                    place: variant_place(1),
+                    transferee: Some(Place::Local(9)),
+                    authority: NeutralizeAuthority::WholeCarrierConsume,
+                },
+            ],
+            Terminator::Return,
+        )];
+        assert!(
+            validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
+            "a transferee the stream actually writes must corroborate clean"
+        );
+    }
+
+    /// A whole-local rebind out of a PARAMETER (`var iter = self;`) is a
+    /// caller-retained borrow alias: the rebound local must never produce a
+    /// definite under-release, even when re-minted per loop iteration from
+    /// a tuple-load (`iter = step.1`) — the `VecIter` cursor shape.
+    #[test]
+    fn param_rebind_and_tuple_load_remint_accept() {
+        let blocks = vec![block(
+            0,
+            vec![
+                Instr::Move {
+                    dest: Place::Local(3),
+                    src: Place::Local(0),
+                },
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(5),
+                    field_index: 1,
+                    dest: Place::Local(3),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+        let elab = elab_with_plans(plans);
+        let tracked: BTreeMap<u32, String> = [(3_u32, "iter".to_string())].into_iter().collect();
+        let suspend_kinds = HashMap::new();
+        let params: HashSet<u32> = [0_u32].into_iter().collect();
+        let local_types = BTreeMap::new();
+        let findings = validate_obligation_balance_with(
+            &elab,
+            &blocks,
+            &suspend_kinds,
+            &tracked,
+            &local_types,
+            &params,
+        );
+        assert!(
+            findings.is_empty(),
+            "borrow-derived mints never definite-leak: {findings:?}"
+        );
+    }
+
+    /// Fail-closed cap exhaustion: when the fixpoint cannot converge within
+    /// its iteration budget the verdict is UNKNOWN, and an unknown verdict
+    /// must NOT certify the body as balanced. A zero cap forces the exhaustion
+    /// path a converging body would never reach; the gate must emit an
+    /// unverified hard error rather than the old silent empty result.
+    #[test]
+    fn fixpoint_cap_exhaustion_fails_closed_unverified() {
+        let blocks = vec![block(0, vec![mint(1)], Terminator::Return)];
+        let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+        let elab = elab_with_plans(plans);
+        let tracked: BTreeMap<u32, String> = [(1_u32, "leaky".to_string())].into_iter().collect();
+        let suspend_kinds = HashMap::new();
+        let params = HashSet::new();
+        let local_types = BTreeMap::new();
+        let findings = validate_obligation_balance_capped(
+            &elab,
+            &blocks,
+            &suspend_kinds,
+            &tracked,
+            &local_types,
+            &params,
+            0,
+        );
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::ObligationBalanceUnverified { .. }]
+            ),
+            "cap exhaustion must fail closed with an unverified verdict, not \
+             silently certify balance: {findings:?}"
+        );
+    }
+
+    /// The unverified verdict is a hard diagnostic with NO allowlist escape:
+    /// `check_to_diagnostic` must upgrade it so the CLI rejects the program.
+    #[test]
+    fn unverified_balance_upgrades_to_hard_diagnostic() {
+        let check = MirCheck::ObligationBalanceUnverified {
+            function: "f".to_string(),
+            reason: "cap exhausted".to_string(),
+        };
+        assert!(
+            check_to_diagnostic(&check).is_some(),
+            "an unverified balance verdict must surface as a hard diagnostic"
+        );
+    }
+
+    fn is_under(check: &MirCheck) -> bool {
+        matches!(check, MirCheck::ObligationUnderReleased { .. })
+    }
+
+    fn is_over(check: &MirCheck) -> bool {
+        matches!(check, MirCheck::ObligationOverReleased { .. })
+    }
+
+    /// S1886 round-4 branch-around shape: a guard early-return BEFORE the
+    /// consuming path, whose exit plan carries NO drop for the minted local
+    /// (`return[bb1] drop plan (none)`), while the other return discharges
+    /// it. The guard exit is a definite zero → under-release REJECT.
+    #[test]
+    fn branch_around_missing_guard_drop_rejects_under_release() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, Vec::new(), Terminator::Return),
+            block(2, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![
+            (ExitPath::Return { block: 1 }, DropPlan::default()),
+            (
+                ExitPath::Return { block: 2 },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            ),
+        ];
+        let findings = run(blocks, plans, &[(1, "leaked")]);
+        assert_eq!(
+            findings.len(),
+            1,
+            "exactly the guard exit is unbalanced: {findings:?}"
+        );
+        let MirCheck::ObligationUnderReleased { block, name, .. } = &findings[0] else {
+            panic!("expected under-release, got {:?}", findings[0]);
+        };
+        assert_eq!(*block, 1);
+        assert_eq!(name, "leaked");
+    }
+
+    /// The fixed round-4 shape: every return path carries exactly one
+    /// discharge → ACCEPT.
+    #[test]
+    fn branch_around_with_both_exit_drops_accepts() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, Vec::new(), Terminator::Return),
+            block(2, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![
+            (
+                ExitPath::Return { block: 1 },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            ),
+            (
+                ExitPath::Return { block: 2 },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            ),
+        ];
+        let findings = run(blocks, plans, &[(1, "balanced")]);
+        assert!(findings.is_empty(), "balanced on both exits: {findings:?}");
+    }
+
+    /// S1882 `move_out_arm` shape: a match-arm payload binder is moved out
+    /// of the carrier's variant slot with NO `NeutralizePayloadSlot`, and
+    /// the exit plan releases BOTH the binder and the variant slot — two
+    /// discharges of one obligation on one path → over-release REJECT.
+    #[test]
+    fn move_out_arm_without_neutralize_rejects_over_release() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint_enum(1),
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: variant_place(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(2)), plain_drop(variant_place(1))],
+            },
+        )];
+        let findings = run(blocks, plans, &[(1, "carrier"), (2, "w")]);
+        assert_eq!(
+            findings.len(),
+            1,
+            "one over-release for the carrier: {findings:?}"
+        );
+        let MirCheck::ObligationOverReleased { name, .. } = &findings[0] else {
+            panic!("expected over-release, got {:?}", findings[0]);
+        };
+        assert_eq!(name, "carrier");
+    }
+
+    /// Branch-conditional double-free: the value is definitely discharged
+    /// TWICE on the `then` arm (returned twice) and once on the `else` arm,
+    /// and the two arms join before a common return. The join meet leaves the
+    /// per-path MINIMUM at 1, so a verdict keyed on `lo` path-dilutes the
+    /// double-free away and silently certifies. The per-path definite MAXIMUM
+    /// is 2, so the fixed verdict REJECTS: a double-free on any single path is
+    /// memory-unsafe regardless of the other paths.
+    #[test]
+    fn branch_conditional_double_free_on_one_arm_rejects_over_release() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            // `then`: two definite discharges (return-transfer twice) — the
+            // double-free arm.
+            block(
+                1,
+                vec![
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(1),
+                    },
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(1),
+                    },
+                ],
+                Terminator::Goto { target: 3 },
+            ),
+            // `else`: exactly one definite discharge — balanced.
+            block(
+                2,
+                vec![Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                }],
+                Terminator::Goto { target: 3 },
+            ),
+            block(3, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![(ExitPath::Return { block: 3 }, DropPlan::default())];
+        let findings = run(blocks, plans, &[(1, "doubled")]);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the then-arm double-free must reject even though it merges with a \
+             single-discharge arm: {findings:?}"
+        );
+        let MirCheck::ObligationOverReleased { name, .. } = &findings[0] else {
+            panic!("expected over-release, got {:?}", findings[0]);
+        };
+        assert_eq!(name, "doubled");
+    }
+
+    /// The FIXED move-out shape (#2523): the move-out is paired with a
+    /// `NeutralizePayloadSlot`, so the binder is an independent owner and
+    /// the carrier's variant-slot drop is a null-tolerant no-op → ACCEPT.
+    #[test]
+    fn move_out_arm_with_neutralize_accepts() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint_enum(1),
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: variant_place(1),
+                },
+                Instr::NeutralizePayloadSlot {
+                    place: variant_place(1),
+                    transferee: Some(Place::Local(2)),
+                    authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(2)), plain_drop(variant_place(1))],
+            },
+        )];
+        let findings = run(blocks, plans, &[(1, "carrier"), (2, "w")]);
+        assert!(
+            findings.is_empty(),
+            "neutralized transfer balances: {findings:?}"
+        );
+    }
+
+    /// Negative control (A278 / S1873): a value transferred into an
+    /// aggregate (the `forward_param_into_field` family once the param
+    /// exclusion has removed the parameter itself) must NOT phantom-reject
+    /// — aggregation operands are ambiguous transfers, so an exit without a
+    /// terminal drop is not a definite leak.
+    #[test]
+    fn aggregate_transfer_without_exit_drop_accepts() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint(1),
+                Instr::RecordInit {
+                    ty: ResolvedTy::Unit,
+                    fields: vec![(FieldOffset(0), Place::Local(1))],
+                    dest: Place::Local(3),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+        let findings = run(blocks, plans, &[(1, "forwarded")]);
+        assert!(
+            findings.is_empty(),
+            "aggregation is not a definite leak: {findings:?}"
+        );
+    }
+
+    /// Return-transfer is a definite discharge: `Move → ReturnSlot` with no
+    /// exit drop balances; adding a spurious exit drop on top is a definite
+    /// double release.
+    #[test]
+    fn return_transfer_balances_and_extra_drop_rejects() {
+        let make_blocks = || {
+            vec![block(
+                0,
+                vec![
+                    mint(1),
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(1),
+                    },
+                ],
+                Terminator::Return,
+            )]
+        };
+        let clean = run(
+            make_blocks(),
+            vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            &[(1, "returned")],
+        );
+        assert!(clean.is_empty(), "return-transfer balances: {clean:?}");
+
+        let doubled = run(
+            make_blocks(),
+            vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            )],
+            &[(1, "returned")],
+        );
+        assert_eq!(doubled.len(), 1, "{doubled:?}");
+        assert!(
+            is_over(&doubled[0]),
+            "spurious drop after return-transfer: {doubled:?}"
+        );
+    }
+
+    /// A guard-gated exit drop is path-sensitive at runtime — the validator
+    /// treats it as ambiguous, so it neither certifies balance nor
+    /// manufactures a definite report.
+    #[test]
+    fn guarded_exit_drop_is_never_a_definite_verdict() {
+        let blocks = vec![block(0, vec![mint(1)], Terminator::Return)];
+        let guarded = ElabDrop {
+            guard: Some(Place::Local(7)),
+            ..plain_drop(Place::Local(1))
+        };
+        let plans = vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![guarded],
+            },
+        )];
+        let findings = run(blocks, plans, &[(1, "gated")]);
+        assert!(
+            findings.is_empty(),
+            "guarded drop widens, never decides: {findings:?}"
+        );
+    }
+
+    /// Per-iteration mint + per-iteration inline release around a loop back
+    /// edge balances: the defining write resets the count each iteration.
+    #[test]
+    fn loop_body_mint_and_release_accepts() {
+        let blocks = vec![
+            block(0, Vec::new(), Terminator::Goto { target: 1 }),
+            block(
+                1,
+                vec![
+                    mint(1),
+                    Instr::Drop {
+                        place: Place::Local(1),
+                        ty: ResolvedTy::String,
+                        drop_fn: None,
+                    },
+                ],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(2, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![(ExitPath::Return { block: 2 }, DropPlan::default())];
+        let findings = run(blocks, plans, &[(1, "cursor")]);
+        assert!(
+            findings.is_empty(),
+            "per-iteration lifecycle balances: {findings:?}"
+        );
+    }
+
+    /// An unminted local (its defining write never executes on any path to
+    /// the exit) carries no obligation — no finding, and an exit-plan drop
+    /// for it is not counted into a phantom mint.
+    #[test]
+    fn unminted_local_is_skipped() {
+        let blocks = vec![block(0, Vec::new(), Terminator::Return)];
+        let plans = vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(1))],
+            },
+        )];
+        let findings = run(blocks, plans, &[(1, "never_minted")]);
+        assert!(findings.is_empty(), "no mint, no obligation: {findings:?}");
+    }
+
+    /// Functions carrying a suspend terminator are excluded wholesale (the
+    /// coro frame owns cross-suspend state; S2/OWN-V1 scope).
+    #[test]
+    fn suspending_function_is_excluded() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 1,
+                    is_final: false,
+                },
+            ),
+            block(1, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![(ExitPath::Return { block: 1 }, DropPlan::default())];
+        let findings = run(blocks, plans, &[(1, "framed")]);
+        assert!(
+            findings.is_empty(),
+            "suspend carriers are out of S1 scope: {findings:?}"
+        );
+    }
+
+    /// Send transfers the prepared outbound owner to transport: definite
+    /// discharge, balanced without an exit drop.
+    #[test]
+    fn send_value_transfer_balances() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Send {
+                    actor: Place::Local(0),
+                    msg_type: 0,
+                    value: Place::Local(1),
+                    next: 1,
+                    arg_modes: Vec::new(),
+                    cleanup_plan: None,
+                },
+            ),
+            block(1, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![(ExitPath::Return { block: 1 }, DropPlan::default())];
+        let findings = run(blocks, plans, &[(1, "payload")]);
+        assert!(
+            findings.is_empty(),
+            "transport consumed the owner: {findings:?}"
+        );
+    }
+
+    /// Interval meets are sound at merges: discharge on one arm only, then
+    /// a joined return with no plan drop is [0,1] — genuinely path-dependent
+    /// (the guard-flag case), so no definite verdict either way.
+    #[test]
+    fn merge_with_one_armed_discharge_is_not_definite() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(
+                1,
+                vec![Instr::Drop {
+                    place: Place::Local(1),
+                    ty: ResolvedTy::String,
+                    drop_fn: None,
+                }],
+                Terminator::Goto { target: 3 },
+            ),
+            block(2, Vec::new(), Terminator::Goto { target: 3 }),
+            block(3, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![(ExitPath::Return { block: 3 }, DropPlan::default())];
+        let findings = run(blocks, plans, &[(1, "joined")]);
+        assert!(
+            findings.iter().all(|f| !is_under(f) && !is_over(f)),
+            "a some-paths discharge is ambiguous, not definite: {findings:?}"
         );
     }
 }

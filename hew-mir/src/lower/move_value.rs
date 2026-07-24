@@ -6,6 +6,21 @@ use super::{
 };
 
 impl Builder {
+    /// Emit a move-out payload-slot neutralize whose ownership is consumed into
+    /// an in-flight expression (no destination local to name as the transferee).
+    /// The shared emit for the consuming-match move-out arms, so each arm records
+    /// its discharge authority without repeating the field-carriage boilerplate.
+    pub(crate) fn push_move_out_neutralize(
+        &mut self,
+        source: Place,
+        authority: crate::model::NeutralizeAuthority,
+    ) {
+        self.push_instr(Instr::NeutralizePayloadSlot {
+            place: source,
+            transferee: None,
+            authority,
+        });
+    }
     /// A `machine` value never enters the owned call-carrier protocol. Its
     /// layout registers in `machine_layouts` (codegen's enum-layout lookup
     /// for snapshot free synthesis fails closed on it), and the language
@@ -342,7 +357,11 @@ impl Builder {
             OwnedCarrierNeutralizeTarget::Whole(source) => {
                 let dest = self.alloc_local(ty.clone());
                 self.push_instr(Instr::Move { dest, src: value });
-                self.push_instr(Instr::NeutralizePayloadSlot { place: source });
+                self.push_instr(Instr::NeutralizePayloadSlot {
+                    place: source,
+                    transferee: Some(dest),
+                    authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                });
                 dest
             }
             OwnedCarrierNeutralizeTarget::Projection { root, fields } => {
@@ -412,8 +431,7 @@ impl Builder {
                         self.param_ownership
                             .call_param_consume
                             .get(&(item, index))
-                            .copied()
-                            == Some(true)
+                            .is_some_and(|v| v.is_consume())
                     });
                 let target_is_owned_carrier = callee_item.is_some_and(|item| {
                     self.param_ownership

@@ -201,7 +201,7 @@ fn run_once() -> i64 {
         .iter()
         .enumerate()
         .filter_map(|(index, instr)| {
-            matches!(instr, Instr::NeutralizePayloadSlot { place } if *place == parameter)
+            matches!(instr, Instr::NeutralizePayloadSlot { place, .. } if *place == parameter)
                 .then_some(index)
         })
         .collect();
@@ -294,7 +294,7 @@ fn run_loop(frames: i64) -> i64 {
         .expect("carrier temp must move into the fresh owner the callee receives");
     assert!(
         carrier_block.instructions.iter().any(|instr| {
-            matches!(instr, Instr::NeutralizePayloadSlot { place } if *place == move_src)
+            matches!(instr, Instr::NeutralizePayloadSlot { place, .. } if *place == move_src)
         }),
         "the source temp slot must be neutralized so only the callee holds release authority"
     );

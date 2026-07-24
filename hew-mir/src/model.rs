@@ -1459,6 +1459,19 @@ pub fn machine_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLayout> 
     machine_layouts.iter().map(machine_enum_view).collect()
 }
 
+/// Returns `true` when the named enum registered in `enum_layouts` has
+/// `is_indirect = true`, meaning every variable of the type holds a
+/// heap pointer rather than an inline tagged-union struct.
+#[must_use]
+pub fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
+    // Look up by exact name first, then by short (unqualified) name so
+    // module-qualified enums (`"mod.Expr"`) match `"Expr"` entries.
+    enum_layouts
+        .iter()
+        .find(|el| el.name == name || el.name == hew_types::short_name(name))
+        .is_some_and(|el| el.is_indirect)
+}
+
 /// THE single enum-layout lookup authority for this module.
 ///
 /// Resolve a `Named { name, args }` to its registered [`EnumLayout`]. Every
@@ -2805,6 +2818,104 @@ pub struct RawMirFunction {
     pub source_origin: SourceOrigin,
 }
 
+/// Name prefix minted by `lower/closure_gen.rs` for every synthesised
+/// generator body (`__hew_gen_body_<owner>_<id>`). The prefix is a semantic
+/// carrier: [`RawMirFunction::coroutine_facts`] keys the no-yield-generator
+/// coroutine classification off it, so the minting site and the classifier
+/// must spell the identical prefix — both reference this single const.
+pub const GEN_BODY_PREFIX: &str = "__hew_gen_body_";
+
+/// Coroutine-lowering facts for one [`RawMirFunction`], derived by the single
+/// authority [`RawMirFunction::coroutine_facts`]. Codegen consumes these
+/// instead of re-scanning `blocks` at each decision site (the coroutine-ramp
+/// declaration, the coroutine prologue's final-suspend/generator shape, and
+/// the dispatch trampoline's per-handler ramp-vs-direct choice), so the
+/// decision sites cannot drift onto differing terminator sets.
+///
+/// The facts are intentionally DISTINCT predicates, not one boolean:
+/// `is_coroutine` (ramp declaration) is strictly wider than
+/// `has_suspend_carrier` (handler suspendability) because a generator body
+/// (`Yield`, or a no-yield `__hew_gen_body_*`) is a coroutine ramp but is
+/// never an actor handler.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "not a state machine: four independent predicates over one block scan, each consumed by a different codegen decision site"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CoroutineFacts {
+    /// The function lowers as an `llvm.coro` switched-resume coroutine RAMP
+    /// (LLVM return type is the `coro.begin` handle `ptr`; coro prologue +
+    /// shared cleanup/suspend-return epilogue). True when the body carries
+    /// ANY suspend-family terminator (`has_suspend_carrier`), carries a
+    /// generator `Yield` (`is_generator`), or is a synthesised generator body
+    /// by name. The name check is load-bearing for a NO-YIELD generator
+    /// (`gen { 1 }` → `Generator<Never, R>`): it carries no `Yield`, so the
+    /// terminator scan alone would treat it as an ordinary function — but its
+    /// construction site (`MakeGenerator`) drives it as a coro ramp expecting
+    /// the handle. Marking every gen body a coroutine makes a no-yield
+    /// generator a ramp that runs straight to its final suspend (the
+    /// consumer's first `next()` then observes `None`), keeping the
+    /// representation uniform.
+    pub is_coroutine: bool,
+    /// The body carries a suspend-family terminator: the ten pure
+    /// `{resume, cleanup}` carriers all collapse to the bare
+    /// [`Terminator::Suspend`]; [`Terminator::SuspendingScopeDeadline`] /
+    /// [`Terminator::SuspendingSelect`] keep their distinct terminators.
+    /// This is the actor-dispatch trampoline's per-handler ramp-vs-direct
+    /// predicate: a handler is driven as a coro ramp exactly when its body
+    /// can actually suspend (`Yield` / gen bodies are excluded — a handler is
+    /// never a generator body).
+    pub has_suspend_carrier: bool,
+    /// The body carries [`Terminator::Yield`] (a generator body's non-final
+    /// suspends). A generator completes at its `Return` — it has no explicit
+    /// final `Suspend` — so its completion routes through the shared
+    /// final-suspend block with a VALUE-FREE final suspend (the value channel
+    /// is the out-pointer, not a reply channel).
+    pub is_generator: bool,
+    /// The body carries an explicit terminal suspend
+    /// (`Terminator::Suspend { is_final: true, .. }`). Such a coroutine needs
+    /// no shared synthesised final-suspend block: its `Return` arm just
+    /// `ret`s the handle.
+    pub has_explicit_final_suspend: bool,
+}
+
+impl RawMirFunction {
+    /// Derive this function's [`CoroutineFacts`] from its finalized `blocks`
+    /// (and its `name`, for the synthesised no-yield generator body).
+    ///
+    /// This is the SINGLE derivation of every coroutine-lowering predicate —
+    /// codegen holds no terminator scan of its own, so the ramp declaration,
+    /// the coroutine prologue shape, and the trampoline's suspendability
+    /// choice agree by construction. Computed on demand (not stored on the
+    /// struct): the facts are fully determined by `name` + `blocks`, which
+    /// already travel to every consumer, and a stored copy would be a second
+    /// carrier that can go stale against post-authoring block edits.
+    #[must_use]
+    pub fn coroutine_facts(&self) -> CoroutineFacts {
+        let mut facts = CoroutineFacts::default();
+        for block in &self.blocks {
+            match block.terminator {
+                Terminator::Yield { .. } => facts.is_generator = true,
+                Terminator::Suspend { is_final, .. } => {
+                    facts.has_suspend_carrier = true;
+                    facts.has_explicit_final_suspend |= is_final;
+                }
+                Terminator::SuspendingScopeDeadline { .. }
+                | Terminator::SuspendingSelect { .. } => facts.has_suspend_carrier = true,
+                _ => {}
+            }
+        }
+        facts.is_coroutine = facts.has_suspend_carrier
+            || facts.is_generator
+            || self.name.starts_with(GEN_BODY_PREFIX);
+        // Structural pin: an explicit final suspend is itself a suspend
+        // carrier, and any carrier makes the function a coroutine.
+        debug_assert!(!facts.has_explicit_final_suspend || facts.has_suspend_carrier);
+        debug_assert!(!facts.has_suspend_carrier || facts.is_coroutine);
+        facts
+    }
+}
+
 /// A generic origin function lowered against abstract `ResolvedTy::TypeParam`
 /// operands, paired with the type-parameter binder it was lowered under
 /// (W5.007a — see [`IrPipeline::polymorphic_mir`]).
@@ -4058,6 +4169,56 @@ pub enum FloatWidth {
     F64,
 }
 
+/// WHY an [`Instr::NeutralizePayloadSlot`] fires — the closed, compiler-owned
+/// set of discharge authorities (D159/U229). Every neutralize site names its
+/// authority so the fact is carried as data rather than re-derived from the
+/// surrounding instruction shape, and the fail-closed `DischargeAuthorityMissing`
+/// check knows which authorities structurally own a transferee.
+///
+/// The match on this enum is exhaustive at every consumer (no wildcard
+/// "unknown authority = assume fine" arm — `exhaustive-coverage`, L125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeutralizeAuthority {
+    /// The move-out arm of a consuming match: an `OwnedBinding`-provenance
+    /// projected payload binder is consumed, nulling the scrutinee's variant
+    /// slot (`hew-mir/src/lower/expr.rs`). The payload is consumed into an
+    /// in-flight expression, so there is no destination `Place` in hand —
+    /// `transferee` is `None` here by construction.
+    MoveOutArmConsume,
+    /// A fresh sole-owner ephemeral temp (`match f()`) whose payload is moved
+    /// out, nulling the temp. No re-readable origin and no persistent new owner
+    /// local — `transferee` is `None`.
+    EphemeralTempConsume,
+    /// A `SendAliasMode::TransferLastUse` send/ask argument funnel: the argument
+    /// is moved into a fresh by-value carrier `dest` and its source slot nulled
+    /// (`hew-mir/src/lower/mod.rs`). `transferee` is the `dest` carrier.
+    SendTransferLastUse,
+    /// A whole owned call-carrier consume: the carrier value is moved into a
+    /// fresh owner `dest` and its source slot nulled
+    /// (`hew-mir/src/lower/move_value.rs`). `transferee` is the `dest` owner.
+    WholeCarrierConsume,
+}
+
+impl NeutralizeAuthority {
+    /// Whether this authority structurally owns a `transferee` destination
+    /// `Place`. The funnel and whole-carrier authorities move into a named
+    /// `dest`; the move-out-arm authorities consume into an in-flight expression
+    /// with no destination local. A `None` transferee on a requires-transferee
+    /// authority is a defective (fact-erased) site the fail-closed
+    /// `DischargeAuthorityMissing` check rejects before codegen.
+    #[must_use]
+    pub fn requires_transferee(self) -> bool {
+        match self {
+            NeutralizeAuthority::SendTransferLastUse | NeutralizeAuthority::WholeCarrierConsume => {
+                true
+            }
+            NeutralizeAuthority::MoveOutArmConsume | NeutralizeAuthority::EphemeralTempConsume => {
+                false
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
     /// Semantic marker at actor-handler entry. Codegen emits no user-visible
@@ -4390,7 +4551,24 @@ pub enum Instr {
     /// a direct null store and an aggregate payload by nulling every heap leaf
     /// (`emit_overwrite_neutralize_*`), so every release symbol the scrutinee's
     /// drop later calls is a null-tolerant no-op.
-    NeutralizePayloadSlot { place: Place },
+    NeutralizePayloadSlot {
+        place: Place,
+        /// The new owner the neutralized storage's ownership transferred TO, when
+        /// it is a nameable `Place` at the emit site. `Some` at the send-transfer
+        /// funnels and the whole-carrier move (the move `dest` is in hand);
+        /// `None` at the move-out-arm consume hooks, where the payload is
+        /// consumed into an in-flight expression with no destination local yet
+        /// bound. The [`NeutralizeAuthority`] records which case applies, and the
+        /// fail-closed `DischargeAuthorityMissing` check rejects a `None` on an
+        /// authority that structurally owns a destination (see `check_to_diagnostic`).
+        transferee: Option<Place>,
+        /// WHY this neutralize fires — the closed, compiler-owned discharge
+        /// authority. Carried as data (D159/U229) so a downstream consumer reads
+        /// the recorded reason instead of re-deriving it from the surrounding
+        /// instruction shape, and the corroboration pass can pin it against the
+        /// independently-derived discharge set.
+        authority: NeutralizeAuthority,
+    },
     /// Neutralize one root-relative aggregate projection after its byte-copied
     /// value has transferred into a new owner. The path traverses inline record
     /// and tuple fields from `root`; clearing only the terminal slot leaves the
@@ -5682,6 +5860,51 @@ pub enum MirCheck {
     /// `reason` carries a short human-readable cause for diagnostic
     /// anchoring; `ty` is the rejected operand rendered for display.
     WitnessOperandUnresolved { ty: String, reason: String },
+    /// S1 obligation-balance: a heap-owning owned local reaches a `Return`
+    /// exit with ZERO discharges on every modelling of that path — no terminal
+    /// drop in the exit's plan, no ownership transfer (move-out / neutralize /
+    /// send / consuming runtime call), no inline release. The mint's release
+    /// obligation is never met on this path: a leak. The discharge set is
+    /// re-derived independently from the primitive `Instr` stream + CFG
+    /// reachability (never from the elaborator's `Disposition` ledger — the
+    /// ledger is the component under test). Under-release is ADVISORY: the
+    /// gate surfaces it as a compile-time warning that does not fail the build
+    /// (see [`MirDiagnosticKind::is_advisory`]). No allowlist suppresses it —
+    /// the lite MIR tier cannot soundly gate leaks without un-forgeable module
+    /// provenance, so it warns on every under-release (tracked stdlib holes
+    /// included) rather than hard-gate behind a forgeable per-function key.
+    ObligationUnderReleased {
+        /// Function symbol (`ElaboratedMirFunction::name`).
+        function: String,
+        /// The unbalanced exit's block id (`return[bbN]`).
+        block: u32,
+        /// Source-level name of the leaked local (diagnostics).
+        name: String,
+        /// Rendered type of the leaked local (`ResolvedTy` Display), carried for
+        /// the diagnostic. Empty when the type could not be recovered
+        /// (hand-built test MIR).
+        local_ty: String,
+        reason: String,
+    },
+    /// S1 obligation-balance: a heap-owning owned local accumulates TWO OR
+    /// MORE definite discharges on a single CFG path to a `Return` exit — a
+    /// double-free. Memory-unsafe; unconditional hard error with NO allowlist
+    /// escape.
+    ObligationOverReleased {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
+    /// S1 obligation-balance: the discharge-interval fixpoint did not reach a
+    /// verdict for this function — the monotone worklist exceeded its
+    /// iteration cap before converging. The lattice is finite and the transfer
+    /// monotone, so this is unreachable in principle; if it ever fires it is a
+    /// modelling defect, and the balance of this function is UNVERIFIED. The
+    /// gate must not silently certify an unverified function as balanced, so
+    /// this is an unconditional hard error with NO allowlist escape (fail
+    /// closed — a leak/double-free gate that cannot decide rejects).
+    ObligationBalanceUnverified { function: String, reason: String },
     /// W3.053 fail-closed gate: an owned handle (Generator / Stream / Sink /
     /// Duplex / Cancellation token / actor handle — any `AffineResource` /
     /// `CowHeap`-drop handle) was moved into a local tuple/record and then
@@ -5718,6 +5941,33 @@ pub enum MirCheck {
         /// remediation wording. Actor-state findings are always `overwrite:
         /// true` (no extraction arm).
         owner: AggregateOwner,
+    },
+    /// Discharge-authority carriage (A / D159): a `NeutralizePayloadSlot`
+    /// carries a [`NeutralizeAuthority`] that structurally owns a `transferee`
+    /// destination (`SendTransferLastUse` / `WholeCarrierConsume`) but the
+    /// `transferee` is `None` — a fact-erased site that slipped a defaulted
+    /// authority past the write chokepoint. Fail-closed hard error before
+    /// codegen (boundary-fail-closed, L49): a neutralize with a required-but-
+    /// absent transferee is a defective discharge record, never a silent pass.
+    DischargeAuthorityMissing {
+        function: String,
+        block: u32,
+        /// The authority whose structural transferee requirement was violated.
+        authority: NeutralizeAuthority,
+        reason: String,
+    },
+    /// Discharge-authority corroboration pin (A / D159 dual-carrier): a carried
+    /// discharge authority disagrees with the INDEPENDENTLY re-derived discharge
+    /// set — a `NeutralizePayloadSlot` names a `transferee` the primitive-stream
+    /// derivation does not see actually taking ownership, or a `ConsumedAt`
+    /// disposition claims a consume the instruction stream never performs (the
+    /// S1889-F3 routing-vs-disposition drift shape). Hard error: two carriers of
+    /// one fact must agree (L211).
+    DischargeAuthorityDrift {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
     },
 }
 
@@ -6619,11 +6869,55 @@ pub enum MirDiagnosticKind {
     /// emits a partial drop (fail-closed per LESSONS
     /// `cleanup-all-exits` / `boundary-fail-closed`).
     DropPlanUndetermined { block: u32, reason: String },
+    /// S1 obligation-balance under-release (leak): surfaced from
+    /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has
+    /// ZERO discharges on a CFG path to a `Return` exit. ADVISORY (see
+    /// [`MirDiagnosticKind::is_advisory`]): rendered as a compile-time warning
+    /// that does not fail the build, because the lite MIR tier cannot soundly
+    /// suppress a leak without un-forgeable module provenance (OWN-V1).
+    ObligationUnderReleased {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
+    /// S1 obligation-balance over-release (double-free): surfaced from
+    /// `MirCheck::ObligationOverReleased`. Two or more definite discharges
+    /// on one CFG path. Unconditional hard error — memory-unsafe, no
+    /// allowlist escape.
+    ObligationOverReleased {
+        function: String,
+        block: u32,
+        name: String,
+        reason: String,
+    },
+    /// S1 obligation-balance verdict unreached: surfaced from
+    /// `MirCheck::ObligationBalanceUnverified`. The discharge-interval fixpoint
+    /// exceeded its iteration cap before converging, so the function's balance
+    /// is undecided. Unconditional hard error — the gate fails closed rather
+    /// than certify an unverified function.
+    ObligationBalanceUnverified { function: String, reason: String },
     /// Execution-context carrier marker validation failed.
     ContextBoundaryViolation {
         function: String,
         block: u32,
         kind: &'static str,
+        reason: String,
+    },
+    /// Discharge-authority carriage: a `NeutralizePayloadSlot` whose authority
+    /// requires a transferee reached elaboration without one (fail-closed).
+    DischargeAuthorityMissing {
+        function: String,
+        block: u32,
+        authority: NeutralizeAuthority,
+        reason: String,
+    },
+    /// Discharge-authority corroboration drift: a carried discharge fact
+    /// disagrees with the independently re-derived discharge set.
+    DischargeAuthorityDrift {
+        function: String,
+        block: u32,
+        name: String,
         reason: String,
     },
     /// A context-derived place escaped past `ExitContext`.
@@ -6817,6 +7111,39 @@ pub enum MirDiagnosticKind {
     /// When the full env-materialization protocol for Duplex captures is
     /// implemented, remove this guard AND the checker gate in `check_call`.
     ClosureCapturesDuplexHandle { name: String, site: SiteId },
+}
+
+impl MirDiagnosticKind {
+    /// Whether this diagnostic is ADVISORY — a compile-time warning that is
+    /// surfaced but does NOT fail the build — rather than a hard error.
+    ///
+    /// This is the single source of severity truth for MIR diagnostics: every
+    /// CLI consumer renders an advisory as a `warning` and never counts it
+    /// toward build failure. All other diagnostics stay hard `E_MIR_*` errors.
+    ///
+    /// Only [`MirDiagnosticKind::ObligationUnderReleased`] is advisory. An
+    /// under-release is a resource LEAK, not a memory-safety violation, and the
+    /// lite MIR-tier obligation-balance gate cannot SOUNDLY suppress a leak: it
+    /// has no un-forgeable defining-module provenance signal, so a per-function
+    /// allowlist keyed on the mangled symbol is forgeable (the compiler mangles
+    /// a user module `base64`'s `decode` to the same `base64$decode` a stdlib
+    /// entry used). Rather than hard-gate every leak behind a forgeable
+    /// allowlist — silently swallowing a genuine user leak that collides with a
+    /// tracked stdlib triple — the gate WARNS on every under-release and leaves
+    /// the build green. The tracked stdlib holes (semver/base64/generic-Vec-iter)
+    /// warn honestly on their own builds. Promoting under-release back to a
+    /// sound hard gate is the OWN-V1 follow-up: it needs frontend module
+    /// provenance threaded into this gate so a stdlib site is distinguishable
+    /// from a same-named user site.
+    ///
+    /// Over-release ([`MirDiagnosticKind::ObligationOverReleased`], double-free)
+    /// is memory-unsafe and is NEVER advisory; the fail-closed undecidability
+    /// verdict ([`MirDiagnosticKind::ObligationBalanceUnverified`]) is NEVER
+    /// advisory.
+    #[must_use]
+    pub fn is_advisory(&self) -> bool {
+        matches!(self, MirDiagnosticKind::ObligationUnderReleased { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7706,6 +8033,64 @@ mod suspend_terminator_tests {
             succs,
             vec![20],
             "successors must NOT collapse to [next] only (pre-fix regression)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_severity_tests {
+    //! Severity classification of MIR diagnostics
+    //! ([`MirDiagnosticKind::is_advisory`]) — the single source of truth every
+    //! CLI consumer keys off. Pins the S1 obligation-balance severity split:
+    //! under-release (leak) is advisory (compile-time warning, build stays
+    //! green); over-release (double-free) and the fail-closed undecidability
+    //! verdict are blocking hard errors with no advisory escape.
+
+    use super::*;
+
+    #[test]
+    fn under_release_leak_is_advisory() {
+        // The exact triple the deleted forgeable allowlist keyed on
+        // (`base64$decode` / `out` / `bytes`): now surfaced, never suppressed,
+        // and classified advisory so it warns rather than fails the build.
+        let leak = MirDiagnosticKind::ObligationUnderReleased {
+            function: "base64$decode".to_string(),
+            block: 20,
+            name: "out".to_string(),
+            reason: "mint without discharge = leak".to_string(),
+        };
+        assert!(
+            leak.is_advisory(),
+            "under-release (leak) must be advisory — a compile-time warning that \
+             does not fail the build"
+        );
+    }
+
+    #[test]
+    fn over_release_double_free_is_blocking() {
+        let double_free = MirDiagnosticKind::ObligationOverReleased {
+            function: "f".to_string(),
+            block: 3,
+            name: "h".to_string(),
+            reason: "double release".to_string(),
+        };
+        assert!(
+            !double_free.is_advisory(),
+            "over-release (double-free) is memory-unsafe and must stay a hard \
+             error — never advisory"
+        );
+    }
+
+    #[test]
+    fn unverified_balance_verdict_is_blocking() {
+        let unverified = MirDiagnosticKind::ObligationBalanceUnverified {
+            function: "f".to_string(),
+            reason: "fixpoint exceeded cap".to_string(),
+        };
+        assert!(
+            !unverified.is_advisory(),
+            "an undecided balance verdict fails closed as a hard error — never \
+             advisory"
         );
     }
 }

@@ -2490,7 +2490,7 @@ impl Checker {
                         // and emits `EnumCloneInplace`, lowered to
                         // `__hew_enum_clone_inplace_<E>`. No bare-name seed: the
                         // enum clone-site is seeded from the `EnumCloneInplace`
-                        // walk in codegen (`collect_enum_clone_inplace_seeds`),
+                        // walk in the MIR thunk registry (`collect_enum_clone_inplace_seeds`),
                         // keyed by the monomorphised layout, so a generic
                         // instantiation never registers a dead bare key.
                         let enum_ty = receiver_ty.clone();
@@ -8390,7 +8390,7 @@ impl Checker {
                                 // User enum: same rewrite + HIR node as a record
                                 // clone; MIR demuxes by the resolved layout and
                                 // emits `EnumCloneInplace`. No bare-name seed —
-                                // codegen's `collect_enum_clone_inplace_seeds`
+                                // the MIR thunk registry's `collect_enum_clone_inplace_seeds`
                                 // keys the per-mono helper.
                                 self.record_method_call_rewrite(
                                     span,

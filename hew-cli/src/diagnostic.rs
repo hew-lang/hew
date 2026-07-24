@@ -124,7 +124,12 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::OutboundModeUnresolved { .. }
         | hew_mir::MirDiagnosticKind::MustConsume { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "E_MIR_CHECK",
         hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
@@ -571,7 +576,14 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         }
         hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { .. } => "RemotePayloadUnsupported",
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. } => "DropPlanUndetermined",
+        hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. } => "ObligationUnderReleased",
+        hew_mir::MirDiagnosticKind::ObligationOverReleased { .. } => "ObligationOverReleased",
+        hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. } => {
+            "ObligationBalanceUnverified"
+        }
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. } => "ContextBoundaryViolation",
+        hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. } => "DischargeAuthorityMissing",
+        hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. } => "DischargeAuthorityDrift",
         hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "ContextBindingEscapes",
         hew_mir::MirDiagnosticKind::UnknownActorStateField { .. } => "UnknownActorStateField",
         hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { .. } => "InvalidActorSpawnArgument",
@@ -668,7 +680,12 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
         | hew_mir::MirDiagnosticKind::ExternStringOwnershipUnresolved { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { .. }
+        | hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
         | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
         | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
@@ -757,6 +774,34 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, reason } => {
             format!("drop plan for MIR block {block} could not be determined: {reason}")
         }
+        hew_mir::MirDiagnosticKind::ObligationUnderReleased {
+            function,
+            name,
+            reason,
+            ..
+        } => {
+            format!(
+                "obligation balance in `{function}`: owned value `{name}` is \
+                 never released on an exit path (leak): {reason}"
+            )
+        }
+        hew_mir::MirDiagnosticKind::ObligationOverReleased {
+            function,
+            name,
+            reason,
+            ..
+        } => {
+            format!(
+                "obligation balance in `{function}`: owned value `{name}` is \
+                 released more than once on an exit path (double-free): {reason}"
+            )
+        }
+        hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { function, reason } => {
+            format!(
+                "obligation balance in `{function}` could not be verified: \
+                 {reason}"
+            )
+        }
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation {
             function,
             kind,
@@ -764,6 +809,16 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
             ..
         } => {
             format!("context boundary violation in `{function}` ({kind}): {reason}")
+        }
+        hew_mir::MirDiagnosticKind::DischargeAuthorityMissing {
+            function, reason, ..
+        } => {
+            format!("discharge-authority carriage in `{function}`: {reason}")
+        }
+        hew_mir::MirDiagnosticKind::DischargeAuthorityDrift {
+            function, reason, ..
+        } => {
+            format!("discharge-authority corroboration in `{function}`: {reason}")
         }
         hew_mir::MirDiagnosticKind::ContextBindingEscapes { place, block } => format!(
             "context-bound place `{}` escapes from MIR block {block}",
@@ -968,7 +1023,11 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             notes.push(format!("site: {site}"));
         }
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, .. }
+        | hew_mir::MirDiagnosticKind::ObligationUnderReleased { block, .. }
+        | hew_mir::MirDiagnosticKind::ObligationOverReleased { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { block, .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityMissing { block, .. }
+        | hew_mir::MirDiagnosticKind::DischargeAuthorityDrift { block, .. }
         | hew_mir::MirDiagnosticKind::ContextBindingEscapes { block, .. } => {
             notes.push(format!("block: {block}"));
         }
@@ -979,6 +1038,9 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             key_field, ..
         } => {
             notes.push(format!("coalesce key field: {key_field}"));
+        }
+        hew_mir::MirDiagnosticKind::ObligationBalanceUnverified { function, .. } => {
+            notes.push(format!("function: {function}"));
         }
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
@@ -1053,7 +1115,18 @@ fn render_mir_diagnostic_without_source(
     diagnostic: &hew_mir::MirDiagnostic,
     site: Option<&hew_hir::HirSiteSource>,
 ) {
-    emit_plain_diagnostic_line(&format!("error: {}", mir_diagnostic_message(diagnostic)));
+    // Advisory diagnostics (obligation under-release leaks) are compile-time
+    // warnings, not build errors — render the `warning:` severity prefix so the
+    // location-less advisory reads honestly and no consumer treats it as fatal.
+    let severity = if diagnostic.kind.is_advisory() {
+        "warning"
+    } else {
+        "error"
+    };
+    emit_plain_diagnostic_line(&format!(
+        "{severity}: {}",
+        mir_diagnostic_message(diagnostic)
+    ));
     for note in mir_context_notes(diagnostic) {
         emit_plain_diagnostic_line(&format!("  = note: {note}"));
     }
@@ -1081,6 +1154,11 @@ pub(crate) fn render_mir_diagnostics(
 ) {
     let json = crate::diagnostic_json::json_output_active();
     for diagnostic in diagnostics {
+        // Advisory diagnostics (obligation under-release leaks) render as
+        // WARNINGS and never fail the build; everything else is a hard error.
+        // The severity is a property of the diagnostic kind
+        // (`MirDiagnosticKind::is_advisory`), the single source of truth.
+        let advisory = diagnostic.kind.is_advisory();
         let primary_site = mir_primary_site(&diagnostic.kind)
             .and_then(|site| site_spans.get(&site).map(|source| (site, source)));
         let Some((_, site)) = primary_site else {
@@ -1109,6 +1187,15 @@ pub(crate) fn render_mir_diagnostics(
                 Some((source, filename)),
                 Some(&site.span),
                 &secondary_spans,
+            );
+        } else if advisory {
+            render_warning_with_raw_notes(
+                source,
+                filename,
+                &site.span,
+                &mir_diagnostic_message(diagnostic),
+                &secondary_spans,
+                &suggestions,
             );
         } else {
             render_diagnostic_with_raw_notes(
@@ -1150,6 +1237,7 @@ fn push_mir_json_diagnostic(
         message,
         secondary_spans,
         &mir_context_notes(diagnostic),
+        diagnostic.kind.is_advisory(),
     ));
 }
 

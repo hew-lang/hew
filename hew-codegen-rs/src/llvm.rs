@@ -69,13 +69,13 @@ use std::sync::{Mutex, OnceLock};
 use hew_hir::stdlib_catalog::PrintKind;
 use hew_hir::{mangle, mangle_dotted_name, ItemId};
 use hew_mir::{
-    instr_source_places, terminator_source_places, validate_context_markers, ActorHandlerKind,
-    ActorLayout, ActorStateLoadMode, CheckedMirFunction, CmpPred, CooperateKind, CooperateSite,
-    DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset,
-    FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
-    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
+    instr_source_places, is_string_const_ty, terminator_source_places, validate_context_markers,
+    ActorHandlerKind, ActorLayout, ActorStateLoadMode, CheckedMirFunction, CmpPred, CooperateKind,
+    CooperateSite, DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
+    FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind,
+    IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
     RawMirFunction, RecordLayout, RegexLiteral, SourceOrigin, StateFieldCloneKind,
-    SupervisorChildLayout, SupervisorLayout, SuspendKind, Terminator, TrapKind,
+    SupervisorChildLayout, SuspendKind, Terminator, TrapKind,
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
@@ -2438,11 +2438,6 @@ fn const_string_data_symbol(c: &MirConst) -> String {
     )
 }
 
-fn is_codegen_string_ty(ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::String)
-        || matches!(ty, ResolvedTy::Named { name, .. } if name == "String")
-}
-
 pub(crate) fn is_unsigned_integer_ty(ty: &ResolvedTy) -> bool {
     matches!(
         ty,
@@ -2513,7 +2508,10 @@ fn emit_const_globals<'ctx>(
                 (global, int_ty.into())
             }
             MirConstValue::Str(value) => {
-                if !is_codegen_string_ty(&c.ty) {
+                // Defence-in-depth re-validation of the descriptor MIR
+                // authored via the same `hew_mir::is_string_const_ty`
+                // authority — never a local respelling of the predicate.
+                if !is_string_const_ty(&c.ty) {
                     return Err(CodegenError::FailClosed(format!(
                         "const `{}` string value requires String type, got `{}`",
                         c.name, c.ty
@@ -7476,1208 +7474,6 @@ pub(crate) fn emit_trap_with_code_raw<'ctx>(
 /// indices line up with the LLVM variant struct; the body emitters filter
 /// them out per step.
 type EnumVariantKinds = Vec<Vec<StateFieldCloneKind>>;
-
-/// W5.020 — gather the `enum_layouts` registration keys of every enum that an
-/// elaborated function drops via `DropKind::EnumInPlace`. These seed the
-/// in-place drop-helper synthesis so a free-function-returned heap-owning enum
-/// (reachable from no actor/record) still gets a `__hew_enum_drop_inplace_*`
-/// body. Resolving from `ElabDrop::ty` reuses the same `register_enum_layouts`
-/// scheme the caller-side drop emission uses, so the seeded helper name and the
-/// emitted call name agree.
-fn collect_enum_inplace_drop_seeds(
-    elaborated: &[hew_mir::ElaboratedMirFunction],
-    enum_layouts: &[EnumLayout],
-) -> Vec<String> {
-    let mut seeds: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for func in elaborated {
-        for (_exit, plan) in &func.drop_plans {
-            for drop in &plan.drops {
-                if drop.kind != hew_mir::DropKind::EnumInPlace {
-                    continue;
-                }
-                let ResolvedTy::Named { name, args, .. } = &drop.ty else {
-                    continue;
-                };
-                let short = short_name(name);
-                let key = if args.is_empty() {
-                    enum_layouts
-                        .iter()
-                        .find(|el| el.name == *name || short_name(&el.name) == short)
-                        .map(|el| el.name.clone())
-                } else {
-                    let mangled = mangle_with_shortened_args(short, args);
-                    enum_layouts
-                        .iter()
-                        .find(|el| el.name == mangled || el.name == *name)
-                        .map(|el| el.name.clone())
-                };
-                if let Some(key) = key {
-                    if seen.insert(key.clone()) {
-                        seeds.push(key);
-                    }
-                }
-            }
-        }
-    }
-    seeds
-}
-
-/// Value-class capstone — collect the record-layout keys of every record that
-/// an elaborated function drops via `DropKind::RecordInPlace` (RC-4 / RC-6 /
-/// G12: an owned aggregate record passed/returned by value, dropped at scope
-/// exit). Its `__hew_record_{clone,drop}_inplace_<Record>` body is referenced
-/// only from the per-function `RecordInPlace` drop call and — unlike a record
-/// reachable from an actor/supervisor state field — is NOT discovered by
-/// `collect_reachable_clone_targets`. Without this seed the helper would be
-/// declared-but-never-defined and the drop call would fail closed at codegen
-/// ("no synthesized helper") — correct but blocks the feature. Resolves the
-/// SAME key `record_inplace_drop_name` resolves at the consumer (the bare name
-/// of a monomorphic user record), so seed and use can never drift.
-fn collect_record_inplace_drop_seeds(
-    elaborated: &[hew_mir::ElaboratedMirFunction],
-    record_layouts: &[RecordLayout],
-) -> Vec<String> {
-    let mut seeds: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for func in elaborated {
-        for (_exit, plan) in &func.drop_plans {
-            for drop in &plan.drops {
-                if drop.kind != hew_mir::DropKind::RecordInPlace {
-                    continue;
-                }
-                // RecordInPlace carries a user record — bare-name monomorphic
-                // OR a generic INSTANTIATION (`Pair<i64, string>`, args present)
-                // — OR a builtin owned-aggregate record (M-5: `CrashInfo`, keyed
-                // by its bare name). `record_inplace_drop_name` is the consumer
-                // authority for the helper name; this seed must register the SAME
-                // key so the body is synthesised before the drop call resolves
-                // it. A non-record ty here is a producer invariant violation the
-                // consumer already rejects, so skip it (the consumer's
-                // fail-closed arm is the diagnostic surface, not this seed).
-                let ResolvedTy::Named { name, args, .. } = &drop.ty else {
-                    continue;
-                };
-                // Confirm the record actually has a registered layout before
-                // seeding — a seed for an unregistered key would itself fail
-                // closed in the synthesis pass with a less specific message. For
-                // a generic instantiation the registered key is the mangled name
-                // (`Pair$$i64$string`); for a bare record it is the (short) name.
-                // Resolve against `record_layouts` trying the full name, the
-                // short name, and — for generics — both full- and short-mangled
-                // forms, mirroring `lookup_record_layout` (state_clone) and
-                // `enum_layout_key_for_ty`. The resolved registry key is what
-                // both this seed and `record_inplace_drop_name` use, so they can
-                // never drift.
-                let short = short_name(name);
-                let key = if args.is_empty() {
-                    record_layouts
-                        .iter()
-                        .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                        .map(|rl| rl.name.clone())
-                } else {
-                    let full_mangled = mangle_with_shortened_args(name, args);
-                    let short_mangled = mangle_with_shortened_args(short, args);
-                    record_layouts
-                        .iter()
-                        .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
-                        .map(|rl| rl.name.clone())
-                };
-                if let Some(key) = key {
-                    if seen.insert(key.clone()) {
-                        seeds.push(key);
-                    }
-                }
-            }
-        }
-    }
-    seeds
-}
-
-/// Collect the record / enum / machine layout keys of every record or enum that
-/// appears as a member of a `DropKind::TupleInPlace` drop's tuple type.
-///
-/// A heap-owning tuple's `__hew_tuple_drop_inplace_<key>` body runs a per-member
-/// drop that, for a record/enum member, calls the member's
-/// `__hew_record_drop_inplace_<R>` / `__hew_enum_drop_inplace_<E>` thunk. That
-/// member thunk's BODY is synthesised only if its key is seeded — and a record
-/// reachable ONLY as a tuple member (`(Boxed, i64)` where `Boxed { payload:
-/// Vec<i64> }`) is discovered by no other seed pass (it is not a state field,
-/// not an owned-Vec element, not a direct `RecordInPlace` local). Without this
-/// seed the member thunk is declared-but-undefined and LLVM verify rejects the
-/// module. This pass closes that gap for the tuple-member shape the unified
-/// record-aware heap-ownership authority newly admits to a `TupleInPlace` drop.
-///
-/// Mirrors `collect_vec_owned_element_seeds`'s resolution: a `Named` member
-/// resolving to a registered enum (or machine, via the enum view) seeds the
-/// enum list; one resolving to a registered record seeds the record list.
-/// Nested tuples/arrays are walked; primitive / builtin members never bear a
-/// per-member thunk and are skipped. Returns `(record_seeds, enum_seeds)`.
-fn collect_tuple_member_inplace_drop_seeds(
-    elaborated: &[hew_mir::ElaboratedMirFunction],
-    record_layouts: &[RecordLayout],
-    enum_layouts: &[EnumLayout],
-) -> (Vec<String>, Vec<String>) {
-    let mut record_seeds: Vec<String> = Vec::new();
-    let mut enum_seeds: Vec<String> = Vec::new();
-    let mut rec_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut enum_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    fn consider(
-        ty: &ResolvedTy,
-        record_layouts: &[RecordLayout],
-        enum_layouts: &[EnumLayout],
-        rec_seen: &mut std::collections::HashSet<String>,
-        enum_seen: &mut std::collections::HashSet<String>,
-        record_seeds: &mut Vec<String>,
-        enum_seeds: &mut Vec<String>,
-    ) {
-        match ty {
-            // Nested aggregate members are themselves dropped per-element; walk
-            // them so a `((Boxed, i64), i64)` reaches the inner record.
-            ResolvedTy::Tuple(elems) => {
-                for e in elems {
-                    consider(
-                        e,
-                        record_layouts,
-                        enum_layouts,
-                        rec_seen,
-                        enum_seen,
-                        record_seeds,
-                        enum_seeds,
-                    );
-                }
-            }
-            ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-                consider(
-                    inner,
-                    record_layouts,
-                    enum_layouts,
-                    rec_seen,
-                    enum_seen,
-                    record_seeds,
-                    enum_seeds,
-                );
-            }
-            ResolvedTy::Named { name, args, .. } => {
-                let short = short_name(name);
-                // Enum-first (machine views are folded into the enum slice by
-                // the caller), mirroring owned_elem_thunk_key resolution order.
-                let enum_key = if args.is_empty() {
-                    enum_layouts
-                        .iter()
-                        .find(|el| el.name == *name || short_name(&el.name) == short)
-                        .map(|el| el.name.clone())
-                } else {
-                    let mangled = mangle_with_shortened_args(short, args);
-                    enum_layouts
-                        .iter()
-                        .find(|el| el.name == mangled || el.name == *name)
-                        .map(|el| el.name.clone())
-                };
-                if let Some(key) = enum_key {
-                    if enum_seen.insert(key.clone()) {
-                        enum_seeds.push(key);
-                    }
-                    return;
-                }
-                let rec_key = if args.is_empty() {
-                    record_layouts
-                        .iter()
-                        .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                        .map(|rl| rl.name.clone())
-                } else {
-                    let full_mangled = mangle_with_shortened_args(name, args);
-                    let short_mangled = mangle_with_shortened_args(short, args);
-                    record_layouts
-                        .iter()
-                        .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
-                        .map(|rl| rl.name.clone())
-                };
-                if let Some(key) = rec_key {
-                    if rec_seen.insert(key.clone()) {
-                        record_seeds.push(key);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    for func in elaborated {
-        for (_exit, plan) in &func.drop_plans {
-            for drop in &plan.drops {
-                if drop.kind != hew_mir::DropKind::TupleInPlace {
-                    continue;
-                }
-                let ResolvedTy::Tuple(elems) = &drop.ty else {
-                    continue;
-                };
-                for elem in elems {
-                    consider(
-                        elem,
-                        record_layouts,
-                        enum_layouts,
-                        &mut rec_seen,
-                        &mut enum_seen,
-                        &mut record_seeds,
-                        &mut enum_seeds,
-                    );
-                }
-            }
-        }
-    }
-    (record_seeds, enum_seeds)
-}
-
-/// Collect the config struct name of every supervisor whose config struct has
-/// at least one OWNED field, so its `__hew_record_drop_inplace_<ConfigTy>` body
-/// is synthesised. The supervisor-owned config buffer owns those inner fields;
-/// the bootstrap registers this drop fn (`hew_supervisor_set_config_drop_fn`)
-/// so teardown releases them before the flat free. A config struct used only as
-/// a supervisor config param is reachable from no other seed.
-fn collect_supervisor_config_drop_seeds(
-    supervisor_layouts: &[SupervisorLayout],
-    record_layouts: &[RecordLayout],
-) -> Vec<String> {
-    let mut seeds: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for sup in supervisor_layouts {
-        let Some(config_param) = &sup.config_param else {
-            continue;
-        };
-        if !seen.insert(config_param.config_ty_name.clone()) {
-            continue;
-        }
-        let Some(record) = record_layouts
-            .iter()
-            .find(|r| r.name == config_param.config_ty_name)
-        else {
-            continue;
-        };
-        // Seed only when at least one field is non-BitCopy (owned). An
-        // all-scalar config has nothing to drop; the bootstrap then registers
-        // no config_drop_fn.
-        let has_owned = record.field_tys.iter().any(|ty| {
-            let mut visited = std::collections::HashSet::new();
-            hew_mir::classify_state_field(ty, record_layouts, &mut visited)
-                .is_ok_and(|kind| !matches!(kind, StateFieldCloneKind::BitCopy { .. }))
-        });
-        if has_owned {
-            seeds.push(config_param.config_ty_name.clone());
-        }
-    }
-    seeds
-}
-
-/// Collect the monomorphised record layout key of every `RecordCloneInplace`
-/// instruction in raw MIR so its `__hew_record_clone_inplace_<key>` /
-/// `__hew_record_drop_inplace_<key>` thunk PAIR is synthesised by
-/// `emit_state_clone_drop_synthesis`.
-///
-/// `clone <record>` lowers to `RecordCloneInplace { record_name, .. }`, where
-/// `record_name` is the monomorphised layout key (the bare name for a
-/// monomorphic record, the mangled `Pair$$i64$i64` for a generic instantiation —
-/// see `user_record_layout_key` in hew-mir). A generic instantiation reaches
-/// the synthesis pass through NO other seed:
-///
-///  * `user_clone_record_seeds` (the checker-side clone seed) carries the bare
-///    declared name (`Pair`), which never matches the mangled layout key; and
-///  * the drop twin (`collect_record_inplace_drop_seeds`) only fires for a
-///    record with a non-trivial drop, so a generic record whose fields are all
-///    Copy (`Pair<i64, i64>`) is cloned but never drop-seeded.
-///
-/// Without this seed the generic clone thunk is declared-but-undefined and LLVM
-/// verify rejects the module. Seeding the clone site directly closes the gap;
-/// because the synthesis loop emits the clone AND drop body together per key,
-/// the thunk pair stays symmetric — there is no clone without its matching drop
-/// (the leak / double-free hazard on unwind).
-///
-/// A seed is registered only when `record_name` names a registered layout, so
-/// the key the synthesis pass emits a body under is exactly the key the clone
-/// call resolves; a `record_name` with no registered layout is left unseeded
-/// and fails closed loudly at LLVM verify rather than silently aliasing.
-fn collect_record_clone_inplace_seeds(
-    raw_mir: &[RawMirFunction],
-    record_layouts: &[RecordLayout],
-) -> Vec<String> {
-    let mut seeds: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for func in raw_mir {
-        for block in &func.blocks {
-            for instr in &block.instructions {
-                let record_name = match instr {
-                    Instr::RecordCloneInplace { record_name, .. } => Some(record_name),
-                    Instr::ValueSnapshotClone { plan, .. } => match plan.root() {
-                        hew_mir::StateFieldCloneKind::UserRecord { name } => Some(name),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                let Some(record_name) = record_name else {
-                    continue;
-                };
-                if !record_layouts.iter().any(|rl| rl.name == *record_name) {
-                    continue;
-                }
-                if seen.insert(record_name.clone()) {
-                    seeds.push(record_name.clone());
-                }
-            }
-        }
-    }
-    seeds
-}
-
-/// Collect the monomorphised tagged-union layout key of every `EnumCloneInplace`
-/// instruction in raw MIR so its `__hew_enum_clone_inplace_<key>` /
-/// `__hew_enum_drop_inplace_<key>` thunk PAIR is synthesised by
-/// `emit_state_clone_drop_synthesis`. The enum twin of
-/// `collect_record_clone_inplace_seeds`.
-///
-/// `clone <enum>` lowers to `EnumCloneInplace { enum_name, .. }`, where
-/// `enum_name` is the monomorphised layout key (the bare name for a monomorphic
-/// enum, the mangled `Maybe$$i64` for a generic instantiation — see
-/// `enum_clone_layout_key` in hew-mir). A generic enum whose every variant
-/// payload is `BitCopy` (`Maybe<i64>`) is cloned but never earns an
-/// `EnumInPlace` drop, so the drop-side seed (`collect_enum_inplace_drop_seeds`)
-/// does NOT cover it; seeding the clone site directly closes that gap. Because
-/// the synthesis loop emits the clone AND drop body together per key, the thunk
-/// pair stays symmetric — there is no clone without its matching drop (the leak
-/// / double-free hazard on unwind).
-///
-/// A seed is registered only when `enum_name` names a registered layout, so the
-/// key the synthesis pass emits a body under is exactly the key the clone call
-/// resolves; a `enum_name` with no registered layout is left unseeded and fails
-/// closed loudly at LLVM verify rather than silently aliasing.
-fn collect_enum_clone_inplace_seeds(
-    raw_mir: &[RawMirFunction],
-    enum_layouts: &[EnumLayout],
-) -> Vec<String> {
-    let mut seeds: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for func in raw_mir {
-        for block in &func.blocks {
-            for instr in &block.instructions {
-                let enum_name = match instr {
-                    Instr::EnumCloneInplace { enum_name, .. } => Some(enum_name),
-                    Instr::ValueSnapshotClone { plan, .. } => match plan.root() {
-                        hew_mir::StateFieldCloneKind::Enum { name } => Some(name),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                let Some(enum_name) = enum_name else {
-                    continue;
-                };
-                if !enum_layouts.iter().any(|el| el.name == *enum_name) {
-                    continue;
-                }
-                if seen.insert(enum_name.clone()) {
-                    seeds.push(enum_name.clone());
-                }
-            }
-        }
-    }
-    seeds
-}
-
-/// #2419 — collect the record/enum layout keys of every value CAPTURED by an
-/// escaping (heap-boxed) closure so its `__hew_{record,enum}_drop_inplace_<key>`
-/// body is synthesised before the env free thunk that CALLS it is emitted.
-///
-/// WHY: `MakeClosure { env_mode: HeapBox }` plants a per-closure env free thunk
-/// (`get_or_emit_closure_env_free_thunk`) that drops each owned captured field
-/// through `emit_field_drop_step`; a record/enum capture dispatches to
-/// `get_or_declare_{record,enum}_drop_inplace`, which only DECLARES the helper
-/// (internal linkage). The body is emitted by `emit_state_clone_drop_synthesis`
-/// for seeded keys only — and a closure capture reaches no other seed channel:
-/// the capture MOVES into the env (suppressing the caller binding's
-/// `{Record,Enum}InPlace` drop-plan seed), and an all-BitCopy record never earns
-/// a drop plan at all yet still classifies as `UserRecord` at the thunk site.
-/// Without this seed the helper is declared-but-undefined and LLVM verify
-/// rejects the module ("Global is external, but doesn't have external or weak
-/// linkage").
-///
-/// Classifies each captured field via `classify_state_field_with_enum_layouts`
-/// over the SAME layout slices the thunk site (`closure_env_capture_drop_kinds`)
-/// consults, so the seeded key and the requested key cannot drift (the
-/// dyn-concrete seed pass discipline). Kinds are walked recursively through
-/// `Tuple`/`Array` so a record captured inside a tuple is also seeded; nested
-/// record/enum FIELDS of a seeded record are drained by
-/// `collect_reachable_clone_targets` itself. Only `HeapBox` closures are
-/// considered: a stack-env capture stays owned by the caller binding and never
-/// reaches the free-thunk drop, and seeding it could newly reject programs
-/// whose captures the classifier cannot map. Classification failures stay
-/// silent here — `closure_env_capture_drop_kinds` is the fail-closed authority
-/// for unclassifiable captures. Returns `(record_seeds, enum_seeds)`.
-fn collect_closure_capture_drop_seeds(
-    raw_mir: &[RawMirFunction],
-    record_layouts: &[RecordLayout],
-    enum_layouts: &[EnumLayout],
-) -> (Vec<String>, Vec<String>) {
-    let mut record_seeds: Vec<String> = Vec::new();
-    let mut enum_seeds: Vec<String> = Vec::new();
-    let mut rec_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut enum_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    fn add_kind_seeds(
-        kind: &StateFieldCloneKind,
-        rec_seen: &mut std::collections::HashSet<String>,
-        enum_seen: &mut std::collections::HashSet<String>,
-        record_seeds: &mut Vec<String>,
-        enum_seeds: &mut Vec<String>,
-    ) {
-        match kind {
-            StateFieldCloneKind::UserRecord { name } => {
-                if rec_seen.insert(name.clone()) {
-                    record_seeds.push(name.clone());
-                }
-            }
-            StateFieldCloneKind::Enum { name } => {
-                if enum_seen.insert(name.clone()) {
-                    enum_seeds.push(name.clone());
-                }
-            }
-            StateFieldCloneKind::Tuple { elems } => {
-                for elem in elems {
-                    add_kind_seeds(elem, rec_seen, enum_seen, record_seeds, enum_seeds);
-                }
-            }
-            StateFieldCloneKind::Array { elem, .. } => {
-                add_kind_seeds(elem, rec_seen, enum_seen, record_seeds, enum_seeds);
-            }
-            // String/Bytes/Vec/HashMap/HashSet/IoHandle/Opaque/ClosurePair/
-            // Resource/BitCopy drop through runtime helpers or planted thunks,
-            // not a per-type synthesised drop body. Vec/HashMap owned-element
-            // record keys are seeded by `collect_vec_owned_element_seeds`
-            // (the captured collection was a local, so its type is walked).
-            _ => {}
-        }
-    }
-
-    for func in raw_mir {
-        for block in &func.blocks {
-            for instr in &block.instructions {
-                let Instr::MakeClosure {
-                    env,
-                    env_mode: hew_mir::ClosureEnvMode::HeapBox,
-                    ..
-                } = instr
-                else {
-                    continue;
-                };
-                let Place::Local(local) = env else {
-                    continue;
-                };
-                let Some(env_ty) = func.locals.get(*local as usize) else {
-                    continue;
-                };
-                let ResolvedTy::Named { name: env_name, .. } = env_ty else {
-                    continue;
-                };
-                let Some(env_layout) = record_layouts.iter().find(|rl| rl.name == *env_name) else {
-                    continue;
-                };
-                for field_ty in &env_layout.field_tys {
-                    let mut visited: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
-                    let Ok(kind) = hew_mir::classify_state_field_with_enum_layouts(
-                        field_ty,
-                        record_layouts,
-                        enum_layouts,
-                        &mut visited,
-                    ) else {
-                        continue;
-                    };
-                    add_kind_seeds(
-                        &kind,
-                        &mut rec_seen,
-                        &mut enum_seen,
-                        &mut record_seeds,
-                        &mut enum_seeds,
-                    );
-                }
-            }
-        }
-    }
-    (record_seeds, enum_seeds)
-}
-
-fn collect_generator_env_clone_seeds(raw_mir: &[RawMirFunction]) -> (Vec<String>, Vec<String>) {
-    let mut record_seeds = Vec::new();
-    let mut enum_seeds = Vec::new();
-    let mut record_seen = HashSet::new();
-    let mut enum_seen = HashSet::new();
-
-    fn add_kind(
-        kind: &StateFieldCloneKind,
-        record_seeds: &mut Vec<String>,
-        enum_seeds: &mut Vec<String>,
-        record_seen: &mut HashSet<String>,
-        enum_seen: &mut HashSet<String>,
-    ) {
-        match kind {
-            StateFieldCloneKind::UserRecord { name } => {
-                if record_seen.insert(name.clone()) {
-                    record_seeds.push(name.clone());
-                }
-            }
-            StateFieldCloneKind::Enum { name } => {
-                if enum_seen.insert(name.clone()) {
-                    enum_seeds.push(name.clone());
-                }
-            }
-            StateFieldCloneKind::Tuple { elems } => {
-                for elem in elems {
-                    add_kind(elem, record_seeds, enum_seeds, record_seen, enum_seen);
-                }
-            }
-            StateFieldCloneKind::Array { elem, .. }
-            | StateFieldCloneKind::Vec { elem }
-            | StateFieldCloneKind::HashSet { elem } => {
-                add_kind(elem, record_seeds, enum_seeds, record_seen, enum_seen);
-            }
-            StateFieldCloneKind::HashMap { key, val } => {
-                add_kind(key, record_seeds, enum_seeds, record_seen, enum_seen);
-                add_kind(val, record_seeds, enum_seeds, record_seen, enum_seen);
-            }
-            _ => {}
-        }
-    }
-
-    for function in raw_mir {
-        for block in &function.blocks {
-            let Terminator::MakeGenerator { env: Some(env), .. } = &block.terminator else {
-                continue;
-            };
-            for field in &env.fields {
-                if let hew_mir::GeneratorEnvFieldPlan::Owned(plan) = field {
-                    add_kind(
-                        plan.root(),
-                        &mut record_seeds,
-                        &mut enum_seeds,
-                        &mut record_seen,
-                        &mut enum_seen,
-                    );
-                }
-            }
-        }
-    }
-    (record_seeds, enum_seeds)
-}
-
-/// Collect the record/enum layout keys of every inline composite yield-value
-/// release (`Instr::Drop { drop_fn: Some(DropFnSpec::InPlace(_)) }`) in raw
-/// MIR so the `__hew_{record,enum}_drop_inplace_<key>` body is synthesised
-/// before the drop call resolves it. Returns `(record_seeds, enum_seeds)`.
-///
-/// Belt-and-suspenders: every composite that flows through the pump /
-/// for-await seam is ALSO referenced by its stream layout witness
-/// (`owned_elem_layout_descriptor_ptr`) or generator out-slot drop thunk,
-/// whose emission seeds the same bodies — but that coupling is structural,
-/// not enforced. Seeding the drop sites directly keeps the inline release
-/// resolvable even for a shape whose witness emission is skipped or
-/// reordered, at the cost of one raw-MIR walk. Resolution mirrors
-/// `collect_record_inplace_drop_seeds` / `collect_enum_inplace_drop_seeds`
-/// (full name, short name, and mangled generic forms against the registered
-/// layouts) so seed and consumer resolve the same key.
-fn collect_inline_inplace_drop_seeds(
-    raw_mir: &[RawMirFunction],
-    record_layouts: &[RecordLayout],
-    enum_layouts: &[EnumLayout],
-) -> (Vec<String>, Vec<String>) {
-    let mut record_seeds: Vec<String> = Vec::new();
-    let mut enum_seeds: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<(bool, String)> = std::collections::HashSet::new();
-    for func in raw_mir {
-        for block in &func.blocks {
-            for instr in &block.instructions {
-                let Instr::Drop {
-                    ty,
-                    drop_fn: Some(hew_mir::DropFnSpec::InPlace(kind)),
-                    ..
-                } = instr
-                else {
-                    continue;
-                };
-                let ResolvedTy::Named { name, args, .. } = ty else {
-                    continue;
-                };
-                let short = short_name(name);
-                let (is_enum, key) = match kind {
-                    hew_mir::InPlaceReleaseKind::Record => {
-                        let key = if args.is_empty() {
-                            record_layouts
-                                .iter()
-                                .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                                .map(|rl| rl.name.clone())
-                        } else {
-                            let full_mangled = mangle_with_shortened_args(name, args);
-                            let short_mangled = mangle_with_shortened_args(short, args);
-                            record_layouts
-                                .iter()
-                                .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
-                                .map(|rl| rl.name.clone())
-                        };
-                        (false, key)
-                    }
-                    hew_mir::InPlaceReleaseKind::Enum => {
-                        let key = if args.is_empty() {
-                            enum_layouts
-                                .iter()
-                                .find(|el| el.name == *name || short_name(&el.name) == short)
-                                .map(|el| el.name.clone())
-                        } else {
-                            let mangled = mangle_with_shortened_args(short, args);
-                            enum_layouts
-                                .iter()
-                                .find(|el| el.name == mangled || el.name == *name)
-                                .map(|el| el.name.clone())
-                        };
-                        (true, key)
-                    }
-                };
-                if let Some(key) = key {
-                    if seen.insert((is_enum, key.clone())) {
-                        if is_enum {
-                            enum_seeds.push(key);
-                        } else {
-                            record_seeds.push(key);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    (record_seeds, enum_seeds)
-}
-
-/// D2 / W3.031 — collect the record/enum layout keys of every type that
-/// appears as a `dyn Trait` CONCRETE so its
-/// `__hew_{record,enum}_drop_inplace_<key>` body is synthesised before
-/// `emit_dyn_trait_drop_in_place_fns` emits the vtable slot-0
-/// `drop_in_place` thunk that CALLS it.
-///
-/// The slot-0 thunk runs the concrete value's structural drop by
-/// dispatching to the per-type record/enum drop-in-place helper (the
-/// runtime-erased counterpart to `DropKind::{Record,Enum}InPlace`). That
-/// helper's BODY is emitted only by `emit_state_clone_drop_synthesis` for
-/// reachable-or-seeded types. A concrete used ONLY behind `dyn` (e.g. a
-/// `Widget` coerced to `dyn Show` and never stored in an actor/record
-/// field) is not otherwise reached, so without this seed the slot-0 thunk
-/// would call a declared-but-undefined helper and LLVM verify would reject
-/// the module ("Global is external, but doesn't have external or weak
-/// linkage").
-///
-/// Classifies enum-aware (so an enum concrete seeds the enum channel
-/// instead of failing closed) and returns the SAME registry key
-/// `classify_user_record`/`classify_enum` resolve — the exact key
-/// `get_or_declare_{record,enum}_drop_inplace` mangle into the helper
-/// symbol — so seed and use can never drift. Returns
-/// `(record_seeds, enum_seeds)`. `BitCopy` concretes need no seed (slot-0
-/// emits an empty body); any other classification is a bare owned-heap
-/// concrete diagnosed at the slot-0 emission site (the fail-closed
-/// authority), so this pass stays silent there to avoid masking it.
-fn collect_dyn_concrete_drop_seeds(
-    registry: &[hew_mir::DynVtableInstance],
-    record_layouts: &[RecordLayout],
-    enum_layouts: &[EnumLayout],
-) -> (Vec<String>, Vec<String>) {
-    let mut record_seeds: Vec<String> = Vec::new();
-    let mut enum_seeds: Vec<String> = Vec::new();
-    let mut seen_rec: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut seen_enum: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for inst in registry {
-        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let Ok(kind) = hew_mir::classify_state_field_with_enum_layouts(
-            &inst.concrete_type,
-            record_layouts,
-            enum_layouts,
-            &mut visited,
-        ) else {
-            continue;
-        };
-        match kind {
-            StateFieldCloneKind::UserRecord { name } if seen_rec.insert(name.clone()) => {
-                record_seeds.push(name);
-            }
-            StateFieldCloneKind::Enum { name } if seen_enum.insert(name.clone()) => {
-                enum_seeds.push(name);
-            }
-            _ => {}
-        }
-    }
-    (record_seeds, enum_seeds)
-}
-
-/// Collect the record- and enum-layout keys of every actor-handler message and
-/// reply type that needs a `__hew_record_drop_inplace_*` or
-/// `__hew_enum_drop_inplace_*` body emitted by the synthesis pass for the
-/// cross-node codec path.
-///
-/// WHY: `emit_cbor_codec_thunks` (the serialize/deserialize emitter) calls
-/// `get_or_declare_record_drop_inplace` (for record-typed
-/// Msg/Reply) and `get_or_declare_enum_drop_inplace` (for enum-typed ones) in
-/// the fail-path drop walk (`emit_de_drop_owned`).  Those calls only DECLARE the
-/// helper; the BODY is emitted by `emit_state_clone_drop_synthesis`.  A record
-/// or enum used only as a handler message/reply type and not reachable from any
-/// actor state field will not appear in the existing seed collectors
-/// (`collect_enum_inplace_drop_seeds` / `collect_record_inplace_drop_seeds`), so
-/// without this seed its body is never emitted and LLVM verify rejects the
-/// module with "Global is external, but doesn't have external or weak linkage".
-/// WHEN-OBSOLETE: if `emit_de_drop_owned` is refactored to emit the body
-/// in-place rather than relying on a separately-seeded synthesis pass.
-/// WHAT: seed by walking actor handler `param_tys`/`return_ty` AND the value
-/// types of every direct `.encode()` / `.decode()` call (`wire_codec_types`) —
-/// the deserialize thunk's fail-path drop walk references the same inplace-drop
-/// helper regardless of whether the codec was reached via an actor message or a
-/// direct call.  The key resolution mirrors `xnode_registry_key` so the declared
-/// name and the body name agree.  Returns `(record_seeds, enum_seeds)`.
-fn collect_xnode_codec_drop_seeds(
-    actor_layouts: &[hew_mir::ActorLayout],
-    wire_codec_types: &[ResolvedTy],
-    record_layouts: &[RecordLayout],
-    enum_layouts: &[EnumLayout],
-) -> (Vec<String>, Vec<String>) {
-    let mut rec_seeds: Vec<String> = Vec::new();
-    let mut enum_seeds: Vec<String> = Vec::new();
-    let mut rec_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut enum_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    let try_add = |ty: &ResolvedTy,
-                   rec_seeds: &mut Vec<String>,
-                   enum_seeds: &mut Vec<String>,
-                   rec_seen: &mut std::collections::HashSet<String>,
-                   enum_seen: &mut std::collections::HashSet<String>| {
-        let ResolvedTy::Named { name, args, .. } = ty else {
-            return;
-        };
-        let short = short_name(name);
-        // Mirror `xnode_registry_key`'s resolution ORDER byte-for-byte, not just
-        // its mangling: it probes the FULL-qualified key across BOTH records AND
-        // enums first (`records.any(full) || enums.any(full)`), and only then
-        // falls back to the SHORT name across both. Probing enum-full → enum-short
-        // and returning before ever checking record-full is wrong: a generic like
-        // `pkg.Foo<i64>` that resolves to a full RECORD key (`pkg.Foo$$i64`) can
-        // collide on its short enum key (`Foo$$i64`), so the enum-first collector
-        // seeded the wrong (short enum) key and left the decoder-referenced record
-        // drop helper declared without a body — LLVM rejects the dangling
-        // declaration (#2208). The full-across-both / short-across-both order below
-        // guarantees the seed lands under the exact key the decoder resolves.
-        //
-        // Records are probed before enums at each qualification level to match the
-        // `||` short-circuit in `xnode_registry_key` (records first). Each level
-        // returns as soon as it hits, so a full-qualified match never falls through
-        // to the short fallback.
-        // For the empty-args case the full candidate is the bare name and the
-        // short fallback matches any layout whose short name equals `short`. For a
-        // generic the full candidate mangles the qualified name (`pkg.E$$i64`) and
-        // the short fallback is the exact bare-name mangling (`E$$i64`) — the two
-        // candidates `xnode_registry_key` tries in that order.
-        let full_key = if args.is_empty() {
-            name.to_string()
-        } else {
-            mangle_with_shortened_args(name, args)
-        };
-        // Full-qualified, records first (mirrors `records.any(full)`).
-        if let Some(rl) = record_layouts.iter().find(|rl| rl.name == full_key) {
-            if rec_seen.insert(rl.name.clone()) {
-                rec_seeds.push(rl.name.clone());
-            }
-            return;
-        }
-        // Full-qualified, enums next (mirrors `|| enums.any(full)`).
-        if let Some(el) = enum_layouts.iter().find(|el| el.name == full_key) {
-            if enum_seen.insert(el.name.clone()) {
-                enum_seeds.push(el.name.clone());
-            }
-            return;
-        }
-        // Short fallback, records first (mirrors the trailing `short` return).
-        let rec_short = if args.is_empty() {
-            record_layouts
-                .iter()
-                .find(|rl| short_name(&rl.name) == short)
-        } else {
-            let short_mangled = mangle_with_shortened_args(short, args);
-            record_layouts.iter().find(|rl| rl.name == short_mangled)
-        };
-        if let Some(rl) = rec_short {
-            if rec_seen.insert(rl.name.clone()) {
-                rec_seeds.push(rl.name.clone());
-            }
-            return;
-        }
-        // Short fallback, enums last.
-        let enum_short = if args.is_empty() {
-            enum_layouts.iter().find(|el| short_name(&el.name) == short)
-        } else {
-            let short_mangled = mangle_with_shortened_args(short, args);
-            enum_layouts.iter().find(|el| el.name == short_mangled)
-        };
-        if let Some(el) = enum_short {
-            if enum_seen.insert(el.name.clone()) {
-                enum_seeds.push(el.name.clone());
-            }
-        }
-    };
-
-    for actor in actor_layouts {
-        for h in &actor.handlers {
-            // Mirrors `emit_actor_codec_module_init`: only single-param
-            // handlers get codec thunks, so only their msg types need
-            // drop-seed bodies. Multi-arg handlers are not seeded (their
-            // packed-args wire has no cross-node codec yet).
-            if let [msg_ty] = h.param_tys.as_slice() {
-                if !matches!(msg_ty, ResolvedTy::Named { name, .. }
-                    if crate::layout::is_indirect_enum(name, enum_layouts))
-                {
-                    try_add(
-                        msg_ty,
-                        &mut rec_seeds,
-                        &mut enum_seeds,
-                        &mut rec_seen,
-                        &mut enum_seen,
-                    );
-                }
-            }
-            try_add(
-                &h.return_ty,
-                &mut rec_seeds,
-                &mut enum_seeds,
-                &mut rec_seen,
-                &mut enum_seen,
-            );
-        }
-    }
-    // Direct `.encode()` / `.decode()` value types need the same drop-seed
-    // bodies: the deserialize thunk's fail-path walk references the inplace
-    // drop helper for the reconstructed value.
-    for ty in wire_codec_types {
-        try_add(
-            ty,
-            &mut rec_seeds,
-            &mut enum_seeds,
-            &mut rec_seen,
-            &mut enum_seen,
-        );
-    }
-    (rec_seeds, enum_seeds)
-}
-
-/// Collect the distinct wire `value_ty`s referenced by every direct
-/// `.encode()` / `.decode()` (`Instr::WireCodec`) call across the MIR. Feeds
-/// `collect_xnode_codec_drop_seeds` and `emit_wire_codec_call_thunks` so a wire
-/// type reached only through a direct codec call still gets its thunk bodies and
-/// drop-seed helpers emitted.
-fn collect_wire_codec_value_types(pipeline: &IrPipeline) -> Vec<ResolvedTy> {
-    let mut out: Vec<ResolvedTy> = Vec::new();
-    for func in &pipeline.raw_mir {
-        for block in &func.blocks {
-            for instr in &block.instructions {
-                if let Instr::WireCodec { value_ty, .. } = instr {
-                    if !out.contains(value_ty) {
-                        out.push(value_ty.clone());
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Walk every raw-MIR function's local/param/return types and collect the
-/// record / enum layout keys of every owned-element `Vec<T>` (W5.016) and every
-/// heap-owning `HashMap<K, V>` value descriptor (G1 clone-on-get).
-///
-/// An owned-Vec element or owned HashMap value type's
-/// `__hew_record/enum_{clone,drop}_inplace_<key>` helper body is NOT reachable
-/// from any actor/record state field nor from a `DropKind::EnumInPlace` seed —
-/// it is referenced only by the descriptor
-/// (`owned_elem_layout_descriptor_ptr` / `hashmap_owned_value_layout_descriptor_ptr`).
-/// Without seeding the body, the descriptor's thunk pointers would dangle at
-/// link time (fail-closed at link, but blocks the feature). Returns
-/// `(record_seeds, enum_seeds)` keyed the same way `collect_reachable_clone_targets`
-/// / `collect_enum_inplace_drop_seeds` expect.
-///
-/// Element-shape resolution mirrors `owned_elem_thunk_key`: a `Named` element
-/// resolving to a registered enum seeds the enum list; one resolving to a
-/// registered record seeds the record list. Tuple / primitive / builtin
-/// elements never produce a thunk-bearing descriptor, so they are skipped here.
-fn collect_vec_owned_element_seeds(
-    raw_mir: &[RawMirFunction],
-    record_layouts: &[RecordLayout],
-    enum_layouts: &[EnumLayout],
-) -> (Vec<String>, Vec<String>) {
-    let mut record_seeds: Vec<String> = Vec::new();
-    let mut enum_seeds: Vec<String> = Vec::new();
-    let mut rec_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut enum_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut visited_ty: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    let mut consider_elem =
-        |elem: &ResolvedTy, record_seeds: &mut Vec<String>, enum_seeds: &mut Vec<String>| {
-            let ResolvedTy::Named { name, args, .. } = elem else {
-                return;
-            };
-            let short = short_name(name);
-            // Enum-first (mirrors owned_elem_thunk_key resolution order).
-            let enum_key = if args.is_empty() {
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == *name || short_name(&el.name) == short)
-                    .map(|el| el.name.clone())
-            } else {
-                let mangled = mangle_with_shortened_args(short, args);
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == mangled || el.name == *name)
-                    .map(|el| el.name.clone())
-            };
-            if let Some(key) = enum_key {
-                if enum_seen.insert(key.clone()) {
-                    enum_seeds.push(key);
-                }
-                return;
-            }
-            let rec_key = if args.is_empty() {
-                record_layouts
-                    .iter()
-                    .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                    .map(|rl| rl.name.clone())
-            } else {
-                let mangled = mangle_with_shortened_args(short, args);
-                record_layouts
-                    .iter()
-                    .find(|rl| rl.name == mangled || rl.name == *name)
-                    .map(|rl| rl.name.clone())
-            };
-            if let Some(key) = rec_key {
-                if rec_seen.insert(key.clone()) {
-                    record_seeds.push(key);
-                }
-            }
-        };
-
-    // Recursively scan a type for `Vec<elem>` and `HashMap<K, V>` occurrences
-    // (so a `Vec<Vec<owned>>`, an owned-Vec nested in a tuple/option arg, or a
-    // map whose heap-owning V is not otherwise dropped is seeded).
-    fn scan_ty(
-        ty: &ResolvedTy,
-        visited: &mut std::collections::HashSet<String>,
-        on_vec_elem: &mut dyn FnMut(&ResolvedTy),
-    ) {
-        match ty {
-            ResolvedTy::Named { name, args, .. } => {
-                // Queue carriers (`Sender<T>`/`Receiver<T>`/`Stream<T>`)
-                // share the owned-element layout witness with `Vec<T>`
-                // (`channel_elem_layout_witness_ptr` →
-                // `owned_elem_layout_descriptor_ptr` references the same
-                // `__hew_{record,enum}_{clone,drop}_inplace_*` thunks), so
-                // their element types must be seeded identically or the
-                // witness's thunk pointers dangle at llvm-verify for any
-                // heap-payload enum element reachable only through a
-                // channel (string-bearing records were masked by the
-                // direct-string record seed). Carrier names may be
-                // module-qualified (`channel.Receiver`) — compare short.
-                if ty.is_builtin(BuiltinType::Vec)
-                    || matches!(short_name(name), "Sender" | "Receiver" | "Stream")
-                {
-                    if let Some(elem) = args.first() {
-                        on_vec_elem(elem);
-                    }
-                } else if ty.is_builtin(BuiltinType::HashMap) {
-                    // Seed BOTH the value (heap-owning V drop thunk) AND the key
-                    // (managed-record-key drop thunk). A `string`-bearing record
-                    // key is owned by the map and dropped via its per-record
-                    // `__hew_record_drop_inplace_<R>` body; without seeding the
-                    // key, that body would be declared-but-undefined and LLVM
-                    // verify would reject the module.
-                    if let Some(key) = args.first() {
-                        on_vec_elem(key);
-                    }
-                    if let Some(value) = args.get(1) {
-                        on_vec_elem(value);
-                    }
-                }
-                // Guard against unbounded recursion through self-referential
-                // generic args (e.g. a recursive enum reachable via args).
-                let key = format!("{name}::{}", args.len());
-                if !visited.insert(key.clone()) {
-                    return;
-                }
-                for a in args {
-                    scan_ty(a, visited, on_vec_elem);
-                }
-                visited.remove(&key);
-            }
-            ResolvedTy::Tuple(elems) => {
-                for e in elems {
-                    scan_ty(e, visited, on_vec_elem);
-                }
-            }
-            ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-                scan_ty(inner, visited, on_vec_elem);
-            }
-            _ => {}
-        }
-    }
-
-    for func in raw_mir {
-        let mut on_vec_elem = |elem: &ResolvedTy| {
-            consider_elem(elem, &mut record_seeds, &mut enum_seeds);
-        };
-        for ty in func
-            .locals
-            .iter()
-            .chain(func.params.iter())
-            .chain(std::iter::once(&func.return_ty))
-        {
-            scan_ty(ty, &mut visited_ty, &mut on_vec_elem);
-        }
-    }
-
-    (record_seeds, enum_seeds)
-}
-
-/// Seed the owned-Vec ELEMENT record/enum keys reachable through a wire type's
-/// LAYOUT (its record fields / enum payloads) — the decode-only reachability
-/// gap. A wire type materialised ONLY by the CBOR codec (`Batch.decode(bytes)`
-/// with no Hew-side construction) has its `Vec<Item>` field type in no MIR local,
-/// so [`collect_vec_owned_element_seeds`] (which scans MIR function types) never
-/// sees the element. The decode-side owned descriptor
-/// (`owned_elem_layout_descriptor_ptr`) references the element's
-/// `__hew_{record,enum}_{clone,drop}_inplace_<key>` thunk, so without this seed
-/// that thunk is declared-but-undefined and LLVM verify rejects the module (a
-/// loud link-time failure, but this pass converts it to a supported feature).
-///
-/// Walks each wire value type's fields/payloads transitively (expanding records
-/// and enums via their layouts, cycle-guarded on the layout name) and seeds every
-/// `Vec<E>` element `E` that resolves to a registered record/enum — the same
-/// resolution [`collect_vec_owned_element_seeds`] applies to MIR-local Vec types.
-fn collect_wire_value_owned_vec_element_seeds(
-    wire_types: &[ResolvedTy],
-    record_layouts: &[RecordLayout],
-    enum_layouts: &[EnumLayout],
-) -> (Vec<String>, Vec<String>) {
-    let mut record_seeds: Vec<String> = Vec::new();
-    let mut enum_seeds: Vec<String> = Vec::new();
-    let mut rec_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut enum_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // Resolve a `Vec` element to its registered record/enum key and seed it —
-    // enum-first, mirroring `owned_elem_thunk_key` / `collect_vec_owned_element_seeds`.
-    let mut consider_elem =
-        |elem: &ResolvedTy, record_seeds: &mut Vec<String>, enum_seeds: &mut Vec<String>| {
-            let ResolvedTy::Named { name, args, .. } = elem else {
-                return;
-            };
-            let short = short_name(name);
-            let enum_key = if args.is_empty() {
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == *name || short_name(&el.name) == short)
-                    .map(|el| el.name.clone())
-            } else {
-                let mangled = mangle_with_shortened_args(short, args);
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == mangled || el.name == *name)
-                    .map(|el| el.name.clone())
-            };
-            if let Some(key) = enum_key {
-                if enum_seen.insert(key.clone()) {
-                    enum_seeds.push(key);
-                }
-                return;
-            }
-            let rec_key = if args.is_empty() {
-                record_layouts
-                    .iter()
-                    .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                    .map(|rl| rl.name.clone())
-            } else {
-                let mangled = mangle_with_shortened_args(short, args);
-                record_layouts
-                    .iter()
-                    .find(|rl| rl.name == mangled || rl.name == *name)
-                    .map(|rl| rl.name.clone())
-            };
-            if let Some(key) = rec_key {
-                if rec_seen.insert(key.clone()) {
-                    record_seeds.push(key);
-                }
-            }
-        };
-
-    // Worklist over the wire types' layouts: expand user records/enums into their
-    // field/payload types, seed every `Vec<E>` element, and keep walking through
-    // nested aggregates so a `Vec<Vec<owned>>` or a record-of-record-of-Vec is
-    // reached. Cycle-guarded on the expanded layout name.
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut stack: Vec<ResolvedTy> = wire_types.to_vec();
-    while let Some(ty) = stack.pop() {
-        match &ty {
-            ResolvedTy::Named { name, args, .. } => {
-                let short = short_name(name);
-                if ty.is_builtin(BuiltinType::Vec)
-                    || matches!(short, "Sender" | "Receiver" | "Stream")
-                {
-                    if let Some(elem) = args.first() {
-                        consider_elem(elem, &mut record_seeds, &mut enum_seeds);
-                        stack.push(elem.clone());
-                    }
-                    continue;
-                }
-                if ty.is_builtin(BuiltinType::HashMap) || ty.is_builtin(BuiltinType::HashSet) {
-                    for a in args {
-                        stack.push(a.clone());
-                    }
-                    continue;
-                }
-                if ty.is_builtin(BuiltinType::Option) || matches!(short, "Result" | "Range") {
-                    for a in args {
-                        stack.push(a.clone());
-                    }
-                    continue;
-                }
-                // A user record / enum: expand its fields / variant payloads once.
-                if !visited.insert(name.clone()) {
-                    continue;
-                }
-                if let Some(el) = enum_layouts
-                    .iter()
-                    .find(|el| el.name == *name || short_name(&el.name) == short)
-                {
-                    for v in &el.variants {
-                        for ft in &v.field_tys {
-                            stack.push(ft.clone());
-                        }
-                    }
-                } else if let Some(rl) = record_layouts
-                    .iter()
-                    .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                {
-                    for ft in &rl.field_tys {
-                        stack.push(ft.clone());
-                    }
-                }
-            }
-            ResolvedTy::Tuple(elems) => {
-                for e in elems {
-                    stack.push(e.clone());
-                }
-            }
-            ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-                stack.push((**inner).clone());
-            }
-            _ => {}
-        }
-    }
-
-    (record_seeds, enum_seeds)
-}
 
 /// Compute the transitive set of user records AND user enums reachable
 /// through any classified actor's state fields, plus monomorphic
@@ -15243,7 +14039,7 @@ fn lower_instruction_with_cancel_drops(
             lower_actor_state_field_store(fn_ctx, *field_offset, *src)?;
             let _ = ctx;
         }
-        Instr::NeutralizePayloadSlot { place } => {
+        Instr::NeutralizePayloadSlot { place, .. } => {
             lower_neutralize_payload_slot(fn_ctx, *place)?;
             let _ = ctx;
         }
@@ -16729,7 +15525,7 @@ fn retain_string_field_load<'ctx>(
     field_val: BasicValueEnum<'ctx>,
     label: &str,
 ) -> CodegenResult<BasicValueEnum<'ctx>> {
-    if !is_codegen_string_ty(place_resolved_ty(fn_ctx, dest)?) {
+    if !is_string_const_ty(place_resolved_ty(fn_ctx, dest)?) {
         return Ok(field_val);
     }
     let clone_fn = get_or_declare_clone_helper(
@@ -16805,7 +15601,7 @@ fn retain_bytes_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> Code
 /// co-owner mint. The runtime wrapper handles null and static strings before
 /// touching the refcount header.
 fn retain_string_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> CodegenResult<()> {
-    if !is_codegen_string_ty(place_resolved_ty(fn_ctx, value)?) {
+    if !is_string_const_ty(place_resolved_ty(fn_ctx, value)?) {
         return Err(CodegenError::FailClosed(format!(
             "StringRetain value is not string-typed: {value:?}"
         )));
@@ -29025,31 +27821,14 @@ fn lower_auto_mutex_bracket<'ctx>(
 /// (its LLVM return type is the `coro.begin` handle `ptr`, and it gets the coro
 /// prologue + shared cleanup/suspend-return epilogue).
 ///
-/// A function is a coroutine when EITHER it carries a suspend-family terminator
-/// (the await family + a generator `Yield`) OR it is a generator body
-/// (`__hew_gen_body_*`). The generator-body name check is load-bearing for a
-/// NO-YIELD generator (`gen { 1 }` → `Generator<Never, R>`): it carries no
-/// `Yield`, so the terminator scan alone would treat it as an ordinary function
-/// returning its logical type — but its construction site (`MakeGenerator`)
-/// drives it as a coro ramp expecting the handle. Marking every gen body a
-/// coroutine makes a no-yield generator a ramp that runs straight to its final
-/// suspend (the consumer's first `next()` then observes `None`), keeping the
-/// representation uniform.
+/// Thin delegate to the single MIR-side authority
+/// [`RawMirFunction::coroutine_facts`] — codegen holds no terminator scan of
+/// its own, so this predicate, the coroutine prologue shape, and the dispatch
+/// trampoline's per-handler suspendability all read one derivation (see
+/// `hew_mir::CoroutineFacts` for the full classification rationale, including
+/// the load-bearing no-yield `__hew_gen_body_*` name check).
 fn is_coroutine_function(func: &RawMirFunction) -> bool {
-    func.name.starts_with("__hew_gen_body_")
-        || func.blocks.iter().any(|b| {
-            matches!(
-                b.terminator,
-                // The ten pure-{resume,cleanup} carriers all collapse to the bare
-                // `Suspend`; `SuspendingScopeDeadline` / `SuspendingSelect` keep
-                // their distinct terminators. Any of them makes the function a
-                // presplit coroutine.
-                Terminator::Yield { .. }
-                    | Terminator::Suspend { .. }
-                    | Terminator::SuspendingScopeDeadline { .. }
-                    | Terminator::SuspendingSelect { .. }
-            )
-        })
+    func.coroutine_facts().is_coroutine
 }
 
 /// True when `func`'s `param_idx`-th parameter is a `bytes` value that may be
@@ -30384,10 +29163,13 @@ fn lower_function<'ctx>(
     // A generator body's `yield` is a `coro.suspend` on this same substrate (the
     // `Terminator::Yield` codegen arm calls `CoroContext::emit_suspend`), so a
     // gen body — whether it yields or is a no-yield `Generator<Never, R>` —
-    // needs the coro prologue + shared cleanup/suspend-return epilogue. Reuses
-    // the same coroutine predicate `declare_function` uses, so the prologue
-    // emission and the `ptr`-handle return type agree.
-    let has_suspend = is_coroutine_function(func);
+    // needs the coro prologue + shared cleanup/suspend-return epilogue.
+    // `coroutine_facts` is the single MIR-side derivation of every coroutine
+    // predicate this body lowering consumes (ramp-ness, generator shape,
+    // explicit final suspend) — the same authority `declare_function` keys the
+    // `ptr`-handle return type off, so prologue emission and return type agree.
+    let coro_facts = func.coroutine_facts();
+    let has_suspend = coro_facts.is_coroutine;
 
     // DWARF subprogram + function-entry location for `hew build -g` (W0.060).
     // Emitted only for plain (non-suspend) `fn`s whose span falls within the
@@ -30525,19 +29307,14 @@ fn lower_function<'ctx>(
         // edge (return to executor) and the cleanup edge (coro.destroy).
         let suspend_return_block = ctx.append_basic_block(llvm_fn, "coro.suspend.return");
         let cleanup_block = ctx.append_basic_block(llvm_fn, "coro.cleanup");
-        let has_explicit_final_suspend = func
-            .blocks
-            .iter()
-            .any(|b| matches!(b.terminator, Terminator::Suspend { is_final: true, .. }));
-        // A generator body carries `Terminator::Yield` (its non-final suspends)
-        // and completes at its `Return` — it has no explicit final `Suspend`.
-        // Its completion routes through the shared `final_suspend_block` like a
-        // SuspendingAsk coroutine, but the block emits a VALUE-FREE final suspend
-        // (the value channel is the out-pointer, not a reply channel).
-        let is_generator = func
-            .blocks
-            .iter()
-            .any(|b| matches!(b.terminator, Terminator::Yield { .. }));
+        // Both read from the `coro_facts` authority above: a generator body
+        // carries `Terminator::Yield` (its non-final suspends) and completes at
+        // its `Return` — it has no explicit final `Suspend`. Its completion
+        // routes through the shared `final_suspend_block` like a SuspendingAsk
+        // coroutine, but the block emits a VALUE-FREE final suspend (the value
+        // channel is the out-pointer, not a reply channel).
+        let has_explicit_final_suspend = coro_facts.has_explicit_final_suspend;
+        let is_generator = coro_facts.is_generator;
         // A coroutine with no explicit final Suspend (a SuspendingAsk handler OR
         // a generator) completes at its `Return` terminator(s). Reserve ONE
         // shared final-suspend block that every `Return` branches to, so the
@@ -32023,17 +30800,20 @@ fn build_module_for_target<'ctx>(
     // than as a dangling reference at link time.
     verify_drop_dispatch_resolves(pipeline, &fn_symbols)?;
     for actor in &pipeline.actor_layouts {
-        // NEW-3a (R326/R327): per-handler suspendable predicate, derived from
-        // the SAME carrier the per-function coroutine emission keys off — the
-        // handler's MIR block terminators carrying `Terminator::Suspend`
-        // (`lower_function` `has_suspend`, see the coroutine prologue arm). The
-        // handler MIR blocks are not on `ActorHandlerLayout`; they live in
-        // `pipeline.raw_mir`, in scope here. Deriving the predicate from the
-        // identical data + match arm makes the trampoline's ramp-vs-direct
-        // decision agree with the ramp emission BY CONSTRUCTION — there is no
-        // second source of truth to drift (R2 / the Lane-B silent-no-op class).
-        // A handler whose symbol has no matching raw MIR function fails closed
-        // inside the trampoline rather than silently defaulting to direct-call.
+        // NEW-3a (R326/R327): per-handler suspendable predicate, read from the
+        // SAME `coroutine_facts` authority the per-function coroutine emission
+        // keys off (`lower_function` / `declare_function`). The handler MIR
+        // blocks are not on `ActorHandlerLayout`; they live in
+        // `pipeline.raw_mir`, in scope here. Reading the one MIR-side
+        // derivation makes the trampoline's ramp-vs-direct decision agree with
+        // the ramp emission BY CONSTRUCTION — there is no second source of
+        // truth to drift (R2 / the Lane-B silent-no-op class). The predicate is
+        // `has_suspend_carrier`, NOT `is_coroutine`: a handler is never a
+        // generator body, so the `Yield` / `__hew_gen_body_*` arms of the wider
+        // ramp classification are deliberately excluded here (see
+        // `hew_mir::CoroutineFacts`). A handler whose symbol has no matching
+        // raw MIR function fails closed inside the trampoline rather than
+        // silently defaulting to direct-call.
         let handler_suspendable: Vec<Option<bool>> = actor
             .handlers
             .iter()
@@ -32042,18 +30822,7 @@ fn build_module_for_target<'ctx>(
                     .raw_mir
                     .iter()
                     .find(|f| f.name == h.symbol)
-                    .map(|f| {
-                        f.blocks.iter().any(|b| {
-                            matches!(
-                                b.terminator,
-                                // The ten pure carriers collapse to bare `Suspend`;
-                                // ScopeDeadline / Select stay distinct.
-                                Terminator::Suspend { .. }
-                                    | Terminator::SuspendingScopeDeadline { .. }
-                                    | Terminator::SuspendingSelect { .. }
-                            )
-                        })
-                    })
+                    .map(|f| f.coroutine_facts().has_suspend_carrier)
             })
             .collect();
         crate::thunks::emit_actor_dispatch_trampoline(
@@ -32106,259 +30875,30 @@ fn build_module_for_target<'ctx>(
     // registration sites (and at every direct-spawn emission site)
     // resolves to the synthesised `define`, not a Stage 2 extern-stub
     // that would only surface at link time.
-    // W5.020 — collect the enum-layout keys that any elaborated function drops
-    // via `DropKind::EnumInPlace`, so the synthesis pass below emits their
-    // `__hew_enum_drop_inplace_<Enum>` body even when no actor/record reaches
-    // them. The key is resolved from each drop's `ElabDrop::ty` through the
-    // same registration scheme `register_enum_layouts` uses.
-    let mut enum_inplace_drop_seeds =
-        collect_enum_inplace_drop_seeds(&pipeline.elaborated_mir, &pipeline.enum_layouts);
-    // W5.016 — seed every owned-Vec element record/enum so its
-    // `__hew_record/enum_{clone,drop}_inplace_<key>` body is emitted (the owned
-    // Vec descriptor is the only referent; without this seed the thunk pointers
-    // dangle at link). Enum seeds merge into the EnumInPlace seed list; record
-    // seeds go through the dedicated `extra_record_seeds` channel.
-    // Machines are enums at the value-classification layer: the seed scan
-    // and the clone/drop synthesis below resolve machine names against the
-    // enum view, so the machine projections join the list once here.
+    //
+    // The record/enum seed sets are authored by MIR as ONE registry
+    // (`IrPipeline::thunk_synthesis_requirements`,
+    // hew-mir/src/thunk_requirements.rs — the dyn-vtable-registry
+    // precedent), so codegen no longer re-scans raw/elaborated MIR per
+    // reachability shape. A missed seed leaves its thunk
+    // declared-but-undefined and LLVM verify rejects the module loudly, so
+    // registry/consumer drift fails closed.
+    //
+    // Machines are enums at the value-classification layer: the registry and
+    // the clone/drop synthesis below resolve machine names against the enum
+    // view, so the machine projections join the slice once here.
     // `machine_layout_map` registers every machine's tagged-union layout
     // under the same name, so the emitted
     // `__hew_enum_{clone,drop}_inplace_<Machine>` bodies walk the real
-    // machine layout. The pipeline's own `enum_layouts` (registration,
-    // xnode codecs) stays untouched.
+    // machine layout. The pipeline's own `enum_layouts` (registration, xnode
+    // codecs) stays untouched.
     let synthesis_enum_layouts: Vec<hew_mir::EnumLayout> = pipeline
         .enum_layouts
         .iter()
         .cloned()
         .chain(hew_mir::machine_enum_views(&pipeline.machine_layouts))
         .collect();
-    let (mut vec_owned_record_seeds, vec_owned_enum_seeds) = collect_vec_owned_element_seeds(
-        &pipeline.raw_mir,
-        &pipeline.record_layouts,
-        &synthesis_enum_layouts,
-    );
-    for enum_seed in vec_owned_enum_seeds {
-        if !enum_inplace_drop_seeds.contains(&enum_seed) {
-            enum_inplace_drop_seeds.push(enum_seed);
-        }
-    }
-    // Value-class capstone — seed every record dropped via
-    // `DropKind::RecordInPlace` (owned aggregate record by value) into the
-    // record-seed channel so its `__hew_record_{clone,drop}_inplace_<R>` body
-    // is synthesized. Reuses the same channel as the owned-Vec element record
-    // seeds; `collect_reachable_clone_targets` dedups by record key.
-    for record_seed in
-        collect_record_inplace_drop_seeds(&pipeline.elaborated_mir, &pipeline.record_layouts)
-    {
-        if !vec_owned_record_seeds.contains(&record_seed) {
-            vec_owned_record_seeds.push(record_seed);
-        }
-    }
-    // Tuple-member capstone — a heap-owning tuple dropped via
-    // `DropKind::TupleInPlace` runs a per-member drop that calls each
-    // record/enum member's `__hew_{record,enum}_drop_inplace_<key>` thunk. A
-    // record/enum reachable ONLY as a tuple member (`(Boxed, i64)` where
-    // `Boxed { payload: Vec<i64> }`) is discovered by no other seed pass, so its
-    // member thunk would be declared-but-undefined and LLVM verify would reject
-    // the module. Seed those member keys here (the unified record-aware
-    // heap-ownership authority newly admits such tuples to a `TupleInPlace`
-    // drop). Records → the record channel; enums/machines → the enum channel.
-    let (tuple_member_record_seeds, tuple_member_enum_seeds) =
-        collect_tuple_member_inplace_drop_seeds(
-            &pipeline.elaborated_mir,
-            &pipeline.record_layouts,
-            &synthesis_enum_layouts,
-        );
-    for record_seed in tuple_member_record_seeds {
-        if !vec_owned_record_seeds.contains(&record_seed) {
-            vec_owned_record_seeds.push(record_seed);
-        }
-    }
-    for enum_seed in tuple_member_enum_seeds {
-        if !enum_inplace_drop_seeds.contains(&enum_seed) {
-            enum_inplace_drop_seeds.push(enum_seed);
-        }
-    }
-    // cross-node codec path — seed every record- or enum-typed actor handler
-    // message/reply so `emit_state_clone_drop_synthesis` emits the
-    // `__hew_record_drop_inplace_*` / `__hew_enum_drop_inplace_*` body before
-    // `emit_actor_codec_module_init` declares it via
-    // `get_or_declare_{record,enum}_drop_inplace` in the fail-path drop walk
-    // (`emit_de_drop_owned`).  Without this seed, LLVM verify rejects the module
-    // ("Global is external, but doesn't have external or weak linkage") for any
-    // record or enum used as a handler type but not reachable from an actor
-    // state field.
-    let wire_codec_value_types = collect_wire_codec_value_types(pipeline);
-    let (xnode_codec_record_seeds, xnode_codec_enum_seeds) = collect_xnode_codec_drop_seeds(
-        &pipeline.actor_layouts,
-        &wire_codec_value_types,
-        &pipeline.record_layouts,
-        &pipeline.enum_layouts,
-    );
-    for xnode_enum_seed in xnode_codec_enum_seeds {
-        if !enum_inplace_drop_seeds.contains(&xnode_enum_seed) {
-            enum_inplace_drop_seeds.push(xnode_enum_seed);
-        }
-    }
-    for xnode_rec_seed in xnode_codec_record_seeds {
-        if !vec_owned_record_seeds.contains(&xnode_rec_seed) {
-            vec_owned_record_seeds.push(xnode_rec_seed);
-        }
-    }
-    // decode-only owned-Vec ELEMENT capstone — a wire type materialised only by
-    // the CBOR codec (`Batch.decode(bytes)`, never constructed) has its
-    // `Vec<Item>` field type in no MIR local, so `collect_vec_owned_element_seeds`
-    // never seeds `Item`. The decode-side owned descriptor references
-    // `__hew_record_drop_inplace_Item`, so seed every owned-Vec element reachable
-    // through a wire value type's layout here or that thunk dangles at LLVM verify.
-    let (wire_vec_elem_record_seeds, wire_vec_elem_enum_seeds) =
-        collect_wire_value_owned_vec_element_seeds(
-            &wire_codec_value_types,
-            &pipeline.record_layouts,
-            &synthesis_enum_layouts,
-        );
-    for enum_seed in wire_vec_elem_enum_seeds {
-        if !enum_inplace_drop_seeds.contains(&enum_seed) {
-            enum_inplace_drop_seeds.push(enum_seed);
-        }
-    }
-    for record_seed in wire_vec_elem_record_seeds {
-        if !vec_owned_record_seeds.contains(&record_seed) {
-            vec_owned_record_seeds.push(record_seed);
-        }
-    }
-    // D2 — seed every record/enum that appears as a `dyn Trait` CONCRETE so
-    // `emit_state_clone_drop_synthesis` (immediately below) emits its
-    // `__hew_{record,enum}_drop_inplace_<key>` body BEFORE
-    // `emit_dyn_trait_drop_in_place_fns` (further down) emits the vtable
-    // slot-0 `drop_in_place` thunk that dispatches to it. A concrete used
-    // only behind `dyn` (never in an actor/record state field) is reachable
-    // through no other seed, so without this its structural-drop helper
-    // would be declared-but-undefined and LLVM verify would reject the
-    // module. Enum-aware classification routes enum concretes to the enum
-    // channel (D2 Mode B); record concretes to the record channel (Mode A).
-    let (dyn_concrete_record_seeds, dyn_concrete_enum_seeds) = collect_dyn_concrete_drop_seeds(
-        &pipeline.dyn_vtable_registry,
-        &pipeline.record_layouts,
-        &synthesis_enum_layouts,
-    );
-    for seed in dyn_concrete_enum_seeds {
-        if !enum_inplace_drop_seeds.contains(&seed) {
-            enum_inplace_drop_seeds.push(seed);
-        }
-    }
-    for seed in dyn_concrete_record_seeds {
-        if !vec_owned_record_seeds.contains(&seed) {
-            vec_owned_record_seeds.push(seed);
-        }
-    }
-    // User-authored `.clone()` calls on record types: seed their thunk pairs
-    // so every record cloned by user code gets a synthesised
-    // `__hew_record_clone_inplace_<R>` / `__hew_record_drop_inplace_<R>` body,
-    // regardless of actor-state or Vec<R> reachability.
-    for seed in &pipeline.user_clone_record_seeds {
-        if !vec_owned_record_seeds.contains(seed) {
-            vec_owned_record_seeds.push(seed.clone());
-        }
-    }
-    // Generic record-clone instantiations: `clone Pair<i64, i64>` lowers to a
-    // `RecordCloneInplace` keyed by the monomorphised layout (`Pair$$i64$i64`),
-    // which the bare-name `user_clone_record_seeds` above does not cover and
-    // which the `RecordInPlace` drop twin only covers when the record has a
-    // non-trivial drop. Seed the clone site directly so the per-mono clone/drop
-    // thunk pair is synthesised together (clone/drop always emitted as a unit per key).
-    for seed in collect_record_clone_inplace_seeds(&pipeline.raw_mir, &pipeline.record_layouts) {
-        if !vec_owned_record_seeds.contains(&seed) {
-            vec_owned_record_seeds.push(seed);
-        }
-    }
-    // Generic/top-level enum-clone instantiations: `clone Maybe<i64>` lowers to
-    // an `EnumCloneInplace` keyed by the monomorphised tagged-union layout
-    // (`Maybe$$i64`). An all-`BitCopy`-payload enum is cloned but never earns an
-    // `EnumInPlace` drop, so the drop-side `collect_enum_inplace_drop_seeds`
-    // above does not cover it. Seed the clone site directly so the per-key
-    // clone/drop thunk PAIR is synthesised together (the enum twin of the
-    // record clone-site seed loop directly above).
-    for seed in collect_enum_clone_inplace_seeds(&pipeline.raw_mir, &pipeline.enum_layouts) {
-        if !enum_inplace_drop_seeds.contains(&seed) {
-            enum_inplace_drop_seeds.push(seed);
-        }
-    }
-    // Inline composite yield-value releases (`DropFnSpec::InPlace` on a raw
-    // `Instr::Drop` — the pump's per-yield producer copy and the for-await
-    // Some-arm consumer copy): seed both channels so the
-    // `__hew_{record,enum}_drop_inplace_<key>` bodies exist before the drop
-    // calls resolve them.
-    let (inline_inplace_record_seeds, inline_inplace_enum_seeds) =
-        collect_inline_inplace_drop_seeds(
-            &pipeline.raw_mir,
-            &pipeline.record_layouts,
-            &synthesis_enum_layouts,
-        );
-    for seed in inline_inplace_record_seeds {
-        if !vec_owned_record_seeds.contains(&seed) {
-            vec_owned_record_seeds.push(seed);
-        }
-    }
-    for seed in inline_inplace_enum_seeds {
-        if !enum_inplace_drop_seeds.contains(&seed) {
-            enum_inplace_drop_seeds.push(seed);
-        }
-    }
-    // v0.6 init-closure restart model — seed every supervisor config struct that
-    // has owned fields so its `__hew_record_drop_inplace_<ConfigTy>` body is
-    // synthesised. The supervisor-owned config buffer OWNS its inner owned
-    // fields (the init thunks only CLONE from them); the bootstrap registers
-    // this drop fn via `hew_supervisor_set_config_drop_fn` so teardown releases
-    // them before the flat free. A config struct used only as a supervisor
-    // config param is reachable from no actor/record state field, so without
-    // this seed its drop body would be declared-but-undefined (LLVM verify
-    // reject) and its inner owned fields would leak at teardown.
-    for seed in
-        collect_supervisor_config_drop_seeds(&pipeline.supervisor_layouts, &pipeline.record_layouts)
-    {
-        if !vec_owned_record_seeds.contains(&seed) {
-            vec_owned_record_seeds.push(seed);
-        }
-    }
-    // #2419 — closure captures: seed every record/enum captured by an escaping
-    // (heap-boxed) closure so the env free thunk's per-field drop
-    // (`get_or_emit_closure_env_free_thunk` → `emit_field_drop_step`) resolves
-    // a synthesised body rather than a bodyless internal declaration (LLVM
-    // verify reject). The capture MOVES into the env, so the caller binding's
-    // `{Record,Enum}InPlace` drop-plan seed never fires for it; an all-BitCopy
-    // record never earns a drop plan at all yet still classifies `UserRecord`
-    // at the thunk site. `pipeline.enum_layouts` (not the synthesis view) is
-    // the slice the thunk-site classifier consults, so the same slice is used
-    // here for key agreement.
-    let (closure_capture_record_seeds, closure_capture_enum_seeds) =
-        collect_closure_capture_drop_seeds(
-            &pipeline.raw_mir,
-            &pipeline.record_layouts,
-            &pipeline.enum_layouts,
-        );
-    for seed in closure_capture_record_seeds {
-        if !vec_owned_record_seeds.contains(&seed) {
-            vec_owned_record_seeds.push(seed);
-        }
-    }
-    for seed in closure_capture_enum_seeds {
-        if !enum_inplace_drop_seeds.contains(&seed) {
-            enum_inplace_drop_seeds.push(seed);
-        }
-    }
-    let (generator_env_record_seeds, generator_env_enum_seeds) =
-        collect_generator_env_clone_seeds(&pipeline.raw_mir);
-    for seed in generator_env_record_seeds {
-        if !vec_owned_record_seeds.contains(&seed) {
-            vec_owned_record_seeds.push(seed);
-        }
-    }
-    for seed in generator_env_enum_seeds {
-        if !enum_inplace_drop_seeds.contains(&seed) {
-            enum_inplace_drop_seeds.push(seed);
-        }
-    }
+    let thunk_requirements = pipeline.thunk_synthesis_requirements();
     emit_state_clone_drop_synthesis(
         ctx,
         &llvm_mod,
@@ -32369,8 +30909,8 @@ fn build_module_for_target<'ctx>(
         &pipeline.opaque_handle_names,
         &machine_layouts,
         Some(&target_data),
-        &enum_inplace_drop_seeds,
-        &vec_owned_record_seeds,
+        &thunk_requirements.enum_seeds,
+        &thunk_requirements.record_seeds,
         &pipeline.resource_record_close,
         &pipeline.resource_opaque_close,
     )?;

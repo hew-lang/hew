@@ -51,6 +51,56 @@ use crate::ResolvedTy;
 use strum::{EnumIter, IntoEnumIterator};
 
 // =============================================================================
+// Ownership verdict
+// =============================================================================
+
+/// Three-valued consume/borrow verdict for one call argument.
+///
+/// Refines the historical `bool` consume flag (`true` = consume, `false` =
+/// borrow) by splitting the consume case on WHY the value escapes:
+///
+/// * [`ProvenBorrow`](Self::ProvenBorrow) — the argument never escapes the
+///   callee (returned/stored/sent/captured nowhere, forwarded to no consuming
+///   sink). The caller keeps ownership and drops it at its own scope exit. This
+///   is exactly the old `false`.
+/// * [`ProvenConsume`](Self::ProvenConsume) — a POSITIVE proof of escape: the
+///   argument is returned, stored (`let`/assign/struct/tuple), sent, or
+///   captured. The callee owns it.
+/// * [`ConservativeConsume`](Self::ConservativeConsume) — flipped to consume
+///   ONLY because it was forwarded to an unproven or consuming parameter (or a
+///   synthesized runtime edge whose per-arg contract is not individually
+///   proven). No positive escape proof exists; the callee is ASSUMED to consume
+///   it. This is the fail-closed half of the old `true`.
+///
+/// Safety invariant: [`ProvenConsume`](Self::ProvenConsume) and
+/// [`ConservativeConsume`](Self::ConservativeConsume) are byte-identical to the
+/// old `true` at every consumer — both mean "callee owns / drops, caller must
+/// not" (`boundary-fail-closed`, no double-free). Only the label is finer. The
+/// precision this unlocks lives entirely on [`ProvenBorrow`](Self::ProvenBorrow),
+/// which is unchanged from the old `false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConsumeVerdict {
+    /// Never escapes — caller keeps and drops (old `false`).
+    ProvenBorrow,
+    /// Positively proven escape — callee owns (proven half of old `true`).
+    ProvenConsume,
+    /// Assumed-consume fail-closed default — callee owns (fail-closed half of
+    /// old `true`).
+    ConservativeConsume,
+}
+
+impl ConsumeVerdict {
+    /// `true` iff the verdict directs the callee to own/drop the argument —
+    /// the projection back onto the historical `bool` (both consume flavours
+    /// collapse to `true`). Consumers that only need the safety-relevant
+    /// borrow-vs-consume bit call this; the finer label drives precision only.
+    #[must_use]
+    pub const fn is_consume(self) -> bool {
+        !matches!(self, Self::ProvenBorrow)
+    }
+}
+
+// =============================================================================
 // Element-type discriminators
 // =============================================================================
 
@@ -1484,6 +1534,52 @@ impl RuntimeCallFamily {
         )
     }
 
+    /// Per-argument consume/borrow verdict for a synthesized runtime-call
+    /// edge. This is the runtime-side carrier of the same fact the user-body
+    /// fixpoint (`compute_call_param_consumption`) carries for user functions:
+    /// together they close the census's "synthesized-spelling UNKNOWN" edge
+    /// class — every compiler-emitted call argument now has a KNOWN verdict
+    /// from a CLOSED compiler-owned vocabulary, with no open-world unknown.
+    ///
+    /// # Authority and fail-closed shape
+    ///
+    /// * **Receiver (`index == 0`)** — derived from the single existing
+    ///   authority [`consumes_receiver`](Self::consumes_receiver): a consuming
+    ///   receiver (the close family + the `Duplex` half-extracts) is
+    ///   [`ProvenConsume`](ConsumeVerdict::ProvenConsume); every other receiver
+    ///   is [`ProvenBorrow`](ConsumeVerdict::ProvenBorrow). Defaulting a
+    ///   receiver to BORROW is the double-free-safe direction (a missed consume
+    ///   leaks, never double-frees — see `consumes_receiver`'s note). The
+    ///   `runtime_contract_perarg_drift` pin asserts this axis and
+    ///   `consumes_receiver` cannot diverge (L211 dual-carrier).
+    /// * **Non-receiver (`index >= 1`)** —
+    ///   [`ConservativeConsume`](ConsumeVerdict::ConservativeConsume). SHIM:
+    ///   WHY — the family carries no per-argument type/ownership detail, so an
+    ///   individually-proven verdict is not derivable here;
+    ///   `ConservativeConsume` is the fail-closed default (callee assumed to
+    ///   own → no double-free if
+    ///   a future consumer acts on it). WHEN obsolete — when a consumer wires
+    ///   onto this axis and a genuine borrow-vs-consume precision win on a
+    ///   non-receiver runtime arg is wanted. WHAT the real solution is — an
+    ///   exhaustive per-family, per-index classification (the `*Owned`/`*Move`
+    ///   collection sinks moving their payload, the scalar-index args
+    ///   borrowing), audited against each family's MIR emit intent. Nothing
+    ///   consumes this axis in the current lane (fact-carriage + pin only;
+    ///   codegen byte-identical), so the default is a carried label, never a
+    ///   lowering decision.
+    #[must_use]
+    pub fn arg_consume_verdict(self, index: usize) -> ConsumeVerdict {
+        if index == 0 {
+            if self.consumes_receiver() {
+                ConsumeVerdict::ProvenConsume
+            } else {
+                ConsumeVerdict::ProvenBorrow
+            }
+        } else {
+            ConsumeVerdict::ConservativeConsume
+        }
+    }
+
     /// Classify the family's async-suspending behaviour, if any.
     ///
     /// Source of truth: the HIR await-classifier at
@@ -2208,6 +2304,44 @@ mod tests {
     /// (`SendHalfClose` / `RecvHalfClose` both → `hew_duplex_close_half`)
     /// — that bijection is the drop-side test below, where the round-
     /// trip key is `drop_fn_name()`, not `c_symbol()`.
+    /// Dual-carrier drift pin (L211): the runtime table's per-argument
+    /// consume axis and the established `consumes_receiver` authority carry
+    /// the SAME receiver-consume fact, so they must never diverge. The
+    /// receiver verdict is DERIVED from `consumes_receiver`, so this can only
+    /// fail if a future edit hardcodes a receiver verdict inconsistent with
+    /// it — which is exactly the drift this pin exists to catch. Non-receiver
+    /// indices are fail-closed `ConservativeConsume` by construction and are
+    /// asserted here so the closed vocabulary stays total (no `ProvenBorrow`
+    /// or unknown leaks onto a non-receiver runtime arg).
+    #[test]
+    fn runtime_contract_perarg_drift() {
+        for family in all_runtime_call_families() {
+            let receiver = family.arg_consume_verdict(0);
+            let expected = if family.consumes_receiver() {
+                ConsumeVerdict::ProvenConsume
+            } else {
+                ConsumeVerdict::ProvenBorrow
+            };
+            assert_eq!(
+                receiver,
+                expected,
+                "receiver verdict for {family:?} drifted from consumes_receiver \
+                 ({}): axis says {receiver:?}",
+                family.consumes_receiver()
+            );
+            // Every consuming verdict projects to the historical `true`.
+            assert_eq!(receiver.is_consume(), family.consumes_receiver());
+            // Non-receiver args are fail-closed consume, never borrow.
+            for index in 1..=3 {
+                assert_eq!(
+                    family.arg_consume_verdict(index),
+                    ConsumeVerdict::ConservativeConsume,
+                    "non-receiver arg {index} of {family:?} must fail closed",
+                );
+            }
+        }
+    }
+
     #[test]
     fn runtime_call_family_c_symbol_is_unique() {
         let mut seen: HashMap<&'static str, RuntimeCallFamily> = HashMap::new();

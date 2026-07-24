@@ -724,3 +724,5 @@ fn duration::fmt(duration) -> string [conv=default]
     ret = move _4
     return
 
+diagnostics:
+  diagnostic: ObligationUnderReleased channel$try_new bb14 detail "owned local `detail` reaches return[bb14] with zero discharges on every path modelling: no terminal drop in this exit's plan and no ownership transfer before the exit (mint without discharge = leak)" — "every heap-owning owned value must be released exactly once on every reachable exit path; this exit path never discharges the mint (leak). This is an advisory warning, not a build error — fix the drop plan (release on every exit) to silence it"

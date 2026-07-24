@@ -84,16 +84,46 @@ enum CompileEmitTarget {
     Wasm,
 }
 
-fn resolve_compile_emit_target(requested: Option<&str>) -> CompileEmitTarget {
+/// Flushes the accumulated JSON diagnostics exactly once when it drops.
+///
+/// The flush-completeness invariant is "accumulated advisories are emitted on
+/// EVERY termination path in EVERY format." Constructing this guard once at the
+/// top of a command's diagnostic scope discharges that invariant for every
+/// normal return AND every unwind: `Drop` runs on all of them. It flushes only
+/// when JSON output is active (text mode renders diagnostics inline and must not
+/// print an empty `[]`), and because it is the SOLE flush site for its command
+/// it cannot double-emit.
+///
+/// CAVEAT (load-bearing): `std::process::exit` does NOT run destructors, so a
+/// command holding this guard must NEVER call `process::exit` while diagnostics
+/// may be unflushed — it returns an exit code out to a single top-level
+/// flush-then-exit point instead (see `cmd_compile`). That keeps the flush
+/// unconditional by construction: no present or future exit branch inside the
+/// guarded scope can bypass it.
+struct JsonDiagnosticFlush;
+
+impl Drop for JsonDiagnosticFlush {
+    fn drop(&mut self) {
+        if diagnostic_json::json_output_active() {
+            diagnostic_json::flush_json_diagnostics();
+        }
+    }
+}
+
+/// Resolve the `hew compile` emit target. `Err(())` means the requested target
+/// is unsupported (the error is already printed); the caller returns the exit
+/// code so the single flush chokepoint still runs (never `process::exit` here —
+/// that would bypass the [`JsonDiagnosticFlush`] guard and drop advisories).
+fn resolve_compile_emit_target(requested: Option<&str>) -> Result<CompileEmitTarget, ()> {
     match requested {
-        None => CompileEmitTarget::Native,
-        Some("wasm32-unknown-unknown") => CompileEmitTarget::Wasm,
+        None => Ok(CompileEmitTarget::Native),
+        Some("wasm32-unknown-unknown") => Ok(CompileEmitTarget::Wasm),
         Some(other) => {
             eprintln!(
                 "Error: unsupported --target `{other}` for `hew compile`; \
                  supported targets: wasm32-unknown-unknown"
             );
-            std::process::exit(2);
+            Err(())
         }
     }
 }
@@ -102,8 +132,10 @@ fn resolve_compile_emit_target(requested: Option<&str>) -> CompileEmitTarget {
 ///
 /// Shared by every native-lowering entry point so a MIR gate failure is
 /// reported identically (and never as a raw `MirDiagnostic { .. }` Debug
-/// payload) regardless of the command. Returns `true` when diagnostics were
-/// emitted and the caller should fail.
+/// payload) regardless of the command. Returns `true` when a BLOCKING
+/// (hard-error) diagnostic was emitted and the caller should fail. Advisory
+/// diagnostics (obligation under-release leaks — `MirDiagnosticKind::is_advisory`)
+/// render as compile-time warnings and never cause failure.
 fn render_pipeline_mir_diagnostics(
     program: &hew_parser::ast::Program,
     source: &str,
@@ -117,7 +149,11 @@ fn render_pipeline_mir_diagnostics(
     let module_source_map = diagnostic::build_module_source_map(program);
     let site_spans = hew_hir::collect_site_spans(module);
     diagnostic::render_mir_diagnostics(source, label, &module_source_map, &site_spans, diagnostics);
-    true
+    // Advisory diagnostics (obligation under-release leaks) render as warnings
+    // and NEVER fail the build; only a blocking (hard-error) diagnostic does.
+    // Severity is owned by the diagnostic kind (`is_advisory`) so a missed
+    // consumer fails closed (over-strict), never silently ships a real error.
+    diagnostics.iter().any(|d| !d.kind.is_advisory())
 }
 
 /// Surface the MIR-stage lint warnings recorded on `pipeline`, applying the
@@ -502,7 +538,9 @@ fn build_explain_cow_pipeline(
     let mut pipeline =
         hew_mir::lower_hir_module_with_facts(&lowered.module, mir_pointer_width(target));
     pipeline.attach_lowering_facts(tco);
-    pipeline.diagnostics.is_empty().then_some(pipeline)
+    // Advisory diagnostics (obligation under-release leaks) are non-blocking; the
+    // explain-cow view is still valid, so proceed unless a hard error is present.
+    (!pipeline.diagnostics.iter().any(|d| !d.kind.is_advisory())).then_some(pipeline)
 }
 
 fn emit_module(
@@ -955,14 +993,30 @@ fn emit_obj_only(
 }
 
 fn cmd_build(a: &args::BuildArgs) {
-    let json = a.format == args::DiagnosticFormat::Json;
     diagnostic_json::set_output_format(a.format.into());
+    // Same single flush-then-exit chokepoint as `cmd_compile`: `cmd_build_run`
+    // returns an exit code for EVERY path and never calls `process::exit`, so
+    // the guard flushes accumulated JSON advisories on every path by construction.
+    let code = {
+        let _flush = JsonDiagnosticFlush;
+        cmd_build_run(a)
+    };
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
 
+/// Body of `hew build`. Returns the process exit code; MUST NOT call
+/// `std::process::exit` (bypasses the [`JsonDiagnosticFlush`] guard).
+fn cmd_build_run(a: &args::BuildArgs) -> i32 {
     // A target parse error is a usage error before any compilation — exit 2.
-    let target = target::TargetSpec::from_requested(a.target.as_deref()).unwrap_or_else(|e| {
-        eprintln!("Error: {e}");
-        std::process::exit(2);
-    });
+    let target = match target::TargetSpec::from_requested(a.target.as_deref()) {
+        Ok(target) => target,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return 2;
+        }
+    };
 
     // `--link-lib` names a NATIVE archive; a wasm module cannot link one. The
     // wasm branch of `compile_build_binary` has no use for the archives, so
@@ -972,7 +1026,7 @@ fn cmd_build(a: &args::BuildArgs) {
             "Error: --link-lib is not supported for wasm targets \
              (native archives cannot be linked into a wasm module)"
         );
-        std::process::exit(2);
+        return 2;
     }
 
     let options = a.to_compile_options();
@@ -980,39 +1034,30 @@ fn cmd_build(a: &args::BuildArgs) {
     // The clap `value_parser` already constrains `--opt-level` to {"0","2"}, so
     // `from_cli_str` cannot return `None` here; fail closed regardless rather than
     // silently defaulting if the parser contract ever drifts.
-    let opt_level = hew_codegen_rs::OptLevel::from_cli_str(&a.opt_level).unwrap_or_else(|| {
+    let Some(opt_level) = hew_codegen_rs::OptLevel::from_cli_str(&a.opt_level) else {
         eprintln!(
             "Error: invalid --opt-level `{}` (expected 0 or 2)",
             a.opt_level
         );
-        std::process::exit(2);
-    });
+        return 2;
+    };
 
     if a.emit_obj {
-        emit_obj_only(&a.input, &target, a.debug, opt_level, &options).unwrap_or_else(|()| {
-            if json {
-                diagnostic_json::flush_json_diagnostics();
-            }
-            std::process::exit(1);
-        });
-        if json {
-            diagnostic_json::flush_json_diagnostics();
-        }
-        return;
+        return match emit_obj_only(&a.input, &target, a.debug, opt_level, &options) {
+            Ok(()) => 0,
+            Err(()) => 1,
+        };
     }
 
     // Linked-binary path. Foreign-OS targets that cannot be linked on this host
     // are rejected fail-closed with a clear message pointing at `--emit-obj`.
     if !target.is_wasm() && !target.can_link_with_host_tools() {
         eprintln!("{}", target.unsupported_native_link_error());
-        if json {
-            diagnostic_json::flush_json_diagnostics();
-        }
-        std::process::exit(1);
+        return 1;
     }
 
     let output_path = resolve_build_output_path(a, &target);
-    compile_build_binary(
+    match compile_build_binary(
         &a.input,
         &output_path,
         &target,
@@ -1020,28 +1065,40 @@ fn cmd_build(a: &args::BuildArgs) {
         opt_level,
         &a.link_libs,
         &options,
-    )
-    .unwrap_or_else(|()| {
-        if json {
-            diagnostic_json::flush_json_diagnostics();
-        }
-        std::process::exit(1);
-    });
-    if json {
-        diagnostic_json::flush_json_diagnostics();
+    ) {
+        Ok(()) => 0,
+        Err(()) => 1,
     }
 }
 
 fn cmd_compile(a: &args::CompileArgs) {
-    let json = a.format == args::DiagnosticFormat::Json;
     diagnostic_json::set_output_format(a.format.into());
 
-    let pipeline = lower_file_to_mir(&a.input, a.target.as_deref()).unwrap_or_else(|()| {
-        if json {
-            diagnostic_json::flush_json_diagnostics();
-        }
-        std::process::exit(1);
-    });
+    // Single flush-then-exit chokepoint. `cmd_compile_run` returns an exit code
+    // for EVERY termination path and NEVER calls `process::exit` — so the
+    // `JsonDiagnosticFlush` guard (dropped when the inner scope ends or unwinds)
+    // flushes the accumulated JSON advisories on every path, present or future.
+    // `process::exit` happens only out here, AFTER the guard has flushed, so it
+    // cannot drop diagnostics.
+    let code = {
+        let _flush = JsonDiagnosticFlush;
+        cmd_compile_run(a)
+    };
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+/// Body of `hew compile`. Returns the process exit code; MUST NOT call
+/// `std::process::exit` (that bypasses the [`JsonDiagnosticFlush`] guard its
+/// caller holds and would drop accumulated advisories). Every failure path is a
+/// `return <code>`, so the caller's single flush chokepoint runs regardless.
+fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
+    let json = a.format == args::DiagnosticFormat::Json;
+
+    let Ok(pipeline) = lower_file_to_mir(&a.input, a.target.as_deref()) else {
+        return 1;
+    };
 
     // Dump path: print the requested MIR stage and exit. Useful for
     // spot-checking the lowering during development.
@@ -1052,11 +1109,21 @@ fn cmd_compile(a: &args::CompileArgs) {
             "elab" => hew_mir::DumpStage::Elab,
             other => {
                 eprintln!("Error: unknown --dump-mir stage `{other}`");
-                std::process::exit(2);
+                return 2;
             }
         };
-        print!("{}", hew_mir::dump_mir(&pipeline, dump_stage));
-        return;
+        let dump = hew_mir::dump_mir(&pipeline, dump_stage);
+        if json {
+            // Under JSON, stdout is the machine diagnostic contract; the MIR
+            // text dump is a human debug aid, so it goes to stderr to keep the
+            // JSON array (flushed by the guard) on stdout parseable.
+            eprint!("{dump}");
+        } else {
+            // Text mode: the warnings already rendered to stderr during
+            // lowering; the dump is the stdout payload the caller asked for.
+            print!("{dump}");
+        }
+        return 0;
     }
 
     // Default emit dir: `.tmp/compile-out` under the cwd. `.tmp/` is
@@ -1071,29 +1138,27 @@ fn cmd_compile(a: &args::CompileArgs) {
 
     // The clap `value_parser` constrains `--opt-level` to {"0","2"}; fail closed
     // if that contract ever drifts rather than silently defaulting.
-    let opt_level = hew_codegen_rs::OptLevel::from_cli_str(&a.opt_level).unwrap_or_else(|| {
+    let Some(opt_level) = hew_codegen_rs::OptLevel::from_cli_str(&a.opt_level) else {
         eprintln!(
             "Error: invalid --opt-level `{}` (expected 0 or 2)",
             a.opt_level
         );
-        std::process::exit(2);
-    });
+        return 2;
+    };
 
-    let emit_target = resolve_compile_emit_target(a.target.as_deref());
-    let artefacts = emit_module(
+    let Ok(emit_target) = resolve_compile_emit_target(a.target.as_deref()) else {
+        return 2;
+    };
+    let Ok(artefacts) = emit_module(
         &pipeline,
         module_name,
         emit_dir,
         emit_target,
         true,
         opt_level,
-    )
-    .unwrap_or_else(|()| {
-        if json {
-            diagnostic_json::flush_json_diagnostics();
-        }
-        std::process::exit(1);
-    });
+    ) else {
+        return 1;
+    };
 
     // Link the native object into an executable using the shared
     // `link::link_executable` path. This resolves `libhew.a` (the
@@ -1105,12 +1170,9 @@ fn cmd_compile(a: &args::CompileArgs) {
     // linker behaviour as release builds.
     if let Some(obj) = &artefacts.native_obj_path {
         let bin_path = emit_dir.join(module_name);
-        link_native_object(obj, &bin_path).unwrap_or_else(|()| {
-            if json {
-                diagnostic_json::flush_json_diagnostics();
-            }
-            std::process::exit(1);
-        });
+        if link_native_object(obj, &bin_path).is_err() {
+            return 1;
+        }
         if !json {
             println!("native: {}", bin_path.display());
         }
@@ -1120,11 +1182,8 @@ fn cmd_compile(a: &args::CompileArgs) {
             println!("wasm:   {}", wasm.display());
         }
     }
-    // Clean compile under JSON: emit the (empty) diagnostic array on stdout so
-    // the contract holds — `[]` and exit 0.
-    if json {
-        diagnostic_json::flush_json_diagnostics();
-    }
+    // Clean compile: exit 0. The guard flushes the (possibly empty) JSON array.
+    0
 }
 
 struct CompiledTempExecutable {
@@ -1504,29 +1563,44 @@ fn resolve_run_target(requested: Option<&str>) -> target::ExecutionTarget {
 }
 
 fn cmd_check(a: &args::CheckArgs) {
-    let json = a.format == args::DiagnosticFormat::Json;
     diagnostic_json::set_output_format(a.format.into());
+    // Same single flush-then-exit chokepoint as `cmd_compile`: `cmd_check_run`
+    // returns an exit code for EVERY path and never calls `process::exit`, so
+    // the guard flushes accumulated JSON diagnostics on every path by construction.
+    let code = {
+        let _flush = JsonDiagnosticFlush;
+        cmd_check_run(a)
+    };
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+/// Body of `hew check`. Returns the process exit code; MUST NOT call
+/// `std::process::exit` (bypasses the [`JsonDiagnosticFlush`] guard).
+fn cmd_check_run(a: &args::CheckArgs) -> i32 {
+    let json = a.format == args::DiagnosticFormat::Json;
 
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
-    let target =
-        target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|e| {
+    let target = match target::TargetSpec::from_requested(options.target.as_deref()) {
+        Ok(target) => target,
+        Err(e) => {
             eprintln!("Error: {e}");
             // Usage/configuration error before any diagnostics — exit 2.
-            std::process::exit(2);
-        });
+            return 2;
+        }
+    };
     let frontend_options = compile::frontend_options(&target, &options);
 
     let (result, state) = match hew_compile::check_file_with_state(&input, &frontend_options) {
         Ok(result) => result,
         Err(failure) => {
             compile::render_frontend_diagnostics(&failure.diagnostics);
-            if json {
-                diagnostic_json::flush_json_diagnostics();
-            } else {
+            if !json {
                 eprintln!("{}", failure.message);
             }
-            std::process::exit(1);
+            return 1;
         }
     };
 
@@ -1544,19 +1618,15 @@ fn cmd_check(a: &args::CheckArgs) {
     }
 
     if run_check_deep_gates(&input, &target, &state, &options.lint_levels).is_err() {
-        if json {
-            diagnostic_json::flush_json_diagnostics();
-        }
-        std::process::exit(1);
+        return 1;
     }
 
-    if json {
-        // Clean program (warnings may still be present in the array): emit the
-        // collected diagnostics — `[]` when none — and exit 0.
-        diagnostic_json::flush_json_diagnostics();
-    } else {
+    if !json {
         eprintln!("{input}: OK");
     }
+    // Clean program (warnings may still be in the array): the guard flushes the
+    // collected diagnostics — `[]` when none — and we exit 0.
+    0
 }
 
 fn cmd_debug(a: &args::DebugArgs) {

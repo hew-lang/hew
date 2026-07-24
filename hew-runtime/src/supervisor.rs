@@ -3558,6 +3558,29 @@ mod tests {
                 1,
                 "the forged user-queue send must not alter the child roster"
             );
+
+            // NON-VACUITY: "the child survived" only means something if the
+            // supervisor was actually running and WOULD have acted on a real
+            // event. Deliver the same ChildCrashed by its legitimate route —
+            // the privileged system send — and require that it does reclaim
+            // the child. The forgery and the real thing carry identical bytes;
+            // only the channel differs, which is the whole point.
+            hew_supervisor_notify_child_actor_event(
+                sup,
+                0,
+                child_id,
+                HewActorState::Crashed as c_int,
+                0,
+            );
+            assert!(
+                wait_for_condition(std::time::Duration::from_secs(2), || {
+                    !actor::is_actor_live_with_id(child_id, child)
+                }),
+                "the supervision path must be live: an event delivered on the \
+                 SYSTEM channel must reclaim the child, otherwise the forgery \
+                 assertions above prove nothing"
+            );
+
             hew_supervisor_stop(sup);
         }
     }

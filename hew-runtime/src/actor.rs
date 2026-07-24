@@ -7205,6 +7205,91 @@ mod tests {
         SYS_PROBE_SEEN.fetch_add(1, Ordering::Release);
     }
 
+    /// NON-VACUITY companion to
+    /// `user_queue_system_values_never_reach_the_system_dispatch`: the system
+    /// entry point IS reachable, by its own route.
+    ///
+    /// Without this, "no forged user-queue value reached system dispatch" would
+    /// pass just as well if system dispatch were unreachable altogether. The
+    /// same `Down` signal that a forged `hew_actor_send` cannot deliver arrives
+    /// here through the privileged system send — and stays on the system side.
+    #[test]
+    fn system_dispatch_is_reachable_only_by_the_system_channel() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        USER_PROBE_SEEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        SYS_PROBE_SEEN.store(0, Ordering::Release);
+        SYS_PROBE_LAST_KIND.store(-1, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(channel_split_user_probe)) };
+        assert!(!actor.is_null());
+        // SAFETY: `actor` is the freshly spawned actor this test owns.
+        unsafe { hew_actor_set_sys_dispatch(actor, Some(channel_split_sys_probe)) };
+
+        let down = crate::monitor::HewDownMessage {
+            monitor_id: 0,
+            target_kind: 0,
+            reason_kind: 0,
+            node_hi: 0,
+            node_lo: 0,
+            slot: 0,
+            session_incarnation: 0,
+            crash_kind: 0,
+        };
+        // SAFETY: the actor is live, so its mailbox is valid; `down` outlives
+        // the copying send.
+        unsafe {
+            let mb = (*actor).mailbox.cast::<mailbox::HewMailbox>();
+            mailbox::mailbox_send_sys(
+                mb,
+                crate::mailbox_header::HewSysMsg::Down,
+                (&raw const down).cast::<c_void>().cast_mut(),
+                std::mem::size_of::<crate::monitor::HewDownMessage>(),
+            );
+            // Wake the actor so the queued system signal is drained. System
+            // messages have dequeue priority, so this arrives after the Down.
+            hew_actor_send(actor, 4242, ptr::null_mut(), 0);
+        }
+
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(5), || {
+                SYS_PROBE_SEEN.load(Ordering::Acquire) == 1
+            }),
+            "a signal sent on the SYSTEM channel must reach the system dispatch \
+             entry point"
+        );
+        assert_eq!(
+            SYS_PROBE_LAST_KIND.load(Ordering::Acquire),
+            crate::mailbox_header::HewSysMsg::Down.as_i32(),
+            "the system handler must receive the typed discriminant it was sent"
+        );
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(5), || {
+                USER_PROBE_SEEN
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_slice()
+                    == [4242]
+            }),
+            "the user handler must see the application message and NOTHING else: \
+             a SYSTEM-queue signal must never be downgraded onto it (saw {:?})",
+            USER_PROBE_SEEN
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        );
+
+        // SAFETY: actor is live and tracked; stop then free it exactly once.
+        unsafe {
+            hew_actor_stop(actor);
+            let _ = hew_actor_free(actor);
+        }
+    }
+
     /// No value sent on the USER queue can reach the SYSTEM dispatch entry
     /// point, and every such value is delivered to the user handler as an
     /// ordinary application message.

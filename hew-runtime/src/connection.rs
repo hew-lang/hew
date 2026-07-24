@@ -239,9 +239,11 @@ struct ConnectionActor {
     /// Null for test-only actors created without a manager; [`close_transport_conn`]
     /// is null-safe so drop is unconditionally safe.
     transport: *mut HewTransport,
-    /// Guards against double-close when callers close the transport explicitly
-    /// before the actor is dropped.
-    transport_closed: AtomicBool,
+    /// Exactly-once close ownership for this connection's transport handle.
+    ///
+    /// Shared by `Arc` so a caller that loses the claim can still wait for the
+    /// winner's close to land after the actor has been unlinked and dropped.
+    transport_close: Arc<TransportClose>,
 }
 
 // ── Connection manager ─────────────────────────────────────────────────
@@ -411,6 +413,73 @@ impl Drop for ReaderLifecycleGuard {
     }
 }
 
+/// Which stage of its one and only close a connection's transport handle is in.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum TransportCloseState {
+    /// Nobody owns the close yet.
+    #[default]
+    Open,
+    /// Exactly one caller has claimed the close and is inside it.
+    Claimed,
+    /// The claiming caller's `close_transport_conn` has returned.
+    Closed,
+}
+
+/// Exactly-once close ownership for one connection's transport handle.
+///
+/// The handle is one-shot: closing it twice frees a freed connection. Several
+/// teardown paths can reach the same connection concurrently (`remove_connection`
+/// from an explicit removal, from a refusal and from a woken reader;
+/// `hew_connmgr_free`; the actor's own `Drop`), so the close cannot be a flag
+/// that each of them stores and then acts on — it has to be *acquired*.
+///
+/// [`TransportClose::claim`] is that acquisition: it succeeds for exactly one
+/// caller across all of them. Every other caller must NOT close. It must,
+/// however, call [`TransportClose::wait_closed`] before it drops the actor,
+/// because dropping joins the reader thread and only the real close wakes a
+/// reader parked in `recv()`.
+#[derive(Debug, Default)]
+struct TransportClose {
+    state: Mutex<TransportCloseState>,
+    closed: Condvar,
+}
+
+impl TransportClose {
+    /// Acquire the right to close this transport handle.
+    ///
+    /// Returns `true` for exactly one caller, ever. A `false` return means
+    /// another caller owns the close and this caller must leave the handle
+    /// alone — fail closed rather than close a handle we do not own.
+    fn claim(&self) -> bool {
+        let mut state = self.state.lock_or_recover();
+        if *state == TransportCloseState::Open {
+            *state = TransportCloseState::Claimed;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Publish that the claimed close has returned, releasing every waiter.
+    fn finish(&self) {
+        let mut state = self.state.lock_or_recover();
+        *state = TransportCloseState::Closed;
+        drop(state);
+        self.closed.notify_all();
+    }
+
+    /// Block until the owner's close has returned.
+    ///
+    /// Returns immediately when the handle was never claimed (nothing will
+    /// close it) or when the close already landed.
+    fn wait_closed(&self) {
+        let mut state = self.state.lock_or_recover();
+        while *state == TransportCloseState::Claimed {
+            state = self.closed.wait_or_recover(state);
+        }
+    }
+}
+
 struct ClaimedSendLease {
     _guard: ReaderLifecycleGuard,
     publication_removed: Arc<AtomicBool>,
@@ -496,22 +565,27 @@ impl ConnectionActor {
             superseded_claim: Mutex::new(None),
             reconnect: None,
             transport: std::ptr::null_mut(),
-            transport_closed: AtomicBool::new(false),
+            transport_close: Arc::new(TransportClose::default()),
         }
     }
 
-    /// Close this actor's transport connection, guarding against double-close.
+    /// Close this actor's transport connection if — and only if — this call
+    /// wins the close claim.
     ///
-    /// Sets `transport_closed` so subsequent calls (including from `Drop`) are
-    /// no-ops. Safe to call when `self.transport` is null (test-only actors).
+    /// A caller that loses waits for the winner's close to land instead of
+    /// closing a handle it does not own, so it is safe for it to go on and
+    /// join the reader.
     ///
     /// # Safety
     ///
     /// `self.transport` must be valid (or null).
     unsafe fn close_transport(&self) {
-        if !self.transport_closed.swap(true, Ordering::AcqRel) {
+        if self.transport_close.claim() {
             // SAFETY: caller guarantees transport pointer is valid or null.
             unsafe { close_transport_conn(self.transport, self.conn_id) };
+            self.transport_close.finish();
+        } else {
+            self.transport_close.wait_closed();
         }
     }
 }
@@ -524,7 +598,9 @@ impl Drop for ConnectionActor {
         self.reader_stop.store(1, Ordering::Release);
         // Defense-in-depth: close the transport before joining so a reader
         // blocked inside recv() unblocks rather than hanging indefinitely.
-        // Guards against double-close via transport_closed; null-safe.
+        // Closes only if this drop wins the close claim; otherwise it waits for
+        // the owner's close to land, because the join below cannot complete
+        // until some close has woken the reader.
         //
         // SAFETY: self.transport is valid for the connection lifetime (set in
         // hew_connmgr_add) or null for test-only actors created without a manager.
@@ -987,13 +1063,14 @@ fn test_publish_claim(mgr: &HewConnMgr, route_slot: u16, conn_id: c_int) -> u64 
 ///    The call is token-guarded, so a superseding admission's publication is
 ///    untouched and the repeat inside the teardown below is a no-op.
 /// 2. Hand the connection to the ordinary guarded teardown. That retires the
-///    claim, removes the route, sets `reader_stop` and `transport_closed`
-///    BEFORE closing the transport, unlinks the actor and joins the reader —
-///    so the transport is closed EXACTLY ONCE (manager free no longer sees the
-///    actor, and the actor's `Drop`/close guard short-circuits), and the woken
-///    reader takes the expected-stop path instead of treating the refusal as an
-///    unexpected drop, which is what would otherwise schedule a reconnect and
-///    retry the rejected peer indefinitely.
+///    claim, removes the route, sets `reader_stop` and ACQUIRES the transport
+///    close before closing, unlinks the actor and joins the reader — so the
+///    transport is closed EXACTLY ONCE even when a manager free or a second
+///    removal races this refusal, since only the caller that wins the claim
+///    closes and the losers wait for that close instead of repeating it. The
+///    woken reader takes the expected-stop path instead of treating the refusal
+///    as an unexpected drop, which is what would otherwise schedule a reconnect
+///    and retry the rejected peer indefinitely.
 fn refuse_established_publication(
     mgr: &HewConnMgr,
     peer_route_slot: u16,
@@ -1146,8 +1223,43 @@ fn publish_identity_connection_established(
     // frames. Its actor tears down via the normal reader-exit path.
     if let Some(superseded) = superseded {
         if superseded.state == ClaimState::Published && superseded.conn_id != conn_id {
+            close_installed_connection_once(mgr, superseded.conn_id);
+        }
+    }
+}
+
+/// Close a connection that is (or may be) installed, exactly once.
+///
+/// Deliberately leaves `reader_stop` alone: this is the supersede path, where
+/// the point is that the superseded connection's reader wakes on an
+/// *unexpected* drop and tears itself down through the ordinary reader-exit
+/// route. Only the close is claimed, so the removal that reader triggers — and
+/// the actor's own `Drop` — cannot free the one-shot handle a second time.
+fn close_installed_connection_once(mgr: &HewConnMgr, conn_id: c_int) {
+    let claim = mgr.connections.access(|connections| {
+        connections
+            .iter()
+            .find(|connection| connection.conn_id == conn_id)
+            .map(|connection| {
+                (
+                    connection.transport_close.claim(),
+                    Arc::clone(&connection.transport_close),
+                )
+            })
+    });
+    match claim {
+        Some((true, transport_close)) => {
             // SAFETY: mgr.transport is valid while the manager is alive.
-            unsafe { close_transport_conn(mgr.transport, superseded.conn_id) };
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            transport_close.finish();
+        }
+        // Another teardown path owns this connection's close; leave the handle
+        // to it rather than closing something we do not own.
+        Some((false, _)) => {}
+        None => {
+            // Not installed: no actor exists to own the close, so this call does.
+            // SAFETY: mgr.transport is valid while the manager is alive.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
         }
     }
 }
@@ -1684,13 +1796,22 @@ fn install_connection_actor(
         }
     });
     if install.is_err() {
-        // Mark the actor's transport as closed so Drop does not double-close
-        // after the explicit close_transport_conn below.
-        if let Some(ref a) = actor {
-            a.transport_closed.store(true, Ordering::Release);
+        // The actor never entered the list, so this thread owns it outright —
+        // but take the close through the same claim so its Drop cannot close
+        // the handle a second time.
+        match actor {
+            Some(ref uninstalled) => {
+                if uninstalled.transport_close.claim() {
+                    // SAFETY: mgr.transport is valid per caller contract of hew_connmgr_add.
+                    unsafe { close_transport_conn(mgr.transport, conn_id) };
+                    uninstalled.transport_close.finish();
+                }
+            }
+            None => {
+                // SAFETY: mgr.transport is valid per caller contract of hew_connmgr_add.
+                unsafe { close_transport_conn(mgr.transport, conn_id) };
+            }
         }
-        // SAFETY: mgr.transport is valid per caller contract of hew_connmgr_add.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
     }
     install
 }
@@ -3537,6 +3658,12 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         // Keep actors published while closing so a transport slot cannot be
         // reused by a new admission until every claimed deferred send has
         // observed the close and returned.
+        //
+        // Each close is acquired, not announced: a removal or refusal already
+        // tearing one of these connections down owns its close, and free must
+        // not close the same one-shot handle behind it. Free still waits for
+        // that owner's close to land before draining, because the drain drops
+        // the actors and each drop joins a reader that only a real close wakes.
         let closing = mgr.connections.access(|connections| {
             connections
                 .iter()
@@ -3545,19 +3672,28 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
                         .publication_removed
                         .store(true, Ordering::Release);
                     connection.reader_stop.store(1, Ordering::Release);
-                    connection.transport_closed.store(true, Ordering::Release);
                     (
                         connection.conn_id,
                         Arc::clone(&connection.claimed_send_lifecycle),
+                        Arc::clone(&connection.transport_close),
+                        connection.transport_close.claim(),
                     )
                 })
                 .collect::<Vec<_>>()
         });
-        for (conn_id, _) in &closing {
-            // SAFETY: transport is valid per manager contract.
-            unsafe { close_transport_conn(transport, *conn_id) };
+        for (conn_id, _, transport_close, owns_close) in &closing {
+            if *owns_close {
+                // SAFETY: transport is valid per manager contract.
+                unsafe { close_transport_conn(transport, *conn_id) };
+                transport_close.finish();
+            }
         }
-        for (_, lifecycle) in &closing {
+        for (_, _, transport_close, owns_close) in &closing {
+            if !*owns_close {
+                transport_close.wait_closed();
+            }
+        }
+        for (_, lifecycle, _, _) in &closing {
             lifecycle.wait_for_idle();
         }
         // The slots are now closed with no claimed sender in flight; draining
@@ -4366,11 +4502,12 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
 /// instead of hand-rolling teardown steps.
 ///
 /// It maintains the teardown invariants in one place: cancel the publication,
-/// remove the route, mark `reader_stop` + `transport_closed` BEFORE closing so
-/// the transport is closed exactly once and the woken reader takes the
-/// expected-stop path (no re-entrant removal, no reconnect), drain claimed
-/// sends, unlink the actor, join the reader, then retire the claim, the route
-/// and the cluster membership.
+/// remove the route, set `reader_stop` and then ACQUIRE the transport close
+/// before closing — so the transport is closed exactly once no matter how many
+/// callers arrive concurrently, and the woken reader takes the expected-stop
+/// path (no re-entrant removal, no reconnect) — drain claimed sends, unlink the
+/// actor, join the reader, then retire the claim, the route and the cluster
+/// membership.
 ///
 /// Returns 0 on success, -1 if `conn_id` is not installed.
 #[allow(
@@ -4455,21 +4592,32 @@ fn remove_connection(mgr: &HewConnMgr, conn_id: c_int) -> c_int {
     // Step 2b: close the transport while the actor remains in the list. That
     // keeps a new admission from reusing this numeric slot until every claimed
     // deferred send has observed the close and released its lifecycle guard.
-    let marked = mgr.connections.access(|connections| {
-        let Some(connection) = connections.iter().find(|connection| {
+    //
+    // The close is ACQUIRED, not announced: a concurrent remover, refusal or
+    // manager free reaching the same connection loses the claim and must not
+    // touch the one-shot handle. It still has to see the close land before it
+    // may unlink and drop the actor below, since the drop joins a reader that
+    // only the real close can wake — so a loser waits instead of closing.
+    let claim = mgr.connections.access(|connections| {
+        let connection = connections.iter().find(|connection| {
             connection.conn_id == conn_id && connection.publication_token == publication_token
-        }) else {
-            return false;
-        };
+        })?;
         connection.reader_stop.store(1, Ordering::Release);
-        connection.transport_closed.store(true, Ordering::Release);
-        true
+        Some((
+            connection.transport_close.claim(),
+            Arc::clone(&connection.transport_close),
+        ))
     });
-    if !marked {
+    let Some((owns_close, transport_close)) = claim else {
         return 0;
+    };
+    if owns_close {
+        // SAFETY: transport is valid per manager contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        transport_close.finish();
+    } else {
+        transport_close.wait_closed();
     }
-    // SAFETY: transport is valid per manager contract.
-    unsafe { close_transport_conn(mgr.transport, conn_id) };
     claimed_send_lifecycle.wait_for_idle();
 
     // Remove only the exact closed publication. A second concurrent removal
@@ -8451,7 +8599,7 @@ mod tests {
     /// The connection is staged the way production stages it: reconnect armed,
     /// and a reader parked until the transport close wakes it, running the real
     /// `reader_cleanup`. A hand-rolled close (one that does not mark
-    /// `reader_stop`/`transport_closed` first) makes that reader treat the
+    /// `reader_stop` or claim the close first) makes that reader treat the
     /// deliberate refusal as an unexpected drop — re-entering removal, closing
     /// the transport a second time, and retrying the rejected peer.
     #[test]

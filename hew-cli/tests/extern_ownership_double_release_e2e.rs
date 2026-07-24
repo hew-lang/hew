@@ -661,3 +661,186 @@ fn a_returned_channel_pair_is_not_closed_by_its_producer() {
          closes handles the caller owns:\n{stdout}"
     );
 }
+
+/// The P0 this revision closes: a Hew WRAPPER around an ownership-opaque
+/// `extern "C" -> string`, observed on a non-adopting ABI.
+///
+/// # Why this fixture can observe what the root-extern one above cannot
+///
+/// A ROOT-declared extern `-> string` is classified `ForeignAdopt`, so codegen
+/// copies the foreign pointer into a private header-aware buffer and `free()`s
+/// it. The foreign handle never reaches Hew raw, which is exactly why the
+/// root-extern fixture can only pin "released exactly once".
+///
+/// A `HeaderAware` extern is not copied: the compiler passes the host's pointer
+/// straight through as a runtime string handle. That classification is reached
+/// through an extern declared in a module with stdlib provenance, so this
+/// fixture builds a two-file project whose sibling module is named `std` and
+/// declares the extern. This is a real, reachable configuration of the selected
+/// ABI, and it is the only one on which a non-adopting foreign result is
+/// observable — stated plainly because it is a deliberately narrow hook.
+///
+/// The host therefore mints a genuine header-aware handle itself (pinned
+/// 16-byte `{ magic, rc, _reserved }` header, `rc` biased so no release can
+/// free it underneath the probe) and keeps every pointer, so each compiler
+/// release is visible as an exact decrement.
+///
+/// Measured against the pre-fix compiler this fixture reports `releases=8` over
+/// eight frames: the wrapper laundered the extern's result into an "analyzed
+/// fresh" verdict, `main` minted a synthetic owner over it and dropped it. The
+/// fixed compiler reports zero.
+const HEADER_AWARE_SPY_RUST: &str = r#"//! Mints REAL header-aware handles and counts every release of them.
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+/// `hew-cabi` pins `CSTRING_HEADER_SIZE = 16`, `{ magic: u64, rc: u32, _pad: u32 }`.
+const HEADER: isize = 16;
+/// `CSTRING_MAGIC` — b"HEW_CSTR" read as a little-endian u64.
+const MAGIC: u64 = 0x4845_575F_4353_5452;
+/// Large enough that no realistic release count reaches zero, so the observed
+/// buffer is never freed underneath us.
+const BIAS: u32 = 1_000_000;
+const SLOTS: usize = 64;
+
+static COUNT: AtomicUsize = AtomicUsize::new(0);
+static HELD: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
+
+extern "C" {
+    fn malloc(size: usize) -> *mut u8;
+    fn hew_string_drop(s: *mut std::ffi::c_char);
+}
+
+unsafe fn rc_ptr(data: *const u8) -> *mut u32 {
+    unsafe { data.offset(-8) as *mut u32 }
+}
+
+/// Hand Hew a handle in the runtime's own representation, WITHOUT copying it.
+#[no_mangle]
+pub unsafe extern "C" fn spy_make_string() -> *mut std::ffi::c_char {
+    let text = b"host-made\0";
+    let base = unsafe { malloc(HEADER as usize + text.len()) };
+    assert!(!base.is_null());
+    unsafe {
+        std::ptr::write_unaligned(base as *mut u64, MAGIC);
+        std::ptr::write_unaligned(base.offset(8) as *mut u32, 1u32 + BIAS);
+        std::ptr::write_unaligned(base.offset(12) as *mut u32, 0u32);
+        std::ptr::copy_nonoverlapping(text.as_ptr(), base.offset(HEADER), text.len());
+    }
+    let data = unsafe { base.offset(HEADER) };
+    let slot = COUNT.fetch_add(1, Ordering::SeqCst);
+    if slot < SLOTS {
+        HELD[slot].store(data as u64, Ordering::SeqCst);
+    }
+    data as *mut std::ffi::c_char
+}
+
+/// Net releases across every handed-out handle: `sum of (1 + BIAS - rc_now)`.
+#[no_mangle]
+pub extern "C" fn spy_releases() -> i64 {
+    let n = COUNT.load(Ordering::SeqCst).min(SLOTS);
+    let mut total: i64 = 0;
+    for slot in 0..n {
+        let data = HELD[slot].load(Ordering::SeqCst) as *const u8;
+        if data.is_null() {
+            continue;
+        }
+        let rc = unsafe { std::ptr::read_unaligned(rc_ptr(data)) };
+        total += i64::from(1u32 + BIAS) - i64::from(rc);
+    }
+    total
+}
+
+#[no_mangle]
+pub extern "C" fn spy_made() -> i64 {
+    COUNT.load(Ordering::SeqCst) as i64
+}
+
+/// Positive control for the counter, run LAST: one real `hew_string_drop` from
+/// the host must read as exactly one release, so a reported zero is a
+/// measurement and not a blind probe.
+#[no_mangle]
+pub extern "C" fn spy_release_one_from_host() -> i64 {
+    let data = HELD[0].load(Ordering::SeqCst) as *mut std::ffi::c_char;
+    if data.is_null() {
+        return -1;
+    }
+    unsafe { hew_string_drop(data) };
+    0
+}
+"#;
+
+/// The sibling module that declares the non-adopting extern and wraps it in one
+/// ordinary Hew frame. `wrapper` is the launderer: body-less externs read as
+/// fresh in the coarse freshness summary, so this `-> string` used to inherit a
+/// freshness proof it never earned.
+const HEADER_AWARE_WRAPPER_MODULE: &str = r#"extern "C" {
+    fn spy_make_string() -> string;
+}
+
+pub fn wrapper() -> string {
+    unsafe { spy_make_string() }
+}
+"#;
+
+const HEADER_AWARE_WRAPPER_MAIN: &str = r#"import std;
+
+extern "C" {
+    fn spy_releases() -> i64;
+    fn spy_made() -> i64;
+    fn spy_release_one_from_host() -> i64;
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 8 {
+        println(f"v={std.wrapper()}");
+        i = i + 1;
+    }
+    let made = unsafe { spy_made() };
+    let releases = unsafe { spy_releases() };
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+#[test]
+fn a_hew_wrapper_around_an_opaque_extern_sees_no_caller_release() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_header_aware", HEADER_AWARE_SPY_RUST) else {
+        return;
+    };
+    // The wrapper lives in a sibling module resolved from the compiled file's
+    // directory; `build_and_run` writes `main.hew` into the same directory.
+    std::fs::write(dir.path().join("std.hew"), HEADER_AWARE_WRAPPER_MODULE)
+        .expect("write sibling module");
+
+    let stdout = build_and_run(dir.path(), "main", HEADER_AWARE_WRAPPER_MAIN, Some(&spy));
+
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: the host must have handed out all eight handles, or the \
+         measurement below is vacuous:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        0,
+        "DOUBLE RELEASE: one Hew frame between the interpolation and an \
+         ownership-opaque extern laundered the foreign result into an \
+         `analyzed fresh` verdict, and the caller minted and ran a release \
+         obligation over a handle the host still owns. The freshness summary \
+         must fail closed through an arbitrary chain of Hew frames:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        1,
+        "the release counter itself must have teeth: one real \
+         `hew_string_drop` from the host must read as exactly one release, so \
+         the zero above is a measurement rather than a blind probe:\n{stdout}"
+    );
+}

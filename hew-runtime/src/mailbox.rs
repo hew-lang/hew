@@ -75,6 +75,15 @@ pub(crate) fn fail_mailbox_alloc_on_nth(n: usize) -> MailboxAllocFailureGuard {
     MailboxAllocFailureGuard
 }
 
+/// Whether an injected allocation failure is still pending on this thread.
+///
+/// `should_fail_mailbox_alloc` disarms the trap only when it actually fires, so
+/// a still-armed trap after a call is proof that the call allocated nothing.
+#[cfg(test)]
+pub(crate) fn mailbox_alloc_failure_still_armed() -> bool {
+    FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| slot.get() != usize::MAX)
+}
+
 #[cfg(test)]
 fn should_fail_mailbox_alloc() -> bool {
     FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| {
@@ -1026,8 +1035,11 @@ pub struct HewMailbox {
     message_drop_fn: Option<HewMessageDropFn>,
     /// Whether the mailbox has been closed.
     closed: std::sync::atomic::AtomicBool,
-    /// Whether a shutdown system message (`msg_type = -1`) has been enqueued.
-    stop_signal_sent: std::sync::atomic::AtomicBool,
+    /// Whether a stop has been requested on this mailbox.
+    ///
+    /// This flag IS the stop signal — there is no queued node. See
+    /// [`mailbox_request_stop`].
+    stop_requested: std::sync::atomic::AtomicBool,
     /// Condvar notified when a user message is consumed, waking blocked senders.
     not_full: Condvar,
     /// High-water mark: maximum `count` value observed.
@@ -1168,7 +1180,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
-        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
+        stop_requested: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: false,
@@ -1206,7 +1218,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
-        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
+        stop_requested: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1253,7 +1265,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
-        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
+        stop_requested: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1292,7 +1304,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
-        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
+        stop_requested: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: true,
@@ -2384,41 +2396,45 @@ unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailbox) -> bool {
+/// Latch a stop request on this mailbox, OUT OF BAND.
+///
+/// The stop signal is this atomic bool, not a queued node. `hew_actor_stop`
+/// calls this for a Running actor and the per-message loop in
+/// `scheduler::activate_actor` reads it at loop top via
+/// [`mailbox_stop_requested`].
+///
+/// This function CANNOT FAIL. That is its whole point. Its predecessor,
+/// `mailbox_send_stop_sys_once`, allocated a sentinel `HewMsgNode` *before*
+/// latching the flag, so on allocation failure it returned `false` having
+/// neither enqueued the node nor set the flag — and both callers discarded the
+/// result. Under memory pressure a Running actor therefore never observed its
+/// own stop and ran until something else tore it down. There is no allocation
+/// on this path, so there is no such window.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer or null.
+pub(crate) unsafe fn mailbox_request_stop(mb: *mut HewMailbox) {
+    if mb.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees `mb` is valid when non-null.
+    let mb = unsafe { &*mb };
+    mb.stop_requested.store(true, Ordering::Release);
+}
+
+/// Whether a stop has been requested on this mailbox.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer or null. A null mailbox is NOT a stop
+/// request (fail-closed against a spurious self-stop).
+pub(crate) unsafe fn mailbox_stop_requested(mb: *mut HewMailbox) -> bool {
     if mb.is_null() {
         return false;
     }
-    // SAFETY: Caller guarantees `mb` is valid.
-    let mb = unsafe { &*mb };
-
-    // SAFETY: stop signals carry no payload.
-    let node = unsafe {
-        msg_node_alloc(
-            HewSysMsg::Shutdown.as_i32(),
-            ptr::null(),
-            0,
-            ptr::null_mut(),
-        )
-    };
-    if node.is_null() {
-        set_last_error("hew_actor_stop: failed to enqueue shutdown system message");
-        eprintln!("hew_actor_stop: failed to enqueue shutdown system message");
-        return false;
-    }
-
-    if mb
-        .stop_signal_sent
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        // SAFETY: `node` was allocated above and was not published to the queue.
-        unsafe { hew_msg_node_free(node) };
-        return false;
-    }
-
-    // SAFETY: `node` is freshly allocated and now owned by the system queue.
-    unsafe { enqueue_sys_node(mb, node) };
-    true
+    // SAFETY: Caller guarantees `mb` is valid when non-null.
+    unsafe { &*mb }.stop_requested.load(Ordering::Acquire)
 }
 
 /// Policy-aware push into the user queue.
@@ -3664,8 +3680,12 @@ mod tests {
                 hew_mailbox_send(mb, 0, p, size_of::<i32>()),
                 HewError::ErrMailboxFull as i32
             );
-            // System message should still succeed.
-            hew_mailbox_send_sys(mb, 99, p, size_of::<i32>());
+            // A real lifecycle signal should still succeed. It must be a
+            // member of the closed `HewSysMsg` set: this entry point refuses
+            // anything else, so an arbitrary integer here would make the
+            // assertion pass on the queued USER message alone.
+            hew_mailbox_send_sys(mb, HewSysMsg::ChildStopped.as_i32(), p, size_of::<i32>());
+            assert_eq!(hew_mailbox_sys_len(mb), 1);
             assert_eq!(hew_mailbox_has_messages(mb), 1);
 
             hew_mailbox_free(mb);

@@ -2006,8 +2006,35 @@ fn activate_actor(actor: *mut HewActor) {
     if !mailbox.is_null() {
         // Process up to `budget` messages.
         for _ in 0..budget {
+            // OUT-OF-BAND STOP, checked BEFORE any receive.
+            //
+            // `hew_actor_stop` on a Running actor latches this flag with an
+            // atomic store. It is not a message and never occupies a queue
+            // slot, so — unlike the sentinel node this replaces — the request
+            // cannot be lost when a `HewMsgNode` allocation fails. The former
+            // producer allocated the node before latching the flag and both
+            // callers discarded its `bool`, so under memory pressure a Running
+            // actor silently never observed its own stop.
+            //
+            // Checking here also means the stop pre-empts any still-queued
+            // system signal: an actor that has been told to stop is not going
+            // to service another lifecycle notification first.
             // SAFETY: mailbox pointer is valid for the lifetime of the actor.
-            // Receive WITH provenance so a SYSTEM-queue shutdown sentinel is not
+            if unsafe { mailbox::mailbox_stop_requested(mailbox) } {
+                // Drive Running -> Stopping so the post-loop settle finalizes
+                // the Stopping -> Stopped terminal transition
+                // (monitors/terminate).
+                let _ = a.actor_state.compare_exchange(
+                    HewActorState::Running as i32,
+                    HewActorState::Stopping as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                break;
+            }
+
+            // SAFETY: mailbox pointer is valid for the lifetime of the actor.
+            // Receive WITH provenance so a SYSTEM-queue lifecycle signal is not
             // confused with an application message that shares its value.
             let mailbox::RecvNode { node: msg, origin } =
                 unsafe { mailbox::mailbox_try_recv_with_origin(mailbox) };
@@ -2015,19 +2042,11 @@ fn activate_actor(actor: *mut HewActor) {
                 break;
             }
 
-            // Route by the node's TYPED provenance. An exhaustive `match` — the
-            // shutdown case is `Origin::Sys(HewSysMsg::Shutdown)`, a pattern
-            // with no value to compare, so it cannot be silently weakened into
-            // a value test the way the previous `from_sys && msg_type == -1`
-            // conjunct could be by dropping one term.
-            //
-            // `hew_actor_stop` enqueues the Shutdown signal onto a Running
-            // actor's SYSTEM queue so its next mailbox poll OBSERVES the close
-            // request. It is a lifecycle signal, not an application message —
-            // the generated user trampoline has no arm for it, so handing it
-            // there would land on the trapping default arm (`ud2` → SIGILL).
-            // This reproduced ~0.75% of the time when a supervised actor was
-            // stopped while a worker was mid-drain of its mailbox.
+            // Route by the node's TYPED provenance. An exhaustive `match`: the
+            // two channels are different types, not different values of one
+            // type, so the routing cannot be silently weakened into a value
+            // test the way the previous `from_sys && msg_type == -1` conjunct
+            // could be by dropping one term.
             //
             // A USER-queue node is never intercepted here whatever its
             // `msg_type`: application tags are unrestricted `i32` in the public
@@ -2035,20 +2054,6 @@ fn activate_actor(actor: *mut HewActor) {
             // code, so a user message carrying a `HewSysMsg` discriminant is a
             // real message that MUST reach the handler.
             let dispatch_target = match origin {
-                Origin::Sys(HewSysMsg::Shutdown) => {
-                    // SAFETY: `msg` is exclusively owned by this worker.
-                    unsafe { hew_msg_node_free(msg) };
-                    // Drive Running -> Stopping so the post-loop settle finalizes
-                    // the Stopping -> Stopped terminal transition
-                    // (monitors/terminate).
-                    let _ = a.actor_state.compare_exchange(
-                        HewActorState::Running as i32,
-                        HewActorState::Stopping as i32,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    );
-                    break;
-                }
                 Origin::Sys(kind) => {
                     let Some(sys_dispatch) = a.sys_dispatch else {
                         // Fail-closed: this actor registered no system entry

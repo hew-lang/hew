@@ -173,12 +173,6 @@ fn report_sys_enqueue_failure(msg_type: i32, size: usize) {
     eprintln!("{msg}");
 }
 
-fn report_stop_enqueue_failure() {
-    let msg = "hew_actor_stop: failed to enqueue shutdown system message";
-    set_last_error(msg);
-    eprintln!("{msg}");
-}
-
 // ── Message node ────────────────────────────────────────────────────────
 //
 // We duplicate the struct here rather than importing from `crate::mailbox`
@@ -604,12 +598,15 @@ pub struct HewMailboxWasm {
     high_water_mark: i64,
     /// Whether the mailbox has been closed.
     closed: bool,
-    /// Whether a shutdown system message (`msg_type = -1`) has been enqueued.
+    /// Whether a stop has been requested on this mailbox.
+    ///
+    /// This flag IS the stop signal — there is no queued node. See
+    /// [`mailbox_request_stop`].
     #[cfg_attr(
         not(target_arch = "wasm32"),
         allow(dead_code, reason = "field is only used by wasm-only stop semantics")
     )]
-    stop_signal_sent: bool,
+    stop_requested: bool,
 }
 
 /// Update the high-water mark after incrementing `count`.
@@ -917,7 +914,7 @@ wasm_no_mangle! {
             message_drop_fn: None,
             high_water_mark: 0,
             closed: false,
-            stop_signal_sent: false,
+            stop_requested: false,
         }))
     }
 }
@@ -940,7 +937,7 @@ wasm_no_mangle! {
             message_drop_fn: None,
             high_water_mark: 0,
             closed: false,
-            stop_signal_sent: false,
+            stop_requested: false,
         }))
     }
 }
@@ -974,7 +971,7 @@ wasm_no_mangle! {
             message_drop_fn: None,
             high_water_mark: 0,
             closed: false,
-            stop_signal_sent: false,
+            stop_requested: false,
         }))
     }
 }
@@ -1198,6 +1195,19 @@ pub(crate) unsafe fn mailbox_send_sys(
     crate::scheduler_wasm::record_message_sent();
 }
 
+/// Latch a stop request on this mailbox, OUT OF BAND — the WASM twin of
+/// [`crate::mailbox::mailbox_request_stop`].
+///
+/// The stop signal is this bool, not a queued node, so the call CANNOT FAIL.
+/// Its predecessor, `mailbox_send_stop_sys_once`, allocated a sentinel
+/// `HewMsgNode` *and* grew the system queue before latching the flag; on either
+/// failure it returned `false` with neither the node enqueued nor the flag set,
+/// and the caller discarded the result. A Running actor then never observed its
+/// own stop.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer or null.
 #[cfg_attr(
     not(target_arch = "wasm32"),
     allow(
@@ -1205,35 +1215,33 @@ pub(crate) unsafe fn mailbox_send_sys(
         reason = "helper is only referenced by wasm-only actor stop code"
     )
 )]
-pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailboxWasm) -> bool {
+pub(crate) unsafe fn mailbox_request_stop(mb: *mut HewMailboxWasm) {
+    if mb.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees `mb` is valid when non-null.
+    unsafe { &mut *mb }.stop_requested = true;
+}
+
+/// Whether a stop has been requested on this mailbox.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer or null. A null mailbox is NOT a stop
+/// request (fail-closed against a spurious self-stop).
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "helper is only referenced by wasm-only actor stop code"
+    )
+)]
+pub(crate) unsafe fn mailbox_stop_requested(mb: *mut HewMailboxWasm) -> bool {
     if mb.is_null() {
         return false;
     }
-    // SAFETY: Caller guarantees `mb` is valid.
-    let mb = unsafe { &mut *mb };
-
-    // SAFETY: stop signals carry no payload.
-    let node = unsafe { msg_node_alloc(HewSysMsg::Shutdown.as_i32(), ptr::null(), 0) };
-    if node.is_null() {
-        report_stop_enqueue_failure();
-        return false;
-    }
-    if !reserve_queue_capacity(&mut mb.sys_queue, 1) {
-        // SAFETY: `node` is still owned by this helper and was never published.
-        unsafe { msg_node_free(node) };
-        report_stop_enqueue_failure();
-        return false;
-    }
-    if mb.stop_signal_sent {
-        // SAFETY: `node` was allocated above and was not published to the queue.
-        unsafe { msg_node_free(node) };
-        return false;
-    }
-
-    mb.stop_signal_sent = true;
-    mb.sys_queue.push_back(node);
-    crate::scheduler_wasm::record_message_sent();
-    true
+    // SAFETY: Caller guarantees `mb` is valid when non-null.
+    unsafe { &*mb }.stop_requested
 }
 
 // ── Receive (consumer side) ─────────────────────────────────────────────
@@ -1659,32 +1667,63 @@ mod tests {
         }
     }
 
+    /// (c) A stop request survives total allocation failure.
+    ///
+    /// Replaces `stop_sys_queue_growth_failure_sets_last_error_and_allows_retry`,
+    /// whose whole subject — a stop node that fails to allocate, reports an
+    /// error, and must be retried — no longer exists. That test certified the
+    /// defect: the old producer allocated the node and grew the sys queue
+    /// BEFORE latching `stop_signal_sent`, so on failure it returned `false`
+    /// with the request dropped entirely, and `hew_actor_stop` discarded the
+    /// `bool`. Retry was the caller's responsibility and no caller retried.
     #[test]
-    fn stop_sys_queue_growth_failure_sets_last_error_and_allows_retry() {
-        // SAFETY: test owns the mailbox exclusively; size=0 isolates queue growth.
+    fn stop_request_is_latched_with_no_allocation() {
+        // SAFETY: test owns the mailbox exclusively.
         unsafe {
             crate::hew_clear_error();
             let mb = hew_mailbox_new();
-            let _oom = fail_mailbox_alloc_on_nth(1);
+            assert!(!mailbox_stop_requested(mb));
 
-            assert!(!mailbox_send_stop_sys_once(mb));
-            assert!(!(*mb).stop_signal_sent);
-            assert!(hew_mailbox_try_recv_sys(mb).is_null());
+            // Arm the allocator to fail the very next allocation and leave it
+            // armed: `should_fail_mailbox_alloc` disarms itself only when it
+            // actually fires.
+            let _oom = fail_mailbox_alloc_on_nth(0);
+            mailbox_request_stop(mb);
 
-            let err = last_error_message().expect("stop OOM should set hew_last_error");
             assert!(
-                err.contains("hew_actor_stop: failed to enqueue shutdown system message"),
-                "unexpected error message: {err}"
+                mailbox_stop_requested(mb),
+                "the stop must be latched even with the allocator poisoned"
+            );
+            assert!(
+                last_error_message().is_none(),
+                "latching a stop must not report a failure — it cannot fail"
+            );
+            // The trap is still armed, which proves the stop path allocated
+            // nothing at all: had it allocated, the guard would have fired and
+            // disarmed itself.
+            assert!(
+                msg_node_alloc(HewSysMsg::ChildStopped.as_i32(), ptr::null(), 0).is_null(),
+                "the injected allocation failure must still be armed — the stop \
+                 path must not have consumed it"
             );
 
-            assert!(mailbox_send_stop_sys_once(mb));
-            let node = hew_mailbox_try_recv_sys(mb);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, HewSysMsg::Shutdown.as_i32());
-            msg_node_free(node);
+            // Idempotent: latching twice is the same state, no once-guard and
+            // therefore no way to "lose" a second stop.
+            mailbox_request_stop(mb);
+            assert!(mailbox_stop_requested(mb));
 
             hew_mailbox_free(mb);
             crate::hew_clear_error();
+        }
+    }
+
+    /// A null mailbox is not a stop request (fail-closed).
+    #[test]
+    fn null_mailbox_is_not_a_stop_request() {
+        // SAFETY: both helpers explicitly tolerate null.
+        unsafe {
+            mailbox_request_stop(ptr::null_mut());
+            assert!(!mailbox_stop_requested(ptr::null_mut()));
         }
     }
 
@@ -1992,7 +2031,7 @@ mod tests {
             );
 
             // sys messages must still be accepted even on a closed mailbox.
-            hew_mailbox_send_sys(mb, 0, p, size_of::<i32>());
+            hew_mailbox_send_sys(mb, HewSysMsg::ChildStopped.as_i32(), p, size_of::<i32>());
             assert_eq!(hew_mailbox_has_messages(mb), 1);
 
             hew_mailbox_free(mb);
@@ -2012,7 +2051,7 @@ mod tests {
 
             // send_sys must enqueue the node despite the closed flag; this is
             // the intended native behaviour for lifecycle/shutdown signals.
-            hew_mailbox_send_sys(mb, HewSysMsg::Shutdown.as_i32(), p, size_of::<i32>());
+            hew_mailbox_send_sys(mb, HewSysMsg::ChildStopped.as_i32(), p, size_of::<i32>());
             assert_eq!(hew_mailbox_has_messages(mb), 1);
 
             hew_mailbox_free(mb);
@@ -2862,11 +2901,13 @@ mod tests {
         // The system queue carries only `HewSysMsg`. The former reserved block
         // (100..=105) and the former shutdown sentinel (-1) are ordinary
         // application values now and must be refused at this privileged entry
-        // point rather than enqueued as an undecodable system node.
+        // point rather than enqueued as an undecodable system node. `0` is
+        // refused too: it is no longer a member, so a zeroed `i32` reaching
+        // this entry point fails closed instead of decoding to a real signal.
         // SAFETY: test owns the mailbox exclusively; all pointers are valid.
         unsafe {
             let mb = hew_mailbox_new();
-            for raw in [-1, 8, 99, 100, 101, 103, 104, 105, i32::MAX] {
+            for raw in [i32::MIN, -1, 0, 8, 99, 100, 101, 103, 104, 105, i32::MAX] {
                 crate::hew_clear_error();
                 hew_mailbox_send_sys(mb, raw, ptr::null_mut(), 0);
                 assert_eq!(
@@ -2891,7 +2932,7 @@ mod tests {
 
             hew_mailbox_send_sys(
                 mb,
-                HewSysMsg::Shutdown.as_i32(),
+                HewSysMsg::ChildStopped.as_i32(),
                 (&raw const val).cast_mut().cast(),
                 size_of::<i32>(),
             );

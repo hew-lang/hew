@@ -38,6 +38,13 @@ pub const HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK: u32 = !((1u32 << 9) - 1);
 /// cannot express a lifecycle signal at all. The provenance is the TYPE, not a
 /// reserved value and not a boolean conjunct a future edit could drop.
 ///
+/// There is NO shutdown member. A stop request is not a message at all: it is
+/// latched out of band on the mailbox by
+/// [`crate::mailbox::mailbox_request_stop`] and read at the top of the
+/// scheduler's per-message loop. Nothing is allocated and nothing is enqueued,
+/// so a stop cannot be lost to allocation failure the way the sentinel node it
+/// replaces could be.
+///
 /// The discriminants are this enum's own private namespace. They are carried
 /// across the C ABI as the `i32` argument of `HewSysDispatchFn`, always
 /// produced by [`HewSysMsg::as_i32`] and always validated back through
@@ -51,10 +58,6 @@ pub const HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK: u32 = !((1u32 << 9) - 1);
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HewSysMsg {
-    /// Self-stop request enqueued by `mailbox_send_stop_sys_once` when
-    /// `hew_actor_stop` targets a Running actor. Observed structurally by the
-    /// scheduler; never reaches any dispatch entry point.
-    Shutdown = 0,
     /// A supervised child reached a clean terminal state.
     ChildStopped = 1,
     /// A supervised child crashed. Payload: `ChildEvent`.
@@ -80,10 +83,16 @@ pub enum HewSysMsg {
 impl HewSysMsg {
     /// Decode a raw discriminant. `None` for anything outside the closed set —
     /// fail-closed, no catch-all arm.
+    ///
+    /// `0` is deliberately NOT a member: it is what zeroed or uninitialised
+    /// memory reads as, so refusing it means a zeroed `i32` arriving at the
+    /// system boundary is rejected instead of decoding to a real signal. There
+    /// is likewise no shutdown discriminant — a stop is latched out of band on
+    /// the mailbox (`mailbox::mailbox_request_stop`) and never travels as a
+    /// message.
     #[must_use]
     pub const fn from_raw(raw: i32) -> Option<Self> {
         match raw {
-            0 => Some(Self::Shutdown),
             1 => Some(Self::ChildStopped),
             2 => Some(Self::ChildCrashed),
             3 => Some(Self::SupervisorStop),
@@ -164,7 +173,6 @@ mod tests {
     #[test]
     fn sys_msg_decode_round_trips_and_refuses_unknown() {
         for kind in [
-            HewSysMsg::Shutdown,
             HewSysMsg::ChildStopped,
             HewSysMsg::ChildCrashed,
             HewSysMsg::SupervisorStop,
@@ -175,11 +183,50 @@ mod tests {
         ] {
             assert_eq!(HewSysMsg::from_raw(kind.as_i32()), Some(kind));
         }
-        // Fail-closed decode: no fallthrough arm. The former reserved block
-        // (100..=105), the former shutdown sentinel (-1), and the extremes of
-        // the application tag range all decode to None.
-        for raw in [-1, 8, 99, 100, 101, 102, 103, 104, 105, i32::MIN, i32::MAX] {
+        // Fail-closed decode: no fallthrough arm. `0` — what zeroed or
+        // uninitialised memory reads as — is not a member. Neither is the
+        // former shutdown sentinel (-1): a stop is latched out of band on the
+        // mailbox and has no wire representation at all. The former reserved
+        // application block (100..=105) and the extremes of the application tag
+        // range are likewise refused.
+        for raw in [
+            i32::MIN,
+            -1,
+            0,
+            8,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            i32::MAX,
+        ] {
             assert_eq!(HewSysMsg::from_raw(raw), None, "raw {raw} must not decode");
         }
+    }
+
+    /// (b) The shutdown sentinel value does not exist. There is no discriminant
+    /// — in the closed set or outside it — that a sender can put on the system
+    /// queue to request a stop.
+    #[test]
+    fn no_discriminant_encodes_a_stop_request() {
+        // The whole decodable set, enumerated: every member is a supervision,
+        // link, or monitor notification. None of them stops an actor.
+        let decodable: Vec<HewSysMsg> = (-2..=10).filter_map(HewSysMsg::from_raw).collect();
+        assert_eq!(
+            decodable,
+            vec![
+                HewSysMsg::ChildStopped,
+                HewSysMsg::ChildCrashed,
+                HewSysMsg::SupervisorStop,
+                HewSysMsg::Exit,
+                HewSysMsg::Down,
+                HewSysMsg::DelayedRestart,
+                HewSysMsg::ChildSupervisorEscalated,
+            ],
+            "the system message set must contain no self-stop signal"
+        );
     }
 }

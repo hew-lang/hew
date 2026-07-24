@@ -2780,9 +2780,8 @@ unsafe fn supervisor_sys_dispatch_impl(
                 unsafe { restart_with_budget_and_strategy(sup, idx) };
             }
         }
-        // A supervisor's own actor is never linked or monitored by the runtime,
-        // and Shutdown is consumed structurally by the scheduler.
-        HewSysMsg::Shutdown | HewSysMsg::Exit | HewSysMsg::Down => {}
+        // A supervisor's own actor is never linked or monitored by the runtime.
+        HewSysMsg::Exit | HewSysMsg::Down => {}
     }
 }
 

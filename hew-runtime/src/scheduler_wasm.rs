@@ -1587,8 +1587,29 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     if !mailbox.is_null() {
         // Process up to `budget` messages.
         for _ in 0..budget {
+            // OUT-OF-BAND STOP, checked BEFORE any receive — the native shape
+            // (sync parity). `hew_actor_stop` on a Running actor latches this
+            // flag; it is not a message and never occupies a queue slot, so the
+            // request cannot be lost when a `HewMsgNode` allocation or a
+            // sys-queue growth fails. The sentinel node this replaces could be:
+            // its producer allocated and grew before latching, and the caller
+            // discarded the resulting `bool`.
             // SAFETY: mailbox pointer is valid for the lifetime of the actor.
-            // Receive WITH provenance so a SYSTEM-queue shutdown sentinel is not
+            if unsafe { crate::mailbox_wasm::mailbox_stop_requested(mailbox.cast()) } {
+                // Drive Running -> Stopping so the post-loop settle finalizes
+                // the Stopping -> Stopped terminal transition (terminate
+                // callback).
+                let _ = a.actor_state.compare_exchange(
+                    HewActorState::Running as i32,
+                    HewActorState::Stopping as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                break;
+            }
+
+            // SAFETY: mailbox pointer is valid for the lifetime of the actor.
+            // Receive WITH provenance so a SYSTEM-queue lifecycle signal is not
             // confused with an application message sharing its value. Mirrors the
             // native `mailbox::mailbox_try_recv_with_origin` path (sync parity).
             let recv = unsafe { crate::mailbox_wasm::mailbox_try_recv_with_origin(mailbox.cast()) };
@@ -1599,33 +1620,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
             }
 
             // Route by the node's TYPED provenance — the exact native shape
-            // (sync parity). The shutdown case is a pattern with no value to
-            // compare, so it cannot be weakened into a value test.
-            //
-            // `hew_actor_stop` enqueues the Shutdown signal onto a Running
-            // actor's SYSTEM queue so its next mailbox poll OBSERVES the close
-            // request. On WASM this fires DETERMINISTICALLY (no concurrency): a
-            // handler that calls `hew_actor_stop(self)` leaves the actor
-            // Running, queues the signal, and the next loop iteration would
-            // otherwise dispatch it.
-            //
-            // A USER-queue node is never intercepted here whatever its
-            // `msg_type`.
+            // (sync parity). A USER-queue node is never intercepted here
+            // whatever its `msg_type`.
             let dispatch_target = match origin {
-                Origin::Sys(HewSysMsg::Shutdown) => {
-                    // SAFETY: `msg` is exclusively owned by this scheduler tick.
-                    unsafe { hew_msg_node_free(msg) };
-                    // Drive Running -> Stopping so the post-loop settle finalizes
-                    // the Stopping -> Stopped terminal transition (terminate
-                    // callback).
-                    let _ = a.actor_state.compare_exchange(
-                        HewActorState::Running as i32,
-                        HewActorState::Stopping as i32,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    );
-                    break;
-                }
                 Origin::Sys(kind) => {
                     let Some(sys_dispatch) = a.sys_dispatch else {
                         // Fail-closed: no system entry point registered, so the
@@ -2972,23 +2969,25 @@ mod tests {
         hew_sched_shutdown();
     }
 
-    // WASM twin of the native `shutdown_sentinel_is_never_delivered_to_handler`.
-    // Fails on the pre-fix wasm path (the sentinel was dispatched to the handler
-    // and the actor stayed Running).
+    /// WASM twin of the native `out_of_band_stop_is_observed_and_never_dispatched`.
+    ///
+    /// Replaces `wasm_shutdown_sentinel_is_never_delivered_to_handler`, whose
+    /// subject — a queued sentinel node that must not reach the handler — no
+    /// longer exists. The stop is now a flag on the mailbox, so there is no
+    /// node to mis-route in the first place; what remains to prove is that the
+    /// flag IS observed and that no dispatch happens because of it.
     #[test]
-    fn wasm_shutdown_sentinel_is_never_delivered_to_handler() {
-        static SAW_SENTINEL: AtomicI32 = AtomicI32::new(0);
-        unsafe extern "C-unwind" fn sentinel_probe_dispatch(
+    fn wasm_out_of_band_stop_is_observed_and_never_dispatched() {
+        static DISPATCHES: AtomicI32 = AtomicI32::new(0);
+        unsafe extern "C-unwind" fn counting_dispatch(
             _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,
-            msg_type: i32,
+            _msg_type: i32,
             _data: *mut c_void,
             _data_size: usize,
             _borrow_mode: i32,
         ) -> *mut c_void {
-            if msg_type == HewSysMsg::Shutdown.as_i32() {
-                SAW_SENTINEL.fetch_add(1, Ordering::Relaxed);
-            }
+            DISPATCHES.fetch_add(1, Ordering::Relaxed);
             std::ptr::null_mut()
         }
 
@@ -2996,35 +2995,43 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
-        SAW_SENTINEL.store(0, Ordering::Relaxed);
+        DISPATCHES.store(0, Ordering::Relaxed);
 
         // SAFETY: hew_mailbox_new returns a valid heap-allocated mailbox.
         let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
         let mut a = stub_actor();
-        a.dispatch = Some(sentinel_probe_dispatch);
+        a.dispatch = Some(counting_dispatch);
         a.mailbox = mailbox.cast();
         a.actor_state
             .store(HewActorState::Runnable as i32, Ordering::Relaxed);
         let a_ptr: *mut HewActor = (&raw mut a);
 
-        // `hew_actor_stop` on a Running actor enqueues the -1 sentinel on the
-        // SYSTEM queue. Enqueue it directly — on wasm this reproduces
-        // deterministically (no concurrency needed).
-        // SAFETY: mailbox is a valid live wasm mailbox.
-        assert!(unsafe { crate::mailbox_wasm::mailbox_send_stop_sys_once(mailbox) });
+        // A real user message is queued BEHIND the stop. The loop-top check
+        // must win: a stopped actor does not drain its backlog first.
+        let payload: i32 = 7;
+        // SAFETY: mailbox is a valid live wasm mailbox; payload outlives the send.
+        unsafe {
+            crate::mailbox_wasm::hew_mailbox_send(
+                mailbox,
+                9,
+                (&raw const payload).cast_mut().cast(),
+                size_of::<i32>(),
+            );
+            crate::mailbox_wasm::mailbox_request_stop(mailbox);
+        }
 
         // SAFETY: actor is valid and Runnable.
         unsafe { activate_actor_wasm(a_ptr) };
 
         assert_eq!(
-            SAW_SENTINEL.load(Ordering::Relaxed),
+            DISPATCHES.load(Ordering::Relaxed),
             0,
-            "the system shutdown sentinel must be observed as a self-stop, never dispatched"
+            "the stop must be observed at loop top, before any dispatch"
         );
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
             HewActorState::Stopped as i32,
-            "observing the shutdown sentinel must self-stop the actor"
+            "observing the out-of-band stop must self-stop the actor"
         );
 
         // SAFETY: actor is terminal; the mailbox is drained and freed once.

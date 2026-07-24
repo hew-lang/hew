@@ -3940,13 +3940,16 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     }
 }
 
-/// Stop an actor, sending a system shutdown message.
+/// Stop an actor.
 ///
-/// Closes the mailbox, transitions idle actors directly to `Stopped`, and
-/// only enqueues a shutdown system message (`msg_type = -1`) when the actor is
-/// already `Running`. Runnable actors already have a queued activation, so
-/// closing their mailbox is enough to let that activation drain naturally to
-/// `Stopped` without fabricating an extra system-queue entry.
+/// Closes the mailbox, transitions idle actors directly to `Stopped`, and for
+/// an actor that is already `Running` latches the mailbox's out-of-band stop
+/// flag so its dispatch loop observes the request at the top of its next
+/// iteration. Runnable actors already have a queued activation, so closing
+/// their mailbox is enough to let that activation drain naturally to `Stopped`.
+///
+/// The stop is a FLAG, not a queued message: latching it allocates nothing and
+/// cannot fail, so the request can never be lost under memory pressure.
 ///
 /// # Safety
 ///
@@ -3983,16 +3986,12 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         return;
     }
 
-    if !mb.is_null() {
-        // Running actors are already inside a dispatch; enqueue one sys
-        // message (-1) so the next mailbox poll observes the shutdown
-        // request. Runnable actors already have queued work and do not need an
-        // extra wake-up signal just to notice that the mailbox closed.
-        // SAFETY: Mailbox is valid for the actor's lifetime.
-        unsafe {
-            let _ = mailbox::mailbox_send_stop_sys_once(mb);
-        }
-    }
+    // Running actors are already inside a dispatch; latch the stop request so
+    // the next loop iteration observes the close request. This is an atomic
+    // store — no node allocation, hence no failure mode on which the request is
+    // silently dropped.
+    // SAFETY: Mailbox is valid for the actor's lifetime (null-tolerant).
+    unsafe { mailbox::mailbox_request_stop(mb) };
 }
 
 /// Free an actor and all associated resources.
@@ -7022,15 +7021,12 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         return;
     }
 
-    // Running actors are already inside a dispatch; enqueue one sys message so
-    // the next mailbox poll observes the shutdown request. Runnable actors
-    // already have queued work and do not need an extra wake-up signal.
-    if !a.mailbox.is_null() {
-        // SAFETY: a.mailbox is a valid mailbox pointer.
-        unsafe {
-            let _ = crate::mailbox_wasm::mailbox_send_stop_sys_once(a.mailbox.cast());
-        }
-    }
+    // Running actors are already inside a dispatch; latch the stop request out
+    // of band so the next loop iteration observes it. Assigning a bool cannot
+    // fail, so unlike the former sentinel-node enqueue there is no path on
+    // which the request is silently dropped.
+    // SAFETY: a.mailbox is a valid mailbox pointer (null-tolerant).
+    unsafe { crate::mailbox_wasm::mailbox_request_stop(a.mailbox.cast()) };
 }
 
 /// Free an actor and all associated resources (WASM).
@@ -7168,9 +7164,9 @@ mod tests {
     static DRAIN_TRAP_ON_STOP_RELEASE: AtomicBool = AtomicBool::new(false);
 
     // Probes for `shutdown_sentinel_is_never_delivered_to_handler`.
-    static SENTINEL_PROBE_STARTED: AtomicBool = AtomicBool::new(false);
-    static SENTINEL_PROBE_RELEASE: AtomicBool = AtomicBool::new(false);
-    static SENTINEL_PROBE_SAW_SENTINEL: AtomicBool = AtomicBool::new(false);
+    static STOP_PROBE_STARTED: AtomicBool = AtomicBool::new(false);
+    static STOP_PROBE_RELEASE: AtomicBool = AtomicBool::new(false);
+    static STOP_PROBE_DISPATCHED_AFTER_STOP: AtomicBool = AtomicBool::new(false);
 
     // Probe for `user_msg_type_minus_one_reaches_handler_and_does_not_terminate`.
     static USER_MINUS_ONE_HANDLED: AtomicBool = AtomicBool::new(false);
@@ -7408,94 +7404,124 @@ mod tests {
         }
     }
 
-    /// Handler that records whether it is ever handed the `msg_type == -1`
-    /// shutdown sentinel. A real codegen actor has no `match` arm for it and
-    /// would trap on the dispatch default arm, so the scheduler must intercept
-    /// the sentinel as a self-stop and never reach this handler with it.
-    unsafe extern "C-unwind" fn sentinel_probe_dispatch(
+    /// Handler that records every dispatch it receives. The FIRST message
+    /// parks it in `Running` so the stop lands on the Running branch; any
+    /// LATER dispatch means the scheduler kept feeding an actor that had
+    /// already been told to stop.
+    unsafe extern "C-unwind" fn stop_probe_dispatch(
         _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
-        msg_type: i32,
+        _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        if msg_type == -1 {
-            SENTINEL_PROBE_SAW_SENTINEL.store(true, Ordering::Release);
+        if STOP_PROBE_STARTED.swap(true, Ordering::AcqRel) {
+            STOP_PROBE_DISPATCHED_AFTER_STOP.store(true, Ordering::Release);
             return std::ptr::null_mut();
         }
-        SENTINEL_PROBE_STARTED.store(true, Ordering::Release);
-        // Hold in Running until the release thread observes the stop is queued,
-        // so `hew_actor_stop` runs against a Running actor (the branch that
-        // enqueues the -1 sentinel).
-        while !SENTINEL_PROBE_RELEASE.load(Ordering::Acquire) {
+        // Hold in Running until the release thread observes the stop is
+        // latched, so `hew_actor_stop` runs against a Running actor.
+        while !STOP_PROBE_RELEASE.load(Ordering::Acquire) {
             std::hint::spin_loop();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         std::ptr::null_mut()
     }
 
+    /// (c) A stop requested while every `HewMsgNode` allocation FAILS is still
+    /// observed by the actor.
+    ///
+    /// This replaces `shutdown_sentinel_is_never_delivered_to_handler`, whose
+    /// subject — a queued `msg_type == -1` node that must be intercepted before
+    /// it reaches the handler — no longer exists.
+    ///
+    /// The defect it closes: `mailbox_send_stop_sys_once` allocated the sentinel
+    /// node BEFORE the `stop_signal_sent` CAS, so on allocation failure it
+    /// returned `false` with neither the node enqueued nor the flag set, and
+    /// `hew_actor_stop` discarded that `bool` (`let _ = ...`). Under memory
+    /// pressure a Running actor therefore never observed its own stop. Latching
+    /// an atomic bool has no such window, and this test proves it by poisoning
+    /// the mailbox allocator across the whole `hew_actor_stop` call.
     #[test]
-    fn shutdown_sentinel_is_never_delivered_to_handler() {
+    fn stop_of_running_actor_is_observed_even_when_node_allocation_fails() {
         let _guard = crate::runtime_test_guard();
         let _scheduler = NativeSchedulerGuard::new();
 
-        SENTINEL_PROBE_STARTED.store(false, Ordering::Release);
-        SENTINEL_PROBE_RELEASE.store(false, Ordering::Release);
-        SENTINEL_PROBE_SAW_SENTINEL.store(false, Ordering::Release);
+        STOP_PROBE_STARTED.store(false, Ordering::Release);
+        STOP_PROBE_RELEASE.store(false, Ordering::Release);
+        STOP_PROBE_DISPATCHED_AFTER_STOP.store(false, Ordering::Release);
 
         // SAFETY: null state + valid dispatch are valid spawn args.
-        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(sentinel_probe_dispatch)) };
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(stop_probe_dispatch)) };
         assert!(!actor.is_null());
 
+        // Two messages: the first parks the handler in Running, the second sits
+        // in the queue as evidence. If the stop were lost, the loop would come
+        // back round and dispatch it.
         // SAFETY: actor is a valid live actor pointer returned by spawn.
-        unsafe { hew_actor_send(actor, 1, ptr::null_mut(), 0) };
+        unsafe {
+            hew_actor_send(actor, 1, ptr::null_mut(), 0);
+            hew_actor_send(actor, 2, ptr::null_mut(), 0);
+        }
         assert!(
             wait_for_condition(std::time::Duration::from_secs(1), || {
-                SENTINEL_PROBE_STARTED.load(Ordering::Acquire)
+                STOP_PROBE_STARTED.load(Ordering::Acquire)
             }),
             "handler should begin running before the stop is issued"
         );
 
-        // Release the dispatch spin only once `hew_actor_stop` has enqueued the
-        // shutdown sentinel (sys-queue length becomes non-zero), so the actor is
-        // stopped while Running — the branch that emits the -1 sentinel.
+        // Release the dispatch spin only once the stop has actually been
+        // latched, so the actor is stopped while Running.
         // SAFETY: the mailbox outlives the joined release thread.
         let mailbox_addr = unsafe { (*actor).mailbox } as usize;
         let release_handle = std::thread::spawn(move || {
-            let mb = mailbox_addr as *const HewMailbox;
+            let mb = mailbox_addr as *mut HewMailbox;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
                 // SAFETY: `mb` stays valid until the test joins this thread.
-                let stop_queued = !mb.is_null() && unsafe { mailbox::hew_mailbox_sys_len(mb) > 0 };
-                if stop_queued || std::time::Instant::now() >= deadline {
+                let latched = unsafe { mailbox::mailbox_stop_requested(mb) };
+                if latched || std::time::Instant::now() >= deadline {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            SENTINEL_PROBE_RELEASE.store(true, Ordering::Release);
+            STOP_PROBE_RELEASE.store(true, Ordering::Release);
         });
 
-        // SAFETY: actor is live and Running; stop enqueues the -1 sentinel.
+        // Poison the allocator for the whole stop. `fail_mailbox_alloc_on_nth`
+        // is thread-local and arms the NEXT allocation on THIS thread, which is
+        // the thread `hew_actor_stop` runs on.
+        let alloc_trap = mailbox::fail_mailbox_alloc_on_nth(0);
+        // SAFETY: actor is live and Running.
         unsafe { hew_actor_stop(actor) };
+        // Still armed => `hew_actor_stop` allocated nothing at all. The old
+        // sentinel path would have consumed this and then dropped the request.
+        assert!(
+            mailbox::mailbox_alloc_failure_still_armed(),
+            "hew_actor_stop must not allocate; the injected failure must survive it"
+        );
+        drop(alloc_trap);
+
         release_handle
             .join()
             .expect("release thread must not panic");
 
-        // The actor must reach a clean terminal Stopped state...
+        // The stop was observed despite the poisoned allocator: the actor
+        // reaches a clean terminal Stopped state...
         assert!(
             wait_for_condition(std::time::Duration::from_secs(2), || {
                 // SAFETY: actor remains tracked until the explicit free below.
                 let s = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
                 s == HewActorState::Stopped as i32
             }),
-            "actor should self-stop cleanly after the shutdown sentinel is observed"
+            "a Running actor must observe its own stop even when node allocation fails"
         );
-        // ...and the sentinel must NEVER have reached the handler.
+        // ...and the queued second message was never dispatched, because the
+        // loop-top stop check ran before the receive.
         assert!(
-            !SENTINEL_PROBE_SAW_SENTINEL.load(Ordering::Acquire),
-            "the msg_type == -1 shutdown sentinel must be observed by the scheduler \
-             as a self-stop, never delivered to the actor handler"
+            !STOP_PROBE_DISPATCHED_AFTER_STOP.load(Ordering::Acquire),
+            "no message may be dispatched after the stop is latched"
         );
 
         // SAFETY: actor is terminal and still tracked; free it exactly once.
@@ -8008,10 +8034,9 @@ mod tests {
 
         // Crash from within this still-Running dispatch, modelling an actor that
         // faults as it is being drained. The crash trigger is a self-trap rather
-        // than handling the shutdown sentinel: the scheduler now intercepts the
-        // `msg_type == -1` shutdown signal as a clean self-stop and never
-        // delivers it to a handler (a real codegen actor has no arm for it and
-        // would trap on the dispatch default arm).
+        // than observing the stop: the stop is an out-of-band flag the scheduler
+        // reads at loop top, so it never becomes a dispatch a handler could
+        // react to.
         // SAFETY: this runs on the actor's own dispatch thread while its context is installed.
         unsafe { hew_actor_trap(hew_actor_self(), 77) };
 
@@ -10583,7 +10608,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_idle_actor_is_idempotent_and_queues_no_shutdown_sys_messages() {
+    fn stop_idle_actor_is_idempotent_and_requests_no_shutdown() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: Spawning with null state and a valid dispatch function.
         let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
@@ -10599,10 +10624,15 @@ mod tests {
                 (*actor).actor_state.load(Ordering::Acquire),
                 HewActorState::Stopped as i32
             );
+            assert!(
+                !mailbox::mailbox_stop_requested(mb),
+                "an idle actor stops synchronously; there is no dispatch loop \
+                 left to observe a deferred stop request"
+            );
             assert_eq!(
                 mailbox::hew_mailbox_sys_len(mb),
                 0,
-                "stopping an idle actor should not enqueue an unprocessable shutdown signal"
+                "stopping an idle actor must put nothing on the system queue"
             );
 
             hew_actor_stop(actor);
@@ -10618,7 +10648,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_runnable_actor_does_not_enqueue_shutdown_signal() {
+    fn stop_runnable_actor_does_not_request_shutdown() {
         let (actor, mailbox) = make_stop_test_actor(HewActorState::Runnable);
 
         // SAFETY: actor/mailbox pointers are valid for the duration of the test.
@@ -10629,10 +10659,16 @@ mod tests {
                 mailbox::mailbox_is_closed(mailbox),
                 "stop must close runnable actors before they drain their queued activation"
             );
+            assert!(
+                !mailbox::mailbox_stop_requested(mailbox),
+                "runnable actors already have a queued activation that drains to \
+                 Stopped on the closed mailbox; latching the stop flag would make \
+                 them abandon that queued work instead"
+            );
             assert_eq!(
                 mailbox::hew_mailbox_sys_len(mailbox),
                 0,
-                "runnable actors already have a queued activation and should not receive an extra shutdown signal"
+                "the stop is out of band — nothing is ever enqueued"
             );
             mailbox::hew_mailbox_free(mailbox);
             drop(Box::from_raw(actor));
@@ -11112,7 +11148,7 @@ mod tests {
     }
 
     #[test]
-    fn close_then_stop_runnable_actor_keeps_shutdown_queue_empty() {
+    fn close_then_stop_runnable_actor_requests_no_shutdown() {
         let (actor, mailbox) = make_stop_test_actor(HewActorState::Runnable);
 
         // SAFETY: actor/mailbox pointers are valid for the duration of the test.
@@ -11129,17 +11165,20 @@ mod tests {
             );
 
             hew_actor_stop(actor);
-            assert_eq!(
-                mailbox::hew_mailbox_sys_len(mailbox),
-                0,
-                "stop after close should not enqueue a redundant shutdown signal for runnable actors"
+            assert!(
+                !mailbox::mailbox_stop_requested(mailbox),
+                "stop after close must not latch a stop request for runnable actors"
             );
 
             hew_actor_stop(actor);
+            assert!(
+                !mailbox::mailbox_stop_requested(mailbox),
+                "repeated stop after close must leave runnable actors unlatched"
+            );
             assert_eq!(
                 mailbox::hew_mailbox_sys_len(mailbox),
                 0,
-                "repeated stop after close must keep runnable actors' shutdown queue empty"
+                "the stop is out of band — nothing is ever enqueued"
             );
 
             mailbox::hew_mailbox_free(mailbox);
@@ -11148,17 +11187,25 @@ mod tests {
     }
 
     #[test]
-    fn stop_running_actor_enqueues_at_most_one_shutdown_signal() {
+    fn stop_running_actor_latches_the_stop_flag_without_enqueueing() {
         let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
 
         // SAFETY: actor/mailbox pointers are valid for the duration of the test.
         unsafe {
             hew_actor_stop(actor);
+            assert!(
+                mailbox::mailbox_stop_requested(mailbox),
+                "stopping a Running actor must latch the out-of-band stop flag"
+            );
             hew_actor_stop(actor);
+            assert!(
+                mailbox::mailbox_stop_requested(mailbox),
+                "the latch is idempotent — a repeated stop leaves it set"
+            );
             assert_eq!(
                 mailbox::hew_mailbox_sys_len(mailbox),
-                1,
-                "only the first stop call should enqueue a shutdown system message for a running actor"
+                0,
+                "the stop must consume no queue slot and allocate no node"
             );
             mailbox::hew_mailbox_free(mailbox);
             drop(Box::from_raw(actor));
@@ -11166,7 +11213,7 @@ mod tests {
     }
 
     #[test]
-    fn close_then_stop_running_actor_enqueues_shutdown_signal_once() {
+    fn close_then_stop_running_actor_latches_the_stop_flag() {
         let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
 
         // SAFETY: actor/mailbox pointers are valid for the duration of the test.
@@ -11183,17 +11230,20 @@ mod tests {
             );
 
             hew_actor_stop(actor);
-            assert_eq!(
-                mailbox::hew_mailbox_sys_len(mailbox),
-                1,
-                "stop after close must still enqueue one shutdown system message for a running actor"
+            assert!(
+                mailbox::mailbox_stop_requested(mailbox),
+                "stop after close must still latch the stop for a running actor"
             );
 
             hew_actor_stop(actor);
+            assert!(
+                mailbox::mailbox_stop_requested(mailbox),
+                "repeated stop after close is idempotent"
+            );
             assert_eq!(
                 mailbox::hew_mailbox_sys_len(mailbox),
-                1,
-                "repeated stop after close must not accumulate shutdown system messages for a running actor"
+                0,
+                "the stop must consume no queue slot and allocate no node"
             );
 
             mailbox::hew_mailbox_free(mailbox);
@@ -11553,26 +11603,25 @@ mod tests {
         );
 
         // Release the dispatch spin only once drain_actors has actually called
-        // hew_actor_stop AND the shutdown system message is enqueued, observed
-        // via the mailbox system-queue length becoming non-zero. `sys_count` is
-        // incremented *after* the stop node is published to the queue (see
-        // enqueue_sys_node), so a non-zero length means the next mailbox poll
-        // will deliver the stop and the actor takes Running→Crashed (the trap
-        // fires on stop) rather than Running→Idle→Stopped. Waiting on this real
-        // condition removes the timing bet: under load a fixed sleep could
-        // elapse before drain reached stop, releasing the dispatch while the
-        // actor was still Idle-bound and yielding Drained.
+        // hew_actor_stop AND the out-of-band stop has been latched on the
+        // mailbox. `hew_actor_stop` stores that flag with Release ordering as
+        // its last act on the Running branch, so observing it means the next
+        // loop-top check will take the stop and the actor goes Running→Crashed
+        // (the trap fires on stop) rather than Running→Idle→Stopped. Waiting on
+        // this real condition removes the timing bet: under load a fixed sleep
+        // could elapse before drain reached stop, releasing the dispatch while
+        // the actor was still Idle-bound and yielding Drained.
         //
         // SAFETY: the actor and its mailbox outlive the joined release thread.
         let mailbox_addr = unsafe { (*actor).mailbox } as usize;
         let release_handle = std::thread::spawn(move || {
-            let mb = mailbox_addr as *const HewMailbox;
+            let mb = mailbox_addr as *mut HewMailbox;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
                 // SAFETY: `mb` is the live actor's mailbox; it stays valid until
                 // the test joins this thread and frees the actor below.
-                let stop_queued = !mb.is_null() && unsafe { mailbox::hew_mailbox_sys_len(mb) > 0 };
-                if stop_queued || std::time::Instant::now() >= deadline {
+                let stop_latched = unsafe { mailbox::mailbox_stop_requested(mb) };
+                if stop_latched || std::time::Instant::now() >= deadline {
                     break;
                 }
                 std::hint::spin_loop();

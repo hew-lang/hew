@@ -9524,6 +9524,150 @@ mod tests {
         unsafe { race.finish() };
     }
 
+    /// (d) A guarded publication transition is held at the moment it has passed
+    /// its guard but has not emitted, and the connection it was authorized
+    /// against is refused underneath it. The refused peer must never be
+    /// observable as alive: the transition's authorization is revoked, so it
+    /// emits nothing at all.
+    ///
+    /// The peer's route slot is deliberately one the cluster has NOT joined, so
+    /// the establish takes the unknown-member branch and the queued transition
+    /// is the peer's first ALIVE — a `NODE_JOINED` the membership callback
+    /// would report if it ever escaped.
+    ///
+    /// Counterfactual: with the guard's verdict treated as final (publishing
+    /// the peer visible at the guard and emitting unconditionally afterwards,
+    /// as before), the parked transition announces the peer joined AFTER the
+    /// refusal retired it — this observes `(slot, NODE_JOINED)` instead of no
+    /// event at all.
+    #[test]
+    fn refusal_retires_a_queued_alive_before_it_can_be_observed() {
+        /// A slot the harness cluster never joined, and not the routing table's
+        /// own slot, so this peer's first ALIVE is a genuine join announcement.
+        const UNJOINED_ROUTE_SLOT: u16 = 5;
+        const CONN: c_int = 45;
+
+        extern "C" fn collect_membership_events(
+            node_id: u16,
+            event: u8,
+            user_data: *mut std::ffi::c_void,
+        ) {
+            // SAFETY: the test installs a Mutex<Vec<(u16, u8)>> that outlives
+            // every thread able to reach the callback.
+            let events = unsafe { &*user_data.cast::<Mutex<Vec<(u16, u8)>>>() };
+            events.lock_or_recover().push((node_id, event));
+        }
+
+        struct SendCluster(*mut crate::cluster::HewCluster);
+        // SAFETY: cluster internals are synchronized and the test keeps the
+        // cluster alive past every thread that holds this pointer.
+        unsafe impl Send for SendCluster {}
+
+        // No connection is ever parked inside `close_conn` here: this test's
+        // interleaving seam is the cluster's guarded emission, not the close.
+        let race = stage_teardown_race(0);
+        let staged = race.stage_connection(CONN, UNJOINED_ROUTE_SLOT, true);
+        let events: Box<Mutex<Vec<(u16, u8)>>> = Box::new(Mutex::new(Vec::new()));
+        let events = Box::into_raw(events);
+        // SAFETY: the cluster is live and `events` outlives every dispatch.
+        unsafe {
+            crate::cluster::hew_cluster_set_membership_callback(
+                race.cluster,
+                collect_membership_events,
+                events.cast::<std::ffi::c_void>(),
+            );
+        }
+
+        // Two parties: the thread draining the transition, and this test.
+        let rendezvous = Arc::new(std::sync::Barrier::new(2));
+        // SAFETY: the cluster is live for the whole test.
+        unsafe { &*race.cluster }.set_guarded_emission_probe(Some(Arc::clone(&rendezvous)));
+
+        let establish_cluster = SendCluster(race.cluster);
+        let token = staged.token;
+        let publication_sync = Arc::clone(&staged.publication_sync);
+        let publication_removed = Arc::clone(&staged.publication_removed);
+        let establish = std::thread::spawn(move || {
+            let establish_cluster = establish_cluster;
+            // SAFETY: the cluster outlives this thread; the test joins it before
+            // freeing anything.
+            unsafe {
+                crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+                    establish_cluster.0,
+                    UNJOINED_ROUTE_SLOT,
+                    1,
+                    token,
+                    &publication_sync,
+                    &publication_removed,
+                )
+            }
+        });
+
+        // The transition is now past its guard and has not emitted.
+        rendezvous.wait();
+        assert_eq!(
+            // SAFETY: the cluster is live.
+            unsafe { crate::cluster::hew_cluster_member_state(race.cluster, UNJOINED_ROUTE_SLOT) },
+            crate::cluster::MEMBER_ALIVE,
+            "the establish must have staged the peer alive before its guard ran"
+        );
+
+        // Refuse the very publication that transition was authorized against.
+        refuse_established_publication(race.mgr(), UNJOINED_ROUTE_SLOT, CONN, token);
+
+        // Release the parked transition into a cluster that has retired it.
+        rendezvous.wait();
+        // SAFETY: the cluster is live.
+        unsafe { &*race.cluster }.set_guarded_emission_probe(None);
+        assert_eq!(
+            establish.join().expect("establish thread should not panic"),
+            1
+        );
+        staged
+            .reader_done
+            .expect("the refused connection is staged with a reader")
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the woken reader must have run its cleanup");
+
+        // SAFETY: `events` is still owned by this test.
+        let observed = unsafe { &*events }.lock_or_recover().clone();
+        assert!(
+            observed
+                .iter()
+                .all(|(node_id, _)| *node_id != UNJOINED_ROUTE_SLOT),
+            "a refused peer must never be observable, but the membership \
+             callback saw {observed:?}"
+        );
+        assert_eq!(
+            // SAFETY: the cluster is live.
+            unsafe { crate::cluster::hew_cluster_member_state(race.cluster, UNJOINED_ROUTE_SLOT) },
+            crate::cluster::MEMBER_SUSPECT,
+            "the refusal must leave the peer retired, not alive"
+        );
+        assert_eq!(
+            race.transport_impl().closes_of(CONN),
+            1,
+            "the refusal must close the one-shot transport exactly once"
+        );
+        // SAFETY: the manager is still live.
+        assert_eq!(unsafe { hew_connmgr_count(race.mgr) }, 0);
+        assert_eq!(
+            race.mgr().reconnect_workers.access(|workers| workers.len()),
+            0,
+            "a refused peer must never be scheduled for reconnect"
+        );
+
+        // SAFETY: the manager is live and is not used again.
+        unsafe { hew_connmgr_free(race.mgr) };
+        assert_eq!(race.transport_impl().closes_of(CONN), 1);
+        // SAFETY: the manager has been freed and no thread can reach the
+        // callback payload any more.
+        unsafe {
+            race.finish();
+            drop(Box::from_raw(events));
+        }
+    }
+
     // ---- issue #2652 · Slice 4 · NodeId claim state machine ----------------
 
     /// Build a minimal manager for claim-machine unit tests: a stub transport

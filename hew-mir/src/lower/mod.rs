@@ -117,10 +117,10 @@ use self::drop_plan::{
     describe_vec_element, dyn_rebind_source_binding, elaborate, exit_block_id,
     field_override_uses_record_field_drop, is_borrowing_call_abi, is_handle_borrowing_call_abi,
     note_payload_escape, render_owned_handle_ty, resource_drop_fn, resource_opaque_close_registry,
-    stream_handle_drop_descriptor, ty_is_closure_pair, ty_is_generator_handle,
-    ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
-    ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
-    ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow, ty_is_closure_pair,
+    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
+    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_nonowning_handle_leaf,
+    ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
     validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
 };
@@ -161,7 +161,7 @@ use self::temp_drop::{
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
     derive_cow_fresh_borrowed_owner, derive_cow_sole_owner, finalize_bytes_ownership,
     finalize_string_local_share_intents, finalize_string_ownership,
-    readmit_retained_bytes_tuple_roots, string_field_load_producer_dest,
+    readmit_retained_bytes_tuple_roots, string_call_borrows, string_field_load_producer_dest,
 };
 
 /// Maps each original (unsanitized) callee symbol to the adapter symbol

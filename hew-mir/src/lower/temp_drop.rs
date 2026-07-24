@@ -1613,7 +1613,23 @@ fn cow_owned_string_terminator_escapes(
         _ => generator_yield_terminator_escapes(term, suspend_kind, local),
     }
 }
-fn string_call_borrows(
+/// True when calling `callee` BORROWS its `string` arguments rather than
+/// consuming them.
+///
+/// Three sources of authority, in fail-closed order:
+/// 1. an explicit runtime `borrows_string_call_args` ownership contract;
+/// 2. any other known runtime symbol is treated as CONSUMING (`hew_string_drop`
+///    named first for documentation value) — a runtime op with no borrow row is
+///    assumed to take ownership;
+/// 3. a Hew-bodied callee (`module_fn_names` / `module_generic_fn_names`)
+///    borrows, because `lower_params` ratifies that a by-value `string`
+///    parameter is registered in `borrowed_string_param_locals` — the callee
+///    never releases it, so the caller keeps the sole drop obligation.
+///
+/// Anything else (an `extern` FFI symbol with no Hew body, a callee this module
+/// cannot see) answers `false` — the caller assumes the value was consumed and
+/// declines to drop it. That is a leak, never a double release.
+pub(super) fn string_call_borrows(
     callee: &str,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,

@@ -11,13 +11,13 @@ use super::{
     local_is_byte_copy_aggregate, note_payload_escape, place_is_interior_projection,
     place_is_tag_read, propagate_whole_value_alias_roots, readmit_retained_bytes_tuple_roots,
     render_owned_handle_ty, retained_string_terminator_drop_safe, shift_instr_spans_on_insert,
-    short_name, string_field_load_producer_dest, terminator_escape_places,
-    terminator_source_places, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
-    ty_is_owned_handle_leaf, vec_iter_record_init_vec_source, AggregateOwner, BTreeMap, BasicBlock,
-    BindingId, BytesDropDerivation, BytesRetainPlacement, BytesRetainSite,
-    ClosureEnvFieldOwnership, FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr,
-    MirCheck, MirStatement, Place, ResolvedTy, RootScan, ScopeId, SuspendKind, Terminator,
-    FOR_ITER_CURSOR_NAME_PREFIX,
+    short_name, string_binder_read_is_user_fn_borrow, string_field_load_producer_dest,
+    terminator_escape_places, terminator_source_places, ty_is_heap_owning_enum_composite,
+    ty_is_heap_owning_tuple, ty_is_owned_handle_leaf, vec_iter_record_init_vec_source,
+    AggregateOwner, BTreeMap, BasicBlock, BindingId, BytesDropDerivation, BytesRetainPlacement,
+    BytesRetainSite, ClosureEnvFieldOwnership, FieldBinderProvenance, FieldOffset, HashMap,
+    HashSet, Instr, MirCheck, MirStatement, Place, ResolvedTy, RootScan, ScopeId, SuspendKind,
+    Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
 };
 
 fn generator_env_snapshot_init_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
@@ -966,6 +966,61 @@ pub(super) fn proven_borrow_whole_arg_locals(
         .filter_map(|(_, p)| base_local(*p))
         .collect()
 }
+/// True when every variant payload of the tagged-union enum behind `ty` is
+/// either a bit-copy value or a plain `string` leaf.
+///
+/// This bounds the blast radius of the `string_binder_read_is_user_fn_borrow`
+/// exemption. `note_payload_escape` is deliberately coarse — one escaping
+/// binder excludes EVERY candidate root in the function — so the inverse is
+/// also coarse: clearing one binder can readmit every candidate. Readmitting a
+/// composite is not free: an `EnumInPlace` drop makes codegen synthesise the
+/// whole in-place helper family for that layout, and the clone half of that
+/// family fails closed on payloads with no dup symbol (`Stream` / `Sink` /
+/// `Generator` / `CancellationToken` handles, `Connection`). A
+/// `Result<(Stream<string>, Sink<string>), string>` scrutinee whose `Err(e)`
+/// binder is interpolated would otherwise turn a leak into a hard
+/// `E_NOT_YET_IMPLEMENTED` compile failure.
+///
+/// Restricting the exemption to string/bit-copy payloads keeps it inside the
+/// shapes the f-string interpolation defect actually covers (`Option<string>`,
+/// `Result<string, string>`, user enums with string payloads) and leaves every
+/// richer composite on its pre-existing fail-closed posture — it keeps leaking,
+/// exactly as before, and still compiles.
+///
+/// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, or any
+/// payload that is neither `string` nor bit-copy answers `false`.
+fn enum_payloads_are_plain_string(
+    ty: &ResolvedTy,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> bool {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return false;
+    };
+    let short = hew_types::short_name(name);
+    let layout = if args.is_empty() {
+        enum_layouts
+            .iter()
+            .find(|el| el.name == *name || hew_types::short_name(&el.name) == short)
+    } else {
+        let mangled = crate::lower::mangle_layout_key(short, args);
+        enum_layouts
+            .iter()
+            .find(|el| el.name == mangled || el.name == *name)
+    };
+    let Some(layout) = layout else {
+        return false;
+    };
+    if layout.is_indirect {
+        return false;
+    }
+    layout.variants.iter().all(|variant| {
+        variant.field_tys.iter().all(|field_ty| {
+            matches!(field_ty, ResolvedTy::String)
+                || !crate::model::ty_owns_heap_mir(field_ty, record_field_orders, enum_layouts)
+        })
+    })
+}
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
 /// composite** bindings (`Result<T, string>`, `Option<string>`, any user
 /// `enum` whose active variant owns heap). Returns the subset of
@@ -1042,6 +1097,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
 ) -> HashSet<BindingId> {
     // A local carries a heap-owning value (string/Bytes/owning aggregate or a
     // nested heap-owning enum) iff its registered type says so. Bitcopy payload
@@ -1059,6 +1116,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    let mut all_candidates_are_plain_string_payload = true;
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
@@ -1069,6 +1127,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
+        all_candidates_are_plain_string_payload &=
+            enum_payloads_are_plain_string(ty, record_field_orders, enum_layouts);
         candidate_local_to_binding.insert(local, *binding);
     }
     if candidate_local_to_binding.is_empty() {
@@ -1522,23 +1582,38 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 // bytes-receiver-borrow contracts, so a `Result<bytes, _>`
                 // payload binder read by `hew_bytes_to_string(b)` (a
                 // `Terminator::Call` receiver borrow) no longer excludes its
-                // composite (#2429). Anything not provably borrow-safe stays a
+                // composite (#2429). `string_binder_read_is_user_fn_borrow`
+                // extends the same reasoning to Hew-bodied callees, whose
+                // by-value `string` parameters `lower_params` ratifies as
+                // caller-owned borrows — without it every `Option<string>` /
+                // `Result<string, _>` payload interpolated into an f-string
+                // (`Some(s) => println(f"v={s}")`, which lowers through the
+                // stdlib `impl Display for string`) read as an escape and leaked
+                // its composite. Anything not provably borrow-safe stays a
                 // fail-closed payload escape.
-                if payload_binders.contains_key(&l)
-                    && !place_is_tag_read(p)
-                    && !binder_read_is_borrow_safe_terminator(
+                if payload_binders.contains_key(&l) && !place_is_tag_read(p) {
+                    let read_is_borrow = binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
                         l,
-                    )
-                {
-                    note_payload_escape(
-                        &payload_binders,
-                        l,
-                        &alias_of,
-                        blocks,
-                        &mut excluded_roots,
-                    );
+                    ) || (all_candidates_are_plain_string_payload
+                        && string_binder_read_is_user_fn_borrow(
+                            &block.terminator,
+                            suspend_kinds.get(&block.id),
+                            l,
+                            local_tys.get(l as usize),
+                            module_fn_names,
+                            module_generic_fn_names,
+                        ));
+                    if !read_is_borrow {
+                        note_payload_escape(
+                            &payload_binders,
+                            l,
+                            &alias_of,
+                            blocks,
+                            &mut excluded_roots,
+                        );
+                    }
                 }
             }
         }
@@ -6956,6 +7031,8 @@ mod enum_composite_field_drop_exemption {
             &record_field_orders,
             &enum_layouts,
             &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
         );
         (b, allowed)
     }

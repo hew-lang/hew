@@ -220,21 +220,21 @@ fn channel$new -> (Sender, Receiver)
     branch[bb1: bb3/bb6] ->
       (none)
     return[bb2] ->
-      (none)
+      drop _2 ty=Result<(Sender, Receiver), string> kind=enum_in_place
     goto[bb3->bb2] ->
       (none)
     cancel[bb3] ->
-      (none)
+      drop _2 ty=Result<(Sender, Receiver), string> kind=enum_in_place
     call[bb4 panic -> bb7] ->
       (none)
     panic[bb5] ->
-      (none)
+      drop _2 ty=Result<(Sender, Receiver), string> kind=enum_in_place
     branch[bb6: bb4/bb5] ->
       (none)
     goto[bb7->bb2] ->
       (none)
     cancel[bb7] ->
-      (none)
+      drop _2 ty=Result<(Sender, Receiver), string> kind=enum_in_place
 
 fn channel$try_new -> Result<(Sender, Receiver), string>
   statements:

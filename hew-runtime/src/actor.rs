@@ -6753,6 +6753,107 @@ mod tests {
     /// returns `Drained` instead of `Incomplete { crashed }`.
     static DRAIN_TRAP_ON_STOP_RELEASE: AtomicBool = AtomicBool::new(false);
 
+    // Probes for `shutdown_sentinel_is_never_delivered_to_handler`.
+    static SENTINEL_PROBE_STARTED: AtomicBool = AtomicBool::new(false);
+    static SENTINEL_PROBE_RELEASE: AtomicBool = AtomicBool::new(false);
+    static SENTINEL_PROBE_SAW_SENTINEL: AtomicBool = AtomicBool::new(false);
+
+    /// Handler that records whether it is ever handed the `msg_type == -1`
+    /// shutdown sentinel. A real codegen actor has no `match` arm for it and
+    /// would trap on the dispatch default arm, so the scheduler must intercept
+    /// the sentinel as a self-stop and never reach this handler with it.
+    unsafe extern "C-unwind" fn sentinel_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        if msg_type == -1 {
+            SENTINEL_PROBE_SAW_SENTINEL.store(true, Ordering::Release);
+            return std::ptr::null_mut();
+        }
+        SENTINEL_PROBE_STARTED.store(true, Ordering::Release);
+        // Hold in Running until the release thread observes the stop is queued,
+        // so `hew_actor_stop` runs against a Running actor (the branch that
+        // enqueues the -1 sentinel).
+        while !SENTINEL_PROBE_RELEASE.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        std::ptr::null_mut()
+    }
+
+    #[test]
+    fn shutdown_sentinel_is_never_delivered_to_handler() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        SENTINEL_PROBE_STARTED.store(false, Ordering::Release);
+        SENTINEL_PROBE_RELEASE.store(false, Ordering::Release);
+        SENTINEL_PROBE_SAW_SENTINEL.store(false, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(sentinel_probe_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is a valid live actor pointer returned by spawn.
+        unsafe { hew_actor_send(actor, 1, ptr::null_mut(), 0) };
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                SENTINEL_PROBE_STARTED.load(Ordering::Acquire)
+            }),
+            "handler should begin running before the stop is issued"
+        );
+
+        // Release the dispatch spin only once `hew_actor_stop` has enqueued the
+        // shutdown sentinel (sys-queue length becomes non-zero), so the actor is
+        // stopped while Running — the branch that emits the -1 sentinel.
+        // SAFETY: the mailbox outlives the joined release thread.
+        let mailbox_addr = unsafe { (*actor).mailbox } as usize;
+        let release_handle = std::thread::spawn(move || {
+            let mb = mailbox_addr as *const HewMailbox;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                // SAFETY: `mb` stays valid until the test joins this thread.
+                let stop_queued = !mb.is_null() && unsafe { mailbox::hew_mailbox_sys_len(mb) > 0 };
+                if stop_queued || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            SENTINEL_PROBE_RELEASE.store(true, Ordering::Release);
+        });
+
+        // SAFETY: actor is live and Running; stop enqueues the -1 sentinel.
+        unsafe { hew_actor_stop(actor) };
+        release_handle
+            .join()
+            .expect("release thread must not panic");
+
+        // The actor must reach a clean terminal Stopped state...
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(2), || {
+                // SAFETY: actor remains tracked until the explicit free below.
+                let s = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+                s == HewActorState::Stopped as i32
+            }),
+            "actor should self-stop cleanly after the shutdown sentinel is observed"
+        );
+        // ...and the sentinel must NEVER have reached the handler.
+        assert!(
+            !SENTINEL_PROBE_SAW_SENTINEL.load(Ordering::Acquire),
+            "the msg_type == -1 shutdown sentinel must be observed by the scheduler \
+             as a self-stop, never delivered to the actor handler"
+        );
+
+        // SAFETY: actor is terminal and still tracked; free it exactly once.
+        unsafe {
+            let _ = hew_actor_free(actor);
+        }
+    }
+
     #[test]
     fn spawned_actor_direct_identity_retires_before_reclamation() {
         let _guard = crate::runtime_test_guard();

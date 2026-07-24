@@ -1980,6 +1980,34 @@ fn activate_actor(actor: *mut HewActor) {
                 break;
             }
 
+            // Shutdown sentinel: `hew_actor_stop` enqueues a
+            // `HEW_MAILBOX_SHUTDOWN_SENTINEL` (msg_type == -1) system message so a
+            // *Running* actor's next mailbox poll OBSERVES the close request. It
+            // is a lifecycle signal, not an application message — the generated
+            // dispatch `match` has no arm for it, so handing it to the user
+            // trampoline lands on the trapping default arm (`ud2` → SIGILL). This
+            // reproduced ~0.75% of the time when a supervised actor was stopped
+            // while a worker was mid-drain of its mailbox: the settle path saw the
+            // queued sentinel via `hew_mailbox_has_messages`, re-enqueued the
+            // actor Runnable, and the next activation dispatched the sentinel.
+            // Observe it here as a self-stop and free it; never dispatch it.
+            //
+            // SAFETY: `msg` is the non-null node just returned by
+            // `hew_mailbox_try_recv`, exclusively owned by this worker.
+            if unsafe { (*msg).msg_type } == mailbox::HEW_MAILBOX_SHUTDOWN_SENTINEL {
+                // SAFETY: `msg` is exclusively owned by this worker.
+                unsafe { hew_msg_node_free(msg) };
+                // Drive Running -> Stopping so the post-loop settle finalizes the
+                // Stopping -> Stopped terminal transition (monitors/terminate).
+                let _ = a.actor_state.compare_exchange(
+                    HewActorState::Running as i32,
+                    HewActorState::Stopping as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                break;
+            }
+
             // Dispatch the message (with profiling and crash recovery).
             if let Some(dispatch) = a.dispatch {
                 let t0 = std::time::Instant::now();

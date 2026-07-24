@@ -2311,6 +2311,16 @@ unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
 
+/// System `msg_type` reserved for the shutdown sentinel that
+/// [`mailbox_send_stop_sys_once`] enqueues onto a Running actor's system queue.
+///
+/// It is a **lifecycle signal**, not an application message: the scheduler must
+/// OBSERVE it as a self-stop request and free it, never hand it to the actor's
+/// user dispatch trampoline. The generated dispatch `match` has no arm for it,
+/// so dispatching it lands on the trapping default arm (`ud2` → SIGILL). See the
+/// interception in `scheduler::activate_actor`.
+pub(crate) const HEW_MAILBOX_SHUTDOWN_SENTINEL: i32 = -1;
+
 pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailbox) -> bool {
     if mb.is_null() {
         return false;
@@ -2319,7 +2329,14 @@ pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailbox) -> bool {
     let mb = unsafe { &*mb };
 
     // SAFETY: stop signals carry no payload.
-    let node = unsafe { msg_node_alloc(-1, ptr::null(), 0, ptr::null_mut()) };
+    let node = unsafe {
+        msg_node_alloc(
+            HEW_MAILBOX_SHUTDOWN_SENTINEL,
+            ptr::null(),
+            0,
+            ptr::null_mut(),
+        )
+    };
     if node.is_null() {
         set_last_error("hew_actor_stop: failed to enqueue shutdown system message");
         eprintln!("hew_actor_stop: failed to enqueue shutdown system message");

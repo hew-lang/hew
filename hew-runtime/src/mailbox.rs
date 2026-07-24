@@ -2439,6 +2439,34 @@ pub(crate) unsafe fn mailbox_is_closed(mb: *mut HewMailbox) -> bool {
 /// functions at a time (single-consumer invariant).
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_try_recv(mb: *mut HewMailbox) -> *mut HewMsgNode {
+    // SAFETY: caller upholds the `mb`-valid + single-consumer contract.
+    unsafe { mailbox_try_recv_with_origin(mb) }.node
+}
+
+/// A received node plus the queue it came from.
+///
+/// The origin bit is load-bearing: the shutdown sentinel
+/// ([`HEW_MAILBOX_SHUTDOWN_SENTINEL`]) is disambiguated from an application
+/// message that merely shares its numeric value by which queue it arrived on,
+/// NOT by the value. `msg_type` is unrestricted `i32` in the public C ABI
+/// ([`hew_actor_send`] / `HewDispatchFn`) and codegen message tags are hashes,
+/// so a user message may legitimately carry `-1`; only a node dequeued from the
+/// **system** queue is the internal shutdown signal.
+pub(crate) struct RecvNode {
+    pub node: *mut HewMsgNode,
+    pub from_sys: bool,
+}
+
+/// Single-consumer receive that preserves system-vs-user provenance.
+///
+/// System messages keep priority (dequeued first), exactly as
+/// [`hew_mailbox_try_recv`] — this is its provenance-carrying core.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer. Only one thread may call recv
+/// functions at a time (single-consumer invariant).
+pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNode {
     // SAFETY: Caller guarantees `mb` is valid and single-consumer.
     let mb = unsafe { &*mb };
 
@@ -2448,7 +2476,10 @@ pub unsafe extern "C" fn hew_mailbox_try_recv(mb: *mut HewMailbox) -> *mut HewMs
     if !sys_node.is_null() {
         mb.sys_count.fetch_sub(1, Ordering::AcqRel);
         MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
-        return sys_node;
+        return RecvNode {
+            node: sys_node,
+            from_sys: true,
+        };
     }
 
     // User messages: slow path uses mutex, fast path uses lock-free queue.
@@ -2459,7 +2490,10 @@ pub unsafe extern "C" fn hew_mailbox_try_recv(mb: *mut HewMailbox) -> *mut HewMs
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             drop(q);
             mb.not_full.notify_one();
-            return node;
+            return RecvNode {
+                node,
+                from_sys: false,
+            };
         }
     } else {
         // SAFETY: single-consumer invariant satisfied by caller.
@@ -2467,11 +2501,17 @@ pub unsafe extern "C" fn hew_mailbox_try_recv(mb: *mut HewMailbox) -> *mut HewMs
         if !node.is_null() {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
-            return node;
+            return RecvNode {
+                node,
+                from_sys: false,
+            };
         }
     }
 
-    ptr::null_mut()
+    RecvNode {
+        node: ptr::null_mut(),
+        from_sys: false,
+    }
 }
 
 /// Try to receive a system message only.

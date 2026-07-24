@@ -6758,6 +6758,72 @@ mod tests {
     static SENTINEL_PROBE_RELEASE: AtomicBool = AtomicBool::new(false);
     static SENTINEL_PROBE_SAW_SENTINEL: AtomicBool = AtomicBool::new(false);
 
+    // Probe for `user_msg_type_minus_one_reaches_handler_and_does_not_terminate`.
+    static USER_MINUS_ONE_HANDLED: AtomicBool = AtomicBool::new(false);
+
+    /// Handler that records receiving `msg_type == -1`. Used to prove that a
+    /// USER-queue message carrying the shutdown-sentinel VALUE is delivered
+    /// normally (the value is only reserved on the system queue).
+    unsafe extern "C-unwind" fn user_minus_one_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        if msg_type == -1 {
+            USER_MINUS_ONE_HANDLED.store(true, Ordering::Release);
+        }
+        std::ptr::null_mut()
+    }
+
+    #[test]
+    fn user_msg_type_minus_one_reaches_handler_and_does_not_terminate() {
+        // Regression guard for the provenance fix: `msg_type` is unrestricted in
+        // the public C ABI and codegen tags are full-range hashes, so a USER send
+        // of `-1` (WITHOUT a stop) is a real message. The scheduler's shutdown
+        // interception gates on SYSTEM-queue provenance, so this must reach the
+        // handler and must NOT terminate the actor. (Keying the interception on
+        // the value alone silently dropped this message and stopped the actor.)
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        USER_MINUS_ONE_HANDLED.store(false, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor =
+            unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(user_minus_one_probe_dispatch)) };
+        assert!(!actor.is_null());
+
+        // A USER-queue send (hew_actor_send routes to the user queue) with the
+        // reserved sentinel value.
+        // SAFETY: actor is a valid live actor pointer returned by spawn.
+        unsafe { hew_actor_send(actor, -1, ptr::null_mut(), 0) };
+
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(2), || {
+                USER_MINUS_ONE_HANDLED.load(Ordering::Acquire)
+            }),
+            "a user-queue message with msg_type == -1 must reach the handler, \
+             not be intercepted as a shutdown signal"
+        );
+
+        // The actor must still be alive — no spurious sentinel-driven self-stop.
+        // SAFETY: actor remains tracked until the explicit free below.
+        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert!(
+            state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32,
+            "delivering a user-queue msg_type == -1 must not terminate the actor (state={state})"
+        );
+
+        // SAFETY: actor is live and tracked; stop then free it exactly once.
+        unsafe {
+            hew_actor_stop(actor);
+            let _ = hew_actor_free(actor);
+        }
+    }
+
     /// Handler that records whether it is ever handed the `msg_type == -1`
     /// shutdown sentinel. A real codegen actor has no `match` arm for it and
     /// would trap on the dispatch default arm, so the scheduler must intercept

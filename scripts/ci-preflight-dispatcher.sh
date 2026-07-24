@@ -707,6 +707,11 @@ case "$LANE" in
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-compiler-pipeline"
         add_command "make fuzz-oracle"
+        # A type-checker change reaches MIR lowering and can drift the checked-MIR
+        # golden corpus (examples/v05/checked-mir) just as a lowering edit can.
+        # Run the same golden diff here so the drift is caught locally rather than
+        # at hosted CI.  Fast (~45s), well within this lane's budget.
+        add_command "make checked-mir-verify"
         ;;
     cli)
         add_command "cargo fmt --all -- --check"
@@ -729,6 +734,12 @@ case "$LANE" in
         # fuzz-oracle catches trap signal-code regressions (SIGILL/SIGTRAP) and
         # ratchet mismatches invisible to the nextest workspace run (#2025).
         add_command "make fuzz-oracle"
+        # checked-mir-verify diffs every fixture's --dump-mir against the
+        # committed golden corpus (examples/v05/checked-mir).  A drop-plan or
+        # lowering edit that shifts the emitted MIR drifts these goldens; without
+        # this step the drift only surfaces at hosted CI's Build & test (Linux)
+        # job, costing a full hosted cycle.  Fast (compile-and-compare, ~45s).
+        add_command "make checked-mir-verify"
         ;;
     vertical-slice)
         add_command "cargo fmt --all -- --check"

@@ -261,23 +261,42 @@ fn fstring_enum_payload_interp_loop_source(frames: usize) -> String {
 
 /// `Result<string, string>` sibling of
 /// [`fstring_enum_payload_interp_loop_source`] — the same defect reached
-/// through the `Ok` arm of a two-owned-payload enum, where BOTH variants
-/// carry a `string` the composite drop must dispose tag-aware.
+/// through a two-owned-payload enum, where BOTH variants carry a `string` the
+/// composite drop must dispose tag-aware.
+///
+/// BOTH tags are constructed and BOTH payloads are interpolated. Exercising
+/// only `Ok` would leave the `Err` arm's payload -- a distinct variant slot
+/// with its own field offset in the tagged union -- entirely unobserved, so a
+/// tag-blind drop that disposed the wrong slot would pass unnoticed. The
+/// alternation is odd/even on the loop counter so both arms run on every
+/// probe frame count, and the two running totals are checked independently at
+/// exit, which pins that each arm read its OWN payload intact.
 fn fstring_result_payload_interp_loop_source(frames: usize) -> String {
-    let expected_len: usize = (0..frames).map(|i| format!("tok{i}").len()).sum();
+    let ok_len: usize = (0..frames)
+        .filter(|i| i % 2 == 0)
+        .map(|i| format!("tok{i}").len())
+        .sum();
+    let err_len: usize = (0..frames)
+        .filter(|i| i % 2 == 1)
+        .map(|i| format!("bad{i}").len())
+        .sum();
     format!(
-        "fn mkres(i: i64) -> Result<string, string> {{ Ok(f\"tok{{i}}\") }}\n\
+        "fn mkres(i: i64) -> Result<string, string> {{\n\
+         \x20   if i % 2 == 0 {{ Ok(f\"tok{{i}}\") }} else {{ Err(f\"bad{{i}}\") }}\n\
+         }}\n\
          fn main() -> i64 {{\n\
          \x20   var i: i64 = 0;\n\
-         \x20   var total: i64 = 0;\n\
+         \x20   var ok_total: i64 = 0;\n\
+         \x20   var err_total: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       match mkres(i) {{\n\
-         \x20           Ok(s) => {{ println(f\"v={{s}}\"); total = total + s.len(); }}\n\
-         \x20           Err(e) => {{ println(e); }}\n\
+         \x20           Ok(s) => {{ println(f\"v={{s}}\"); ok_total = ok_total + s.len(); }}\n\
+         \x20           Err(e) => {{ println(f\"e={{e}}\"); err_total = err_total + e.len(); }}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   if total != {expected_len} {{ return 87; }}\n\
+         \x20   if ok_total != {ok_len} {{ return 87; }}\n\
+         \x20   if err_total != {err_len} {{ return 86; }}\n\
          \x20   0\n\
          }}\n"
     )

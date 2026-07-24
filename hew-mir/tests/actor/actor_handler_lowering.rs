@@ -424,6 +424,11 @@ fn root_actor_layout_carries_no_defining_module() {
 /// unknown-message sentinel for every handler — is a duplicate-switch-case
 /// LLVM verify reject at two-plus handlers and a silent wire-discriminant
 /// corruption at exactly one, so lowering fails closed instead.
+///
+/// The layout must come back with ZERO handler rows: refusing is the whole
+/// point, and a row can only exist if a protocol descriptor issued its
+/// `msg_type`. A row carrying a fabricated discriminant behind the
+/// diagnostic is the failure this asserts against.
 #[test]
 fn missing_protocol_descriptor_with_handlers_fails_closed() {
     let mut ids = IdGen::default();
@@ -447,6 +452,83 @@ fn missing_protocol_descriptor_with_handlers_fails_closed() {
         )),
         "descriptor-less actor with handlers must fail closed: {:?}",
         pipeline.diagnostics
+    );
+    let layout = pipeline
+        .actor_layouts
+        .iter()
+        .find(|l| l.name == "Counter")
+        .expect("a zero-handler ActorLayout is still published for downstream lookups");
+    assert!(
+        layout.handlers.is_empty(),
+        "no handler row may survive without a protocol-issued msg_type: {:?}",
+        layout
+            .handlers
+            .iter()
+            .map(|h| (h.name.clone(), h.msg_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The narrower hole in the same producer: a descriptor IS attached, but it
+/// issues no `msg_id` for one of the actor's handlers (a name the checker
+/// never published). The `map_or(i32::MAX, ..)` fallback covered this case
+/// too, and the descriptor-presence guard did not — an actor here lowered
+/// with one real discriminant and one fabricated one, and no diagnostic.
+/// Taking the id with `ok_or(..)?` makes the row unconstructable, so the
+/// same hard error fires.
+#[test]
+fn descriptor_without_handler_id_fails_closed() {
+    let mut ids = IdGen::default();
+    let bump_body = block(&mut ids, vec![], None, ResolvedTy::Unit);
+    let drain_body = block(&mut ids, vec![], None, ResolvedTy::Unit);
+    let mut counter = actor(
+        &mut ids,
+        "Counter",
+        vec![
+            receive("bump", false, vec![], ResolvedTy::Unit, bump_body),
+            receive("drain", false, vec![], ResolvedTy::Unit, drain_body),
+        ],
+    );
+    // Publish a descriptor that covers only `bump`; `drain` has no issued id.
+    counter.protocol_descriptor = Some(
+        ActorProtocolDescriptor::from_handlers(
+            "Counter".to_string(),
+            &[ActorHandlerSpec {
+                name: "bump".to_string(),
+                param_tys: vec![],
+                return_ty: ResolvedTy::Unit,
+                symbol: "Counter__bump".to_string(),
+            }],
+        )
+        .expect("single-handler descriptor cannot collide"),
+    );
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(counter)]));
+
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::ActorProtocolDescriptorMissing {
+                actor,
+                handler_count,
+            } if actor == "Counter" && *handler_count == 2
+        )),
+        "a handler with no protocol-issued msg_id must fail closed: {:?}",
+        pipeline.diagnostics
+    );
+    let layout = pipeline
+        .actor_layouts
+        .iter()
+        .find(|l| l.name == "Counter")
+        .expect("a zero-handler ActorLayout is still published for downstream lookups");
+    assert!(
+        layout.handlers.is_empty(),
+        "the partially-issuable actor must publish no rows at all: {:?}",
+        layout
+            .handlers
+            .iter()
+            .map(|h| (h.name.clone(), h.msg_type))
+            .collect::<Vec<_>>()
     );
 }
 

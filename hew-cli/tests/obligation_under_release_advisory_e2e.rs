@@ -18,13 +18,25 @@
 //!
 //! These teeth pin three properties so no future allowlist can silently
 //! re-suppress a leak:
-//!   1. a root-unit user leak (`decode` / `out: bytes`) surfaces as a warning,
-//!      build stays green;
-//!   2. the EXACT module-mangled `base64$decode` symbol the deleted allowlist
-//!      keyed on surfaces as a warning (proves a `$`-mangled symbol is not
+//!   1. a root-unit user leak (`count_items` / owned-element `for` cursor)
+//!      surfaces as a warning, build stays green;
+//!   2. a `$`-mangled symbol (the generic monomorphisation `count_iter$$Item`)
+//!      surfaces as a warning (proves a `$`-containing symbol is not
 //!      special-cased back into suppression);
 //!   3. the advisory is flushed on EVERY output path, including
 //!      `--format json --dump-mir`, where an early return once dropped it.
+//!
+//! The fixtures originally pinned the `base64::decode` / `semver::try_parse`
+//! branch-around guard-return leak (a value returned on the tail path and
+//! removed from the drop plan globally, leaking on the guard early-returns).
+//! That family is now fixed by path-sensitive returned-member drop re-admission,
+//! so the fixtures were repointed to the remaining genuine under-release: a
+//! `for _ in v.iter()` over an OWNED-element `Vec` clones a receiver snapshot
+//! (`hew_vec_clone_owned`) whose owned elements the `VecIter` cursor never frees
+//! — a distinct MIR-seam leak (the cursor is misclassified as a borrower, not
+//! the owner of its cloned snapshot). Both fixtures still fire the advisory. (If
+//! that leak is ever fixed this test fails loudly at the lift event — repoint it
+//! to the next genuine under-release then.)
 
 #![cfg(unix)]
 
@@ -35,60 +47,53 @@ use std::process::{Command, Output};
 
 use support::{describe_output, hew_binary, repo_root, require_codegen, strip_ansi, tempdir};
 
-/// A self-contained user program whose `decode` builds a local `out: bytes` and
-/// returns it on the tail path while two guard paths return a fresh
-/// `bytes::new()`. The elaborator removes `out`'s terminal drop globally
-/// (because `out` is consumed on the tail return), so the guard early-returns
-/// reach a `Return` exit with `out` live and undischarged — the branch-around
-/// under-release the S1 gate flags. This is the user-code analogue of the
-/// former-allowlisted stdlib `base64$decode` / `out` / `bytes` triple; the
-/// root-unit symbol here is `decode`.
-const USER_DECODE_LEAK_SOURCE: &str = "\
-fn decode(s: string) -> bytes {\n\
-\x20   let slen = s.len();\n\
-\x20   let out: bytes = bytes::new();\n\
-\x20   if slen == 0 {\n\
-\x20       return out;\n\
+/// A self-contained user program that iterates an OWNED-element `Vec<Item>` with
+/// `for _ in xs.iter()`. `.iter()` clones the receiver into a `VecIter` snapshot
+/// (`hew_vec_clone_owned`) deep-copying each owned `Item`; the cursor is
+/// classified as a borrower of its source (the place-source `VecIter` model), so
+/// its cloned snapshot's owned elements are never released — the S1 gate flags
+/// the under-release on the loop-exit `Return`. The root-unit symbol is
+/// `count_items` and the leaked local renders as `_0` (the discarded `for`
+/// cursor element).
+const USER_ITER_LEAK_SOURCE: &str = "\
+type Item { name: string; n: i64; }\n\
+\n\
+fn count_items(xs: Vec<Item>) -> i64 {\n\
+\x20   let it = xs.iter();\n\
+\x20   var total = 0;\n\
+\x20   for _ in it {\n\
+\x20       total = total + 1;\n\
 \x20   }\n\
-\x20   let vals: bytes = bytes::new();\n\
-\x20   for i in 0 .. slen {\n\
-\x20       let v = s.slice(i, i + 1).len();\n\
-\x20       if v < 0 {\n\
-\x20           return bytes::new();\n\
-\x20       }\n\
-\x20       vals.push(v as u8);\n\
-\x20   }\n\
-\x20   let nvals = vals.len();\n\
-\x20   var i = 0;\n\
-\x20   while i + 4 <= nvals {\n\
-\x20       out.push(vals[i]);\n\
-\x20       i = i + 4;\n\
-\x20   }\n\
-\x20   let remaining = nvals - i;\n\
-\x20   if remaining == 1 {\n\
-\x20       return bytes::new();\n\
-\x20   }\n\
-\x20   out\n\
+\x20   total\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let b = decode(\"hello\");\n\
-\x20   print(b.len());\n\
+\x20   let xs: Vec<Item> = Vec::new();\n\
+\x20   xs.push(Item { name: \"a\", n: 1 });\n\
+\x20   print(count_items(xs));\n\
 }\n";
 
-/// A program that imports the stdlib `base64` module and calls `decode`. The
-/// stdlib `base64.decode` builds a local `out: bytes` and under-releases it on
-/// its guard-return paths — a tracked pre-existing leak. Its mangled symbol is
-/// exactly `base64$decode`, the EXACT `$`-mangled triple the deleted allowlist
-/// keyed on. This pins that a module-qualified (`$`-containing) symbol is not
-/// re-suppressed by a future allowlist. (If the stdlib leak is ever fixed this
-/// test fails loudly at precisely the lift event — update it then.)
-const STDLIB_BASE64_LEAK_SOURCE: &str = "\
-import std::encoding::base64;\n\
+/// A program whose GENERIC `count_iter<T>` iterates an owned-element `Vec<T>`,
+/// instantiated at the owned record `Item`. The monomorphised symbol is exactly
+/// `count_iter$$Item` — a `$`-containing symbol. This pins that a `$`-mangled
+/// (monomorphisation-qualified) symbol is not re-suppressed by a future
+/// allowlist. The same owned-element `VecIter` snapshot leak fires here.
+const GENERIC_ITER_LEAK_SOURCE: &str = "\
+type Item { name: string; n: i64; }\n\
+\n\
+fn count_iter<T>(xs: Vec<T>) -> i64 {\n\
+\x20   let it = xs.iter();\n\
+\x20   var total = 0;\n\
+\x20   for _ in it {\n\
+\x20       total = total + 1;\n\
+\x20   }\n\
+\x20   total\n\
+}\n\
 \n\
 fn main() {\n\
-\x20   let back = base64.decode(\"SGk=\");\n\
-\x20   print(back.len());\n\
+\x20   let xs: Vec<Item> = Vec::new();\n\
+\x20   xs.push(Item { name: \"a\", n: 1 });\n\
+\x20   print(count_iter(xs));\n\
 }\n";
 
 fn compile(dir: &Path, source: &str, name: &str, extra_args: &[&str]) -> Output {
@@ -138,7 +143,7 @@ fn json_under_release_severities(output: &Output) -> Vec<String> {
 fn user_under_release_leak_warns_but_builds_green() {
     require_codegen();
     let dir = tempdir();
-    let output = compile(dir.path(), USER_DECODE_LEAK_SOURCE, "user_decode_leak", &[]);
+    let output = compile(dir.path(), USER_ITER_LEAK_SOURCE, "user_iter_leak", &[]);
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
     assert!(
@@ -146,8 +151,8 @@ fn user_under_release_leak_warns_but_builds_green() {
         "an under-release leak must be advisory (warning), not a build error;\n{}",
         describe_output(&output)
     );
-    let names_the_leak = stderr.contains("obligation balance in `decode`")
-        && stderr.contains("`out`")
+    let names_the_leak = stderr.contains("obligation balance in `count_items`")
+        && stderr.contains("`_0`")
         && stderr.contains("never released")
         && stderr.contains("ObligationUnderReleased");
     assert!(
@@ -168,44 +173,48 @@ fn user_under_release_leak_warns_but_builds_green() {
     }
 }
 
-/// (2) The EXACT module-mangled `base64$decode` symbol the deleted allowlist
-/// keyed on surfaces as a warning at exit 0 — a `$`-containing (module-scoped)
-/// symbol is NOT re-suppressed.
+/// (2) A `$`-mangled symbol (the generic monomorphisation `count_iter$$Item`)
+/// surfaces as a warning at exit 0 — a `$`-containing symbol is NOT re-suppressed.
 #[test]
-fn module_mangled_base64_decode_leak_is_not_suppressed() {
+fn mangled_generic_iter_leak_is_not_suppressed() {
     require_codegen();
     let dir = tempdir();
-    let output = compile(dir.path(), STDLIB_BASE64_LEAK_SOURCE, "uses_base64", &[]);
+    let output = compile(
+        dir.path(),
+        GENERIC_ITER_LEAK_SOURCE,
+        "uses_generic_iter",
+        &[],
+    );
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
     assert!(
         output.status.success(),
-        "the stdlib base64$decode under-release is advisory — the build must stay \
-         green;\n{}",
+        "the generic count_iter$$Item under-release is advisory — the build must \
+         stay green;\n{}",
         describe_output(&output)
     );
 
     let mangled_lines: Vec<&str> = stderr
         .lines()
-        .filter(|l| l.contains("obligation balance in `base64$decode`"))
+        .filter(|l| l.contains("obligation balance in `count_iter$$Item`"))
         .collect();
     assert!(
         !mangled_lines.is_empty(),
-        "the exact module-mangled `base64$decode` under-release (the former \
-         forgeable-allowlist triple) must surface as a diagnostic, never be \
-         suppressed;\n{}",
+        "the `$`-mangled `count_iter$$Item` under-release must surface as a \
+         diagnostic, never be suppressed;\n{}",
         describe_output(&output)
     );
-    // The `$` proves this is the module-mangled symbol, not a root-unit name.
+    // The `$` proves this is the monomorphisation-mangled symbol, not a
+    // root-unit name.
     assert!(
         mangled_lines.iter().all(|l| l.contains('$')),
-        "the surfaced symbol must be the `$`-mangled `base64$decode`;\n{}",
+        "the surfaced symbol must be the `$`-mangled `count_iter$$Item`;\n{}",
         describe_output(&output)
     );
     for line in &mangled_lines {
         assert!(
             line.trim_start().starts_with("warning:"),
-            "the `base64$decode` advisory must render as `warning:`, never \
+            "the `count_iter$$Item` advisory must render as `warning:`, never \
              `error:` — offending line: {line:?}\n{}",
             describe_output(&output)
         );
@@ -244,7 +253,7 @@ fn json_advisory_survives_every_exit_path() {
 
     for (label, args, expected_code) in cases {
         let dir = tempdir();
-        let output = compile(dir.path(), USER_DECODE_LEAK_SOURCE, label, args);
+        let output = compile(dir.path(), USER_ITER_LEAK_SOURCE, label, args);
 
         assert_eq!(
             output.status.code(),
@@ -270,7 +279,7 @@ fn check_json_carries_under_release_advisory() {
     require_codegen();
     let dir = tempdir();
     let src = dir.path().join("check_leak.hew");
-    std::fs::write(&src, USER_DECODE_LEAK_SOURCE).expect("write hew source");
+    std::fs::write(&src, USER_ITER_LEAK_SOURCE).expect("write hew source");
     let output = Command::new(hew_binary())
         .args(["check", "--format", "json", src.to_str().expect("utf-8")])
         .current_dir(repo_root())
@@ -299,8 +308,8 @@ fn text_dump_mir_still_warns_on_stderr() {
     let dir = tempdir();
     let output = compile(
         dir.path(),
-        USER_DECODE_LEAK_SOURCE,
-        "user_decode_leak_textdump",
+        USER_ITER_LEAK_SOURCE,
+        "user_iter_leak_textdump",
         &["--dump-mir", "elab"],
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -312,7 +321,7 @@ fn text_dump_mir_still_warns_on_stderr() {
         describe_output(&output)
     );
     assert!(
-        stderr.contains("obligation balance in `decode`")
+        stderr.contains("obligation balance in `count_items`")
             && stderr
                 .lines()
                 .filter(|l| l.contains("obligation balance in"))

@@ -91,10 +91,10 @@ use self::composite_own::{
     apply_escaped_record_sibling_field_drops, derive_consumed_local_aggregate_member_bindings,
     derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
     derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
-    derive_returned_aggregate_member_bindings, derive_spawn_consumed_handle_bindings,
-    derive_tuple_composite_drop_allowed, detect_actor_state_handle_consume,
-    detect_actor_state_resource_overwrite, detect_opaque_resource_field_misuse,
-    detect_unproven_aggregate_handle_double_free,
+    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
+    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
+    detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
+    detect_opaque_resource_field_misuse, detect_unproven_aggregate_handle_double_free,
 };
 #[cfg(not(test))]
 use self::consts::{

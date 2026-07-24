@@ -3848,6 +3848,75 @@ mod tests {
         }
     }
 
+    /// The MPSC stable stub is disambiguated from a real message by POINTER
+    /// IDENTITY, never by its `msg_type`. That stamp must nonetheless alias no
+    /// value that carries meaning on the queues the stub lives in: `-1` is the
+    /// shutdown signal ([`HEW_MAILBOX_SHUTDOWN_SENTINEL`]) that the system
+    /// queue genuinely transports, and `0` is the by-convention `msg_type` of a
+    /// reply envelope. Two independent invariants must not share a number.
+    #[test]
+    fn stub_stamp_aliases_no_meaningful_msg_type() {
+        let q = MpscQueue::new().expect("queue allocation should succeed");
+        // SAFETY: the stub stays live for the queue's lifetime and this thread
+        // exclusively owns `q`.
+        let stamp = unsafe { (*q.stub_ptr()).msg_type };
+        assert_ne!(
+            stamp, HEW_MAILBOX_SHUTDOWN_SENTINEL,
+            "stub stamp must not equal the shutdown signal carried on the same queue"
+        );
+        assert_ne!(
+            stamp, 0,
+            "stub stamp must not equal the reply-envelope msg_type"
+        );
+        // SAFETY: the queue is exclusively owned and holds only the stub.
+        unsafe { q.drain_and_free(None) };
+    }
+
+    /// Release-visible counterpart of the `debug_assert!` in
+    /// [`MpscQueue::consumer_success`]: the stable stub is re-injected by the
+    /// consumer on every drain-to-empty, so every dequeue path must step over
+    /// it. Handing it out would let the caller free a node the producers still
+    /// hold a live pointer to.
+    #[test]
+    fn stable_stub_never_escapes_to_the_consumer() {
+        // burst 1 exercises the single-real-node re-injection path; larger
+        // bursts exercise the linked-successor path. Repeated rounds start the
+        // second and third burst from a tail that IS the re-injected stub.
+        for burst in [1usize, 2, 5] {
+            let q = MpscQueue::new().expect("queue allocation should succeed");
+            let stub = q.stub_ptr();
+            for _round in 0..3 {
+                for seq in 0..burst {
+                    let msg_type = i32::try_from(seq).expect("test payload id fits in i32");
+                    // SAFETY: null payload + zero size is a valid message.
+                    let node = unsafe { msg_node_alloc(msg_type, ptr::null(), 0, ptr::null_mut()) };
+                    assert!(!node.is_null(), "message allocation must succeed");
+                    // SAFETY: freshly allocated and exclusively owned until publish.
+                    unsafe { q.enqueue(node) };
+                }
+                for _ in 0..burst {
+                    // SAFETY: this thread is the sole consumer.
+                    let node = unsafe { q.try_dequeue() };
+                    assert!(!node.is_null(), "published node must be observable");
+                    assert_ne!(
+                        node, stub,
+                        "the stable stub must never be handed to a consumer"
+                    );
+                    // SAFETY: the queue handed ownership of `node` to the consumer.
+                    unsafe { hew_msg_node_free(node) };
+                }
+                // SAFETY: this thread is the sole consumer.
+                let drained = unsafe { q.try_dequeue() };
+                assert!(
+                    drained.is_null(),
+                    "queue must read empty once the burst is consumed"
+                );
+            }
+            // SAFETY: the queue is exclusively owned and holds only the stub.
+            unsafe { q.drain_and_free(None) };
+        }
+    }
+
     #[test]
     fn trace_context_preserved_in_dequeue() {
         // Test that trace_context is properly copied during dequeue

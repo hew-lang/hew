@@ -1338,16 +1338,21 @@ pub struct HewActor {
     /// discriminator.
     ///
     /// `id` packs only the low 48 bits of the serial (`pid::hew_pid_make`
-    /// masks with `SERIAL_MASK`), so after 2^48 allocations a fresh actor can
-    /// carry a retired incarnation's masked `id`. The two-phase owner-scoped
-    /// role ask copies this full serial out under `children_lock`
+    /// masks with `SERIAL_MASK`), so two incarnations can in principle collide
+    /// on the masked `id`. The two-phase owner-scoped role ask copies this full
+    /// serial out under `children_lock`
     /// (`supervisor::role_resolve_current_child_id`) and re-checks it against
     /// the pinned actor before enqueue
     /// (`live_actors::with_actor_send_by_identity`): an aliased `id` pins a
     /// DIFFERENT incarnation whose serial differs, so the submission refuses
-    /// closed instead of delivering to the wrong actor. Runtime-internal; not
-    /// mirrored by codegen. Appended at the struct tail so no codegen-mirrored
-    /// offset (`id` at 8, `state` at 16) moves.
+    /// closed instead of delivering to the wrong actor.
+    ///
+    /// [`take_actor_serial`] refuses past `MAX_SPAWN_SERIAL` rather than
+    /// wrapping, so the collision is not reachable in production; this field is
+    /// what makes wrong-actor delivery unrepresentable at the seam regardless,
+    /// and the supervisor alias tooth fabricates the collision to prove it.
+    /// Runtime-internal; not mirrored by codegen. Appended at the struct tail so
+    /// no codegen-mirrored offset (`id` at 8, `state` at 16) moves.
     pub spawn_serial: u64,
 }
 

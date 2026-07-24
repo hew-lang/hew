@@ -436,15 +436,20 @@ pub(crate) fn with_actor_send_by_id<R>(
 /// IS the resolved incarnation by matching its full [`HewActor::spawn_serial`]
 /// against `expected_serial` before running `f`.
 ///
-/// The by-ID pin resolves through `LIVE_ACTORS`, keyed by the packed `id`,
-/// whose serial portion is masked to 48 bits (`pid::hew_pid_make`). After 2^48
-/// allocations a fresh actor can carry a retired incarnation's masked `id`, so
-/// a pin by `id` alone could hand `f` the WRONG actor. The two-phase
-/// owner-scoped role ask copies the resolved incarnation's full serial out
-/// under `children_lock` and passes it here; on serial mismatch this returns
+/// The by-ID pin resolves through `LIVE_ACTORS`, keyed by the packed `id`, whose
+/// serial portion is masked to 48 bits (`pid::hew_pid_make`), so a pin by `id`
+/// alone could hand `f` an actor that merely collides on the masked value. The
+/// two-phase owner-scoped role ask copies the resolved incarnation's full serial
+/// out under `children_lock` and passes it here; on serial mismatch this returns
 /// `None` WITHOUT calling `f` — fail closed, treated exactly like a retirement
 /// (the ID aliased a different incarnation). Only used where the caller holds
 /// the resolved incarnation's authoritative serial.
+///
+/// The spawn allocator now refuses past `MAX_ACTOR_SERIAL` rather than wrapping
+/// into already-issued ids, so production cannot reach the collision this
+/// guards; the check stays because it is what makes wrong-actor delivery
+/// unrepresentable at the resolve→submit seam rather than merely unlikely, and
+/// `supervisor.rs` fabricates the collision to keep it honest.
 // live on not(wasm32) — supervisor role ask + by-id ask; dead on wasm32.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_actor_send_by_identity<R>(

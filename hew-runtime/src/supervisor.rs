@@ -6437,12 +6437,15 @@ fn role_ask_refuse(reason: u8, key: u32) -> i32 {
 /// the phases fails CLOSED instead of touching reclaimed storage.
 ///
 /// The returned pair is `(packed id, full spawn serial)`. The packed `id`
-/// masks the serial to 48 bits (`pid::hew_pid_make`), so after 2^48
-/// allocations a fresh actor can carry a retired incarnation's `id`; phase two
-/// therefore matches the pinned actor's full serial against the resolved one
+/// masks the serial to 48 bits (`pid::hew_pid_make`), so two incarnations can in
+/// principle collide on `id`; phase two therefore matches the pinned actor's
+/// full serial against the resolved one
 /// (`live_actors::with_actor_send_by_identity`) so an aliased `id` refuses
-/// closed rather than delivering to the wrong actor. Both scalars are copied
-/// out under `children_lock`; no pointer crosses the lock boundary.
+/// closed rather than delivering to the wrong actor. The spawn allocator refuses
+/// past `pid::MAX_ACTOR_SERIAL` rather than wrapping, so the collision is not
+/// reachable in production; the serial match is what keeps wrong-actor delivery
+/// unrepresentable at this seam regardless. Both scalars are copied out under
+/// `children_lock`; no pointer crosses the lock boundary.
 #[cfg(not(target_arch = "wasm32"))]
 fn role_resolve_current_child_id(
     token: crate::lifetime::local_handles::HewLocalPidId,

@@ -2571,6 +2571,25 @@ pub(super) fn lower_supervisor_bootstrap(
         Rc::clone(task_entry_adapter_symbols),
     ))
 }
+/// Why [`lower_actor_handler_layouts`] could not assign a message-kind
+/// discriminant to every `receive fn` on an actor.
+///
+/// This is the out-of-band channel that replaced the `i32::MAX` fallback:
+/// absence of a discriminant is a distinct value, not a reserved point in
+/// the discriminant's own `i32` range, so the whole `i32` range stays
+/// available to real protocols and no consumer has to recognise a magic id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ProtocolDescriptorMissing {
+    /// The actor declares `receive fn` handlers but carries no protocol
+    /// descriptor at all — the checker refused to publish one (an
+    /// `ActorProtocolCollision`, or an unresolved handler signature), or a
+    /// lowering path dropped it.
+    NoDescriptor,
+    /// A descriptor is attached but issues no `msg_id` for this handler, so
+    /// the actor's HIR handler set and its published protocol disagree.
+    NoHandlerId { handler: String },
+}
+
 /// Build the MIR `ActorHandlerLayout` row for every `receive fn` on this
 /// actor, drawing the `msg_type` from the checker's protocol descriptor.
 ///
@@ -2581,17 +2600,39 @@ pub(super) fn lower_supervisor_bootstrap(
 /// `HirActorDecl::protocol_descriptor`. Source-order rearrangement no
 /// longer affects the protocol.
 ///
-/// Fail-closed: an actor that carries `receive_handlers` but no descriptor
-/// (the checker emitted an `ActorProtocolCollision` and refused to publish
-/// the protocol, a lowering path failed to attach the checker's descriptor,
-/// or an upstream bug) falls back to `i32::MAX` here — but the layout pass
-/// pairs that fallback with a hard `ActorProtocolDescriptorMissing`
-/// diagnostic (see the guard before the `ActorLayout` push in
-/// `lower_hir_module`), so no compiled program ever dispatches on the
-/// sentinel. The sentinel rows exist only to keep the MIR shape well-formed
-/// behind that hard error.
-pub(super) fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> {
-    let descriptor = actor.protocol_descriptor.as_ref();
+/// Fail-closed by construction: the protocol descriptor is the ONLY source of
+/// a `msg_type`, so a row that no descriptor issued cannot be built. An actor
+/// that carries `receive_handlers` without an issuable id — the checker
+/// emitted an `ActorProtocolCollision` and refused to publish the protocol, a
+/// lowering path failed to attach the checker's descriptor, or a handler name
+/// is absent from an otherwise-present descriptor — yields
+/// [`ProtocolDescriptorMissing`] instead of a fabricated discriminant, and the
+/// caller turns that into a hard `ActorProtocolDescriptorMissing` diagnostic.
+///
+/// This replaces a `map_or(i32::MAX, ..)` fallback whose rows were meant to
+/// be unreachable behind a caller-side guard. They were not: the guard tested
+/// only whole-descriptor absence, so a descriptor missing a single handler
+/// name shipped a fabricated `i32::MAX` discriminant with no diagnostic at
+/// all. There is no fabricated `msg_type` anywhere in this crate now — every
+/// `ActorHandlerLayout.msg_type` is a value some descriptor issued.
+///
+/// # Errors
+///
+/// Returns [`ProtocolDescriptorMissing`] when the actor declares at least one
+/// `receive fn` and any of them has no protocol-issued `msg_id`.
+pub(super) fn lower_actor_handler_layouts(
+    actor: &HirActorDecl,
+) -> Result<Vec<ActorHandlerLayout>, ProtocolDescriptorMissing> {
+    if actor.receive_handlers.is_empty() {
+        // No handlers means no discriminants to assign; a handler-less actor
+        // legitimately carries no descriptor (the checker skips publishing
+        // one), so this is not the missing-descriptor condition.
+        return Ok(Vec::new());
+    }
+    let descriptor = actor
+        .protocol_descriptor
+        .as_ref()
+        .ok_or(ProtocolDescriptorMissing::NoDescriptor)?;
     let mut layouts = Vec::with_capacity(actor.receive_handlers.len());
     for handler in &actor.receive_handlers {
         // The checker is the only authority for state-guard facts.
@@ -2604,8 +2645,11 @@ pub(super) fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHand
             hew_hir::HirActorStateGuard::Exclusive => true,
         };
         let msg_type = descriptor
-            .and_then(|d| d.msg_id_for(&handler.name))
-            .map_or(i32::MAX, |id| i32::from_ne_bytes(id.to_ne_bytes()));
+            .msg_id_for(&handler.name)
+            .map(|id| i32::from_ne_bytes(id.to_ne_bytes()))
+            .ok_or_else(|| ProtocolDescriptorMissing::NoHandlerId {
+                handler: handler.name.clone(),
+            })?;
 
         if handler.is_generator {
             // A `receive gen fn` IS a message-dispatch handler — the third
@@ -2671,7 +2715,7 @@ pub(super) fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHand
             is_stream_producer: false,
         });
     }
-    layouts
+    Ok(layouts)
 }
 fn unknown_self_fields_in_block(block: &HirBlock, state_fields: &HashSet<String>) -> Vec<String> {
     let mut seen = HashSet::new();

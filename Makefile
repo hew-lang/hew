@@ -896,13 +896,57 @@ test-ux-examples: hew runtime stdlib
 # dependency that cannot run offline — and additionally exercises a known TLS
 # data-plane ABI gap (it fails closed on a short write). It ships a paired
 # .expected for local diffing only. See examples/README.md for the rationale.
+#
+# The comparison merges stderr into stdout DELIBERATELY. An `.expected` file is
+# the example's whole observable contract: a shipped example that prints an
+# unannounced diagnostic is a defect whether the text lands on fd 1 or fd 2.
+# Splitting the streams would let a new compiler warning ride along unnoticed —
+# exactly the failure this lane exists to catch. A diagnostic an example is
+# supposed to print is recorded verbatim in its `.expected`, so the strictness
+# costs nothing legitimate.
+#
+# SURFACE_EXAMPLES_UNGATED lists lane sources that deliberately ship without an
+# `.expected`. The list is closed both ways: a source outside it that has no
+# `.expected` FAILS (an ungated example cannot hide by omission — that is how a
+# leak advisory shipped unnoticed), and an entry that has since grown an
+# `.expected` or no longer exists FAILS too, so the list cannot rot.
+#
+#   examples/v05/surfaces/scanner_tokens.hew — `hew run` emits an obligation
+#   under-release advisory naming the loop-carried `Scanner` local. The advisory
+#   is a TRUE POSITIVE (`leaks --atExit` reports 160 bytes across 5 blocks, all
+#   from `hew_string_slice`), and the leak is compiler-side, not example-side:
+#   the by-value owned-record escape-scan behind `DropKind::RecordInPlace`
+#   declines a record reassigned in a loop from a tuple projection and, being
+#   fail-closed, leaks rather than risk a double free. The example's Hew is the
+#   documented value-state `Scanner` surface and must NOT be contorted to dodge
+#   a substrate gap; it is gated again once the record drop prover clears this
+#   shape.
+SURFACE_EXAMPLES_UNGATED := examples/v05/surfaces/scanner_tokens.hew
+
 test-surface-examples: hew runtime stdlib
 	@echo "==> Running v0.5 surface examples against .expected"
 	@fail=0; pass=0; \
+	ungated="$(SURFACE_EXAMPLES_UNGATED)"; \
 	srcs="$$(find examples/v05/surfaces -maxdepth 1 -name '*.hew' | sort) examples/net/http_await_service.hew"; \
+	for entry in $$ungated; do \
+	  if [ ! -f "$$entry" ]; then \
+	    echo "  FAIL: $$entry listed in SURFACE_EXAMPLES_UNGATED but does not exist"; \
+	    fail=$$((fail + 1)); \
+	  elif [ -f "$${entry%.hew}.expected" ]; then \
+	    echo "  FAIL: $$entry has an .expected — drop it from SURFACE_EXAMPLES_UNGATED"; \
+	    fail=$$((fail + 1)); \
+	  fi; \
+	done; \
 	for src in $$srcs; do \
 	  exp="$${src%.hew}.expected"; \
-	  test -f "$$exp" || continue; \
+	  if [ ! -f "$$exp" ]; then \
+	    case " $$ungated " in \
+	      *" $$src "*) echo "  SKIP: $$src (SURFACE_EXAMPLES_UNGATED)";; \
+	      *) echo "  FAIL: $$src has no .expected — add one or justify it in SURFACE_EXAMPLES_UNGATED"; \
+	         fail=$$((fail + 1));; \
+	    esac; \
+	    continue; \
+	  fi; \
 	  actual=$$($(DEBUG_DIR)/hew run "$$src" 2>&1); \
 	  expected=$$(cat "$$exp"); \
 	  if [ "$$actual" = "$$expected" ]; then \

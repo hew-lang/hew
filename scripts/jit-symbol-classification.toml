@@ -309,6 +309,7 @@ stable = [
   "hew_iter_value_ptr",
   "hew_iter_value_str",
   "hew_iter_vec",
+  "hew_join_branch_failed",
   "hew_lambda_actor_ask",
   "hew_lambda_actor_clone",
   "hew_lambda_actor_downgrade",
@@ -473,6 +474,7 @@ stable = [
   "hew_registry_unregister",
   "hew_reply",
   "hew_reply_channel_cancel",
+  "hew_reply_channel_failure_kind",
   "hew_reply_channel_free",
   "hew_reply_channel_is_orphaned",
   "hew_reply_channel_new",
@@ -607,6 +609,8 @@ stable = [
   "hew_supervisor_restart_await_blocking",
   "hew_supervisor_restart_await_detach",
   "hew_supervisor_restart_await_suspend",
+  "hew_supervisor_role_ask",
+  "hew_supervisor_role_ask_with_channel",
   "hew_supervisor_set_child_init_fn",
   "hew_supervisor_set_child_lifecycle",
   "hew_supervisor_set_child_state_clone",
@@ -4898,3 +4902,41 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free"
 discharge-depth = "shallow"
+
+# hew-runtime/src/supervisor.rs: owner-scoped stable-role ask. The payload is
+# deep-copied by the mailbox; the reply channel gains one queued sender ref
+# (retain), released internally on a failed submission — the caller's creator
+# ref survives either way.
+[[ownership.contracts]]
+symbol = "hew_supervisor_role_ask_with_channel"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "retain"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/supervisor.rs: blocking owner-scoped stable-role ask. The
+# payload is deep-copied by the mailbox; the reply buffer transfers to the
+# caller (null on refusal/failure with the ask error recorded).
+[[ownership.contracts]]
+symbol = "hew_supervisor_role_ask"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_reply_payload_free"
+discharge-depth = "shallow"
+
+# hew-runtime/src/reply_channel.rs: reads classification flags only.
+[[ownership.contracts]]
+symbol = "hew_reply_channel_failure_kind"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/reply_channel.rs: reads classification flags, writes the
+# error slot, prints the diagnostic; the channel ref stays caller-owned.
+[[ownership.contracts]]
+symbol = "hew_join_branch_failed"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"

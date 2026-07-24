@@ -402,6 +402,7 @@ fn render_terminator(term: &Terminator) -> String {
         ),
         Terminator::Ask {
             actor,
+            stable_role: _,
             msg_type,
             value,
             arg_modes: _,

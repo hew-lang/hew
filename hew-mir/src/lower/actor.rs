@@ -4,7 +4,7 @@ use super::{
     recv_result_payload_ty, ty_contains_channel_handle, ActorLayout, ActorMethodInfo, Builder,
     BuiltinType, CmpPred, FieldOffset, FloatWidth, FungibleChildRef, HashMap, HirExpr, HirExprKind,
     Instr, MirDiagnostic, MirDiagnosticKind, PendingOutboundArg, PendingOutboundSite, Place,
-    ReleaseSymbolVerdict, ResolvedTy, RuntimeCallContext, SuspendKind, Terminator,
+    ReleaseSymbolVerdict, ResolvedTy, RuntimeCallContext, StableActorRole, SuspendKind, Terminator,
     CHILD_LOOKUP_RESULT_TY_NAME, RECEIVE_GEN_STREAM_CAPACITY,
 };
 
@@ -2461,19 +2461,23 @@ impl Builder {
             return None;
         }
         let actor = self.lower_value(receiver)?;
-        // F-04: an ask through a FUNGIBLE supervisor-child reference re-resolves
-        // the current child at the ask site. Unlike the tell path, the ask needs
-        // NO liveness branch: a not-live slot resolves to a null handle, and the
-        // existing ask err path fail-closes a null/stale actor to
-        // `Err(AskError::ActorStopped)` (`actor_send_result_internal_reply`
-        // null-guards at actor.rs:4078 → `ErrActorStopped` →
-        // `hew_actor_ask_take_last_error` → `Err`). So storing the freshly
-        // resolved pointer (null when not-live) into the handle alloca is
-        // sufficient: a live child is asked, a not-live one yields a recoverable
-        // `Err` rather than a UAF or trap.
-        if let Some(child_ref) = self.fungible_child_ref_of(actor) {
-            self.emit_child_get_into(child_ref.sup_place, child_ref.slot_index, actor);
-        }
+        // F-04: an ask through a FUNGIBLE supervisor-child reference carries
+        // the stable role (supervisor token + slot) into the ask terminator;
+        // codegen submits through the OWNER-SCOPED role ask
+        // (`hew_supervisor_role_ask` / `hew_supervisor_role_ask_with_channel`),
+        // which resolves the current incarnation and submits under the
+        // runtime's liveness protocol. The former shape re-resolved to a raw
+        // `*mut HewActor` here (`emit_child_get_into`) and dereferenced it at
+        // the ask site — an UNPINNED pointer a restart could free between the
+        // lookup and the deref (use-after-free, not a refusal). A not-live or
+        // retired slot now fails closed to `Err(AskError::ActorStopped)` with
+        // the slot state classified in the error slot.
+        let stable_role = self
+            .fungible_child_ref_of(actor)
+            .map(|child_ref| StableActorRole {
+                supervisor_token: child_ref.supervisor_token,
+                slot_index: child_ref.slot_index,
+            });
         let mut lowered: Vec<(Place, ResolvedTy)> = Vec::with_capacity(args.len());
         for arg in args {
             lowered.push((self.lower_value_for_move(arg)?, self.subst_ty(&arg.ty)));
@@ -2532,6 +2536,7 @@ impl Builder {
             }
             self.record_suspend_kind(SuspendKind::Ask {
                 actor,
+                stable_role,
                 msg_type: info.msg_type,
                 value,
                 arg_modes: Vec::new(),
@@ -2568,6 +2573,7 @@ impl Builder {
             }
             self.finish_current_block(Terminator::Ask {
                 actor,
+                stable_role,
                 msg_type: info.msg_type,
                 value,
                 arg_modes: Vec::new(),

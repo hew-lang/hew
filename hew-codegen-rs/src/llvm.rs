@@ -25201,6 +25201,7 @@ fn dispatch_collapsed_suspend<'ctx>(
     match kind {
         SuspendKind::Ask {
             actor,
+            stable_role,
             msg_type,
             value,
             arg_modes,
@@ -25214,6 +25215,7 @@ fn dispatch_collapsed_suspend<'ctx>(
                 fn_ctx,
                 crate::suspend::SuspendingAskEmit {
                     actor: *actor,
+                    stable_role: *stable_role,
                     msg_type: *msg_type,
                     value: *value,
                     cleanup_plan: cleanup_plan.clone(),
@@ -27276,6 +27278,7 @@ fn lower_terminator<'ctx>(
         }
         Terminator::Ask {
             actor,
+            stable_role,
             msg_type,
             value,
             arg_modes,
@@ -27286,15 +27289,8 @@ fn lower_terminator<'ctx>(
             next,
         } => {
             validate_prepared_outbound_modes(fn_ctx, *value, arg_modes)?;
-            let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_ask receiver")?;
             let (payload_ptr, payload_size) =
                 actor_payload_ptr_size(fn_ctx, *value, "actor_ask_payload")?;
-            let ask = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_actor_ask",
-            )?;
             let msg_type_val = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
             // `payload_size` is built as i64; the `size` param is `usize`/
             // `size_t` (i32 on wasm32). Reconcile to the target-correct width.
@@ -27305,23 +27301,75 @@ fn lower_terminator<'ctx>(
                 ask_size_ty.into(),
                 "actor ask payload size",
             )?;
-            let reply_ptr = fn_ctx
-                .builder
-                .build_call(
-                    ask,
-                    &[
-                        actor_ptr.into(),
-                        msg_type_val.into(),
-                        payload_ptr.into(),
-                        payload_size.into(),
-                    ],
-                    "hew_actor_ask_call",
-                )
-                .llvm_ctx("hew_actor_ask call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_actor_ask returned void".into()))?
-                .into_pointer_value();
+            // A fungible stable-role receiver submits through the blocking
+            // OWNER-SCOPED role ask (resolve + ID-pinned submission inside the
+            // runtime; same null-or-reply return contract as hew_actor_ask).
+            // The former shape dereferenced a re-resolved, UNPINNED child
+            // pointer that a restart could free before the deref.
+            let reply_ptr = if let Some(role) = stable_role {
+                let i64_ty = fn_ctx.ctx.i64_type();
+                let sup_token = load_int_arg(
+                    fn_ctx,
+                    role.supervisor_token,
+                    i64_ty,
+                    "actor_ask_role_supervisor_token",
+                )?;
+                let slot_idx = fn_ctx
+                    .ctx
+                    .i32_type()
+                    .const_int(u64::from(role.slot_index), false);
+                let role_ask = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_supervisor_role_ask",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        role_ask,
+                        &[
+                            sup_token.into(),
+                            slot_idx.into(),
+                            msg_type_val.into(),
+                            payload_ptr.into(),
+                            payload_size.into(),
+                        ],
+                        "hew_supervisor_role_ask_call",
+                    )
+                    .llvm_ctx("hew_supervisor_role_ask call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_supervisor_role_ask returned void".into())
+                    })?
+                    .into_pointer_value()
+            } else {
+                let actor_ptr = load_duplex_handle(fn_ctx, *actor, "actor_ask receiver")?;
+                let ask = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_actor_ask",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        ask,
+                        &[
+                            actor_ptr.into(),
+                            msg_type_val.into(),
+                            payload_ptr.into(),
+                            payload_size.into(),
+                        ],
+                        "hew_actor_ask_call",
+                    )
+                    .llvm_ctx("hew_actor_ask call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("hew_actor_ask returned void".into()))?
+                    .into_pointer_value()
+            };
             let parent = fn_ctx
                 .builder
                 .get_insert_block()

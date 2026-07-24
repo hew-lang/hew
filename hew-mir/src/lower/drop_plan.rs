@@ -5468,6 +5468,7 @@ pub(super) fn enumerate_exits(
             ),
             Terminator::Ask {
                 actor,
+                stable_role: _,
                 msg_type: _,
                 value: _,
                 arg_modes: _,

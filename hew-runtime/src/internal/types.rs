@@ -546,6 +546,56 @@ pub const HEW_TRAP_MODULE_INIT_REGEX_FAILED: i32 = 209;
 /// this constant so a renumber here fails the codegen build closed.
 pub const HEW_TRAP_WIRE_DECODE_FAILED: i32 = 210;
 
+/// Error code recorded when a `join{}` branch's reply resolves without a
+/// value. The join surface awaits every branch and binds a tuple — it has no
+/// per-branch `Result` binding — so a branch failure is fail-closed
+/// (§4.11.2: cancel the remaining branches and propagate). Pre-fix the null
+/// branch emitted a bare `llvm.trap` with no code and no diagnostic; the
+/// failure now traps with THIS code after `hew_join_branch_failed` names the
+/// classified cause (actor stopped, cancelled, handler trapped, or reply
+/// allocation failure — the observable-honesty axiom applied to the join
+/// site).
+///
+/// The single source of truth for the codegen literal: `hew-codegen-rs`
+/// imports this constant so a renumber here fails the codegen build closed.
+pub const HEW_TRAP_JOIN_BRANCH_FAILED: i32 = 211;
+
+// ── Reply-failure classification ─────────────────────────────────────────
+//
+// Discriminants recorded on a reply channel (`HewReplyChannel.fail_reason`,
+// first-write-wins) so a null reply is status-bearing: the waiter can name
+// WHY no value arrived instead of collapsing every failure into "null".
+// Consumed by `hew_reply_channel_failure_kind` / `hew_join_branch_failed`.
+
+/// No failure recorded: a null reply with this kind is a legitimate null.
+pub const HEW_REPLY_FAIL_NONE: i32 = 0;
+/// The target actor stopped (mailbox teardown retired the queued ask before
+/// dispatch — the orphaned-ask class).
+pub const HEW_REPLY_FAIL_ACTOR_STOPPED: i32 = 1;
+/// The waiting side cancelled the ask before a reply arrived.
+pub const HEW_REPLY_FAIL_CANCELLED: i32 = 2;
+/// The handler trapped mid-dispatch; the scheduler's crash fallback resolved
+/// the waiter with an empty reply.
+pub const HEW_REPLY_FAIL_HANDLER_TRAPPED: i32 = 3;
+/// The reply payload could not be materialized (allocation failure on the
+/// deposit or submission path).
+pub const HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED: i32 = 4;
+
+/// Name a reply-failure discriminant for diagnostics. Fail-closed: an
+/// unrecognized discriminant names itself rather than borrowing a real
+/// kind's name.
+#[must_use]
+pub const fn reply_fail_kind_name(kind: i32) -> &'static str {
+    match kind {
+        HEW_REPLY_FAIL_NONE => "no failure recorded",
+        HEW_REPLY_FAIL_ACTOR_STOPPED => "actor stopped before replying",
+        HEW_REPLY_FAIL_CANCELLED => "ask cancelled before a reply arrived",
+        HEW_REPLY_FAIL_HANDLER_TRAPPED => "handler trapped during dispatch",
+        HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED => "reply payload allocation failed",
+        _ => "(unrecognized reply-failure discriminant)",
+    }
+}
+
 /// Convert a canonical Hew trap discriminator into the WASI process exit code
 /// used when a trap escapes outside actor dispatch.
 ///
@@ -565,7 +615,8 @@ pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
         | HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE
         | HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH
         | HEW_TRAP_MODULE_INIT_REGEX_FAILED
-        | HEW_TRAP_WIRE_DECODE_FAILED => Some(code),
+        | HEW_TRAP_WIRE_DECODE_FAILED
+        | HEW_TRAP_JOIN_BRANCH_FAILED => Some(code),
         _ => None,
     }
 }
@@ -612,6 +663,13 @@ pub enum ExitReason {
     /// the decode call site traps on that null. Reachable on malformed or
     /// adversarial input — the fail-closed boundary, not a producer regression.
     WireDecodeFailed,
+    /// Actor crashed because a `join{}` branch's reply resolved without a
+    /// value (error code 211): the branch's target actor stopped, the ask was
+    /// cancelled, the handler trapped, or the reply payload failed to
+    /// materialize. `hew_join_branch_failed` names the classified cause in the
+    /// diagnostic before the trap fires. Reachable whenever a joined actor
+    /// dies mid-join — an environmental failure, not a producer regression.
+    JoinBranchFailed,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -641,6 +699,7 @@ impl ExitReason {
             ExitReason::ExhaustivenessFallthrough => "ExhaustivenessFallthrough",
             ExitReason::ModuleInitRegexFailed => "ModuleInitRegexFailed",
             ExitReason::WireDecodeFailed => "WireDecodeFailed",
+            ExitReason::JoinBranchFailed => "JoinBranchFailed",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -663,6 +722,7 @@ impl ExitReason {
             HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH => ExitReason::ExhaustivenessFallthrough,
             HEW_TRAP_MODULE_INIT_REGEX_FAILED => ExitReason::ModuleInitRegexFailed,
             HEW_TRAP_WIRE_DECODE_FAILED => ExitReason::WireDecodeFailed,
+            HEW_TRAP_JOIN_BRANCH_FAILED => ExitReason::JoinBranchFailed,
             sig => ExitReason::Signal(sig),
         }
     }
@@ -708,6 +768,7 @@ impl ExitReason {
             | ExitReason::ExhaustivenessFallthrough
             | ExitReason::ModuleInitRegexFailed
             | ExitReason::WireDecodeFailed
+            | ExitReason::JoinBranchFailed
             | ExitReason::Signal(_)
             | ExitReason::Normal => CrashKind::Crashed,
         }
@@ -802,6 +863,7 @@ mod crash_kind_projection_tests {
             HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
             HEW_TRAP_MODULE_INIT_REGEX_FAILED,
             HEW_TRAP_WIRE_DECODE_FAILED,
+            HEW_TRAP_JOIN_BRANCH_FAILED,
         ] {
             assert_eq!(
                 CrashKind::tag_from_error_code(code),
@@ -839,6 +901,7 @@ mod crash_kind_projection_tests {
             ExitReason::ExhaustivenessFallthrough,
             ExitReason::ModuleInitRegexFailed,
             ExitReason::WireDecodeFailed,
+            ExitReason::JoinBranchFailed,
             ExitReason::Signal(-1),
             ExitReason::Normal,
         ];

@@ -296,6 +296,16 @@ fn actor_ask_null(err: AskError) -> *mut c_void {
     ptr::null_mut()
 }
 
+/// Refuse an ask closed with `AskError::ActorStopped` and return null —
+/// the blocking stable-role ask's classified-refusal surface
+/// (`hew_supervisor_role_ask` records the slot-state diagnostic separately
+/// via the error slot; this binds the user-visible `Err(AskError::*)`).
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+pub(crate) fn actor_ask_null_actor_stopped() -> *mut c_void {
+    actor_ask_null(AskError::ActorStopped)
+}
+
 /// Clear the local-ask error slot (called on successful ask return).
 #[inline]
 fn actor_ask_clear() {
@@ -880,12 +890,23 @@ fn should_fail_arena_alloc() -> bool {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 thread_local! {
-    static NEXT_SPAWN_ACTOR_ID_OVERRIDE: Cell<Option<u64>> = const { Cell::new(None) };
+    static NEXT_SPAWN_ACTOR_ID_OVERRIDE: Cell<Option<(u64, u64)>> = const { Cell::new(None) };
 }
 
+/// Force the next spawn to adopt `actor_id` as its packed `id` while keeping the
+/// full serial equal to it — the common case where aliasing is not under test.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 fn override_next_spawn_actor_id(actor_id: u64) {
-    NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(|slot| slot.set(Some(actor_id)));
+    NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(|slot| slot.set(Some((actor_id, actor_id))));
+}
+
+/// Force the next spawn to adopt `actor_id` as its packed `id` but a DISTINCT
+/// full `serial`. Fabricates the masked-`id` alias shape: two incarnations that
+/// collide on `id` yet differ on the aliasing-proof discriminator. Used by the
+/// supervisor role-ask alias tooth (`supervisor.rs`).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn override_next_spawn_actor_identity(actor_id: u64, serial: u64) {
+    NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(|slot| slot.set(Some((actor_id, serial))));
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1312,6 +1333,22 @@ pub struct HewActor {
     /// compiler cutover. Appended at the tail so the codegen-mirrored `id` and
     /// `state` offsets and every established prefix offset remain unchanged.
     pub local_pid_id: crate::lifetime::local_handles::HewLocalPidId,
+
+    /// Full, un-masked spawn serial — the aliasing-proof incarnation
+    /// discriminator.
+    ///
+    /// `id` packs only the low 48 bits of the serial (`pid::hew_pid_make`
+    /// masks with `SERIAL_MASK`), so after 2^48 allocations a fresh actor can
+    /// carry a retired incarnation's masked `id`. The two-phase owner-scoped
+    /// role ask copies this full serial out under `children_lock`
+    /// (`supervisor::role_resolve_current_child_id`) and re-checks it against
+    /// the pinned actor before enqueue
+    /// (`live_actors::with_actor_send_by_identity`): an aliased `id` pins a
+    /// DIFFERENT incarnation whose serial differs, so the submission refuses
+    /// closed instead of delivering to the wrong actor. Runtime-internal; not
+    /// mirrored by codegen. Appended at the struct tail so no codegen-mirrored
+    /// offset (`id` at 8, `state` at 16) moves.
+    pub spawn_serial: u64,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -2469,19 +2506,33 @@ unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_voi
     }
 }
 
-fn next_spawn_actor_identity() -> u64 {
+/// A freshly allocated actor identity: the packed, location-transparent `id`
+/// (masked serial) plus the full un-masked `serial` used as the aliasing-proof
+/// incarnation discriminator (see [`HewActor::spawn_serial`]).
+#[derive(Clone, Copy)]
+struct SpawnIdentity {
+    id: u64,
+    serial: u64,
+}
+
+fn next_spawn_actor_identity() -> SpawnIdentity {
     #[cfg(not(target_arch = "wasm32"))]
     {
         #[cfg(test)]
-        if let Some(actor_id) = NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(Cell::take) {
-            return actor_id;
+        if let Some((id, serial)) = NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(Cell::take) {
+            return SpawnIdentity { id, serial };
         }
-        crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed))
+        let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
+        SpawnIdentity {
+            id: crate::pid::next_actor_id(serial),
+            serial,
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed)
+        let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
+        SpawnIdentity { id: serial, serial }
     }
 }
 
@@ -2491,7 +2542,7 @@ fn next_spawn_actor_identity() -> u64 {
 )]
 fn build_spawned_actor(
     config: ActorSpawnConfig,
-    actor_id: u64,
+    identity: SpawnIdentity,
     init_state: *mut c_void,
     arena: *mut crate::arena::ActorArena,
 ) -> Box<HewActor> {
@@ -2500,7 +2551,7 @@ fn build_spawned_actor(
 
     Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: actor_id,
+        id: identity.id,
         state: config.state,
         state_size: config.state_size,
         dispatch: config.dispatch,
@@ -2551,6 +2602,7 @@ fn build_spawned_actor(
         send_pin_count: AtomicU32::new(0),
         gen_sink: AtomicPtr::new(ptr::null_mut()),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+        spawn_serial: identity.serial,
     })
 }
 
@@ -2700,12 +2752,12 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         unsafe { cleanup_failed_spawn(&config, init_state) };
         return ptr::null_mut();
     }
-    let actor_id = next_spawn_actor_identity();
-    let actor = build_spawned_actor(config, actor_id, init_state, arena);
+    let identity = next_spawn_actor_identity();
+    let actor = build_spawned_actor(config, identity, init_state, arena);
     let raw = Box::into_raw(actor);
     register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
-    if !unsafe { finalize_spawned_actor(raw, actor_id) } {
+    if !unsafe { finalize_spawned_actor(raw, identity.id) } {
         // SAFETY: registration failed after liveness was rolled back; no caller
         // or scheduler can observe `raw`.
         unsafe { free_actor_resources_with_options(raw, false) };
@@ -2754,12 +2806,12 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         return ptr::null_mut();
     }
 
-    let actor_id = next_spawn_actor_identity();
-    let actor = build_spawned_actor(config, actor_id, init_state, arena);
+    let identity = next_spawn_actor_identity();
+    let actor = build_spawned_actor(config, identity, init_state, arena);
     let raw = Box::into_raw(actor);
     register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
-    if !unsafe { finalize_spawned_actor(raw, actor_id) } {
+    if !unsafe { finalize_spawned_actor(raw, identity.id) } {
         // SAFETY: registration failed after liveness was rolled back; no caller
         // or scheduler can observe `raw`.
         unsafe { free_actor_resources_with_options(raw, false) };
@@ -5080,6 +5132,39 @@ where
     send_result
 }
 
+/// Submit an ask with a caller-owned reply channel against an actor
+/// allocation whose liveness the CALLER pins (the owner-scoped stable-role
+/// path: `hew_supervisor_role_ask_with_channel` resolves the child slot and
+/// submits while holding the supervisor's `children_lock`, so the incarnation
+/// cannot be replaced or reclaimed across the submission).
+///
+/// Channel-reference discipline is identical to
+/// [`hew_actor_ask_with_channel`]: the queued sender-side ref is retained here
+/// and released on a failed submission; the caller-provided creator ref
+/// survives failure so the caller can still free the channel.
+///
+/// # Safety
+///
+/// - `actor` must be a live `HewActor` the caller keeps live for the call.
+/// - `data` and `ch` must satisfy [`hew_actor_ask_with_channel`]'s contract.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn ask_with_channel_pinned(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    ch: *mut c_void,
+) -> i32 {
+    // SAFETY: the caller pins `actor`; channel/data follow this fn's contract.
+    unsafe {
+        submit_ask_with_reply_channel(
+            ch.cast(),
+            AskReplyChannelFailureCleanup::KeepCreatorRef,
+            |ch| actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()),
+        )
+    }
+}
+
 // ── Ask (request-response) ──────────────────────────────────────────────
 // Native asks block on threaded reply channels; WASM asks cooperate by
 // driving the single-threaded scheduler in bounded ticks.
@@ -5289,6 +5374,51 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
     data: *mut c_void,
     size: usize,
 ) -> *mut c_void {
+    // SAFETY: same contract as this fn; `expected_serial: None` selects the
+    // plain by-ID pin.
+    unsafe { actor_ask_by_id_inner(actor_id, None, msg_type, data, size) }
+}
+
+/// Identity-verified variant of [`hew_actor_ask_by_id`]: pins the resolved
+/// incarnation by `actor_id` AND requires its full [`HewActor::spawn_serial`]
+/// to equal `expected_serial` before enqueuing, so a masked-`id` alias (a fresh
+/// actor reusing a retired incarnation's low-48-bit `id` after 2^48
+/// allocations) fails closed to `AskError::ActorStopped` instead of delivering
+/// to the wrong actor. Used by the blocking owner-scoped role ask, whose phase
+/// one resolves the serial under `children_lock`.
+///
+/// # Safety
+///
+/// Same as [`hew_actor_ask_by_id`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn hew_actor_ask_by_identity(
+    actor_id: u64,
+    expected_serial: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> *mut c_void {
+    // SAFETY: same contract as this fn; the serial gate runs under the pin.
+    unsafe { actor_ask_by_id_inner(actor_id, Some(expected_serial), msg_type, data, size) }
+}
+
+/// Shared body for the by-ID blocking ask. When `expected_serial` is `Some`,
+/// the send phase pins through [`live_actors::with_actor_send_by_identity`] so
+/// an aliased `id` (serial mismatch) refuses closed without enqueuing;
+/// otherwise it uses the plain by-ID pin.
+///
+/// # Safety
+///
+/// `data` must point to at least `size` readable bytes, or be null when `size`
+/// is 0.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn actor_ask_by_id_inner(
+    actor_id: u64,
+    expected_serial: Option<u64>,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> *mut c_void {
     let ch = reply_channel::hew_reply_channel_new();
 
     // SAFETY: `ch` is a live reply channel owned by this ask call and the
@@ -5298,14 +5428,21 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
             // Use the liveness-pin protocol (same as hew_actor_send_by_id):
             // under LIVE_ACTORS, validate + pin; release lock; run the send;
             // SendPinGuard decrements on return.  The untrack-first free path
-            // cannot finalize while this pin is held.
-            live_actors::with_actor_send_by_id(actor_id, |actor| {
-                // SAFETY: `actor` is pinned live by `with_actor_send_by_id`;
-                // allocation valid for the closure.  `ch` is a live reply
-                // channel retained above.  Same data/size preconditions as
-                // hew_actor_ask.  Outer `unsafe` block covers this call.
+            // cannot finalize while this pin is held.  With `expected_serial`
+            // set, the pin additionally verifies the incarnation's full serial
+            // so an aliased `id` fails closed here instead of at a later deref.
+            let dispatch = |actor: *mut HewActor| {
+                // SAFETY: `actor` is pinned live by the by-ID pin; allocation
+                // valid for the closure.  `ch` is a live reply channel retained
+                // above.  Same data/size preconditions as hew_actor_ask.
                 actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
-            })
+            };
+            match expected_serial {
+                Some(serial) => {
+                    live_actors::with_actor_send_by_identity(actor_id, serial, dispatch)
+                }
+                None => live_actors::with_actor_send_by_id(actor_id, dispatch),
+            }
             .unwrap_or(HewError::ErrActorStopped as i32)
         })
     };
@@ -7620,13 +7757,15 @@ mod tests {
                 send_pin_count: AtomicU32::new(0),
                 gen_sink: AtomicPtr::new(ptr::null_mut()),
                 local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                spawn_serial: id,
             }));
             (actor, mailbox)
         }
     }
 
     fn make_tracked_wasm_free_test_actor(initial_state: HewActorState) -> *mut HewActor {
-        let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
+        let spawn_serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
+        let actor_id = crate::pid::next_actor_id(spawn_serial);
         let actor = Box::into_raw(Box::new(HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
@@ -7666,6 +7805,7 @@ mod tests {
             send_pin_count: AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            spawn_serial,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
@@ -11659,7 +11799,8 @@ mod tests {
         // Capture the address before transferring ownership to the actor struct.
         let arena_addr = arena as usize;
 
-        let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
+        let spawn_serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
+        let actor_id = crate::pid::next_actor_id(spawn_serial);
         let actor = Box::into_raw(Box::new(HewActor {
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
@@ -11700,6 +11841,7 @@ mod tests {
             send_pin_count: AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            spawn_serial,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });

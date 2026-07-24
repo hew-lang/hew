@@ -143,6 +143,11 @@ pub struct HewActor {
     pub gen_sink: AtomicPtr<c_void>,
     // Stable target-word local-handle identity; mirrors the canonical tail.
     pub local_pid_id: crate::lifetime::local_handles::HewLocalPidId,
+    // Full un-masked spawn serial; mirrors the canonical tail so the layout
+    // parity this module asserts holds. Never read on WASM (the owner-scoped
+    // role ask that consumes it is native-only), but present for size/offset
+    // parity with the native `HewActor`.
+    pub spawn_serial: u64,
 }
 
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
@@ -208,6 +213,7 @@ const _: () = {
     assert!(offset_of!(W, send_pin_count) == offset_of!(N, send_pin_count));
     assert!(offset_of!(W, gen_sink) == offset_of!(N, gen_sink));
     assert!(offset_of!(W, local_pid_id) == offset_of!(N, local_pid_id));
+    assert!(offset_of!(W, spawn_serial) == offset_of!(N, spawn_serial));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -2264,6 +2270,7 @@ mod tests {
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            spawn_serial: 1,
         }
     }
 
@@ -5413,6 +5420,7 @@ mod tests {
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            spawn_serial: 99,
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

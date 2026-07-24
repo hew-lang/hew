@@ -352,6 +352,7 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         send_pin_count: std::sync::atomic::AtomicU32::new(0),
         gen_sink: AtomicPtr::new(std::ptr::null_mut()),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+        spawn_serial: 1,
     })
 }
 
@@ -1642,10 +1643,18 @@ fn wasm_trap_exit_code_mapping_wire_decode_failed_is_allowlisted_as_210() {
 }
 
 #[test]
+fn wasm_trap_exit_code_mapping_join_branch_failed_is_allowlisted_as_211() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_JOIN_BRANCH_FAILED,
+        crate::internal::types::ExitReason::JoinBranchFailed,
+    );
+}
+
+#[test]
 fn wasm_unknown_non_actor_trap_code_is_not_mapped_to_process_exit() {
-    // 210 (HEW_TRAP_WIRE_DECODE_FAILED) is now a Hew-owned discriminator and is
-    // allowlisted; 211 takes its place as the first unused code.
-    for unknown in [-1, 1, 101, 199, 211, i32::MAX] {
+    // 211 (HEW_TRAP_JOIN_BRANCH_FAILED) is now a Hew-owned discriminator and is
+    // allowlisted; 212 takes its place as the first unused code.
+    for unknown in [-1, 1, 101, 199, 212, i32::MAX] {
         assert_eq!(
             crate::internal::types::canonical_trap_wasi_exit_code(unknown),
             None,

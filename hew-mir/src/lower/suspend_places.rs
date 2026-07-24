@@ -1087,6 +1087,7 @@ mod f1_suspending_escape_poison {
     fn suspending_ask_poisons_its_owned_payload() {
         let value = Place::Local(3);
         let kind = SuspendKind::Ask {
+            stable_role: None,
             actor: Place::Local(1),
             msg_type: 0,
             value,
@@ -1128,6 +1129,7 @@ mod f1_suspending_escape_poison {
         let value = Place::Local(3);
         let local_tys = vec![ResolvedTy::I64; 7];
         let blocking = Terminator::Ask {
+            stable_role: None,
             actor: Place::Local(1),
             msg_type: 0,
             value,
@@ -1139,6 +1141,7 @@ mod f1_suspending_escape_poison {
             next: 1,
         };
         let kind = SuspendKind::Ask {
+            stable_role: None,
             actor: Place::Local(1),
             msg_type: 0,
             value,

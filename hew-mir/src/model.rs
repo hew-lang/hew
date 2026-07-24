@@ -2494,6 +2494,10 @@ pub enum SuspendKind {
     /// Non-blocking `await actor.method(value)` (`SuspendingAsk`).
     Ask {
         actor: Place,
+        /// Present only for a fungible supervisor-child binding: the ask
+        /// submits through `hew_supervisor_role_ask_with_channel` (the
+        /// owner-scoped role ask) instead of a resolved child pointer.
+        stable_role: Option<StableActorRole>,
         msg_type: i32,
         value: Place,
         arg_modes: Vec<SendAliasMode>,
@@ -3561,6 +3565,12 @@ pub enum Terminator {
     /// lands.
     Ask {
         actor: Place,
+        /// Present only for a fungible supervisor-child binding. Codegen
+        /// submits through the owner-scoped role ask
+        /// (`hew_supervisor_role_ask`) instead of dereferencing a resolved
+        /// child pointer — the raw lookup-then-ask pair left an unpinned
+        /// `*mut HewActor` that a restart could free before the deref.
+        stable_role: Option<StableActorRole>,
         msg_type: i32,
         value: Place,
         /// One resolved mode per source argument, in handler parameter order.

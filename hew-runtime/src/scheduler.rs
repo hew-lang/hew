@@ -1673,8 +1673,10 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
     // invariant is observable as soon as the actor is terminal.
     if !reply_consumed && !crash_reply.is_null() {
         // SAFETY: `crash_reply` is a valid `HewReplyChannel` pointer.
+        // Classified as a handler trap so the waiter's null reply is
+        // status-bearing, never a bare null.
         unsafe {
-            let _ = crate::reply_channel::hew_reply(crash_reply.cast(), std::ptr::null_mut(), 0);
+            crate::reply_channel::hew_reply_channel_publish_crash_fallback(crash_reply.cast());
         }
     }
 
@@ -2198,11 +2200,12 @@ fn activate_actor(actor: *mut HewActor) {
 
                         if !reply_consumed && !crash_reply.is_null() {
                             // SAFETY: crash_reply is a valid HewReplyChannel pointer.
+                            // Classified as a handler trap (the lock-refused
+                            // dispatch trapped the actor) so the waiter's null
+                            // reply is status-bearing.
                             unsafe {
-                                let _ = crate::reply_channel::hew_reply(
+                                crate::reply_channel::hew_reply_channel_publish_crash_fallback(
                                     crash_reply.cast(),
-                                    std::ptr::null_mut(),
-                                    0,
                                 );
                             }
                         }
@@ -2512,11 +2515,11 @@ fn activate_actor(actor: *mut HewActor) {
                     // as state becomes `Crashed`.
                     if !reply_consumed && !crash_reply.is_null() {
                         // SAFETY: crash_reply is a valid HewReplyChannel pointer.
+                        // Classified as a handler trap so the waiter's null
+                        // reply is status-bearing, never a bare null.
                         unsafe {
-                            let _ = crate::reply_channel::hew_reply(
+                            crate::reply_channel::hew_reply_channel_publish_crash_fallback(
                                 crash_reply.cast(),
-                                std::ptr::null_mut(),
-                                0,
                             );
                         }
                     }
@@ -3348,6 +3351,7 @@ mod tests {
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            spawn_serial: 1,
         }
     }
 
@@ -4382,6 +4386,7 @@ mod tests {
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            spawn_serial: 0,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -5875,6 +5880,7 @@ mod tests {
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             gen_sink: AtomicPtr::new(std::ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            spawn_serial: 0,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

@@ -972,6 +972,48 @@ fn test_publish_claim(mgr: &HewConnMgr, route_slot: u16, conn_id: c_int) -> u64 
     token
 }
 
+/// Fail closed on a publication that cannot complete after the connection has
+/// already been installed and exposed to the cluster.
+///
+/// Order matters, and both steps are synchronous:
+///
+/// 1. Retire the cluster token/member FIRST, before any close is exposed.
+///    Cluster establishment runs before route registration, so by the time a
+///    refusal is decided this peer may already be the CURRENT ALIVE member.
+///    Dropping the current token here both demotes the member and disarms any
+///    still-queued `GuardedTokenEstablished` transition (delivery is gated on
+///    the current token still matching), so no observer can ever see this peer
+///    alive while it has no routing entry and no authenticated published owner.
+///    The call is token-guarded, so a superseding admission's publication is
+///    untouched and the repeat inside the teardown below is a no-op.
+/// 2. Hand the connection to the ordinary guarded teardown. That retires the
+///    claim, removes the route, sets `reader_stop` and `transport_closed`
+///    BEFORE closing the transport, unlinks the actor and joins the reader —
+///    so the transport is closed EXACTLY ONCE (manager free no longer sees the
+///    actor, and the actor's `Drop`/close guard short-circuits), and the woken
+///    reader takes the expected-stop path instead of treating the refusal as an
+///    unexpected drop, which is what would otherwise schedule a reconnect and
+///    retry the rejected peer indefinitely.
+fn refuse_established_publication(
+    mgr: &HewConnMgr,
+    peer_route_slot: u16,
+    conn_id: c_int,
+    publication_token: u64,
+) {
+    if !mgr.cluster.is_null() {
+        // SAFETY: cluster is owned by the live manager; pointer validity is
+        // re-checked by the callee.
+        let _ = unsafe {
+            crate::cluster::hew_cluster_notify_connection_lost_if_current(
+                mgr.cluster,
+                peer_route_slot,
+                publication_token,
+            )
+        };
+    }
+    let _ = remove_connection(mgr, conn_id);
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "publication threads route/cluster/gossip metadata plus the issue #2652 superseded claim; bundling them would obscure the call site"
@@ -1055,17 +1097,19 @@ fn publish_identity_connection_established(
         // node's own local route slot). Publishing anyway would leave an
         // established peer with no routing-table entry, and every later send to
         // it would vanish as an unexplained partition instead of a reported
-        // error. Report, retire the claim, drop the transport, and emit no
-        // registry gossip for a peer we cannot route to.
+        // error. Tear the admission down through the guarded path — cluster
+        // membership retired synchronously first, then claim retired, reader
+        // stopped, transport marked, actor removed and closed exactly once —
+        // and emit no registry gossip for a peer we cannot route to.
         if !route_registered {
+            refuse_established_publication(mgr, peer_route_slot, conn_id, publication_token);
+            // Reported last so the teardown's own diagnostics cannot mask the
+            // reason the admission was refused.
             set_last_error(format!(
                 "connection publication refused for peer {peer_identity} on conn {conn_id}: \
                  route slot {peer_route_slot} is reserved (slot 0 or this node's own local \
                  route slot), so no route could be registered"
             ));
-            let _ = retire_identity_claim(mgr, peer_identity, conn_id, publication_token);
-            // SAFETY: mgr.transport is valid while the manager is alive.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
             return;
         }
     }
@@ -4306,7 +4350,8 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
 
 /// The guarded removal/teardown path, as a safe function over a borrowed
 /// manager: [`hew_connmgr_remove`] is the FFI shim over it, and in-crate
-/// callers route through it instead of hand-rolling teardown steps.
+/// callers (notably [`refuse_established_publication`]) route through it
+/// instead of hand-rolling teardown steps.
 ///
 /// It maintains the teardown invariants in one place: cancel the publication,
 /// remove the route, mark `reader_stop` + `transport_closed` BEFORE closing so
@@ -8284,7 +8329,9 @@ mod tests {
     }
 
     /// Post-conditions of a refused publication (see the caller): reported,
-    /// claim retired, transport closed, no route, no gossip drained.
+    /// claim retired, transport closed exactly once through the guarded
+    /// teardown, connection unlinked, no reconnect armed, no route, no live
+    /// cluster membership, no gossip drained.
     ///
     /// # Safety
     ///
@@ -8334,6 +8381,41 @@ mod tests {
             owner, 0,
             "the claim must be retired, leaving no published owner"
         );
+        // The refusal must go through the guarded removal path, so the actor is
+        // unlinked synchronously. If it were left installed, manager free would
+        // close its transport a second time.
+        // SAFETY: caller keeps the manager live.
+        let installed = unsafe { hew_connmgr_count(mgr) };
+        assert_eq!(
+            installed, 0,
+            "the refused connection must be unlinked by the guarded teardown"
+        );
+        // A deliberate refusal is not an unexpected drop: `reader_stop` is set
+        // before the close, so the woken reader must not arm a retry.
+        // SAFETY: caller keeps the manager live.
+        let reconnect_workers = unsafe { &*mgr }
+            .reconnect_workers
+            .access(|workers| workers.len());
+        assert_eq!(
+            reconnect_workers, 0,
+            "a refused peer must never be scheduled for reconnect"
+        );
+        // Cluster establishment runs BEFORE route registration, so the refusal
+        // must retire the member synchronously: no observer may still see this
+        // peer as the current alive member.
+        // SAFETY: caller keeps the cluster live.
+        let member_state = unsafe { crate::cluster::hew_cluster_member_state(cluster, route_slot) };
+        assert_eq!(
+            member_state,
+            crate::cluster::MEMBER_SUSPECT,
+            "a refused peer must not remain an alive cluster member"
+        );
+        // SAFETY: caller keeps the cluster live.
+        let alive = unsafe { crate::cluster::hew_cluster_alive_count(cluster) };
+        assert_eq!(
+            alive, 0,
+            "no member may be alive once the only publication was refused"
+        );
         // SAFETY: caller keeps the cluster live.
         let pending = unsafe { &*cluster }.registry_gossip_count();
         assert_eq!(
@@ -8347,20 +8429,80 @@ mod tests {
     /// refusal instead of continuing: a peer that is published with no
     /// routing-table entry turns every later send into an unexplained
     /// partition rather than a reported error. Assert the refusal is
-    /// observable (`set_last_error`), the claim is retired, the transport is
-    /// dropped, and no registry gossip is drained onto the doomed connection.
+    /// observable (`set_last_error`), the claim is retired, no registry gossip
+    /// is drained onto the doomed connection, and — because the refusal runs
+    /// through the guarded removal path — the transport is closed EXACTLY
+    /// ONCE, the actor is unlinked, the reader exits via the expected-stop
+    /// path without arming a reconnect, and the cluster membership published
+    /// before route registration is retired synchronously.
+    ///
+    /// The connection is staged the way production stages it: reconnect armed,
+    /// and a reader parked until the transport close wakes it, running the real
+    /// `reader_cleanup`. A hand-rolled close (one that does not mark
+    /// `reader_stop`/`transport_closed` first) makes that reader treat the
+    /// deliberate refusal as an unexpected drop — re-entering removal, closing
+    /// the transport a second time, and retrying the rejected peer.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages the full production refusal shape — reader, reconnect, cluster — in one place"
+    )]
     fn publication_refuses_peer_whose_route_slot_is_reserved() {
+        struct RefusalTransport {
+            closes: std::sync::mpsc::Sender<c_int>,
+            wake_reader: std::sync::mpsc::Sender<()>,
+            /// Cluster visibility sampled at the instant each close is exposed.
+            cluster: *mut crate::cluster::HewCluster,
+            route_slot: u16,
+            seen_at_close: Mutex<Vec<(i32, c_int)>>,
+        }
+
         unsafe extern "C" fn signal_close_conn(impl_ptr: *mut std::ffi::c_void, conn_id: c_int) {
-            // SAFETY: test installs a Sender<c_int> as the transport impl payload.
-            let tx = unsafe { &*(impl_ptr.cast::<std::sync::mpsc::Sender<c_int>>()) };
-            tx.send(conn_id).expect("close signal send should succeed");
+            // SAFETY: test installs a RefusalTransport as the transport impl payload.
+            let signals = unsafe { &*(impl_ptr.cast::<RefusalTransport>()) };
+            // Stand in for any other cluster/SWIM observer: what does the peer
+            // look like at the moment its close becomes visible?
+            // SAFETY: the test keeps the cluster alive past every close.
+            let member_state = unsafe {
+                crate::cluster::hew_cluster_member_state(signals.cluster, signals.route_slot)
+            };
+            // SAFETY: as above.
+            let alive = unsafe { crate::cluster::hew_cluster_alive_count(signals.cluster) };
+            signals
+                .seen_at_close
+                .lock_or_recover()
+                .push((member_state, alive));
+            signals
+                .closes
+                .send(conn_id)
+                .expect("close signal send should succeed");
+            // Mirror a real transport: closing the connection unblocks the
+            // reader parked in recv().
+            let _ = signals.wake_reader.send(());
         }
 
         const LOCAL_ROUTE_SLOT: u16 = 2;
+        const CONN_ID: c_int = 33;
+
+        let cluster_config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: `cluster_config` is a live local for the duration of the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cluster_config) };
+        assert!(!cluster.is_null());
 
         let (close_tx, close_rx) = std::sync::mpsc::channel::<c_int>();
-        let close_impl = Box::into_raw(Box::new(close_tx)).cast::<std::ffi::c_void>();
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+        let (reader_done_tx, reader_done_rx) = std::sync::mpsc::channel::<()>();
+        let close_impl = Box::into_raw(Box::new(RefusalTransport {
+            closes: close_tx,
+            wake_reader: wake_tx,
+            cluster,
+            route_slot: LOCAL_ROUTE_SLOT,
+            seen_at_close: Mutex::new(Vec::new()),
+        }))
+        .cast::<std::ffi::c_void>();
         let ops = Box::new(crate::transport::HewTransportOps {
             connect: None,
             listen: None,
@@ -8374,17 +8516,12 @@ mod tests {
             ops: &raw const *ops,
             r#impl: close_impl,
         }));
-        let cluster_config = crate::cluster::ClusterConfig {
-            local_node_id: 1,
-            ..crate::cluster::ClusterConfig::default()
-        };
 
         // SAFETY: every raw pointer below is allocated in this test and stays
         // valid until the matching free calls.
         unsafe {
             let routing_table = crate::routing::hew_routing_table_new_for_test(LOCAL_ROUTE_SLOT);
-            let cluster = crate::cluster::hew_cluster_new(&raw const cluster_config);
-            assert!(!routing_table.is_null() && !cluster.is_null());
+            assert!(!routing_table.is_null());
             assert_eq!(
                 crate::cluster::hew_cluster_join(
                     cluster,
@@ -8403,21 +8540,48 @@ mod tests {
 
             let mgr = hew_connmgr_new(transport_ptr, None, routing_table, cluster, 1);
             assert!(!mgr.is_null());
+            // Arm reconnect so a refusal mistaken for an unexpected drop would
+            // schedule a retry of the rejected peer.
+            (&*mgr).reconnect_enabled.store(true, Ordering::Release);
 
-            let mut actor = ConnectionActor::new(33);
+            let mut actor = ConnectionActor::new(CONN_ID);
             let token = next_publication_token(&*mgr);
             actor.publication_token = token;
             actor.peer_node_id = LOCAL_ROUTE_SLOT;
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            actor.reconnect = Some(ReconnectSettings {
+                target_addr: "10.0.0.2:9000".to_owned(),
+                max_retries: 3,
+                expected_node_id: Some(LOCAL_ROUTE_SLOT),
+            });
+            let reader_stop = Arc::clone(&actor.reader_stop);
+            let mgr_send = SendConnMgr(mgr);
+            actor.reader_handle = Some(std::thread::spawn(move || {
+                let mgr_send = mgr_send;
+                // Park like a real reader inside recv() until the close wakes us.
+                let _ = wake_rx.recv();
+                reader_cleanup(mgr_send.0, CONN_ID, &reader_stop);
+                let _ = reader_done_tx.send(());
+            }));
             let publication_sync = Arc::clone(&actor.publication_sync);
             let publication_removed = Arc::clone(&actor.publication_removed);
             (&*mgr).connections.access(|conns| conns.push(actor));
-            let superseded = test_reserve_unverified(&*mgr, LOCAL_ROUTE_SLOT, 33, token);
+            let superseded = test_reserve_unverified(&*mgr, LOCAL_ROUTE_SLOT, CONN_ID, token);
+
+            // The joined peer is alive before publication, and the publication
+            // makes it the *current-token* alive member before route
+            // registration is even attempted — so the refusal below has live
+            // cluster state to retire.
+            assert_eq!(crate::cluster::hew_cluster_alive_count(cluster), 1);
+            assert_eq!(
+                crate::cluster::hew_cluster_member_state(cluster, LOCAL_ROUTE_SLOT),
+                crate::cluster::MEMBER_ALIVE
+            );
 
             publish_connection_established(
                 &*mgr,
                 LOCAL_ROUTE_SLOT,
-                33,
+                CONN_ID,
                 HEW_FEATURE_SUPPORTS_GOSSIP,
                 token,
                 &publication_sync,
@@ -8425,16 +8589,50 @@ mod tests {
                 superseded,
             );
 
+            // The guarded teardown joins the reader before it returns, so this
+            // has already happened; waiting makes every post-condition below
+            // deterministic for any teardown that does not.
+            reader_done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the woken reader must have run its cleanup");
+
             assert_reserved_slot_refusal(
                 mgr,
                 cluster,
                 routing_table,
                 &close_rx,
-                33,
+                CONN_ID,
                 LOCAL_ROUTE_SLOT,
+            );
+            assert!(
+                close_rx.try_recv().is_err(),
+                "the woken reader must not treat the refusal as an unexpected drop \
+                 and close the transport again"
             );
 
             hew_connmgr_free(mgr);
+            // Exactly once: the guarded teardown already closed and unlinked the
+            // connection, so manager free has nothing left to close.
+            assert!(
+                close_rx.try_recv().is_err(),
+                "the refused transport must be closed exactly once"
+            );
+
+            // No half-published cluster state is observable: the only close was
+            // exposed AFTER the cluster token/member had already been retired,
+            // so an observer woken by it can never find this peer alive.
+            // SAFETY: `close_impl` is the live RefusalTransport allocated above.
+            let seen_at_close = (*close_impl.cast::<RefusalTransport>())
+                .seen_at_close
+                .lock_or_recover()
+                .clone();
+            assert_eq!(
+                seen_at_close,
+                vec![(crate::cluster::MEMBER_SUSPECT, 0)],
+                "the refused peer must already be retired from the cluster when its \
+                 close becomes observable"
+            );
+
             crate::cluster::hew_cluster_free(cluster);
             crate::routing::hew_routing_table_free(routing_table);
         }
@@ -8443,9 +8641,7 @@ mod tests {
         // longer referenced after manager teardown.
         unsafe {
             drop(Box::from_raw(transport_ptr));
-            drop(Box::from_raw(
-                close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
-            ));
+            drop(Box::from_raw(close_impl.cast::<RefusalTransport>()));
         }
         drop(ops);
     }

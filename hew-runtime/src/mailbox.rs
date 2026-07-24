@@ -694,11 +694,24 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
 
 // ── Lock-free MPSC queue ────────────────────────────────────────────────
 
-/// Allocate a sentinel (dummy) node for an intrusive MPSC queue.
+/// `msg_type` stamped on the MPSC stable stub.
 ///
-/// The sentinel has `msg_type = -1` and null data. It is never returned
-/// to consumers — it exists only to simplify empty/non-empty transitions.
-fn alloc_sentinel() -> *mut HewMsgNode {
+/// The stub is told apart from a real message by POINTER IDENTITY
+/// ([`MpscQueue::stub_ptr`]) and never by this value — no code anywhere reads
+/// a stub's `msg_type`. It is nonetheless chosen so that two independent
+/// invariants do not share one number on the same queue: `-1` is
+/// [`HEW_MAILBOX_SHUTDOWN_SENTINEL`], which the system queue genuinely
+/// transports, and `0` is the by-convention `msg_type` of a reply envelope.
+/// `i32::MIN` is claimed by neither, so a stamp read by mistake matches no
+/// live protocol value rather than impersonating the stop signal.
+const MPSC_STUB_MSG_TYPE: i32 = i32::MIN;
+
+/// Allocate the stable stub node for an intrusive MPSC queue.
+///
+/// The stub is a permanently-live placeholder that exists only to simplify the
+/// empty/non-empty transitions of the Vyukov algorithm. It is never returned to
+/// a consumer, so it carries no payload: null data and [`MPSC_STUB_MSG_TYPE`].
+fn alloc_stub_node() -> *mut HewMsgNode {
     // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
     let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
     if node.is_null() {
@@ -707,11 +720,11 @@ fn alloc_sentinel() -> *mut HewMsgNode {
     // SAFETY: `node` is non-null, properly aligned, and we own it exclusively.
     unsafe {
         ptr::write(&raw mut (*node).next, AtomicPtr::new(ptr::null_mut()));
-        (*node).msg_type = -1;
+        (*node).msg_type = MPSC_STUB_MSG_TYPE;
         (*node).data = ptr::null_mut();
         (*node).data_size = 0;
         (*node).reply_channel = ptr::null_mut();
-        // Sentinels never carry an envelope payload; zero so that
+        // The stub never carries an envelope payload; zero so that
         // hew_msg_node_free routes through the legacy `libc::free` path.
         (*node).envelope = ptr::null_mut();
         (*node).trace_context = HewTraceContext::default();
@@ -727,9 +740,8 @@ fn alloc_sentinel() -> *mut HewMsgNode {
 /// Lock-free MPSC queue using a stable-stub Vyukov-style algorithm.
 ///
 /// Multiple producers enqueue via an atomic swap on `head`. A single
-/// consumer dequeues from `tail`. A heap-allocated stub sentinel remains
-/// live for the queue's full lifetime so producers never race a freed
-/// former sentinel.
+/// consumer dequeues from `tail`. A heap-allocated stub node remains live for
+/// the queue's full lifetime so producers never race a freed former stub.
 struct MpscQueue {
     head: AtomicPtr<HewMsgNode>,
     tail: UnsafeCell<*mut HewMsgNode>,
@@ -765,7 +777,7 @@ enum DequeueState {
 
 impl MpscQueue {
     fn new() -> Option<Self> {
-        let stub = alloc_sentinel();
+        let stub = alloc_stub_node();
         if stub.is_null() {
             return None;
         }
@@ -779,6 +791,29 @@ impl MpscQueue {
     #[inline]
     fn stub_ptr(&self) -> *mut HewMsgNode {
         self.stub
+    }
+
+    /// Build the [`DequeueState::Success`] handed back to the single consumer.
+    ///
+    /// Every success return routes through here so the stub-escape invariant
+    /// has exactly one statement instead of one per exit. The consumer
+    /// re-injects the stable stub on each drain-to-empty and must always step
+    /// over it: the caller frees what it receives, while producers hold a live
+    /// pointer to the stub for the queue's whole lifetime, so handing it out
+    /// would leave them linking through freed memory.
+    ///
+    /// `debug_assert!` rather than a release check — this is the per-message
+    /// dequeue hot path, and the algorithm already keeps the invariant by
+    /// construction (a stub tail is stepped over before any pop, and the single
+    /// consumer is the only party that re-enqueues it). The assertion exists to
+    /// catch a future edit to that algorithm, not a condition reachable today.
+    #[inline]
+    fn consumer_success(&self, node: *mut HewMsgNode) -> DequeueState {
+        debug_assert!(
+            node != self.stub_ptr(),
+            "MPSC stable stub escaped to the consumer; freeing it would leave producers linking through freed memory"
+        );
+        DequeueState::Success(node)
     }
 
     /// Enqueue a node. Safe for concurrent producers.
@@ -813,7 +848,7 @@ impl MpscQueue {
             if next.is_null() {
                 return DequeueState::Empty;
             }
-            // SAFETY: `next` is the first real node after the stub sentinel.
+            // SAFETY: `next` is the first real node after the stable stub.
             unsafe { *self.tail.get() = next };
             // SAFETY: `next` became the consumer tail, so pop_inner sees a
             // valid live node under the same single-consumer invariant.
@@ -824,7 +859,7 @@ impl MpscQueue {
             // SAFETY: advance consumer tail to the successor before returning
             // the current tail node to the caller for freeing.
             unsafe { *self.tail.get() = next };
-            return DequeueState::Success(tail);
+            return self.consumer_success(tail);
         }
 
         let head = self.head.load(Ordering::Acquire);
@@ -833,7 +868,7 @@ impl MpscQueue {
         }
 
         // Queue holds a single real node. Re-inject the stable stub so the
-        // consumer can pop the last node without ever freeing the sentinel
+        // consumer can pop the last node without ever freeing the stub
         // seen by producers.
         // SAFETY: the stable stub stays live for the queue lifetime and may be
         // re-enqueued by the single consumer.
@@ -845,22 +880,22 @@ impl MpscQueue {
             // SAFETY: `next` is the successor just observed from the current
             // consumer tail, so updating the tail preserves the invariant.
             unsafe { *self.tail.get() = next };
-            return DequeueState::Success(tail);
+            return self.consumer_success(tail);
         }
 
         DequeueState::Inconsistent
     }
 
-    /// Helper after advancing past the stub sentinel.
+    /// Helper after advancing past the stable stub.
     unsafe fn pop_inner(&self, tail: *mut HewMsgNode) -> DequeueState {
-        // SAFETY: `tail` is the first real node after the stub sentinel.
+        // SAFETY: `tail` is the first real node after the stable stub.
         let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
         if !next.is_null() {
             // SAFETY: `next` is the successor just observed from the current
             // consumer tail, so updating the tail preserves the invariant.
             unsafe { *self.tail.get() = next };
-            return DequeueState::Success(tail);
+            return self.consumer_success(tail);
         }
 
         let head = self.head.load(Ordering::Acquire);
@@ -878,7 +913,7 @@ impl MpscQueue {
             // SAFETY: `next` is the successor just observed from the current
             // consumer tail, so updating the tail preserves the invariant.
             unsafe { *self.tail.get() = next };
-            return DequeueState::Success(tail);
+            return self.consumer_success(tail);
         }
 
         DequeueState::Inconsistent
@@ -907,12 +942,12 @@ impl MpscQueue {
         ptr::null_mut()
     }
 
-    /// Drain and free all remaining nodes (including the sentinel).
+    /// Drain and free all remaining nodes (including the stable stub).
     ///
     /// # Safety
     ///
     /// No concurrent access may occur. All nodes must have been allocated
-    /// by `msg_node_alloc` (or `alloc_sentinel`).
+    /// by `msg_node_alloc` (or `alloc_stub_node`).
     unsafe fn drain_and_free(&self, message_drop_fn: Option<HewMessageDropFn>) {
         loop {
             // SAFETY: caller guarantees exclusive teardown access, so dequeue
@@ -927,7 +962,7 @@ impl MpscQueue {
             // SAFETY: dequeue transferred exclusive ownership of `node`.
             unsafe { hew_msg_node_free_with_message_drop(node, message_drop_fn) };
         }
-        // Free the stable stub sentinel last.
+        // Free the stable stub last.
         // SAFETY: the stub was heap-allocated at queue creation and is still
         // exclusively owned during teardown.
         unsafe { hew_msg_node_free(self.stub_ptr()) };
@@ -2617,11 +2652,11 @@ pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
         }
     }
 
-    // Drain lock-free user queue (sentinel + any remaining nodes).
+    // Drain lock-free user queue (stable stub + any remaining nodes).
     // SAFETY: No concurrent access — mailbox is exclusively owned.
     unsafe { mailbox.user_fast.drain_and_free(mailbox.message_drop_fn) };
 
-    // Drain lock-free system queue (sentinel + any remaining nodes).
+    // Drain lock-free system queue (stable stub + any remaining nodes).
     // SAFETY: No concurrent access — mailbox is exclusively owned.
     unsafe { mailbox.sys_queue.drain_and_free(None) };
 }

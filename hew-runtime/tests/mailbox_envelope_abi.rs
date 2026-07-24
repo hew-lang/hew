@@ -245,7 +245,7 @@ fn cross_node_gate_release_build_enforcement_is_not_debug_only() {
 /// that an uninitialized `payload_class` byte cannot silently equal
 /// `SerializedCrossNode` (3) and bypass the cross-node gate.
 ///
-/// `alloc_sentinel` is also patched but is never returned to consumers
+/// `alloc_stub_node` is also patched but is never returned to consumers
 /// (it lives inside the MPSC queue structure); it is covered by code review
 /// and the explicit zero-init in the source, not by a separate observable test.
 /// `msg_node_alloc_aliased` is Phase-α fail-closed (dead production path) and

@@ -423,6 +423,39 @@ def test_compiler_pipeline_rs_change_includes_vertical_slice_oracle() -> None:
     assert "--test await_e2e" not in result.stdout, result.stdout
 
 
+def test_compiler_pipeline_lane_includes_checked_mir_verify() -> None:
+    """A MIR-changing (drop-plan / lowering) diff runs the checked-MIR golden diff.
+
+    A hew-mir edit that shifts emitted MIR drifts the committed
+    examples/v05/checked-mir goldens.  Without checked-mir-verify in this lane
+    the drift is invisible to the local preflight and only surfaces at hosted
+    CI's Build & test (Linux) job.  This ratchet locks the step into the lane so
+    it cannot be silently dropped.
+    """
+    result = run_dispatcher("hew-mir/src/lower/drop_plan.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+    assert "make checked-mir-verify" in result.stdout, (
+        f"Expected 'make checked-mir-verify' in compiler-pipeline lane.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
+def test_types_lane_includes_checked_mir_verify() -> None:
+    """A type-checker change runs the checked-MIR golden diff.
+
+    Type inference feeds MIR lowering, so a hew-types edit can drift the
+    examples/v05/checked-mir goldens.  The types lane runs checked-mir-verify so
+    that drift is caught locally rather than at hosted CI.
+    """
+    result = run_dispatcher("hew-types/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: types" in result.stdout, result.stdout
+    assert "make checked-mir-verify" in result.stdout, (
+        f"Expected 'make checked-mir-verify' in types lane.\nstdout:\n{result.stdout}"
+    )
+
+
 def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> None:
     """The compiler-pipeline and types lanes delegate hew-cli consumer-corpus
     coverage to make test-compiler-pipeline: its nextest invocation must keep
@@ -728,6 +761,8 @@ _TESTS = [
     test_runtime_net_lane_rebuilds_libhew,
     test_zero_timeout_fails_closed,
     test_compiler_pipeline_rs_change_includes_vertical_slice_oracle,
+    test_compiler_pipeline_lane_includes_checked_mir_verify,
+    test_types_lane_includes_checked_mir_verify,
     test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages,
     test_docs_only_change_does_not_include_vertical_slice_oracle,
     test_fallback_lane_includes_smoke_tier_before_heavy,

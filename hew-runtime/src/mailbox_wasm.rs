@@ -685,8 +685,9 @@ unsafe fn retire_reply_channel(reply_channel: *mut c_void) {
     // becomes true, so the ordering is: set orphaned → call hew_reply (sets
     // replied=true) → waiter sees replied=true → waiter reads orphaned=true.
     unsafe {
-        (*reply_channel.cast::<crate::reply_channel_wasm::WasmReplyChannel>()).orphaned = true;
-        let _ = crate::reply_channel_wasm::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
+        crate::reply_channel_wasm::hew_reply_channel_retire_orphaned_ask_sender_ref(
+            reply_channel.cast(),
+        );
     }
 }
 

@@ -1384,15 +1384,40 @@ unsafe impl Send for HewActor {}
 // Raw-pointer fields are lifecycle-managed by scheduler CAS transitions.
 unsafe impl Sync for HewActor {}
 
-#[cfg(not(target_arch = "wasm32"))]
-fn clear_suspended_cancel_token(actor: &HewActor) {
+pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
     let token = actor
         .suspended_cancel_token
         .swap(std::ptr::null_mut(), Ordering::AcqRel);
     if !token.is_null() {
+        // `task_scope` is native-only, and so is the suspend edge that stashes
+        // a token: `scheduler_wasm` never writes this slot. The wasm build
+        // therefore cannot reach a non-null token, and asserts that rather than
+        // silently dropping a retained reference if that ever changes.
+        #[cfg(target_arch = "wasm32")]
+        debug_assert!(
+            false,
+            "wasm stashed a suspend-edge cancel token but has no task_scope to release it"
+        );
         // SAFETY: the actor slot owns a retained task-scope cancellation token.
-        unsafe { crate::task_scope::hew_cancel_token_release(token.cast()) };
+        #[cfg(not(target_arch = "wasm32"))]
+        unsafe {
+            crate::task_scope::hew_cancel_token_release(token.cast());
+        }
     }
+}
+
+/// Discharge the reply a parked `ask` handler still owes, on whichever target
+/// this build is.
+///
+/// The two schedulers own the slot on their own target and are configured out
+/// on the other, but the obligation is one invariant, so target-neutral
+/// teardown code -- `cleanup_all_actors`, the free paths -- routes through here
+/// rather than repeating the `cfg` split at every call site.
+pub(crate) fn retire_parked_activation_reply(actor: &HewActor) {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::scheduler::retire_suspended_reply_channel(actor);
+    #[cfg(target_arch = "wasm32")]
+    crate::scheduler_wasm::retire_suspended_reply_channel_wasm(actor);
 }
 
 // ── Codegen-mirrored ABI offsets ────────────────────────────────────────
@@ -2068,7 +2093,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
                 // here in a way finalizing is not: it only swaps the slot and
                 // publishes the orphan failure, touching neither the frame nor
                 // the box the UAF concern is about.
-                crate::scheduler::retire_suspended_reply_channel(a);
+                retire_parked_activation_reply(a);
                 None
             }
         };
@@ -2375,6 +2400,16 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
 ) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    // Every route into this function abandons the actor: the box is about to go
+    // away. If it was parked mid-`ask`, its suspend edge moved the caller's
+    // reply-sender reference into `suspended_reply_channel` and no resume will
+    // ever consume it. Parity with the native
+    // `free_actor_resources_with_options`: discharge the debt at the single
+    // choke point every free route funnels through, so "the box is never freed
+    // with a live reply slot" is a property of this function rather than
+    // something each caller has to remember.
+    crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
 
     // C1 abandonment teardown (D-C1) — parity with the native
     // `free_actor_resources_with_options`. A never-woken `Suspended` actor freed
@@ -7056,12 +7091,29 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
+    // SAFETY: caller forwards the same invariants the impl requires.
+    unsafe { actor_stop_wasm_impl(actor) };
+}
+
+/// The wasm stop body, callable from native test builds.
+///
+/// Split out for the same reason as [`actor_free_wasm_impl`]: the `#[no_mangle]`
+/// entry point above is `wasm32`-only, so nothing could exercise the wasm stop
+/// semantics under the native test harness. The stop-while-parked path is
+/// precisely where the wasm and native lifecycles diverged, so it has to be
+/// reachable by a test.
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer returned by a spawn function.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn actor_stop_wasm_impl(actor: *mut HewActor) {
     cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     if !a.mailbox.is_null() {
         // SAFETY: a.mailbox is a valid mailbox pointer.
-        unsafe { hew_mailbox_close(a.mailbox) };
+        unsafe { crate::mailbox_wasm::hew_mailbox_close(a.mailbox.cast()) };
     }
 
     if a.actor_state
@@ -7105,16 +7157,36 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     }
 
     let state = a.actor_state.load(Ordering::Acquire);
-    if state != HewActorState::Running as i32 {
+    if state != HewActorState::Running as i32 && state != HewActorState::Suspended as i32 {
         return;
     }
 
     // Running actors are already inside a dispatch; latch the stop request out
-    // of band so the next loop iteration observes it. Assigning a bool cannot
+    // of band so the next loop iteration -- or, for a resumed continuation, the
+    // resume path's own latch check -- observes it. Assigning a bool cannot
     // fail, so unlike the former sentinel-node enqueue there is no path on
     // which the request is silently dropped.
     // SAFETY: a.mailbox is a valid mailbox pointer (null-tolerant).
     unsafe { crate::mailbox_wasm::mailbox_request_stop(a.mailbox.cast()) };
+
+    // A `Suspended` actor is parked on a continuation and nothing consults the
+    // latch until something wakes it, so latching alone would strand the stop
+    // forever and never run the terminate callback -- and, if the parked
+    // handler was serving an `ask`, leave the asking side waiting on a reply
+    // that is never coming. Wake it: that activation takes the resume path,
+    // observes the latch, and cancels the park.
+    //
+    // Native needs a latch-then-recheck here because a `Running` continuation
+    // can re-park underneath the stopper between the load and the store. Wasm
+    // is single-threaded, so the state read above cannot go stale: nothing else
+    // runs between it and this transition.
+    if state == HewActorState::Suspended as i32 {
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        // SAFETY: the actor is live and now Runnable; the cooperative scheduler
+        // drives it on the next tick.
+        unsafe { crate::scheduler_wasm::sched_enqueue(actor.cast()) };
+    }
 }
 
 /// Free an actor and all associated resources (WASM).
@@ -7135,6 +7207,31 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
 
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    // C1 abandonment teardown, parity with `hew_actor_free_inner`. `Suspended`
+    // is not quiescent, so without this the wait below spins to the two-second
+    // deadline and returns `-2`: the free FAILS, the frame and the actor box
+    // leak, and -- if the parked handler was serving an `ask` -- the asking side
+    // waits on a reply that is never coming. Destroy the parked frame first so
+    // the actor can reach a terminal state through the normal path, and
+    // discharge the reply debt at the same instant rather than after a two
+    // second spin. Single-threaded, so `destroy_parked` cannot lose its CAS to
+    // a concurrent resume the way native's can.
+    if crate::coro_exec::has_live_parked_cont(a) {
+        // SAFETY: `a` is the actor being freed; nothing else runs on this
+        // thread, so no resume can be driving the frame.
+        let destroyed = unsafe { crate::coro_exec::destroy_parked(a) };
+        if destroyed.is_ok() {
+            clear_suspended_cancel_token(a);
+            crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
+            let _ = a.actor_state.compare_exchange(
+                HewActorState::Suspended as i32,
+                HewActorState::Stopped as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {

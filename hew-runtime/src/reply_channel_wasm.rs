@@ -302,6 +302,44 @@ pub unsafe extern "C" fn hew_reply(
     }
 }
 
+/// Resolve the reply channel a suspending handler still owed its `ask` caller,
+/// on a path that abandons the parked activation without ever resuming it.
+///
+/// The wasm counterpart of
+/// `reply_channel::hew_reply_channel_retire_orphaned_ask_sender_ref`, and the
+/// single place the wasm runtime publishes an orphaned-ask failure. The suspend
+/// edge MOVES the mailbox node's sender-side reference into
+/// `suspended_reply_channel` so the resumed continuation can deposit the reply;
+/// when there is no resume -- stopped, freed, refused its park, or resumed to
+/// completion without replying -- that reference is the caller's ONLY link to a
+/// reply. Publishing the orphaned null sentinel resolves the waiter to a
+/// status-bearing failure instead of leaving it polling forever, and consumes
+/// the reference exactly once (`hew_reply` ends in `hew_reply_channel_free`).
+///
+/// `orphaned` is set BEFORE the publish so the waiter, which reads it only
+/// after observing `replied`, can tell an abandoned ask from a handler that
+/// legitimately replied with nothing.
+///
+/// # Safety
+///
+/// `ch` must be the live, unconsumed sender-side reference the actor slot owned
+/// (or null).
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask_sender_ref(ch: *mut WasmReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `ch` is the live sender-side reference.
+    unsafe {
+        debug_assert!(
+            !(*ch).replied,
+            "orphaned ask teardown must not overwrite an existing reply"
+        );
+        (*ch).orphaned = true;
+        let _ = hew_reply(ch, ptr::null_mut(), 0);
+    }
+}
+
 /// Mark a retained WASM reply-channel reference ready without depositing a payload.
 ///
 /// WASM parity: this is the single-threaded counterpart of the native

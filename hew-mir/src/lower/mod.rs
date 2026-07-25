@@ -132,7 +132,7 @@ use self::machine_synth::{
     mangle_actor_crash_handler, mangle_actor_down_handler, mangle_actor_exit_handler,
     mangle_actor_init_handler, mangle_actor_lifecycle_wrapper, mangle_actor_start_handler,
     mangle_actor_stop_handler_indexed, mangle_machine_step, mangle_supervisor_bootstrap,
-    synthesize_machine_step_fn,
+    synthesize_machine_step_fn, ProtocolDescriptorMissing,
 };
 #[cfg(not(test))]
 use self::split_consume::{
@@ -2256,32 +2256,43 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                 }
             }
         };
-        let handlers = lower_actor_handler_layouts(actor);
+        // Fail closed when a `receive fn` has no protocol-issued
+        // discriminant. `lower_actor_handler_layouts` cannot invent one — a
+        // fabricated `msg_type` is a duplicate-switch-case LLVM verify reject
+        // at two-plus handlers and silent wire-protocol corruption (wrong
+        // discriminant, in-process-only dispatch) at exactly one — so it
+        // refuses the whole layout instead. The `ActorLayout` is still
+        // published, with zero handler rows: downstream lookups
+        // (`actor_method_info`, the coalesce key plan) already fail closed on
+        // an absent row, and the hard error below is what stops the compile.
+        let handlers = match lower_actor_handler_layouts(actor) {
+            Ok(handlers) => handlers,
+            Err(reason) => {
+                let detail = match reason {
+                    ProtocolDescriptorMissing::NoDescriptor => {
+                        "carries no protocol descriptor".to_string()
+                    }
+                    ProtocolDescriptorMissing::NoHandlerId { handler } => format!(
+                        "carries a protocol descriptor that issues no msg_id for handler `{handler}`"
+                    ),
+                };
+                diagnostics.push(crate::model::MirDiagnostic {
+                    kind: crate::model::MirDiagnosticKind::ActorProtocolDescriptorMissing {
+                        actor: actor.qualified_name(),
+                        handler_count: actor.receive_handlers.len(),
+                    },
+                    note: format!(
+                        "actor `{}` declares {} `receive fn` handler(s) but {detail}; \
+                         message-kind discriminants cannot be assigned, so lowering \
+                         refuses instead of fabricating one",
+                        actor.qualified_name(),
+                        actor.receive_handlers.len()
+                    ),
+                });
+                Vec::new()
+            }
+        };
         let coalesce_key_plan = resolve_coalesce_key_plan(actor, &handlers, &mut diagnostics);
-        // Fail closed when receive handlers exist but no protocol descriptor
-        // was attached: `lower_actor_handler_layouts` would fall back to the
-        // `i32::MAX` sentinel for EVERY handler — a duplicate-switch-case
-        // LLVM verify reject at two-plus handlers, and silent wire-protocol
-        // corruption (wrong discriminant, in-process-only dispatch) at
-        // exactly one. A known handler must never ride the sentinel; the
-        // sentinel rows below exist only to keep the MIR shape well-formed
-        // behind this hard error.
-        if !actor.receive_handlers.is_empty() && actor.protocol_descriptor.is_none() {
-            diagnostics.push(crate::model::MirDiagnostic {
-                kind: crate::model::MirDiagnosticKind::ActorProtocolDescriptorMissing {
-                    actor: actor.qualified_name(),
-                    handler_count: actor.receive_handlers.len(),
-                },
-                note: format!(
-                    "actor `{}` declares {} `receive fn` handler(s) but carries no \
-                     protocol descriptor; message-kind discriminants cannot be \
-                     assigned, so lowering refuses instead of emitting the \
-                     unknown-message sentinel for known handlers",
-                    actor.qualified_name(),
-                    actor.receive_handlers.len()
-                ),
-            });
-        }
         actor_layouts.push(crate::model::ActorLayout {
             // The registry key is the actor's qualified identity: dotted
             // `module.Name` for module actors, bare for root actors. It

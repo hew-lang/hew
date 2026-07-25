@@ -6983,18 +6983,24 @@ pub enum MirDiagnosticKind {
         key_field: String,
         reason: String,
     },
-    /// An actor reached MIR layout lowering with `receive fn` handlers but no
-    /// protocol descriptor, so no handler can be assigned its real
-    /// message-kind discriminant. Emitting the `i32::MAX` sentinel instead
-    /// collapses every handler onto one tag: with two or more handlers LLVM
-    /// rejects the dispatch switch ("Duplicate integer as switch case"), and
-    /// with exactly one the program compiles but carries a wrong wire
-    /// discriminant — silent protocol corruption. Fail closed here; the
-    /// sentinel rows exist only to keep the MIR shape well-formed behind this
-    /// hard error. Reachable when a lowering path fails to attach the
-    /// checker's descriptor (the checker's own `ActorProtocolCollision`
-    /// reject empties the descriptor too, but that path already carries its
-    /// user-facing diagnostic).
+    /// An actor reached MIR layout lowering with `receive fn` handlers that no
+    /// protocol descriptor can assign a message-kind discriminant to: either
+    /// no descriptor is attached at all, or an attached descriptor issues no
+    /// `msg_id` for some handler name. The free-form `note` says which.
+    ///
+    /// Assigning a placeholder discriminant instead collapses handlers onto
+    /// one tag: with two or more affected handlers LLVM rejects the dispatch
+    /// switch ("Duplicate integer as switch case"), and with exactly one the
+    /// program compiles but carries a wrong wire discriminant — silent
+    /// protocol corruption. `lower_actor_handler_layouts` therefore cannot
+    /// build such a row at all; the `ActorLayout` is published with zero
+    /// handler rows behind this hard error. Reachable when a lowering path
+    /// fails to attach the checker's descriptor (the checker's own
+    /// `ActorProtocolCollision` reject empties the descriptor too, but that
+    /// path already carries its user-facing diagnostic).
+    ///
+    /// `handler_count` is the actor's declared `receive fn` count, not the
+    /// number of unassignable handlers — lowering stops at the first one.
     ActorProtocolDescriptorMissing { actor: String, handler_count: usize },
     /// W3.022 V10: A `CallTraitMethodStatic` reached MIR with no concrete
     /// substitution for its `receiver_type_param`. After Stage 3 (impl-level

@@ -11281,9 +11281,12 @@ impl LowerCtx {
         // resolve the descriptor and the cycle-capability flag under the
         // module-short key first and fall back to the bare root key. Without
         // the module-scoped lookup every spliced multi-handler actor lost its
-        // descriptor and MIR collapsed all message-kind discriminants to the
-        // i32::MAX sentinel — LLVM rejected the dispatch switch with
-        // "Duplicate integer as switch case". Package-module actors overwrite
+        // descriptor and MIR collapsed all message-kind discriminants onto one
+        // fabricated tag — LLVM rejected the dispatch switch with "Duplicate
+        // integer as switch case". MIR no longer fabricates a discriminant, so
+        // that regression now surfaces as a hard
+        // `ActorProtocolDescriptorMissing` instead; this lookup is still what
+        // keeps a correct program from tripping it. Package-module actors overwrite
         // both fields in `lower_imported_actor` with the same qualified keys,
         // so this lookup is identity-preserving for them.
         let module_scoped_key = self

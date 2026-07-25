@@ -41,6 +41,12 @@ const SERIAL_MASK: u64 = (1u64 << SERIAL_BITS) - 1;
 
 /// Whether an exact actor slot can be represented by the temporary packed
 /// node-internal actor ID without truncation.
+///
+/// The single representability predicate for the packed alias: slot `0` is the
+/// invalid-actor sentinel (`hew_node_api_register_by_pid` and the pool lookups
+/// both read `pid == 0` as "no actor") and anything above [`SERIAL_MASK`] cannot
+/// survive the 48-bit pack. Every site that turns a serial into an actor ID
+/// passes it through here first, so a rejected slot never becomes a PID.
 pub(crate) const fn actor_slot_fits_internal_alias(slot: u64) -> bool {
     slot != 0 && slot <= SERIAL_MASK
 }
@@ -53,6 +59,15 @@ pub(crate) const fn actor_slot_fits_internal_alias(slot: u64) -> bool {
 /// // Remote actor on node 3, serial 100:
 /// let pid = hew_pid_make(3, 100); // == (3 << 48) | 100
 /// ```
+///
+/// # Truncation is why callers must pre-check
+///
+/// This is the raw packing primitive at a `#[no_mangle]` C ABI boundary; it has
+/// no error channel, so a serial wider than 48 bits is masked rather than
+/// refused and `serial == 1 << 48` packs to node-local PID `0` — the
+/// invalid-actor sentinel. Runtime composition therefore goes through
+/// [`next_actor_id`], which refuses an unrepresentable serial
+/// ([`actor_slot_fits_internal_alias`]) before it can reach this mask.
 #[no_mangle]
 pub extern "C" fn hew_pid_make(node_id: u16, serial: u64) -> u64 {
     (u64::from(node_id) << SERIAL_BITS) | (serial & SERIAL_MASK)
@@ -79,6 +94,27 @@ pub extern "C" fn hew_pid_serial(pid: u64) -> u64 {
 /// `LOCAL_NODE_ID` which defaulted to 0. This preserves the always-available
 /// semantics for callers that check locality before `hew_sched_init` or after
 /// teardown. The mutate path (`hew_pid_set_local_node`) stays fail-closed.
+///
+/// # Why route slot 0 answers local unconditionally
+///
+/// Route slot `0` is the local-dispatch reservation, not an addressable node.
+/// Actors spawned before `hew_node_start` publishes this process's slot
+/// (`hew_node.rs`, `hew_pid_set_local_node(node.route_slot)`) carry `0` in the
+/// high half and are still local afterwards, so the clause is load-bearing —
+/// dropping it strands every pre-node-start pid.
+///
+/// It is sound because a remote actor cannot be spelled with route slot `0`, and
+/// cannot be spelled with this node's slot either:
+///
+/// - No packed pid crosses the wire. The distributed vocabulary is
+///   `node_identity::Location` (`NodeId` + actor slot + session incarnation),
+///   whose decoder refuses actor slot `0` (`Location::new`); the packed form is
+///   minted receiver-side by `routing::hew_routing_lookup_location` and the
+///   `connection.rs` ingress handlers.
+/// - Those mint sites take the high half from a registered route slot, and
+///   `routing::hew_routing_add_route` refuses both `0` and the table's own
+///   `local_route_slot`. `peer_binding::PeerAuthSnapshot::validate` refuses the
+///   same collision one layer earlier, at node start.
 #[no_mangle]
 pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
     let pid_node = hew_pid_node(pid);
@@ -109,13 +145,24 @@ pub extern "C" fn hew_pid_local_node() -> u16 {
     crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_route_slot())
 }
 
-/// Allocate the next actor ID for the local node.
+/// Compose the actor ID for `serial` on the local node, or `None` when `serial`
+/// cannot be represented in the packed alias.
 ///
-/// Combines the local node ID with a monotonically-increasing serial.
-pub(crate) fn next_actor_id(serial: u64) -> u64 {
+/// Fails closed instead of packing: [`hew_pid_make`] masks, so an exhausted
+/// serial space would otherwise mint node-local PID `0` (the invalid-actor
+/// sentinel) and then alias every subsequent allocation onto ids already in use.
+/// Callers propagate the `None` as a spawn failure.
+pub(crate) fn next_actor_id(serial: u64) -> Option<u64> {
+    if !actor_slot_fits_internal_alias(serial) {
+        return None;
+    }
     let node = crate::runtime::rt_current().node.local_route_slot();
-    hew_pid_make(node, serial)
+    Some(hew_pid_make(node, serial))
 }
+
+/// The largest serial the packed alias can carry — the exhaustion boundary the
+/// spawn allocator stops at.
+pub(crate) const MAX_ACTOR_SERIAL: u64 = SERIAL_MASK;
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
@@ -169,12 +216,48 @@ mod tests {
         }
     }
 
+    /// The raw C ABI primitive masks, and that is exactly why composition is
+    /// checked one layer up: at `1 << 48` the mask produces node-local PID `0`,
+    /// the invalid-actor sentinel. Pinned here so a future edit that "fixes"
+    /// `hew_pid_make` by saturating instead has to confront the ABI contract.
     #[test]
-    fn serial_mask_truncation() {
-        // If serial exceeds 48 bits, the extra bits are masked off.
+    fn serial_mask_truncation_reaches_the_invalid_sentinel() {
         let too_large = 1u64 << 48;
         let pid = hew_pid_make(0, too_large);
         assert_eq!(hew_pid_serial(pid), 0);
+        assert_eq!(pid, 0, "the masked overflow IS the invalid-actor sentinel");
+    }
+
+    /// Composition refuses an exhausted serial rather than minting PID `0`.
+    #[test]
+    fn actor_id_for_exhausted_serial_is_refused() {
+        let _g = guard();
+        hew_pid_set_local_node(0);
+        assert_eq!(next_actor_id(1u64 << 48), None);
+        assert_eq!(next_actor_id(u64::MAX), None);
+    }
+
+    /// Serial `0` is the sentinel itself and is refused on every route slot —
+    /// including a non-zero one, where the packed id would be non-zero and so
+    /// would slip past a bare `id != 0` check.
+    #[test]
+    fn actor_id_for_zero_serial_is_refused() {
+        let _g = guard();
+        hew_pid_set_local_node(0);
+        assert_eq!(next_actor_id(0), None);
+        hew_pid_set_local_node(9);
+        assert_eq!(next_actor_id(0), None);
+        hew_pid_set_local_node(0);
+    }
+
+    /// The boundary itself still composes: exhaustion starts one past the mask.
+    #[test]
+    fn actor_id_at_the_serial_boundary_is_accepted() {
+        let _g = guard();
+        hew_pid_set_local_node(0);
+        let id = next_actor_id(MAX_ACTOR_SERIAL).expect("the last serial is representable");
+        assert_eq!(hew_pid_serial(id), MAX_ACTOR_SERIAL);
+        assert_eq!(hew_pid_node(id), 0);
     }
 
     #[test]
@@ -199,10 +282,10 @@ mod tests {
     fn next_actor_id_integration() {
         let _g = guard();
         hew_pid_set_local_node(0);
-        assert_eq!(next_actor_id(42), 42);
+        assert_eq!(next_actor_id(42), Some(42));
 
         hew_pid_set_local_node(7);
-        let id = next_actor_id(42);
+        let id = next_actor_id(42).expect("serial 42 is representable");
         assert_eq!(hew_pid_node(id), 7);
         assert_eq!(hew_pid_serial(id), 42);
 
@@ -217,7 +300,7 @@ mod tests {
                 std::thread::spawn(move || {
                     let _g = guard();
                     hew_pid_set_local_node(node);
-                    let actor_id = next_actor_id(42);
+                    let actor_id = next_actor_id(42).expect("serial 42 is representable");
                     (
                         hew_pid_local_node(),
                         hew_pid_node(actor_id),

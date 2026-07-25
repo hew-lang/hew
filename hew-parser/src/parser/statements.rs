@@ -6,8 +6,60 @@
 )]
 use super::*;
 
+/// Where a `break`/`continue` is being parsed — controls where its optional
+/// operand ends. Shared by the statement parser (`parse_stmt`) and the
+/// expression-position desugar (`parse_primary`'s `Token::Break` arm) so the
+/// two spellings can never drift apart.
+#[derive(Clone, Copy)]
+pub(crate) enum BreakValuePosition {
+    /// `break [expr];` — the operand ends at the mandatory `;`.
+    Statement,
+    /// `break [expr]` in expression position (e.g. a match-arm body) — no
+    /// trailing `;`; the operand ends at whatever ends the surrounding
+    /// expression, mirroring `Token::Return` in `parse_primary`.
+    Expression,
+}
+
 impl Parser<'_> {
     // ── Statements ──
+
+    /// Parses the `'label` suffix shared by `break` and `continue`, in both
+    /// statement and expression position.
+    pub(crate) fn parse_control_flow_label(&mut self) -> Option<String> {
+        if let Some(Token::Label(l)) = self.peek() {
+            let name = l[1..].to_string();
+            self.advance();
+            Some(name)
+        } else {
+            None
+        }
+    }
+
+    /// True when the next token ends `break`'s optional value operand without
+    /// starting an expression. `position` decides the terminator set: `;` or
+    /// a block-closing `}` (the tail-of-block case, mirroring
+    /// `Token::Return`'s statement-position handling below) in statement
+    /// position, or the same "cannot begin an expression" stop set `return`
+    /// uses in expression position.
+    pub(crate) fn break_value_is_absent(&self, position: BreakValuePosition) -> bool {
+        match position {
+            BreakValuePosition::Statement => {
+                matches!(self.peek(), Some(Token::Semicolon | Token::RightBrace))
+            }
+            BreakValuePosition::Expression => matches!(
+                self.peek(),
+                Some(
+                    Token::Semicolon
+                        | Token::RightBrace
+                        | Token::RightParen
+                        | Token::RightBracket
+                        | Token::Comma
+                        | Token::Else
+                ) | None
+            ),
+        }
+    }
+
     pub(crate) fn parse_block(&mut self) -> Option<Block> {
         self.expect(&Token::LeftBrace)?;
 
@@ -488,31 +540,27 @@ impl Parser<'_> {
             }
             Some(Token::Break) => {
                 self.advance();
-                let label = if let Some(Token::Label(l)) = self.peek() {
-                    let name = l[1..].to_string();
-                    self.advance();
-                    Some(name)
-                } else {
-                    None
-                };
-                let value = if self.peek() == Some(&Token::Semicolon) {
+                let label = self.parse_control_flow_label();
+                let value = if self.break_value_is_absent(BreakValuePosition::Statement) {
                     None
                 } else {
                     Some(self.parse_expr()?)
                 };
-                self.expect(&Token::Semicolon)?;
+                // Mirrors `Token::Return` below: a statement-position `break`
+                // normally ends with `;`, but not when it is the last item in
+                // a block (`}` follows) — the `else { break }` / `if c {
+                // break }`-tail shape.
+                if self.peek() != Some(&Token::RightBrace) {
+                    self.expect(&Token::Semicolon)?;
+                }
                 Stmt::Break { label, value }
             }
             Some(Token::Continue) => {
                 self.advance();
-                let label = if let Some(Token::Label(l)) = self.peek() {
-                    let name = l[1..].to_string();
-                    self.advance();
-                    Some(name)
-                } else {
-                    None
-                };
-                self.expect(&Token::Semicolon)?;
+                let label = self.parse_control_flow_label();
+                if self.peek() != Some(&Token::RightBrace) {
+                    self.expect(&Token::Semicolon)?;
+                }
                 Stmt::Continue { label }
             }
             Some(Token::Return) => {

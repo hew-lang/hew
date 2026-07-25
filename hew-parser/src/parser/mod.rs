@@ -40,6 +40,12 @@ pub(crate) use precedence::{
     infix_bp, prefix_bp, token_begins_clone_operand, token_to_binop, CLONE_PREFIX_BP,
 };
 
+// `break`'s statement-vs-expression terminator selector lives in `statements`
+// (alongside the label/value parsing helpers it drives) but is consumed by
+// `expressions`'s `Token::Break` desugar too, so it is re-exported here like
+// the `precedence` free fns above.
+pub(crate) use statements::BreakValuePosition;
+
 #[cfg(test)]
 mod tests;
 

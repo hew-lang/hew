@@ -1167,6 +1167,37 @@ impl Parser<'_> {
                 };
                 Expr::Return(value)
             }
+            Token::Break => {
+                self.advance();
+                // `break ['label] [expr]` in expression position — desugars
+                // to exactly the same tree `{ break ['label] [expr]; }`
+                // produces: a one-statement block wrapping `Stmt::Break`.
+                // `loop_analysis.rs`'s `Expr::Block` walker already descends
+                // into that shape, so this introduces no new tree for the
+                // break-detection soundness argument to cover.
+                let label = self.parse_control_flow_label();
+                let value = if self.break_value_is_absent(BreakValuePosition::Expression) {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
+                let stmt_span = start..self.peek_span().start;
+                Expr::Block(Block {
+                    stmts: vec![(Stmt::Break { label, value }, stmt_span)],
+                    trailing_expr: None,
+                })
+            }
+            Token::Continue => {
+                self.advance();
+                // `continue ['label]` in expression position — same desugar
+                // rationale as `Token::Break` above.
+                let label = self.parse_control_flow_label();
+                let stmt_span = start..self.peek_span().start;
+                Expr::Block(Block {
+                    stmts: vec![(Stmt::Continue { label }, stmt_span)],
+                    trailing_expr: None,
+                })
+            }
             Token::Scope => {
                 self.advance();
                 // Reject obsolete surfaces: `scope.method()` and `scope |s| { ... }`.

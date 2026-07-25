@@ -1502,6 +1502,160 @@ internal = [
   "hew_trace_reset",
 ]
 
+# ---------------------------------------------------------------------------
+# System-lane closure
+# ---------------------------------------------------------------------------
+#
+# `docs/internal/jit-host-abi.md` states the invariant: no `stable` symbol may
+# produce, install, mutate, observe, or destroy system-lane state. That is a
+# property of the whole TRANSITIVE CALL GRAPH, not of a symbol's own body -- a
+# symbol that reaches a lane operation one call away still violates it.
+#
+# `scripts/sys-lane-closure.py` computes it mechanically: it finds the ROOTS
+# (functions whose own body names `sys_queue`, `sys_count`, `sys_dispatch`,
+# `HewSysMsg` or `Origin::Sys`), walks the call graph in reverse to the closure
+# of everything that can reach a root, and fails if any `stable` symbol is in
+# it. Run `python3 scripts/sys-lane-closure.py --list-roots` to see the roots
+# and `--explain SYM` for a witness path.
+#
+# The two tables below are the ONLY escape hatches, and each needs a written
+# reason. Both are checked for staleness: an edge that is no longer a call, or
+# a non-root that no longer names the lane, fails the gate.
+
+# Edges the closure must not traverse. An entry deletes exactly ONE caller ->
+# callee edge; a *different* caller of the same callee still trips the gate, so
+# these do not blanket-exempt the callee.
+[sys-lane-closure.authenticated-edges]
+
+"worker_loop -> activate_actor" = """
+The native scheduler worker is the system lane's one legitimate consumer: \
+draining sys_queue ahead of the user queue and routing each HewSysMsg to the \
+actor's sys_dispatch is what the lane exists for. Every stable symbol that \
+merely runs or waits on the scheduler reaches this edge, so treating it as a \
+violation would disqualify the entire blocking API without describing any \
+capability the caller actually gains."""
+
+"step_one_actor -> activate_actor_wasm" = """
+The wasm mirror of `worker_loop -> activate_actor`, reached by every stable \
+symbol that turns the wasm scheduler (hew_reply_wait, hew_actor_await, \
+hew_exit, hew_select_first, ...). Same reasoning."""
+
+"hew_actor_link -> send_exit_signal" = """
+Authenticated producer. hew_actor_link only reaches send_exit_signal on the \
+already-dead-peer race: the caller asked to be linked to an actor that has \
+since gone terminal, so the runtime synthesises the EXIT the link would have \
+produced had the ordering been the other way. The reason code is read from \
+the runtime's own death record, never from the caller, and the destination is \
+the linking actor itself -- the caller cannot address a third party or choose \
+what the signal says."""
+
+"deliver_cross_node_link_exit -> send_exit_signal" = """
+Authenticated producer. The transport observed the remote side go away \
+(connection lost, node stop, member transition) and turns that observation \
+into the local EXIT the link contract promises. The 13 cluster/node/connmgr \
+stable symbols reach it only by driving the transport; none of them supplies \
+the reason or the destination."""
+
+"hew_actor_monitor -> deliver_down_message" = """
+Authenticated producer, same shape as hew_actor_link: the monitored actor was \
+already terminal when the monitor was installed, so the runtime synthesises \
+the DOWN that the monitor contract owes the caller, addressed to the caller \
+and carrying the runtime's own recorded reason."""
+
+"hew_actor_trap -> hew_supervisor_notify_child_actor_event" = """
+Authenticated producer. hew_actor_trap reports a crash the runtime detected in \
+the trapping actor; the notification goes to that actor's registered parent \
+supervisor, whose identity is runtime state, and the payload is the crash \
+record. The caller names no destination and writes no message body. Reached \
+transitively by hew_actor_stop / hew_actor_close / hew_actor_group_stop_all \
+via call_terminate_fn -> handle_crash_recovery when a terminate hook panics."""
+
+"hew_actor_trap -> propagate_exit_to_links" = """
+Authenticated producer. The trapping actor has died; propagate_exit_to_links \
+fans the EXIT out to the link set the runtime recorded for it. The caller \
+supplies neither the recipients (they are whoever linked to this actor) nor \
+the reason (it is the crash record). Refusing this edge would mean links \
+cannot fire, which is the whole contract of hew_actor_link."""
+
+"hew_actor_trap -> notify_monitors_on_death" = """
+The third and last of hew_actor_trap's death fan-outs (links, monitors, \
+parent supervisor). Same authentication: the actor is already dead, the \
+watcher set is runtime state, and the reason is the recorded crash. Listed as \
+its own edge rather than folded into the other two so that a fourth fan-out \
+target would trip the gate."""
+
+"enqueue_down -> deliver_down_message" = """
+Authenticated producer: the monitored actor died and the runtime owes its \
+watchers the DOWN the monitor contract promised. Recipients come from the \
+monitor registry, the reason from the death record."""
+
+"enqueue_lost -> deliver_down_message" = """
+Authenticated producer, transport variant: a node, session or identity the \
+runtime was watching went away, so every monitor riding that connection is \
+resolved as lost. Reached by the 13 cluster/node/connmgr stable symbols only \
+by driving the transport."""
+
+"enqueue_shutdown -> deliver_down_message" = """
+Authenticated producer, shutdown variant: runtime teardown resolves every \
+outstanding remote observation rather than leaving watchers blocked forever. \
+The DOWN reason is the fixed shutdown code."""
+
+"free_spawn_mailbox -> hew_mailbox_free" = """
+Spawn rollback. cleanup_failed_spawn runs when spawn_actor_internal could not \
+finish building the actor, and frees the mailbox that same call had just \
+created. The mailbox was never published -- no actor handle, no registry \
+entry, no pid -- so nothing could have enqueued a signal into its lane and the \
+retirement count is necessarily zero."""
+
+"hew_supervisor_start -> hew_actor_set_sys_dispatch" = """
+Installs the runtime's own supervisor_sys_dispatch trampoline, a compile-time \
+constant code address, on a self_actor hew_supervisor_start has not yet \
+published. No caller-supplied function pointer reaches the slot and there is \
+no window in which another thread can observe the actor without one."""
+
+"free_actor_resources_with_options -> hew_mailbox_free" = """
+Accounted teardown, native. This is the edge behind `hew_actor_free destroys \
+the system lane through a call`. Two things make it safe rather than merely \
+tolerated. Ordering: teardown reaches lane destruction only after the actor \
+is latched terminal and untracked, so no signal that could still have been \
+dispatched is discarded. Non-silence: hew_mailbox_free retires through \
+mailbox::retire_pending_sys_lane, which names every discarded signal via \
+HewSysMsg::name() and counts it into sys_lane_signals_retired() -- a lane \
+teardown can no longer happen without leaving a countable trace."""
+
+"free_actor_resources_wasm_with_options -> hew_mailbox_free" = """
+The wasm mirror of the edge above, retiring through \
+mailbox_wasm::retire_pending_sys_lane with the same ordering and the same \
+per-signal accounting."""
+
+"spawn_actor_internal -> build_spawned_actor" = """
+build_spawned_actor writes `sys_dispatch: config.sys_dispatch`, so it installs \
+whatever the internal SpawnConfig carries -- but no stable spawn entry point \
+can put anything there. hew_actor_spawn, hew_actor_spawn_bounded, \
+hew_actor_spawn_opts and hew_actor_spawn_opts_adopt each build the config with \
+`sys_dispatch: None`; the slot has no parameter in any spawn arg list. The \
+only ways to install a real consumer are hew_actor_set_sys_dispatch \
+(codegen-stable, emitted by the compiler) and hew_supervisor_start."""
+
+"current_thread_owns_supervisor_tree -> current_actor_supervisor" = """
+Role identity, not lane observation. current_actor_supervisor reads \
+`(*current).sys_dispatch` for the sole purpose of fn_addr_eq-ing it against \
+the runtime's own supervisor_sys_dispatch trampoline, answering `is the \
+current actor a supervisor?`. It never dereferences the pointer, never calls \
+it, and never reveals it. Reached by hew_supervisor_stop and \
+hew_local_pid_supervisor_stop to refuse a cross-tree stop."""
+
+# Functions removed from the ROOT set only. They stay ordinary graph nodes, so
+# anything they call is still traversed -- this says `this body's mention of
+# the lane is not an operation on it`, not `stop looking here`.
+[sys-lane-closure.non-roots]
+
+"hew_supervisor_start" = """
+Its own body's only mention of the lane is the text of the call \
+`hew_actor_set_sys_dispatch(self_actor, Some(supervisor_sys_dispatch))`. The \
+substantive justification is on that edge in the table above; this entry only \
+stops the call site from being read as an independent lane operation."""
+
 [ownership]
 
 # Scalar i64 counter getter; no parameters, nothing owned crosses the boundary.

@@ -115,6 +115,47 @@ real death. Both stay `stable`. The test is whether the caller can put the
 system lane into a state the runtime did not derive from an authenticated
 event, read it, or destroy it.
 
+### The property is TRANSITIVE, and it is computed
+
+Everything above is a property of what a symbol *does*, and every audit of it
+read the symbols one at a time. That method enumerated this table four times
+and got four different answers — 3 symbols, then 9, then 16, then 17 — because
+a symbol does not have to touch the lane itself to breach the invariant. It
+only has to *call* something that does. `hew_actor_free` names no lane state
+anywhere in its body; it reaches `hew_mailbox_free` four calls down and
+destroys the lane there.
+
+So the rule is stated over the call graph:
+
+> A symbol is disqualified from `stable` if it, or **anything it can reach**,
+> produces, installs, mutates, observes, or destroys system-lane state.
+
+and `scripts/sys-lane-closure.py` (`make verify-sys-lane-closure`, part of
+`make lint`) computes it rather than asserting it:
+
+1. **Roots** — every function in `hew-runtime/src` and `hew-std/src` whose own
+   body names `sys_queue`, `sys_count`, `sys_dispatch`, `HewSysMsg` or
+   `Origin::Sys`. Comments and string literals are blanked first so prose can
+   neither mint nor hide a root; test-only items are dropped, including whole
+   files behind a `#[cfg(test)] mod x;` in their parent. `#[cfg(any(target_arch
+   = "wasm32", test))]` is production wasm code and is deliberately NOT dropped.
+2. **Reachability** — reverse breadth-first search from the roots over call
+   edges, so the result is everything that can reach a lane operation, however
+   far away.
+3. **Verdict** — the gate fails if any `stable` or `stable-stdlib` symbol is in
+   that closure, and prints a witness path for each.
+
+Escapes live in `[sys-lane-closure.authenticated-edges]` and
+`[sys-lane-closure.non-roots]` in `scripts/jit-symbol-classification.toml`.
+Each needs a written reason, each is checked for staleness, and an
+authenticated edge clears exactly one caller→callee pair — a *new* caller of
+the same callee still fails. `scripts/tests/test_sys_lane_closure.py` proves
+the gate still fails on a transitive reach, so a green run means something.
+
+This does not replace the judgement above; it replaces the enumeration. The
+question "is this edge authenticated?" is still answered by a human, but the
+question "which edges are there?" is no longer answered by reading.
+
 ## JIT host requirements
 
 A compliant JIT host **must** expose `stable ∪ codegen-stable`. The `internal`

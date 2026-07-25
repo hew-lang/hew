@@ -16,6 +16,8 @@ mod liveness;
 mod local_names_side_table;
 #[path = "diagnostics/overflow_trap.rs"]
 mod overflow_trap;
+#[path = "diagnostics/poisoned_assign_cascade.rs"]
+mod poisoned_assign_cascade;
 #[path = "diagnostics/runtime_call_allowlist.rs"]
 mod runtime_call_allowlist;
 #[path = "diagnostics/trap_terminator.rs"]

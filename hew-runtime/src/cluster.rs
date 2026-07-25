@@ -458,6 +458,25 @@ pub struct HewCluster {
     /// its emission (see `guarded_emission_rendezvous`).
     #[cfg(test)]
     guarded_emission_probe: Mutex<Option<Arc<std::sync::Barrier>>>,
+    /// Test-only park point AFTER a guarded transition has claimed and before
+    /// any of its observable deliveries (see `guarded_delivery_rendezvous`).
+    #[cfg(test)]
+    guarded_delivery_probe: Mutex<Option<Arc<GuardedDeliveryProbe>>>,
+}
+
+/// Test-only handshake for the post-claim park point.
+///
+/// Deliberately not a `Barrier`: the thread that releases the parked delivery
+/// must not be a thread that could itself be blocked waiting for that delivery
+/// to finish. Announce-then-await-release keeps the releaser free.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct GuardedDeliveryProbe {
+    /// Signalled once the delivery has claimed and is about to become
+    /// observable.
+    pub(crate) entered: std::sync::mpsc::Sender<()>,
+    /// Blocks the delivery until the test releases it.
+    pub(crate) release: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
 /// Maximum number of gossip events to retain.
@@ -855,6 +874,8 @@ impl HewCluster {
             partition_registry: None,
             #[cfg(test)]
             guarded_emission_probe: Mutex::new(None),
+            #[cfg(test)]
+            guarded_delivery_probe: Mutex::new(None),
         }
     }
 
@@ -1148,6 +1169,25 @@ impl HewCluster {
         *self.guarded_emission_probe.lock_or_recover() = barrier;
     }
 
+    /// Test-only rendezvous AFTER a guarded transition has claimed and BEFORE
+    /// any of its observable deliveries — the window the claim-to-emit finding
+    /// is about. Parks the delivering thread there, registered as in flight, so
+    /// another thread can try to retire the token underneath it.
+    #[cfg(test)]
+    fn guarded_delivery_rendezvous(&self) {
+        let probe = self.guarded_delivery_probe.lock_or_recover().clone();
+        if let Some(probe) = probe {
+            let _ = probe.entered.send(());
+            let _ = probe.release.lock_or_recover().recv();
+        }
+    }
+
+    /// Park every claimed guarded delivery on `probe` until it is released.
+    #[cfg(test)]
+    pub(crate) fn set_guarded_delivery_probe(&self, probe: Option<Arc<GuardedDeliveryProbe>>) {
+        *self.guarded_delivery_probe.lock_or_recover() = probe;
+    }
+
     fn deliver_member_transition(&self, transition: &MemberTransition) {
         let membership_event = transition.membership_event();
         // Held for the whole of the observable delivery below when the
@@ -1214,6 +1254,8 @@ impl HewCluster {
                     node_id: transition.node_id,
                     publication_token: *publication_token,
                 });
+                #[cfg(test)]
+                self.guarded_delivery_rendezvous();
                 true
             }
             PublicationTransition::TokenLost(publication_token) => {

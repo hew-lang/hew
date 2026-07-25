@@ -702,8 +702,24 @@ fn collect_finished_reconnect_workers(mgr: &HewConnMgr) {
     });
 }
 
-fn next_publication_token(mgr: &HewConnMgr) -> u64 {
-    mgr.next_publication_token.fetch_add(1, Ordering::Relaxed)
+/// Issue the next publication token, or `None` once the token space is
+/// exhausted.
+///
+/// The token is the discriminator that makes `(conn_id, publication_token)` an
+/// exact identity for one admission, and transport `conn_id`s are recycled. A
+/// wrapping counter would eventually reissue a token that a paused teardown or
+/// supersede is still holding for a long-dead connection, and that stale
+/// operation would then match — and close, or retire — an unrelated successor
+/// on the same recycled id. So the counter is checked rather than wrapping: it
+/// saturates at `u64::MAX` and issues nothing further, which turns an
+/// impossible-in-practice ABA match into a refused admission. No value is ever
+/// issued twice, and zero is never issued at all.
+fn next_publication_token(mgr: &HewConnMgr) -> Option<u64> {
+    mgr.next_publication_token
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |issued| {
+            issued.checked_add(1)
+        })
+        .ok()
 }
 
 /// Bounded wait for an in-flight `Reserved` claim to resolve, in ms. Mirrors the
@@ -1036,7 +1052,7 @@ fn test_reserve_unverified(
 #[cfg(test)]
 fn test_publish_claim(mgr: &HewConnMgr, route_slot: u16, conn_id: c_int) -> u64 {
     let node_id = test_node_identity(route_slot);
-    let token = next_publication_token(mgr);
+    let token = next_publication_token(mgr).expect("the publication token space is not exhausted");
     reserve_unverified_identity_claim(mgr, node_id, route_slot, 1, conn_id, token);
     let (lock, condvar) = &mgr.claims;
     let mut guard = lock
@@ -4331,7 +4347,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
 
     // Reserve the authenticated NodeId/session claim before any route, cluster,
     // registry, SWIM, monitor, link, or reply-table publication.
-    let claim_token = next_publication_token(mgr);
+    let Some(claim_token) = next_publication_token(mgr) else {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: publication token space is exhausted (conn {conn_id})"
+        ));
+        return -1;
+    };
     let superseded_claim: Option<LiveClaim> = match reserve_identity_claim(
         mgr,
         peer_hs.node_id,
@@ -7464,7 +7487,8 @@ mod tests {
 
             // Step 1 (real): reserve the claim, as hew_connmgr_add does before
             // spawning the reader.
-            let token = next_publication_token(&*mgr);
+            let token = next_publication_token(&*mgr)
+                .expect("the publication token space is not exhausted");
             let ClaimReservation::Reserved { superseded: None } =
                 reserve_claim(&*mgr, 5, None, 30, token)
             else {
@@ -8381,7 +8405,8 @@ mod tests {
             assert!(!mgr.is_null());
 
             let mut old_actor = ConnectionActor::new(11);
-            let old_token = next_publication_token(&*mgr);
+            let old_token = next_publication_token(&*mgr)
+                .expect("the publication token space is not exhausted");
             old_actor.publication_token = old_token;
             old_actor.peer_node_id = 2;
             old_actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -8424,7 +8449,8 @@ mod tests {
 
             let mut replacement_actor = Some({
                 let mut actor = ConnectionActor::new(22);
-                actor.publication_token = next_publication_token(&*mgr);
+                actor.publication_token = next_publication_token(&*mgr)
+                    .expect("the publication token space is not exhausted");
                 actor.peer_node_id = 2;
                 actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
                 actor
@@ -8734,7 +8760,8 @@ mod tests {
             (&*mgr).reconnect_enabled.store(true, Ordering::Release);
 
             let mut actor = ConnectionActor::new(CONN_ID);
-            let token = next_publication_token(&*mgr);
+            let token = next_publication_token(&*mgr)
+                .expect("the publication token space is not exhausted");
             actor.publication_token = token;
             actor.peer_node_id = LOCAL_ROUTE_SLOT;
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -8896,7 +8923,8 @@ mod tests {
             // The peer that legitimately owns the slot, at session 5.
             let established_identity = NodeId::from_bytes([5; 16]);
             let mut established = ConnectionActor::new(ESTABLISHED_CONN);
-            let established_token = next_publication_token(&*mgr);
+            let established_token = next_publication_token(&*mgr)
+                .expect("the publication token space is not exhausted");
             established.publication_token = established_token;
             established.peer_node_id = ROUTE_SLOT;
             established.peer_identity = Some(established_identity);
@@ -8948,7 +8976,8 @@ mod tests {
             // session, so the cluster refuses the publication outright.
             let refused_identity = NodeId::from_bytes([6; 16]);
             let mut refused = ConnectionActor::new(REFUSED_CONN);
-            let refused_token = next_publication_token(&*mgr);
+            let refused_token = next_publication_token(&*mgr)
+                .expect("the publication token space is not exhausted");
             refused.publication_token = refused_token;
             refused.peer_node_id = ROUTE_SLOT;
             refused.peer_identity = Some(refused_identity);
@@ -9242,7 +9271,8 @@ mod tests {
         fn stage_connection(&self, conn_id: c_int, route_slot: u16, reader: bool) -> StagedConn {
             let mgr = self.mgr();
             let mut actor = ConnectionActor::new(conn_id);
-            let token = next_publication_token(mgr);
+            let token =
+                next_publication_token(mgr).expect("the publication token space is not exhausted");
             actor.publication_token = token;
             actor.peer_node_id = route_slot;
             actor.transport = self.transport;
@@ -10384,6 +10414,53 @@ mod tests {
         assert_no_alive_survives_the_refusal(UNJOINED_ROUTE_SLOT, &observed);
     }
 
+    /// The publication token is the discriminator that makes
+    /// `(conn_id, publication_token)` an exact identity for one admission, and
+    /// transport `conn_id`s are recycled. A wrapping counter would eventually
+    /// reissue a token a paused teardown or supersede is still holding, and
+    /// that stale operation would then match an unrelated successor on the same
+    /// recycled id. So the generator must never reissue: it saturates and
+    /// refuses instead of wrapping, and the admission that cannot get a token
+    /// fails closed rather than proceeding with an ambiguous one.
+    ///
+    /// Counterfactual: with the bare `fetch_add` back, the call at saturation
+    /// returns `Some(u64::MAX)` and the one after it hands out `0` again —
+    /// both assertions below fail.
+    #[test]
+    fn the_publication_token_never_wraps_back_onto_a_live_token() {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // SAFETY: the manager is live until `free_claim_test_mgr` below.
+        let mgr = unsafe { &*mgr_ptr };
+
+        let first = next_publication_token(mgr).expect("a fresh manager must issue a token");
+        let second = next_publication_token(mgr).expect("a fresh manager must issue a token");
+        assert!(
+            second > first && first > 0,
+            "tokens must be strictly increasing and never zero, got {first} then {second}"
+        );
+
+        // Park the generator at the end of the space.
+        mgr.next_publication_token
+            .store(u64::MAX, Ordering::Relaxed);
+        assert_eq!(
+            next_publication_token(mgr),
+            None,
+            "an exhausted generator must refuse rather than wrap"
+        );
+        assert_eq!(
+            mgr.next_publication_token.load(Ordering::Relaxed),
+            u64::MAX,
+            "a refused issue must not advance the counter past the end"
+        );
+        assert_eq!(
+            next_publication_token(mgr),
+            None,
+            "an exhausted generator must stay exhausted"
+        );
+
+        free_claim_test_mgr(mgr_ptr, transport);
+    }
+
     // ---- issue #2652 · Slice 4 · NodeId claim state machine ----------------
 
     /// Build a minimal manager for claim-machine unit tests: a stub transport
@@ -10911,7 +10988,8 @@ mod tests {
         actor.peer_node_id = 2;
         actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
         // SAFETY: mgr is live and was allocated by hew_connmgr_new above.
-        let publication_token = unsafe { next_publication_token(&*mgr) };
+        let publication_token = unsafe { next_publication_token(&*mgr) }
+            .expect("the publication token space is not exhausted");
         actor.publication_token = publication_token;
         let pub_sync = Arc::clone(&actor.publication_sync);
         let pub_removed = Arc::clone(&actor.publication_removed);
@@ -11029,7 +11107,8 @@ mod tests {
             assert!(!mgr.is_null());
 
             let mut actor = ConnectionActor::new(31);
-            let publication_token = next_publication_token(&*mgr);
+            let publication_token = next_publication_token(&*mgr)
+                .expect("the publication token space is not exhausted");
             actor.publication_token = publication_token;
             actor.peer_node_id = 2;
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
@@ -11371,7 +11450,8 @@ mod tests {
             );
 
             let mut actor = ConnectionActor::new(44);
-            let publication_token = next_publication_token(&*mgr);
+            let publication_token = next_publication_token(&*mgr)
+                .expect("the publication token space is not exhausted");
             actor.publication_token = publication_token;
             actor.peer_node_id = 2;
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);

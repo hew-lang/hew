@@ -715,6 +715,9 @@ primary
     | scopeExpr                             // scope { ... } structured-concurrency block
     | forkChild                             // fork [name '='] expr — only valid inside scope
     | yieldExpr
+    | 'return' expr?                        // !-typed; no ';' in expression position
+    | 'break' LABEL? expr?                  // !-typed; no ';' in expression position
+    | 'continue' LABEL?                     // !-typed
     ;
 
 fieldInitList

@@ -51,7 +51,7 @@ fn i64_literal(value: i64) -> HirExpr {
 
 /// Positive: a binding recorded in `poisoned_let_bindings` (its `let`/
 /// `var` initializer already failed and reported the root error) emits
-/// NO diagnostic when later assigned. This is the cascade this lane
+/// NO diagnostic when later assigned. This is the cascade the guard
 /// suppresses.
 #[test]
 fn assign_to_poisoned_binding_emits_no_diagnostic() {

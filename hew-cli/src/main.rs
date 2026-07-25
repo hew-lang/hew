@@ -1917,6 +1917,11 @@ hew run main.hew
 "
     );
 
+    // Record which files pre-existed before --force overwrites them, so the
+    // forced path can report what it replaced.
+    let main_hew_replaced = a.force && main_hew.exists();
+    let readme_replaced = a.force && readme.exists();
+
     if let Err(e) = std::fs::write(&main_hew, main_content) {
         eprintln!("Error: cannot write {}: {e}", main_hew.display());
         std::process::exit(1);
@@ -1928,6 +1933,17 @@ hew run main.hew
 
     println!("Created source-only project \"{project_name}\" with main.hew and README.md");
     println!("No hew.toml was created; use `adze init` for manifest-first bootstrap.");
+
+    let replaced: Vec<&str> = [
+        main_hew_replaced.then_some("main.hew"),
+        readme_replaced.then_some("README.md"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !replaced.is_empty() {
+        println!("--force replaced existing: {}", replaced.join(", "));
+    }
 }
 
 fn cmd_completions(a: &args::CompletionsArgs) {

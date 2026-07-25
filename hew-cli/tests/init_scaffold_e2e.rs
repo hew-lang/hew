@@ -331,4 +331,29 @@ fn init_force_overwrites_existing_scaffold() {
         readme_src.contains("It does not create `hew.toml`"),
         "forced scaffold should restore the starter README; got:\n{readme_src}"
     );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--force replaced existing: main.hew, README.md"),
+        "stdout should report which pre-existing files --force replaced; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn init_force_into_empty_directory_prints_no_replacement_notice() {
+    let tmp = support::tempdir();
+    let out = run_hew(tmp.path(), &["init", "--force"]);
+
+    assert!(
+        out.status.success(),
+        "hew init --force failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("--force replaced existing"),
+        "stdout should not claim a replacement when no scaffold file pre-existed; got:\n{stdout}"
+    );
 }

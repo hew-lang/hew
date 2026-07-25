@@ -2638,19 +2638,19 @@ pub unsafe extern "C" fn hew_mailbox_try_recv_sys(mb: *mut HewMailbox) -> *mut H
 
 // ── Queries ─────────────────────────────────────────────────────────────
 
-/// Returns `1` if either queue has messages, `0` otherwise.
+/// Returns `1` if the USER queue has messages, `0` otherwise.
+///
+/// This is the mailbox-holder's emptiness query: it answers "is there work for
+/// me" without revealing anything about the runtime-private system lane. It is
+/// the `stable` half of the split described on [`hew_mailbox_has_messages`].
 ///
 /// # Safety
 ///
 /// `mb` must be a valid mailbox pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
+pub unsafe extern "C" fn hew_mailbox_has_user_messages(mb: *mut HewMailbox) -> i32 {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
-
-    if mb.sys_count.load(Ordering::Acquire) > 0 {
-        return 1;
-    }
 
     if mb.use_slow_path {
         let q = mb.slow_path.lock_or_recover();
@@ -2658,6 +2658,29 @@ pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
     } else {
         i32::from(mb.count.load(Ordering::Acquire) > 0)
     }
+}
+
+/// Returns `1` if EITHER queue has messages, `0` otherwise.
+///
+/// System-lane aware, therefore runtime-internal: a caller that can distinguish
+/// an empty mailbox from one holding only a queued `Exit`/`Down`/supervisor
+/// signal has observed privileged state, which is ingress in the same sense
+/// that minting a system node is. Only the scheduler — the system queue's sole
+/// legitimate consumer — has a reason to ask this question, so this half stays
+/// `internal` and user code gets [`hew_mailbox_has_user_messages`] instead.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
+    // SAFETY: Caller guarantees `mb` is valid.
+    if unsafe { &*mb }.sys_count.load(Ordering::Acquire) > 0 {
+        return 1;
+    }
+
+    // SAFETY: Caller guarantees `mb` is valid.
+    unsafe { hew_mailbox_has_user_messages(mb) }
 }
 
 /// Return the number of user messages in the mailbox.
@@ -3582,6 +3605,46 @@ mod tests {
 
             let node = hew_mailbox_try_recv(mb);
             hew_msg_node_free(node);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    /// The has-messages SPLIT: a queued system message is INVISIBLE to the
+    /// user-lane query and visible to the system-aware one. This is the
+    /// behavioural half of the classification move — `hew_mailbox_has_messages`
+    /// is `internal` precisely because it answers `1` here, which lets a
+    /// mailbox holder detect a pending supervisor/`Exit`/`Down` signal in an
+    /// otherwise-empty mailbox.
+    ///
+    /// Counterfactual: implement `hew_mailbox_has_user_messages` by delegating
+    /// to `hew_mailbox_has_messages` (the pre-split behaviour) and the first
+    /// assertion fails.
+    #[test]
+    fn user_lane_query_does_not_observe_a_queued_system_message() {
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let s: i32 = 99;
+
+            hew_mailbox_send_sys(mb, 2, (&raw const s).cast_mut().cast(), size_of::<i32>());
+
+            assert_eq!(
+                hew_mailbox_has_user_messages(mb),
+                0,
+                "the user-lane query must not reveal a queued system message"
+            );
+            assert_eq!(
+                hew_mailbox_has_messages(mb),
+                1,
+                "the system-aware scheduler query still sees the system lane"
+            );
+
+            // A user message is visible to both.
+            let u: i32 = 10;
+            hew_mailbox_send(mb, 1, (&raw const u).cast_mut().cast(), size_of::<i32>());
+            assert_eq!(hew_mailbox_has_user_messages(mb), 1);
+            assert_eq!(hew_mailbox_has_messages(mb), 1);
+
             hew_mailbox_free(mb);
         }
     }

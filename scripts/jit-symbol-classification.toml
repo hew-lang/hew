@@ -339,19 +339,13 @@ stable = [
   "hew_local_pid_supervisor_stop",
   "hew_local_pid_unlink",
   "hew_mailbox_capacity",
-  "hew_mailbox_free",
-  "hew_mailbox_has_messages",
+  "hew_mailbox_has_user_messages",
   "hew_mailbox_len",
-  "hew_mailbox_new",
-  "hew_mailbox_new_bounded",
-  "hew_mailbox_new_coalesce",
-  "hew_mailbox_new_with_policy",
   "hew_mailbox_send",
   "hew_mailbox_send_with_reply",
   "hew_mailbox_set_coalesce_config",
   "hew_mailbox_set_message_drop_fn",
   "hew_mailbox_try_push",
-  "hew_mailbox_try_recv",
   "hew_mailbox_try_send",
   "hew_memory_alloc_count",
   "hew_memory_bytes_allocated",
@@ -1370,24 +1364,49 @@ internal = [
   "hew_fault_inject_delay",
   "hew_fault_inject_drop",
   "hew_is_shutting_down",
-  "hew_mailbox_send_aliased",
-  # SYSTEM-LANE PROVENANCE BOUNDARY (the four entries below). The system queue
-  # is a runtime-private lane: the only legitimate producers are runtime paths
-  # that derive the signal from authenticated actor state (a real terminal
-  # transition, a real link/monitor death, a real supervisor decision), and the
-  # only legitimate consumer is `scheduler::activate_actor`. These raw entry
-  # points take a caller-supplied mailbox pointer and either mint, drain, or
-  # observe privileged nodes directly, which is provenance laundering: checking
-  # that the caller picked one of the seven `HewSysMsg` kinds validates the
-  # VALUE, not the ORIGIN. No codegen path emits them and no user program has a
-  # legitimate need for them, so they are AOT/runtime-internal only.
+  # SYSTEM-LANE PROVENANCE BOUNDARY (every `hew_mailbox_*` entry below). The
+  # system queue is a runtime-private lane: the only legitimate producers are
+  # runtime paths that derive the signal from authenticated actor state (a real
+  # terminal transition, a real link/monitor death, a real supervisor decision),
+  # and the only legitimate consumer is `scheduler::activate_actor`. The
+  # boundary is not `may not MINT a system node` — it is `may not PRODUCE,
+  # INSTALL, MUTATE, OBSERVE, or DESTROY system-lane state`. Observation and
+  # destruction are ingress too: a caller that can tell an empty mailbox from
+  # one holding a queued `Exit` has read privileged state, and a caller that can
+  # free the mailbox has discarded it. Checking that a caller picked one of the
+  # seven `HewSysMsg` kinds validates the VALUE, not the ORIGIN. No codegen path
+  # emits any of these and no user program has a legitimate need for them.
+  #
+  # What user code KEEPS (still `stable`): produce into the user lane
+  # (`hew_mailbox_send*`, `_try_send`, `_try_push`) and measure the user lane
+  # (`hew_mailbox_len`, `_capacity`, `_has_user_messages`). It may not CONSUME
+  # from any lane, OBSERVE the system lane, or CREATE/DESTROY the mailbox.
   #
   # `hew_mailbox_send_sys` mints an arbitrary system node on any mailbox.
   # `hew_mailbox_try_recv_sys` pops one — it would also break the queue's
   # single-consumer invariant against the scheduler.
   # `hew_mailbox_sys_len` observes the private lane's depth.
+  # `hew_mailbox_has_messages` observes whether the private lane is non-empty;
+  # `hew_mailbox_has_user_messages` is its user-lane-only `stable` half.
+  # `hew_mailbox_try_recv` dequeues the SYSTEM queue first and returns the raw
+  # node with its provenance stripped — strictly more powerful than
+  # `hew_mailbox_try_recv_sys`, and it breaks the same single-consumer contract.
+  # `hew_mailbox_free` drains and frees the system queue, silently discarding
+  # every pending lifecycle signal. Destruction is not separable from the
+  # object, so unlike the has-messages query it cannot be split.
+  # `hew_mailbox_new*` construct the lane. They move with the destructor
+  # because a `stable` constructor whose release symbol is `internal` is a leak
+  # factory; the supported user-facing lifecycle is the actor API.
+  "hew_mailbox_free",
+  "hew_mailbox_has_messages",
+  "hew_mailbox_new",
+  "hew_mailbox_new_bounded",
+  "hew_mailbox_new_coalesce",
+  "hew_mailbox_new_with_policy",
+  "hew_mailbox_send_aliased",
   "hew_mailbox_send_sys",
   "hew_mailbox_sys_len",
+  "hew_mailbox_try_recv",
   "hew_mailbox_try_recv_sys",
   "hew_node_api_ask_cancel",
   "hew_node_api_ask_finish",
@@ -5013,5 +5032,15 @@ discharge-depth = "none"
 symbol = "hew_supervisor_notify_child_supervisor_escalation"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# hew-runtime/src/mailbox.rs: reads the user queue's emptiness. The mailbox
+# handle stays caller-owned, the result is a plain flag, and the system lane is
+# deliberately NOT consulted (see the system-lane provenance boundary above).
+[[ownership.contracts]]
+symbol = "hew_mailbox_has_user_messages"
+result = "none"
+params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"

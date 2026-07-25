@@ -1748,10 +1748,16 @@ mod assoc_types_slice2 {
     /// The SYSTEM-LANE provenance boundary. The sys/user channel split makes
     /// provenance structural inside the mailbox — a user-queue node can never
     /// be dispatched as a system message — but the classification table is the
-    /// other ingress authority. Every runtime export that mints a system-queue
-    /// node, drains one, or installs an actor's system dispatch pointer must
-    /// therefore be rejected in `extern "rt"`; a `stable` classification would
-    /// re-open by symbol exactly what the queue split closes by type.
+    /// other ingress authority. Every runtime export that PRODUCES, INSTALLS,
+    /// MUTATES, OBSERVES, or DESTROYS system-lane state must therefore be
+    /// rejected in `extern "rt"`; a `stable` classification would re-open by
+    /// symbol exactly what the queue split closes by type.
+    ///
+    /// The first pass over this table used the narrower property "mints a
+    /// system node, drains one, or installs a dispatch pointer" and missed the
+    /// observers and the destructor. Observation and destruction are ingress:
+    /// telling an empty mailbox from one holding a queued `Exit` reads
+    /// privileged state, and freeing the mailbox discards it.
     ///
     /// Each of these was `stable` before the audit:
     ///
@@ -1763,6 +1769,21 @@ mod assoc_types_slice2 {
     ///   mailbox; `hew_mailbox_try_recv_sys` pops one out from under the
     ///   scheduler (the queue's only legitimate consumer); `hew_mailbox_sys_len`
     ///   observes the private lane.
+    /// - `hew_mailbox_try_recv` dequeues the SYSTEM queue first and returns the
+    ///   raw node with its provenance stripped, so it is strictly more powerful
+    ///   than `hew_mailbox_try_recv_sys` and breaks the same single-consumer
+    ///   contract against the scheduler.
+    /// - `hew_mailbox_has_messages` reveals whether an otherwise-empty mailbox
+    ///   holds a pending lifecycle signal. Its user-lane-only half,
+    ///   `hew_mailbox_has_user_messages`, stays `stable` — the legitimate
+    ///   question is separable from the privileged one, so it is split, not
+    ///   removed (asserted below).
+    /// - `hew_mailbox_free` drains and frees the system queue, silently
+    ///   discarding every pending lifecycle signal before the scheduler's sole
+    ///   consumer dispatches it. Destruction is NOT separable from the object,
+    ///   so this one moves whole; `hew_mailbox_new{,_bounded,_with_policy,
+    ///   _coalesce}` move with it so no `stable` constructor is left minting an
+    ///   allocation whose release symbol the tier withholds.
     /// - `hew_supervisor_notify_child_actor_event`, its escalation sibling, and
     ///   `hew_supervisor_handle_crash` put a caller-composed `ChildEvent` on a
     ///   supervisor's system queue, whose dispatch frees the LIVE child named by
@@ -1773,8 +1794,15 @@ mod assoc_types_slice2 {
     fn extern_rt_system_lane_symbols_rejected() {
         for sym in [
             "hew_actor_set_sys_dispatch",
+            "hew_mailbox_free",
+            "hew_mailbox_has_messages",
+            "hew_mailbox_new",
+            "hew_mailbox_new_bounded",
+            "hew_mailbox_new_coalesce",
+            "hew_mailbox_new_with_policy",
             "hew_mailbox_send_sys",
             "hew_mailbox_sys_len",
+            "hew_mailbox_try_recv",
             "hew_mailbox_try_recv_sys",
             "hew_supervisor_add_child_dynamic",
             "hew_supervisor_add_child_spec",
@@ -1799,6 +1827,33 @@ mod assoc_types_slice2 {
                 output.errors
             );
         }
+    }
+
+    /// The other half of the has-messages SPLIT: user code keeps a way to ask
+    /// about its OWN lane. Without this assertion the split could silently
+    /// degrade into a plain removal — moving `hew_mailbox_has_messages` to
+    /// `internal` and never landing the replacement would leave a mailbox
+    /// holder with no emptiness query at all, and the rejection test above
+    /// would still pass.
+    #[test]
+    fn extern_rt_user_lane_mailbox_query_accepted() {
+        let sym = "hew_mailbox_has_user_messages";
+        let extern_item = make_extern_rt_block(&[sym]);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..60)],
+            module_doc: None,
+            module_graph: None,
+        });
+        assert!(
+            !output.errors.iter().any(|e| matches!(&e.kind,
+                TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                if symbol_name == sym
+            )),
+            "the user-lane query {sym} must remain declarable in extern \"rt\"; \
+             got: {:?}",
+            output.errors
+        );
     }
 
     /// The stream/sink error channel splits producer from consumer: the

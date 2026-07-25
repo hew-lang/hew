@@ -1356,7 +1356,28 @@ wasm_no_mangle! {
 // ── Queries ─────────────────────────────────────────────────────────────
 
 wasm_no_mangle! {
-    /// Returns `1` if either queue has messages, `0` otherwise.
+    /// Returns `1` if the USER queue has messages, `0` otherwise.
+    ///
+    /// The `stable` half of the has-messages split: it answers "is there work
+    /// for me" without revealing the runtime-private system lane.
+    ///
+    /// # Safety
+    ///
+    /// `mb` must be a valid mailbox pointer.
+    pub unsafe extern "C" fn hew_mailbox_has_user_messages(
+        mb: *mut HewMailboxWasm,
+    ) -> i32 {
+        // SAFETY: Caller guarantees `mb` is valid.
+        let mb = unsafe { &*mb };
+        i32::from(!mb.user_queue.is_empty())
+    }
+}
+
+wasm_no_mangle! {
+    /// Returns `1` if EITHER queue has messages, `0` otherwise.
+    ///
+    /// System-lane aware, therefore runtime-internal — see the native
+    /// `hew_mailbox_has_messages` for the provenance rationale.
     ///
     /// # Safety
     ///
@@ -1823,6 +1844,40 @@ mod tests {
             msg_node_free(node);
             assert_eq!(hew_mailbox_len(mb), 0);
             assert_eq!(hew_mailbox_has_messages(mb), 0);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    /// WASM twin of the native has-messages SPLIT test: the user-lane query
+    /// must not reveal a queued system message, while the system-aware query
+    /// still does. Both targets implement the same lane boundary, so both must
+    /// prove it.
+    #[test]
+    fn user_lane_query_does_not_observe_a_queued_system_message() {
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let s: i32 = 99;
+            let p = (&raw const s).cast_mut().cast();
+
+            hew_mailbox_send_sys(mb, 2, p, size_of::<i32>());
+
+            assert_eq!(
+                hew_mailbox_has_user_messages(mb),
+                0,
+                "the user-lane query must not reveal a queued system message"
+            );
+            assert_eq!(
+                hew_mailbox_has_messages(mb),
+                1,
+                "the system-aware scheduler query still sees the system lane"
+            );
+
+            let u: i32 = 10;
+            hew_mailbox_send(mb, 1, (&raw const u).cast_mut().cast(), size_of::<i32>());
+            assert_eq!(hew_mailbox_has_user_messages(mb), 1);
+            assert_eq!(hew_mailbox_has_messages(mb), 1);
 
             hew_mailbox_free(mb);
         }

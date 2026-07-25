@@ -55,8 +55,8 @@ later with an explicit review.
 ## Classification decision flowchart
 
 ```
-Does this symbol produce a system-queue node, consume one, or install
-an actor's system dispatch pointer?
+Does this symbol produce, install, mutate, observe, or destroy any
+system-lane state?
   Yes → NOT stable (codegen-stable if the compiler emits it, else internal)
   No  →
     Is this symbol named by user extern "rt" blocks?
@@ -82,14 +82,38 @@ exactly what the queue split closed by type.
 The rule is therefore a first-class part of the provenance boundary and takes
 precedence over the rest of the flowchart:
 
-> No `stable` symbol may mint a system node, drain one, or install a system
-> dispatch pointer.
+> No `stable` symbol may produce, install, mutate, observe, or destroy
+> system-lane state.
+
+The first audit of this table used the narrower property "mints a system node,
+drains one, or installs a system dispatch pointer" and missed three symbols
+because of it. OBSERVATION and DESTRUCTION are ingress in the same sense as
+production: a caller that can distinguish an empty mailbox from one holding a
+queued `Exit` has read privileged state (`hew_mailbox_has_messages`), and a
+caller that can free the mailbox has silently discarded every pending lifecycle
+signal before the scheduler dispatched it (`hew_mailbox_free`). A general
+receive that happens to pop the system queue first is a drain even though its
+name says nothing about the lane (`hew_mailbox_try_recv`).
+
+Where the privileged and the legitimate question are separable, SPLIT rather
+than remove: `hew_mailbox_has_user_messages` answers "is there work for me"
+from the `stable` tier while the system-aware `hew_mailbox_has_messages` stays
+`internal`. Where they are not separable — destruction is not — the whole
+symbol moves, and its constructors move with it so the tier never offers an
+allocation whose release symbol it withholds.
 
 Validating that a caller picked one of the seven `HewSysMsg` kinds checks the
 VALUE, not the ORIGIN, and is not a substitute. The legitimate producers are
 runtime paths whose event is authenticated by a transition they perform
 themselves — `hew_actor_trap` CAS-transitions the child terminal before
 notifying its supervisor — not entry points that accept a composed event.
+
+Capability-scoped requests are NOT ingress: `hew_actor_stop` latches a stop
+flag on an actor the caller already holds, and `hew_actor_link` / `_monitor`
+install a watcher whose `Exit` / `Down` is minted later by the runtime from a
+real death. Both stay `stable`. The test is whether the caller can put the
+system lane into a state the runtime did not derive from an authenticated
+event, read it, or destroy it.
 
 ## JIT host requirements
 

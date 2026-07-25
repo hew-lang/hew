@@ -240,6 +240,37 @@ fn init_existing_scaffold_files_without_force_exit_one() {
 }
 
 #[test]
+fn init_existing_scaffold_files_names_every_conflict_in_one_message() {
+    let tmp = support::tempdir();
+    fs::write(tmp.path().join("main.hew"), "sentinel main").unwrap();
+    fs::write(tmp.path().join("README.md"), "sentinel readme").unwrap();
+
+    let out = run_hew(tmp.path(), &["init"]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "hew init should exit 1 when both scaffold files already exist:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("main.hew"),
+        "stderr should name main.hew; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("README.md"),
+        "stderr should name README.md; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("already exists (use --force to overwrite)"),
+        "stderr should explain how to recover; got:\n{stderr}"
+    );
+}
+
+#[test]
 fn init_force_overwrites_existing_scaffold() {
     let tmp = support::tempdir();
     let main_hew = tmp.path().join("main.hew");

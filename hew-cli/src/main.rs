@@ -1865,15 +1865,23 @@ fn cmd_init(a: &args::InitArgs) {
     let readme = project_dir.join("README.md");
 
     // Guard against overwriting existing files unless --force is given.
+    // Name every conflicting file in one message rather than stopping at the
+    // first, so the user sees the full blast radius before deciding.
     if !a.force {
-        for path in [&main_hew, &readme] {
-            if path.exists() {
-                eprintln!(
-                    "Error: '{}' already exists (use --force to overwrite)",
-                    path.display()
-                );
-                std::process::exit(1);
-            }
+        let conflicts: Vec<String> = [&main_hew, &readme]
+            .into_iter()
+            .filter(|p| p.exists())
+            .map(|p| format!("'{}'", p.display()))
+            .collect();
+        if !conflicts.is_empty() {
+            eprintln!(
+                "Error: {} already exists (use --force to overwrite)",
+                conflicts.join(", ")
+            );
+            eprintln!(
+                "Overwrite with --force, or run `hew init` in a directory without these files."
+            );
+            std::process::exit(1);
         }
     }
 

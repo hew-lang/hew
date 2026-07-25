@@ -214,6 +214,38 @@ fn clear_suspended_cancel_token(a: &HewActor) {
     }
 }
 
+/// Resolve the reply channel a suspending handler still owed its `ask` caller,
+/// on a path that abandons the parked activation without ever resuming it.
+///
+/// The suspend edge MOVES the mailbox node's sender-side reference into
+/// `suspended_reply_channel` (nulling the node's copy) precisely so the
+/// continuation can deposit the reply on its resume edge. When there is no
+/// resume — the actor was stopped, trapped, or refused its park — that
+/// reference is the caller's ONLY link to a reply, and simply nulling the slot
+/// strands a blocking `hew_actor_ask` at `hew_reply_wait` forever and leaks the
+/// channel. Mirror the crash path (which publishes a crash fallback before
+/// going terminal) by publishing the orphaned/actor-stopped failure instead, so
+/// the waiter resolves to a status-bearing `Err`.
+///
+/// EXACTLY ONCE: the slot is taken with a `swap`, so only the caller that
+/// observes the non-null pointer publishes and releases; a second visit to the
+/// same actor (or a racing one) sees null and does nothing.
+/// `hew_reply_channel_retire_orphaned_ask_sender_ref` consumes the sender ref
+/// it publishes through — the same single release the mailbox teardown path
+/// performs for an ask node that is dropped before dispatch.
+fn retire_suspended_reply_channel(a: &HewActor) {
+    let ch = a
+        .suspended_reply_channel
+        .swap(std::ptr::null_mut(), Ordering::AcqRel);
+    if !ch.is_null() {
+        // SAFETY: the actor slot owned this sender-side reference, transferred
+        // from the mailbox node on the suspend edge and not yet consumed.
+        unsafe {
+            crate::reply_channel::hew_reply_channel_retire_orphaned_ask_sender_ref(ch.cast());
+        }
+    }
+}
+
 fn restore_current_context_after_dispatch() {
     let ctx = crate::execution_context::current_context();
     if !ctx.is_null() {
@@ -1415,8 +1447,10 @@ pub unsafe extern "C" fn hew_actor_park_lifecycle_cont(
 /// `Suspended`) so no other worker can drive this actor, and must own the
 /// activation. Destroys the parked frame exactly once (FG1 — the `… →
 /// Destroyed` CAS also serialises against a concurrent resume, FG2), re-arms
-/// the tag so a later park is still possible, drops the suspend-edge stashes
-/// the continuation will never read, resets the per-activation arena, and hands
+/// the tag so a later park is still possible, RESOLVES the `ask` reply channel
+/// the cancelled handler still owed its caller (publishing the orphaned failure
+/// so the asking thread is not left blocked in `hew_reply_wait`), drops the
+/// suspend-edge cancel token, resets the per-activation arena, and hands
 /// off to [`settle_after_activation`], which runs the monitors + terminate
 /// callback for `Stopping`.
 ///
@@ -1431,10 +1465,14 @@ unsafe fn cancel_parked_activation_for_stop(actor: *mut HewActor) {
     let _ = unsafe { crate::coro_exec::destroy_parked(a) };
     let _ = crate::coro_exec::re_arm(a);
     // The continuation is gone: nothing will ever read the stashed reply
-    // channel or the suspend-edge cancel token again. Clear both so a re-armed
-    // actor cannot resume against a freed channel.
-    a.suspended_reply_channel
-        .store(std::ptr::null_mut(), Ordering::Release);
+    // channel or the suspend-edge cancel token again. A suspending handler that
+    // was serving an `ask` still OWES its caller a reply, and this slot holds
+    // the only reference to that caller's channel — clearing it without
+    // resolving it hangs the asking thread in `hew_reply_wait` forever. Publish
+    // the orphaned failure and release the reference exactly once (see
+    // [`retire_suspended_reply_channel`]), mirroring the crash path's late
+    // crash-reply, before dropping the cancel token.
+    retire_suspended_reply_channel(a);
     clear_suspended_cancel_token(a);
     if !a.arena.is_null() {
         // SAFETY: arena was created at spawn; the cancelled activation is over.
@@ -1542,9 +1580,12 @@ unsafe fn settle_pending_resume(actor: *mut HewActor) {
             unsafe { cancel_parked_activation_for_stop(actor) };
         }
     } else {
-        // Stopped/crashed under us -- destroy the parked frame once.
+        // Stopped/crashed under us -- destroy the parked frame once, and resolve
+        // the ask the dead continuation will never answer.
         // SAFETY: no concurrent resume; we just observed Pending.
         let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+        retire_suspended_reply_channel(a);
+        clear_suspended_cancel_token(a);
     }
 }
 
@@ -1658,14 +1699,23 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
 
     // Restore the prior context now that the resume step (resume + poll, and any
     // body-side reply deposit it performed) has run. On a Ready completion the
-    // body already deposited its reply; clear the stash so a re-armed multi-await
-    // actor does not reuse a freed channel. On Pending the handler re-parked, so
-    // the stash stays for the next resume.
+    // body normally deposited its reply, which released the transferred sender
+    // reference — read the consumed flag off the resume context BEFORE the
+    // restore to find out, because a completion that did NOT deposit (or a
+    // refused resume, which ran nothing at all) leaves the slot holding the only
+    // reference to a caller still parked in `hew_reply_wait`. Clear the stash
+    // either way so a re-armed multi-await actor does not reuse a freed channel.
+    // On Pending the handler re-parked, so the stash stays for the next resume.
+    let resume_reply_consumed = current_reply_channel_consumed_on(&raw mut resume_context);
     let restored = crate::execution_context::set_current_context(prev_context);
     debug_assert_eq!(restored, &raw mut resume_context);
     if matches!(poll, Some(crate::cont::ResumePoll::Ready) | None) {
-        a.suspended_reply_channel
-            .store(std::ptr::null_mut(), Ordering::Release);
+        if resume_reply_consumed {
+            a.suspended_reply_channel
+                .store(std::ptr::null_mut(), Ordering::Release);
+        } else {
+            retire_suspended_reply_channel(a);
+        }
         clear_suspended_cancel_token(a);
     }
 
@@ -2519,12 +2569,26 @@ fn activate_actor(actor: *mut HewActor) {
                     // context carrying it and the resumed coroutine body deposits
                     // the reply (the body, not the unwound trampoline frame, owns
                     // the deposit — the trampoline's out-slot is dead by resume).
-                    // The channel reference is transferred to the actor slot: the
-                    // suspend path below skips the normal reply teardown so the
-                    // channel is NOT freed here; the resume edge consumes it.
-                    if !suspend_handle.is_null() {
+                    //
+                    // This is a MOVE, not a copy: the node's sender-side
+                    // reference becomes the actor slot's, and the node's pointer
+                    // is nulled here so `hew_msg_node_free` below cannot also
+                    // retire it. Owning the reference in exactly one place is
+                    // what lets every path that abandons the park resolve it
+                    // exactly once. A handler that already deposited its reply
+                    // before suspending owes nothing, and its reference is
+                    // already released, so that channel is NOT stashed.
+                    if !suspend_handle.is_null()
+                        && !current_reply_channel_consumed_on(ec_ptr)
+                        && !msg_ref.reply_channel.is_null()
+                    {
                         a.suspended_reply_channel
                             .store(msg_ref.reply_channel, Ordering::Release);
+                        // SAFETY: msg is exclusively owned by this worker; the
+                        // reference now belongs to the actor slot.
+                        unsafe { (*msg).reply_channel = std::ptr::null_mut() };
+                    }
+                    if !suspend_handle.is_null() {
                         // SAFETY: `ec_ptr` points at the live dispatch-local
                         // context; reading `cancel_token` through it avoids
                         // re-borrowing the local (which would Unique-retag and
@@ -2624,9 +2688,12 @@ fn activate_actor(actor: *mut HewActor) {
                         }
                         clear_suspended_cancel_token(a);
                         // Park refused (actor concurrently stopped/crashed): the
-                        // handle was destroyed once inside the park guard. Fall
-                        // through to the standard settle so the terminal state is
-                        // honoured.
+                        // handle was destroyed once inside the park guard. The
+                        // suspend edge already moved the caller's reply reference
+                        // into the actor slot, and no resume will ever consume it,
+                        // so resolve it here. Fall through to the standard settle
+                        // so the terminal state is honoured.
+                        retire_suspended_reply_channel(a);
                     }
 
                     // Apply injected delay after dispatch (testing only).
@@ -5394,6 +5461,136 @@ mod tests {
             libc::free(state);
             mailbox::hew_mailbox_free(mailbox);
         }
+    }
+
+    /// Regression: stopping an actor whose `ask` handler is PARKED must not
+    /// strand the asking thread.
+    ///
+    /// The suspend edge MOVES the caller's reply-channel reference into
+    /// `suspended_reply_channel` — the resumed coroutine body, not the unwound
+    /// trampoline frame, deposits the reply — so once an out-of-band stop
+    /// destroys the continuation that slot holds the ONLY reference to the
+    /// asking thread's channel. Before this fix the stop path stored null over
+    /// it without publishing anything, so the asker blocked forever in
+    /// `hew_reply_wait` and the channel leaked. The stop path now mirrors the
+    /// crash path: publish the orphaned failure, release exactly once.
+    ///
+    /// Bite-proof, both halves:
+    /// - Drop the retire from `cancel_parked_activation_for_stop` and the
+    ///   `recv_timeout` below trips — the asker never returns.
+    /// - Retire TWICE (or release without publishing) and the channel-count
+    ///   assertion trips instead: a double release underflows/double-frees and
+    ///   a missing release leaves `baseline + 1`. Asserting the count is what
+    ///   catches a resolution that happens zero or twice rather than once.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn stopping_a_parked_ask_handler_unblocks_the_asking_thread() {
+        /// `*mut HewActor` is not `Send`; the asking thread only ever calls the
+        /// C ABI entry point on it, which is the production contract.
+        struct AskTarget(*mut HewActor);
+        // SAFETY: the actor outlives the asking thread (joined below) and is
+        // tracked in `LIVE_ACTORS` for the whole of it.
+        unsafe impl Send for AskTarget {}
+
+        let _sched = NoWorkerSchedulerForTest::install();
+        let baseline = crate::reply_channel::active_channel_count();
+
+        // SAFETY: fresh mailbox owned by this test.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+
+        let mut stub = stub_actor();
+        stub.dispatch = Some(suspend_once_dispatch);
+        stub.mailbox = mailbox.cast();
+        // Idle would let `hew_actor_stop` short-circuit straight to Stopped, so
+        // start Runnable: the send finds an actor that already has (as far as it
+        // is concerned) a queued activation, and this test drives it by hand.
+        stub.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        let actor = TrackedTestActor::install(stub);
+        let actor_ptr = actor.ptr();
+
+        // A REAL blocking ask from another thread: it creates the channel,
+        // enqueues the node carrying it, and parks in `hew_reply_wait`.
+        let target = AskTarget(actor_ptr);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<bool>();
+        let asker = std::thread::spawn(move || {
+            let target = target;
+            // SAFETY: the actor is live and tracked for this thread's lifetime.
+            let reply = unsafe { crate::actor::hew_actor_ask(target.0, 1, ptr::null_mut(), 0) };
+            if !reply.is_null() {
+                // SAFETY: a deposited reply value is caller-owned.
+                unsafe { libc::free(reply) };
+            }
+            // Sending AFTER the ask returns means the caller-side
+            // `hew_reply_channel_free` has already run, so the count read on the
+            // main thread sees the fully-settled refcount.
+            let _ = done_tx.send(reply.is_null());
+        });
+
+        // Wait for the ask to land before dispatching it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // SAFETY: mailbox is live for the whole test.
+        while unsafe { mailbox::hew_mailbox_len(mailbox) } == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the ask never reached the mailbox"
+            );
+            std::thread::yield_now();
+        }
+
+        // Dispatch it: the handler suspends still owing the reply.
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "the ask handler parked"
+        );
+        assert!(
+            !actor
+                .suspended_reply_channel
+                .load(Ordering::Acquire)
+                .is_null(),
+            "the suspend edge transferred the caller's reply channel to the actor slot"
+        );
+
+        // Out-of-band stop: latches, CASes Suspended → Runnable, and enqueues.
+        // SAFETY: the actor is live and owned by this test.
+        unsafe { crate::actor::hew_actor_stop(actor_ptr) };
+        // Drive the activation the stop queued (no workers under this guard).
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32,
+            "the stop cancelled the park and drove the actor terminal"
+        );
+        assert!(
+            actor
+                .suspended_reply_channel
+                .load(Ordering::Acquire)
+                .is_null(),
+            "the reply slot is cleared once resolved"
+        );
+
+        // Half one: the asking thread RETURNS.
+        let reply_was_null = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("stopping a parked ask handler must unblock the asking thread");
+        assert!(
+            reply_was_null,
+            "a stopped handler deposits no value; the ask fails"
+        );
+        asker.join().expect("asking thread panicked");
+
+        // Half two: the reference was released EXACTLY once.
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            baseline,
+            "the orphaned ask channel is released exactly once by the stop path"
+        );
+
+        // SAFETY: single-threaded again; mailbox unused afterwards.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
     }
 
     /// D-4 Ready-immediately: a run-to-completion dispatch (the trampoline drove

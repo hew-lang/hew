@@ -1,0 +1,36 @@
+//! `continue` as a bare match-arm expression (v0.6 loop ergonomics).
+//!
+//! Same desugar as `break_in_match_arm.hew` (sibling fixture): `continue`
+//! previously required a `{ continue; }` block wrapper in expression
+//! position. It now parses directly as a bare match-arm body.
+//!
+//! Observable contract: sums only the even elements of a `Vec<i64>`, skipping
+//! odd ones via a `continue` match arm, then prints the running total.
+
+fn sum_evens(v: Vec<i64>) -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < v.len() {
+        let n = match v.get(i) {
+            Some(x) => x,
+            None => break,
+        };
+        i = i + 1;
+        match n % 2 {
+            0 => {}
+            _ => continue,
+        }
+        total = total + n;
+    }
+    total
+}
+
+fn main() {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(3);
+    v.push(20);
+    v.push(7);
+    v.push(12);
+    println(sum_evens(v));
+}

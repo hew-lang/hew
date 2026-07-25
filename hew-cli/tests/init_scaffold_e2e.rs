@@ -155,33 +155,55 @@ fn init_without_name_creates_files_in_cwd() {
 }
 
 #[test]
-fn init_existing_directory_without_force_exits_one() {
+fn init_existing_empty_directory_without_force_succeeds() {
     let tmp = support::tempdir();
     let existing = tmp.path().join("existing");
     fs::create_dir(&existing).unwrap();
 
     let out = run_init(tmp.path(), "existing");
 
+    assert!(
+        out.status.success(),
+        "hew init should succeed when the target directory exists but is empty:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        existing.join("main.hew").exists(),
+        "hew init should write main.hew into the pre-existing empty directory"
+    );
+    assert!(
+        existing.join("README.md").exists(),
+        "hew init should write README.md into the pre-existing empty directory"
+    );
+}
+
+#[test]
+fn init_existing_directory_with_real_main_hew_exits_one_naming_the_file() {
+    let tmp = support::tempdir();
+    let existing = tmp.path().join("existing");
+    fs::create_dir(&existing).unwrap();
+    fs::write(existing.join("main.hew"), "fn main() {}\n").unwrap();
+
+    let out = run_init(tmp.path(), "existing");
+
     assert_eq!(
         out.status.code(),
         Some(1),
-        "hew init should exit 1 when the target directory already exists:\nstdout: {}\nstderr: {}",
+        "hew init should exit 1 when main.hew already exists in the target directory:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("Error: directory 'existing' already exists (use --force to overwrite)"),
-        "stderr should explain how to recover; got:\n{stderr}"
+        stderr.contains("main.hew"),
+        "stderr should name the conflicting file, not the directory; got:\n{stderr}"
     );
-    assert!(
-        !existing.join("main.hew").exists(),
-        "hew init should not write main.hew when the directory-exists guard trips"
-    );
-    assert!(
-        !existing.join("README.md").exists(),
-        "hew init should not write README.md when the directory-exists guard trips"
+    assert_eq!(
+        fs::read_to_string(existing.join("main.hew")).unwrap(),
+        "fn main() {}\n",
+        "hew init should leave the pre-existing main.hew untouched when refusing to overwrite"
     );
 }
 

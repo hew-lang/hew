@@ -1842,13 +1842,6 @@ fn cmd_init(a: &args::InitArgs) {
             .and_then(|n| n.to_str())
             .unwrap_or("hew-project")
             .to_string();
-        if dir.exists() && !a.force {
-            eprintln!(
-                "Error: directory '{}' already exists (use --force to overwrite)",
-                dir.display()
-            );
-            std::process::exit(1);
-        }
         if let Err(e) = std::fs::create_dir_all(&dir) {
             eprintln!("Error: cannot create directory '{}': {e}", dir.display());
             std::process::exit(1);

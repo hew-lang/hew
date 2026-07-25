@@ -9075,6 +9075,15 @@ mod tests {
         release_park: Mutex<std::sync::mpsc::Receiver<()>>,
         /// Mirrors a real transport: a close unblocks that connection's reader.
         readers: Mutex<HashMap<c_int, std::sync::mpsc::Sender<()>>>,
+        /// Connection whose `send` parks until the test releases it, or 0.
+        ///
+        /// A send parked here is a genuine claimed send in flight: it holds the
+        /// connection's `ClaimedSendLease` for as long as the transport call
+        /// has not returned, which is exactly the production condition manager
+        /// free waits out after its close phase.
+        park_send_conn: AtomicI32,
+        entered_send_park: std::sync::mpsc::Sender<()>,
+        release_send_park: Mutex<std::sync::mpsc::Receiver<()>>,
     }
 
     impl RacingCloseTransport {
@@ -9106,6 +9115,22 @@ mod tests {
         }
     }
 
+    unsafe extern "C" fn racing_send(
+        impl_ptr: *mut std::ffi::c_void,
+        conn_id: c_int,
+        _data: *const std::ffi::c_void,
+        len: usize,
+    ) -> c_int {
+        // SAFETY: the teardown-race tests install a RacingCloseTransport as the
+        // transport impl payload and keep it alive past every send.
+        let transport = unsafe { &*(impl_ptr.cast::<RacingCloseTransport>()) };
+        if transport.park_send_conn.load(Ordering::Acquire) == conn_id {
+            let _ = transport.entered_send_park.send(());
+            let _ = transport.release_send_park.lock_or_recover().recv();
+        }
+        c_int::try_from(len).unwrap_or(c_int::MAX)
+    }
+
     struct TeardownRace {
         mgr: *mut HewConnMgr,
         cluster: *mut crate::cluster::HewCluster,
@@ -9115,6 +9140,8 @@ mod tests {
         ops: Box<crate::transport::HewTransportOps>,
         entered_park: std::sync::mpsc::Receiver<()>,
         release_park: std::sync::mpsc::Sender<()>,
+        entered_send_park: std::sync::mpsc::Receiver<()>,
+        release_send_park: std::sync::mpsc::Sender<()>,
     }
 
     struct StagedConn {
@@ -9122,7 +9149,6 @@ mod tests {
         publication_sync: Arc<Mutex<()>>,
         publication_removed: Arc<AtomicBool>,
         superseded: Option<LiveClaim>,
-        claimed_send_lifecycle: Arc<ReaderLifecycle>,
         reader_done: Option<std::sync::mpsc::Receiver<()>>,
     }
 
@@ -9146,18 +9172,23 @@ mod tests {
 
         let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (entered_send_tx, entered_send_rx) = std::sync::mpsc::channel::<()>();
+        let (release_send_tx, release_send_rx) = std::sync::mpsc::channel::<()>();
         let transport_impl = Box::into_raw(Box::new(RacingCloseTransport {
             closes: Mutex::new(Vec::new()),
             park_conn,
             entered_park: entered_tx,
             release_park: Mutex::new(release_rx),
             readers: Mutex::new(HashMap::new()),
+            park_send_conn: AtomicI32::new(0),
+            entered_send_park: entered_send_tx,
+            release_send_park: Mutex::new(release_send_rx),
         }));
         let ops = Box::new(crate::transport::HewTransportOps {
             connect: None,
             listen: None,
             accept: None,
-            send: None,
+            send: Some(racing_send),
             recv: None,
             close_conn: Some(racing_close_conn),
             destroy: None,
@@ -9189,6 +9220,8 @@ mod tests {
             ops,
             entered_park: entered_rx,
             release_park: release_tx,
+            entered_send_park: entered_send_rx,
+            release_send_park: release_send_tx,
         }
     }
 
@@ -9221,7 +9254,6 @@ mod tests {
             });
             let publication_sync = Arc::clone(&actor.publication_sync);
             let publication_removed = Arc::clone(&actor.publication_removed);
-            let claimed_send_lifecycle = Arc::clone(&actor.claimed_send_lifecycle);
             let reader_done = reader.then(|| {
                 let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
                 let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
@@ -9246,7 +9278,6 @@ mod tests {
                 publication_sync,
                 publication_removed,
                 superseded,
-                claimed_send_lifecycle,
                 reader_done,
             }
         }
@@ -9285,6 +9316,50 @@ mod tests {
             self.release_park
                 .send(())
                 .expect("the parked close must still be waiting");
+        }
+
+        /// Park the transport `send` of `conn_id`, then start a real claimed
+        /// send on it and block until it is inside that transport call.
+        ///
+        /// Returns the sending thread; the caller releases it with
+        /// [`TeardownRace::release_send_park`] and joins it. While it is
+        /// parked the connection holds a genuine `ClaimedSendLease`, which is
+        /// the production condition manager free waits out after its close
+        /// phase.
+        fn park_claimed_send(
+            &self,
+            conn_id: c_int,
+            publication_token: u64,
+        ) -> std::thread::JoinHandle<c_int> {
+            self.transport_impl()
+                .park_send_conn
+                .store(conn_id, Ordering::Release);
+            let mgr = SendConnMgr(self.mgr);
+            let sender = std::thread::spawn(move || {
+                let mgr = mgr;
+                let payload = [7_u8; 8];
+                // SAFETY: the manager cannot be freed while this claimed send
+                // is in flight, and the payload outlives the call.
+                unsafe {
+                    send_preencoded_on_manager(
+                        &*mgr.0,
+                        conn_id,
+                        Some(publication_token),
+                        payload.as_ptr(),
+                        payload.len(),
+                    )
+                }
+            });
+            self.entered_send_park
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the claimed send must reach the transport and park there");
+            sender
+        }
+
+        fn release_send_park(&self) {
+            self.release_send_park
+                .send(())
+                .expect("the parked send must still be waiting");
         }
 
         /// Free everything the harness owns.
@@ -9461,10 +9536,12 @@ mod tests {
     /// down. Manager free walks every installed connection and closes it, so it
     /// reaches the refused connection while the refusal still owns its close.
     ///
-    /// A second connection holds a claimed send in flight, which parks free
-    /// after its close phase — that keeps free from dropping the manager out
-    /// from under the refusal still running on it, without weakening the close
-    /// race the test is about.
+    /// A second connection holds a REAL claimed send in flight — a production
+    /// `send_preencoded_on_manager` call parked inside the transport's `send`,
+    /// holding that connection's `ClaimedSendLease` — which is precisely the
+    /// condition free waits out after its close phase. That keeps free from
+    /// dropping the manager out from under the refusal still running on it,
+    /// without weakening the close race the test is about.
     ///
     /// Counterfactual: with the close announced rather than acquired, free's
     /// walk stores the flag and frees the refused connection's handle behind
@@ -9479,7 +9556,7 @@ mod tests {
         let race = stage_teardown_race(REFUSED);
         let refused = race.stage_connection(REFUSED, RACE_ROUTE_SLOT, true);
         let other = race.stage_connection(OTHER, OTHER_ROUTE_SLOT, false);
-        let in_flight_send = other.claimed_send_lifecycle.register();
+        let in_flight_send = race.park_claimed_send(OTHER, other.token);
 
         let refusal_mgr = SendConnMgr(race.mgr);
         let token = refused.token;
@@ -9533,7 +9610,18 @@ mod tests {
 
         // Release the in-flight claimed send so free can finish; the refusal is
         // already done with the manager.
-        drop(in_flight_send);
+        assert!(
+            !free.is_finished(),
+            "manager free must still be parked on the in-flight claimed send"
+        );
+        race.release_send_park();
+        assert_eq!(
+            in_flight_send
+                .join()
+                .expect("the claimed send thread should not panic"),
+            0,
+            "the parked claimed send must complete once released"
+        );
         free.join().expect("manager free thread should not panic");
         assert_eq!(race.transport_impl().closes_of(REFUSED), 1);
         assert_eq!(race.transport_impl().closes_of(OTHER), 1);

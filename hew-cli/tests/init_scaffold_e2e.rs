@@ -155,33 +155,80 @@ fn init_without_name_creates_files_in_cwd() {
 }
 
 #[test]
-fn init_existing_directory_without_force_exits_one() {
+fn init_existing_empty_directory_without_force_succeeds() {
     let tmp = support::tempdir();
     let existing = tmp.path().join("existing");
     fs::create_dir(&existing).unwrap();
 
     let out = run_init(tmp.path(), "existing");
 
+    assert!(
+        out.status.success(),
+        "hew init should succeed when the target directory exists but is empty:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        existing.join("main.hew").exists(),
+        "hew init should write main.hew into the pre-existing empty directory"
+    );
+    assert!(
+        existing.join("README.md").exists(),
+        "hew init should write README.md into the pre-existing empty directory"
+    );
+}
+
+#[test]
+fn init_dot_and_no_arg_produce_the_same_project_name() {
+    let tmp = support::tempdir();
+    let out = run_hew(tmp.path(), &["init", "."]);
+
+    assert!(
+        out.status.success(),
+        "hew init . failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let project_name = tmp
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!("Created source-only project \"{project_name}\"")),
+        "hew init . should name the project after the target directory, matching `hew init` \
+         with no argument; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn init_existing_directory_with_real_main_hew_exits_one_naming_the_file() {
+    let tmp = support::tempdir();
+    let existing = tmp.path().join("existing");
+    fs::create_dir(&existing).unwrap();
+    fs::write(existing.join("main.hew"), "fn main() {}\n").unwrap();
+
+    let out = run_init(tmp.path(), "existing");
+
     assert_eq!(
         out.status.code(),
         Some(1),
-        "hew init should exit 1 when the target directory already exists:\nstdout: {}\nstderr: {}",
+        "hew init should exit 1 when main.hew already exists in the target directory:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("Error: directory 'existing' already exists (use --force to overwrite)"),
-        "stderr should explain how to recover; got:\n{stderr}"
+        stderr.contains("main.hew"),
+        "stderr should name the conflicting file, not the directory; got:\n{stderr}"
     );
-    assert!(
-        !existing.join("main.hew").exists(),
-        "hew init should not write main.hew when the directory-exists guard trips"
-    );
-    assert!(
-        !existing.join("README.md").exists(),
-        "hew init should not write README.md when the directory-exists guard trips"
+    assert_eq!(
+        fs::read_to_string(existing.join("main.hew")).unwrap(),
+        "fn main() {}\n",
+        "hew init should leave the pre-existing main.hew untouched when refusing to overwrite"
     );
 }
 
@@ -209,12 +256,52 @@ fn init_existing_scaffold_files_without_force_exit_one() {
             )),
             "stderr should explain how to recover for {file_name}; got:\n{stderr}"
         );
+        assert!(
+            !stderr.contains("already exist (use --force to overwrite)"),
+            "a single conflict should use the singular verb; got:\n{stderr}"
+        );
         assert_eq!(
             fs::read_to_string(&existing_path).unwrap(),
             "sentinel",
             "hew init should leave {file_name} untouched when refusing to overwrite"
         );
     }
+}
+
+#[test]
+fn init_existing_scaffold_files_names_every_conflict_in_one_message() {
+    let tmp = support::tempdir();
+    fs::write(tmp.path().join("main.hew"), "sentinel main").unwrap();
+    fs::write(tmp.path().join("README.md"), "sentinel readme").unwrap();
+
+    let out = run_hew(tmp.path(), &["init"]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "hew init should exit 1 when both scaffold files already exist:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("main.hew"),
+        "stderr should name main.hew; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("README.md"),
+        "stderr should name README.md; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("README.md' already exist (use --force to overwrite)"),
+        "stderr should explain how to recover, with the verb agreeing with the two \
+         conflicting files; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("already exists"),
+        "two conflicts should use the plural verb; got:\n{stderr}"
+    );
 }
 
 #[test]
@@ -252,5 +339,30 @@ fn init_force_overwrites_existing_scaffold() {
     assert!(
         readme_src.contains("It does not create `hew.toml`"),
         "forced scaffold should restore the starter README; got:\n{readme_src}"
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--force replaced existing: main.hew, README.md"),
+        "stdout should report which pre-existing files --force replaced; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn init_force_into_empty_directory_prints_no_replacement_notice() {
+    let tmp = support::tempdir();
+    let out = run_hew(tmp.path(), &["init", "--force"]);
+
+    assert!(
+        out.status.success(),
+        "hew init --force failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("--force replaced existing"),
+        "stdout should not claim a replacement when no scaffold file pre-existed; got:\n{stdout}"
     );
 }

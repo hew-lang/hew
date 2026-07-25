@@ -1837,22 +1837,23 @@ fn format_for_display(input_name: &str, source: &str) -> Option<String> {
 fn cmd_init(a: &args::InitArgs) {
     let (project_name, project_dir) = if let Some(ref name) = a.name {
         let dir = std::path::PathBuf::from(name);
-        let pname = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("hew-project")
-            .to_string();
-        if dir.exists() && !a.force {
-            eprintln!(
-                "Error: directory '{}' already exists (use --force to overwrite)",
-                dir.display()
-            );
-            std::process::exit(1);
-        }
         if let Err(e) = std::fs::create_dir_all(&dir) {
             eprintln!("Error: cannot create directory '{}': {e}", dir.display());
             std::process::exit(1);
         }
+        // Derive the name from the canonicalized directory so `hew init .`
+        // and `hew init` (no arg) agree — `.` alone has no file_name(), and
+        // canonicalize needs the directory to exist, which create_dir_all
+        // above guarantees.
+        let pname = dir
+            .canonicalize()
+            .ok()
+            .as_deref()
+            .and_then(std::path::Path::file_name)
+            .or_else(|| dir.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("hew-project")
+            .to_string();
         (pname, dir)
     } else {
         // No name given — use current directory name as project name.
@@ -1872,15 +1873,30 @@ fn cmd_init(a: &args::InitArgs) {
     let readme = project_dir.join("README.md");
 
     // Guard against overwriting existing files unless --force is given.
+    // Name every conflicting file in one message rather than stopping at the
+    // first, so the user sees the full blast radius before deciding.
     if !a.force {
-        for path in [&main_hew, &readme] {
-            if path.exists() {
-                eprintln!(
-                    "Error: '{}' already exists (use --force to overwrite)",
-                    path.display()
-                );
-                std::process::exit(1);
-            }
+        let conflicts: Vec<String> = [&main_hew, &readme]
+            .into_iter()
+            .filter(|p| p.exists())
+            .map(|p| format!("'{}'", p.display()))
+            .collect();
+        if !conflicts.is_empty() {
+            // Agree the verb with the number of conflicts so a multi-file list
+            // does not read as if it were a single file.
+            let verb = if conflicts.len() == 1 {
+                "already exists"
+            } else {
+                "already exist"
+            };
+            eprintln!(
+                "Error: {} {verb} (use --force to overwrite)",
+                conflicts.join(", ")
+            );
+            eprintln!(
+                "Overwrite with --force, or run `hew init` in a directory without these files."
+            );
+            std::process::exit(1);
         }
     }
 
@@ -1908,6 +1924,11 @@ hew run main.hew
 "
     );
 
+    // Record which files pre-existed before --force overwrites them, so the
+    // forced path can report what it replaced.
+    let main_hew_replaced = a.force && main_hew.exists();
+    let readme_replaced = a.force && readme.exists();
+
     if let Err(e) = std::fs::write(&main_hew, main_content) {
         eprintln!("Error: cannot write {}: {e}", main_hew.display());
         std::process::exit(1);
@@ -1919,6 +1940,17 @@ hew run main.hew
 
     println!("Created source-only project \"{project_name}\" with main.hew and README.md");
     println!("No hew.toml was created; use `adze init` for manifest-first bootstrap.");
+
+    let replaced: Vec<&str> = [
+        main_hew_replaced.then_some("main.hew"),
+        readme_replaced.then_some("README.md"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !replaced.is_empty() {
+        println!("--force replaced existing: {}", replaced.join(", "));
+    }
 }
 
 fn cmd_completions(a: &args::CompletionsArgs) {

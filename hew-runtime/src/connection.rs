@@ -9788,6 +9788,219 @@ mod tests {
         unsafe { race.finish() };
     }
 
+    /// (f) A guarded publication transition has already CLAIMED — it is past
+    /// every check, registered as in flight, and about to run its callbacks —
+    /// when the connection it was authorized against is refused. Revocation
+    /// cannot reach a claimed transition, so the refusal must WAIT for it: once
+    /// `notify_connection_lost_if_current` has returned, no ALIVE for the
+    /// retired token may still become observable.
+    ///
+    /// The seam this parks on sits AFTER the claim and BEFORE the first
+    /// observable delivery, which is where this race lives. Test (d)'s seam
+    /// sits before the claim and cannot see it — a seam placed where the bug is
+    /// not cannot fail.
+    ///
+    /// The releasing thread is this test, never the refusing thread, precisely
+    /// because the refusing thread is the one expected to block.
+    ///
+    /// Counterfactual: with the claim treated as the end of the story (no
+    /// in-flight registration for retirement to wait on), the refusal returns
+    /// straight through while the delivery is still parked — the negative-
+    /// timing assertion below fails, and the peer's `NODE_JOINED` is recorded
+    /// AFTER the refusal-returned marker instead of before it.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test stages the post-claim delivery race and its full observation log in one place"
+    )]
+    fn refusal_waits_out_a_claimed_alive_before_it_returns() {
+        /// A slot the harness cluster never joined, so this peer's ALIVE is a
+        /// genuine `NODE_JOINED` announcement.
+        const UNJOINED_ROUTE_SLOT: u16 = 7;
+        const CONN: c_int = 48;
+
+        /// One entry in the observation log, in the order observers saw it.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum Observed {
+            Membership(u16, u8),
+            /// Pushed the instant `refuse_established_publication` returns.
+            RefusalReturned,
+        }
+
+        extern "C" fn collect_membership_events(
+            node_id: u16,
+            event: u8,
+            user_data: *mut std::ffi::c_void,
+        ) {
+            // SAFETY: the test installs a Mutex<Vec<Observed>> that outlives
+            // every thread able to reach the callback.
+            let log = unsafe { &*user_data.cast::<Mutex<Vec<Observed>>>() };
+            log.lock_or_recover()
+                .push(Observed::Membership(node_id, event));
+        }
+
+        struct SendCluster(*mut crate::cluster::HewCluster);
+        // SAFETY: cluster internals are synchronized and the test keeps the
+        // cluster alive past every thread that holds this pointer.
+        unsafe impl Send for SendCluster {}
+
+        struct SendLog(*mut Mutex<Vec<Observed>>);
+        // SAFETY: the log is a mutex the test keeps alive past every thread
+        // that holds this pointer.
+        unsafe impl Send for SendLog {}
+
+        // No close is parked: this interleaving seam is the cluster's guarded
+        // delivery, not the close.
+        let race = stage_teardown_race(0);
+        let staged = race.stage_connection(CONN, UNJOINED_ROUTE_SLOT, true);
+        let log: Box<Mutex<Vec<Observed>>> = Box::new(Mutex::new(Vec::new()));
+        let log = Box::into_raw(log);
+        // SAFETY: the cluster is live and `log` outlives every dispatch.
+        unsafe {
+            crate::cluster::hew_cluster_set_membership_callback(
+                race.cluster,
+                collect_membership_events,
+                log.cast::<std::ffi::c_void>(),
+            );
+        }
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        // SAFETY: the cluster is live for the whole test.
+        unsafe { &*race.cluster }.set_guarded_delivery_probe(Some(Arc::new(
+            crate::cluster::GuardedDeliveryProbe {
+                entered: entered_tx,
+                release: Mutex::new(release_rx),
+            },
+        )));
+
+        let establish_cluster = SendCluster(race.cluster);
+        let token = staged.token;
+        let publication_sync = Arc::clone(&staged.publication_sync);
+        let publication_removed = Arc::clone(&staged.publication_removed);
+        let establish = std::thread::spawn(move || {
+            let establish_cluster = establish_cluster;
+            // SAFETY: the cluster outlives this thread; the test joins it
+            // before freeing anything.
+            unsafe {
+                crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+                    establish_cluster.0,
+                    UNJOINED_ROUTE_SLOT,
+                    1,
+                    token,
+                    &publication_sync,
+                    &publication_removed,
+                )
+            }
+        });
+
+        // The transition has now CLAIMED and has emitted nothing yet.
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the guarded delivery must park after its claim");
+        // SAFETY: `log` is owned by this test.
+        let observed_before_release = unsafe { &*log }.lock_or_recover().len();
+        assert_eq!(
+            observed_before_release, 0,
+            "the parked delivery must not have become observable yet"
+        );
+
+        let (refusal_done_tx, refusal_done_rx) = std::sync::mpsc::channel::<()>();
+        let refusal_mgr = SendConnMgr(race.mgr);
+        let refusal_log = SendLog(log);
+        let refusal = std::thread::spawn(move || {
+            let refusal_mgr = refusal_mgr;
+            let refusal_log = refusal_log;
+            // SAFETY: the manager outlives this thread.
+            let mgr = unsafe { &*refusal_mgr.0 };
+            refuse_established_publication(mgr, UNJOINED_ROUTE_SLOT, CONN, token);
+            // SAFETY: the log outlives every thread that can reach it.
+            unsafe { &*refusal_log.0 }
+                .lock_or_recover()
+                .push(Observed::RefusalReturned);
+            let _ = refusal_done_tx.send(());
+        });
+
+        // Deliberate negative-timing assertion: the refusal must NOT be able to
+        // return while an authorized-and-claimed ALIVE is still in flight.
+        assert!(
+            refusal_done_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "the refusal returned while a claimed ALIVE was still undelivered"
+        );
+
+        // Release the delivery into a cluster that has already retired it.
+        release_tx
+            .send(())
+            .expect("the parked delivery must still be waiting");
+        assert_eq!(
+            establish.join().expect("establish thread should not panic"),
+            1
+        );
+        refusal.join().expect("refusal thread should not panic");
+        refusal_done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the refusal must complete once the delivery has finished");
+        // SAFETY: the cluster is live.
+        unsafe { &*race.cluster }.set_guarded_delivery_probe(None);
+        staged
+            .reader_done
+            .expect("the refused connection is staged with a reader")
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the woken reader must have run its cleanup");
+
+        // SAFETY: `log` is still owned by this test and every thread that
+        // could push to it has been joined.
+        let observed = unsafe { &*log }.lock_or_recover().clone();
+        let returned = observed
+            .iter()
+            .position(|entry| *entry == Observed::RefusalReturned)
+            .expect("the refusal-returned marker must be recorded");
+        let joined = Observed::Membership(
+            UNJOINED_ROUTE_SLOT,
+            crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED,
+        );
+        assert!(
+            observed[..returned].contains(&joined),
+            "the released ALIVE must be observed before the refusal returns, got {observed:?}"
+        );
+        assert!(
+            !observed[returned..].contains(&joined),
+            "no ALIVE may be observable once the refusal has returned, got {observed:?}"
+        );
+        assert!(
+            observed.contains(&Observed::Membership(
+                UNJOINED_ROUTE_SLOT,
+                crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT
+            )),
+            "the refusal must still demote the peer it retired, got {observed:?}"
+        );
+        assert_eq!(
+            // SAFETY: the cluster is live.
+            unsafe { crate::cluster::hew_cluster_member_state(race.cluster, UNJOINED_ROUTE_SLOT) },
+            crate::cluster::MEMBER_SUSPECT,
+            "the refusal must leave the peer retired, not alive"
+        );
+        assert_eq!(
+            race.transport_impl().closes_of(CONN),
+            1,
+            "the refusal must close the one-shot transport exactly once"
+        );
+        // SAFETY: the manager is still live.
+        assert_eq!(unsafe { hew_connmgr_count(race.mgr) }, 0);
+
+        // SAFETY: the manager is live and is not used again.
+        unsafe { hew_connmgr_free(race.mgr) };
+        assert_eq!(race.transport_impl().closes_of(CONN), 1);
+        // SAFETY: the manager has been freed and no thread can reach the
+        // callback payload any more.
+        unsafe {
+            race.finish();
+            drop(Box::from_raw(log));
+        }
+    }
+
     // ---- issue #2652 · Slice 4 · NodeId claim state machine ----------------
 
     /// Build a minimal manager for claim-machine unit tests: a stub transport

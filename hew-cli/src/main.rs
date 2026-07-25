@@ -1837,15 +1837,23 @@ fn format_for_display(input_name: &str, source: &str) -> Option<String> {
 fn cmd_init(a: &args::InitArgs) {
     let (project_name, project_dir) = if let Some(ref name) = a.name {
         let dir = std::path::PathBuf::from(name);
-        let pname = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("hew-project")
-            .to_string();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             eprintln!("Error: cannot create directory '{}': {e}", dir.display());
             std::process::exit(1);
         }
+        // Derive the name from the canonicalized directory so `hew init .`
+        // and `hew init` (no arg) agree — `.` alone has no file_name(), and
+        // canonicalize needs the directory to exist, which create_dir_all
+        // above guarantees.
+        let pname = dir
+            .canonicalize()
+            .ok()
+            .as_deref()
+            .and_then(std::path::Path::file_name)
+            .or_else(|| dir.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("hew-project")
+            .to_string();
         (pname, dir)
     } else {
         // No name given — use current directory name as project name.

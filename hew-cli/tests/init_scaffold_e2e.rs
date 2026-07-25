@@ -179,6 +179,31 @@ fn init_existing_empty_directory_without_force_succeeds() {
 }
 
 #[test]
+fn init_dot_and_no_arg_produce_the_same_project_name() {
+    let tmp = support::tempdir();
+    let out = run_hew(tmp.path(), &["init", "."]);
+
+    assert!(
+        out.status.success(),
+        "hew init . failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let project_name = tmp
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!("Created source-only project \"{project_name}\"")),
+        "hew init . should name the project after the target directory, matching `hew init` \
+         with no argument; got:\n{stdout}"
+    );
+}
+
+#[test]
 fn init_existing_directory_with_real_main_hew_exits_one_naming_the_file() {
     let tmp = support::tempdir();
     let existing = tmp.path().join("existing");

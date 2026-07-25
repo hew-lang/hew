@@ -10091,6 +10091,299 @@ mod tests {
         }
     }
 
+    /// One entry in the re-entrant refusal's observation log, in the order
+    /// observers saw it.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ReentrantSeen {
+        /// The ordinary state callback, which fires BEFORE the membership one.
+        State(u16, i32),
+        Membership(u16, u8),
+        /// Pushed the instant the re-entrant refusal returns.
+        RetirementReturned,
+    }
+
+    /// Everything the re-entrant state callback needs to refuse its own
+    /// connection, since [`crate::cluster::hew_cluster_set_callback`] carries
+    /// no user data.
+    struct ReentrantRefusal {
+        mgr: *mut HewConnMgr,
+        conn_id: c_int,
+        route_slot: u16,
+        token: u64,
+        log: *mut Mutex<Vec<ReentrantSeen>>,
+        /// Refuse once: the refusal itself delivers a SUSPECT through this same
+        /// callback and must not recurse.
+        fired: bool,
+        /// Run the refusal on a SECOND thread and block the delivering thread
+        /// on it, which is the cycle a retirement that waited for the delivery
+        /// would close.
+        off_thread: bool,
+    }
+
+    // SAFETY: the test keeps the manager and the log alive past every thread
+    // that can reach this callback, and clears the slot before freeing either.
+    unsafe impl Send for ReentrantRefusal {}
+
+    static REENTRANT_REFUSAL: Mutex<Option<ReentrantRefusal>> = Mutex::new(None);
+
+    extern "C" fn refuse_from_state_callback(node_id: u16, state: i32, _incarnation: u64) {
+        // The slot lock is dropped before the refusal: the refusal drives
+        // further deliveries through this same callback.
+        let target = {
+            let mut slot = REENTRANT_REFUSAL.lock_or_recover();
+            let Some(context) = slot.as_mut() else {
+                return;
+            };
+            // SAFETY: the log outlives the callback registration.
+            unsafe { &*context.log }
+                .lock_or_recover()
+                .push(ReentrantSeen::State(node_id, state));
+            if context.fired
+                || node_id != context.route_slot
+                || state != crate::cluster::MEMBER_ALIVE
+            {
+                None
+            } else {
+                context.fired = true;
+                Some((
+                    context.mgr,
+                    context.route_slot,
+                    context.conn_id,
+                    context.token,
+                    context.log,
+                    context.off_thread,
+                ))
+            }
+        };
+        let Some((mgr, route_slot, conn_id, token, log, off_thread)) = target else {
+            return;
+        };
+        if off_thread {
+            let refusal_mgr = SendConnMgr(mgr);
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let refusal = std::thread::spawn(move || {
+                let refusal_mgr = refusal_mgr;
+                // SAFETY: the manager outlives the callback registration.
+                refuse_established_publication(
+                    unsafe { &*refusal_mgr.0 },
+                    route_slot,
+                    conn_id,
+                    token,
+                );
+                let _ = done_tx.send(());
+            });
+            // The delivering thread now blocks on the retiring thread. A
+            // retirement that waited for this delivery would close the cycle;
+            // this bounded wait turns that deadlock into a failure instead of
+            // a hang.
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the retirement must not deadlock against the delivery it retires");
+            refusal.join().expect("refusal thread should not panic");
+        } else {
+            // SAFETY: the manager outlives the callback registration.
+            refuse_established_publication(unsafe { &*mgr }, route_slot, conn_id, token);
+        }
+        // SAFETY: the log outlives the callback registration.
+        unsafe { &*log }
+            .lock_or_recover()
+            .push(ReentrantSeen::RetirementReturned);
+    }
+
+    extern "C" fn collect_reentrant_membership_events(
+        node_id: u16,
+        event: u8,
+        user_data: *mut std::ffi::c_void,
+    ) {
+        // SAFETY: the test installs a Mutex<Vec<ReentrantSeen>> that outlives
+        // every thread able to reach the callback.
+        let log = unsafe { &*user_data.cast::<Mutex<Vec<ReentrantSeen>>>() };
+        log.lock_or_recover()
+            .push(ReentrantSeen::Membership(node_id, event));
+    }
+
+    /// Drive one claimed guarded ALIVE whose state callback refuses the very
+    /// connection that ALIVE is about, and return the observation log in the
+    /// order observers saw it.
+    ///
+    /// `off_thread` chooses which of the two re-entrancy shapes runs: the
+    /// refusal on the delivering thread itself, or on a second thread the
+    /// delivering thread then blocks on.
+    fn drive_refusal_from_a_delivery_callback(
+        off_thread: bool,
+        route_slot: u16,
+        conn_id: c_int,
+    ) -> Vec<ReentrantSeen> {
+        // No close is parked: this is about the delivery, not the close.
+        let race = stage_teardown_race(0);
+        let staged = race.stage_connection(conn_id, route_slot, true);
+        let log: Box<Mutex<Vec<ReentrantSeen>>> = Box::new(Mutex::new(Vec::new()));
+        let log = Box::into_raw(log);
+        // SAFETY: the cluster is live and `log` outlives every dispatch.
+        unsafe {
+            crate::cluster::hew_cluster_set_membership_callback(
+                race.cluster,
+                collect_reentrant_membership_events,
+                log.cast::<std::ffi::c_void>(),
+            );
+            crate::cluster::hew_cluster_set_callback(
+                race.cluster,
+                Some(refuse_from_state_callback),
+            );
+        }
+        *REENTRANT_REFUSAL.lock_or_recover() = Some(ReentrantRefusal {
+            mgr: race.mgr,
+            conn_id,
+            route_slot,
+            token: staged.token,
+            log,
+            fired: false,
+            off_thread,
+        });
+
+        // Driven on THIS thread, so the refusal is genuinely re-entrant: it
+        // runs inside the delivery it is retiring.
+        // SAFETY: the cluster is live for the whole test.
+        let established = unsafe {
+            crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+                race.cluster,
+                route_slot,
+                1,
+                staged.token,
+                &staged.publication_sync,
+                &staged.publication_removed,
+            )
+        };
+        assert_eq!(established, 1);
+
+        *REENTRANT_REFUSAL.lock_or_recover() = None;
+        // SAFETY: the cluster is live and no other thread is using it.
+        unsafe { crate::cluster::hew_cluster_set_callback(race.cluster, None) };
+        staged
+            .reader_done
+            .expect("the refused connection is staged with a reader")
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the woken reader must have run its cleanup");
+
+        assert_eq!(
+            // SAFETY: the cluster is live.
+            unsafe { crate::cluster::hew_cluster_member_state(race.cluster, route_slot) },
+            crate::cluster::MEMBER_SUSPECT,
+            "the re-entrant refusal must leave the peer retired, not alive"
+        );
+        assert_eq!(
+            race.transport_impl().closes_of(conn_id),
+            1,
+            "the re-entrant refusal must close the transport exactly once"
+        );
+        // SAFETY: the manager is still live.
+        assert_eq!(unsafe { hew_connmgr_count(race.mgr) }, 0);
+        // SAFETY: the manager is live and is not used again.
+        unsafe { hew_connmgr_free(race.mgr) };
+        assert_eq!(race.transport_impl().closes_of(conn_id), 1);
+
+        // SAFETY: the manager has been freed and no thread can reach the
+        // callback payload any more.
+        let observed = unsafe {
+            race.finish();
+            let observed = (*log).lock_or_recover().clone();
+            drop(Box::from_raw(log));
+            observed
+        };
+        observed
+    }
+
+    /// Assert the ordering the token-guarded retirement exists to provide:
+    /// no ALIVE is observable once that retirement has returned.
+    fn assert_no_alive_survives_the_refusal(route_slot: u16, observed: &[ReentrantSeen]) {
+        assert!(
+            observed.contains(&ReentrantSeen::State(
+                route_slot,
+                crate::cluster::MEMBER_ALIVE
+            )),
+            "the re-entrant callback must have been reached through an ALIVE, got {observed:?}"
+        );
+        let returned = observed
+            .iter()
+            .position(|entry| *entry == ReentrantSeen::RetirementReturned)
+            .expect("the re-entrant retirement must have run and returned");
+        let joined =
+            ReentrantSeen::Membership(route_slot, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED);
+        assert!(
+            !observed[returned..].contains(&joined),
+            "no ALIVE may be observable once the retirement has returned, got {observed:?}"
+        );
+        assert!(
+            !observed.contains(&joined),
+            "the cancelled ALIVE must be suppressed outright, got {observed:?}"
+        );
+        assert!(
+            observed.contains(&ReentrantSeen::Membership(
+                route_slot,
+                crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_SUSPECT
+            )),
+            "the refusal must still demote the peer it retired, got {observed:?}"
+        );
+    }
+
+    /// (g) RE-ENTRANT: the state callback of a claimed guarded ALIVE refuses
+    /// the very connection that ALIVE is about, ON THE DELIVERING THREAD.
+    ///
+    /// This is the interleaving a same-thread exemption cannot survive. The
+    /// state callback fires before the membership one, so a retirement that
+    /// returned into the middle of a delivery would be followed by that
+    /// delivery's own `NODE_JOINED` — a token-guarded removal returning before
+    /// an ALIVE it exists to exclude.
+    ///
+    /// Cancellation makes it hold without any same-thread special case: the
+    /// refusal marks the in-flight delivery cancelled and returns, and the
+    /// delivering thread's next re-read of that registration — which cannot be
+    /// stale, because it happens after the refusal returned on the same
+    /// thread — suppresses every remaining step.
+    ///
+    /// It is also the case a wait could never serve: the only thread that
+    /// could release such a wait is the thread doing the waiting.
+    ///
+    /// Counterfactual: without the per-step re-read, `NODE_JOINED` is recorded
+    /// after `RetirementReturned` and the ordering assertion fails.
+    #[test]
+    fn refusal_re_entered_from_a_delivery_callback_suppresses_its_own_alive() {
+        /// A slot the harness cluster never joined, so this peer's ALIVE is a
+        /// genuine `NODE_JOINED` announcement.
+        const UNJOINED_ROUTE_SLOT: u16 = 9;
+        const CONN: c_int = 51;
+
+        let observed = drive_refusal_from_a_delivery_callback(false, UNJOINED_ROUTE_SLOT, CONN);
+        assert_no_alive_survives_the_refusal(UNJOINED_ROUTE_SLOT, &observed);
+    }
+
+    /// (h) RE-ENTRANT ACROSS THREADS: the state callback of a claimed guarded
+    /// ALIVE hands the refusal to a second thread and blocks on it.
+    ///
+    /// This is the cycle: the delivering thread cannot return from the callback
+    /// until the refusing thread returns from the refusal. A retirement that
+    /// waited for the in-flight delivery would never return, and neither thread
+    /// would make progress. Cancellation has nothing to wait on — the refusal
+    /// takes the token lock, flips a flag and returns — so the cycle cannot
+    /// form.
+    ///
+    /// The bounded wait inside the callback exists only so a regression shows
+    /// up as a failure rather than a hung test binary.
+    ///
+    /// Counterfactual: with the wait restored, this test hangs until that
+    /// bounded wait expires and then fails on it; with the wait removed but no
+    /// per-step re-read, it fails on the `NODE_JOINED` ordering instead.
+    #[test]
+    fn refusal_from_another_thread_cannot_deadlock_the_delivery_it_retires() {
+        /// A slot the harness cluster never joined, so this peer's ALIVE is a
+        /// genuine `NODE_JOINED` announcement.
+        const UNJOINED_ROUTE_SLOT: u16 = 11;
+        const CONN: c_int = 52;
+
+        let observed = drive_refusal_from_a_delivery_callback(true, UNJOINED_ROUTE_SLOT, CONN);
+        assert_no_alive_survives_the_refusal(UNJOINED_ROUTE_SLOT, &observed);
+    }
+
     // ---- issue #2652 · Slice 4 · NodeId claim state machine ----------------
 
     /// Build a minimal manager for claim-machine unit tests: a stub transport

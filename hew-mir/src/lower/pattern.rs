@@ -1260,7 +1260,7 @@ impl Builder {
     /// the leaf parameterised to "a read of `binding`" instead of "any
     /// parameter": wrappers recurse all reachable values, constructions
     /// recurse operands, a call may alias iff its callee is not
-    /// summary-proven fresh (`funcupdate_fn_returns_fresh`) AND some argument
+    /// summary-proven fresh (`fresh_owner_verdicts`) AND some argument
     /// may alias, projections recurse their object chain, and every unmodelled
     /// form answers `true`. Two deliberate refinements:
     ///
@@ -1346,7 +1346,7 @@ impl Builder {
             // forward that argument's heap into its return).
             HirExprKind::Call { callee, args } => {
                 !callee_is_resolved_item(callee)
-                    || (!callee_returns_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
+                    || (!callee_returns_fresh_owner(callee, &self.fresh_owner_verdicts)
                         && args
                             .iter()
                             .any(|a| self.reassign_rhs_may_alias_binding(a, binding)))

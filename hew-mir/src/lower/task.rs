@@ -837,7 +837,7 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
-            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
+            fresh_owner_verdicts: self.fresh_owner_verdicts.clone(),
             param_ownership: self.param_ownership.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),

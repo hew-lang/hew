@@ -1088,6 +1088,137 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
 // Module-global preflight context — built once, threaded into every builder
 // ---------------------------------------------------------------------------
 
+/// The SINGLE authority for the question "does this call hand back a fresh owner
+/// I may mint a caller-side RELEASE obligation over?".
+///
+/// # Why a type and not a map
+///
+/// The coarse freshness fixpoint (`compute_fn_returns_fresh_owner`) answers a
+/// NARROWER question — may a return value alias a by-value parameter — and it
+/// cannot see an extern at all: a declared `extern "C"` fn is body-less, so the
+/// coarse walk's `unwrap_or(true)` cross-ABI fallback classifies an un-audited
+/// host as a fresh-owner producer, and one Hew frame around it inherits a `true`
+/// row. Conjoining the veto at each consumer was tried and failed three times:
+/// the defect reappeared one call site at a time, because the coarse `HashMap`
+/// stayed reachable and a new consumer could always read it directly.
+///
+/// So the veto lives in the TYPE. The rows are private, the only constructor is
+/// [`FreshOwnerVerdicts::build`] (crate-private, called once from
+/// [`build_call_scrutinee_provenance`]), and every ownership consumer takes a
+/// `&FreshOwnerVerdicts`. A coarse `HashMap<ItemId, bool>` is not
+/// type-compatible with any of those signatures, so no consumer — present or
+/// future — can obtain a "fresh" answer for a laundering wrapper.
+///
+/// # The two vetoes it carries
+///
+/// * **Wrapper laundering (id-keyed).** Every row is the coarse verdict
+///   CONJOINED with `compute_fn_return_launders_opaque_extern`, a transitive
+///   fixpoint over the audited [`ExternContractTable`]. A wrapper, a wrapper of
+///   a wrapper, a generic wrapper (analyzed at its origin `ItemId`, which is
+///   what a monomorphisation's callee resolves to) and a recursive-looking
+///   wrapper all read `false`.
+/// * **Direct extern (name-keyed).** An extern call site's `ResolvedRef::Item`
+///   carries a PLACEHOLDER id, not the declaration's — an id lookup would both
+///   miss the extern and collide with the module-fn summary space. The declared
+///   opaque-extern NAMES are therefore carried here too and vetoed first.
+///
+/// Both vetoes are TYPE-AGNOSTIC: neither the laundering fixpoint nor the extern
+/// table filters on `string`, so a record, a tuple, an enum and a `Vec` element
+/// are covered identically.
+///
+/// # Fallbacks
+///
+/// [`FreshOwnerVerdicts::item_returns_fresh_owner`] keeps the coarse
+/// `unwrap_or(true)` for an ABSENT row — the cross-ABI owned-return contract
+/// that covers aggregate constructors and compiler-minted runtime primitives,
+/// none of which are declared externs and none of which the laundering fixpoint
+/// can taint. [`FreshOwnerVerdicts::item_returns_analyzed_fresh_owner`] drops
+/// that fallback entirely: only a row this module ANALYZED and proved clean
+/// answers `true`. A consumer whose worst case is a double release uses the
+/// latter; a consumer whose worst case is a missed move/clone optimisation uses
+/// the former.
+#[derive(Debug, Default, Clone)]
+pub struct FreshOwnerVerdicts {
+    /// `ItemId` → coarse freshness ∧ ¬laundering. Private: the whole point.
+    rows: HashMap<hew_hir::ItemId, bool>,
+    /// Declared `extern "C"` fn names with no audited fresh-owner return.
+    opaque_extern_names: HashSet<String>,
+}
+
+impl FreshOwnerVerdicts {
+    /// The ONLY constructor. Crate-private so the conjunction cannot be skipped
+    /// by a caller that happens to hold a coarse map.
+    ///
+    /// The row set is the UNION of the coarse fixpoint's keys and the taint
+    /// set's: a laundering id that the coarse fixpoint somehow never keyed
+    /// still lands as an explicit `false` rather than falling through to the
+    /// `unwrap_or(true)` fallback.
+    fn build(
+        coarse_fresh_returns: &HashMap<hew_hir::ItemId, bool>,
+        launders_opaque_extern: &HashSet<hew_hir::ItemId>,
+        extern_table: &ExternContractTable,
+    ) -> Self {
+        let mut rows: HashMap<hew_hir::ItemId, bool> = coarse_fresh_returns
+            .iter()
+            .map(|(&id, &fresh)| (id, fresh && !launders_opaque_extern.contains(&id)))
+            .collect();
+        for &id in launders_opaque_extern {
+            rows.insert(id, false);
+        }
+        let opaque_extern_names = extern_table
+            .names
+            .iter()
+            .filter(|name| !extern_table.extern_return_is_audited_fresh_owner(name))
+            .cloned()
+            .collect();
+        Self {
+            rows,
+            opaque_extern_names,
+        }
+    }
+
+    /// The table-aware freshness verdict for a resolved item, keeping the
+    /// coarse cross-ABI `unwrap_or(true)` fallback for a body-less item the
+    /// module summary never keyed (an aggregate constructor, a compiler-minted
+    /// runtime primitive). A laundering wrapper is keyed and reads `false`.
+    #[must_use]
+    pub fn item_returns_fresh_owner(&self, id: hew_hir::ItemId) -> bool {
+        self.rows.get(&id).copied().unwrap_or(true)
+    }
+
+    /// The strict sibling: `true` ONLY for a body this module analyzed, proved
+    /// fresh, and proved free of opaque-extern laundering. An absent row is not
+    /// a proof — worst case a leak, never a double release.
+    #[must_use]
+    pub fn item_returns_analyzed_fresh_owner(&self, id: hew_hir::ItemId) -> bool {
+        self.rows.get(&id) == Some(&true)
+    }
+
+    /// True when `symbol` names a declared `extern "C"` fn with no audited
+    /// fresh-owner return contract — an ownership-OPAQUE callee whose result
+    /// may be an interior, static or retained host pointer.
+    #[must_use]
+    pub fn symbol_is_ownership_opaque_extern(&self, symbol: &str) -> bool {
+        self.opaque_extern_names.contains(symbol)
+    }
+
+    /// Test-only assembly of an authority from explicit parts, so a unit test
+    /// can pin a consumer's behaviour against a hand-built row set without
+    /// standing up a whole module. `#[cfg(test)]` keeps the production build's
+    /// single-constructor invariant intact.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_parts_for_tests(
+        rows: HashMap<hew_hir::ItemId, bool>,
+        opaque_extern_names: HashSet<String>,
+    ) -> Self {
+        Self {
+            rows,
+            opaque_extern_names,
+        }
+    }
+}
+
 /// The module-global call-scrutinee return-provenance context the #2648 preflight
 /// admission classifier consults at every scrutinee consumer.
 ///
@@ -1123,29 +1254,27 @@ pub struct CallScrutineeProvenance {
     /// arg-scan's fresh-local admit additionally requires an entry in the
     /// freshness map, so an empty context never widens an admit.
     pub may_mutate: HashMap<hew_hir::ItemId, bool>,
-    /// The TABLE-AWARE freshness summary: `ItemId → does every return path of
-    /// this function hand back a fresh owner that never crossed an
-    /// ownership-opaque extern`.
+    /// The TABLE-AWARE freshness authority: the single object every ownership
+    /// consumer asks "does this call produce a fresh owner I may drop".
     ///
-    /// This is the row a consumer must read before minting a caller-side RELEASE
-    /// obligation for a call result. It is the CONJUNCTION of two facts that no
-    /// single existing summary carries:
+    /// It is the CONJUNCTION of facts that no single existing summary carries:
     ///
     /// * the coarse freshness proof (`compute_fn_returns_fresh_owner`), which
-    ///   answers the narrower may-alias-a-by-value-parameter question; and
+    ///   answers the narrower may-alias-a-by-value-parameter question;
     /// * the veto of [`compute_fn_return_launders_opaque_extern`], because the
     ///   coarse proof is built before and independently of the extern contract
     ///   table and classifies EVERY body-less resolved item — a declared extern
-    ///   included — as fresh, so a Hew wrapper around an extern inherits a `true`
-    ///   row there.
+    ///   included — as fresh, so a Hew wrapper around an extern inherits a
+    ///   `true` row there; and
+    /// * the name-keyed direct-extern veto, because an extern call site's
+    ///   resolved id is a placeholder that no id lookup can catch.
     ///
-    /// Both halves are transitive fixpoints, so a wrapper, a wrapper of a
-    /// wrapper, a generic wrapper and a recursive-looking wrapper all read
-    /// `false` here.
+    /// Empty default fails SAFE for the strict reader (an absent row is not a
+    /// freshness proof, so the release mint declines) and reproduces today's
+    /// coarse behaviour for the permissive reader.
     ///
-    /// Empty default fails SAFE: an absent row is not a freshness proof, so the
-    /// mint declines (a leak, never a release).
-    pub extern_aware_fresh_returns: HashMap<hew_hir::ItemId, bool>,
+    /// [`compute_fn_return_launders_opaque_extern`]: crate::return_provenance::compute_fn_return_launders_opaque_extern
+    pub fresh_owner_verdicts: FreshOwnerVerdicts,
 }
 
 /// Build the module-global preflight context: the precise return-provenance
@@ -1173,21 +1302,20 @@ pub fn build_call_scrutinee_provenance(
     let may_mutate = compute_may_mutate_heap_param(origin_fns);
     let provenance =
         compute_call_scrutinee_return_provenance(origin_fns, &extern_table, &may_mutate);
-    // The table-aware freshness fact: the coarse proof MINUS everything the
-    // opaque-extern laundering summary vetoes. The coarse map is passed in
-    // rather than recomputed so both consumers read one fixpoint.
+    // The table-aware freshness authority: the coarse proof MINUS everything the
+    // opaque-extern laundering summary vetoes, plus the direct-extern name veto.
+    // The coarse map is passed in rather than recomputed so both consumers read
+    // one fixpoint, and it is consumed HERE — no builder ever sees it.
     let launders_opaque_extern =
         compute_fn_return_launders_opaque_extern(origin_fns, &extern_table);
-    let extern_aware_fresh_returns: HashMap<hew_hir::ItemId, bool> = coarse_fresh_returns
-        .iter()
-        .map(|(&id, &fresh)| (id, fresh && !launders_opaque_extern.contains(&id)))
-        .collect();
+    let fresh_owner_verdicts =
+        FreshOwnerVerdicts::build(coarse_fresh_returns, &launders_opaque_extern, &extern_table);
     CallScrutineeProvenance {
         provenance,
         extern_names,
         extern_table,
         may_mutate,
-        extern_aware_fresh_returns,
+        fresh_owner_verdicts,
     }
 }
 

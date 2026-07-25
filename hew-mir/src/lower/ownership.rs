@@ -351,25 +351,25 @@ impl Builder {
                         || self.user_call_produces_fresh_owned_string(callee)
                 } else {
                     // A composite (record/tuple/enum) result: admit a PROVEN-fresh
-                    // producer, gated by the SAME module sole-owner prover the push
-                    // consult site uses (`callee_returns_fresh_owner`). A callee
-                    // whose freshness fixpoint verdict is `false` — because a
-                    // return path forwards, projects, or launders a by-value param
-                    // (#2648) — stays excluded (leak, never a caller-side
+                    // producer, gated by the SAME authority every other
+                    // "may I drop this call result" consumer reads
+                    // (`callee_returns_fresh_owner` over
+                    // `FreshOwnerVerdicts`). A callee whose freshness verdict
+                    // is `false` — because a return path forwards, projects, or
+                    // launders a by-value param (#2648), OR because it launders
+                    // an ownership-opaque extern's return through any number of
+                    // Hew frames — stays excluded (leak, never a caller-side
                     // double-free). The mint caller then gates the actual drop on
                     // `proven_borrow_args` (borrow vs consume), so a CONSUMING
                     // composite callee's temp is never double-registered, and a
                     // fresh result that ESCAPES is still excluded by the sole-owner
                     // prover exactly as for the named `let x = mk(); g(x)` shape.
                     //
-                    // A declared `extern "C"` callee is vetoed FIRST. It is
-                    // body-less, so `callee_returns_fresh_owner`'s `unwrap_or(true)`
-                    // cross-ABI fallback — written for aggregate constructors and
-                    // runtime primitives, which are kept — would otherwise classify
-                    // an un-audited host as a fresh-owner producer. The constructor
-                    // fallback survives because only extern NAMES are vetoed.
-                    !self.callee_is_ownership_opaque_extern(Self::callee_symbol_name(callee))
-                        && callee_returns_fresh_owner(callee, &self.funcupdate_fn_returns_fresh)
+                    // A declared `extern "C"` callee is vetoed inside the
+                    // authority, by NAME (its call site's resolved id is a
+                    // placeholder). The aggregate-constructor / runtime-primitive
+                    // fallback survives because only extern names are vetoed.
+                    callee_returns_fresh_owner(callee, &self.fresh_owner_verdicts)
                 }
             }
             _ => false,
@@ -492,75 +492,44 @@ impl Builder {
     /// `string::fmt` with no `let` to anchor a scope-exit drop and the buffer
     /// leaked once per evaluation.
     ///
-    /// Fail-closed on three halves:
+    /// Fail-closed on two halves:
     ///
     /// * a KNOWN runtime symbol is rejected here outright, so the runtime
     ///   contract keeps its veto — a catalogued callee returning a BORROWED or
     ///   receiver-interior-alias string can never be laundered into a mint;
-    /// * a declared `extern "C"` callee is rejected unless the audited extern
-    ///   contract table proves its return is a fresh `+1` owner. Interim, no
-    ///   heap-returning extern carries such a row, so every one of them is
-    ///   ownership-OPAQUE here. An extern is in `module_fn_names` purely so its
-    ///   calls lower as `Terminator::Call`; that CALL-DISPATCH membership is not
-    ///   an ownership fact, and a host that hands back an interior or retained
-    ///   pointer would be released a second time by the minted owner;
-    /// * a user callee must satisfy [`callee_returns_analyzed_fresh_owner`] —
-    ///   the module-global least-fixpoint verdict of a body this module actually
-    ///   ANALYZED (generic origins included), read from the TABLE-AWARE summary
-    ///   (`call_scrutinee_provenance.extern_aware_fresh_returns`). The
-    ///   `unwrap_or(true)` cross-ABI fallback of
-    ///   [`callee_returns_fresh_owner`] is deliberately NOT inherited: a
-    ///   body-less resolved item is not a proof of freshness. Neither is a
-    ///   `true` row in the PLAIN summary, which is built independently of the
-    ///   extern table and launders a body-less extern into `Fresh` — so a Hew
-    ///   wrapper (`fn w() -> string { unsafe { host_string() } }`), a wrapper of
-    ///   a wrapper, a generic wrapper and a recursive-looking wrapper would all
-    ///   restore the forbidden caller drop through one visible frame. A callee
-    ///   that forwards, projects, or launders a by-value parameter on ANY return
-    ///   path (`fn passthru(s: string) -> string { s }`) is `false` and stays
-    ///   unminted — a leak, never a caller-side double-free.
+    /// * every OTHER shape must satisfy [`callee_returns_analyzed_fresh_owner`]
+    ///   against the module's fresh-owner authority
+    ///   (`Builder::fresh_owner_verdicts`). That single object carries BOTH
+    ///   vetoes: a declared `extern "C"` callee is rejected by NAME unless the
+    ///   audited extern contract table proves its return is a fresh `+1` owner
+    ///   (interim: no heap-returning extern carries such a row, so every one is
+    ///   ownership-OPAQUE), and a Hew callee is rejected unless the module-global
+    ///   least-fixpoint proved its body fresh (generic origins included) AND free
+    ///   of opaque-extern laundering on every return path. The `unwrap_or(true)`
+    ///   cross-ABI fallback is deliberately NOT inherited here: a body-less
+    ///   resolved item is not a proof of freshness. So a Hew wrapper
+    ///   (`fn w() -> string { unsafe { host_string() } }`), a wrapper of a
+    ///   wrapper, a generic wrapper and a recursive-looking wrapper all stay
+    ///   rejected, and a callee that forwards, projects, or launders a by-value
+    ///   parameter on ANY return path (`fn passthru(s: string) -> string { s }`)
+    ///   is `false` and stays unminted — a leak, never a caller-side
+    ///   double-free.
     ///
     /// Registration alone still never forces a release: the minted local flows
     /// through `derive_cow_sole_owner` / `derive_cow_fresh_borrowed_owner`,
     /// which drop it only when it is a proven fresh, untainted owner whose every
     /// use is a verified borrow.
     fn user_call_produces_fresh_owned_string(&self, callee: &HirExpr) -> bool {
-        let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
-            return false;
-        };
-        let symbol = match resolved {
-            ResolvedRef::Builtin(family) => family.c_symbol(),
-            _ => name.as_str(),
-        };
-        if crate::runtime_symbols::is_known_runtime_symbol(symbol) {
+        if crate::runtime_symbols::is_known_runtime_symbol(Self::callee_symbol_name(callee)) {
             return false;
         }
-        if self.callee_is_ownership_opaque_extern(symbol) {
-            return false;
-        }
-        callee_returns_analyzed_fresh_owner(
-            callee,
-            &self.call_scrutinee_provenance.extern_aware_fresh_returns,
-        )
-    }
-    /// True when `symbol` names a declared `extern "C"` fn with no audited
-    /// fresh-owner return contract — an ownership-OPAQUE callee.    ///
-    /// The single authority is the module's [`ExternContractTable`], which is
-    /// built from the `HirItem::ExternFn` declarations and carries the audited
-    /// allowlist. It is deliberately consulted instead of `module_fn_names`:
-    /// that set is the CALL-DISPATCH membership test and contains every extern
-    /// by design (`hew-mir/src/lower/mod.rs`, so extern calls lower as
-    /// `Terminator::Call` rather than through the runtime-ABI path).
-    ///
-    /// [`ExternContractTable`]: crate::return_provenance::ExternContractTable
-    pub(crate) fn callee_is_ownership_opaque_extern(&self, symbol: &str) -> bool {
-        let table = &self.call_scrutinee_provenance.extern_table;
-        table.is_extern_name(symbol) && !table.extern_return_is_audited_fresh_owner(symbol)
+        callee_returns_analyzed_fresh_owner(callee, &self.fresh_owner_verdicts)
     }
     /// The ARGUMENT-side sibling of
-    /// [`Builder::callee_is_ownership_opaque_extern`]: `true` when `symbol` names
-    /// a declared `extern "C"` fn with no audited contract proving it BORROWS the
-    /// heap arguments it is handed.
+    /// [`FreshOwnerVerdicts::symbol_is_ownership_opaque_extern`], which is the
+    /// RETURN-side authority: `true` when `symbol` names a declared `extern "C"`
+    /// fn with no audited contract proving it BORROWS the heap arguments it is
+    /// handed.
     ///
     /// The two questions are different and must not be substituted for one
     /// another. A `-> ()` extern carries a vacuous audited fresh-RETURN row (it
@@ -572,6 +541,9 @@ impl Builder {
     /// This is the same veto, from the same table, that
     /// [`crate::lower::temp_drop::string_call_borrows`] applies ahead of its
     /// `module_fn_names` clause.
+    ///
+    /// [`FreshOwnerVerdicts::symbol_is_ownership_opaque_extern`]:
+    ///     crate::return_provenance::FreshOwnerVerdicts::symbol_is_ownership_opaque_extern
     pub(crate) fn callee_is_arg_ownership_opaque_extern(&self, symbol: &str) -> bool {
         let table = &self.call_scrutinee_provenance.extern_table;
         table.is_extern_name(symbol) && !table.extern_borrows_audited_heap_args(symbol)
@@ -2649,7 +2621,7 @@ impl Builder {
         //     every reachable value is a materialised owner with no live alias.
         Self::expr_is_materialized_owner(
             base,
-            &self.funcupdate_fn_returns_fresh,
+            &self.fresh_owner_verdicts,
             &self.funcupdate_param_ids,
         )
     }
@@ -2708,7 +2680,7 @@ impl Builder {
     )]
     pub(crate) fn expr_is_materialized_owner(
         expr: &HirExpr,
-        fresh: &HashMap<hew_hir::ItemId, bool>,
+        fresh: &crate::return_provenance::FreshOwnerVerdicts,
         params: &HashSet<BindingId>,
     ) -> bool {
         match &expr.kind {
@@ -2745,12 +2717,18 @@ impl Builder {
             // slot — unconditionally an owner.
             HirExprKind::RecordCloneCall { .. } => true,
             // A free-function call is a materialised owner ONLY when the module
-            // interprocedural summary proves the callee returns a fresh owner on
-            // every path. A blanket `Call => true` is UNSOUND: a function can
-            // launder a by-value heap parameter (a BORROW) through its return
-            // without a refcount bump (`fn id(p: Inner) -> Inner { p }`), so
-            // `..id(o.inner)` would free the caller's live `o.inner` at the
-            // override-drop (the call-returns-borrowed-param use-after-free).
+            // freshness AUTHORITY proves the callee returns a fresh owner on
+            // every path. A blanket `Call => true` is UNSOUND twice over: a
+            // function can launder a by-value heap parameter (a BORROW) through
+            // its return without a refcount bump (`fn id(p: Inner) -> Inner { p }`),
+            // so `..id(o.inner)` would free the caller's live `o.inner` at the
+            // override-drop (the call-returns-borrowed-param use-after-free);
+            // and a function can launder an ownership-OPAQUE extern's return
+            // (`fn wrap() -> Record { unsafe { host() } }`), so
+            // `v.push(wrap())` would route to `hew_vec_push_owned_move` and the
+            // Vec's teardown would release a foreign host handle. The authority
+            // vetoes both — the wrapper by its taint row (transitively, through
+            // any number of Hew frames) and a DIRECT extern callee by name.
             // Method-call variants can likewise return borrowed `self`/params
             // and are not summarised — they fall to the fail-closed `_` arm.
             HirExprKind::Call { callee, .. } => callee_returns_fresh_owner(callee, fresh),

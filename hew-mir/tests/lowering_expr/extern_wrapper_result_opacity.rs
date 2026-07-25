@@ -18,7 +18,7 @@
 //! owner and no `CowHeap` drop survive for the wrapper shapes, while a Hew-bodied
 //! producer keeps its mint (that mint IS the f-string temp leak fix).
 
-use hew_mir::{DropKind, IrPipeline, MirStatement};
+use hew_mir::{DropKind, IrPipeline, MirStatement, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -68,12 +68,42 @@ fn cow_heap_drops(p: &IrPipeline, fn_name: &str) -> usize {
         .count()
 }
 
+fn record_in_place_drops(p: &IrPipeline, fn_name: &str) -> usize {
+    p.elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|drop| matches!(drop.kind, DropKind::RecordInPlace))
+        .count()
+}
+
+fn call_count(p: &IrPipeline, fn_name: &str, symbol: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(&block.terminator, Terminator::Call { callee, .. } if callee == symbol)
+        })
+        .count()
+}
+
 /// Every fixture declares the same externs so the only variable is the SHAPE of
 /// the Hew frame between the extern and the interpolation.
+///
+/// `host_record` is the NON-STRING heap class: the taint must be type-agnostic,
+/// so a record handle the host owns is exactly as un-droppable as a string one.
 const PRELUDE: &str = r#"extern "C" {
     fn host_string() -> string;
     fn host_sink(s: string);
+    fn host_record() -> Holder;
 }
+record Holder { label: string }
 "#;
 
 fn main_with(defs: &str, body: &str) -> IrPipeline {
@@ -208,4 +238,122 @@ fn temp_argument_passed_to_a_hew_fn_keeps_its_mint() {
          leaves the caller holding the sole owner"
     );
     assert_eq!(cow_heap_drops(&p, "main"), 1);
+}
+
+// ── non-string heap classes ───────────────────────────────────────────────
+//
+// The veto lives in the freshness AUTHORITY, not in the string mint, so a
+// record travelling the same laundering path must be refused identically.
+
+/// F1 — a Hew wrapper returning a RECORD from an opaque extern, passed to a
+/// BORROWING Hew callee.
+///
+/// The direct-extern name veto never fired here (a wrapper is not an extern),
+/// so the composite temp-arg mint fell through to the coarse map's
+/// `unwrap_or(true)` and registered a caller-owned temp over the host's handle,
+/// scheduling an in-place record release the host never asked for.
+#[test]
+fn record_wrapper_result_passed_to_a_borrowing_callee_mints_no_owner_and_no_drop() {
+    let p = main_with(
+        "fn wrapRecord() -> Holder { unsafe { host_record() } }\n\
+         fn borrowRecord(h: Holder) -> i64 { h.label.len() }",
+        "borrowRecord(wrapRecord());",
+    );
+    assert_eq!(
+        synthetic_binds(&p, "main"),
+        0,
+        "a Hew wrapper over an opaque extern is not a fresh producer for a \
+         RECORD either: minting a caller-owned temp here hands a drop to a \
+         handle the host still owns"
+    );
+    assert_eq!(
+        record_in_place_drops(&p, "main"),
+        0,
+        "and exactly zero in-place record releases may be scheduled over it"
+    );
+}
+
+/// Control for the case above: an analyzed Hew producer of the same record type
+/// keeps its mint and gets exactly ONE release. Without this, the assertion
+/// above would also pass if the composite mint had simply been switched off.
+#[test]
+fn hew_bodied_record_producer_keeps_its_mint_and_drops_once() {
+    let p = main_with(
+        "fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }\n\
+         fn borrowRecord(h: Holder) -> i64 { h.label.len() }",
+        "borrowRecord(mkRecord(1));",
+    );
+    assert_eq!(
+        synthetic_binds(&p, "main"),
+        1,
+        "control: an analyzed Hew record producer still earns its caller-side \
+         temp owner"
+    );
+    assert_eq!(
+        record_in_place_drops(&p, "main"),
+        1,
+        "and EXACTLY one in-place release balances it — an exact count, not a \
+         bound, so a future widening that double-registers the temp fails here"
+    );
+}
+
+/// F2 — Vec ingress. `expr_is_materialized_owner` read the coarse map with no
+/// veto at all, so the wrapper's result was admitted as a materialised owner
+/// and routed to the MOVE-in `hew_vec_push_owned_move`; the Vec's teardown then
+/// released the host's handle. It must stay on the COPY-IN
+/// `hew_vec_push_owned`.
+#[test]
+fn record_wrapper_result_pushed_into_a_vec_stays_copy_in() {
+    let p = main_with(
+        "fn wrapRecord() -> Holder { unsafe { host_record() } }",
+        "var v: Vec<Holder> = Vec::new();\n    v.push(wrapRecord());",
+    );
+    assert_eq!(
+        call_count(&p, "main", "hew_vec_push_owned_move"),
+        0,
+        "moving a foreign handle into the Vec makes the Vec's teardown release \
+         it — the same laundering, one call site over"
+    );
+    assert_eq!(
+        call_count(&p, "main", "hew_vec_push_owned"),
+        1,
+        "the push must stay COPY-IN: exactly one clone-in call, and the host \
+         keeps its handle"
+    );
+}
+
+/// Control for the Vec route: an analyzed Hew producer of the same record type
+/// still earns the MOVE-in route, so the assertion above is not just "the move
+/// route is dead".
+#[test]
+fn hew_bodied_record_producer_pushed_into_a_vec_still_moves() {
+    let p = main_with(
+        "fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }",
+        "var v: Vec<Holder> = Vec::new();\n    v.push(mkRecord(1));",
+    );
+    assert_eq!(
+        call_count(&p, "main", "hew_vec_push_owned_move"),
+        1,
+        "control: the unbound-temp push leak fix depends on an analyzed Hew \
+         producer keeping the MOVE-in route"
+    );
+    assert_eq!(call_count(&p, "main", "hew_vec_push_owned"), 0);
+}
+
+/// A DIRECT extern call at the Vec seam. The Vec route never carried the
+/// name veto, so `v.push(host_record())` moved a foreign handle in even
+/// without a Hew frame; folding the name veto into the authority closes it.
+#[test]
+fn direct_extern_result_pushed_into_a_vec_stays_copy_in() {
+    let p = main_with(
+        "",
+        "var v: Vec<Holder> = Vec::new();\n    unsafe { v.push(host_record()); }",
+    );
+    assert_eq!(
+        call_count(&p, "main", "hew_vec_push_owned_move"),
+        0,
+        "an extern result is ownership-OPAQUE at every seam, not just the ones \
+         that happened to spell the name veto out"
+    );
+    assert_eq!(call_count(&p, "main", "hew_vec_push_owned"), 1);
 }

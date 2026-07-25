@@ -844,3 +844,282 @@ fn a_hew_wrapper_around_an_opaque_extern_sees_no_caller_release() {
          the zero above is a measurement rather than a blind probe:\n{stdout}"
     );
 }
+
+/// The Vec-ingress P0 this revision closes, counted exactly.
+///
+/// `expr_is_materialized_owner` read the coarse freshness map with no
+/// opaque-extern veto at all, so a Hew wrapper over an extern was admitted as a
+/// materialised owner and `v.push(wrapHolder())` was routed to the MOVE-in
+/// `hew_vec_push_owned_move`. The element's heap — here a real header-aware
+/// `string` handle the host minted and still holds — was byte-transferred into
+/// the buffer with no retain, and the Vec's teardown then released it. That is
+/// a release of a handle the caller never owned.
+///
+/// The fixed routing keeps the push COPY-IN (`hew_vec_push_owned`), which
+/// deep-clones the element: the label is RETAINED into the slot and the Vec's
+/// teardown releases that retained share, so the host's own reference is
+/// untouched and the net count over the observed handles is exactly zero.
+///
+/// This is the non-string heap class (a record element) observed through the
+/// one field the runtime representation lets us count exactly. Measured against
+/// the pre-fix compiler it reports `releases=8` over eight frames.
+const VEC_INGRESS_RECORD_WRAPPER: &str = r#"record Holder { label: string }
+
+extern "C" {
+    fn spy_make_holder() -> Holder;
+    fn spy_made() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
+}
+
+fn wrapHolder() -> Holder { unsafe { spy_make_holder() } }
+
+fn pushFrames(n: i64) -> i64 {
+    var v: Vec<Holder> = Vec::new();
+    var i: i64 = 0;
+    while i < n {
+        v.push(wrapHolder());
+        i = i + 1;
+    }
+    v.len()
+}
+
+fn main() -> i64 {
+    let pushed = pushFrames(8);
+    let made = unsafe { spy_made() };
+    let releases = unsafe { spy_releases() };
+    println(f"pushed={pushed}");
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    // Positive control for the counter, run LAST so it cannot perturb the
+    // measurement above.
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+/// Mints REAL header-aware `string` handles, wraps each in a `repr(C)` record,
+/// and counts every release of them. Non-copying: the exact pointer handed to
+/// Hew is the one whose `rc` is observed, and the `rc` is biased so no release
+/// can free the buffer underneath the probe.
+const RECORD_SPY_RUST: &str = r#"use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+/// `hew-cabi` pins `CSTRING_HEADER_SIZE = 16`, `{ magic: u64, rc: u32, _pad: u32 }`.
+const HEADER: isize = 16;
+/// `CSTRING_MAGIC` — b"HEW_CSTR" read as a little-endian u64.
+const MAGIC: u64 = 0x4845_575F_4353_5452;
+/// Large enough that no realistic release count reaches zero.
+const BIAS: u32 = 1_000_000;
+const SLOTS: usize = 64;
+
+static COUNT: AtomicUsize = AtomicUsize::new(0);
+static HELD: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
+
+extern "C" {
+    fn malloc(size: usize) -> *mut u8;
+    fn hew_string_drop(s: *mut std::ffi::c_char);
+}
+
+unsafe fn rc_ptr(data: *const u8) -> *mut u32 {
+    unsafe { data.offset(-8) as *mut u32 }
+}
+
+/// The record the extern returns, in the C layout the declaration implies.
+#[repr(C)]
+pub struct Holder {
+    label: *mut std::ffi::c_char,
+}
+
+unsafe fn make_handle() -> *mut std::ffi::c_char {
+    let text = b"host-made\0";
+    let base = unsafe { malloc(HEADER as usize + text.len()) };
+    assert!(!base.is_null());
+    unsafe {
+        std::ptr::write_unaligned(base as *mut u64, MAGIC);
+        std::ptr::write_unaligned(base.offset(8) as *mut u32, 1 + BIAS);
+        std::ptr::write_unaligned(base.offset(12) as *mut u32, 0u32);
+        std::ptr::copy_nonoverlapping(text.as_ptr(), base.offset(HEADER), text.len());
+    }
+    let data = unsafe { base.offset(HEADER) };
+    let slot = COUNT.fetch_add(1, Ordering::SeqCst);
+    if slot < SLOTS {
+        HELD[slot].store(data as u64, Ordering::SeqCst);
+    }
+    data as *mut std::ffi::c_char
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spy_make_holder() -> Holder {
+    Holder {
+        label: unsafe { make_handle() },
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn spy_made() -> i64 {
+    COUNT.load(Ordering::SeqCst) as i64
+}
+
+/// Net releases across every handed-out handle:
+/// `sum over slots of ((1 + BIAS) - rc_now)`.
+#[no_mangle]
+pub extern "C" fn spy_releases() -> i64 {
+    let n = COUNT.load(Ordering::SeqCst).min(SLOTS);
+    let mut total: i64 = 0;
+    for slot in 0..n {
+        let data = HELD[slot].load(Ordering::SeqCst) as *const u8;
+        if data.is_null() {
+            continue;
+        }
+        let rc = unsafe { std::ptr::read_unaligned(rc_ptr(data)) };
+        total += i64::from(1u32 + BIAS) - i64::from(rc);
+    }
+    total
+}
+
+/// Positive control for the counter, run LAST.
+#[no_mangle]
+pub extern "C" fn spy_release_one_from_host() -> i64 {
+    let data = HELD[0].load(Ordering::SeqCst) as *mut std::ffi::c_char;
+    if data.is_null() {
+        return -1;
+    }
+    unsafe { hew_string_drop(data) };
+    0
+}
+"#;
+
+#[test]
+fn a_vec_push_of_a_wrapped_extern_record_sees_no_caller_release() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_record", RECORD_SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "vec_ingress",
+        VEC_INGRESS_RECORD_WRAPPER,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "pushed"),
+        8,
+        "guard: all eight elements must have reached the Vec, or the \
+         measurement below is vacuous:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: the host must have minted all eight handles:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        0,
+        "DOUBLE RELEASE at Vec ingress: a Hew wrapper over an ownership-opaque \
+         extern was admitted as a materialised owner, the push was routed to \
+         `hew_vec_push_owned_move`, and the Vec's teardown released a handle \
+         the host still owns. The freshness authority must veto the wrapper at \
+         the Vec seam exactly as it does at the string mint:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        1,
+        "the release counter itself must have teeth: one real \
+         `hew_string_drop` from the host must read as exactly one release, so \
+         the zero above is a measurement rather than a blind probe:\n{stdout}"
+    );
+}
+
+/// The borrowing-callee-argument P0 this revision closes, counted exactly.
+///
+/// The caller-side temp-arg mint vetoed a DIRECT extern by name and then fell
+/// through to the coarse freshness map's `unwrap_or(true)`. A Hew wrapper is
+/// not a direct extern, so `borrowHolder(wrapHolder())` minted a synthetic
+/// caller-owned temporary over the host's record and scheduled an in-place
+/// release of its heap fields — again, a release of a handle the caller never
+/// owned. `borrowHolder` only BORROWS its by-value parameter, so nothing else
+/// in the program could account for the decrement.
+///
+/// Measured against the pre-fix compiler this reports `releases=8`.
+const BORROWING_CALLEE_RECORD_WRAPPER: &str = r#"record Holder { label: string }
+
+extern "C" {
+    fn spy_make_holder() -> Holder;
+    fn spy_made() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
+}
+
+fn wrapHolder() -> Holder { unsafe { spy_make_holder() } }
+
+fn borrowHolder(h: Holder) -> i64 { h.label.len() }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        total = total + borrowHolder(wrapHolder());
+        i = i + 1;
+    }
+    let made = unsafe { spy_made() };
+    let releases = unsafe { spy_releases() };
+    println(f"total={total}");
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+#[test]
+fn a_wrapped_extern_record_in_a_borrowing_argument_sees_no_caller_release() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_record_arg", RECORD_SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "borrowing_arg",
+        BORROWING_CALLEE_RECORD_WRAPPER,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: the host must have minted all eight handles:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "total"),
+        72,
+        "guard: every borrowed record must have been readable — `host-made` is \
+         nine bytes, eight times:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        0,
+        "DOUBLE RELEASE at the temp-arg mint: a Hew wrapper over an \
+         ownership-opaque extern is not a direct extern, so the name veto \
+         missed it and the coarse `unwrap_or(true)` minted a caller-owned \
+         temporary over the host's record. The freshness authority must carry \
+         the veto for the WRAPPER, not just the direct callee:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        1,
+        "the release counter itself must have teeth: one real \
+         `hew_string_drop` from the host must read as exactly one release, so \
+         the zero above is a measurement rather than a blind probe:\n{stdout}"
+    );
+}

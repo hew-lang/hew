@@ -109,6 +109,24 @@ impl HewSysMsg {
     pub const fn as_i32(self) -> i32 {
         self as i32
     }
+
+    /// The variant's name, for the one place a system signal is REPORTED
+    /// rather than dispatched: mailbox teardown, which discards anything the
+    /// scheduler never got to (`mailbox::retire_pending_sys_lane`). Exhaustive
+    /// with no catch-all arm, so a new variant is a compile error here rather
+    /// than a signal that silently reports as something else.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ChildStopped => "ChildStopped",
+            Self::ChildCrashed => "ChildCrashed",
+            Self::SupervisorStop => "SupervisorStop",
+            Self::Exit => "Exit",
+            Self::Down => "Down",
+            Self::DelayedRestart => "DelayedRestart",
+            Self::ChildSupervisorEscalated => "ChildSupervisorEscalated",
+        }
+    }
 }
 
 /// Which queue a dequeued mailbox node arrived on, carrying the system

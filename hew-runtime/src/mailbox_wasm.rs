@@ -1474,6 +1474,56 @@ pub(crate) unsafe fn mailbox_is_closed(mb: *mut HewMailboxWasm) -> bool {
 
 // ── Cleanup ─────────────────────────────────────────────────────────────
 
+/// Undispatched system-lane signals discarded by WASM mailbox teardown.
+///
+/// Parity counterpart of `mailbox::SYS_LANE_SIGNALS_RETIRED`; see
+/// [`retire_pending_sys_lane`] for why teardown counts and names what it
+/// discards instead of dropping it silently.
+static SYS_LANE_SIGNALS_RETIRED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Read the count of system-lane signals discarded by WASM mailbox teardown.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "teardown accounting readout is asserted on by the mailbox regressions"
+    )
+)]
+pub(crate) fn sys_lane_signals_retired() -> usize {
+    SYS_LANE_SIGNALS_RETIRED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Retire the undispatched system lane at teardown, reporting every signal.
+///
+/// WASM parity counterpart of `mailbox::retire_pending_sys_lane`: the scheduler
+/// is the lane's only legitimate consumer, so a mailbox that is being destroyed
+/// loses whatever is still queued — but it loses it VISIBLY. Each node is
+/// decoded through the closed [`HewSysMsg`] namespace, counted, and named,
+/// which is what makes user-declarable actor teardown an accounted destruction
+/// of system-lane state rather than a silent one.
+fn retire_pending_sys_lane(mailbox: &mut HewMailboxWasm) -> usize {
+    let mut retired = 0usize;
+    let mailbox_addr = std::ptr::from_ref(mailbox);
+    while let Some(node) = mailbox.sys_queue.pop_front() {
+        // SAFETY: Each node was allocated by `msg_node_alloc` and the mailbox
+        // owns it exclusively during teardown.
+        let raw = unsafe { (*node).msg_type };
+        let name = HewSysMsg::from_raw(raw).map_or("unknown", HewSysMsg::name);
+        eprintln!(
+            "[mailbox] warning: discarding undispatched system signal {name} ({raw}) \
+             at mailbox teardown (mailbox {mailbox_addr:p})"
+        );
+        retired += 1;
+        // SAFETY: the pop transferred exclusive ownership of `node`.
+        unsafe { msg_node_free(node) };
+    }
+    if retired > 0 {
+        SYS_LANE_SIGNALS_RETIRED.fetch_add(retired, std::sync::atomic::Ordering::AcqRel);
+    }
+    retired
+}
+
 wasm_no_mangle! {
     /// Free the mailbox, draining and freeing all remaining messages.
     ///
@@ -1498,11 +1548,8 @@ wasm_no_mangle! {
             unsafe { msg_node_free_with_message_drop(node, mailbox.message_drop_fn) };
         }
 
-        // Drain system queue.
-        while let Some(node) = mailbox.sys_queue.pop_front() {
-            // SAFETY: Each node was allocated by `msg_node_alloc`.
-            unsafe { msg_node_free(node) };
-        }
+        // Retire the system lane: accounted and named, never a silent discard.
+        let _ = retire_pending_sys_lane(&mut mailbox);
     }
 }
 
@@ -1881,6 +1928,25 @@ mod tests {
 
             hew_mailbox_free(mb);
         }
+    }
+
+    /// WASM mirror of `mailbox::mailbox_teardown_accounts_for_the_system_signals_it_discards`.
+    /// Same property, same counterfactual: drop the reporting drain back to a
+    /// bare `pop_front` loop and the delta becomes 0.
+    #[test]
+    fn mailbox_teardown_accounts_for_the_system_signals_it_discards() {
+        let before = sys_lane_signals_retired();
+        // SAFETY: the test owns the mailbox exclusively for its whole lifetime.
+        unsafe {
+            let mb = hew_mailbox_new();
+            hew_mailbox_send_sys(mb, HewSysMsg::Exit.as_i32(), ptr::null_mut(), 0);
+            assert_eq!(hew_mailbox_sys_len(mb), 1);
+            hew_mailbox_free(mb);
+        }
+        assert!(
+            sys_lane_signals_retired() > before,
+            "wasm mailbox teardown must account for the system signal it discarded"
+        );
     }
 
     #[test]

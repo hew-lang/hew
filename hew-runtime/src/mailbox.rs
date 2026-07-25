@@ -2721,6 +2721,76 @@ pub unsafe extern "C" fn hew_mailbox_capacity(mb: *const HewMailbox) -> usize {
 
 // ── Cleanup ─────────────────────────────────────────────────────────────
 
+/// Undispatched system-lane signals discarded by mailbox teardown, process-wide.
+///
+/// Mailbox teardown is the one place that destroys system-lane state, and it is
+/// reachable from user-declarable actor teardown (`hew_actor_free` →
+/// `free_actor_resources_*` → [`hew_mailbox_free`]). What made that reachability
+/// a defect was that the discard was SILENT: a capability holder could tear an
+/// actor down and every still-queued `Exit`/`Down`/supervisor signal simply
+/// vanished with no record anywhere. Counting and naming each one is what turns
+/// it into an accounted teardown — see [`retire_pending_sys_lane`].
+static SYS_LANE_SIGNALS_RETIRED: AtomicUsize = AtomicUsize::new(0);
+
+/// Read the process-wide count of system-lane signals discarded by teardown.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "teardown accounting readout is asserted on by the mailbox regressions"
+    )
+)]
+pub(crate) fn sys_lane_signals_retired() -> usize {
+    SYS_LANE_SIGNALS_RETIRED.load(Ordering::Acquire)
+}
+
+/// Retire the undispatched system lane, then release the queue's sentinel.
+///
+/// The scheduler is the system lane's only legitimate consumer. Once a mailbox
+/// is being destroyed there is no consumer left, so anything still queued is
+/// lost by construction — but it must not be lost QUIETLY. Every node is
+/// decoded through the closed [`HewSysMsg`] namespace, counted in
+/// [`SYS_LANE_SIGNALS_RETIRED`], and named on stderr before it is freed, so the
+/// loss is observable to whoever is looking at the run rather than invisible.
+///
+/// A raw value the closed namespace refuses is reported as `unknown`: teardown
+/// is not a place to start trusting an undecodable discriminant, and a silent
+/// skip would re-open the exact hole this exists to close.
+///
+/// # Safety
+///
+/// The caller must own `mailbox` exclusively (teardown), so the single-consumer
+/// contract on `sys_queue` is satisfied.
+unsafe fn retire_pending_sys_lane(mailbox: &HewMailbox) -> usize {
+    let mut retired = 0usize;
+    loop {
+        // SAFETY: teardown owns the mailbox exclusively, so this frame is the
+        // sole consumer for the duration of the drain.
+        let node = unsafe { mailbox.sys_queue.try_dequeue() };
+        if node.is_null() {
+            break;
+        }
+        // SAFETY: `try_dequeue` transferred exclusive ownership of `node`.
+        let raw = unsafe { (*node).msg_type };
+        let name = HewSysMsg::from_raw(raw).map_or("unknown", HewSysMsg::name);
+        eprintln!(
+            "[mailbox] warning: discarding undispatched system signal {name} ({raw}) \
+             at mailbox teardown (mailbox {mailbox:p})"
+        );
+        retired += 1;
+        // SAFETY: exclusive ownership was transferred by the dequeue.
+        unsafe { hew_msg_node_free(node) };
+    }
+    if retired > 0 {
+        SYS_LANE_SIGNALS_RETIRED.fetch_add(retired, Ordering::AcqRel);
+    }
+    // Release the queue's stable stub sentinel (the drain above left the queue
+    // empty, so this frees the sentinel and nothing else).
+    // SAFETY: exclusive teardown ownership, as above.
+    unsafe { mailbox.sys_queue.drain_and_free(None) };
+    retired
+}
+
 /// Free the mailbox, draining and freeing all remaining messages.
 ///
 /// # Safety
@@ -2747,9 +2817,10 @@ pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
     // SAFETY: No concurrent access — mailbox is exclusively owned.
     unsafe { mailbox.user_fast.drain_and_free(mailbox.message_drop_fn) };
 
-    // Drain lock-free system queue (stable stub + any remaining nodes).
+    // Retire the system queue (stable stub + any remaining nodes): accounted
+    // and named, never a silent discard.
     // SAFETY: No concurrent access — mailbox is exclusively owned.
-    unsafe { mailbox.sys_queue.drain_and_free(None) };
+    let _ = unsafe { retire_pending_sys_lane(&mailbox) };
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -3926,6 +3997,40 @@ mod tests {
     // Regression test: fast-path mailbox teardown must retire queued
     // reply-bearing nodes via hew_msg_node_free so that ask waiters are
     // unblocked promptly rather than blocking until timeout.
+    /// Actor teardown is user-declarable (`hew_actor_free` is `stable`) and it
+    /// reaches system-lane DESTRUCTION through `hew_mailbox_free`. What made
+    /// that a defect was the silence: an undispatched `Exit`/`Down`/supervisor
+    /// signal vanished with no record. Teardown now counts and names every
+    /// signal it discards, which is the property that makes the reachability an
+    /// accounted destruction instead of a covert one.
+    ///
+    /// Counterfactual: restore the old body — `mailbox.sys_queue.drain_and_free(None)`
+    /// in place of `retire_pending_sys_lane` — and the delta below is 0, so the
+    /// assertion trips. The counter is process-wide and other tests tear down
+    /// mailboxes concurrently, so the assertion is a lower bound on the delta;
+    /// the counterfactual moves it to exactly zero, which is what makes the
+    /// bound non-vacuous.
+    #[test]
+    fn mailbox_teardown_accounts_for_the_system_signals_it_discards() {
+        let before = sys_lane_signals_retired();
+        // SAFETY: the test owns the mailbox exclusively for its whole lifetime.
+        unsafe {
+            let mb = hew_mailbox_new();
+            assert!(mailbox_send_sys_checked(
+                mb,
+                HewSysMsg::Exit,
+                ptr::null_mut(),
+                0
+            ));
+            assert_eq!(hew_mailbox_sys_len(mb), 1);
+            hew_mailbox_free(mb);
+        }
+        assert!(
+            sys_lane_signals_retired() > before,
+            "mailbox teardown must account for the undispatched system signal it discarded"
+        );
+    }
+
     #[test]
     fn drain_and_free_unblocks_reply_waiter() {
         // SAFETY: helper fully owns the mailbox pointer for the duration.

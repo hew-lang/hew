@@ -9878,30 +9878,32 @@ mod tests {
 
     /// (f) A guarded publication transition has already CLAIMED — it is past
     /// every check, registered as in flight, and about to run its callbacks —
-    /// when the connection it was authorized against is refused. Revocation
-    /// cannot reach a claimed transition, so the refusal must WAIT for it: once
-    /// `notify_connection_lost_if_current` has returned, no ALIVE for the
-    /// retired token may still become observable.
+    /// when the connection it was authorized against is refused. The whole
+    /// transition can no longer be revoked, so the refusal CANCELS THE
+    /// REMAINDER of it: once `notify_connection_lost_if_current` has returned,
+    /// no observable ALIVE step for the retired token starts.
+    ///
+    /// The refusal must NOT wait for the claimed delivery. Waiting would mean
+    /// blocking on a thread running externally-registered callbacks, which is
+    /// the deadlock this design exists to avoid; the positive-timing assertion
+    /// below pins that the refusal returns while the delivery is still parked.
     ///
     /// The seam this parks on sits AFTER the claim and BEFORE the first
     /// observable delivery, which is where this race lives. Test (d)'s seam
     /// sits before the claim and cannot see it — a seam placed where the bug is
     /// not cannot fail.
     ///
-    /// The releasing thread is this test, never the refusing thread, precisely
-    /// because the refusing thread is the one expected to block.
-    ///
     /// Counterfactual: with the claim treated as the end of the story (no
-    /// in-flight registration for retirement to wait on), the refusal returns
-    /// straight through while the delivery is still parked — the negative-
-    /// timing assertion below fails, and the peer's `NODE_JOINED` is recorded
-    /// AFTER the refusal-returned marker instead of before it.
+    /// per-step re-read of the in-flight registration), the released delivery
+    /// runs its callbacks unconditionally and the peer's `NODE_JOINED` is
+    /// recorded AFTER the refusal-returned marker — the negative assertion
+    /// below fails.
     #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "test stages the post-claim delivery race and its full observation log in one place"
     )]
-    fn refusal_waits_out_a_claimed_alive_before_it_returns() {
+    fn refusal_cancels_a_claimed_alive_before_it_returns() {
         /// A slot the harness cluster never joined, so this peer's ALIVE is a
         /// genuine `NODE_JOINED` announcement.
         const UNJOINED_ROUTE_SLOT: u16 = 7;
@@ -10009,13 +10011,20 @@ mod tests {
             let _ = refusal_done_tx.send(());
         });
 
-        // Deliberate negative-timing assertion: the refusal must NOT be able to
-        // return while an authorized-and-claimed ALIVE is still in flight.
+        // Positive-timing assertion: the refusal must return WITHOUT waiting
+        // for the claimed delivery, which is still parked. A refusal that
+        // blocked here would be blocking on a thread that is free to run user
+        // callbacks, and those callbacks are free to block on this thread.
+        refusal_done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the refusal must return without waiting for the parked delivery");
         assert!(
-            refusal_done_rx
-                .recv_timeout(std::time::Duration::from_millis(200))
-                .is_err(),
-            "the refusal returned while a claimed ALIVE was still undelivered"
+            // SAFETY: `log` is owned by this test and outlives every thread
+            // that can reach it.
+            unsafe { &*log }
+                .lock_or_recover()
+                .contains(&Observed::RefusalReturned),
+            "the refusal-returned marker must be recorded before the release"
         );
 
         // Release the delivery into a cluster that has already retired it.
@@ -10027,9 +10036,6 @@ mod tests {
             1
         );
         refusal.join().expect("refusal thread should not panic");
-        refusal_done_rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the refusal must complete once the delivery has finished");
         // SAFETY: the cluster is live.
         unsafe { &*race.cluster }.set_guarded_delivery_probe(None);
         staged
@@ -10041,21 +10047,17 @@ mod tests {
         // SAFETY: `log` is still owned by this test and every thread that
         // could push to it has been joined.
         let observed = unsafe { &*log }.lock_or_recover().clone();
-        let returned = observed
-            .iter()
-            .position(|entry| *entry == Observed::RefusalReturned)
-            .expect("the refusal-returned marker must be recorded");
+        assert!(
+            observed.contains(&Observed::RefusalReturned),
+            "the refusal-returned marker must be recorded, got {observed:?}"
+        );
         let joined = Observed::Membership(
             UNJOINED_ROUTE_SLOT,
             crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED,
         );
         assert!(
-            observed[..returned].contains(&joined),
-            "the released ALIVE must be observed before the refusal returns, got {observed:?}"
-        );
-        assert!(
-            !observed[returned..].contains(&joined),
-            "no ALIVE may be observable once the refusal has returned, got {observed:?}"
+            !observed.contains(&joined),
+            "the cancelled ALIVE must never become observable, got {observed:?}"
         );
         assert!(
             observed.contains(&Observed::Membership(

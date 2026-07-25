@@ -256,6 +256,10 @@ fn init_existing_scaffold_files_without_force_exit_one() {
             )),
             "stderr should explain how to recover for {file_name}; got:\n{stderr}"
         );
+        assert!(
+            !stderr.contains("already exist (use --force to overwrite)"),
+            "a single conflict should use the singular verb; got:\n{stderr}"
+        );
         assert_eq!(
             fs::read_to_string(&existing_path).unwrap(),
             "sentinel",
@@ -290,8 +294,13 @@ fn init_existing_scaffold_files_names_every_conflict_in_one_message() {
         "stderr should name README.md; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("already exists (use --force to overwrite)"),
-        "stderr should explain how to recover; got:\n{stderr}"
+        stderr.contains("README.md' already exist (use --force to overwrite)"),
+        "stderr should explain how to recover, with the verb agreeing with the two \
+         conflicting files; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("already exists"),
+        "two conflicts should use the plural verb; got:\n{stderr}"
     );
 }
 

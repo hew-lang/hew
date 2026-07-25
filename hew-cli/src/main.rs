@@ -1882,8 +1882,15 @@ fn cmd_init(a: &args::InitArgs) {
             .map(|p| format!("'{}'", p.display()))
             .collect();
         if !conflicts.is_empty() {
+            // Agree the verb with the number of conflicts so a multi-file list
+            // does not read as if it were a single file.
+            let verb = if conflicts.len() == 1 {
+                "already exists"
+            } else {
+                "already exist"
+            };
             eprintln!(
-                "Error: {} already exists (use --force to overwrite)",
+                "Error: {} {verb} (use --force to overwrite)",
                 conflicts.join(", ")
             );
             eprintln!(

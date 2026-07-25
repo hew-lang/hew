@@ -1695,7 +1695,8 @@ unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
 }
 
 /// Release the continuation frame of an actor that is being abandoned mid-suspend,
-/// and latch it out of the non-quiescent `Suspended` window.
+/// discharge the reply that activation still owed, and latch the actor out of the
+/// non-quiescent `Suspended` window.
 ///
 /// C1 abandonment teardown (D-C1, R326/R327). A `Suspended` actor (`cont_tag`
 /// `Parked`) holds a live continuation frame in `suspended_cont`. That frame is
@@ -1713,6 +1714,17 @@ unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
 /// state transition cannot race a resume — a resume would have refused the
 /// destroy.
 ///
+/// That same CAS decides the OTHER debt a parked activation carries. If the
+/// handler was serving an `ask`, its suspend edge moved the caller's
+/// reply-sender reference into `suspended_reply_channel`; destroying the frame
+/// means no resume will ever deposit a reply through it, and an asking thread is
+/// blocked in `hew_reply_wait` on a reply that can no longer arrive. Winning the
+/// CAS is what makes this teardown the owner of the abandoned activation, so it
+/// is also what makes that unanswered reply this teardown's to retire — which is
+/// why the retire sits in the same won-the-CAS branch as the destroy and not at
+/// the call sites. A resume that won the CAS instead still owns, and answers,
+/// its own reply.
+///
 /// Every teardown route that abandons an actor must call this, and for the same
 /// reason. `hew_actor_free_inner` calls it before its bounded quiescence wait,
 /// which would otherwise spin to the 2 s deadline and return `-2`.
@@ -1728,7 +1740,12 @@ unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
 /// the reactor. Running it later dereferences a freed wheel and crashes. It
 /// must equally run after the worker threads are joined, so no resume can be
 /// attempted concurrently. That leaves exactly one window during shutdown, and
-/// [`retire_parked_activations`] is called in it.
+/// [`retire_parked_activations`] is called in it. The teardown routes that run
+/// OUTSIDE that window — `cleanup_all_actors` and
+/// `free_actor_resources_with_options`, both of which run after
+/// `hew_periodic_shutdown` — must therefore never call this. They sweep the
+/// reply slot directly instead, which is a bare atomic swap and re-enters
+/// nothing.
 ///
 /// A no-op for the overwhelmingly common actor that never suspended.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1746,6 +1763,24 @@ fn abandon_parked_activation(a: &HewActor) {
         return;
     }
     clear_suspended_cancel_token(a);
+    // The parked handler may have been serving an `ask`. Its suspend edge MOVED
+    // the caller's reply-sender reference into `suspended_reply_channel`, and
+    // destroying the frame above means nothing will ever resume to answer it, so
+    // the asking thread is blocked in `hew_reply_wait` on a reply that can no
+    // longer arrive. Retiring it belongs HERE, in the won-the-CAS branch,
+    // because winning the `… → Destroyed` CAS is exactly what makes this
+    // teardown the owner of the abandoned activation — and therefore the owner
+    // of the reply it still owes. A concurrent resume that won the CAS instead
+    // took the early return above and answers its own reply; this branch cannot
+    // be reached in that case, so the obligation is never discharged twice.
+    // Placing it inside the function rather than at each caller also releases
+    // the asker at the first instant abandonment commits — not after
+    // `hew_actor_free_inner`'s two-second quiescence wait — and makes it a
+    // property of abandonment rather than something every route has to
+    // remember. The swap inside `retire_suspended_reply_channel` keeps it
+    // exactly once even though `free_actor_resources_with_options` sweeps the
+    // same slot on the way out.
+    crate::scheduler::retire_suspended_reply_channel(a);
     // `destroy_parked` above just ran the pump frame's `coro.destroy` cleanup
     // outline, which releases the generator companion (heap env + coro handle)
     // living as a local INSIDE that frame via its normal scope-exit drop
@@ -2021,6 +2056,19 @@ pub(crate) unsafe fn cleanup_all_actors() {
                      point); actor leaked to avoid UAF",
                     a.id
                 );
+                // Leaking the box and the parked frame is the right fail-closed
+                // answer to a possible UAF -- but it is an answer about MEMORY,
+                // and a parked `ask` handler owes something else: a reply. Its
+                // suspend edge moved the asking thread's reply-sender reference
+                // into `suspended_reply_channel`, and this branch is the
+                // runtime deciding never to resume that activation. Leaking the
+                // reference too would leave a foreign thread blocked in
+                // `hew_reply_wait` for the rest of the process's life, which is
+                // strictly worse than the leak we accepted. Retiring is safe
+                // here in a way finalizing is not: it only swaps the slot and
+                // publishes the orphan failure, touching neither the frame nor
+                // the box the UAF concern is about.
+                crate::scheduler::retire_suspended_reply_channel(a);
                 None
             }
         };
@@ -2127,6 +2175,19 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
 
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    // Every route into this function is a route that abandons the actor: the
+    // box is about to go away. If it was parked mid-`ask`, its suspend edge
+    // moved the caller's reply-sender reference into `suspended_reply_channel`
+    // and no resume will ever consume it, so the asking thread is parked in
+    // `hew_reply_wait` on a reply that cannot arrive. Retire it FIRST -- ahead
+    // of the five-second terminate wait and its quarantine early-return below,
+    // both of which would otherwise hold the asker for the duration or forever.
+    // This is the sweep that covers the free routes which do not come through
+    // `hew_actor_free_inner` (`cleanup_all_actors`, `drain_quiesced_actor`,
+    // supervisor child teardown); the swap makes it exactly once when they
+    // overlap.
+    crate::scheduler::retire_suspended_reply_channel(a);
 
     // Wait for any in-progress terminate callback to complete. This
     // prevents freeing state while another thread is running terminate.

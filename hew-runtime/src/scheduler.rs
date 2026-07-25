@@ -233,7 +233,7 @@ fn clear_suspended_cancel_token(a: &HewActor) {
 /// `hew_reply_channel_retire_orphaned_ask_sender_ref` consumes the sender ref
 /// it publishes through — the same single release the mailbox teardown path
 /// performs for an ask node that is dropped before dispatch.
-fn retire_suspended_reply_channel(a: &HewActor) {
+pub(crate) fn retire_suspended_reply_channel(a: &HewActor) {
     let ch = a
         .suspended_reply_channel
         .swap(std::ptr::null_mut(), Ordering::AcqRel);
@@ -5591,6 +5591,135 @@ mod tests {
 
         // SAFETY: single-threaded again; mailbox unused afterwards.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
+    }
+
+    /// Regression: freeing an actor DIRECTLY, with no stop first, must not
+    /// strand a parked `ask`.
+    ///
+    /// `hew_actor_free` destroys the parked continuation itself
+    /// (`coro_exec::destroy_parked`, so the frame does not leak) and then drives
+    /// the actor terminal and reclaims the box. That is the same abandonment the
+    /// stop path performs, and it carries the same debt: the suspend edge MOVED
+    /// the asking thread's reply-sender reference into `suspended_reply_channel`,
+    /// and destroying the continuation means nothing will ever deposit a reply
+    /// through it. Fixing the stop path alone left this one open -- a direct free
+    /// still hung the asker and leaked the channel.
+    ///
+    /// Bite-proof, both halves:
+    /// - Drop the retire from `hew_actor_free_inner`'s destroy branch AND from
+    ///   `free_actor_resources_with_options` and the `recv_timeout` below trips:
+    ///   the asking thread never returns from `hew_reply_wait`.
+    /// - Retire twice, or release without publishing, and the channel-count
+    ///   assertion trips instead -- zero releases leaves `baseline + 1`, two
+    ///   underflow. Asserting the count is what distinguishes "resolved once"
+    ///   from "resolved at all".
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn freeing_an_actor_with_a_parked_ask_unblocks_the_asking_thread() {
+        struct AskTarget(*mut HewActor);
+        // SAFETY: the actor outlives the asking thread's use of it -- the thread
+        // only calls the C ABI entry point, and the free below cannot complete
+        // until that call has published its node and parked.
+        unsafe impl Send for AskTarget {}
+
+        let _sched = NoWorkerSchedulerForTest::install();
+        let baseline = crate::reply_channel::active_channel_count();
+
+        // SAFETY: fresh mailbox owned by the actor; `hew_actor_free` reclaims it.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        // SAFETY: malloc returns a valid 8-byte allocation or null. The free
+        // path reclaims this with `libc::free`.
+        let state = unsafe { libc::malloc(8) };
+        assert!(!state.is_null());
+
+        let mut stub = stub_actor();
+        stub.dispatch = Some(suspend_once_dispatch);
+        stub.mailbox = mailbox.cast();
+        stub.state = state;
+        stub.state_size = 8;
+        // Runnable, not Idle: the ask must find an actor this test drives by
+        // hand rather than one the send path short-circuits.
+        stub.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        stub.id = 9_100_001;
+        // Owned by `hew_actor_free` below, not by a `TrackedTestActor` guard --
+        // the guard would free the box a second time.
+        let actor_ptr: *mut HewActor = Box::into_raw(Box::new(stub));
+        // SAFETY: `actor_ptr` is a freshly-boxed, fully-initialised actor.
+        assert!(unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) });
+
+        // A REAL blocking ask from another thread: it mints the channel,
+        // enqueues the node carrying it, and parks in `hew_reply_wait`.
+        let target = AskTarget(actor_ptr);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<bool>();
+        let asker = std::thread::spawn(move || {
+            let target = target;
+            // SAFETY: the actor is live and tracked until the ask has parked.
+            let reply = unsafe { crate::actor::hew_actor_ask(target.0, 1, ptr::null_mut(), 0) };
+            if !reply.is_null() {
+                // SAFETY: a deposited reply value is caller-owned.
+                unsafe { libc::free(reply) };
+            }
+            // Sent AFTER the ask returns, so the caller-side
+            // `hew_reply_channel_free` has already run and the count read on the
+            // main thread sees the fully-settled refcount.
+            let _ = done_tx.send(reply.is_null());
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // SAFETY: mailbox is live until the free below.
+        while unsafe { mailbox::hew_mailbox_len(mailbox) } == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the ask never reached the mailbox"
+            );
+            std::thread::yield_now();
+        }
+
+        // Dispatch it: the handler suspends still owing the reply.
+        activate_actor(actor_ptr);
+        // SAFETY: the actor is live; nothing has freed it yet.
+        let parked = unsafe { &*actor_ptr };
+        assert_eq!(
+            parked.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "the ask handler parked"
+        );
+        assert!(
+            !parked
+                .suspended_reply_channel
+                .load(Ordering::Acquire)
+                .is_null(),
+            "the suspend edge transferred the caller's reply channel to the actor slot"
+        );
+
+        // The path under test: a DIRECT free, with no stop and no further
+        // activation. Everything after this point must not touch the actor.
+        // SAFETY: the actor is live, tracked, and not the current actor.
+        let rc = unsafe { crate::actor::hew_actor_free(actor_ptr) };
+        assert_eq!(
+            rc, 0,
+            "freeing a parked actor succeeds: the destroy branch latches it out \
+             of the non-quiescent Suspended window"
+        );
+
+        // Half one: the asking thread RETURNS.
+        let reply_was_null = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("freeing an actor with a parked ask must unblock the asking thread");
+        assert!(
+            reply_was_null,
+            "a freed handler deposits no value; the ask fails"
+        );
+        asker.join().expect("asking thread panicked");
+
+        // Half two: the reference was released EXACTLY once.
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            baseline,
+            "the orphaned ask channel is released exactly once by the free path"
+        );
     }
 
     /// D-4 Ready-immediately: a run-to-completion dispatch (the trampoline drove

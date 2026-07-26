@@ -6487,6 +6487,31 @@ machine Traffic {
         );
     }
 
+    /// Exact-count variant of [`assert_v05_find_references`], for surfaces whose
+    /// reference set is currently pinned rather than open-ended.
+    fn assert_v05_find_references_count(
+        fixture_name: &str,
+        source: &str,
+        probe_name: &str,
+        expected: usize,
+    ) {
+        let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
+        let doc = make_typed_doc(source);
+        let probe_offset = source.rfind(probe_name).unwrap_or_else(|| {
+            panic!("surface=findReferences fixture={fixture_name}: missing probe {probe_name:?}")
+        });
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(uri.clone(), doc);
+        let doc_ref = documents.get(&uri).unwrap();
+        let refs = build_reference_locations(&uri, &doc_ref, probe_offset, true, &documents);
+        assert_eq!(
+            refs.len(),
+            expected,
+            "surface=findReferences fixture={fixture_name} probe={probe_name:?} \
+             offset={probe_offset}: expected exactly {expected} refs, got {refs:?}"
+        );
+    }
+
     /// Check the `semanticTokens` LSP surface for a v0.5 fixture at a specific
     /// byte offset.
     ///
@@ -6748,17 +6773,26 @@ machine Traffic {
         );
     }
 
-    // W4.023 Stage 0: pending-upstream-substrate — W3.006 (slice-2 tuple substrate)
-    // Do not unignore until W3.006 tuple support lands and the parser accepts
-    // positional-field type declarations (`type Pair(i32, i32)`).
+    /// KNOWN GAP, PINNED (W4.023 Stage 0, waiting on W3.006): the parser does
+    /// not accept positional-field type declarations (`type Pair(i32, i32)`),
+    /// so no LSP surface can analyse the tuple-record fixture.
+    ///
+    /// The LSP assertions this replaces were `#[ignore]`d and therefore never
+    /// ran. Pinning the parse rejection keeps the fixture honest and turns the
+    /// arrival of tuple-record syntax into a test failure rather than something
+    /// nobody notices. When this fails, restore the LSP coverage:
+    /// `assert_v05_lsp_fixture("v05_record_tuple_literal", <fixture>,
+    /// "record_tuple_probe", &["Pair", "record_tuple_probe",
+    /// "record_tuple_literal"])`.
     #[test]
-    #[ignore = "pending-upstream-substrate W3.006: tuple-record type syntax not yet parsed"]
-    fn v05_record_tuple_literal_lsp_coverage() {
-        assert_v05_lsp_fixture(
-            "v05_record_tuple_literal",
-            include_str!("../../tests/fixtures/v05_record_tuple_literal.hew"),
-            "record_tuple_probe",
-            &["Pair", "record_tuple_probe", "record_tuple_literal"],
+    fn v05_record_tuple_literal_type_syntax_is_not_parsed_yet() {
+        let source = include_str!("../../tests/fixtures/v05_record_tuple_literal.hew");
+        let parsed = hew_parser::parse(source);
+        assert!(
+            !parsed.errors.is_empty(),
+            "tuple-record type syntax is expected to be a parse error today; if \
+             this fixture now parses, W3.006 has landed — restore the LSP \
+             assertions described above"
         );
     }
 
@@ -7505,20 +7539,20 @@ machine Traffic {
         assert_v05_goto_definition("v05_trait_bounds", source, "Describable");
     }
 
-    /// Substrate-pending: the reference engine returns only the declaration site
-    /// when queried at the type-bound position `<T: Describable>`.
-    /// `min_count=1` is trivially satisfiable and does not prove declaration +
-    /// use-site behaviour; this test is therefore reclassified as ignored rather
-    /// than kept as a green accepted-surface assertion.
-    /// Unignore and raise to `min_count >= 3` (declaration + `impl Describable`
-    /// header + `<T: Describable>` type-bound) when the reference engine gains
-    /// full trait-name cross-reference tracking.
+    /// KNOWN GAP, PINNED: querying references at the type-bound position
+    /// `<T: Describable>` returns the trait declaration and nothing else.
+    ///
+    /// The previous version of this test asked for `>= 3` and was `#[ignore]`d,
+    /// so it never ran. An exact count is the honest assertion and it is also
+    /// the stronger one: it fails both if cross-reference tracking regresses to
+    /// zero results and if it improves. When the reference engine learns
+    /// trait-name cross-references, this fails and the fixer should raise the
+    /// expectation to 3 — declaration, `impl Describable` header, and the
+    /// `<T: Describable>` type-bound.
     #[test]
-    #[ignore = "substrate: reference engine returns declaration-only for trait names; min_count=1 does not prove cross-reference behaviour"]
-    fn v05_trait_bounds_trait_name_find_references_includes_declaration() {
+    fn v05_trait_bounds_trait_name_find_references_returns_declaration_only() {
         let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
-        // When unignored this should assert >= 3: declaration + impl header + type-bound.
-        assert_v05_find_references("v05_trait_bounds", source, "Describable", 3);
+        assert_v05_find_references_count("v05_trait_bounds", source, "Describable", 1);
     }
 
     /// The last occurrence of `show` in the fixture is the `holder.show()` call

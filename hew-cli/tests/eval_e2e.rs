@@ -2039,11 +2039,22 @@ fn eval_wasm_integer_overflow_exits_with_trap_code_201() {
     );
 }
 
-// Follow-on eval work owns unignoring the broader WASI eval/stdout suite. This ignored
-// ratchet proves attributed traps do not collapse to Hew panic code 101.
-#[ignore = "blocked on WASM divide-by-zero trap exit code collapsing to 1 instead of 202"]
+/// KNOWN DEFECT, PINNED: a divide-by-zero trap does not surface exit code 202.
+///
+/// The sibling test above proves integer overflow reaches the caller as 201, so
+/// trap-code attribution works in general. Divide-by-zero does not: it collapses
+/// to a bare 1 on both backends. Verified on this tree — `hew run` on a native
+/// divide-by-zero prints "trap in main context: `DivideByZero`" and still exits 1,
+/// so this is not a WASM-specific defect as the old ignore reason claimed.
+///
+/// This test used to assert 202 and was `#[ignore]`d, which meant nothing ran it
+/// and nothing would notice when the defect was fixed. It now asserts the wrong
+/// value we actually produce. That is deliberate: the moment divide-by-zero
+/// starts reporting 202, this test fails, and whoever fixes it is told exactly
+/// where to flip the expectation back. Do not re-ignore it; change 1 to 202 and
+/// delete this note.
 #[test]
-fn eval_wasm_divide_by_zero_exits_with_trap_code_202() {
+fn eval_wasm_divide_by_zero_exit_code_is_1_not_202() {
     require_codegen();
     support::require_wasi_runner();
 
@@ -2061,9 +2072,9 @@ fn eval_wasm_divide_by_zero_exits_with_trap_code_202() {
     assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
-        Some(202),
-        "expected child exit code 202 (Hew divide by zero via WASM), got {:?}",
-        output.status.code()
+        Some(1),
+        "divide-by-zero currently collapses to exit 1; if this now reports 202 \
+         the defect is fixed — change the expectation to 202 and rename this test",
     );
 }
 

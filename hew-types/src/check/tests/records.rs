@@ -1252,39 +1252,37 @@ mod assoc_types_slice1 {
         );
     }
 
-    // TODO(assoc-types slice 2 / parser): `TraitDecl` does not yet parse a
-    // `where` clause at the trait header, so `trait Foo where Self::Bar:
-    // Display { ... }` cannot be tested end-to-end. Once the parser
-    // surfaces `TraitDecl.where_clause`, drop the `#[ignore]` and verify
-    // the bound is enforced on impls whose `Self::Bar` binding does not
-    // satisfy `Display`.
+    /// KNOWN GAP, PINNED: `TraitDecl` does not parse a `where` clause at the
+    /// trait header, so `trait Show where Self::Out: Display { ... }` cannot be
+    /// bound-checked end to end.
+    ///
+    /// This used to be an `#[ignore]`d test asserting the bound *is* enforced,
+    /// which meant it never ran and nothing would announce the gap closing. It
+    /// now asserts the parse rejection we actually produce. When the parser
+    /// surfaces `TraitDecl.where_clause` this test fails, and the fixer should
+    /// restore the original bound assertion:
+    /// `parse_and_check_with_stdlib` the same source and expect a
+    /// `BoundsNotSatisfied` error citing `Display` and `Plain`, because
+    /// `impl Show for Widget` binds `Out = Plain` and `Plain` has no `Display`.
     #[test]
-    #[ignore = "trait-header where-clause syntax not yet parsed; see TODO above"]
-    fn assoc_type_where_clause_bound_enforced() {
-        let (errors, _warnings) = parse_and_check_with_stdlib(
+    fn assoc_type_trait_header_where_clause_is_not_parsed_yet() {
+        let result = hew_parser::parse(
             r"
             trait Show where Self::Out: Display {
                 type Out;
                 fn show(val: Self) -> Self::Out;
             }
-
-            type Widget {}
-
-            type Plain {}
-
-            impl Show for Widget {
-                type Out = Plain;
-                fn show(val: Widget) -> Plain { Plain {} }
-            }
             ",
         );
         assert!(
-            errors
+            result
+                .errors
                 .iter()
-                .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)
-                    && e.message.contains("Display")
-                    && e.message.contains("Plain")),
-            "expected BoundsNotSatisfied citing Display and Plain; got: {errors:?}"
+                .any(|e| e.message.contains("expected `{`") && e.message.contains("where")),
+            "trait-header `where` is expected to be a parse error today; if this \
+             now parses, the gap has closed — replace this test with the bound \
+             assertion described above. Got: {:?}",
+            result.errors
         );
     }
 }

@@ -385,12 +385,22 @@ fn overlapping_builtin_impls_rejected() {
 /// The projection fix this change delivers is unaffected by the gap: first-wins
 /// keeps the dispatched method signature and the applicability proof from the
 /// SAME (first) impl, so an accepted duplicate cannot cause the mis-projection
-/// fail-open this fix closes. `#[ignore]` keeps the regression CI-visible
-/// (`cargo test -- --ignored`) without failing the gate; remove `#[ignore]` when
-/// the follow-up lands.
+/// fail-open this fix closes.
+///
+/// This test previously asserted the desired rejection and was `#[ignore]`d
+/// under a comment claiming the regression stayed "CI-visible via
+/// `cargo test -- --ignored`". That claim was false. `--ignored` appears twice
+/// in this repository and both uses are pinned to other crates, so nothing ever
+/// ran this test — the sentence described coverage that did not exist.
+///
+/// It now asserts the fail-open we actually ship: the duplicate is accepted and
+/// no `ConflictingTraitImpl` is raised. The test runs on every `cargo nextest
+/// run`, so when the defining-identity coherence key lands and the duplicate
+/// starts being rejected, this fails immediately and points at the fix. Do not
+/// re-ignore it; invert the assertion and rename it back to
+/// `duplicate_same_shape_builtin_impls_rejected`.
 #[test]
-#[ignore = "tracked: duplicate same-(type,trait) impl coherence needs defining-identity key (separate follow-up)"]
-fn duplicate_same_shape_builtin_impls_rejected() {
+fn duplicate_same_shape_builtin_impls_are_accepted_fail_open() {
     let output = typecheck(
         r"
         trait Acc {
@@ -409,12 +419,13 @@ fn duplicate_same_shape_builtin_impls_rejected() {
         ",
     );
     assert!(
-        output
+        !output
             .errors
             .iter()
             .any(|err| matches!(err.kind, TypeErrorKind::ConflictingTraitImpl { .. })),
-        "expected a ConflictingTraitImpl coherence diagnostic for the duplicate \
-         same-shape Vec impls, got: {:#?}",
+        "duplicate same-shape Vec impls are currently accepted (known coherence \
+         fail-open). A ConflictingTraitImpl here means the defining-identity key \
+         landed — invert this assertion and rename the test. Got: {:#?}",
         output.errors
     );
 }

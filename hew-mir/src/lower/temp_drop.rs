@@ -1634,14 +1634,17 @@ fn cow_owned_string_terminator_escapes(
 ///    named first for documentation value) — a runtime op with no borrow row is
 ///    assumed to take ownership;
 /// 3. a declared `extern "C"` callee borrows ONLY with an audited argument
-///    contract (`extern_borrows_audited_heap_args`, interim always `false`).
-///    An extern's behaviour at its parameters is unknowable: the host may
-///    retain the handle or release it with `hew_string_drop`, and a caller that
-///    kept a drop obligation on top of that releases the buffer twice. This
-///    check runs BEFORE the Hew-bodied rule below because `module_fn_names` —
-///    the CALL-DISPATCH set — deliberately carries every `HirItem::ExternFn`
-///    so extern calls lower as `Terminator::Call`; dispatch membership is not
-///    an ownership fact and must never stand in for one;
+///    contract (`extern_borrows_audited_heap_args`), which admits a name only
+///    when the declaration belongs to this compiler's own runtime ABI AND the
+///    machine-checked FFI ownership table says every parameter position is
+///    `Borrow`. Without that audit an extern's behaviour at its parameters is
+///    unknowable: the host may retain the handle or release it with
+///    `hew_string_drop`, and a caller that kept a drop obligation on top of
+///    that releases the buffer twice. This check runs BEFORE the Hew-bodied
+///    rule below because `module_fn_names` — the CALL-DISPATCH set —
+///    deliberately carries every `HirItem::ExternFn` so extern calls lower as
+///    `Terminator::Call`; dispatch membership is not an ownership fact and must
+///    never stand in for one;
 /// 4. a Hew-BODIED callee (`module_fn_names` / `module_generic_fn_names`)
 ///    borrows, because `lower_params` ratifies that a by-value `string`
 ///    parameter is registered in `borrowed_string_param_locals` — the callee
@@ -4610,13 +4613,13 @@ fn main() {}
     }
 
     #[test]
-    fn no_extern_carries_an_audited_borrowing_argument_contract() {
+    fn a_root_declared_extern_carries_no_audited_borrowing_argument_contract() {
         let table = extern_table(HOST_SINK);
         assert!(
             !table.extern_borrows_audited_heap_args("host_sink"),
-            "the audited ARGUMENT contract table is EMPTY in the interim: no \
-             audit can prove a host borrows rather than retains or releases a \
-             heap handle it is passed"
+            "a foreign host declaration earns no audited ARGUMENT contract: \
+             nothing proves it borrows rather than retains or releases a heap \
+             handle it is passed"
         );
     }
 

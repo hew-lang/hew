@@ -1431,14 +1431,14 @@ pub struct ExternContractTable {
     /// The NAME-keyed audited ARGUMENT contract: an extern proved to BORROW the
     /// heap arguments it is handed rather than to consume or retain them.
     ///
-    /// # Interim: EMPTY / fail-closed
+    /// # The declared-borrow provenance class
     ///
-    /// No marker-backed argument audit exists (the same trusted-root precursor
-    /// that gates the owned-RETURN rows gates these), so every declared extern
-    /// is a potential consumer of every heap argument it receives. There is no
-    /// `return_ty`-shaped shortcut here as there is for scalar returns: a
-    /// `string` PARAMETER is a pointer the host may retain or release no matter
-    /// what the declaration says.
+    /// There is no `return_ty`-shaped shortcut here as there is for scalar
+    /// returns: a `string` PARAMETER is a pointer the callee may retain or
+    /// release no matter what the declaration says. So a name enters this set
+    /// only when an AUDIT says so — see
+    /// [`build_extern_contract_table`] for the two admission clauses and the
+    /// argument that they are a proof rather than a fallback.
     borrowing_arg_names: HashSet<String>,
     /// Every declared `extern "C"` fn DECLARATION id.
     ///
@@ -1494,13 +1494,17 @@ impl ExternContractTable {
     }
 
     /// True when `name` is a declared extern with an audited ARGUMENT contract
-    /// proving it BORROWS the heap arguments it is passed. Interim: always
-    /// `false` — an extern's ownership behaviour at its parameters is
-    /// unknowable, so the caller must assume the handle was consumed or
-    /// retained and must NOT keep a release obligation for it.
+    /// proving it BORROWS the heap arguments it is passed, so the caller keeps
+    /// the sole release obligation for them.
+    ///
+    /// An extern with no such audit answers `false`: its behaviour at its
+    /// parameters is unknowable, so the caller must assume the handle was
+    /// consumed or retained and must NOT keep a release obligation for it.
     ///
     /// Fail-closed direction: `false` costs a leak; `true` on a consuming host
-    /// costs a double release (heap corruption).
+    /// costs a double release (heap corruption). That asymmetry is why the
+    /// admission in [`build_extern_contract_table`] requires EVERY parameter to
+    /// be audited `Borrow`, not merely the heap-typed ones.
     #[must_use]
     pub fn extern_borrows_audited_heap_args(&self, name: &str) -> bool {
         self.borrowing_arg_names.contains(name)
@@ -1528,14 +1532,47 @@ impl ExternContractTable {
     }
 }
 
-/// Build the interim (empty/fail-closed) extern contract table over a module's
-/// `extern "C"` declarations: scalar-return externs → Fresh; every
-/// heap-returning extern is omitted (→ `{OPAQUE}` on lookup). Zero marker-backed
-/// rows — the trusted-root precursor is required for those (S4b).
+/// Build the extern contract table over a module's `extern "C"` declarations:
+/// scalar-return externs → Fresh; every heap-returning extern is omitted (→
+/// `{OPAQUE}` on lookup). Zero marker-backed owned-RETURN rows — the
+/// trusted-root precursor is required for those (S4b).
 ///
-/// The audited ARGUMENT contract (`borrowing_arg_names`) is unconditionally
-/// EMPTY: no audit exists that could prove a host borrows rather than consumes
-/// a heap argument.
+/// # The audited ARGUMENT contract — the declared-borrow class
+///
+/// `borrowing_arg_names` is the ARGUMENT-side sibling of round seven's declared
+/// RELEASE class, and it is admitted the same way: from a row source the
+/// program already declares and a validator already checks, never from a
+/// permissive fallback.
+///
+/// The rows come from [`crate::ffi_contracts::extern_ownership_contract`],
+/// which `hew-mir/build.rs` projects from the `[[ownership.contracts]]` table
+/// of `scripts/jit-symbol-classification.toml` — the single authority for
+/// per-parameter consume/borrow facts, validated out of band by
+/// `scripts/verify-ffi-symbols.py`. `ExternParamOwnership::Borrow` is defined
+/// as "the callee reads (or copies from) the parameter; **the caller keeps the
+/// drop obligation**", which is exactly the fact this set is read for.
+///
+/// Two admission clauses, both required:
+///
+/// 1. the declaration's [`hew_hir::ExternProvenance`] is `is_stdlib()` — the
+///    symbol belongs to this compiler's OWN runtime ABI, not to a foreign host.
+///    A root or user-package `extern` block that spells its symbol
+///    `hew_fs_rename` is `Root`/`Module(..)` provenance and is NOT admitted, so
+///    the audited row cannot be claimed by name-spoofing. This is the same
+///    positive per-declaration fact `foreign_decl_ids` already reads, not a
+///    name-prefix guess;
+/// 2. the audited contract exists AND every parameter position is `Borrow`. A
+///    `Consume` or `Retain` position anywhere in the signature, or an
+///    [`crate::ffi_contracts::ExternOwnershipFact::Absent`] verdict, refuses the
+///    name outright.
+///
+/// Clause 2 is deliberately whole-signature rather than per-position. The
+/// consumer ([`crate::lower::temp_drop::string_call_borrows`]) asks one boolean
+/// about the CALL, so a per-position answer could not be expressed there
+/// faithfully; requiring every position to borrow makes the boolean sound for
+/// every argument of every admitted call. `hew_string_drop`
+/// (`params = [Consume]`) is refused by this clause, so the universal release
+/// can never be read as borrowing its argument.
 #[must_use]
 pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContractTable {
     let mut rows: HashMap<hew_hir::ItemId, ReturnProvenance> = HashMap::new();
@@ -1544,11 +1581,16 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
     let mut decl_ids: HashSet<hew_hir::ItemId> = HashSet::new();
     let mut foreign_decl_ids: HashSet<hew_hir::ItemId> = HashSet::new();
     let mut foreign_names: HashSet<String> = HashSet::new();
+    let mut borrowing_arg_names: HashSet<String> = HashSet::new();
     for item in &module.items {
         if let hew_hir::HirItem::ExternFn(ef) = item {
             names.insert(ef.name.clone());
             decl_ids.insert(ef.id);
-            if !ef.provenance.is_stdlib() {
+            if ef.provenance.is_stdlib() {
+                if extern_all_params_audited_borrow(&ef.name) {
+                    borrowing_arg_names.insert(ef.name.clone());
+                }
+            } else {
                 foreign_decl_ids.insert(ef.id);
                 foreign_names.insert(ef.name.clone());
             }
@@ -1564,9 +1606,26 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
         fresh_return_names,
         foreign_decl_ids,
         foreign_names,
-        borrowing_arg_names: HashSet::new(),
+        borrowing_arg_names,
         decl_ids,
     }
+}
+
+/// Clause 2 of the declared-borrow admission: the audited contract exists and
+/// EVERY parameter position is `Borrow`.
+///
+/// A zero-parameter contract vacuously satisfies "every position borrows" and
+/// is admitted; it has no heap argument to get wrong, and the consumer's
+/// question is only ever asked about a call that passes one.
+fn extern_all_params_audited_borrow(symbol: &str) -> bool {
+    crate::ffi_contracts::extern_ownership_contract(symbol)
+        .contract()
+        .is_some_and(|contract| {
+            contract
+                .params
+                .iter()
+                .all(|param| *param == crate::ffi_contracts::ExternParamOwnership::Borrow)
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -1596,12 +1655,15 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
 ///
 /// # The three vetoes it carries
 ///
-/// * **Wrapper laundering (id-keyed).** Every row is the coarse verdict
+/// * **Wrapper laundering (id-keyed).** Every row is a freshness proof
 ///   CONJOINED with `compute_fn_return_launders_opaque_extern`, a transitive
 ///   fixpoint over the audited [`ExternContractTable`]. A wrapper, a wrapper of
 ///   a wrapper, a generic wrapper (analyzed at its origin `ItemId`, which is
 ///   what a monomorphisation's callee resolves to) and a recursive-looking
-///   wrapper all read `false`.
+///   wrapper all read `false`. The freshness proof itself is the coarse
+///   may-alias-a-parameter fixpoint UNIONED with a precise `∅` return summary —
+///   see [`FreshOwnerVerdicts::build`] for why the second is needed and why it
+///   cannot widen what this veto refuses.
 /// * **Direct extern (name-keyed).** An extern call site's `ResolvedRef::Item`
 ///   carries a PLACEHOLDER id, not the declaration's — an id lookup would both
 ///   miss the extern and collide with the module-fn summary space. The declared
@@ -1637,7 +1699,8 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
 /// can name it, hold it, or construct one.
 #[derive(Debug, Clone)]
 pub(crate) struct FreshOwnerVerdicts {
-    /// `ItemId` → coarse freshness ∧ ¬laundering. Private: the whole point.
+    /// `ItemId` → (coarse ∨ precise) freshness ∧ ¬laundering. Private: the whole
+    /// point.
     rows: HashMap<hew_hir::ItemId, bool>,
     /// Declared `extern "C"` fn names with no audited fresh-owner return.
     opaque_extern_names: HashSet<String>,
@@ -1681,19 +1744,68 @@ impl FreshOwnerVerdicts {
     /// The ONLY analysing constructor. Module-private so the conjunction cannot
     /// be skipped by a caller that happens to hold a coarse map.
     ///
-    /// The row set is the UNION of the coarse fixpoint's keys and the taint
-    /// set's: a laundering id that the coarse fixpoint somehow never keyed
-    /// still lands as an explicit `false` rather than as an absent row.
+    /// The row set is the UNION of the coarse fixpoint's keys, the precise
+    /// summary's keys and the taint set's: a laundering id that the coarse
+    /// fixpoint somehow never keyed still lands as an explicit `false` rather
+    /// than as an absent row.
+    ///
+    /// # Why the precise summary is read alongside the coarse one
+    ///
+    /// The two fixpoints answer DIFFERENT questions, and the freshness warrant
+    /// wants the better-informed answer to its own.
+    ///
+    /// The coarse walk asks "may this return alias a by-value heap PARAMETER?"
+    /// and it answers with a blanket `AliasBits::OPAQUE` at every leaf it does
+    /// not model — including a scalar literal and a bare `var` binding of type
+    /// `f64`. A wholly domestic helper such as `string.parse_valid_float_literal`,
+    /// whose last expression is a bare scalar binding, therefore reads
+    /// "may alias a borrow" for a value that owns no heap at all, and every
+    /// caller up the chain inherits that. `string.to_float`'s
+    /// `Result<f64, string>` scrutinee lost its release that way: the value is
+    /// domestic, the taint fixpoint is silent about it, and nothing foreign is
+    /// anywhere near it — the question was simply answered with too little
+    /// information.
+    ///
+    /// The precise fixpoint answers the same question with more: it
+    /// short-circuits scalar non-heap types to `∅`, models string concatenation,
+    /// reads audited method contracts, and tracks local bindings. Where it
+    /// differs from the coarse walk it is STRICTER in exactly the direction that
+    /// matters — a body-less or unresolvable callee is `Opaque` rather than the
+    /// coarse walk's permissive "fresh", and EVERY declared extern is `Opaque`
+    /// by name — so a precise `∅` cannot re-admit the extern-wrapper shapes the
+    /// coarse walk over-admits and the laundering veto removes.
+    ///
+    /// So a precise `∅` is a positive proof that every return path produces a
+    /// value that aliases neither a parameter nor any opaque origin, which is
+    /// strictly more than the coarse row claims. It is unioned in, and the
+    /// laundering veto still applies to the result: widening the freshness proof
+    /// must never widen what the taint fixpoint refuses.
+    ///
+    /// The coarse walk itself is deliberately left alone. Its own consumers
+    /// (the funcupdate materialised-owner gate and the reassign may-alias gate)
+    /// are pinned byte-identical by `coarse_verdict_differential`; this reads
+    /// past it rather than changing it.
     fn build(
         coarse_fresh_returns: &HashMap<hew_hir::ItemId, bool>,
+        precise_returns: &HashMap<hew_hir::ItemId, ReturnProvenance>,
         launders_opaque_extern: &HashSet<hew_hir::ItemId>,
         carries_proven_foreign: &HashSet<hew_hir::ItemId>,
         extern_table: &ExternContractTable,
         declared_release: &DeclaredReleaseTypes,
     ) -> Self {
+        let proven_fresh = |id: hew_hir::ItemId| {
+            coarse_fresh_returns.get(&id).copied().unwrap_or(false)
+                || precise_returns.get(&id).is_some_and(|bits| bits.is_fresh())
+        };
         let mut rows: HashMap<hew_hir::ItemId, bool> = coarse_fresh_returns
-            .iter()
-            .map(|(&id, &fresh)| (id, fresh && !launders_opaque_extern.contains(&id)))
+            .keys()
+            .chain(precise_returns.keys())
+            .map(|&id| {
+                (
+                    id,
+                    proven_fresh(id) && !launders_opaque_extern.contains(&id),
+                )
+            })
             .collect();
         for &id in launders_opaque_extern {
             rows.insert(id, false);
@@ -1950,8 +2062,11 @@ pub(crate) struct CallScrutineeProvenance {
     ///
     /// It is the CONJUNCTION of facts that no single existing summary carries:
     ///
-    /// * the coarse freshness proof (`compute_fn_returns_fresh_owner`), which
-    ///   answers the narrower may-alias-a-by-value-parameter question;
+    /// * a freshness proof — the coarse fixpoint
+    ///   (`compute_fn_returns_fresh_owner`), which answers the narrower
+    ///   may-alias-a-by-value-parameter question, unioned with a precise `∅`
+    ///   return summary for the domestic shapes the coarse walk's blanket
+    ///   opaque leaf cannot see through;
     /// * the veto of [`compute_fn_return_launders_opaque_extern`], because the
     ///   coarse proof is built before and independently of the extern contract
     ///   table and classifies EVERY body-less resolved item — a declared extern
@@ -2019,6 +2134,7 @@ pub(crate) fn build_call_scrutinee_provenance(
         compute_fn_return_carries_proven_foreign(origin_fns, &extern_table, &declared_release);
     let fresh_owner_verdicts = FreshOwnerVerdicts::build(
         coarse_fresh_returns,
+        &provenance,
         &launders_opaque_extern,
         &carries_proven_foreign,
         &extern_table,
@@ -4871,10 +4987,58 @@ fn main() {}
         for name in ["host_string", "host_bytes", "host_len", "host_sink"] {
             assert!(
                 !t.extern_borrows_audited_heap_args(name),
-                "the audited ARGUMENT table is empty: nothing proves `{name}` \
-                 borrows rather than retains or drops the handle it is passed"
+                "`{name}` is a foreign host declaration with no audited row: \
+                 nothing proves it borrows rather than retains or drops the \
+                 handle it is passed"
             );
         }
+    }
+
+    #[test]
+    fn a_root_declaration_cannot_claim_a_runtime_row_by_spelling_its_name() {
+        // `hew_fs_rename` DOES carry an all-`Borrow` audited contract. The row
+        // describes this compiler's own runtime ABI, so only a declaration whose
+        // provenance IS the standard library may read it. A root `extern` block
+        // that spells the same symbol is a different function that happens to
+        // share a name, and admitting it would let any user file forge a borrow
+        // proof for a host it wrote.
+        const SPOOF: &str = r#"extern "C" {
+    fn hew_fs_rename(from: string, to: string) -> i64;
+}
+fn main() {}
+"#;
+        let t = build_extern_contract_table(&tests::lower_source(SPOOF));
+        assert!(
+            extern_all_params_audited_borrow("hew_fs_rename"),
+            "guard: the audited table must actually carry an all-`Borrow` row \
+             for `hew_fs_rename`, or this test proves nothing"
+        );
+        assert!(
+            !t.extern_borrows_audited_heap_args("hew_fs_rename"),
+            "a root-provenance declaration is foreign; the audited row belongs \
+             to the standard library's declaration of that symbol and must not \
+             be claimable by name"
+        );
+    }
+
+    #[test]
+    fn an_all_borrow_audited_signature_is_the_only_admitted_shape() {
+        assert!(
+            extern_all_params_audited_borrow("hew_fs_rename"),
+            "`hew_fs_rename` is audited `params = [borrow, borrow]`: it reads \
+             both paths and releases neither, so the caller keeps the sole drop \
+             obligation for the temporaries it passes"
+        );
+        assert!(
+            !extern_all_params_audited_borrow("hew_string_drop"),
+            "the universal release consumes its argument; reading it as \
+             borrowing would leave the caller a second release"
+        );
+        assert!(
+            !extern_all_params_audited_borrow("no_such_audited_symbol"),
+            "an unaudited symbol has no contract at all and must not be \
+             admitted by absence"
+        );
     }
 
     #[test]

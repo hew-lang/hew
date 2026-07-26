@@ -22,6 +22,30 @@
 #   (paired temp-arg bind/drop plus `(none)` scope-exit slots becoming string
 #   drops, no CFG/terminator/value change). The closure/gen-fn baselines remain
 #   byte-identical.
+#   Refreshed for the borrowing-callee temp-arg drop reaching Hew-BODIED
+#   callees: `testing.assert_eq_str(c.label, string.repeat(...))` now carries the
+#   same `bind __hew_temp_arg ty=string` / `drop _N ty=string
+#   kind=cow_heap(hew_string_drop)` pair the string-call temp rule already gave
+#   other borrowing callees. Only funcupdate_owned_field_drop_test.elab.mir
+#   shifted, purely additively: three `(none)` scope-exit slots become string
+#   drops, three paired bind/drop statements appear, and the only other changed
+#   lines are the `eval site=SiteId(#N)` renumbering those binds push along. No
+#   CFG, terminator or value change.
+#
+#   Why the NEW output is the correct one, measured rather than asserted:
+#   `testing.assert_eq_str(actual: string, expected: string)` is Hew-BODIED
+#   (std/testing/testing.hew), and `lower_params` registers both by-value
+#   `string` parameters in `borrowed_string_param_locals` — the callee only
+#   reads them and never releases them, so the caller holds the sole release
+#   obligation for the fresh `string.repeat(...)` buffer it passes. The old
+#   baseline recorded no such release, i.e. it froze a leak. A 200-iteration
+#   loop of exactly this call shape, compiled at the previous
+#   generating revision and run under `leaks --atExit` with MallocScribble,
+#   MallocPreScribble and MallocGuardEdges, reports 200 leaked nodes / 12800
+#   bytes — one per iteration. The same program compiled here reports 0 leaks
+#   and exits cleanly under the same poisoned allocator, so the added drop is
+#   exactly-once rather than a second release. The baseline was stale; the MIR
+#   is right.
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
 # normalization: two run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both

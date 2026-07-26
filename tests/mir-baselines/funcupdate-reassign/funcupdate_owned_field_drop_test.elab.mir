@@ -14,7 +14,9 @@ fn test_funcupdate_string_field_override_drops_old -> ()
     eval site=SiteId(18) ty=()
     eval site=SiteId(22) ty=()
     use BindingId(0) c site=SiteId(29) ty=FlatConfig intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(30) ty=string
     eval site=SiteId(27) ty=()
+    drop BindingId(4294967231) __hew_temp_arg ty=string
     drop BindingId(0) c ty=FlatConfig
   drop_plans:
     call[bb0 string$repeat -> bb1] ->
@@ -42,7 +44,7 @@ fn test_funcupdate_string_field_override_drops_old -> ()
     call[bb9 testing$assert_eq_str -> bb10] ->
       (none)
     return[bb10] ->
-      (none)
+      drop _23 ty=string kind=cow_heap(hew_string_drop)
 
 fn test_funcupdate_bitcopy_field_override_carries_label -> ()
   statements:
@@ -61,7 +63,9 @@ fn test_funcupdate_bitcopy_field_override_carries_label -> ()
     eval site=SiteId(53) ty=()
     eval site=SiteId(57) ty=()
     use BindingId(2) c site=SiteId(64) ty=FlatConfig intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(65) ty=string
     eval site=SiteId(62) ty=()
+    drop BindingId(4294967231) __hew_temp_arg ty=string
     drop BindingId(2) c ty=FlatConfig
   drop_plans:
     call[bb0 string$repeat -> bb1] ->
@@ -91,7 +95,7 @@ fn test_funcupdate_bitcopy_field_override_carries_label -> ()
     call[bb10 testing$assert_eq_str -> bb11] ->
       (none)
     return[bb11] ->
-      (none)
+      drop _24 ty=string kind=cow_heap(hew_string_drop)
 
 fn test_funcupdate_vec_field_override_drops_old -> ()
   statements:
@@ -183,7 +187,9 @@ fn test_funcupdate_multi_field_override_drops_old -> ()
     eval site=SiteId(136) ty=()
     eval site=SiteId(140) ty=()
     use BindingId(9) s site=SiteId(148) ty=VecHolder intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(149) ty=string
     eval site=SiteId(146) ty=()
+    drop BindingId(4294967231) __hew_temp_arg ty=string
     drop BindingId(11) next ty=Vec<i64>
     drop BindingId(9) s ty=VecHolder
     drop BindingId(8) init ty=Vec<i64>
@@ -223,7 +229,7 @@ fn test_funcupdate_multi_field_override_drops_old -> ()
     call[bb14 testing$assert_eq_str -> bb15] ->
       (none)
     return[bb15] ->
-      (none)
+      drop _27 ty=string kind=cow_heap(hew_string_drop)
 
 fn test_funcupdate_hashmap_field_override_drops_old -> ()
   statements:

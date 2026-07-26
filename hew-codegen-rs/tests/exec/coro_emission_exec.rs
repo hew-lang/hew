@@ -11,15 +11,34 @@
 //!     allocates a Hew-owned heap value, mutates it across four suspends, and
 //!     frees it once. The driver resumes/polls/destroys it via the runtime ABI.
 //!     Asserts the accumulated sum (the value round-tripped through the frame on
-//!     every resume) AND the alloc/free accounting (frame + value each 1/1).
-//!     A leak or double-free fails the in-program accounting (exit != 0).
+//!     every resume) AND the alloc/free accounting for BOTH allocations: the
+//!     heap value and the coroutine FRAME, each exactly 1 alloc / 1 free.
+//!     The counters are bumped where the allocations actually happen — the
+//!     prologue's `dyn.alloc` block and the `hew_cont_frame_free` call in the
+//!     cleanup arm — and `main` turns them into the exit code (1 = the value
+//!     did not round-trip, 2 = value imbalance, 3 = frame imbalance).
+//!
+//!     This accounting IS the leak oracle. Exit status on its own is not one: a
+//!     frame that is allocated and never freed exits 0. `leaks --atExit` used to
+//!     carry that verdict and deadlocked, so it was removed — but the reason to
+//!     stop using `--atExit` is not a reason to stop checking for leaks. An
+//!     exact allocation-count balance around the coroutine lifecycle needs no
+//!     second process, cannot deadlock, and works identically on macOS, Linux,
+//!     FreeBSD and under wasmtime, which `leaks(1)` does not.
+//!
+//!   * `coro_frame_leak_is_caught` — the counterfactual that keeps the oracle
+//!     honest: the SAME module with the frame free deliberately omitted must
+//!     exit 3. If it ever exits 0, the accounting above has stopped proving
+//!     anything.
 //!
 //!   * `coro_substrate_guarded_heap_run_native` — re-runs the same binary with
 //!     `MallocScribble`/`MallocPreScribble`/`MallocGuardEdges` (freed memory is
 //!     poisoned; heap edges guarded), proving the heap value is genuinely
 //!     reloaded from the frame each resume (not read from a freed slot) and that
 //!     the single-teardown-owner frees frame and value exactly once — a second
-//!     free lands on a poisoned or guarded page and aborts.
+//!     free lands on a poisoned or guarded page and aborts. This is a
+//!     use-after-free and overflow oracle; it does NOT see leaks, which is why
+//!     the accounting above exists alongside it.
 //!
 //!   * `coro_substrate_round_trips_value_wasm32` — the SAME coroutine IR lowered
 //!     for `wasm32-wasi`, linked with `wasm-ld` against the wasm runtime, run
@@ -216,11 +235,34 @@ fn ensure_wasm_runtime() -> Option<PathBuf> {
 
 // ── the coroutine + driver emission (via the real codegen `coro` API) ──────
 
+/// What the coroutine's cleanup arm does with the frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameTeardown {
+    /// Free the frame through `hew_cont_frame_free` — the real teardown.
+    Free,
+    /// Allocate the frame and never free it. The counterfactual for the leak
+    /// oracle: exit status alone cannot see this (a leaked frame still exits
+    /// 0), so it is what proves the accounting oracle is load-bearing.
+    Leak,
+}
+
 /// Emit `gen_counter(out, start, count) -> ptr` — a finite generator coroutine
 /// holding a Hew-owned heap value across every suspend. Mirrors the W6.006 spike
 /// `gen.ll`, but the prologue / suspend / frame-free are emitted by the
 /// production `hew_codegen_rs::coro` API rather than hand-written `.ll`.
-fn emit_gen_counter<'ctx>(ctx: &'ctx Context, llvm_mod: &LlvmModule<'ctx>) {
+///
+/// Instruments both ends of the FRAME's lifetime: `frame_allocs` is bumped in
+/// the `dyn.alloc` block the prologue emits (the block holding the
+/// `hew_cont_frame_alloc` call) and `frame_frees` at the `hew_cont_frame_free`
+/// call in the cleanup arm. `main` turns the two counters into the exit code,
+/// which is what makes a leaked frame observable at all.
+fn emit_gen_counter<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    frame_allocs: inkwell::values::GlobalValue<'ctx>,
+    frame_frees: inkwell::values::GlobalValue<'ctx>,
+    teardown: FrameTeardown,
+) {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
     let builder = ctx.create_builder();
@@ -253,6 +295,25 @@ fn emit_gen_counter<'ctx>(ctx: &'ctx Context, llvm_mod: &LlvmModule<'ctx>) {
     // After the prologue the builder sits at the end of `coro.begin`; capture it
     // as the i=0 incoming edge for the loop-carried phi.
     let begin_block = builder.get_insert_block().expect("builder in coro.begin");
+
+    // Count the frame allocation where it happens: the prologue's `dyn.alloc`
+    // block, entered only when `llvm.coro.alloc` says the frame needs heap
+    // storage. Instrumenting the emitted block (rather than wrapping the
+    // runtime symbol) keeps the binary linked against the REAL
+    // `hew_cont_frame_alloc`, so the count is of actual runtime allocations.
+    {
+        let dyn_alloc = func
+            .get_basic_blocks()
+            .into_iter()
+            .find(|bb| bb.get_name().to_str() == Ok("dyn.alloc"))
+            .expect("prologue emits a dyn.alloc block");
+        let terminator = dyn_alloc
+            .get_terminator()
+            .expect("dyn.alloc branches to coro.begin");
+        builder.position_before(&terminator);
+        bump(&builder, i64_ty, frame_allocs);
+        builder.position_at_end(begin_block);
+    }
 
     // boxed = test_value_alloc(); *boxed = start
     let boxed = builder
@@ -361,20 +422,23 @@ fn emit_gen_counter<'ctx>(ctx: &'ctx Context, llvm_mod: &LlvmModule<'ctx>) {
 
     // free_bb: actually free the frame memory, then fall into suspend_ret.
     builder.position_at_end(free_bb);
-    let frame_free = cc
-        .llvm_mod
-        .get_function("hew_cont_frame_free")
-        .unwrap_or_else(|| {
-            let ptr_ty = cc.ctx.ptr_type(inkwell::AddressSpace::default());
-            cc.llvm_mod.add_function(
-                "hew_cont_frame_free",
-                cc.ctx.void_type().fn_type(&[ptr_ty.into()], false),
-                Some(inkwell::module::Linkage::External),
-            )
-        });
-    builder
-        .build_call(frame_free, &[freemem.into()], "")
-        .unwrap();
+    if teardown == FrameTeardown::Free {
+        let frame_free = cc
+            .llvm_mod
+            .get_function("hew_cont_frame_free")
+            .unwrap_or_else(|| {
+                let ptr_ty = cc.ctx.ptr_type(inkwell::AddressSpace::default());
+                cc.llvm_mod.add_function(
+                    "hew_cont_frame_free",
+                    cc.ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                    Some(inkwell::module::Linkage::External),
+                )
+            });
+        builder
+            .build_call(frame_free, &[freemem.into()], "")
+            .unwrap();
+        bump(&builder, i64_ty, frame_frees);
+    }
     builder.build_unconditional_branch(suspend_ret).unwrap();
 
     // suspend_ret: single exit — coro.end marks the suspension boundary, then
@@ -417,22 +481,27 @@ fn get_or_add<'ctx>(
 /// heap-value allocator pair (with accounting globals) + a `main` driver that
 /// drives the coroutine through the REAL `HewCont` runtime ABI
 /// (`hew_cont_resume`/`hew_cont_done`/`hew_cont_destroy`). `main` returns 0
-/// only if the value round-tripped (sum == 406) and alloc/free balanced.
+/// only if the value round-tripped (sum == 406) and BOTH the heap value and the
+/// coroutine frame were allocated once and freed once; otherwise it returns the
+/// code of the oracle that failed (1 sum, 2 value, 3 frame).
 ///
 /// The test value allocator uses `hew_alloc`/`hew_dealloc` (from `hew-runtime`)
 /// rather than `libc::malloc`/`free`. Both functions take `(u64, u64)` on all
 /// targets — no `size_t` width difference between native and wasm32 — so this
 /// module is ABI-correct on both without parameterisation.
-fn build_module<'ctx>(ctx: &'ctx Context, name: &str) -> LlvmModule<'ctx> {
+fn build_module<'ctx>(ctx: &'ctx Context, name: &str, teardown: FrameTeardown) -> LlvmModule<'ctx> {
     let llvm_mod = ctx.create_module(name);
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
     let i32_ty = ctx.i32_type();
     let i1_ty = ctx.bool_type();
 
-    // accounting globals
+    // accounting globals: the heap value the coroutine carries, and the
+    // coroutine FRAME itself.
     let value_allocs = add_counter(&llvm_mod, "value_allocs");
     let value_frees = add_counter(&llvm_mod, "value_frees");
+    let frame_allocs = add_counter(&llvm_mod, "frame_allocs");
+    let frame_frees = add_counter(&llvm_mod, "frame_frees");
 
     // test_value_alloc/free: 8-byte heap value via hew_alloc/hew_dealloc.
     // hew_alloc(size: u64, align: u64) -> *mut u8 — always i64 args on all targets.
@@ -495,7 +564,7 @@ fn build_module<'ctx>(ctx: &'ctx Context, name: &str) -> LlvmModule<'ctx> {
         b.build_return(None).unwrap();
     }
 
-    emit_gen_counter(ctx, &llvm_mod);
+    emit_gen_counter(ctx, &llvm_mod, frame_allocs, frame_frees, teardown);
 
     // Runtime HewCont ABI the driver calls.
     let cont_resume = get_or_add(
@@ -572,7 +641,9 @@ fn build_module<'ctx>(ctx: &'ctx Context, name: &str) -> LlvmModule<'ctx> {
         (&sum_next, drive_body),
     ]);
 
-    // finish: destroy; rc = 0 iff sum==406 and value alloc==free==1
+    // finish: destroy, then read the accounting. rc encodes WHICH check failed:
+    // 0 all pass, 1 the value did not round-trip, 2 the heap value leaked or was
+    // double-freed, 3 the coroutine FRAME leaked or was double-freed.
     b.position_at_end(finish);
     let sum_final = sum_phi.as_basic_value().into_int_value();
     b.build_call(cont_destroy, &[hdl.into()], "").unwrap();
@@ -608,15 +679,50 @@ fn build_module<'ctx>(ctx: &'ctx Context, name: &str) -> LlvmModule<'ctx> {
             "ok.vf",
         )
         .unwrap();
-    let a1 = b.build_and(ok_sum, ok_va, "a1").unwrap();
-    let a2 = b.build_and(a1, ok_vf, "a2").unwrap();
-    let rc = b
-        .build_select(
-            a2,
-            i32_ty.const_int(0, false),
-            i32_ty.const_int(1, false),
-            "rc",
+    let fa = b
+        .build_load(i64_ty, frame_allocs.as_pointer_value(), "fa")
+        .unwrap()
+        .into_int_value();
+    let ff = b
+        .build_load(i64_ty, frame_frees.as_pointer_value(), "ff")
+        .unwrap()
+        .into_int_value();
+    let ok_fa = b
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            fa,
+            i64_ty.const_int(1, false),
+            "ok.fa",
         )
+        .unwrap();
+    let ok_ff = b
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            ff,
+            i64_ty.const_int(1, false),
+            "ok.ff",
+        )
+        .unwrap();
+    let ok_value = b.build_and(ok_va, ok_vf, "ok.value").unwrap();
+    let ok_frame = b.build_and(ok_fa, ok_ff, "ok.frame").unwrap();
+    // Nested so the exit code names the failing oracle rather than collapsing
+    // every failure into 1: a leak counterfactual that exits non-zero for the
+    // wrong reason would prove nothing.
+    let rc_frame = b
+        .build_select(
+            ok_frame,
+            i32_ty.const_int(0, false),
+            i32_ty.const_int(3, false),
+            "rc.frame",
+        )
+        .unwrap()
+        .into_int_value();
+    let rc_value = b
+        .build_select(ok_value, rc_frame, i32_ty.const_int(2, false), "rc.value")
+        .unwrap()
+        .into_int_value();
+    let rc = b
+        .build_select(ok_sum, rc_value, i32_ty.const_int(1, false), "rc")
         .unwrap()
         .into_int_value();
     b.build_return(Some(&rc)).unwrap();
@@ -742,7 +848,8 @@ fn wasm_self_contained_libc() -> Option<PathBuf> {
 
 /// The continuation primitive lowers + runs on NATIVE: a Hew-owned heap value
 /// round-trips through the coro frame across four suspends, driven entirely by
-/// the runtime `HewCont` ABI, with balanced alloc/free.
+/// the runtime `HewCont` ABI, with the heap value AND the coroutine frame each
+/// allocated once and freed once.
 #[test]
 fn coro_substrate_round_trips_value_native() {
     let Some(clang) = llvm_bin("clang") else {
@@ -755,7 +862,7 @@ fn coro_substrate_round_trips_value_native() {
     let bin = tmp.path().join("coro");
 
     let ctx = Context::create();
-    let module = build_module(&ctx, "coro_native");
+    let module = build_module(&ctx, "coro_native", FrameTeardown::Free);
     let machine = machine_for(&native_triple());
     emit_object(&module, &machine, &obj);
 
@@ -772,16 +879,69 @@ fn coro_substrate_round_trips_value_native() {
     assert_eq!(
         run.code(),
         Some(0),
-        "coroutine must round-trip the value (sum 406) with balanced alloc/free"
+        "coroutine must round-trip the value (sum 406) and free both the heap \
+         value and the coroutine frame exactly once (exit 1 = sum, 2 = value \
+         imbalance, 3 = frame leak or double-free)"
+    );
+}
+
+/// The leak oracle is load-bearing: omit the `hew_cont_frame_free` call and the
+/// SAME binary must fail with the frame-imbalance code.
+///
+/// Without this, the frame accounting could silently stop counting — a renamed
+/// block, a bump sunk into dead code, a counter never read — and every
+/// remaining assertion would still pass, because a leaked coroutine frame exits
+/// 0 and produces the correct sum. The guarded MallocScribble/MallocGuardEdges
+/// run does not see it either: nothing poisons memory that is never freed.
+#[test]
+fn coro_frame_leak_is_caught() {
+    let Some(clang) = llvm_bin("clang") else {
+        eprintln!("skip: clang (LLVM 22) not found");
+        return;
+    };
+    let runtime = ensure_native_runtime();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let obj = tmp.path().join("coro.o");
+    let bin = tmp.path().join("coro");
+
+    let ctx = Context::create();
+    let module = build_module(&ctx, "coro_frame_leak", FrameTeardown::Leak);
+    let machine = machine_for(&native_triple());
+    emit_object(&module, &machine, &obj);
+
+    let status = Command::new(&clang)
+        .arg(&obj)
+        .arg(&runtime)
+        .args(native_link_frameworks())
+        .args(["-o", bin.to_str().unwrap()])
+        .status()
+        .expect("link native coro binary");
+    assert!(status.success(), "clang link failed");
+
+    let run = Command::new(&bin)
+        .status()
+        .expect("run leaking coro binary");
+    assert_eq!(
+        run.code(),
+        Some(3),
+        "a coroutine frame that is allocated and never freed must fail the \
+         accounting oracle with the frame code — exit 0 here would mean the \
+         leak check has stopped checking, and exit 1 or 2 would mean it failed \
+         for an unrelated reason"
     );
 }
 
 /// The native binary is double-free- and use-after-free-clean: re-run it with
 /// freed memory poisoned (`MallocScribble`/`MallocPreScribble`) and heap edges
 /// guarded (`MallocGuardEdges`). Proves the heap value is genuinely reloaded
-/// from the frame each resume rather than read out of a freed slot, and that
-/// the single-teardown-owner frees the frame and the value exactly once — a
-/// second free lands on a poisoned or guarded page and aborts.
+/// from the frame each resume rather than read out of a freed slot, and that a
+/// second free of the frame or the value lands on a poisoned or guarded page
+/// and aborts.
+///
+/// This run catches use-after-free and overflow. It does NOT catch a leak —
+/// nothing poisons memory that is never freed — so the exactly-once half of
+/// that claim is carried by the in-program accounting in `build_module`, which
+/// this run also evaluates.
 #[test]
 fn coro_substrate_guarded_heap_run_native() {
     let Some(clang) = llvm_bin("clang") else {
@@ -794,7 +954,7 @@ fn coro_substrate_guarded_heap_run_native() {
     let bin = tmp.path().join("coro");
 
     let ctx = Context::create();
-    let module = build_module(&ctx, "coro_leak");
+    let module = build_module(&ctx, "coro_guarded", FrameTeardown::Free);
     let machine = machine_for(&native_triple());
     emit_object(&module, &machine, &obj);
     let status = Command::new(&clang)
@@ -850,7 +1010,7 @@ fn coro_substrate_round_trips_value_wasm32() {
     // split needed. Set triple/data-layout BEFORE emit_object so the target-data
     // the module carries is consistent with the object file the linker sees.
     let machine = machine_for("wasm32-wasi");
-    let module = build_module(&ctx, "coro_wasm");
+    let module = build_module(&ctx, "coro_wasm", FrameTeardown::Free);
     module.set_triple(&machine.get_triple());
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     emit_object(&module, &machine, &obj);
@@ -895,7 +1055,7 @@ fn debug_emit_and_check_native() {
     let ir_path = std::path::PathBuf::from("/tmp/coro_post_split.ll");
 
     let ctx = Context::create();
-    let module = build_module(&ctx, "coro_debug");
+    let module = build_module(&ctx, "coro_debug", FrameTeardown::Free);
     let machine = machine_for(&native_triple());
 
     // Dump pre-split IR

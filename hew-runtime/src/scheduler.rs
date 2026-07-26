@@ -5619,6 +5619,156 @@ mod tests {
         unsafe { mailbox::hew_mailbox_free(mailbox) };
     }
 
+    /// Regression: an out-of-band stop that cancels a PARKED `receive gen fn`
+    /// pump must publish the stream fault its consumer is waiting on.
+    ///
+    /// `cancel_parked_activation_for_stop` destroys the pump's parked frame
+    /// itself, so `hew_actor_free_inner`'s reclaim — for a while the only place
+    /// the stop path published the fault — arrives to find nothing left to
+    /// destroy, loses the `... -> Destroyed` CAS and skips the publish. A stream
+    /// `recv` is woken by a send, a clean close or the fault and by nothing
+    /// else, so the consumer parked in `ChannelCore::blocking_recv` forever:
+    /// the whole process went quiescent with one thread on a condvar nothing
+    /// would ever notify.
+    ///
+    /// Bite-proof, both halves. The consumer must come back with the FAULT, not
+    /// merely come back:
+    /// - Drop the publish from the terminal settle and the `recv_timeout` below
+    ///   trips — that is the hang, reproduced at this layer.
+    /// - Turn the fault into a clean close (or let the sink drop silently) and
+    ///   the consumer returns a `None` EOF instead, so the `Faulted` assertion
+    ///   trips. A future change that turns the abort into a silent exit 0 fails
+    ///   here rather than passing quietly.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn stopping_a_parked_gen_pump_faults_the_stream_its_consumer_waits_on() {
+        /// Neither raw handle is `Send`. The consumer thread parks on the
+        /// shared `ChannelCore` — the exact wait a real consumer parks on —
+        /// which the stream half keeps alive for the whole test.
+        struct CorePtr(*const crate::channel_core::ChannelCore);
+        // SAFETY: `ChannelCore` is `Sync` (mutex + condvar); the stream half
+        // holds an `Arc` clone of it that outlives the joined thread.
+        unsafe impl Send for CorePtr {}
+
+        #[derive(Debug, PartialEq, Eq)]
+        enum Observed {
+            Faulted,
+            Eof,
+            Value,
+        }
+
+        let _sched = NoWorkerSchedulerForTest::install();
+
+        // SAFETY: fresh mailbox owned by this test, with one message to drive
+        // the single dispatch that parks the pump.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox is live; null payload of size 0 is valid.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+
+        let mut stub = stub_actor();
+        stub.dispatch = Some(suspend_once_dispatch);
+        stub.mailbox = mailbox.cast();
+        stub.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        let actor = TrackedTestActor::install(stub);
+        let actor_ptr = actor.ptr();
+
+        // The pump's sink, registered exactly as the generated prologue does.
+        // The consumer keeps the stream half alive; nothing ever writes a
+        // value, so the only thing that can release it is the fault.
+        // SAFETY: `hew_stream_channel` returns a valid pair; each half is
+        // extracted once and the emptied pair box is freed.
+        let (sink, stream) = unsafe {
+            let pair = crate::stream::hew_stream_channel(1);
+            let sink = crate::stream::hew_stream_pair_sink(pair);
+            let stream = crate::stream::hew_stream_pair_stream(pair);
+            crate::stream::hew_stream_pair_free(pair);
+            (sink, stream)
+        };
+        // Borrow the shared core through the sink BEFORE registering it: the
+        // fault-close consumes the sink, but the core is an `Arc` the stream
+        // half also holds, so the address stays live until that half is closed
+        // at the end of the test.
+        // SAFETY: `sink` is the live, freshly extracted sink half.
+        let core = CorePtr(unsafe { (*sink).channel_core_ptr() }.cast());
+        assert!(!core.0.is_null(), "a channel sink exposes its shared core");
+        // SAFETY: the actor is live and tracked; `sink` is the freshly
+        // extracted, not-yet-consumed sink half.
+        unsafe { crate::actor::hew_actor_gen_sink_register(actor_ptr, sink) };
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<Observed>();
+        let consumer = std::thread::spawn(move || {
+            let core = core;
+            // The faulted read panics by design (`ChannelCore::panic_faulted`).
+            // Catch it here and report WHICH terminal the consumer observed;
+            // the vertical-slice fixture covers the same panic reaching the
+            // process boundary as the abort.
+            let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // SAFETY: the core is kept alive by the stream half held on the
+                // main thread until after this thread is joined.
+                unsafe { &*core.0 }.blocking_recv()
+            }))
+            .map_or(Observed::Faulted, |item| {
+                if item.is_some() {
+                    Observed::Value
+                } else {
+                    Observed::Eof
+                }
+            });
+            let _ = done_tx.send(observed);
+        });
+
+        // Dispatch: the pump parks with its sink still registered.
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32,
+            "the pump parked"
+        );
+        assert!(
+            !actor.gen_sink.load(Ordering::Acquire).is_null(),
+            "the parked pump still owns its registered sink"
+        );
+
+        // Out-of-band stop: latches, CASes Suspended → Runnable, and enqueues.
+        // SAFETY: the actor is live and owned by this test.
+        unsafe { crate::actor::hew_actor_stop(actor_ptr) };
+        // Drive the activation the stop queued (no workers under this guard).
+        activate_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32,
+            "the stop cancelled the park and drove the actor terminal"
+        );
+
+        // The contract, in the order it matters: the consumer must come back,
+        // and it must come back having seen the FAULT.
+        let observed = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("stopping a parked pump must release its parked consumer");
+        assert_eq!(
+            observed,
+            Observed::Faulted,
+            "the consumer must OBSERVE the producer fault, never a silent EOF"
+        );
+        consumer.join().expect("consumer thread panicked");
+        assert!(
+            actor.gen_sink.load(Ordering::Acquire).is_null(),
+            "the terminal settle consumed the registered sink exactly once"
+        );
+
+        // SAFETY: single-threaded again; neither handle is used afterwards. The
+        // sink was already released by the fault-close.
+        unsafe {
+            crate::stream::hew_stream_close(stream);
+            mailbox::hew_mailbox_free(mailbox);
+        }
+    }
+
     /// Regression: freeing an actor DIRECTLY, with no stop first, must not
     /// strand a parked `ask`.
     ///

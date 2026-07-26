@@ -13467,6 +13467,90 @@ mod tests {
             drop(Box::from_raw(actor));
         }
     }
+
+    /// Regression: freeing an actor must publish the stream fault for the
+    /// abandonment routes that never settle an activation at all.
+    ///
+    /// `cleanup_all_actors`, the quiesced drain and supervisor child teardown
+    /// all reach the free with no parked frame to reclaim. The publish used to
+    /// sit inside `hew_actor_free_inner`'s parked-activation branch, gated on
+    /// winning the `... -> Destroyed` CAS, so none of those routes ran it: a
+    /// pump that had registered a sink and was then abandoned left its consumer
+    /// parked in `ChannelCore::blocking_recv` on a producer that no longer
+    /// existed.
+    ///
+    /// Bite-proof: this actor has NO parked continuation, so the old
+    /// destroy-gated publish is skipped entirely and the `recv_timeout` below
+    /// trips — the hang, reproduced at this layer. The consumer must also come
+    /// back having seen the FAULT: turn it into a clean close and `faulted` is
+    /// false instead, so a silent EOF fails here too.
+    #[test]
+    fn freeing_an_actor_faults_a_registered_gen_sink_with_no_parked_frame() {
+        /// The consumer thread parks on the shared `ChannelCore` — the exact
+        /// wait a real consumer parks on. The stream half kept on this thread
+        /// holds the `Arc` that keeps it alive.
+        struct CorePtr(*const crate::channel_core::ChannelCore);
+        // SAFETY: `ChannelCore` is `Sync` (mutex + condvar) and outlives the
+        // joined thread via the stream half's `Arc` clone.
+        unsafe impl Send for CorePtr {}
+
+        let _guard = crate::runtime_test_guard();
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Stopped);
+        // Keep the consumer half alive so the shared core outlives the free.
+        // SAFETY: hew_stream_channel returns a valid pair; each half is
+        // extracted once and the emptied pair box is freed.
+        let (sink, stream) = unsafe {
+            let pair = crate::stream::hew_stream_channel(1);
+            let sink = crate::stream::hew_stream_pair_sink(pair);
+            let stream = crate::stream::hew_stream_pair_stream(pair);
+            crate::stream::hew_stream_pair_free(pair);
+            (sink, stream)
+        };
+        // Borrow the shared core before registering: the fault-close consumes
+        // the sink, but the core is an `Arc` the stream half also holds.
+        // SAFETY: `sink` is the live, freshly extracted sink half.
+        let core = CorePtr(unsafe { (*sink).channel_core_ptr() }.cast());
+        assert!(!core.0.is_null(), "a channel sink exposes its shared core");
+        // SAFETY: actor is a live, freshly built test actor.
+        unsafe { hew_actor_gen_sink_register(actor, sink) };
+        // SAFETY: the actor never parked a continuation, so the destroy-gated
+        // publish this test guards against would find nothing to reclaim.
+        let has_parked = crate::coro_exec::has_live_parked_cont(unsafe { &*actor });
+        assert!(
+            !has_parked,
+            "this actor must have no parked frame for the test to bite"
+        );
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<bool>();
+        let consumer = std::thread::spawn(move || {
+            let core = core;
+            // The faulted read panics by design; report whether the consumer
+            // saw the FAULT (panic) or a silent EOF / value (no panic).
+            let faulted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // SAFETY: the core is kept alive by the stream half held on the
+                // main thread until after this thread is joined.
+                unsafe { &*core.0 }.blocking_recv()
+            }))
+            .is_err();
+            let _ = done_tx.send(faulted);
+        });
+
+        // SAFETY: actor is tracked, quiescent and owned by this test;
+        // `hew_actor_free` reclaims the box, so `actor` is dangling afterwards.
+        assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+
+        let faulted = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("freeing an abandoned pump must release its parked consumer");
+        assert!(
+            faulted,
+            "the consumer must OBSERVE the producer fault, never a silent EOF"
+        );
+        consumer.join().expect("consumer thread panicked");
+
+        // SAFETY: the stream half is live and unused afterwards.
+        unsafe { crate::stream::hew_stream_close(stream) };
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]

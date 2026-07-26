@@ -2,10 +2,9 @@
 # check-libhew-fresh.sh — assert that the combined runtime + stdlib archive is
 # not stale.
 #
-# Compares the mtime of target/debug/libhew.a (target/debug/hew.lib on Windows)
-# against the newest input file found under hew-lib/, hew-runtime/ and hew-std/
-# (*.rs, Cargo.toml, build.rs). Exits 0 if the archive is current; exits 1 if it
-# predates any source input.
+# Compares the mtime of libhew.a (hew.lib on Windows) in the directory Cargo
+# actually writes to against the newest input file that feeds the archive.
+# Exits 0 if the archive is current; exits 1 if it predates any input.
 #
 # This is the build-graph half of the staleness defence. The other half lives in
 # the compiler driver, which embeds a digest of the same input set and refuses
@@ -15,12 +14,22 @@
 # `cargo build`, IDE builds and copied-in artefacts.
 #
 # Usage: scripts/check-libhew-fresh.sh [--debug-dir <dir>]
-#   --debug-dir <dir>   Override the Cargo output dir (default: target/debug)
+#   --debug-dir <dir>   Override the Cargo output dir. The default is whatever
+#                       scripts/cargo-output-dir.py resolves, which is what
+#                       Cargo itself would use: `target/debug` only when
+#                       CARGO_TARGET_DIR, build.target-dir, CARGO_BUILD_TARGET
+#                       and build.target are all unset. Checking a hard-coded
+#                       `target/debug` while Cargo writes elsewhere is how a
+#                       stale default archive gets reported as current.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEBUG_DIR="${REPO_ROOT}/target/debug"
+resolved_out="$("${REPO_ROOT}/scripts/cargo-output-dir.py" --profile debug)"
+case "$resolved_out" in
+    /*) DEBUG_DIR="$resolved_out" ;;
+    *)  DEBUG_DIR="${REPO_ROOT}/${resolved_out}" ;;
+esac
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

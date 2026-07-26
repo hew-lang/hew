@@ -91,16 +91,51 @@ DESTDIR    ?=
 BUILD_DIR  := build
 COMMON_GIT_DIR := $(shell git rev-parse --git-common-dir 2>/dev/null)
 
-# Cargo profile directory names
-DEBUG_DIR  := target/debug
-RELEASE_DIR := target/release
+# Cargo profile directory names.
+#
+# Cargo does not always write into `target/`: CARGO_TARGET_DIR, build.target-dir
+# in any .cargo/config.toml, CARGO_BUILD_TARGET, build.target and an explicit
+# --target each move the output directory. A rule that builds through Cargo and
+# then touches, inspects or installs a hard-coded `target/debug` is looking at a
+# different file than the one Cargo just wrote — which is precisely how a
+# month-old libhew.a in a shared scratch target directory got certified fresh.
+# scripts/cargo-output-dir.py resolves the real directory the way Cargo does,
+# and everything below is derived from it.
+#
+# TARGET_TRIPLE passes --target through to the native cargo invocations here;
+# leave it empty to build for the host.
+TARGET_TRIPLE ?=
+CARGO_TARGET_FLAG := $(if $(TARGET_TRIPLE),--target $(TARGET_TRIPLE),)
+CARGO_TARGET_ROOT := $(shell scripts/cargo-output-dir.py --root)
+CARGO_NATIVE_OUT := $(shell scripts/cargo-output-dir.py --native $(CARGO_TARGET_FLAG))
+ifeq ($(CARGO_NATIVE_OUT),)
+$(error scripts/cargo-output-dir.py could not resolve Cargo's output directory)
+endif
+
+DEBUG_DIR  := $(CARGO_NATIVE_OUT)/debug
+RELEASE_DIR := $(CARGO_NATIVE_OUT)/release
 # The SHIPPED libhew.a builds under the non-LTO `release-lib` cargo profile:
 # a fat-LTO archive cannot dedupe its folded libstd against external Rust
 # staticlibs (`--link-lib` packages), so packaging must never ship the
-# `target/release` archive. See `[profile.release-lib]` in Cargo.toml.
-RELEASE_LIB_DIR := target/release-lib
-WASM_DEBUG_DIR  := target/wasm32-wasip1/debug
-WASM_RELEASE_DIR := target/wasm32-wasip1/release
+# `release` archive. See `[profile.release-lib]` in Cargo.toml.
+RELEASE_LIB_DIR := $(CARGO_NATIVE_OUT)/release-lib
+# The wasm archives are always built with an explicit `--target wasm32-wasip1`,
+# which outranks the environment, so they hang off the target root rather than
+# the native output directory.
+WASM_DEBUG_DIR  := $(CARGO_TARGET_ROOT)/wasm32-wasip1/debug
+WASM_RELEASE_DIR := $(CARGO_TARGET_ROOT)/wasm32-wasip1/release
+
+# Symlinks under build/ point into the Cargo output directory. While that
+# directory is inside the repository the links stay relative, so a moved
+# checkout keeps working; an out-of-tree CARGO_TARGET_DIR resolves to an
+# absolute path, which must not have `../` hops prepended to it.
+ifeq ($(filter /%,$(CARGO_TARGET_ROOT)),)
+LINK_UP2 := ../../
+LINK_UP3 := ../../../
+else
+LINK_UP2 :=
+LINK_UP3 :=
+endif
 
 # ── The combined runtime + stdlib archive as a real file target ─────────────
 #
@@ -185,17 +220,17 @@ hew: hew-native
 # in place. Keep this target cross-platform so fresh Windows hosts use the same
 # build graph as Linux/macOS.
 hew-native: $(LIBHEW)
-	cargo build -p hew-cli
+	cargo build -p hew-cli $(CARGO_TARGET_FLAG)
 
 # Build the adze package manager (debug)
 adze:
-	cargo build -p adze-cli
+	cargo build -p adze-cli $(CARGO_TARGET_FLAG)
 
 # Build the TUI actor observer (debug).
 # hew-observe is a sibling binary: `hew observe` delegates to it when it is
 # present next to the running hew binary or on PATH (see exec_sibling_binary).
 observe:
-	cargo build -p hew-observe
+	cargo build -p hew-observe $(CARGO_TARGET_FLAG)
 
 observe-functional-test: hew-native observe $(LIBHEW_READY)
 	cargo test -p hew-observe --test functional -- --ignored --nocapture
@@ -212,7 +247,7 @@ libhew-link-race-test: hew-native $(LIBHEW_READY)
 
 # Build the runtime static library (debug)
 runtime:
-	cargo build -p hew-runtime
+	cargo build -p hew-runtime $(CARGO_TARGET_FLAG)
 
 # Build libhew.a — the combined runtime + stdlib static library.
 # The hew-lib umbrella crate depends on hew-runtime + all stdlib crates;
@@ -228,7 +263,7 @@ stdlib: $(LIBHEW)
 # the archive is current, and recording that keeps make (and the mtime-based
 # freshness check) from re-running on every invocation.
 $(LIBHEW): $(LIBHEW_SRCS) Cargo.toml Cargo.lock
-	cargo build -p hew-lib
+	cargo build -p hew-lib $(CARGO_TARGET_FLAG)
 	@touch $@
 
 # Build the WASM runtime + the consolidated stdlib archive (libhew_std.a)
@@ -522,18 +557,18 @@ assemble: | hew-native adze observe runtime stdlib wasm-runtime
 	@rm -rf $(BUILD_DIR)/std
 	@mkdir -p $(BUILD_DIR)/std
 	@# Compiler driver
-	@ln -sfn ../../$(DEBUG_DIR)/hew                $(BUILD_DIR)/bin/hew
+	@ln -sfn $(LINK_UP2)$(DEBUG_DIR)/hew                $(BUILD_DIR)/bin/hew
 	@# Package manager
-	@ln -sfn ../../$(DEBUG_DIR)/adze               $(BUILD_DIR)/bin/adze
+	@ln -sfn $(LINK_UP2)$(DEBUG_DIR)/adze               $(BUILD_DIR)/bin/adze
 	@# TUI actor observer (sibling binary — `hew observe` delegates here)
-	@ln -sfn ../../$(DEBUG_DIR)/hew-observe        $(BUILD_DIR)/bin/hew-observe
+	@ln -sfn $(LINK_UP2)$(DEBUG_DIR)/hew-observe        $(BUILD_DIR)/bin/hew-observe
 	@# Combined Hew library (runtime + all stdlib packages)
-	@ln -sfn ../../$(DEBUG_DIR)/libhew.a           $(BUILD_DIR)/lib/libhew.a
+	@ln -sfn $(LINK_UP2)$(DEBUG_DIR)/libhew.a           $(BUILD_DIR)/lib/libhew.a
 	@# WASM runtime + focused wire stdlib archives (symlink if built)
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_DEBUG_DIR)/$$lib ]; then \
 			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
-			ln -sfn ../../../$(WASM_DEBUG_DIR)/$$lib \
+			ln -sfn $(LINK_UP3)$(WASM_DEBUG_DIR)/$$lib \
 				$(BUILD_DIR)/lib/wasm32-wasip1/$$lib; \
 		fi; \
 	done
@@ -543,15 +578,15 @@ assemble: | hew-native adze observe runtime stdlib wasm-runtime
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f target/$$triple/debug/libhew.a ]; then \
-			lib_path="target/$$triple/debug/libhew.a"; \
+		if [ -f $(CARGO_TARGET_ROOT)/$$triple/debug/libhew.a ]; then \
+			lib_path="$(CARGO_TARGET_ROOT)/$$triple/debug/libhew.a"; \
 		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(DEBUG_DIR)/libhew.a ]; then \
 			lib_path="$(DEBUG_DIR)/libhew.a"; \
 		else \
 			continue; \
 		fi; \
 		mkdir -p $(BUILD_DIR)/lib/$$triple; \
-		ln -sfn ../../../$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
+		ln -sfn $(LINK_UP3)$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
 	done
 	@# Standard library stubs (one symlink per file so the dir stays flat)
 	@for f in std/*.hew; do \
@@ -575,10 +610,10 @@ endif
 
 release:
 	$(RELEASE_PREP)
-	$(RELEASE_ENV) cargo build -p hew-cli --release
-	$(RELEASE_ENV) cargo build -p adze-cli --release
-	$(RELEASE_ENV) cargo build -p hew-observe --release
-	$(RELEASE_ENV) cargo build -p hew-lib --profile release-lib
+	$(RELEASE_ENV) cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
+	$(RELEASE_ENV) cargo build -p adze-cli --release $(CARGO_TARGET_FLAG)
+	$(RELEASE_ENV) cargo build -p hew-observe --release $(CARGO_TARGET_FLAG)
+	$(RELEASE_ENV) cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 	$(RELEASE_ENV) cargo build -p hew-std --target wasm32-wasip1 --release
 	$(MAKE) assemble-release
@@ -591,15 +626,15 @@ pre-release: release
 	scripts/pre-release-validate.sh $(PLATFORMS)
 
 # Build stdlib docs and print the wrangler deploy command.
-# Requires a release binary; run `make release` first if target/release/hew
+# Requires a release binary; run `make release` first if the release hew
 # is absent or stale.  The operator supplies the Cloudflare token via
 # `wrangler login` or CLOUDFLARE_API_TOKEN in the shell — it is never in
 # this file.
-publish-docs: target/release/hew ## Build stdlib docs; print wrangler deploy command for hew-docs
-	./target/release/hew doc std/ --output-dir target/doc/
+publish-docs: $(RELEASE_DIR)/hew ## Build stdlib docs; print wrangler deploy command for hew-docs
+	$(RELEASE_DIR)/hew doc std/ --output-dir $(CARGO_TARGET_ROOT)/doc/
 	@echo ""
-	@echo "Docs generated at target/doc/."
-	@echo "Deploy with: wrangler pages deploy target/doc/ --project-name hew-docs"
+	@echo "Docs generated at $(CARGO_TARGET_ROOT)/doc/."
+	@echo "Deploy with: wrangler pages deploy $(CARGO_TARGET_ROOT)/doc/ --project-name hew-docs"
 
 # Fail-closed shape check for a shipped libhew.a: the archive must carry
 # verbatim prebuilt libstd members (std-*.o). A fat-LTO build folds libstd
@@ -614,17 +649,17 @@ endef
 # Assemble build/ with release symlinks.
 assemble-release:
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
-	@ln -sfn ../../$(RELEASE_DIR)/hew              $(BUILD_DIR)/bin/hew
-	@ln -sfn ../../$(RELEASE_DIR)/adze             $(BUILD_DIR)/bin/adze
-	@ln -sfn ../../$(RELEASE_DIR)/hew-observe      $(BUILD_DIR)/bin/hew-observe
+	@ln -sfn $(LINK_UP2)$(RELEASE_DIR)/hew              $(BUILD_DIR)/bin/hew
+	@ln -sfn $(LINK_UP2)$(RELEASE_DIR)/adze             $(BUILD_DIR)/bin/adze
+	@ln -sfn $(LINK_UP2)$(RELEASE_DIR)/hew-observe      $(BUILD_DIR)/bin/hew-observe
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
 	@# release-lib profile — never the fat-LTO target/release archive.
 	@$(call check_libhew_shape,$(RELEASE_LIB_DIR)/libhew.a)
-	@ln -sfn ../../$(RELEASE_LIB_DIR)/libhew.a     $(BUILD_DIR)/lib/libhew.a
+	@ln -sfn $(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a     $(BUILD_DIR)/lib/libhew.a
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
 			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
-			ln -sfn ../../../$(WASM_RELEASE_DIR)/$$lib \
+			ln -sfn $(LINK_UP3)$(WASM_RELEASE_DIR)/$$lib \
 				$(BUILD_DIR)/lib/wasm32-wasip1/$$lib; \
 		fi; \
 	done
@@ -632,8 +667,8 @@ assemble-release:
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f target/$$triple/release-lib/libhew.a ]; then \
-			lib_path="target/$$triple/release-lib/libhew.a"; \
+		if [ -f $(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a ]; then \
+			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a"; \
 		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_LIB_DIR)/libhew.a ]; then \
 			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
 		else \
@@ -641,7 +676,7 @@ assemble-release:
 		fi; \
 		$(call check_libhew_shape,$$lib_path); \
 		mkdir -p $(BUILD_DIR)/lib/$$triple; \
-		ln -sfn ../../../$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
+		ln -sfn $(LINK_UP3)$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
 	done
 	@rm -rf $(BUILD_DIR)/std
 	@ln -sfn ../std $(BUILD_DIR)/std
@@ -1433,8 +1468,8 @@ install: install-check
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f target/$$triple/release-lib/libhew.a ]; then \
-			lib_path="target/$$triple/release-lib/libhew.a"; \
+		if [ -f $(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a ]; then \
+			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a"; \
 		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_LIB_DIR)/libhew.a ]; then \
 			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
 		else \

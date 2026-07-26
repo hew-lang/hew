@@ -17,8 +17,15 @@ use support::{hew_binary, repo_root, require_codegen, run_bounded_hew_run, strip
 /// runtime's `hew_process_run` spawns sh without `setpgid`, so background
 /// jobs in non-interactive sh retain the parent's PGID). `BoundedChild` then
 /// targets that entire group with `killpg(SIGKILL)` on timeout.
+///
+/// This was ignored on the claim that v0.5 native codegen had no supported
+/// long-running `std::process` fixture. That was not the failure. The fixture
+/// compiles and runs; the test asked `hew run` for a 30 s timeout while
+/// wrapping the call in `run_bounded_command`, whose deadline is also 30 s
+/// (`DEFAULT_EXEC_TIMEOUT`), so the outer harness always killed the process
+/// before the inner watchdog could fire. The inner timeout is now 5 s and the
+/// outer bound is explicit and generous, leaving room for compile plus link.
 #[cfg(unix)]
-#[ignore = "v0.5 native codegen lacks a supported long-running std::process fixture for this timeout assertion"]
 #[test]
 fn run_timeout_kills_grandchild_process_tree() {
     require_codegen();
@@ -48,19 +55,24 @@ fn run_timeout_kills_grandchild_process_tree() {
     )
     .unwrap();
 
-    // The --timeout is a hang watchdog, not a precision timer.  30 s gives the
-    // compiled binary generous startup time (compilation + link + spawn) even
-    // on a heavily loaded CI runner.  The program loops forever, so the
-    // timeout always fires; the assertion is that the whole process group is
-    // dead, not how long it took.
+    // The --timeout is a hang watchdog, not a precision timer.  The program
+    // loops forever, so the timeout always fires; the assertion is that the
+    // whole process group is dead, not how long it took.  It must stay well
+    // inside the outer harness deadline below, which also has to absorb
+    // compilation and link time on a loaded runner.
     let mut command = Command::new(hew_binary());
     command
         .arg("run")
         .arg("--timeout")
-        .arg("30")
+        .arg("5")
         .arg(&hew_src)
         .current_dir(dir.path());
-    let output = support::run_bounded_command(command, format!("hew run {}", hew_src.display()));
+    let output = support::try_run_bounded_command(
+        command,
+        format!("hew run {}", hew_src.display()),
+        Duration::from_mins(2),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 
     assert!(
         !output.status.success(),

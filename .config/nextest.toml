@@ -368,7 +368,6 @@ test-group = "subprocess-intensive"
 #   Excluded by binary(~oracle) — leak-oracle hew-cli tests
 #   Excluded by binary(machine_lifecycle) — subprocess; name outside the patterns
 #   Excluded by binary(zeroarg_module_enum_emission) — subprocess; name outside patterns
-#   Excluded by binary(jit_trap_bridge)  — JIT-deferred; name outside the patterns
 #   Excluded by binary(playground), binary(ios_subset) — VM-dependent sandbox
 #     parity binaries, same reason as binary(parity) below
 #   Excluded by binary(parity_ratchet) — its live_gate test spawns the Node VM
@@ -382,7 +381,7 @@ test-group = "subprocess-intensive"
 # no binary name.  Substring exclusion therefore needs the contains matcher
 # `~`: binary(~exec).  The exact-name exclusions below are valid bare strings
 # because those binaries exist.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(parity_ratchet) - binary(playground) - binary(ios_subset) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(parity_ratchet) - binary(playground) - binary(ios_subset) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
 test-threads = "num-cpus"
 slow-timeout = { period = "30s", terminate-after = 2 }
 # Suppress the 3800-line passing-test wall; show only failures during the run

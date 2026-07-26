@@ -223,29 +223,30 @@ fn assert_wasm_unsupported_category(fixture: &str, expected: &[&str], forbidden:
 }
 
 // ---------------------------------------------------------------------------
-// WASM-TODO(#1451): duplex program blocked at codegen, not at wasm-ld
+// Duplex on wasm32: native compiles, wasm32 refuses with a structured error
 // ---------------------------------------------------------------------------
 
-/// WASM-TODO(#1451): `hew_duplex_*` symbols are excluded from the wasm32 build
-/// (`hew-runtime/src/duplex.rs:54`, `#![cfg(not(target_arch = "wasm32"))]`).
-/// `emit_module` returns `CodegenError::WasmUnsupportedSubstrate` before
-/// invoking `wasm-ld`, and the CLI surfaces a structured diagnostic with a
-/// `--target wasm32-unknown-unknown` hint instead of a raw linker failure.
+/// A duplex program must compile natively and must be refused on wasm32 with a
+/// structured Hew diagnostic — never a raw `wasm-ld` undefined-symbol dump.
 ///
-/// This test is ignored because the HIR→MIR duplex surface requires E3
-/// (checker-side `duplex_pair` resolution in the HIR bridge) which has not yet
-/// landed on `v05-integration`. The codegen-layer classification is exercised
-/// directly by `hew-codegen-rs/tests/wasm_duplex_classification.rs`.
+/// This test previously pointed at `duplex_pair_send_skeleton.hew`, a fixture
+/// that has never existed in this repository, and was ignored on the claim that
+/// the HIR duplex bridge had not landed. Both statements were stale: the bridge
+/// is in, `duplex_split_roundtrip.hew` is a committed accept fixture, and the
+/// wasm32 refusal happens today.
+///
+/// The refusal now arrives one layer earlier than the original author expected.
+/// HIR rejects the duplex program's blocking `.recv()` on wasm32
+/// (`BlockingChannelRecvUnsupportedOnWasm`) before codegen gets a chance to
+/// return `WasmUnsupportedSubstrate` for the excluded `hew_duplex_*` symbols.
+/// That earlier stop is the honest current behaviour and is what this test
+/// asserts. The codegen-layer classification it used to reach is separately
+/// covered by `hew-codegen-rs/tests/structural/wasm_duplex_classification.rs`.
 #[test]
-#[ignore = "WASM-TODO(#1451): hew_duplex_* excluded from wasm32 build; see \
-            hew-runtime/src/duplex.rs:54. E3 (HIR duplex bridge) is required \
-            to compile a duplex source fixture end-to-end."]
 fn duplex_program_wasm_surfaces_structured_diagnostic() {
     require_codegen();
 
-    // This fixture requires E3 to compile; it will fail at HIR with
-    // `UnresolvedSymbol: duplex_pair` until E3 lands.
-    let fixture = repo_root().join("tests/vertical-slice/accept/duplex_pair_send_skeleton.hew");
+    let fixture = repo_root().join("tests/vertical-slice/accept/duplex_split_roundtrip.hew");
 
     let emit_dir = tempfile::Builder::new()
         .prefix("compile-duplex-wasm-")
@@ -255,7 +256,7 @@ fn duplex_program_wasm_surfaces_structured_diagnostic() {
     let fixture_str = fixture.to_str().expect("fixture path is valid UTF-8");
     let emit_dir_str = emit_dir.path().to_str().expect("emit dir is valid UTF-8");
 
-    // With the WASM target: expect structured diagnostic referencing #1451.
+    // With the WASM target: expect a structured Hew diagnostic, not a linker dump.
     let output = Command::new(hew_binary())
         .args([
             "compile",
@@ -275,8 +276,12 @@ fn duplex_program_wasm_surfaces_structured_diagnostic() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("duplex") && stderr.contains("--target wasm32-unknown-unknown"),
-        "expected diagnostic mentioning duplex substrate and WASM target hint; got:\n{stderr}"
+        stderr.contains("is not supported on wasm32"),
+        "expected a structured wasm32 refusal for the duplex program; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("wasm-ld"),
+        "the refusal must be a Hew diagnostic, not a raw wasm-ld failure; got:\n{stderr}"
     );
 
     // Bare native compile: native binary produced, exits 0.

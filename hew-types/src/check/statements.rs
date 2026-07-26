@@ -1052,8 +1052,29 @@ impl Checker {
                                     field.decl_span.clone(),
                                 ));
                             } else {
-                                self.errors
-                                    .push(TypeError::mutability_error(span.clone(), name));
+                                // A by-value aggregate parameter must not be
+                                // told to become `var`: `var` on one is itself
+                                // rejected (#2810), so the old suggestion
+                                // routed the user straight into a construct
+                                // the compiler refuses. Parameters whose `var`
+                                // form IS effective — `Vec` and the other
+                                // handle types — keep the `var` suggestion.
+                                let ineffective_var_param = if binding.is_param() {
+                                    let binding_ty = self.subst.resolve(&binding.ty);
+                                    self.param_var_has_no_caller_visible_effect(&binding_ty)
+                                        .then(|| binding_ty.user_facing().to_string())
+                                } else {
+                                    None
+                                };
+                                let error = match ineffective_var_param {
+                                    Some(ty) => TypeError::value_param_mutability_error(
+                                        span.clone(),
+                                        name,
+                                        &ty,
+                                    ),
+                                    None => TypeError::mutability_error(span.clone(), name),
+                                };
+                                self.errors.push(error);
                             }
                         }
                     }

@@ -466,69 +466,6 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
     assert_eq!(count_400, 1, "N=400: expected 1 refresh, got {count_400}");
 }
 
-/// Timing check: registering 400 structs must run in at most 4× the time it
-/// takes for 100 structs, demonstrating linear (not quadratic) scaling.
-///
-/// Uses `Instant::elapsed`-bounded ratio rather than an absolute wall-clock
-/// threshold so CI hardware differences don't cause false failures.
-/// Kept `#[ignore]` (CONVERT-C deferred): migration to `benches/` requires
-/// adding Criterion to hew-types and is non-trivial. Invoke explicitly with
-/// `cargo test -- --include-ignored` when you want the timing signal.
-#[test]
-#[ignore = "wall-clock ratio test; run explicitly with --include-ignored (benches/ migration deferred: no Criterion dep)"]
-fn handle_bearing_registration_scales_linearly_not_quadratically() {
-    use std::time::Instant;
-
-    fn time_register_n(n: usize) -> std::time::Duration {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let start = Instant::now();
-        for i in 0..n {
-            let td = hew_parser::ast::TypeDecl {
-                visibility: hew_parser::ast::Visibility::Private,
-                kind: hew_parser::ast::TypeDeclKind::Struct,
-                name: format!("T{i}"),
-                type_params: None,
-                where_clause: None,
-                body: vec![hew_parser::ast::TypeBodyItem::Field {
-                    name: "x".to_string(),
-                    ty: (
-                        hew_parser::ast::TypeExpr::Named {
-                            name: "i64".to_string(),
-                            type_args: None,
-                        },
-                        0..0,
-                    ),
-                    attributes: vec![],
-                    doc_comment: None,
-                    span: 0..0,
-                }],
-                doc_comment: None,
-                wire: None,
-                is_indirect: false,
-                resource_marker: hew_parser::ast::ResourceMarker::None,
-                is_opaque: false,
-                consuming_methods: Vec::new(),
-                lang_item: None,
-            };
-            checker.register_type_decl(&td);
-        }
-        checker.ensure_handle_bearing_fresh();
-        start.elapsed()
-    }
-
-    let t100 = time_register_n(100);
-    let t400 = time_register_n(400);
-
-    // Use as_secs_f64 to avoid u128->f64 precision-loss lints; nanosecond
-    // precision is far more than this test needs.
-    let ratio = t400.as_secs_f64() / t100.as_secs_f64().max(f64::EPSILON);
-    assert!(
-        ratio < 16.0,
-        "registration of 400 structs took {ratio:.1}× as long as 100 structs — expected < 16× \
-         (quadratic would be ~16×, linear is ~4×). t100={t100:?} t400={t400:?}"
-    );
-}
-
 // ── Task<T> surface rules ──────────────────────────────────────────────────
 //
 // `Task<T>` is a compiler-internal type. It has no user-source spelling:

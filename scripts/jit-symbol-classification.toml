@@ -1734,8 +1734,12 @@ discarded. Non-silence: hew_mailbox_free retires through \
 mailbox::retire_pending_sys_lane, which names every discarded signal via \
 HewSysMsg::name() and counts it into sys_lane_signals_retired() -- a teardown \
 can no longer happen without leaving a countable trace. Both properties are \
-tests, not prose: teardown_latches_terminal_and_untracks_before_freeing_queue \
-and teardown_of_a_pending_signal_moves_the_retirement_counter. No \
+tests, not prose: \
+actor::tests::teardown_reaches_queue_destruction_only_after_terminal_and_untracked \
+observes both at the instruction before the queue is freed, and \
+actor::tests::actor_teardown_of_a_pending_signal_moves_the_retirement_counter \
+tears down an actor holding an undispatched signal and requires the counter to \
+move. No \
 user-declarable caller reaches this edge at all any more -- \
 hew_supervisor_remove_child was the last one and is now internal."""
 
@@ -1749,9 +1753,11 @@ build_spawned_actor writes `sys_dispatch: config.sys_dispatch`, so it installs \
 whatever the internal SpawnConfig carries -- but no stable spawn entry point \
 can put anything there. hew_actor_spawn, hew_actor_spawn_bounded, \
 hew_actor_spawn_opts and hew_actor_spawn_opts_adopt each build the config with \
-`sys_dispatch: None`; the slot has no parameter in any spawn arg list. The \
-only ways to install a real consumer are hew_actor_set_sys_dispatch \
-(codegen-stable, emitted by the compiler) and hew_supervisor_start."""
+`sys_dispatch: None`; the slot has no parameter in any spawn arg list. That \
+is asserted over all four by \
+actor::tests::no_spawn_entry_point_installs_a_system_dispatch, not left to \
+this paragraph. The only ways to install a real consumer are \
+hew_actor_set_sys_dispatch and hew_supervisor_start, both codegen-stable."""
 
 "current_thread_owns_supervisor_tree -> current_actor_supervisor" = """
 Role identity, not lane observation. current_actor_supervisor reads \

@@ -148,8 +148,39 @@ fn run_free_post_latch_hook(actor: *mut HewActor) {
     }
 }
 
-// ── Stable-registration retirement rendezvous hooks (test-only) ──────────
+// The destruction of an actor's system queue is only defensible if it cannot
+// race a producer. That rests on an ORDERING -- the actor is latched into a
+// terminal state and removed from live tracking before anything reaches the
+// queue -- and an ordering is a checkable fact, not a paragraph. This hook
+// fires on the instruction before `hew_mailbox_free`, so a test reads the
+// state that holds AT destruction. Move the queue free above the latch or the
+// untrack and `teardown_reaches_queue_destruction_only_after_terminal_and_untracked`
+// fails.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static PRE_QUEUE_DESTROY_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn set_pre_queue_destroy_hook_for_test(hook: Option<fn(*mut HewActor)>) {
+    let mut guard = PRE_QUEUE_DESTROY_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = hook;
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn run_pre_queue_destroy_hook(actor: *mut HewActor) {
+    let hook = {
+        let guard = PRE_QUEUE_DESTROY_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard
+    };
+    if let Some(hook) = hook {
+        hook(actor);
+    }
+}
+
+// ── Stable-registration retirement rendezvous hooks (test-only) ──────────
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[derive(Clone)]
 struct RegistrationRetirementHook {
@@ -2340,6 +2371,12 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
 
     let mb = a.mailbox.cast::<HewMailbox>();
     if !mb.is_null() {
+        // Observation point for the teardown-ordering proof. This is the last
+        // instruction before the actor's system queue is destroyed, so a test
+        // reading actor_state and live-actor tracking here reads exactly the
+        // state that holds AT destruction rather than around it.
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        run_pre_queue_destroy_hook(actor);
         // Null the mailbox slot before freeing — same defense-in-depth
         // discipline as the arena slot above (`raii-null-after-move`).
         // SAFETY: caller guarantees exclusive access to `actor` during free.
@@ -9685,6 +9722,198 @@ mod tests {
             !live_actors::is_actor_live(actor),
             "freed actor must no longer be tracked in LIVE_ACTORS"
         );
+        drop(sched);
+    }
+
+    // ── System-channel invariants, as tests rather than as prose ────────
+    //
+    // Three of the justifications for reaching system-channel state from a
+    // reachable-but-defensible position were paragraphs. A paragraph does not
+    // fail when the code moves underneath it, so each one that can be checked
+    // mechanically is checked here instead.
+
+    /// JUSTIFICATION UNDER TEST: no user-declarable spawn entry point can
+    /// install a system dispatch pointer, because the slot has no parameter in
+    /// any spawn argument list.
+    ///
+    /// All four entry points are exercised, including both `HewActorOpts`
+    /// forms — `HewActorOpts` is the only spawn argument that is a struct, so
+    /// it is the only one where a field could be added without changing a
+    /// function signature, and it is therefore the one worth pinning. Add a
+    /// system-dispatch parameter or field to any of them and wire it through,
+    /// and this test fails on that entry point.
+    #[test]
+    fn no_spawn_entry_point_installs_a_system_dispatch() {
+        let _guard = crate::runtime_test_guard();
+
+        let opts = HewActorOpts {
+            init_state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox_capacity: 0,
+            overflow: HewOverflowPolicy::DropOld as i32,
+            coalesce_key_fn: None,
+            coalesce_fallback: 0,
+            message_drop_fn: None,
+            budget: 0,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+        };
+
+        // SAFETY: null state with size 0 and a valid dispatch are valid spawn
+        // arguments for every entry point; `opts` outlives both calls, and the
+        // adopt form is documented to take ownership of the cloned-state
+        // pointer, which is null here.
+        let spawned: [(&str, *mut HewActor); 4] = unsafe {
+            [
+                (
+                    "hew_actor_spawn",
+                    hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)),
+                ),
+                (
+                    "hew_actor_spawn_bounded",
+                    hew_actor_spawn_bounded(ptr::null_mut(), 0, Some(noop_dispatch), 8),
+                ),
+                (
+                    "hew_actor_spawn_opts",
+                    hew_actor_spawn_opts(&raw const opts),
+                ),
+                (
+                    "hew_actor_spawn_opts_adopt",
+                    hew_actor_spawn_opts_adopt(&raw const opts, ptr::null_mut()),
+                ),
+            ]
+        };
+
+        for (name, actor) in spawned {
+            assert!(!actor.is_null(), "{name} must spawn");
+            // SAFETY: actor was just spawned and is not being dispatched.
+            let installed = unsafe { (*actor).sys_dispatch };
+            assert!(
+                installed.is_none(),
+                "{name} left a system dispatch installed; no spawn argument may reach that slot"
+            );
+            // SAFETY: actor is valid, Idle, and owned solely by this test.
+            let rc = unsafe { hew_actor_free(actor) };
+            assert_eq!(rc, 0, "{name}: teardown must succeed (got {rc})");
+        }
+    }
+
+    static QUEUE_DESTROY_OBSERVED_STATE: AtomicI32 = AtomicI32::new(-1);
+    static QUEUE_DESTROY_OBSERVED_TRACKED: AtomicBool = AtomicBool::new(true);
+    static QUEUE_DESTROY_RAN: AtomicBool = AtomicBool::new(false);
+
+    fn observe_at_queue_destroy(actor: *mut HewActor) {
+        // SAFETY: the hook fires inside teardown, before the box is reclaimed,
+        // so `actor` is still a live allocation.
+        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        QUEUE_DESTROY_OBSERVED_STATE.store(state, Ordering::Release);
+        QUEUE_DESTROY_OBSERVED_TRACKED.store(live_actors::is_actor_live(actor), Ordering::Release);
+        QUEUE_DESTROY_RAN.store(true, Ordering::Release);
+    }
+
+    /// JUSTIFICATION UNDER TEST: teardown reaches destruction of the actor's
+    /// system queue only after the actor has been latched into a terminal
+    /// state and removed from live tracking.
+    ///
+    /// That ordering is the whole defence for destroying a queue that
+    /// producers can otherwise push into: once the actor is terminal, every
+    /// producer's `CAS Idle->Runnable` fails, and once it is untracked no new
+    /// producer can find it by id at all. Prose cannot notice when the order
+    /// changes. The hook fires on the instruction before `hew_mailbox_free`,
+    /// so these two reads are taken AT destruction, not near it.
+    ///
+    /// Counterfactual: move the mailbox free above the `Idle->Stopped` latch
+    /// and the state assertion trips; move it above `untrack_actor` and the
+    /// tracking assertion trips.
+    #[test]
+    fn teardown_reaches_queue_destruction_only_after_terminal_and_untracked() {
+        let _guard = crate::runtime_test_guard();
+        let sched = scheduler::NoWorkerSchedulerForTest::install();
+
+        QUEUE_DESTROY_RAN.store(false, Ordering::Release);
+        QUEUE_DESTROY_OBSERVED_STATE.store(-1, Ordering::Release);
+        QUEUE_DESTROY_OBSERVED_TRACKED.store(true, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn arguments.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor is valid and freshly spawned.
+        let spawned_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(spawned_state, HewActorState::Idle as i32);
+
+        set_pre_queue_destroy_hook_for_test(Some(observe_at_queue_destroy));
+        // SAFETY: actor is valid and owned solely by this test.
+        let rc = unsafe { hew_actor_free(actor) };
+        set_pre_queue_destroy_hook_for_test(None);
+
+        assert_eq!(rc, 0, "teardown must succeed (got {rc})");
+        assert!(
+            QUEUE_DESTROY_RAN.load(Ordering::Acquire),
+            "teardown must actually reach the queue destruction it is being observed at"
+        );
+
+        let observed = QUEUE_DESTROY_OBSERVED_STATE.load(Ordering::Acquire);
+        assert!(
+            observed == HewActorState::Stopped as i32 || observed == HewActorState::Crashed as i32,
+            "the system queue was destroyed while the actor was in state {observed}; \
+             it must be latched terminal (Stopped or Crashed) first, or a producer \
+             can still win CAS Idle->Runnable and push into a queue being freed"
+        );
+        assert!(
+            !QUEUE_DESTROY_OBSERVED_TRACKED.load(Ordering::Acquire),
+            "the system queue was destroyed while the actor was still tracked; \
+             a by-id producer could still have found it"
+        );
+
+        drop(sched);
+    }
+
+    /// JUSTIFICATION UNDER TEST: a teardown cannot happen without leaving a
+    /// countable trace.
+    ///
+    /// Destroying an actor's system queue destroys whatever lifecycle signals
+    /// were still undispatched in it. That is tolerable only because it is
+    /// accounted: every discarded signal is named and counted. The counter is
+    /// process-wide and other tests tear down mailboxes concurrently, so this
+    /// asserts a lower bound on the delta — restoring the unaccounted drain
+    /// moves it to exactly zero, which is what makes the bound non-vacuous.
+    ///
+    /// This is the actor-level companion to
+    /// `mailbox_teardown_accounts_for_the_system_signals_it_discards`: that one
+    /// covers a bare mailbox, this one covers the full actor teardown path the
+    /// authenticated edge actually names.
+    #[test]
+    fn actor_teardown_of_a_pending_signal_moves_the_retirement_counter() {
+        let _guard = crate::runtime_test_guard();
+        let sched = scheduler::NoWorkerSchedulerForTest::install();
+
+        // SAFETY: null state + valid dispatch are valid spawn arguments.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor is valid; its mailbox is live for the actor's lifetime.
+        let mb = unsafe { (*actor).mailbox.cast::<mailbox::HewMailbox>() };
+        assert!(!mb.is_null());
+
+        // SAFETY: the actor is Idle under a worker-less scheduler, so nothing
+        // dispatches this signal before teardown observes it.
+        let queued = unsafe {
+            mailbox::mailbox_send_sys_checked(mb, mailbox::HewSysMsg::Exit, ptr::null_mut(), 0)
+        };
+        assert!(queued, "the test signal must be queued");
+        // SAFETY: mailbox pointer is valid.
+        assert_eq!(unsafe { mailbox::hew_mailbox_sys_len(mb) }, 1);
+
+        let before = mailbox::sys_lane_signals_retired();
+        // SAFETY: actor is valid and owned solely by this test.
+        let rc = unsafe { hew_actor_free(actor) };
+        assert_eq!(rc, 0, "teardown must succeed (got {rc})");
+
+        assert!(
+            mailbox::sys_lane_signals_retired() > before,
+            "actor teardown discarded an undispatched lifecycle signal without counting it"
+        );
+
         drop(sched);
     }
 

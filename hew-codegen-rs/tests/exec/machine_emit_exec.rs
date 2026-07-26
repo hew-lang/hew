@@ -345,9 +345,14 @@ fn machine_emit_placeholder_lowers_to_push_call() {
 ///    return slot, and returns cleanly (no trap). `caller` receives the
 ///    return value and discards it.
 /// 7. Assert the outermost step exit drained the thread-local queue.
+///
+/// This test runs on every `cargo nextest run`. It is the one MCJIT-executing
+/// test that is sound today, because step 3 maps every runtime symbol the
+/// module references by address via `add_global_mapping` instead of relying on
+/// the engine's dynamic-symbol resolver — the resolver gap is what made the
+/// rest of the MCJIT execution tests crash.
 #[test]
 #[cfg(unix)]
-#[ignore = "JIT/MCJIT execution deferred post-v0.5; native is the primary path (U26). Re-enable when the JIT runtime matures."]
 fn machine_emit_push_populates_thread_queue_in_fifo_order() {
     use inkwell::context::Context;
     use inkwell::memory_buffer::MemoryBuffer;

@@ -3,6 +3,7 @@ name = "hew-build-identity"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository = "https://github.com/hew-lang/hew"
 description = "Content-addressed build identity shared by the Hew driver and libhew.a"
 publish = false
 

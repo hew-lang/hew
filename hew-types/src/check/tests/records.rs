@@ -1825,6 +1825,11 @@ mod assoc_types_slice2 {
     ///   raw destructor was withdrawn for destroying — and removing a live
     ///   child discards whatever lifecycle signals were still queued for it.
     ///   Supervisor ownership does not change what the call reaches.
+    /// - `hew_supervisor_start` installs the runtime's own system dispatch
+    ///   trampoline on the supervisor actor. The installed value is a constant
+    ///   code address, but the call is still a system-dispatch installation and
+    ///   the closure gate refuses to authenticate an edge whose caller is
+    ///   user-declarable rather than take that distinction on trust.
     #[test]
     fn extern_rt_system_lane_symbols_rejected() {
         for sym in [
@@ -1851,6 +1856,7 @@ mod assoc_types_slice2 {
             "hew_supervisor_notify_child_actor_event",
             "hew_supervisor_notify_child_supervisor_escalation",
             "hew_supervisor_remove_child",
+            "hew_supervisor_start",
         ] {
             let extern_item = make_extern_rt_block(&[sym]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));

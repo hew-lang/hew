@@ -81,6 +81,10 @@ CRATE = """
 
     #[cfg(any(target_arch = "wasm32", test))]
     pub unsafe extern "C" fn hew_toy_free_wasm(a: *mut Actor) {
+        toy_wasm_inner(a);
+    }
+
+    fn toy_wasm_inner(a: *mut Actor) {
         toy_mailbox_free(a);
     }
 
@@ -358,19 +362,47 @@ def main() -> int:
             output,
         )
 
-        # 8. A clean tree passes -- so a green run means something.
+        # 8. A clean tree passes -- so a green run means something. Every waiver
+        #    here is on a caller no user program can name.
         toml.write_text(
             textwrap.dedent(BASE_TOML)
             + "\n[sys-lane-closure.authenticated-edges]\n"
             + '"toy_free_inner -> toy_mailbox_free" = "test reason"\n'
-            + '"hew_toy_free_wasm -> toy_mailbox_free" = "test reason"\n',
+            + '"toy_wasm_inner -> toy_mailbox_free" = "test reason"\n',
             encoding="utf-8",
         )
         code, output = run_gate(tree, toml)
         check("fully waived tree passes", code == 0, output)
 
-        # 9. The parser fails CLOSED: valid Rust it cannot balance is a hard
-        #    error naming the symbol, and braces that are data are read as data.
+        # 9. An authenticated edge cannot be waived from a user-declarable
+        #    caller. That caller composes the call's arguments, so it picks the
+        #    destination and the reason -- the exact thing the waiver denies.
+        #    This is the rule that keeps a waived callee from being re-exposed
+        #    by a thin stable forwarder sitting one hop above it.
+        toml.write_text(
+            textwrap.dedent(BASE_TOML)
+            + "\n[sys-lane-closure.authenticated-edges]\n"
+            + '"hew_toy_free -> toy_free_inner" = "test reason"\n'
+            + '"toy_wasm_inner -> toy_mailbox_free" = "test reason"\n',
+            encoding="utf-8",
+        )
+        code, output = run_gate(tree, toml)
+        check(
+            "an authenticated edge from a user-declarable caller fails",
+            code == 1
+            and "authenticated edge hew_toy_free -> toy_free_inner has a "
+            "user-declarable caller"
+            in output,
+            output,
+        )
+        check(
+            "the same edge from a non-user-declarable caller is accepted",
+            "toy_wasm_inner -> toy_mailbox_free has a" not in output,
+            output,
+        )
+
+        # 10. The parser fails CLOSED: valid Rust it cannot balance is a hard
+        #     error naming the symbol, and braces that are data are read as data.
         check_parser_fails_closed(root)
 
     if FAILURES:

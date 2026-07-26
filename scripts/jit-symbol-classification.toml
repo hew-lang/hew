@@ -598,7 +598,6 @@ stable = [
   "hew_supervisor_set_config_drop_fn",
   "hew_supervisor_set_circuit_breaker",
   "hew_supervisor_set_restart_notify",
-  "hew_supervisor_start",
   "hew_supervisor_stop",
   "hew_supervisor_pool_add_slot",
   "hew_supervisor_pool_child_get",
@@ -1285,6 +1284,18 @@ codegen-stable = [
   # emits the literal and the call); user code has no way to name it that is
   # not a forged system-dispatch registration.
   "hew_supervisor_add_child_spec",
+  # SYSTEM-LANE PROVENANCE BOUNDARY. Installs the runtime's own
+  # `supervisor_sys_dispatch` trampoline on the supervisor's not-yet-published
+  # `self_actor`. The installed value is a compile-time constant code address
+  # and the target is an object this call is in the middle of constructing, so
+  # no caller argument reaches the system dispatch slot — but the call IS a
+  # system-dispatch installation, and the gate now refuses to waive an edge
+  # whose caller is user-declarable rather than take that distinction on
+  # trust. It belongs here regardless: `hew-codegen-rs/src/suspend.rs` emits
+  # `hew_supervisor_new` -> `hew_supervisor_add_child_spec` ->
+  # `hew_supervisor_start` as one lowering, and its sibling in that sequence
+  # is already `codegen-stable`.
+  "hew_supervisor_start",
   "hew_task_scope_set_current",
   "hew_wasm_register_actor_meta",
   "hew_wire_cbor_to_text",
@@ -1599,7 +1610,10 @@ internal = [
 
 # Edges the closure must not traverse. An entry deletes exactly ONE caller ->
 # callee edge; a *different* caller of the same callee still trips the gate, so
-# these do not blanket-exempt the callee.
+# these do not blanket-exempt the callee. The caller must not be
+# user-declarable: a caller user code can name in an `extern` rt block composes
+# the call's arguments, so it picks the destination and the reason, and no
+# reason paragraph makes that authenticated. The gate enforces that directly.
 [sys-lane-closure.authenticated-edges]
 
 "worker_loop -> activate_actor" = """
@@ -1699,7 +1713,11 @@ retirement count is necessarily zero."""
 Installs the runtime's own supervisor_sys_dispatch trampoline, a compile-time \
 constant code address, on a self_actor hew_supervisor_start has not yet \
 published. No caller-supplied function pointer reaches the slot and there is \
-no window in which another thread can observe the actor without one."""
+no window in which another thread can observe the actor without one. \
+hew_supervisor_start is codegen-stable, not stable: the gate refuses to waive \
+an edge from a user-declarable caller at all, rather than distinguish by hand \
+between a caller whose arguments reach the system queue and one whose do \
+not."""
 
 "free_actor_resources_with_options -> hew_mailbox_free" = """
 Accounted teardown, native. This is the edge every actor-lifecycle route \

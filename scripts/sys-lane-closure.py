@@ -34,7 +34,10 @@ requiring a written reason per entry:
     caller cannot choose what crosses: the runtime derives the signal from a
     transition it won itself, or the callee is the lane's own consumer. An edge
     cut is narrow by construction -- a NEW caller of the same callee still
-    trips the gate, because only the named pair is deleted.
+    trips the gate, because only the named pair is deleted. The caller itself
+    must not be user-declarable: a caller user code can name in `extern "rt"`
+    composes the call's arguments, so it picks the destination and the reason,
+    and no reason paragraph can make that authenticated.
 
   [sys-lane-closure.non-roots]
       "function" = "why its lane mention is not a lane operation"
@@ -662,6 +665,16 @@ def main(argv: list[str] | None = None) -> int:
     for caller, callee in sorted(waivers.edges):
         if callee not in graph.callees.get(caller, ()):
             stale.append(f"authenticated edge {caller} -> {callee} is not a call")
+    # An authenticated edge says "this caller cannot choose what crosses into
+    # the system queue". A user-declarable caller composes the call's arguments
+    # itself, so the claim cannot hold for it: the destination and the reason
+    # are whatever the user program passed in. Refuse the pairing outright
+    # rather than let a reason paragraph assert otherwise.
+    unauthenticated: list[str] = [
+        f"authenticated edge {caller} -> {callee} has a user-declarable caller"
+        for caller, callee in sorted(waivers.edges)
+        if caller in user_declarable
+    ]
     # A non-root whose body no longer names the lane is waiving nothing, and a
     # non-root that is no longer defined is waiving a symbol that does not
     # exist. Both hide the next edit behind an entry nobody will re-read.
@@ -682,12 +695,27 @@ def main(argv: list[str] | None = None) -> int:
                     "closure": len(closure),
                     "violations": violations,
                     "stale_waivers": stale,
+                    "unauthenticated_edges": unauthenticated,
                 },
                 indent=2,
             )
         )
 
     failed = False
+    if unauthenticated:
+        failed = True
+        print(
+            "sys-lane closure: these authenticated edges are waived from a\n"
+            "user-declarable caller. An authenticated edge means the runtime, not\n"
+            "the caller, decides what crosses into the system queue -- but a\n"
+            'caller user code can name in `extern "rt"` composes the call\'s\n'
+            "arguments itself, so it chooses the destination and the reason. Move\n"
+            "the caller out of the user-declarable tier or close the edge:",
+            file=sys.stderr,
+        )
+        for entry in unauthenticated:
+            print(f"  {entry}", file=sys.stderr)
+
     if stale:
         failed = True
         print(

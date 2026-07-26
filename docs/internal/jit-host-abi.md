@@ -160,21 +160,33 @@ and `scripts/sys-lane-closure.py` (`make verify-sys-lane-closure`, part of
 
 1. **Roots** — every function in `hew-runtime/src` and `hew-std/src` whose own
    body names `sys_queue`, `sys_count`, `sys_dispatch`, `HewSysMsg` or
-   `Origin::Sys`. Comments and string literals are blanked first so prose can
-   neither mint nor hide a root; test-only items are dropped, including whole
-   files behind a `#[cfg(test)] mod x;` in their parent. `#[cfg(any(target_arch
-   = "wasm32", test))]` is production wasm code and is deliberately NOT dropped.
+   `Origin::Sys`. Comments, string literals and character literals are blanked
+   first so prose can neither mint nor hide a root, and so a brace that is data
+   is not read as syntax; test-only items are dropped, including whole files
+   behind a `#[cfg(test)] mod x;` in their parent. `#[cfg(any(target_arch =
+   "wasm32", test))]` is production wasm code and is deliberately NOT dropped.
 2. **Reachability** — reverse breadth-first search from the roots over call
    edges, so the result is everything that can reach a lane operation, however
    far away.
 3. **Verdict** — the gate fails if any `stable` or `stable-stdlib` symbol is in
    that closure, and prints a witness path for each.
 
+The gate **fails closed**. A body it cannot brace-balance is a hard error
+naming the symbol and its `file:line`, never a skip: a symbol the parser drops
+is a symbol that can reach the system queue without appearing in the closure,
+which is the same defect class the gate exists to remove.
+
 Escapes live in `[sys-lane-closure.authenticated-edges]` and
 `[sys-lane-closure.non-roots]` in `scripts/jit-symbol-classification.toml`.
 Each needs a written reason, each is checked for staleness, and an
 authenticated edge clears exactly one caller→callee pair — a *new* caller of
-the same callee still fails. `scripts/tests/test_sys_lane_closure.py` proves
+the same callee still fails. An authenticated edge's **caller must not itself
+be user-declarable**, and the gate enforces that: an authenticated edge claims
+the runtime rather than the caller decides what crosses into the system queue,
+but a caller a program can name in an `extern` rt block composes the call's
+arguments, so it picks the destination and the reason. That rule is what keeps
+a waived callee from being re-exposed by a thin `stable` forwarder sitting one
+hop above it, without anyone having to notice the forwarder. `scripts/tests/test_sys_lane_closure.py` proves
 the gate still fails on a transitive reach, so a green run means something.
 
 This does not replace the judgement above; it replaces the enumeration. The

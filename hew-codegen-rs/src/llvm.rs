@@ -19224,7 +19224,7 @@ pub(crate) fn const_elem_witness_global<'ctx>(
     global_name: &str,
     size: u64,
     align: u32,
-    ownership_kind: u8,
+    ownership_kind: hew_cabi::vec::HewTypeOwnershipKind,
 ) -> CodegenResult<PointerValue<'ctx>> {
     if let Some(g) = fn_ctx.llvm_mod.get_global(global_name) {
         return Ok(g.as_pointer_value());
@@ -19246,7 +19246,9 @@ pub(crate) fn const_elem_witness_global<'ctx>(
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
         usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_int(u64::from(ownership_kind), false).into(),
+        i8_ty
+            .const_int(crate::layout::ownership_kind_byte(ownership_kind), false)
+            .into(),
         ptr_ty.const_null().into(),
         ptr_ty.const_null().into(),
     ]);

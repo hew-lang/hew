@@ -24,6 +24,7 @@ use inkwell::values::{
 };
 use inkwell::{AddressSpace, IntPredicate};
 
+use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_mir::{
     EnumLayout, IrPipeline, MachineLayout, MachineVariantLayout, Place, RecordLayout,
     StateFieldCloneKind, Terminator,
@@ -33,6 +34,45 @@ use hew_types::{BuiltinType, ResolvedTy};
 
 #[allow(unused_imports)]
 use crate::llvm::*;
+
+/// The `ownership_kind` byte every layout descriptor below embeds, taken from
+/// the ABI enum rather than a literal.
+///
+/// The emitted global is decoded by the shipped runtime, so the byte and
+/// `hew_cabi::vec::HewTypeOwnershipKind` are one value, not two that a comment
+/// claims agree. Reading the discriminant off the enum means a reorder moves
+/// codegen with it instead of leaving codegen telling the runtime the wrong
+/// ownership discipline for every vec, map and set element.
+pub(crate) const fn ownership_kind_byte(kind: HewTypeOwnershipKind) -> u64 {
+    kind as u64
+}
+
+// The discriminants are ABI: they travel in emitted IR that an already-shipped
+// runtime decodes, so renumbering one is a wire break, not an internal edit.
+// These assertions pin the values here, in the crate that emits them, so a
+// renumber fails to compile instead of silently miscompiling.
+const _: () = {
+    assert!(ownership_kind_byte(HewTypeOwnershipKind::Plain) == 0);
+    assert!(ownership_kind_byte(HewTypeOwnershipKind::String) == 1);
+    assert!(ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged) == 2);
+    assert!(ownership_kind_byte(HewTypeOwnershipKind::Bytes) == 3);
+};
+
+/// Companion to the pin above: a new `HewTypeOwnershipKind` variant fails this
+/// match, forcing whoever adds it to decide what codegen emits for it.
+#[expect(
+    dead_code,
+    reason = "exhaustiveness guard — its only job is to stop compiling when a \
+              variant is added to the ABI ownership enum"
+)]
+fn ownership_kind_variants_are_accounted_for(kind: HewTypeOwnershipKind) {
+    match kind {
+        HewTypeOwnershipKind::Plain
+        | HewTypeOwnershipKind::String
+        | HewTypeOwnershipKind::LayoutManaged
+        | HewTypeOwnershipKind::Bytes => {}
+    }
+}
 
 /// Register every named-form record from `layouts` as an LLVM named struct
 /// type on `ctx`, populating the body with each field's LLVM lowering.
@@ -1116,7 +1156,9 @@ pub(crate) fn layout_descriptor_ptr<'ctx>(
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
         usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_zero().into(),
+        i8_ty
+            .const_int(ownership_kind_byte(HewTypeOwnershipKind::Plain), false)
+            .into(),
     ]);
     let global = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
     global.set_constant(true);
@@ -1131,7 +1173,8 @@ pub(crate) fn layout_descriptor_ptr<'ctx>(
 ///
 /// The struct shape must match `hew_cabi::vec::HewVecElemLayout`:
 /// `{ size: usize, align: usize, ownership_kind: u8, clone_fn: *const fn,
-/// drop_fn: *const fn }`. `ownership_kind = LayoutManaged (2)`; the two thunk
+/// drop_fn: *const fn }`. `ownership_kind` is `HewTypeOwnershipKind::LayoutManaged`
+/// read off the ABI enum, not a literal; the two thunk
 /// fields point at the element's per-type `__hew_record/enum_{clone,drop}_
 /// inplace_<key>` helpers (their bodies seeded by
 /// `collect_vec_owned_element_seeds`). Dedup by `(size, align, key)` so two
@@ -1245,11 +1288,15 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
         ],
         false,
     );
-    // ownership_kind = LayoutManaged (HewTypeOwnershipKind::LayoutManaged = 2).
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
         usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_int(2, false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
         clone_fn.as_global_value().as_pointer_value().into(),
         drop_fn.as_global_value().as_pointer_value().into(),
     ]);
@@ -1302,7 +1349,12 @@ pub(crate) fn closure_pair_elem_layout_descriptor_ptr<'ctx>(
     let init = layout_ty.const_named_struct(&[
         size_ty.const_int(size, false).into(),
         size_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_int(2, false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
         ptr_ty.const_null().into(),
         drop_fn.as_global_value().as_pointer_value().into(),
     ]);
@@ -1344,7 +1396,13 @@ pub(crate) fn channel_elem_layout_witness_ptr<'ctx>(
                 reason = "pointer byte size fits u32 on every supported target"
             )]
             let align = ptr_bytes as u32;
-            const_elem_witness_global(fn_ctx, "__hew_elem_layout_string", ptr_bytes, align, 1)
+            const_elem_witness_global(
+                fn_ctx,
+                "__hew_elem_layout_string",
+                ptr_bytes,
+                align,
+                HewTypeOwnershipKind::String,
+            )
         }
         ResolvedTy::Bytes => {
             let triple_ty = fn_ctx.ctx.struct_type(
@@ -1356,7 +1414,13 @@ pub(crate) fn channel_elem_layout_witness_ptr<'ctx>(
                 false,
             );
             let (size, align) = abi_size_align(triple_ty.into(), Some(fn_ctx.target_data))?;
-            const_elem_witness_global(fn_ctx, "__hew_elem_layout_bytes", size, align, 3)
+            const_elem_witness_global(
+                fn_ctx,
+                "__hew_elem_layout_bytes",
+                size,
+                align,
+                HewTypeOwnershipKind::Bytes,
+            )
         }
         _ if resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, elem_ty) => {
             let elem_llvm_ty = resolve_ty(
@@ -1393,7 +1457,7 @@ pub(crate) fn channel_elem_layout_witness_ptr<'ctx>(
                 &format!("__hew_elem_layout_plain_{size}_{align}"),
                 size,
                 align,
-                0,
+                HewTypeOwnershipKind::Plain,
             )
         }
     }
@@ -1918,9 +1982,11 @@ fn declare_extern_layout_global<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, name: &str) -> P
 /// LLVM inserts natural alignment padding between `ownership_kind` (i8) and
 /// the function pointers automatically because the struct is non-packed.
 ///
-/// The `ownership_kind` byte is hard-wired to `Plain` (0) — managed/non-Copy
-/// keys are rejected by the checker's `hash_eligibility` predicate (C-2a),
-/// so reaching this seam implies Plain ownership.
+/// The `ownership_kind` byte is `HewTypeOwnershipKind::Plain` for a Copy key and
+/// `HewTypeOwnershipKind::LayoutManaged` for a key carrying an owned (string)
+/// leaf, in which case the `drop_fn` slot carries the per-record drop thunk the
+/// runtime's `validate_key_layout` requires. Both values are read off the ABI
+/// enum rather than written as integers.
 fn hashmap_key_layout_descriptor_ptr<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     elem_ty: BasicTypeEnum<'ctx>,
@@ -2011,8 +2077,14 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     // thunk for managed keys; null for Plain. The runtime's `validate_key_layout`
     // requires drop_fn = Some for LayoutManaged ownership.
     let (ownership_kind, drop_fn_value) = match key_drop_fn {
-        Some(drop_fn) => (2u64, drop_fn.as_global_value().as_pointer_value().into()),
-        None => (0u64, ptr_ty.const_null().into()),
+        Some(drop_fn) => (
+            ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+            drop_fn.as_global_value().as_pointer_value().into(),
+        ),
+        None => (
+            ownership_kind_byte(HewTypeOwnershipKind::Plain),
+            ptr_ty.const_null().into(),
+        ),
     };
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
@@ -2088,7 +2160,9 @@ fn hashmap_value_layout_descriptor_ptr<'ctx>(
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
         usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_zero().into(),
+        i8_ty
+            .const_int(ownership_kind_byte(HewTypeOwnershipKind::Plain), false)
+            .into(),
         ptr_ty.const_null().into(),
         ptr_ty.const_null().into(),
     ]);
@@ -2199,7 +2273,12 @@ fn hashmap_owned_value_layout_descriptor_ptr<'ctx>(
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
         usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_int(2, false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
         drop_fn.as_global_value().as_pointer_value().into(),
         clone_fn.as_global_value().as_pointer_value().into(),
     ]);

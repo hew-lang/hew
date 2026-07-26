@@ -1736,7 +1736,12 @@ fn codec_bitcopy_layout_descriptor_ptr<'ctx>(
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
         usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_zero().into(),
+        i8_ty
+            .const_int(
+                crate::layout::ownership_kind_byte(hew_cabi::vec::HewTypeOwnershipKind::Plain),
+                false,
+            )
+            .into(),
     ]);
     let global = llvm_mod.add_global(layout_ty, None, &global_name);
     global.set_constant(true);

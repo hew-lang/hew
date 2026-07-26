@@ -193,9 +193,6 @@ jobs:
       # check: manifest freshness, full hew-wasm test suite (lib + fixture-coverage
       # integration), and the wasm-pack release build.  Scoped to x86_64 to avoid
       # multiplying wasm-pack installs across aarch64/macOS/Windows lanes.
-      #
-      # TODO(playground-wasi-gate): add `make playground-wasi-check` here once the
-      # curated_playground_examples_run_under_wasi test is un-ignored by that lane.
       - name: Install wasm-pack v0.13.1 (browser-analysis gate)
         run: |
           set -euo pipefail

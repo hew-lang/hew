@@ -271,15 +271,8 @@ jobs:
           restore-keys: runtime-miri-${{ runner.os }}-
 
       - name: Run hew-runtime Miri allowlist
-        env:
-          CARGO_TARGET_DIR: target/miri-runtime
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
-        run: |
-          # The trailing filters are the curated GREEN allowlist (substring match,
-          # `::`-anchored to module boundaries).  Keep this in sync with the
-          # `make miri` MIRI_ALLOWLIST.
-          cargo +nightly-2026-06-14 miri test \
-            -p hew-runtime \
-            --no-default-features \
-            --lib \
-            -- send_ptr:: rc:: arc:: tagged_union:: arena:: bytes:: vecdeque:: vec::
+        # `make miri` owns the command: the toolchain, MIRIFLAGS, target dir and
+        # the curated GREEN allowlist all live in one place. This step used to
+        # hand-roll a copy with a "keep in sync" comment, which meant the target
+        # ran nowhere in CI and the two could drift silently.
+        run: make miri MIRI_TOOLCHAIN=nightly-2026-06-14

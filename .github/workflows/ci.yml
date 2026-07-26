@@ -259,6 +259,17 @@ jobs:
       - name: Runtime poison-safe lint
         run: make runtime-poison-safe-lint
 
+      - name: WASM-TODO issue-reference lint
+        # Reject WASM-TODO comments with no issue reference. Part of `make lint`
+        # locally, but nothing ran it in CI, so an unreferenced WASM-TODO could
+        # merge and only surface on the next local lint.
+        run: make lint-wasm-todo
+
+      - name: Codegen carried-identity gate
+        # Assert the codegen carried-identity invariants. Also a `make lint`
+        # prerequisite that no CI job invoked.
+        run: make codegen-carried-identity-gate
+
       - name: Orchestration-token leak scan
         # Scan tracked source files and commit-message bodies of all PR commits
         # for orchestration tokens (lane IDs, Q-tags, .tmp/ paths).  Placed outside
@@ -271,7 +282,13 @@ jobs:
         # step list.  A new unconditional CI step not reflected in CI_REQUIRED_CHECKS
         # or CI_BUILD_AND_TEST_STEPS fails here before it can silently skip in local
         # preflights.
-        run: scripts/check-preflight-ci-parity.sh
+        #
+        # The self-test runs first: it proves the parity checker still fails on a
+        # synthetic drift. Without it the checker could degrade into a no-op and
+        # the parity step below would pass by vacuum.
+        run: |
+          make preflight-parity-selftest
+          scripts/check-preflight-ci-parity.sh
 
       - name: ll-byte-identity normaliser self-test
         # Prove the ll-diff oracle's normaliser still catches real IR changes

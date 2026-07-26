@@ -159,7 +159,13 @@ LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
 # scripts/check-libhew-fresh.sh scans and that hew-build-identity hashes into
 # the link-time stamp, so the build graph, the mtime check and the driver's
 # fail-closed check all agree on what "stale" means.
-LIBHEW_SRC_DIRS := hew-lib hew-runtime hew-std
+#
+# hew-build-identity belongs here even though none of its code runs at runtime:
+# it is hew-lib's build dependency, and its scanner and domain separator decide
+# what stamp lands in the archive. Leaving it out meant a scanner change
+# produced a new driver beside an archive make still considered current — a
+# driver that then refused its own fresh-looking archive.
+LIBHEW_SRC_DIRS := hew-lib hew-runtime hew-std hew-build-identity
 LIBHEW_SRCS := $(shell find $(LIBHEW_SRC_DIRS) \
 	\( -name '*.rs' -o -name 'Cargo.toml' -o -name 'build.rs' \) \
 	-not -path '*/target/*' 2>/dev/null)

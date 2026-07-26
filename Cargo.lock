@@ -1784,6 +1784,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-build-identity"
+version = "0.6.0-rc1"
+dependencies = [
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "hew-cabi"
 version = "0.6.0-rc1"
 dependencies = [
@@ -1808,6 +1815,7 @@ dependencies = [
  "dirs",
  "fd-lock",
  "hew-analysis",
+ "hew-build-identity",
  "hew-codegen-rs",
  "hew-compile",
  "hew-hir",
@@ -1879,6 +1887,7 @@ dependencies = [
 name = "hew-lib"
 version = "0.6.0-rc1"
 dependencies = [
+ "hew-build-identity",
  "hew-runtime",
  "hew-std",
 ]

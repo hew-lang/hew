@@ -1,0 +1,19 @@
+[package]
+name = "hew-build-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Content-addressed build identity shared by the Hew driver and libhew.a"
+publish = false
+
+[dependencies]
+# Only pulled in by the `scan` feature, which is enabled exclusively for
+# build-dependency copies of this crate. The driver depends on this crate
+# WITHOUT `scan`, so `sha2` never enters the shipped `hew` binary.
+sha2 = { workspace = true, optional = true }
+
+[features]
+scan = ["dep:sha2"]
+
+[lints]
+workspace = true

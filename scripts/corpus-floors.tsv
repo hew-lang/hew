@@ -31,7 +31,9 @@
 # key	mode	floor	slack	description
 asan-fixture-gates	exact	17	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
 checked-mir-fixtures	exact	57	-	golden-MIR fixtures under examples/v05/checked-mir
-corpus-floor-registry	exact	20	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
+ci-parity-marked-steps	exact	18	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
+ci-required-checks	exact	21	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
+corpus-floor-registry	exact	22	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
 doc-hew-fences	min	297	60	hew fences extracted from the language guide and the spec
 ffi-arity-checked-contracts	min	469	80	FFI ownership contracts whose declared arity was checked against the Rust signature
 fuzz-oracle-candidates	min	646	120	ratcheted candidates collected by the fuzz-to-run oracle

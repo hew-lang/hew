@@ -33,11 +33,34 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
 # DISPATCHER / CI_YML default to the in-repo paths but may be overridden via the
 # environment so the self-test (scripts/preflight-parity-selftest.sh) can point
 # this checker at controlled stub fixtures.
-DISPATCHER="${PREFLIGHT_PARITY_DISPATCHER:-$REPO_ROOT/scripts/ci-preflight-dispatcher.sh}"
-CI_YML="${PREFLIGHT_PARITY_CI_YML:-$REPO_ROOT/.github/workflows/ci.yml}"
+DEFAULT_DISPATCHER="$REPO_ROOT/scripts/ci-preflight-dispatcher.sh"
+DEFAULT_CI_YML="$REPO_ROOT/.github/workflows/ci.yml"
+DISPATCHER="${PREFLIGHT_PARITY_DISPATCHER:-$DEFAULT_DISPATCHER}"
+CI_YML="${PREFLIGHT_PARITY_CI_YML:-$DEFAULT_CI_YML}"
+# Both comparisons below are searches over an enumerated set, and both already
+# refuse an EMPTY one. Neither noticed a set that merely shrank: 21 required
+# checks quietly becoming 3 still reports "3/3 present". The real sets are
+# floored against scripts/corpus-floors.tsv; a caller pointing this checker at
+# stub fixtures owns a corpus the registry knows nothing about and must declare
+# its size instead.
+MIN_CHECKS="${PREFLIGHT_PARITY_MIN_CHECKS:-}"
+MIN_STEPS="${PREFLIGHT_PARITY_MIN_STEPS:-}"
+if [[ "$DISPATCHER" != "$DEFAULT_DISPATCHER" && -z "$MIN_CHECKS" ]]; then
+    echo "error: PREFLIGHT_PARITY_DISPATCHER overrides the required-check source;" >&2
+    echo "       set PREFLIGHT_PARITY_MIN_CHECKS to the number of checks it declares." >&2
+    exit 1
+fi
+if [[ "$CI_YML" != "$DEFAULT_CI_YML" && -z "$MIN_STEPS" ]]; then
+    echo "error: PREFLIGHT_PARITY_CI_YML overrides the marked-step source;" >&2
+    echo "       set PREFLIGHT_PARITY_MIN_STEPS to the number of steps it marks." >&2
+    exit 1
+fi
 VERBOSE=0
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=1
 
@@ -97,6 +120,15 @@ if (( ${#CI_BUILD_AND_TEST_STEPS[@]} == 0 )); then
     exit 1
 fi
 
+if [[ -n "$MIN_STEPS" ]]; then
+    if (( ${#CI_BUILD_AND_TEST_STEPS[@]} < MIN_STEPS )); then
+        echo "error: parsed ${#CI_BUILD_AND_TEST_STEPS[@]} marked CI step(s), caller declared at least $MIN_STEPS" >&2
+        exit 1
+    fi
+else
+    corpus_floor_assert "ci-parity-marked-steps" "${#CI_BUILD_AND_TEST_STEPS[@]}" || exit 1
+fi
+
 if (( VERBOSE == 1 )); then
     echo "==> Required CI steps (parsed from CI-PARITY-STEPS blocks in ci.yml):"
     for step in "${CI_BUILD_AND_TEST_STEPS[@]}"; do
@@ -123,6 +155,15 @@ CI_CHECKS_COUNT=$i
 if (( CI_CHECKS_COUNT == 0 )); then
     echo "error: $DISPATCHER --ci-required returned no entries; cannot verify parity." >&2
     exit 1
+fi
+
+if [[ -n "$MIN_CHECKS" ]]; then
+    if (( CI_CHECKS_COUNT < MIN_CHECKS )); then
+        echo "error: $DISPATCHER --ci-required returned $CI_CHECKS_COUNT entry/entries, caller declared at least $MIN_CHECKS" >&2
+        exit 1
+    fi
+else
+    corpus_floor_assert "ci-required-checks" "$CI_CHECKS_COUNT" || exit 1
 fi
 
 # ── Capture fallback-lane command set via --dry-run ────────────────────────────

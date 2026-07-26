@@ -1846,6 +1846,15 @@ fn abandon_parked_activation(a: &HewActor) {
     // consumer awaiting the stream observes the fault instead of hanging on a
     // stream whose producer will never resume. A no-op if nothing is registered
     // (this was not a gen-stream pump).
+    //
+    // This one IS destroy-gated, and is only a backstop: the fault is owed
+    // whether or not this teardown won the destroy, so the routes that abandon a
+    // producer publish it unconditionally themselves —
+    // `hew_actor_free_inner` before this call, and
+    // `free_actor_resources_with_options` on the way out of every free,
+    // including the one `retire_parked_activations` hands to
+    // `cleanup_all_actors`. The publish is a single atomic swap, so the
+    // overlapping calls settle to exactly one release.
     fault_close_registered_gen_sink(a);
     let _ = a.actor_state.compare_exchange(
         HewActorState::Suspended as i32,
@@ -2244,6 +2253,18 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
     // supervisor child teardown); the swap makes it exactly once when they
     // overlap.
     crate::scheduler::retire_suspended_reply_channel(a);
+
+    // Same argument, other debt: if this actor was running a `receive gen fn`
+    // pump, its registered sink is the consumer's only source of values and no
+    // activation will ever run again to produce one. A consumer parked in
+    // `ChannelCore::blocking_recv` is woken only by a send, a close or a fault,
+    // so freeing the box without publishing the fault parks it forever. Publish
+    // it here, at the same choke point and for the same reason, so "the box is
+    // never freed with a live registered gen sink" is a property of this
+    // function rather than something each free route has to remember. The swap
+    // inside `fault_close_registered_gen_sink` makes it exactly once when it
+    // overlaps the stop, crash or `hew_actor_free_inner` publish.
+    fault_close_registered_gen_sink(a);
 
     // Wait for any in-progress terminate callback to complete. This
     // prevents freeing state while another thread is running terminate.
@@ -4274,6 +4295,19 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     // FLOW (unregister-readiness + resume-with-cancellation + the two-phase
     // park lost-wake-vs-cancel race) is NEW-6; this teardown is the minimum that
     // makes the live suspend edge non-leaking.
+    //
+    // Reaching this function is already terminal for the actor: the box is about
+    // to be reclaimed, so a `receive gen fn` pump registered here will never
+    // produce another value. Fault-close its sink NOW — before the bounded
+    // quiescence wait below and unconditionally, i.e. NOT gated on this path
+    // winning the parked-frame destroy. The destroy is a race with every other
+    // abandonment path (the out-of-band stop cancel, a concurrent resume settle),
+    // and whoever loses it still owes the consumer the fault. Gating the publish
+    // on the destroy is what let a stopped producer leave a consumer parked in
+    // `ChannelCore::blocking_recv` forever. Idempotent (a single atomic swap), so
+    // the destroy-gated publish inside `abandon_parked_activation` below, and an
+    // earlier publish on the stop or crash path, both become no-ops.
+    fault_close_registered_gen_sink(a);
     abandon_parked_activation(a);
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -6070,17 +6104,31 @@ pub unsafe extern "C" fn hew_actor_gen_sink_complete(
 }
 
 /// Fault-close this actor's still-registered gen-sink, if any (decision
-/// 7). Called from BOTH terminal finalize paths — [`hew_actor_trap`] (the
-/// crash path) and `hew_actor_free_inner`'s parked-activation reclaim (the
-/// stop/teardown-with-a-live-parked-pump path) — so a consumer awaiting the
-/// stream observes the fault on every terminal cause
-/// (`death-signal-fires-on-every-terminal-cause`), never a silent hang.
+/// 7), so a consumer awaiting the stream observes the fault on every terminal
+/// cause (`death-signal-fires-on-every-terminal-cause`), never a silent hang.
+///
+/// A parked consumer in `ChannelCore::blocking_recv` (or a suspended `recv`
+/// bind edge) is woken by exactly three things: a send, a clean close, or this
+/// fault. A producer actor that will never run again publishes none of the
+/// first two, so this call is the ONLY thing standing between a dead producer
+/// and a permanently parked consumer. It is therefore called from every route
+/// that makes the producer unable to produce, not just the ones that happen to
+/// reclaim a parked frame:
+///
+/// - [`hew_actor_trap`] — the crash / explicit-terminal path.
+/// - `scheduler::settle_after_activation`'s two `→ Stopped` transitions — the
+///   graceful-stop terminals, including the one the out-of-band stop cancel of
+///   a parked activation funnels into. This publishes at the instant the
+///   producer stops, ahead of any free.
+/// - `hew_actor_free_inner` and `free_actor_resources_with_options` — the
+///   backstop for the abandonment routes that never settle an activation at all
+///   (shutdown sweep, quiesced drain, supervisor child teardown, leak).
 ///
 /// Idempotent: swaps the slot to null before touching the sink, so a second
-/// call (or a race between the two callers) sees an already-null slot and is
-/// a no-op — the sink is fault-closed exactly once.
+/// call (or a race between callers) sees an already-null slot and is a no-op —
+/// the sink is fault-closed exactly once.
 #[cfg(not(target_arch = "wasm32"))]
-fn fault_close_registered_gen_sink(a: &HewActor) {
+pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
     let raw = a.gen_sink.swap(ptr::null_mut(), Ordering::AcqRel);
     if raw.is_null() {
         return;

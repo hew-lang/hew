@@ -1452,7 +1452,13 @@ pub unsafe extern "C" fn hew_actor_park_lifecycle_cont(
 /// so the asking thread is not left blocked in `hew_reply_wait`), drops the
 /// suspend-edge cancel token, resets the per-activation arena, and hands
 /// off to [`settle_after_activation`], which runs the monitors + terminate
-/// callback for `Stopping`.
+/// callback for `Stopping` — and, on that same `Stopping → Stopped` edge,
+/// fault-closes any `receive gen fn` sink this cancelled pump still had
+/// registered. That last part matters here: this path destroys the parked frame
+/// itself, so the free path's own reclaim finds nothing left to destroy and
+/// cannot be relied on to publish the fault. Cancelling a parked producer
+/// without publishing it leaves its consumer parked in the channel's recv with
+/// nothing left alive to wake it.
 ///
 /// # Safety
 ///
@@ -1897,6 +1903,14 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             .is_ok()
         {
             crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+            // Terminal: no further activation of this actor will ever run, so a
+            // `receive gen fn` pump registered here can never produce another
+            // value. Publish the stream fault BEFORE the monitors and the
+            // terminate callback, so a consumer parked in the channel's recv is
+            // released at the instant the producer stops rather than waiting for
+            // the actor to be freed (which a supervisor may defer, or which may
+            // race this path's own frame destroy and lose it).
+            crate::actor::fault_close_registered_gen_sink(a);
             // Clean self-stop on the resume path: notify monitors with the
             // Stopped reason, mirroring the crash trap and the non-resume
             // finalize. See the companion comment in `activate_actor`.
@@ -1970,6 +1984,10 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
                 .is_ok()
         {
             crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+            // Terminal, same reasoning as the `Stopping -> Stopped` settle
+            // above: a pump that stops here (mailbox closed while it sat idle
+            // between yields) owes its consumer the stream fault.
+            crate::actor::fault_close_registered_gen_sink(a);
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             unsafe { crate::actor::call_terminate_fn(actor) };
@@ -2898,6 +2916,11 @@ fn activate_actor(actor: *mut HewActor) {
             .is_ok()
         {
             crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+            // Terminal: publish any registered `receive gen fn` stream fault
+            // before the monitors, mirroring `settle_after_activation`'s
+            // `Stopping -> Stopped` settle. A stopped pump owes its consumer the
+            // fault at the instant it stops, not whenever the box is freed.
+            crate::actor::fault_close_registered_gen_sink(a);
             // A clean self-stop is a terminal transition, so monitors must be
             // notified with the Stopped reason — exactly as a crash trap notifies
             // them with Crashed. Without this, a monitor of a cleanly-stopped
@@ -2992,6 +3015,9 @@ fn activate_actor(actor: *mut HewActor) {
                     .is_ok()
                 {
                     crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+                    // Terminal, same reasoning as the `Stopping -> Stopped`
+                    // finalize above.
+                    crate::actor::fault_close_registered_gen_sink(a);
                     crate::actor_group::notify_actor_death(a.id);
                     // SAFETY: actor just transitioned to Stopped; dispatch is finished.
                     unsafe { crate::actor::call_terminate_fn(actor) };

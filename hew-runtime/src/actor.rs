@@ -7189,6 +7189,44 @@ pub(crate) unsafe fn actor_stop_wasm_impl(actor: *mut HewActor) {
     }
 }
 
+/// Abandon a parked activation because the actor is being freed (wasm).
+///
+/// Destroy the parked frame so the actor can reach a terminal state through the
+/// normal path, and discharge the reply debt at the same instant rather than
+/// after `actor_free_wasm_impl`'s two-second quiescence spin: once teardown has
+/// committed to abandoning the activation there is no reason to hold a waiter
+/// for the duration. Single-threaded, so `destroy_parked` cannot lose its CAS
+/// to a concurrent resume the way native's can.
+///
+/// Split out of [`actor_free_wasm_impl`] so it is reachable from a native test
+/// build. The rest of that function is not: its tail goes through
+/// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources_with_options`
+/// resolves to the NATIVE body under `cfg(test)` and would free a wasm mailbox
+/// with the native destructor. This branch is the part the wasm free path adds,
+/// and it is target-neutral.
+///
+/// # Safety
+///
+/// `actor` is being freed by the caller and no dispatch is in progress.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn cancel_parked_activation_for_free_wasm(a: &HewActor) {
+    if !crate::coro_exec::has_live_parked_cont(a) {
+        return;
+    }
+    // SAFETY: the caller owns the teardown; nothing else runs on this thread.
+    let destroyed = unsafe { crate::coro_exec::destroy_parked(a) };
+    if destroyed.is_ok() {
+        clear_suspended_cancel_token(a);
+        crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
+        let _ = a.actor_state.compare_exchange(
+            HewActorState::Suspended as i32,
+            HewActorState::Stopped as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
 /// Free an actor and all associated resources (WASM).
 ///
 /// Waits until the actor is quiescent (`Stopped`, `Crashed`, or `Idle`)
@@ -7212,26 +7250,10 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     // is not quiescent, so without this the wait below spins to the two-second
     // deadline and returns `-2`: the free FAILS, the frame and the actor box
     // leak, and -- if the parked handler was serving an `ask` -- the asking side
-    // waits on a reply that is never coming. Destroy the parked frame first so
-    // the actor can reach a terminal state through the normal path, and
-    // discharge the reply debt at the same instant rather than after a two
-    // second spin. Single-threaded, so `destroy_parked` cannot lose its CAS to
-    // a concurrent resume the way native's can.
-    if crate::coro_exec::has_live_parked_cont(a) {
-        // SAFETY: `a` is the actor being freed; nothing else runs on this
-        // thread, so no resume can be driving the frame.
-        let destroyed = unsafe { crate::coro_exec::destroy_parked(a) };
-        if destroyed.is_ok() {
-            clear_suspended_cancel_token(a);
-            crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
-            let _ = a.actor_state.compare_exchange(
-                HewActorState::Suspended as i32,
-                HewActorState::Stopped as i32,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-        }
-    }
+    // waits on a reply that is never coming.
+    // SAFETY: `a` is the actor being freed; nothing else runs on this thread,
+    // so no resume can be driving the frame.
+    unsafe { cancel_parked_activation_for_free_wasm(a) };
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {

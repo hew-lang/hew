@@ -3511,26 +3511,31 @@ mod tests {
     }
 
     /// Park an actor inside an `ask` whose handler suspended, and hand back the
-    /// caller's reply channel. Shared setup for the three wasm abandonment
+    /// caller's reply channel. Shared setup for the wasm abandonment
     /// regressions below.
+    ///
+    /// Takes a raw pointer rather than `&mut` so the same setup serves both the
+    /// stack actors the stop/resume/suspend tests own and the heap-allocated,
+    /// live-tracked actor the free test hands to `actor_free_wasm_impl`.
     ///
     /// # Safety
     ///
     /// `actor` must outlive the returned channel's use and be owned by the test.
     unsafe fn park_wasm_ask(
-        actor: &mut HewActor,
+        actor_ptr: *mut HewActor,
         dispatch: HewDispatchFn,
     ) -> (
         *mut HewActor,
         *mut crate::reply_channel_wasm::WasmReplyChannel,
     ) {
+        // SAFETY: the caller owns `actor_ptr` and nothing else references it yet.
+        let actor = unsafe { &mut *actor_ptr };
         actor.dispatch = Some(dispatch);
         // SAFETY: this test creates and exclusively owns the mailbox.
         actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
         actor
             .actor_state
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
-        let actor_ptr: *mut HewActor = std::ptr::from_mut(actor);
 
         let ch = crate::reply_channel_wasm::hew_reply_channel_new();
         let value: i32 = 7;
@@ -3570,7 +3575,8 @@ mod tests {
 
         let mut actor = stub_actor();
         // SAFETY: the actor lives for the whole test.
-        let (actor_ptr, ch) = unsafe { park_wasm_ask(&mut actor, suspend_once_dispatch_wasm) };
+        let (actor_ptr, ch) =
+            unsafe { park_wasm_ask(std::ptr::from_mut(&mut actor), suspend_once_dispatch_wasm) };
         let a = as_native_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Relaxed),
@@ -3645,6 +3651,110 @@ mod tests {
         hew_sched_shutdown();
     }
 
+    /// The wasm FREE-while-parked path — the fourth abandonment route, and the
+    /// one this round's enumeration exists to make visible. `actor_free_wasm_impl`
+    /// used to have no C1 teardown at all: `Suspended` is not quiescent, so the
+    /// free spun to its two-second deadline and returned `-2` with the frame,
+    /// the actor box, and the asking side's only reply reference all still live.
+    /// Unlike the stop path no wake can rescue it — the caller asked for the box
+    /// back — so the teardown has to destroy the frame itself and settle the
+    /// debt on the spot.
+    ///
+    /// HARNESS LIMIT, stated rather than papered over: this drives
+    /// `cancel_parked_activation_for_free_wasm`, the branch the fix adds, NOT
+    /// the whole of `actor_free_wasm_impl`. That function's tail calls
+    /// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources_with_options`
+    /// resolves to the NATIVE body under `cfg(test)` and frees a wasm mailbox
+    /// with the native destructor. End-to-end coverage of the wasm free needs a
+    /// real wasm32 runner, not another native test.
+    ///
+    /// Asserts BOTH halves, like its native twin: the actor settles terminal
+    /// with the frame destroyed, AND the ask resolves orphaned with exactly one
+    /// release — zero would leave the asking side waiting, two would underflow.
+    #[test]
+    fn wasm_freeing_a_parked_ask_handler_resolves_the_asking_side() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        let baseline = crate::reply_channel_wasm::active_channel_count();
+
+        let mut actor = stub_actor();
+        // SAFETY: the actor lives for the whole test.
+        let (actor_ptr, ch) =
+            unsafe { park_wasm_ask(std::ptr::from_mut(&mut actor), suspend_once_dispatch_wasm) };
+        let a = as_native_actor(actor_ptr);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Suspended as i32,
+            "the suspending handler parks the activation"
+        );
+        assert_eq!(
+            a.suspended_reply_channel.load(Ordering::Relaxed),
+            ch.cast::<c_void>(),
+            "the suspend edge stashes the unanswered reply channel"
+        );
+
+        // The path under test: teardown abandons the activation outright.
+        // SAFETY: nothing is dispatching this actor.
+        unsafe { crate::actor::cancel_parked_activation_for_free_wasm(a) };
+
+        assert!(
+            a.suspended_cont.load(Ordering::Relaxed).is_null(),
+            "the free destroys the parked continuation instead of spinning to -2"
+        );
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Stopped as i32,
+            "the actor reaches a quiescent state, so the free can proceed"
+        );
+        assert!(
+            a.suspended_reply_channel.load(Ordering::Relaxed).is_null(),
+            "the slot invariant: the retired slot no longer owns a reference"
+        );
+
+        // SAFETY: the test still holds its own reference to `ch`.
+        unsafe {
+            assert!(
+                crate::reply_channel_wasm::test_replied(ch),
+                "the abandoned ask must RESOLVE, not wait on a destroyed handler"
+            );
+            assert!(
+                crate::reply_channel_wasm::reply_is_orphaned(ch),
+                "it resolves as orphaned, distinguishable from a null reply"
+            );
+            assert_eq!(
+                crate::reply_channel_wasm::test_ref_count(ch),
+                1,
+                "EXACTLY ONE release: only the caller's own reference is left"
+            );
+        }
+
+        // A second sweep — `free_actor_resources_wasm_with_options` runs one on
+        // every free route — must be a no-op, not a second release.
+        crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
+        // SAFETY: the test still holds its own reference to `ch`.
+        unsafe {
+            assert_eq!(
+                crate::reply_channel_wasm::test_ref_count(ch),
+                1,
+                "the swap makes overlapping abandonment routes resolve exactly once"
+            );
+        }
+
+        // SAFETY: releasing the test's own reference exactly once.
+        unsafe {
+            crate::reply_channel_wasm::hew_reply_channel_free(ch.cast());
+            crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
+        }
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            baseline,
+            "the reply channel refcount returns to baseline"
+        );
+        hew_sched_shutdown();
+    }
+
     /// FINDING 4 (wasm resume-without-reply). The resume edge used to store
     /// null into `suspended_reply_channel` unconditionally when the
     /// continuation went `Ready`. If the resumed body never called `hew_reply`,
@@ -3661,7 +3771,8 @@ mod tests {
 
         let mut actor = stub_actor();
         // SAFETY: the actor lives for the whole test.
-        let (actor_ptr, ch) = unsafe { park_wasm_ask(&mut actor, suspend_once_dispatch_wasm) };
+        let (actor_ptr, ch) =
+            unsafe { park_wasm_ask(std::ptr::from_mut(&mut actor), suspend_once_dispatch_wasm) };
         let a = as_native_actor(actor_ptr);
         assert_eq!(
             a.suspended_reply_channel.load(Ordering::Relaxed),
@@ -3730,8 +3841,12 @@ mod tests {
 
         let mut actor = stub_actor();
         // SAFETY: the actor lives for the whole test.
-        let (actor_ptr, ch) =
-            unsafe { park_wasm_ask(&mut actor, reply_then_suspend_dispatch_wasm) };
+        let (actor_ptr, ch) = unsafe {
+            park_wasm_ask(
+                std::ptr::from_mut(&mut actor),
+                reply_then_suspend_dispatch_wasm,
+            )
+        };
         let a = as_native_actor(actor_ptr);
         assert_eq!(
             actor.actor_state.load(Ordering::Relaxed),

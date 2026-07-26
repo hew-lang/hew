@@ -103,6 +103,155 @@ BASE_TOML = """
     internal = []
 """
 
+# Valid Rust whose braces are DATA, not syntax. Each of these bodies used to
+# defeat the brace walk, and the parser then dropped the whole definition --
+# so the stable symbol reached the system queue without appearing in the
+# closure and without failing the gate. A gate that skips what it cannot parse
+# is the defect class this script exists to remove, so every one of these must
+# now be read normally and reported.
+LITERAL_BRACE_CRATE = """
+    pub unsafe extern "C" fn hew_toy_char_brace(a: *mut Actor) {
+        let _open = '{';
+        toy_touches_lane(a);
+    }
+
+    pub unsafe extern "C" fn hew_toy_byte_brace(a: *mut Actor) {
+        let _open = b'{';
+        toy_touches_lane(a);
+    }
+
+    pub unsafe extern "C" fn hew_toy_escaped_quote(a: *mut Actor) {
+        let _q = '\\'';
+        let _open = '{';
+        toy_touches_lane(a);
+    }
+
+    pub unsafe extern "C" fn hew_toy_string_brace(a: *mut Actor) {
+        let _s = "{ unbalanced";
+        toy_touches_lane(a);
+    }
+
+    // A lifetime is spelled with the same quote as a character literal. If the
+    // stripper treats `'a` as an opening quote it blanks everything up to the
+    // next quote in the file, taking real braces with it.
+    pub fn toy_lifetime<'a>(a: &'a mut Actor, label: &'a str) {
+        'outer: loop {
+            let _ = label;
+            break 'outer;
+        }
+        toy_touches_lane_ref(a);
+    }
+
+    fn toy_touches_lane(a: *mut Actor) {
+        (*a).sys_queue.push(node);
+    }
+
+    fn toy_touches_lane_ref(a: &mut Actor) {
+        a.sys_queue.push(node);
+    }
+"""
+
+LITERAL_BRACE_TOML = """
+    stable = [
+      "hew_toy_char_brace",
+      "hew_toy_byte_brace",
+      "hew_toy_escaped_quote",
+      "hew_toy_string_brace",
+      "toy_lifetime",
+    ]
+    stable-stdlib = []
+    codegen-stable = []
+    internal = []
+"""
+
+# A body that genuinely does not balance. There is no correct closure for this
+# tree, so the gate must refuse to report one -- naming the symbol.
+UNBALANCED_CRATE = """
+    pub unsafe extern "C" fn hew_toy_unbalanced(a: *mut Actor) {
+        if a.is_null() {
+            return;
+    }
+"""
+
+# `#[cfg(test)]` on a struct-LITERAL field. The field ends at its `,`, not at a
+# brace pair or a semicolon; scanning for one of those runs past the literal's
+# `}` and past the function's own `}`, blanking live code on the way.
+CFG_FIELD_CRATE = """
+    pub unsafe extern "C" fn hew_toy_cfg_field(a: *mut Actor) -> *mut Thing {
+        let t = Box::into_raw(Box::new(Thing {
+            real: Real::new(1, 2),
+            #[cfg(test)]
+            probe: Mutex::new(None),
+        }));
+        toy_touches_lane(a);
+        t
+    }
+
+    fn toy_touches_lane(a: *mut Actor) {
+        (*a).sys_queue.push(node);
+    }
+"""
+
+CFG_FIELD_TOML = """
+    stable = ["hew_toy_cfg_field"]
+    stable-stdlib = []
+    codegen-stable = []
+    internal = []
+"""
+
+
+def check_parser_fails_closed(root: Path) -> None:
+    """F1: an unparseable body is a hard error, never a skip."""
+    tree = root / "literal-braces" / "src"
+    write(tree, "lib.rs", LITERAL_BRACE_CRATE)
+    toml = root / "literal-braces.toml"
+    toml.write_text(textwrap.dedent(LITERAL_BRACE_TOML), encoding="utf-8")
+    code, output = run_gate(tree, toml)
+    check("a brace in a literal still fails the gate", code == 1, output)
+    for symbol in (
+        "hew_toy_char_brace",
+        "hew_toy_byte_brace",
+        "hew_toy_escaped_quote",
+        "hew_toy_string_brace",
+    ):
+        check(
+            f"{symbol} is reported, not silently omitted",
+            f"{symbol}: {symbol} -> toy_touches_lane" in output,
+            output,
+        )
+    check(
+        "a lifetime is not read as a character literal",
+        "toy_lifetime: toy_lifetime -> toy_touches_lane_ref" in output,
+        output,
+    )
+
+    tree = root / "unbalanced" / "src"
+    write(tree, "lib.rs", UNBALANCED_CRATE)
+    code, output = run_gate(tree, toml)
+    check("an unbalanced body fails the gate", code == 1, output)
+    check(
+        "the unbalanced body is named by symbol",
+        "hew_toy_unbalanced" in output and "never closes" in output,
+        output,
+    )
+    check(
+        "the unbalanced body is named by location",
+        "lib.rs:2" in output,
+        output,
+    )
+
+    tree = root / "cfg-field" / "src"
+    write(tree, "lib.rs", CFG_FIELD_CRATE)
+    toml = root / "cfg-field.toml"
+    toml.write_text(textwrap.dedent(CFG_FIELD_TOML), encoding="utf-8")
+    code, output = run_gate(tree, toml)
+    check(
+        "cfg(test) on a struct-literal field does not blank live code",
+        code == 1
+        and "hew_toy_cfg_field: hew_toy_cfg_field -> toy_touches_lane" in output,
+        output,
+    )
+
 
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
@@ -219,6 +368,10 @@ def main() -> int:
         )
         code, output = run_gate(tree, toml)
         check("fully waived tree passes", code == 0, output)
+
+        # 9. The parser fails CLOSED: valid Rust it cannot balance is a hard
+        #    error naming the symbol, and braces that are data are read as data.
+        check_parser_fails_closed(root)
 
     if FAILURES:
         print(f"\n{len(FAILURES)} check(s) failed", file=sys.stderr)

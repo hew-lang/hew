@@ -13,8 +13,9 @@ away (`hew_actor_free` -> `hew_mailbox_free` -> `sys_queue.drain_and_free`).
 This script computes the property mechanically instead:
 
   1. ROOTS  -- every function whose own body touches the system-lane state set
-               (`SYSTEM_LANE_TOKENS`), with comments and string literals
-               stripped so prose cannot create or hide a root.
+               (`SYSTEM_LANE_TOKENS`), with comments, string literals and
+               character literals stripped so prose cannot create or hide a
+               root and a brace in a literal cannot desynchronise the parse.
   2. GRAPH  -- a name-keyed call graph over every `fn` defined in the scanned
                crates. Native and WASM definitions that share a name are merged
                deliberately: the invariant must hold on both targets, so a
@@ -43,6 +44,12 @@ requiring a written reason per entry:
     None`).
 
 Neither hatch is a blanket exemption, and both are diffs a reviewer sees.
+
+The gate fails CLOSED on anything it cannot read. A function body that does not
+brace-balance is a hard error naming the symbol and its `file:line`, never a
+skip -- a skipped definition contributes no root and no edge, so its symbol
+drops out of the closure and the gate reports success on a tree it never
+inspected.
 
 Usage:
     python3 scripts/sys-lane-closure.py                 # gate (exit 1 on violation)
@@ -145,6 +152,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _char_literal_end(source: str, i: int) -> int | None:
+    """End offset of the char literal starting at `source[i] == "'"`, or None.
+
+    Rust spells lifetimes and loop labels with the same quote it spells
+    character literals with (`&'a str`, `'outer: loop`, `'{'`), so this cannot
+    be a naive scan-to-the-next-quote. A `'` opens a literal only when it is
+    followed by an escape (`'\\n'`, `'\\''`, `'\\u{7b}'`) or by exactly one
+    character and then a closing quote. Everything else is a lifetime or a
+    label and must be left alone -- blanking `'a` through to the next quote
+    would erase real code and take its braces with it.
+    """
+    n = len(source)
+    if i + 1 >= n:
+        return None
+    if source[i + 1] == "\\":
+        # Escape: consume the selector char, then run to the closing quote.
+        # No escape body can contain an unescaped `'`, so the first one ends
+        # the literal (`'\''` consumes its quote as the selector).
+        j = i + 3
+        while j < n and source[j] != "'":
+            if source[j] == "\n":
+                return None
+            j += 1
+        return j + 1 if j < n else None
+    if i + 2 < n and source[i + 2] == "'":
+        return i + 3
+    return None
+
+
 def strip_comments_and_strings(source: str) -> str:
     """Blank out comments and string/char literals, preserving offsets.
 
@@ -152,6 +188,10 @@ def strip_comments_and_strings(source: str) -> str:
     must not mint a root, and a `//` that mentions a callee must not mint an
     edge. Offsets are preserved (replacement is space-for-character) so the
     balanced-brace walks below still line up with the original source.
+
+    Character and byte-character literals are blanked for the same reason the
+    brace walk needs them gone: `let _ = '{';` is valid Rust whose brace is
+    data, not syntax, and counting it desynchronises every span in the file.
     """
     out = list(source)
     i = 0
@@ -206,6 +246,15 @@ def strip_comments_and_strings(source: str) -> str:
                 if source[k] != "\n":
                     out[k] = " "
             i = j
+        elif ch == "'":
+            end = _char_literal_end(source, i)
+            if end is None:
+                # A lifetime or a loop label. Not a literal; leave it be.
+                i += 1
+                continue
+            for k in range(i, min(end, n)):
+                out[k] = " "
+            i = end
         else:
             i += 1
     return "".join(out)
@@ -238,13 +287,32 @@ def strip_cfg_test_items(source: str) -> str:
     Unit tests are allowed to reach the system lane -- they are the runtime's
     own coverage of it, not part of the ABI surface -- so they must not create
     roots or graph edges.
+
+    The attributed thing is not always a braced item. `#[cfg(test)]` also
+    attaches to a `mod x;` declaration, a `use`, and -- the case that used to
+    run away -- a single struct or struct-LITERAL field:
+
+        Box::new(HewAwaitCancel {
+            ...
+            #[cfg(test)]
+            final_free_probe: Mutex::new(None),
+        })
+
+    A field ends at a `,` (or at the enclosing `}` when it is the last one),
+    never at a `{` or a `;`. Scanning for "a brace pair or a semicolon" ran
+    past the field, past the enclosing struct literal's `}` and past the
+    function's own `}` to the next statement terminator -- blanking live code
+    and leaving the enclosing body unbalanced. Delimiter depth is tracked over
+    all three bracket kinds so a `,` inside `Mutex::new(a, b)` does not end the
+    field early.
     """
     out = list(source)
+    n = len(source)
     for match in _CFG_RE.finditer(source):
         # Read the balanced cfg predicate.
         depth = 0
         end = match.end()
-        for j in range(match.end() - 1, len(source)):
+        for j in range(match.end() - 1, n):
             if source[j] == "(":
                 depth += 1
             elif source[j] == ")":
@@ -255,25 +323,35 @@ def strip_cfg_test_items(source: str) -> str:
         predicate = source[match.end() : end]
         if not _cfg_is_test_only(predicate):
             continue
-        # Find the item body that follows the attribute and blank it out.
-        i = match.end()
+        # Step past the predicate's `)` and the attribute's own `]` so the
+        # scan below does not read that `]` as the enclosing item's closer.
+        i = end + 1
+        while i < n and source[i].isspace():
+            i += 1
+        if i < n and source[i] == "]":
+            i += 1
         depth = 0
-        started = False
-        while i < len(source):
+        brace_started = False
+        while i < n:
             ch = source[i]
-            if ch == "{":
+            if ch in "([{":
+                if ch == "{" and depth == 0:
+                    brace_started = True
                 depth += 1
-                started = True
-            elif ch == "}":
+            elif ch in ")]}":
+                if depth == 0:
+                    # The enclosing item's closer: the attributed thing was its
+                    # last field/element and ends immediately before this.
+                    break
                 depth -= 1
-                if depth == 0 and started:
+                if depth == 0 and brace_started:
                     i += 1
                     break
-            elif ch == ";" and not started:
+            elif depth == 0 and ch in ";,":
                 i += 1
                 break
             i += 1
-        for k in range(match.start(), min(i, len(source))):
+        for k in range(match.start(), min(i, n)):
             if source[k] != "\n":
                 out[k] = " "
     return "".join(out)
@@ -282,8 +360,28 @@ def strip_cfg_test_items(source: str) -> str:
 _FN_RE = re.compile(r"\bfn\s+([A-Za-z_]\w*)")
 
 
-def _body_span(source: str, decl_end: int) -> tuple[int, int] | None:
-    """Return the `{ .. }` span of the fn whose signature starts at `decl_end`."""
+class BodyParseError(Exception):
+    """A function definition whose body could not be brace-balanced.
+
+    This is a HARD ERROR, never a skip. A definition the parser cannot balance
+    is a definition that contributes no root and no call edge, so the symbol it
+    defines silently drops out of the closure and out of the gate -- a stable
+    symbol could reach the system queue through a body this script declined to
+    read. Failing open is the exact defect class the gate exists to remove, so
+    the gate refuses to report a verdict at all until the body parses.
+    """
+
+
+def _body_span(
+    source: str, decl_end: int, symbol: str, where: str
+) -> tuple[int, int] | None:
+    """Return the `{ .. }` span of the fn whose signature starts at `decl_end`.
+
+    Returns `None` only for a genuinely bodyless declaration (a trait method or
+    an `extern` block entry, terminated by `;`). Every other outcome -- an
+    opening brace that never closes, or end-of-file before either a body or a
+    `;` -- raises [`BodyParseError`] naming the symbol and its location.
+    """
     i = decl_end
     n = len(source)
     while i < n:
@@ -299,9 +397,15 @@ def _body_span(source: str, decl_end: int) -> tuple[int, int] | None:
                     depth -= 1
                     if depth == 0:
                         return (i, j + 1)
-            return None
+            raise BodyParseError(
+                f"{where}: the body of `{symbol}` opens at this brace and never "
+                f"closes (depth {depth} at end of file)"
+            )
         i += 1
-    return None
+    raise BodyParseError(
+        f"{where}: `{symbol}` has neither a `{{` body nor a `;` terminator "
+        f"before the end of the file"
+    )
 
 
 class Graph:
@@ -336,21 +440,35 @@ def build_graph(scan_dirs: list[Path] | None = None) -> Graph:
             continue
         cleaned.append((rs_file, strip_cfg_test_items(source)))
 
-    # Pass 1: every function definition and its body text.
+    # Pass 1: every function definition and its body text. An unbalanced body
+    # is collected rather than raised immediately so one run names every
+    # offending definition instead of only the first.
+    unparseable: list[str] = []
     for rs_file, source in cleaned:
+        try:
+            shown: Path | str = rs_file.relative_to(ROOT)
+        except ValueError:
+            shown = rs_file
         for match in _FN_RE.finditer(source):
             name = match.group(1)
-            span = _body_span(source, match.end())
-            if span is None:
+            line = source.count("\n", 0, match.start()) + 1
+            where = f"{shown}:{line}"
+            try:
+                span = _body_span(source, match.end(), name, where)
+            except BodyParseError as exc:
+                unparseable.append(str(exc))
                 continue
+            if span is None:
+                continue  # a bodyless declaration contributes no body
             body = source[span[0] : span[1]]
             graph.bodies.setdefault(name, []).append(body)
-            line = source.count("\n", 0, match.start()) + 1
-            try:
-                shown = rs_file.relative_to(ROOT)
-            except ValueError:
-                shown = rs_file
-            graph.sites.setdefault(name, []).append(f"{shown}:{line}")
+            graph.sites.setdefault(name, []).append(where)
+
+    if unparseable:
+        raise BodyParseError(
+            "the closure gate could not read these function bodies, so it "
+            "cannot report a verdict:\n  " + "\n  ".join(unparseable)
+        )
 
     defined = graph.defined() - GRAPH_NAME_DENYLIST
 
@@ -496,7 +614,17 @@ def witness_path(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    graph = build_graph(args.scan_dir or None)
+    try:
+        graph = build_graph(args.scan_dir or None)
+    except BodyParseError as exc:
+        print(f"sys-lane closure: {exc}", file=sys.stderr)
+        print(
+            "A body this parser cannot balance contributes no root and no call "
+            "edge, so its symbol drops out of the closure without failing the "
+            "gate. That is failing open, so the gate refuses to run instead.",
+            file=sys.stderr,
+        )
+        return 1
     tiers, waivers = load_classification(args.classification)
     roots = find_roots(graph, waivers.non_roots)
     closure, via = compute_closure(graph, roots, waivers)

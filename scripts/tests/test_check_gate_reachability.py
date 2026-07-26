@@ -491,6 +491,114 @@ def test_the_real_makefile_reaches_check_libhew_fresh_through_its_consumers() ->
     )
 
 
+# ── Finding 6: a build-artefact precondition behind a variable ────────────────
+#
+# `make test-rust` is proved reached by CONTAINMENT: CI runs every command the
+# recipe runs. When the recipe grew `test -f $(LIBHEW)` — an assertion that the
+# archive make just brought up to date is really on disk — the proof collapsed,
+# because the only `test -f` the checker classified was one on a literal
+# `target/…` path, and the output directory had moved behind a variable.
+#
+# The licence is the prerequisite, not the path. Everything else about
+# `test -f` stays unclassified.
+
+
+def covered(command: str, artefacts: "set[str] | frozenset[str]" = frozenset()) -> bool:
+    return gate._command_is_covered(
+        command, "synthetic", set(), set(), [], [], [], set(), artefacts
+    )
+
+
+def test_a_precondition_on_a_declared_prerequisite_is_scaffolding() -> None:
+    assert covered("test -f $(OUT)/debug/libhew.a", {"$(OUT)/debug/libhew.a"})
+
+
+def test_a_precondition_on_a_path_the_target_never_declared_is_not() -> None:
+    assert not covered("test -f $(OUT)/debug/libhew.a", {"runtime", "wasm-runtime"}), (
+        "a `test -f` on something outside the target's own prerequisites is a "
+        "claim about the machine, not about the build this graph describes"
+    )
+    assert not covered("test -f target/debug/libhew.a"), (
+        "the old `target/…` prefix was a guess at 'build artefact'; the build "
+        "graph answers exactly, so nothing rides on the path text any more"
+    )
+
+
+def test_a_real_command_is_not_smuggled_in_as_a_precondition() -> None:
+    assert not covered("bash scripts/lint-wasm-todo-issue-ref.sh", {"whatever"})
+    assert not covered("test -f a && cargo miri test", {"a"}), (
+        "the precondition rule matches a whole segment; it cannot be used as a "
+        "prefix that launders the command after it"
+    )
+
+
+def test_the_real_test_rust_recipe_is_proved_from_its_prerequisites() -> None:
+    phony, prereqs, recipes = gate.parse_makefile(gate.MAKEFILE.read_text())
+    known = set(prereqs) | phony
+    reached = {"check-libhew-fresh", "runtime", "wasm-runtime"}
+    assert gate.prove_contained(
+        "test-rust",
+        prereqs,
+        recipes,
+        reached,
+        known,
+        [],
+        ["cargo nextest run --workspace --profile ci"],
+        ["hew-cabi"],
+        set(),
+    ), (
+        "CI runs the workspace suite test-rust runs; the rest of the recipe is "
+        "a nextest probe and an archive precondition"
+    )
+
+
+# ── Counterfactual: a parity marker is not an edge ────────────────────────────
+#
+# ci.yml annotates its workspace test step `run: >-  # parity-cmd: make test`,
+# and it is tempting to read that as wiring: check-preflight-ci-parity.sh knows
+# the convention, so the marker looks checked. It is not checked in the sense
+# reachability needs. That script asserts the NAMED command appears in the
+# dispatcher's CI_REQUIRED_CHECKS array and in its fallback command set; nothing
+# anywhere compares the workflow's `run:` body against what `make test` would
+# actually run. Honouring the marker would make a YAML comment plus a bash
+# array entry sufficient to declare a target reached — a mention promoted to an
+# edge, one indirection deeper than the release-gate.yml TODO that made this
+# checker necessary.
+#
+# `make test` is reached here on a proof instead: every command in its recipe
+# is a command CI demonstrably runs. That proof reads the real commands on both
+# sides, so it cannot be satisfied by writing a comment.
+
+
+def test_a_parity_cmd_marker_is_not_an_edge() -> None:
+    marked = """
+name: ci
+on: [pull_request]
+jobs:
+  build:
+    steps:
+      - run: >-  # parity-cmd: make miri
+          cargo nextest run --workspace --profile ci
+"""
+    assert edges(marked) == set(), (
+        "a `# parity-cmd:` annotation names a target without invoking it; "
+        "reachability must come from the commands, not from the comment"
+    )
+
+
+def test_the_gate_has_no_marker_convention_at_all() -> None:
+    source = SCRIPT.read_text()
+    assert "parity-cmd" not in source, (
+        "no annotation may confer reachability: a target whose only claim to "
+        "running is a comment is exactly what this checker reports"
+    )
+    for waiver in ("UNREACHED_BY_DESIGN", "reachability-exempt", "ALLOWED_UNREACHED"):
+        assert waiver not in source, (
+            f"{waiver} would be an exemption list under another name; an "
+            "unreached gate is wired in or deleted"
+        )
+
+
 # ── Containment proofs ────────────────────────────────────────────────────────
 
 
@@ -736,6 +844,12 @@ _TESTS = [
     test_a_reference_cycle_terminates,
     test_a_shell_dollar_in_a_recipe_is_not_a_variable_reference,
     test_the_real_makefile_reaches_check_libhew_fresh_through_its_consumers,
+    test_a_precondition_on_a_declared_prerequisite_is_scaffolding,
+    test_a_precondition_on_a_path_the_target_never_declared_is_not,
+    test_a_real_command_is_not_smuggled_in_as_a_precondition,
+    test_the_real_test_rust_recipe_is_proved_from_its_prerequisites,
+    test_a_parity_cmd_marker_is_not_an_edge,
+    test_the_gate_has_no_marker_convention_at_all,
     test_containment_refuses_an_opaque_command,
     test_containment_refuses_an_env_prefixed_command,
     test_containment_accepts_a_narrower_selection_of_what_ci_runs,

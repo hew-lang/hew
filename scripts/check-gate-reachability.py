@@ -1631,9 +1631,7 @@ def uncompensated_packages(
 _LEADING_KEYWORDS = ("if", "elif", "while", "until", "then", "else", "do", "!")
 
 # Commands that assert nothing about the code under test: shell bookkeeping,
-# progress output, and preconditions on build artefacts. `test -f target/…`
-# is here because it asserts the BUILD produced a file, not that any behaviour
-# holds — the surrounding cargo commands carry the verdict.
+# progress output, and control-flow scaffolding.
 SCAFFOLDING_RE = re.compile(
     r"""^@?-?(
           set\s+[-+]\w+
@@ -1644,10 +1642,22 @@ SCAFFOLDING_RE = re.compile(
         | for\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+[^`$]*
         | command\s+-v\b.*
         | cd\s+\S+
-        | test\s+-[efxdsr]\s+target/\S+
         )$""",
     re.VERBOSE | re.S,
 )
+
+# `test -f <path>` where <path> is one of the target's own PREREQUISITES: the
+# recipe is checking that an artefact make was asked to bring up to date is on
+# disk. That asserts the build ran, not that any behaviour holds — the
+# surrounding cargo commands carry the verdict.
+#
+# The prerequisite is the whole of the licence. An earlier version accepted any
+# path under `target/`, which was a guess at "build artefact" that stopped
+# working the moment the output directory moved behind $(CARGO_NATIVE_OUT); the
+# build graph knows the answer exactly, so ask it. A `test -f` on a path the
+# target never declared stays unclassified, and the target stays a wire-or-cut
+# decision.
+ARTEFACT_PRECONDITION_RE = re.compile(r"^@?-?test\s+-[efxdsr]\s+(\S+)$")
 
 
 def _strip_keywords(text: str) -> str:
@@ -1683,9 +1693,13 @@ def _command_is_covered(
     blobs: list[str],
     all_crates: list[str],
     excluded_binaries: set[str],
+    artefacts: frozenset[str] | set[str] = frozenset(),
 ) -> bool:
     text = _strip_keywords(" ".join(segment.split()))
     if not text or SCAFFOLDING_RE.match(text):
+        return True
+    precondition = ARTEFACT_PRECONDITION_RE.match(text)
+    if precondition and precondition.group(1).strip("\"'") in artefacts:
         return True
     targets = make_targets_in(text, known) | {
         m.group(1) for m in re.finditer(r"\$\(MAKE\)\s+([A-Za-z0-9_.-]+)", text)
@@ -1758,6 +1772,7 @@ def prove_contained(
             blobs,
             all_crates,
             excluded_binaries,
+            prereqs.get(target, set()),
         ):
             return False
     return True

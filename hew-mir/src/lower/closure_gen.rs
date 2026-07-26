@@ -481,11 +481,10 @@ impl Builder {
             funcupdate_param_ids: self.funcupdate_param_ids.clone(),
             // #2648 — the module return-provenance context MUST reach every
             // child builder: without it the preflight classifies a resolved
-            // module fn as an unknown item → interim `LegacyModuleCall`
-            // fail-open → a `match wrap(captured)` INSIDE a closure minted an
-            // owner the enclosing frame also releases (a reproduced
-            // double-free). Never `Builder::default()` for this field on a
-            // user-body child.
+            // module fn as an unknown item, which now declines rather than
+            // mints — so a `match wrap(captured)` INSIDE a closure would lose a
+            // legitimate release instead of gaining a double one. Never
+            // `Builder::default()` for this field on a user-body child.
             call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
             // `call_scrutinee_local_freshness` is deliberately NOT inherited
             // (the spread leaves it the empty fail-closed default): the

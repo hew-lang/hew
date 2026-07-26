@@ -1568,7 +1568,6 @@ fn stream$pipe(i64) -> (Sink<string>, Stream<string>) [conv=default]
     stmt: use BindingId(64) capacity site=SiteId(490) ty=i64 intent=Read
     _2 = call stream$try_pipe(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(489) ty=Result<(Sink<string>, Stream<string>), string>
     _3 = move etag2
     _4 = const.i64 0
     _5 = icmp.eq _3 _4
@@ -1753,7 +1752,6 @@ fn stream$bytes_pipe(i64) -> (Sink<bytes>, Stream<bytes>) [conv=default]
     stmt: use BindingId(72) capacity site=SiteId(549) ty=i64 intent=Read
     _2 = call stream$try_bytes_pipe(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(548) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     _3 = move etag2
     _4 = const.i64 0
     _5 = icmp.eq _3 _4

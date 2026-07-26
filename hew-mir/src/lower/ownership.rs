@@ -616,21 +616,26 @@ impl Builder {
     /// scrutinee whose callee may hand back a borrowed by-value parameter alias
     /// (summary contains `PARAM`) or an un-audited heap-returning `extern`.
     ///
-    /// # Interim behaviour (S2–S4, before the trusted-root precursor merges)
+    /// # Admission behaviour
     ///
     /// - A resolved module-fn callee whose precise summary carries `PARAM`
     ///   REJECTS — the PRIMARY #2648 forwarder double-free fix (`match
-    ///   passthru(h.b)`). Mixed `PARAM|OPAQUE` forwarders reject too.
-    /// - A module fn whose summary is `∅` (Fresh) or `OPAQUE`-only takes
-    ///   [`CallScrutineeAdmission::LegacyModuleCall`] — today's owner-mint
-    ///   admission EXACTLY (jwt/encrypt/semver/template keep compiling). The
-    ///   precise `OPAQUE`-only rejects + jwt/encrypt Fresh admits land at S4b.
+    ///   passthru(h.b)`). Mixed `PARAM|OPAQUE` forwarders reject too, except
+    ///   that a `{PARAM}`-only summary whose every argument is provably fresh is
+    ///   arg-rescued to `Admit`.
+    /// - EVERY other resolved-callee shape — a `∅` (Fresh) summary, an
+    ///   `OPAQUE`-only summary, an unknown/cross-module item, and an
+    ///   indirect/closure/fn-pointer callee — is decided by the ONE authority
+    ///   via [`callee_returns_fresh_owner`]: `Admit` when it proves the callee
+    ///   returns a fresh owner on every path, `NotApplicable` otherwise. There
+    ///   is no permissive arm. The interim `LegacyModuleCall` fail-open that
+    ///   used to serve the `∅`/`OPAQUE`-only and unknown-item cases is deleted:
+    ///   it minted a caller-side release over a heap enum a Hew wrapper had
+    ///   laundered out of an ownership-opaque extern.
     /// - A declared heap-returning `extern` REJECTS — including a user extern
     ///   whose NAME spoofs a runtime recv symbol (it resolves to
     ///   `ResolvedRef::Item`, so it is keyed by id, never the name).
-    /// - Every recv/stream/`Builtin` carve-out, unknown/cross-module item, and
-    ///   indirect/closure callee behaves as today (`NotApplicable` /
-    ///   `LegacyModuleCall` fail-open).
+    /// - Every recv/stream/`Builtin` carve-out stays `NotApplicable`.
     pub(crate) fn classify_call_scrutinee_admission(
         &self,
         scrutinee: &HirExpr,
@@ -740,8 +745,29 @@ impl Builder {
                              the scrutinee would double-free",
                         )));
                     }
-                    // Fresh or `OPAQUE`-only → interim legacy fail-open mint.
-                    return Ok(CallScrutineeAdmission::LegacyModuleCall);
+                    // Neither `PARAM`-carrying nor rescuable by fresh arguments:
+                    // the AUTHORITY decides, exactly as at every other
+                    // "may I drop this call result" consumer. This used to be an
+                    // interim legacy fail-open mint, and that is what let a
+                    // `{OPAQUE}`-only summary through — a Hew wrapper whose
+                    // return crossed an ownership-opaque extern
+                    // (`fn wrap() -> Option<Holder> { Some(unsafe { host() }) }`)
+                    // carries no `PARAM` bit, so it fell into the permissive arm
+                    // and `match wrap()` minted a caller-side owner whose
+                    // scope-exit drop released the host's handle.
+                    //
+                    // `callee_returns_fresh_owner` applies BOTH of the
+                    // authority's row-keyed vetoes: the taint row (transitively,
+                    // through any number of Hew frames) and the direct-extern
+                    // NAME veto. A callee it cannot prove fresh mints nothing —
+                    // a leak, never a caller-side double release.
+                    return Ok(
+                        if callee_returns_fresh_owner(callee, &prov.fresh_owner_verdicts) {
+                            CallScrutineeAdmission::Admit
+                        } else {
+                            CallScrutineeAdmission::NotApplicable
+                        },
+                    );
                 }
             }
             // A genuine runtime-symbol callee that resolves to neither a user
@@ -750,10 +776,21 @@ impl Builder {
                 return Ok(CallScrutineeAdmission::NotApplicable);
             }
         }
-        // An unknown/missing/cross-module item or a non-`BindingRef` (indirect /
-        // closure) callee → interim legacy fail-open (today's mint); the precise
-        // `OPAQUE` reject for these lands at S4b.
-        Ok(CallScrutineeAdmission::LegacyModuleCall)
+        // An unknown/missing/cross-module item, or a non-`BindingRef` (indirect /
+        // closure / fn-pointer) callee. This was the second interim fail-open —
+        // today's mint for a callee nobody analysed. It now asks the same single
+        // authority: an unresolvable callee is not a freshness proof, so it mints
+        // nothing.
+        Ok(
+            if callee_returns_fresh_owner(
+                callee,
+                &self.call_scrutinee_provenance.fresh_owner_verdicts,
+            ) {
+                CallScrutineeAdmission::Admit
+            } else {
+                CallScrutineeAdmission::NotApplicable
+            },
+        )
     }
     /// Build the single #2648 reject diagnostic (a clean NYI — no partial
     /// codegen). `why` names the specific unsound shape. Boxed to keep the
@@ -869,12 +906,12 @@ impl Builder {
     ) -> Option<(BindingId, ResolvedTy)> {
         use crate::return_provenance::CallScrutineeAdmission;
         // The non-optional admission token gates the mint [F4]: `NotApplicable`
-        // mints nothing (the scrutinee's own release runs); `Admit` /
-        // `LegacyModuleCall` proceed to the existing owner gate. A `Reject` never
-        // reaches here — the preflight returned early at the consumer.
+        // mints nothing (the scrutinee's own release runs); `Admit` proceeds to
+        // the existing owner gate. A `Reject` never reaches here — the preflight
+        // returned early at the consumer.
         match admission {
             CallScrutineeAdmission::NotApplicable => return None,
-            CallScrutineeAdmission::Admit | CallScrutineeAdmission::LegacyModuleCall => {}
+            CallScrutineeAdmission::Admit => {}
         }
         let ty = self.call_scrutinee_owned_ty(scrutinee)?;
         let binding = self.register_synthetic_owned_local(

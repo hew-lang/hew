@@ -1663,9 +1663,9 @@ impl FreshOwnerVerdicts {
 /// set of declared extern `ItemId`s, and the audited owned-return extern table.
 ///
 /// `Default` (empty) fails SAFE: an empty summary classifies every module-fn
-/// callee as an unknown item → interim `LegacyModuleCall` (today's fail-open
-/// mint), never a wrongly-Fresh admit and never a spurious reject, and its
-/// authority ([`FreshOwnerVerdicts::denying_all`]) grants no release at all. The
+/// callee as an unknown item, which the authority
+/// ([`FreshOwnerVerdicts::denying_all`]) then declines — `NotApplicable`, no
+/// mint — never a wrongly-Fresh admit and never a spurious reject. The
 /// live pipeline always threads the fully-built context; the empty default only
 /// backs `Builder::default()` in unit tests that do not exercise a forwarder
 /// scrutinee. It is hand-written rather than derived because the authority has
@@ -1842,14 +1842,6 @@ pub enum CallScrutineeAdmission {
     /// A `Fresh` (or `ParamsOnly`-with-all-fresh-args) scrutinee → mint the #2429
     /// owner and classify #2523's move-out as `EphemeralTemp`.
     Admit,
-    /// INTERIM ONLY (S2–S4; DELETED at S4b) [Rev-8, round-6 item 2]: a resolved
-    /// module-fn callee whose precise summary carries NO `PARAM` bit → today's
-    /// admission EXACTLY (the existing owner gate mints `__hew_call_scrutinee`;
-    /// #2523 keeps its legacy `EphemeralTemp`). The precise module summary is
-    /// consulted ONLY for the `PARAM`-present early reject, never for the
-    /// admission shape — so opaque-hidden forwarding stays legacy fail-open until
-    /// the trusted-root precursor merges.
-    LegacyModuleCall,
 }
 
 // ---------------------------------------------------------------------------
@@ -4420,8 +4412,9 @@ pub(crate) mod tests {
     // closure capture ledger reached via a callable-parameter invocation. Each
     // caller returns a heap param it smuggled through a may-mutate helper, so the
     // return is OPAQUE and its `match caller()` scrutinee rejects at S4b. These
-    // pin the ANALYSIS verdict (the interim compile verdict is `LegacyModuleCall`
-    // fail-open; the precise reject lands at S4b).
+    // pin the ANALYSIS verdict; at compile time the authority now simply declines
+    // to mint for such a callee (the precise diagnostic-bearing reject lands at
+    // S4b).
     // -----------------------------------------------------------------------
 
     #[test]

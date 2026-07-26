@@ -925,7 +925,6 @@ fn fs$is_dir -> bool
 fn stream$pipe -> (Sink<string>, Stream<string>)
   statements:
     use BindingId(66) capacity site=SiteId(497) ty=i64 intent=Read
-    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(496) ty=Result<(Sink<string>, Stream<string>), string>
     return site=Some(SiteId(495)) ty=(Sink<string>, Stream<string>)
     bind BindingId(67) pair site=SiteId(499) ty=(Sink<string>, Stream<string>)
     use BindingId(67) pair site=SiteId(499) ty=(Sink<string>, Stream<string>) intent=Read
@@ -933,7 +932,6 @@ fn stream$pipe -> (Sink<string>, Stream<string>)
     use BindingId(68) err site=SiteId(501) ty=string intent=Read
     drop BindingId(68) err ty=string
     drop BindingId(67) pair ty=(Sink<string>, Stream<string>)
-    drop BindingId(4294967231) __hew_call_scrutinee ty=Result<(Sink<string>, Stream<string>), string>
   drop_plans:
     call[bb0 stream$try_pipe -> bb1] ->
       (none)
@@ -1045,7 +1043,6 @@ fn stream$try_pipe -> Result<(Sink<string>, Stream<string>), string>
 fn stream$bytes_pipe -> (Sink<bytes>, Stream<bytes>)
   statements:
     use BindingId(74) capacity site=SiteId(556) ty=i64 intent=Read
-    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(555) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     return site=Some(SiteId(554)) ty=(Sink<bytes>, Stream<bytes>)
     bind BindingId(75) pair site=SiteId(558) ty=(Sink<bytes>, Stream<bytes>)
     use BindingId(75) pair site=SiteId(558) ty=(Sink<bytes>, Stream<bytes>) intent=Read
@@ -1053,7 +1050,6 @@ fn stream$bytes_pipe -> (Sink<bytes>, Stream<bytes>)
     use BindingId(76) err site=SiteId(560) ty=string intent=Read
     drop BindingId(76) err ty=string
     drop BindingId(75) pair ty=(Sink<bytes>, Stream<bytes>)
-    drop BindingId(4294967231) __hew_call_scrutinee ty=Result<(Sink<bytes>, Stream<bytes>), string>
   drop_plans:
     call[bb0 stream$try_bytes_pipe -> bb1] ->
       (none)

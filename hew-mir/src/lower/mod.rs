@@ -583,8 +583,8 @@ struct Builder {
     /// each module-fn `ItemId` to its precise three-state return provenance, the
     /// declared-extern id set, and the audited extern contract table. `Rc` so
     /// child builders share it cheaply; the empty default classifies every callee
-    /// as an unknown item → interim `LegacyModuleCall` fail-open (sound —
-    /// preserves today's mint, never a wrongly-Fresh admit). See
+    /// as an unknown item, which the fresh-owner authority then declines — no
+    /// mint, never a wrongly-Fresh admit. See
     /// `crate::return_provenance::CallScrutineeProvenance`.
     ///
     /// Its `fresh_owner_verdicts` field is the ONE place a builder holds the

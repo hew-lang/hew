@@ -10,9 +10,10 @@
 //!   (no `__hew_call_scrutinee` owner mint and no neutralization of a call
 //!   result; independent call-carrier transfers may neutralize argument slots);
 //! - an `OPAQUE`-only module fn (a Hew fn forwarding a heap-returning extern
-//!   result, the jwt/encrypt shape) takes the interim `LegacyModuleCall` path —
-//!   it COMPILES and STILL mints the `__hew_call_scrutinee` owner byte-for-byte as
-//!   today (the legacy-output regression);
+//!   result, the jwt/encrypt shape) COMPILES but mints NO
+//!   `__hew_call_scrutinee` owner: the fresh-owner authority vetoes it through
+//!   its taint row, so the caller never schedules a release of a value the host
+//!   produced. Declining to mint is not a reject;
 //! - a fresh producer (`match make_fresh()`) admits and mints the owner;
 //! - a direct heap-returning extern scrutinee, and a user extern whose NAME spoofs
 //!   the `hew_channel_recv_layout` runtime symbol, both REJECT (keyed on the
@@ -87,6 +88,27 @@ fn any_owner_minted(p: &IrPipeline) -> bool {
 fn count_owner_mints(p: &IrPipeline) -> usize {
     p.raw_mir
         .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.statements.iter())
+        .filter(|s| {
+            matches!(
+                s,
+                hew_mir::MirStatement::Bind { name, .. }
+                    if name == SYNTHETIC_CALL_SCRUTINEE_NAME
+            )
+        })
+        .count()
+}
+
+/// Counts `__hew_call_scrutinee` owner mints inside ONE lowered function.
+///
+/// The program-wide counter is too coarse for sources that also contain a
+/// legitimately fresh scrutinee elsewhere; pinning the site under test keeps
+/// the assertion exact instead of merely non-zero.
+fn count_owner_mints_in(p: &IrPipeline, fn_name: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .filter(|f| f.name == fn_name)
         .flat_map(|f| f.blocks.iter())
         .flat_map(|b| b.statements.iter())
         .filter(|s| {
@@ -434,12 +456,11 @@ fn params_only_pattern_binder_arg_rejects() {
 }
 
 #[test]
-fn extern_result_bound_module_fn_takes_legacy_path() {
+fn extern_result_bound_module_fn_mints_no_owner() {
     // The jwt/encrypt shape END-TO-END: a module fn binding an extern result
     // and returning it through a catch-all error arm is `OPAQUE`-only (the
     // extern-name id-collision and the catch-all `err =>` binder both stay out
-    // of the PARAM channel) → interim LegacyModuleCall: compiles and mints the
-    // owner as today.
+    // of the PARAM channel). It compiles, and the authority declines the mint.
     let src = r#"
         extern "C" {
             fn ext_encode(payload: string) -> string;
@@ -460,11 +481,22 @@ fn extern_result_bound_module_fn_takes_legacy_path() {
     assert_eq!(
         reject_count(&p),
         0,
-        "an OPAQUE-only extern-result module fn must take the legacy path: {:#?}",
+        "an OPAQUE-only extern-result module fn must still compile: {:#?}",
         p.diagnostics
     );
     assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
-    assert!(any_owner_minted(&p), "legacy mint preserved");
+    assert_eq!(
+        count_owner_mints_in(&p, "use_it"),
+        0,
+        "the token this fn returns came out of `ext_encode`; no caller-side \
+         owner may be minted over it"
+    );
+    assert_eq!(
+        count_owner_mints_in(&p, "try_encode"),
+        1,
+        "the inner `match last_err()` is a genuinely fresh producer and must \
+         keep its owner — the veto is provenance-directed, not a blanket stop"
+    );
 }
 
 #[test]
@@ -516,11 +548,16 @@ fn fresh_producer_match_admits_and_mints_owner() {
 }
 
 #[test]
-fn opaque_only_module_fn_takes_legacy_path_and_mints_owner() {
-    // A Hew fn forwarding a heap-returning extern's result is `OPAQUE`-only (no
-    // PARAM) — the jwt/encrypt `try_encode` shape. Interim: it takes the
-    // `LegacyModuleCall` path → COMPILES and STILL mints the owner exactly as
-    // today (the legacy-output regression). Its precise-Fresh admit lands at S4b.
+fn opaque_only_module_fn_mints_no_owner() {
+    // F1, inverted. A Hew fn forwarding a heap-returning extern's result is
+    // `OPAQUE`-only (no PARAM) — the jwt/encrypt `try_encode` shape. It used to
+    // take an interim `LegacyModuleCall` fail-open and mint the owner, which is
+    // a caller-side release of a value the host produced and may still own.
+    //
+    // The admission classifier now asks the ONE authority, which vetoes `wrap`
+    // through its taint row. The scrutinee still COMPILES — declining to mint is
+    // not a reject — it simply gains no caller-side owner. Worst case is a
+    // missed drop; the fail-open's worst case was a double release.
     let src = r#"
         extern "C" {
             fn ext_make() -> Result<string, string>;
@@ -534,15 +571,16 @@ fn opaque_only_module_fn_takes_legacy_path_and_mints_owner() {
     assert_eq!(
         reject_count(&p),
         0,
-        "an OPAQUE-only module fn must take the legacy path, not reject: {:#?}",
+        "declining to mint is not a reject — the program must still compile: {:#?}",
         p.diagnostics
     );
     assert_eq!(unrelated_diag_count(&p), 0, "diags: {:#?}", p.diagnostics);
     assert_eq!(
         count_owner_mints(&p),
-        1,
-        "the interim LegacyModuleCall path preserves the owner mint byte-for-byte \
-         (exactly one owner, as today)"
+        0,
+        "an OPAQUE-only module fn launders an ownership-opaque extern's return \
+         through one Hew frame; minting a `__hew_call_scrutinee` owner over it \
+         schedules a release of a handle this program never owned"
     );
 }
 
@@ -670,10 +708,11 @@ fn owned_record_getter_move_out_admits_not_rejected() {
 }
 
 #[test]
-fn opaque_only_module_fn_move_out_admits_and_mints_owner() {
-    // An `OPAQUE`-only module fn (forwarding a heap extern result) is admitted
-    // via the interim LegacyModuleCall path; a move-out of its payload keeps the
-    // legacy classification (mints the owner as today, not rejected).
+fn opaque_only_module_fn_move_out_mints_no_owner() {
+    // The move-out half of the same F1 shape: an `OPAQUE`-only module fn whose
+    // payload is moved out of the arm. It used to be admitted via the interim
+    // `LegacyModuleCall` fail-open and mint the owner; the authority now vetoes
+    // it. Still no reject — the classification simply declines.
     let src = r#"
         extern "C" {
             fn ext_make() -> Result<string, string>;
@@ -697,9 +736,11 @@ fn opaque_only_module_fn_move_out_admits_and_mints_owner() {
         "diags: {:#?}",
         p.diagnostics
     );
-    assert!(
-        any_owner_minted(&p),
-        "the interim LegacyModuleCall path mints the owner byte-for-byte as today"
+    assert_eq!(
+        count_owner_mints(&p),
+        0,
+        "moving the payload out does not make the laundered extern result \
+         caller-owned; no owner may be minted over it"
     );
 }
 

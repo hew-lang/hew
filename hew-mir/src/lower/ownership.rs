@@ -283,12 +283,20 @@ impl Builder {
     /// A fresh top-level constructor/producer (`StructInit` / `TupleLiteral` /
     /// `MachineVariantCtor` enum ctor / a string-producing `Binary`/`Unary`
     /// concat / an explicit `RecordCloneCall`) allocates an aggregate that SOLELY
-    /// owns itself. The synthetic owner then flows through the SAME
+    /// owns itself, PROVIDED nothing ownership-opaque is embedded in it. The
+    /// synthetic owner then flows through the SAME
     /// `derive_{record,tuple,enum}_composite_drop_allowed` / `derive_cow_sole_owner`
     /// prover as a `let`-bound composite, so field/element provenance (a moved-in
     /// vs cloned field) is decided by that authority exactly as for the named
     /// shape — registration alone never forces a drop (an escaping value is still
     /// excluded → leak, never a double-free).
+    ///
+    /// The "provided" is load-bearing and is checked here, not assumed: the
+    /// composite's release is RECURSIVE, so a fresh container holding a foreign
+    /// handle releases that handle. Every container arm therefore asks the
+    /// authority's composite query
+    /// (`FreshOwnerVerdicts::value_is_free_of_opaque_foreign_provenance`), which
+    /// states and enforces the rule.
     ///
     /// EVERYTHING ELSE fails closed to today's leak-not-double-free posture:
     /// - a `BindingRef` already has an owner (its `let`/param) — a second owner
@@ -309,10 +317,22 @@ impl Builder {
             return None;
         }
         let is_fresh_producer = match &arg.kind {
+            // A fresh CONTAINER. Its own allocation is fresh by construction,
+            // but that is not the whole question: the mint is over the whole
+            // TREE, because every composite release here is recursive. A
+            // container embedding an ownership-opaque foreign value
+            // (`Outer { inner: unsafe { host_record() } }`) is therefore not
+            // minted at all — see
+            // `FreshOwnerVerdicts::value_is_free_of_opaque_foreign_provenance`
+            // for the rule. A `RecordCloneCall` is asked the same question: the
+            // clone deep-copies the spine but RETAINS refcounted leaves, so a
+            // clone of a foreign tree still points at the host's handles.
             HirExprKind::StructInit { .. }
             | HirExprKind::TupleLiteral { .. }
             | HirExprKind::MachineVariantCtor { .. }
-            | HirExprKind::RecordCloneCall { .. } => true,
+            | HirExprKind::RecordCloneCall { .. } => {
+                self.value_is_free_of_opaque_foreign_provenance(arg)
+            }
             // A string-producing concat/interpolation allocates a fresh buffer;
             // a bare string `Literal` is excluded above by being a non-producer
             // arm (it interns a static — freeing it is unsound).
@@ -402,6 +422,12 @@ impl Builder {
                 | HirExprKind::TupleLiteral { .. }
                 | HirExprKind::MachineVariantCtor { .. }
         ) {
+            return None;
+        }
+        // The same composite rule as the temp-arg mint: this element temp's
+        // owner is a recursive release of the whole constructed tree, so a
+        // container embedding a foreign value earns no owner here either.
+        if !self.value_is_free_of_opaque_foreign_provenance(arg) {
             return None;
         }
         let class = Self::classify_whole_param_embeds(
@@ -2627,6 +2653,7 @@ impl Builder {
             base,
             &self.call_scrutinee_provenance.fresh_owner_verdicts,
             &self.funcupdate_param_ids,
+            &self.proven_foreign_bindings,
         )
     }
     /// True when `expr` evaluates to a freshly MATERIALISED owner — a value in
@@ -2686,16 +2713,16 @@ impl Builder {
         expr: &HirExpr,
         fresh: &crate::return_provenance::FreshOwnerVerdicts,
         params: &HashSet<BindingId>,
+        proven_foreign: &HashSet<BindingId>,
     ) -> bool {
         match &expr.kind {
             // ---- value-passthrough wrappers: ALL reachable values must be
             //      materialised (look THROUGH; reject any bare-binding leaf) ----
             // A block's value is its tail (statements are side-effecting only);
             // peel to the tail regardless of statement count.
-            HirExprKind::Block(block) => block
-                .tail
-                .as_deref()
-                .is_some_and(|t| Self::expr_is_materialized_owner(t, fresh, params)),
+            HirExprKind::Block(block) => block.tail.as_deref().is_some_and(|t| {
+                Self::expr_is_materialized_owner(t, fresh, params, proven_foreign)
+            }),
             // BOTH `if` branches must be materialised. A missing `else` cannot
             // produce an owned-record value, so it fails closed.
             HirExprKind::If {
@@ -2703,18 +2730,18 @@ impl Builder {
                 else_expr,
                 ..
             } => {
-                Self::expr_is_materialized_owner(then_expr, fresh, params)
-                    && else_expr
-                        .as_deref()
-                        .is_some_and(|e| Self::expr_is_materialized_owner(e, fresh, params))
+                Self::expr_is_materialized_owner(then_expr, fresh, params, proven_foreign)
+                    && else_expr.as_deref().is_some_and(|e| {
+                        Self::expr_is_materialized_owner(e, fresh, params, proven_foreign)
+                    })
             }
             // EVERY `match` arm body must be materialised (an arm body that is a
             // bare payload binding aliases the scrutinee and fails closed).
             HirExprKind::Match { arms, .. } => {
                 !arms.is_empty()
-                    && arms
-                        .iter()
-                        .all(|arm| Self::expr_is_materialized_owner(&arm.body, fresh, params))
+                    && arms.iter().all(|arm| {
+                        Self::expr_is_materialized_owner(&arm.body, fresh, params, proven_foreign)
+                    })
             }
             // ---- materialised leaves ----
             // A `.clone()` result is a fresh deep copy materialised into its own
@@ -2752,32 +2779,50 @@ impl Builder {
             // parameters carry a retained share but remain intentionally outside
             // the destructive/MOVE-owner route. Reject both embed classes here.
             // A nested `..base` is checked too.
+            //
+            // The SECOND exception is an ownership-opaque FOREIGN operand
+            // (`Holder { .. }` built around `unsafe { host_record() }`, or a
+            // wrapper of one). Freshness of the container says nothing about it:
+            // the move-in route byte-transfers the whole tree into the
+            // collection slot, whose teardown then releases a handle the host
+            // still owns. The authority's composite query answers that, and it
+            // is asked FIRST because it is the type-agnostic veto.
             HirExprKind::StructInit { .. } => {
-                Self::classify_whole_param_embeds(
-                    expr,
-                    params,
-                    &HashSet::new(),
-                    &ResolvedTy::clone,
-                    false,
-                    &|_| false,
-                ) == WholeParamEmbedClass::None
+                fresh.value_is_free_of_opaque_foreign_provenance(expr)
+                    && !crate::return_provenance::value_reads_a_proven_foreign_binding(
+                        expr,
+                        proven_foreign,
+                    )
+                    && Self::classify_whole_param_embeds(
+                        expr,
+                        params,
+                        &HashSet::new(),
+                        &ResolvedTy::clone,
+                        false,
+                        &|_| false,
+                    ) == WholeParamEmbedClass::None
             }
             HirExprKind::TupleLiteral { .. } | HirExprKind::MachineVariantCtor { .. } => {
-                Self::classify_whole_param_embeds(
-                    expr,
-                    params,
-                    &HashSet::new(),
-                    &ResolvedTy::clone,
-                    false,
-                    &|_| false,
-                ) == WholeParamEmbedClass::None
+                fresh.value_is_free_of_opaque_foreign_provenance(expr)
+                    && !crate::return_provenance::value_reads_a_proven_foreign_binding(
+                        expr,
+                        proven_foreign,
+                    )
+                    && Self::classify_whole_param_embeds(
+                        expr,
+                        params,
+                        &HashSet::new(),
+                        &ResolvedTy::clone,
+                        false,
+                        &|_| false,
+                    ) == WholeParamEmbedClass::None
             }
             // A projection is materialised iff its object chain is.
             HirExprKind::FieldAccess { object, .. } => {
-                Self::expr_is_materialized_owner(object, fresh, params)
+                Self::expr_is_materialized_owner(object, fresh, params, proven_foreign)
             }
             HirExprKind::TupleIndex { tuple, .. } => {
-                Self::expr_is_materialized_owner(tuple, fresh, params)
+                Self::expr_is_materialized_owner(tuple, fresh, params, proven_foreign)
             }
             // Bare/`Const` binding ref, machine-state field projection, deref, a
             // method call (can return borrowed `self`/param), or any future
@@ -2923,6 +2968,165 @@ impl Builder {
     /// vacant by the map, overwrite by the codegen release — never both, never
     /// leaked (issue #2033 — see the conditional-key-consume contract comment in
     /// `hew-runtime/src/hashmap.rs`).
+    /// Refuse a `HashMap`/`HashSet` MOVE-ingress operand whose provenance is not
+    /// proven free of an ownership-opaque foreign producer. Returns `true` when a
+    /// diagnostic was pushed and the caller must abandon the lowering.
+    ///
+    /// The collection's ingress is MOVE by ABI (`hew_hashmap_insert_layout`
+    /// documents copy-in as intentionally absent), so the compiler schedules a
+    /// release of whatever is stored, through the value layout's `drop_fn`, at
+    /// the collection's teardown. For a foreign value that release is a release
+    /// of a handle the caller never owned — the same class as the caller-side
+    /// mints, arriving through the collection instead of through a local.
+    ///
+    /// There is no COPY-IN sibling to fall back to, so "fail closed" cannot mean
+    /// "mint nothing": the move is the only ingress the ABI has. It therefore
+    /// means refusing the ingress — one clean `NotYetImplemented`, no partial
+    /// MIR, exactly the posture the #2648 call-scrutinee reject takes.
+    ///
+    /// Scalars are exempt: with no heap to release, the teardown's `drop_fn`
+    /// has nothing to free and the provenance question does not arise.
+    pub(crate) fn reject_opaque_foreign_collection_ingress(&mut self, operand: &HirExpr) -> bool {
+        let ty = self.subst_ty(&operand.ty);
+        if !crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts) {
+            return false;
+        }
+        if self.value_is_free_of_opaque_foreign_provenance(operand) {
+            return false;
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "collection ingress of a value with ownership-opaque provenance"
+                    .to_string(),
+                site: operand.site,
+            },
+            note: format!(
+                "a `HashMap`/`HashSet` takes ownership of what it is given (its ingress is a \
+                 move, with no copy-in), so the collection's teardown releases this `{}`. Its \
+                 provenance is not proven free of an ownership-opaque producer — a declared \
+                 `extern` return, a Hew function that forwards one, or an indirect/closure \
+                 callee whose body is not statically in hand — so that release could free a \
+                 handle this program never owned. Build the element from values this module \
+                 owns, or clone it explicitly before inserting it.",
+                ty.user_facing()
+            ),
+        });
+        true
+    }
+
+    /// True when a `let` binder must NOT be registered as a scope-exit owner
+    /// because its initializer provably hands back a handle a declared,
+    /// non-audited extern produced.
+    ///
+    /// The seed gate this guards (`binding_seeds_drop_elaboration`) is purely
+    /// TYPE-driven — "this type is not `BitCopy`, therefore drop it at scope
+    /// exit" — so `let h = unsafe { host_record() }` earned a `RecordInPlace`
+    /// release of the host's `Holder` with the initializer's provenance never
+    /// consulted. That is the same defect class as the container mints, one
+    /// construct over.
+    ///
+    /// # Why this reads the PROVEN query, not the strict one
+    ///
+    /// This is the only ownership decision in the lowering whose fail-closed
+    /// direction is to REMOVE a release rather than to withhold one. Reading the
+    /// strict `value_is_free_of_opaque_foreign_provenance` here would drop the
+    /// scope-exit release of every binding whose initializer reaches an indirect
+    /// or unanalysed callee — a leak in ordinary code that never touches an
+    /// extern. So the veto requires proof, and the audited extern table is the
+    /// only thing that can supply it.
+    ///
+    /// # The `string` carve-out is the ratified adoption ABI
+    ///
+    /// A root `extern "C" -> string` declared `ForeignAdopt` is ADOPTED at the
+    /// call edge: codegen copies the foreign C string into a refcounted Hew
+    /// buffer and `free`s the raw pointer, so the binding holds a value this
+    /// program really does own and its release must survive. Adoption is defined
+    /// at `return_ty == String` and nowhere else — it does not reach a `string`
+    /// FIELD of a returned record, nor a `string` inside a returned
+    /// `Option`/`Result` — so carving out exactly the `string`-typed binding
+    /// matches the contract's domain precisely.
+    pub(crate) fn let_binder_owns_proven_foreign_value(
+        &self,
+        value: &HirExpr,
+        binding_ty: &ResolvedTy,
+    ) -> bool {
+        if matches!(binding_ty, ResolvedTy::String) {
+            return false;
+        }
+        if !crate::model::ty_owns_heap_mir(
+            binding_ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+        ) {
+            return false;
+        }
+        self.call_scrutinee_provenance
+            .fresh_owner_verdicts
+            .value_carries_proven_foreign_provenance(value)
+            || crate::return_provenance::value_reads_a_proven_foreign_binding(
+                value,
+                &self.proven_foreign_bindings,
+            )
+    }
+
+    /// [`Self::let_binder_owns_proven_foreign_value`], recording the answer in
+    /// this function's proven-foreign ledger so the same fact travels with the
+    /// binding into every container it is later embedded in.
+    ///
+    /// Recording at the point of decision, rather than re-deriving it at each
+    /// container mint, is what keeps the two sites from drifting: there is one
+    /// place that decides a binder is foreign, and one ledger that says so.
+    pub(crate) fn note_let_binder_proven_foreign(
+        &mut self,
+        binding: BindingId,
+        value: &HirExpr,
+        binding_ty: &ResolvedTy,
+    ) -> bool {
+        if !self.let_binder_owns_proven_foreign_value(value, binding_ty) {
+            return false;
+        }
+        self.proven_foreign_bindings.insert(binding);
+        true
+    }
+
+    /// The ONE composite-provenance query every mint site in this builder asks.
+    ///
+    /// It is the module authority's
+    /// [`FreshOwnerVerdicts::value_is_free_of_opaque_foreign_provenance`]
+    /// conjoined with this function's `proven_foreign_bindings` ledger. The
+    /// authority walks an expression's own structure and treats a `BindingRef`
+    /// as a leaf, so on its own it cannot see a foreign handle that reached the
+    /// container through a `let`:
+    ///
+    /// ```hew
+    /// let h = unsafe { host_record() };
+    /// borrowOuter(Outer { inner: h, tag: 0 });
+    /// ```
+    ///
+    /// The ledger closes exactly that: the `let` refused `h` a scope-exit owner
+    /// because its initializer was proven foreign, and that same fact now
+    /// travels with `h` into every container it is embedded in. Conjunction, not
+    /// replacement — neither half can license a mint the other denies.
+    pub(crate) fn value_is_free_of_opaque_foreign_provenance(&self, expr: &HirExpr) -> bool {
+        self.call_scrutinee_provenance
+            .fresh_owner_verdicts
+            .value_is_free_of_opaque_foreign_provenance(expr)
+            && !self.expr_reads_a_proven_foreign_binding(expr)
+    }
+
+    /// True when `expr` reads any binding this function refused a scope-exit
+    /// owner for because its initializer was proven foreign.
+    ///
+    /// Structural and conservative: it runs the authority's own walk under a
+    /// policy that carries only the ledger, so it visits exactly the value
+    /// positions the authority does, and answering `true` only ever WITHHOLDS a
+    /// mint.
+    fn expr_reads_a_proven_foreign_binding(&self, expr: &HirExpr) -> bool {
+        crate::return_provenance::value_reads_a_proven_foreign_binding(
+            expr,
+            &self.proven_foreign_bindings,
+        )
+    }
     pub(crate) fn consume_moved_builtin_method_arg(&mut self, operand: &HirExpr) {
         let HirExprKind::BindingRef {
             name,

@@ -77,6 +77,12 @@ pub(super) fn compute_funcupdate_base_provenance<'f>(
         params,
         memo: HashMap::new(),
         fresh,
+        // This prescan runs BEFORE the function is lowered, so the lowering's
+        // proven-foreign binder ledger does not exist yet. Empty is safe here:
+        // a `let` bound to a foreign producer already fails this resolver's own
+        // call check (the authority declines a direct extern and every wrapper
+        // of one), so the ledger would add nothing a funcupdate base could use.
+        proven_foreign: HashSet::new(),
     };
     let ids: Vec<BindingId> = resolver.let_or_param.iter().copied().collect();
     for id in ids {
@@ -97,6 +103,7 @@ struct BaseOwnerResolver<'f> {
     params: HashSet<BindingId>,
     memo: HashMap<BindingId, bool>,
     fresh: &'f crate::return_provenance::FreshOwnerVerdicts,
+    proven_foreign: HashSet<BindingId>,
 }
 impl<'f> BaseOwnerResolver<'f> {
     /// True iff `{ ..<binding>, f: new }` is a proven unique owner: `binding` is
@@ -168,7 +175,12 @@ impl<'f> BaseOwnerResolver<'f> {
             // and fails here; a call is checked against the freshness summary; a
             // construction embedding a whole by-value parameter is rejected via
             // the prescan's `params` set.
-            _ => Builder::expr_is_materialized_owner(init, self.fresh, &self.params),
+            _ => Builder::expr_is_materialized_owner(
+                init,
+                self.fresh,
+                &self.params,
+                &self.proven_foreign,
+            ),
         }
     }
 }

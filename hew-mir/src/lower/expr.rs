@@ -1431,6 +1431,7 @@ impl Builder {
                     }
                 } else if self.binding_seeds_drop_elaboration(&binding_ty)
                     && (pending || value_place.is_some())
+                    && !self.note_let_binder_proven_foreign(binding.id, value, &binding_ty)
                 {
                     // Only register the binding in `owned_locals` when
                     // the same iteration will also wire `binding_locals`
@@ -4569,6 +4570,7 @@ impl Builder {
                         &args[0],
                         &self.call_scrutinee_provenance.fresh_owner_verdicts,
                         &self.funcupdate_param_ids,
+                        &self.proven_foreign_bindings,
                     ) {
                     "hew_vec_push_owned_move".to_string()
                 } else {
@@ -4600,6 +4602,7 @@ impl Builder {
                         &args[1],
                         &self.call_scrutinee_provenance.fresh_owner_verdicts,
                         &self.funcupdate_param_ids,
+                        &self.proven_foreign_bindings,
                     ) {
                     "hew_vec_set_owned_move".to_string()
                 } else {
@@ -4638,12 +4641,28 @@ impl Builder {
                 let receiver_place = self.lower_value(receiver)?;
                 let mut arg_places = vec![receiver_place];
                 for arg in args {
-                    let arg_place = self.lower_method_arg_value(
-                        arg,
-                        is_vec_element_store || builtin_method_arg_is_move_ingress(*target_family),
-                    )?;
+                    let move_ingress = builtin_method_arg_is_move_ingress(*target_family);
+                    // `HashMap`/`HashSet` ingress is MOVE by ABI — the runtime
+                    // documents copy-in as intentionally absent — so the operand's
+                    // heap is byte-transferred into the collection and the
+                    // collection's compiler-scheduled teardown releases it through
+                    // the value layout's `drop_fn`. Deciding that from the method
+                    // FAMILY alone schedules a release of a value the compiler may
+                    // not own: `m.insert(k, wrap())` hands the map an
+                    // ownership-opaque foreign record and the teardown frees a
+                    // handle the host still holds.
+                    //
+                    // Unlike the `Vec` seam there is no COPY-IN sibling to fall
+                    // back to, so failing closed cannot mean "mint nothing" — the
+                    // move happens either way. It means refusing to compile the
+                    // ingress at all, which is what this does.
+                    if move_ingress && self.reject_opaque_foreign_collection_ingress(arg) {
+                        return None;
+                    }
+                    let arg_place =
+                        self.lower_method_arg_value(arg, is_vec_element_store || move_ingress)?;
                     arg_places.push(arg_place);
-                    if builtin_method_arg_is_move_ingress(*target_family) {
+                    if move_ingress {
                         self.consume_moved_builtin_method_arg(arg);
                     }
                     if is_array_literal_push {

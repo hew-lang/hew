@@ -599,6 +599,18 @@ struct Builder {
     /// any consumer, and an un-threaded (default) context grants nothing because
     /// the authority fails closed on every absent row.
     pub(crate) call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance>,
+    /// Bindings this function `let`-bound to a value that PROVABLY carries a
+    /// declared, non-audited extern's handle, and which were therefore refused a
+    /// scope-exit owner (`let_binder_owns_proven_foreign_value`).
+    ///
+    /// The authority's value queries walk an expression's own structure, and a
+    /// `BindingRef` is a leaf to them — so without this ledger a foreign handle
+    /// laundered through one `let` would re-enter every container mint clean
+    /// (`let h = unsafe { host_record() }; Outer { inner: h }`). It is the
+    /// per-function carrier of the same fact, consulted by
+    /// `Builder::value_is_free_of_opaque_foreign_provenance` beside the
+    /// module-level authority. Reset per function, like every other local ledger.
+    pub(crate) proven_foreign_bindings: std::collections::HashSet<hew_hir::BindingId>,
     /// Per-function local-binding freshness facts (#2648 S2b) consumed by the
     /// caller-side argument scan: which of the CURRENT function's locals are
     /// provably solely-owned fresh values (S1 bits `∅`, plain `let`, not
@@ -4864,6 +4876,7 @@ pub(crate) fn lower_function(
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
         call_scrutinee_provenance: call_scrutinee_provenance.clone(),
+        proven_foreign_bindings: std::collections::HashSet::new(),
         param_ownership: param_ownership.clone(),
         trait_impl_index: trait_impl_index.clone(),
         subst,

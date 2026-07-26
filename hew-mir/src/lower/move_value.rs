@@ -305,6 +305,7 @@ impl Builder {
                 value,
                 &self.call_scrutinee_provenance.fresh_owner_verdicts,
                 &self.funcupdate_param_ids,
+                &self.proven_foreign_bindings,
             ) || self.is_consumed_bound_local(value))
     }
 

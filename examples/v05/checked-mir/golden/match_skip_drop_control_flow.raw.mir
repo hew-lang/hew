@@ -316,7 +316,7 @@ fn main() -> i64 [conv=default]
   bb9:
     trap(IntegerOverflow)
   bb10:
-    _18 = const.i64 15
+    _18 = const.i64 14
     _19 ovf=_20 = sub.checked.s _16 _18
     branch _20 ? bb11 : bb12
   bb11:

@@ -31,6 +31,13 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+// Build identity stamp. This crate's staticlib is put on the WASM link line
+// directly, without going through hew-lib's umbrella archive, so it carries its
+// own copy of the digest the driver checks. Without it a wasm program links
+// whatever libhew_runtime.a is on disk — a copied or cached one included — with
+// nothing tying it to the driver that produced the object.
+include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
+
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;

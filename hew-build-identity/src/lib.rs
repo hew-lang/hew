@@ -39,6 +39,17 @@ pub const STAMP_LEN: usize = STAMP_PREFIX.len() + DIGEST_HEX_LEN;
 /// Name of the `#[no_mangle]` static that `hew-lib` exports to carry the stamp.
 pub const STAMP_SYMBOL: &str = "HEW_BUILD_IDENTITY_V1";
 
+/// Stamp symbol for `hew-runtime`'s own staticlib, which the WASM link line
+/// resolves directly rather than through `hew-lib`.
+///
+/// The symbol differs from [`STAMP_SYMBOL`] because `hew-lib` links this crate
+/// and the two statics would otherwise collide; the payload each one carries is
+/// identical, since both are computed over the same input set.
+pub const STAMP_SYMBOL_RUNTIME: &str = "HEW_BUILD_IDENTITY_V1_RUNTIME";
+
+/// Stamp symbol for `hew-std`'s own staticlib. See [`STAMP_SYMBOL_RUNTIME`].
+pub const STAMP_SYMBOL_STD: &str = "HEW_BUILD_IDENTITY_V1_STD";
+
 /// The package whose staticlib *is* the archive.
 ///
 /// Its non-dev path-dependency closure — resolved from the manifests, never

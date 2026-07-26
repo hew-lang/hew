@@ -736,6 +736,54 @@ fn unescape(literal: &[u8], macro_name: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(|_| macro_name.to_string())
 }
 
+/// Stamps the calling crate's staticlib with the archive's build identity.
+///
+/// Every crate whose staticlib the driver can put on a link line calls this
+/// from its build script under its own `symbol`: `hew-lib` for native links,
+/// `hew-runtime` and `hew-std` for WASM ones. All of them compute the same
+/// input set, so the payload is identical and an umbrella archive that links
+/// the others still carries exactly one identity.
+///
+/// Writes `$OUT_DIR/build_identity.rs` for the crate root to `include!`, emits
+/// the rerun directives that keep the digest live, and exports it as
+/// `HEW_BUILD_IDENTITY` for code that needs it at compile time.
+///
+/// # Panics
+///
+/// Panics when the identity cannot be computed or written. Failing closed is
+/// the point: an archive that cannot be stamped is one nothing can validate,
+/// so no archive is better than an unverifiable one.
+pub fn emit_stamp(crate_name: &str, symbol: &str) {
+    println!("cargo:rerun-if-changed=build.rs");
+
+    let manifest_dir = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"),
+    );
+    let workspace_root = workspace_root_from_manifest_dir(&manifest_dir)
+        .unwrap_or_else(|error| panic!("{crate_name} build identity: {error}"));
+
+    let identity = compute(&workspace_root)
+        .unwrap_or_else(|error| panic!("{crate_name} build identity: {error}"));
+    identity.emit_cargo_rerun_directives();
+
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    let generated = out_dir.join("build_identity.rs");
+    let source = identity.stamp_static_source(symbol);
+
+    // Rewriting an unchanged file would force a recompile on every unrelated
+    // rerun of the build script.
+    if !fs::read_to_string(&generated).is_ok_and(|existing| existing == source) {
+        fs::write(&generated, &source).unwrap_or_else(|error| {
+            panic!(
+                "{crate_name} build identity: cannot write {}: {error}",
+                generated.display()
+            )
+        });
+    }
+
+    println!("cargo:rustc-env=HEW_BUILD_IDENTITY={}", identity.digest());
+}
+
 /// Resolves the workspace root from a build script's `CARGO_MANIFEST_DIR`.
 ///
 /// # Errors

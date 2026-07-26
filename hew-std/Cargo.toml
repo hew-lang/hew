@@ -17,6 +17,11 @@ crate-type = ["staticlib", "lib"]
 # appear here. Every native-only crate lives in the cfg(not(wasm)) block below
 # — many of them (ring, socket2, flate2, getrandom, …) hard-`compile_error!`
 # on wasm32, so listing them unconditionally would break the wasm build.
+[build-dependencies]
+# Computes the build identity this crate's staticlib is stamped with. Enabled
+# with `scan` only here, in the build graph; nothing of it reaches the stdlib.
+hew-build-identity = { path = "../hew-build-identity", features = ["scan"] }
+
 [dependencies]
 # Shared ABI + runtime (path deps).
 hew-cabi = { path = "../hew-cabi" }

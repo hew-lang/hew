@@ -274,14 +274,28 @@ stdlib: $(LIBHEW)
 # alone when nothing changed, so stamp it here: the file rule has just proven
 # the archive is current, and recording that keeps make (and the mtime-based
 # freshness check) from re-running on every invocation.
-$(LIBHEW): $(LIBHEW_SRCS) Cargo.toml Cargo.lock
+$(LIBHEW): $(LIBHEW_SRCS)
 	cargo build -p hew-lib $(CARGO_TARGET_FLAG)
 	@touch $@
 
-# Build the WASM runtime + the consolidated stdlib archive (libhew_std.a)
-wasm-runtime:
+# Build the WASM runtime + the consolidated stdlib archive (libhew_std.a).
+#
+# Real file rules over the same input set as $(LIBHEW), for the same reason:
+# the driver refuses a wasm archive whose stamp disagrees with its own, so a
+# phony target that rebuilds only when asked leaves `make wasm-runtime` able to
+# report success over an archive from an older checkout.
+WASM_RUNTIME_LIB := $(WASM_DEBUG_DIR)/libhew_runtime.a
+WASM_STD_LIB := $(WASM_DEBUG_DIR)/libhew_std.a
+
+$(WASM_RUNTIME_LIB): $(LIBHEW_SRCS)
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+	@touch $@
+
+$(WASM_STD_LIB): $(LIBHEW_SRCS)
 	cargo build -p hew-std --target wasm32-wasip1
+	@touch $@
+
+wasm-runtime: $(WASM_RUNTIME_LIB) $(WASM_STD_LIB)
 
 # Build the hew-wasm browser analysis-only module (requires: cargo install wasm-pack)
 wasm:

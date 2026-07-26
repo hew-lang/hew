@@ -31,13 +31,16 @@
 # key	mode	floor	slack	description
 asan-fixture-gates	exact	17	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
 checked-mir-fixtures	exact	57	-	golden-MIR fixtures under examples/v05/checked-mir
-corpus-floor-registry	exact	12	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
+corpus-floor-registry	exact	15	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
 doc-hew-fences	min	297	60	hew fences extracted from the language guide and the spec
+ffi-arity-checked-contracts	min	469	80	FFI ownership contracts whose declared arity was checked against the Rust signature
+fuzz-oracle-candidates	min	646	120	ratcheted candidates collected by the fuzz-to-run oracle
 fuzz-seed-corpus	min	699	120	source seeds hydrated into the parser fuzz corpus
 hew-corpus-check-files	min	1685	250	tracked .hew files swept by scripts/hew-corpus-check.sh
 hew-suite-tests	min	1169	200	tests executed by hew test tests/hew under the suite ratchet
 ll-oracle-fixtures	exact	15	-	ll-oracle corpus fixtures under tests/ll-oracle/corpus
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
+sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requiring whole-binary exclusion
 stdlib-int-surface-files	exact	73	-	tracked std/ .hew files scanned for removed int/uint aliases
 stdlib-proof-modules	exact	69	-	public stdlib modules mapped to executable proof fixtures
 stdlib-ratchet-files	exact	73	-	std/ .hew files type-checked by scripts/stdlib-ratchet.sh

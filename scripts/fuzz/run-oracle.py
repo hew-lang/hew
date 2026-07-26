@@ -52,6 +52,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from corpus_floor import check_floor  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -580,6 +583,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Also scan cargo-fuzz corpus (source 1). Default: regressions mode only.",
     )
     p.add_argument(
+        "--min-candidates",
+        type=int,
+        default=None,
+        help=(
+            "Minimum number of ratcheted candidates (vertical-slice + regressions) "
+            "this run must have collected. Required whenever --regressions-dir or "
+            "--vertical-slice-dir is overridden; the default corpus takes its floor "
+            "from scripts/corpus-floors.tsv."
+        ),
+    )
+    p.add_argument(
         "--timeout",
         type=float,
         default=15.0,
@@ -609,6 +623,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_arg_parser().parse_args()
 
+    custom_corpus = (
+        args.regressions_dir is not None or args.vertical_slice_dir is not None
+    )
+    if custom_corpus and args.min_candidates is None:
+        print(
+            "error: --regressions-dir/--vertical-slice-dir point at a corpus this "
+            "gate has no floor for; pass --min-candidates <n>",
+            file=sys.stderr,
+        )
+        print(
+            "       An oracle that collected no candidates finds no unexpected "
+            "failures and no unexpected passes, and prints PASS. Every corpus this "
+            "gate runs over must declare how many candidates it expects.",
+            file=sys.stderr,
+        )
+        return 1
+    if args.min_candidates is not None and args.min_candidates < 1:
+        print("error: --min-candidates must be a positive integer", file=sys.stderr)
+        return 1
+
     script_dir = Path(__file__).resolve().parent
     repo_root: Path = args.repo_root or (script_dir.parent.parent)
 
@@ -637,6 +671,35 @@ def main() -> int:
 
     expected_failure_names = _load_expected_failures(expected_failures_path)
 
+    # Floor the ratcheted candidate set. Both gate conditions below are searches
+    # over the collected candidates: an empty collection yields no unexpected
+    # failures and no unexpected passes, and prints PASS. The cargo-fuzz corpus
+    # (--full) is deliberately excluded — it is hydrated, unratcheted and its
+    # size is not a property of this repo's tracked fixtures.
+    ratcheted_candidates = len(vertical_slice) + len(regressions)
+    floor_error: Optional[str] = None
+    if args.min_candidates is not None:
+        if ratcheted_candidates < args.min_candidates:
+            floor_error = (
+                f"\nCORPUS FLOOR: collected {ratcheted_candidates} ratcheted "
+                f"candidate(s), caller declared at least {args.min_candidates}\n"
+                "              vertical-slice/accept + fuzz-oracle/regressions\n"
+                "              An oracle run over nothing proves nothing: both gate\n"
+                "              conditions are searches over the candidates it "
+                "collected."
+            )
+    else:
+        floor_error = check_floor("fuzz-oracle-candidates", ratcheted_candidates)
+
+    if floor_error is not None:
+        print(
+            "\n-- candidate execution skipped: the collected corpus is below "
+            "its floor, so running it would prove nothing --"
+        )
+        print(f"   ({ratcheted_candidates} ratcheted candidate(s) collected)")
+    else:
+        print(f"corpus floor OK: {ratcheted_candidates} ratcheted candidate(s)")
+
     stats = OracleStats()
     all_verdicts: list[Verdict] = []
     unexpected_fails: list[Verdict] = []
@@ -651,7 +714,7 @@ def main() -> int:
             apply_ratchet: bool,
             strict_exit: bool = True,
         ) -> None:
-            if not files:
+            if not files or floor_error is not None:
                 return
             print(f"\n-- {label} ({len(files)} files) --")
             for src in files:
@@ -721,6 +784,10 @@ def main() -> int:
     )
 
     gate_ok = True
+
+    if floor_error is not None:
+        print(floor_error, file=sys.stderr)
+        gate_ok = False
 
     if unexpected_fails:
         print("\nUNEXPECTED FAILURES (not in expected-failures.txt):")

@@ -34,6 +34,10 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from corpus_floor import check_floor  # noqa: E402
+
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
 STDLIB_SRC = ROOT / "hew-std" / "src"
 JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
@@ -317,6 +321,7 @@ def validate_ownership_contracts(
 
     classified = set().union(*classification.values())
     contracted: set[str] = set()
+    arity_checked = 0
     for index, contract in enumerate(contracts, start=1):
         location = f"{JIT_SYMBOL_CLASSIFICATION}: ownership contract #{index}"
         if not isinstance(contract, dict):
@@ -348,16 +353,18 @@ def validate_ownership_contracts(
             errors.append(
                 f"{location} params must contain only {sorted(PARAM_OWNERSHIP)}"
             )
-        elif symbol in fn_param_counts and len(params) not in fn_param_counts[symbol]:
-            # Arity teeth: a contract whose params row no longer matches the C
-            # signature of the implementation is stale and must fail here, not
-            # silently mis-describe ownership positionally. Macro-generated
-            # exports have no literal signature and are skipped.
-            found = sorted(fn_param_counts[symbol])
-            errors.append(
-                f"{location} declares {len(params)} params but the FFI "
-                f"declaration has {found} parameters"
-            )
+        elif symbol in fn_param_counts:
+            arity_checked += 1
+            if len(params) not in fn_param_counts[symbol]:
+                # Arity teeth: a contract whose params row no longer matches the C
+                # signature of the implementation is stale and must fail here, not
+                # silently mis-describe ownership positionally. Macro-generated
+                # exports have no literal signature and are skipped.
+                found = sorted(fn_param_counts[symbol])
+                errors.append(
+                    f"{location} declares {len(params)} params but the FFI "
+                    f"declaration has {found} parameters"
+                )
 
         release_symbol = contract.get("release-symbol")
         discharge_depth = contract.get("discharge-depth")
@@ -393,7 +400,23 @@ def validate_ownership_contracts(
                 'and discharge-depth = "none"'
             )
 
+    # The arity check above only bites for a symbol present in fn_param_counts.
+    # That map is built by scanning Rust sources with a regex; if the sources
+    # move or the declaration spelling drifts, the map comes back empty, every
+    # contract takes the skip branch, and validation passes with the teeth
+    # retracted and nothing to show for it. Floor the number of contracts that
+    # were actually arity-checked.
+    floor_error = check_floor("ffi-arity-checked-contracts", arity_checked)
+    if floor_error is not None:
+        errors.append(floor_error)
+    else:
+        print(
+            f"corpus floor OK: ffi-arity-checked-contracts = {arity_checked}",
+            file=sys.stderr,
+        )
+
     ratchet = tomllib.loads(FFI_OWNERSHIP_RATCHET.read_text(encoding=SOURCE_ENCODING))
+
     expected_unclassified = ratchet.get("unclassified")
     if not isinstance(expected_unclassified, int) or expected_unclassified < 0:
         errors.append(f"{FFI_OWNERSHIP_RATCHET}: unclassified must be non-negative")

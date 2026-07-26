@@ -444,9 +444,10 @@ fuzz-oracle: hew-native runtime $(LIBHEW_READY)
 		python3 scripts/fuzz/run-oracle.py --timeout 30; \
 	fi
 
-# Oracle self-tests: three independently-failable checks that prove the
-# harness has teeth (flags real crashes) and honours the ratchet contract
-# (unexpected-pass and unexpected-fail both fail closed).
+# Oracle self-tests: four independently-failable checks that prove the
+# harness has teeth (flags real crashes), honours the ratchet contract
+# (unexpected-pass and unexpected-fail both fail closed), and refuses to
+# report PASS over a candidate set below its floor.
 fuzz-oracle-selftest: hew-native runtime $(LIBHEW_READY)
 	bash scripts/fuzz/oracle-selftest.sh
 

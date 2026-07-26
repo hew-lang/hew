@@ -1,0 +1,32 @@
+# scripts/corpus-floors.tsv — the tracked minimum size of every gated enumeration.
+#
+# A gate that enumerates a corpus, a fixture set, a symbol list or a test set
+# and then compares or asserts over it proves NOTHING when the enumeration is
+# empty: two empty sets are identical, an empty loop counts zero failures, and
+# the gate exits 0 forever. A corpus that silently shrinks from 57 fixtures to
+# 3 is the same defect in slower motion.
+#
+# Every such gate declares its size here and asserts it through
+# scripts/lib/corpus-floor.sh (shell) or scripts/lib/corpus_floor.py (Python).
+# scripts/check-corpus-floors.sh proves every row still has a live call site,
+# so a floor cannot be retired by deleting the assertion that reads it.
+#
+# Columns (tab-separated):
+#   key          the assertion key, referenced by exactly one call site
+#   mode         exact — curated, stable corpus: ANY change fails, up or down
+#                min   — legitimately grows: below `floor` fails, and so does
+#                        anything above floor+slack (an unraised floor stops
+#                        being a floor)
+#   floor        expected count (exact) or tracked minimum (min)
+#   slack        how far above `floor` a min corpus may drift before the gate
+#                asks for the floor to be raised; `-` for exact rows
+#   description  what is being counted
+#
+# MAINTENANCE: the counts live in the same commit as the corpus. Add fixtures,
+# the gate goes red and names this file and the new number; edit the row in
+# that same commit. Remove fixtures, the gate goes red and asks you to justify
+# the smaller number in the commit body. There is no path where the count
+# drifts without somebody saying so out loud.
+#
+# key	mode	floor	slack	description
+corpus-floor-registry	exact	1	-	rows in this registry, asserted by scripts/check-corpus-floors.sh

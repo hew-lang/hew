@@ -68,7 +68,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure
+.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1152,8 +1152,18 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check
+lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
 	cargo clippy --workspace --tests -- -D warnings
+
+# Keep the corpus-floor registry honest: every declared floor is well formed
+# and still has a live call site, the registry's own row count is floored, and
+# both helper implementations agree on every row's verdict. A gate that
+# enumerates a corpus and then compares over it proves nothing when the
+# enumeration is empty; scripts/corpus-floors.tsv is where each such gate
+# records the size it expects to find.
+corpus-floor-check:
+	bash scripts/tests/test_corpus_floor.sh
+	bash scripts/check-corpus-floors.sh
 
 # Keep nightly FreeBSD coverage and both release-gate legs on one exact
 # nextest/provisioning contract. The required Clippy & format job runs this

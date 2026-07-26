@@ -39,27 +39,22 @@
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make licenses                  — regenerate THIRD-PARTY-LICENSES from current Cargo.lock
 #   make licenses-check            — verify THIRD-PARTY-LICENSES is current (used in CI)
+#   make check-gate-reachability   — verify every gate target/crate/exclusion is reached by CI
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
-#   make test         — Rust workspace tests (fast path; excludes test-hew)
-#   make test-all     — everything in test + stdlib + Hew tests (slow)
+#   make test         — Rust workspace tests (fast path)
 #   make test-rust         — just Rust workspace tests
 #   make test-parser       — parser + lexer crate tests (narrow)
 #   make test-types        — type-checker + parser + lexer crate tests (narrow)
 #   make test-cli          — CLI crate tests (narrow)
+#   make test-cabi         — C-ABI crate tests (narrow; excluded from the workspace run)
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
 #   make test-vertical-slice — end-to-end Hew compiler oracle
 #   make test-package-install — Adze install -> Hew import consumer proof
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
-#   make test-real-timing  — serialized real wall-clock / OS-timing quarantine tests (narrow)
-#   make test-lane CRATE=<crate> — fast in-process tier for one crate (lane iteration)
-#   make test-lane-all          — fast in-process tier for the whole workspace
-#   make test-fast              — fast tier scoped to git-diff-affected crates (agents/devs)
-#   make test-fast CRATE=<c>   — pin fast tier to one crate
-#   make test-hew          — run Hew test files (std/ *_test.hew)
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make tsan         — run the nightly rust-runtime TSan test command locally
@@ -68,16 +63,15 @@
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
 #   make leak-scan    — scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 #   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
-#   make fuzz-smoke     — build and smoke-run cargo-fuzz targets locally
 #   make clean        — remove build/, target/
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all lane-gates test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check
-.PHONY: clean install install-check uninstall verify-ffi test-verify-ffi
+.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check
+.PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
-.PHONY: fuzz-corpus fuzz-smoke fuzz-oracle fuzz-oracle-selftest
+.PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest
 .PHONY: ll-diff ll-golden ll-identity-selftest
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
@@ -197,8 +191,6 @@ SANITIZER_RUST_TARGET ?= $(HOST_TRIPLE)
 RUNTIME_ASAN_TARGET_DIR := target/sanitizer-runtime-asan
 RUNTIME_TSAN_TARGET_DIR := target/sanitizer-runtime-tsan
 RUNTIME_MIRI_TARGET_DIR := target/miri-runtime
-FUZZ_TARGETS := fuzz_parse fuzz_lex fuzz_structured fuzz_machine fuzz_check fuzz_mir
-FUZZ_SMOKE_SECONDS ?= 45
 
 # ── Default target ──────────────────────────────────────────────────────────
 
@@ -432,20 +424,6 @@ ci-local-linux:
 
 fuzz-corpus:
 	scripts/fuzz/hydrate-corpus.sh
-
-fuzz-smoke: fuzz-corpus
-	@command -v cargo-fuzz >/dev/null 2>&1 || { echo "error: cargo-fuzz is required (cargo install cargo-fuzz)"; exit 127; }
-	@rustup toolchain list | grep -q '^nightly' || { echo "error: Rust nightly toolchain is required (rustup install nightly)"; exit 127; }
-	@cd hew-parser && rc=0 && for target in $(FUZZ_TARGETS); do \
-		echo "==> cargo fuzz build $$target"; \
-		cargo +nightly fuzz build "$$target" || rc=$$?; \
-	done; \
-	exit $$rc
-	@cd hew-parser && rc=0 && for target in $(FUZZ_TARGETS); do \
-		echo "==> cargo fuzz smoke $$target ($(FUZZ_SMOKE_SECONDS)s)"; \
-		cargo +nightly fuzz run "$$target" -- -max_total_time=$(FUZZ_SMOKE_SECONDS) || rc=$$?; \
-	done; \
-	exit $$rc
 
 # Fuzz-to-run completeness oracle.
 #
@@ -705,12 +683,6 @@ test: test-rust
 
 # test-all: the full sweep including the Hew JIT test suite.
 # Hew tests (~354 functions through the Rust JIT path) are omitted from the
-# default `test` target because they take ~5 min locally and are not called
-# by CI (which uses cargo nextest directly). Use `make test-all` when you
-# want the previous behaviour.
-# TODO: Add test-stdlib to `test-all` unconditionally once stdlib files are type-check clean
-test-all: test test-stdlib test-hew test-ux-examples test-surface-examples test-package-install
-
 # Build the combined runtime+stdlib static lib, the native runtime staticlib,
 # and the WASM runtime before running the full workspace test suite.  Several
 # hew-cli integration tests (eval_e2e, eval_wasm_*) call `hew eval` which needs
@@ -745,6 +717,18 @@ test-types:
 
 test-cli:
 	cargo nextest run --profile ci -p hew-cli -p adze-cli
+
+# The C-ABI crate, run on its own.
+#
+# Every workspace-wide nextest invocation excludes hew-cabi: its `#[cfg(test)]`
+# runtime stubs re-`#[no_mangle]` symbols hew-runtime also defines, so a
+# workspace test binary that links both fails at link time. That exclusion is a
+# link workaround, not a coverage decision -- but for a long time nothing ran
+# the crate afterwards, so the FFI ownership contract's own tests executed on
+# developer machines only. This target is that missing half; every job carrying
+# an `--exclude hew-cabi` runs it.
+test-cabi:
+	cargo nextest run --profile ci -p hew-cabi
 
 # Build the combined runtime+stdlib static lib and the WASM runtime before
 # running the compiler-pipeline tests.  Several hew-cli integration tests
@@ -850,97 +834,6 @@ test-runtime-unit:
 # .config/nextest.toml) and are kept off the lane/smoke fast tiers.  Scoped to the
 # owning crates so the gate stays prompt.  Keep this selector in sync with the
 # `real-timing` group membership in .config/nextest.toml.
-test-real-timing:
-	cargo nextest run --profile ci \
-		-p hew-cli \
-		-p hew-runtime \
-		-E 'test(bounded_child_timeout_kills_grandchild_process_group) or test(two_process_remote_ask_echo_double_returns_42) or test(remote_ask_two_process_echo_client_helper)'
-
-# ── Lane-iteration tier ──────────────────────────────────────────────────────
-# Fast in-process tests only — exec/e2e corpus excluded (see profile.lane in
-# .config/nextest.toml for the exclusion list and coverage contract).
-#
-# Fast tier — exec corpus runs at the integrated gate.
-#
-# Usage:
-#   make test-lane CRATE=hew-types        # single crate
-#   make test-lane CRATE=hew-mir          # single crate
-#   make test-lane-all                    # full workspace
-#
-# Acceptance: use the plan's named proving gates (make test-types,
-#   make test-compiler-pipeline) — not this tier — before declaring ready.
-test-lane:
-ifndef CRATE
-	$(error CRATE is required: make test-lane CRATE=<crate-name>)
-endif
-	@echo "==> fast tier — exec corpus runs at the integrated gate"
-	cargo nextest run --profile lane -p $(CRATE)
-
-test-lane-all:
-	@echo "==> fast tier — exec corpus runs at the integrated gate"
-	cargo nextest run --workspace --profile lane
-
-# lane-gates: mechanical per-lane gate battery (fmt-check, workspace clippy,
-# targeted crate tests, commit-body lint, fuzz-oracle two-gate ratchet).
-# Single-crate ergonomics only; for multiple crates call the script directly:
-#   scripts/lane-gates.sh -p <crate1> -p <crate2>
-lane-gates:
-ifndef CRATE
-	$(error CRATE is required: make lane-gates CRATE=<crate-name>. For multiple crates run scripts/lane-gates.sh -p <crate1> -p <crate2> directly.)
-endif
-	scripts/lane-gates.sh -p $(CRATE) $(LANE_GATES_ARGS)
-
-# ── Affected-crate fast tier ─────────────────────────────────────────────────
-# Derives scope from git diff: runs nextest --profile lane restricted to the
-# rdeps() closure of crates that have changed since the merge base.  Falls back
-# to a full workspace lane run when no crates are detected (e.g. first commit,
-# workspace-wide file change, or no diff vs origin).
-#
-# Multi-crate case: changed-crates.sh may return several space-separated names.
-# A single rdeps(hew-types hew-parser) is not valid nextest syntax — it matches
-# no package.  Instead each crate gets its own rdeps() term, joined with `|`:
-#   rdeps(hew-types) | rdeps(hew-parser)
-# The workspace fallback only fires when the crate list is empty.
-#
-# Usage:
-#   make test-fast                    # auto-derive scope from git diff
-#   make test-fast CRATE=hew-types    # pin to one crate (skips diff derivation)
-#
-# This target replaces hand-curated -p lists for interactive iteration.
-# The exec/e2e corpus is still excluded (profile.lane).  Acceptance gates
-# require the plan's named proving commands, not this tier.
-test-fast:
-	@crates=$$(CRATE="$(CRATE)" scripts/changed-crates.sh); \
-	if [ -n "$$crates" ]; then \
-	  echo "==> fast tier — affected: $$crates"; \
-	  expr=$$(printf 'rdeps(%s) | ' $$crates); expr=$${expr% | }; \
-	  cargo nextest run --profile lane -E "$$expr"; \
-	else \
-	  echo "==> fast tier — full workspace (no crate-specific diff detected)"; \
-	  cargo nextest run --workspace --profile lane; \
-	fi
-
-test-stdlib: hew
-	@echo "==> Type-checking stdlib .hew files"
-	@fail=0; total=0; \
-	for f in $$(find std/ -name '*.hew' -not -path '*/target/*' | sort); do \
-	  total=$$((total + 1)); \
-	  if ! $(DEBUG_DIR)/hew check "$$f" >/dev/null 2>&1; then \
-	    echo "  FAIL: $$f"; \
-	    $(DEBUG_DIR)/hew check "$$f" 2>&1 | head -3; \
-	    fail=$$((fail + 1)); \
-	  fi; \
-	done; \
-	echo "  $$((total - fail))/$$total stdlib files pass type-check"; \
-	if [ $$fail -gt 0 ]; then \
-	  echo "ERROR: $$fail stdlib file(s) failed type-check"; \
-	  exit 1; \
-	fi
-
-test-hew: hew-native runtime $(LIBHEW_READY)
-	@echo "==> Running Hew test files"
-	$(DEBUG_DIR)/hew test tests/hew/
-
 # Ratcheted wrappers for the Hew-language test suites.
 #
 # These targets run the suites through scripts/hew-suite-ratchet.sh and
@@ -971,6 +864,15 @@ o2-differential-selftest:
 
 preflight-parity-selftest:
 	bash scripts/preflight-parity-selftest.sh
+
+# Reachability gate: every gate target in this Makefile, every workspace crate,
+# every nextest exclusion and every #[ignore]d test must be reached by a named
+# CI step or preflight command. There is no waiver list — an unreached check is
+# either wired in or deleted. Sibling of check-preflight-ci-parity.sh: that one
+# proves CI and the local preflight agree, this one proves the graph they agree
+# on actually covers the tree.
+check-gate-reachability:
+	python3 scripts/check-gate-reachability.py
 
 test-stdlib-ratchet: hew
 	@echo "==> Type-checking stdlib (ratcheted)"
@@ -1199,11 +1101,11 @@ endif
 # the make target is a usable signal rather than a confusing failure.
 tsan:
 ifeq ($(shell uname -sm),Darwin arm64)
-	@echo "tsan: skipped on darwin-arm64 (upstream Rust nightly TSan not supported on this target — see nightly-sanitizers.yml rust-runtime-tsan advisory lane)"
+	@echo "tsan: skipped on darwin-arm64 (upstream Rust nightly TSan not supported on this target — see the rust-runtime-tsan advisory job in nightly-sanitizers.yml)"
 else
 	CARGO_TARGET_DIR=$(RUNTIME_TSAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
-	TSAN_OPTIONS="halt_on_error=0 suppressions=tsan.supp" \
+	TSAN_OPTIONS="$${TSAN_OPTIONS:-halt_on_error=0 suppressions=tsan.supp}" \
 	cargo +nightly test \
 		--target $(SANITIZER_RUST_TARGET) \
 		-p hew-runtime \
@@ -1439,45 +1341,27 @@ verify-ffi:
 test-verify-ffi:
 	python3 scripts/tests/test_verify_ffi_symbols.py
 
-# ── ANTLR4 grammar validation ──────────────────────────────────────────────
-# Requires Java and the ANTLR4 jar. This is rarely needed — only when
-# modifying docs/specs/Hew.g4.
-
-ANTLR4_JAR  ?= /tmp/antlr-4.13.2-complete.jar
-JAVA_HOME   ?= /usr/lib/jvm/java-21-openjdk-amd64
-JAVA        := $(JAVA_HOME)/bin/java
-JAVAC       := $(JAVA_HOME)/bin/javac
-GRAMMAR     := docs/specs/Hew.g4
-GRAMMAR_OUT := .tmp/hew-grammar-test
-HEW_FILES   := $(sort $(shell find examples/ -name '*.hew' 2>/dev/null))
-
-grammar: $(GRAMMAR) $(HEW_FILES)
-	@echo "==> Generating ANTLR4 parser"
-	@rm -rf $(GRAMMAR_OUT)
-	@cp $(GRAMMAR) .tmp/Hew.g4
-	$(JAVA) -jar $(ANTLR4_JAR) -Dlanguage=Java -Xexact-output-dir -o $(GRAMMAR_OUT) .tmp/Hew.g4
-	@echo "==> Compiling grammar test parser"
-	$(JAVAC) -cp $(ANTLR4_JAR) $(GRAMMAR_OUT)/*.java
-	@echo "==> Parsing example files"
-	@pass=0; fail=0; \
-	for f in $(HEW_FILES); do \
-		if $(JAVA) -cp $(ANTLR4_JAR):$(GRAMMAR_OUT) \
-			org.antlr.v4.gui.TestRig Hew program < "$$f" > /dev/null 2>&1; then \
-			echo "  OK   $$f"; \
-			pass=$$((pass + 1)); \
-		else \
-			echo "  FAIL $$f"; \
-			fail=$$((fail + 1)); \
-		fi; \
-	done; \
-	echo "==> $$pass passed, $$fail failed"; \
-	if [ $$fail -gt 0 ]; then exit 1; fi
-
 # ── Install / Uninstall ────────────────────────────────────────────────────
 # Installs release-built artifacts to $(DESTDIR)$(PREFIX).
 # Run `make release` first, or this target will build release for you.
 
-install: install-check
+# Release-artefact preconditions for `install`. A macro rather than a target:
+# it is only ever meaningful as the first step of `install`'s recipe.
+define require_release_artifacts
+	@test -f $(RELEASE_DIR)/hew \
+		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
+	@test -f $(RELEASE_DIR)/adze \
+		|| { echo "Error: release adze not built. Run 'make release' first."; exit 1; }
+	@test -f $(RELEASE_DIR)/hew-observe \
+		|| { echo "Error: release hew-observe not built. Run 'make release' first."; exit 1; }
+	@test -f $(RELEASE_LIB_DIR)/libhew.a \
+		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
+	@test -f $(WASM_RELEASE_DIR)/libhew_runtime.a \
+		|| { echo "Error: wasm runtime not built. Run 'make release' first."; exit 1; }
+endef
+
+install:
+	$(call require_release_artifacts)
 	@echo "==> Installing to $(DESTDIR)$(PREFIX)"
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -d $(DESTDIR)$(PREFIX)/lib
@@ -1522,17 +1406,6 @@ install: install-check
 	@echo "    Add $(PREFIX)/bin to your PATH:"
 	@echo "      export PATH=\"$(PREFIX)/bin:\$$PATH\""
 
-install-check:
-	@test -f $(RELEASE_DIR)/hew \
-		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
-	@test -f $(RELEASE_DIR)/adze \
-		|| { echo "Error: release adze not built. Run 'make release' first."; exit 1; }
-	@test -f $(RELEASE_DIR)/hew-observe \
-		|| { echo "Error: release hew-observe not built. Run 'make release' first."; exit 1; }
-	@test -f $(RELEASE_LIB_DIR)/libhew.a \
-		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
-	@test -f $(WASM_RELEASE_DIR)/libhew_runtime.a \
-		|| { echo "Error: wasm runtime not built. Run 'make release' first."; exit 1; }
 
 uninstall:
 	rm -rf $(DESTDIR)$(PREFIX)

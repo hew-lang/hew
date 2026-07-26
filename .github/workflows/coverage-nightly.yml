@@ -248,6 +248,11 @@ jobs:
           --exclude hew-cabi
           --profile ci
 
+
+      - name: Run C-ABI crate tests
+        # Standalone because the workspace run above must exclude hew-cabi.
+        run: make test-cabi
+
   # ─────────────────────────────────────────────────────────────────────────
   # Full macOS arm64 workspace nextest — the cross-platform coverage that
   # ci.yml dedups off the per-PR path. Same command ci.yml ran unconditionally
@@ -298,17 +303,19 @@ jobs:
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both link into a test binary.
         #
-        # Skip the leak-slope oracles AND the coro substrate-leak exec test on
-        # the 3-core macos-14 runner. Both compile/run Hew programs through LLVM
-        # at test time and measure RSS/leak behaviour over loops; on 3 cores
-        # under the subprocess-intensive group's parallelism they exceed the ci
-        # profile's exec budget (coro_substrate_leak_clean_native ran >480s and
-        # was terminated) and slope/leak measurement is timing-sensitive on a
-        # noisy cloud runner. The Linux job runs the full oracle + coro-leak set
-        # on its faster runner, so leak coverage is not lost.
+        # Skip the leak-slope oracles on the 3-core macos-14 runner: they
+        # compile/run Hew programs through LLVM at test time and measure RSS
+        # over loops, and slope measurement is timing-sensitive on a noisy
+        # cloud runner. The Linux job runs the full oracle set on its faster
+        # runner, so that coverage is not lost.
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
-          -E 'not binary(~oracle) - test(~coro_substrate_leak)'
+          -E 'not binary(~oracle)'
+
+
+      - name: Run C-ABI crate tests
+        # Standalone because the workspace run above must exclude hew-cabi.
+        run: make test-cabi

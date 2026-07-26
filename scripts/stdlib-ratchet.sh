@@ -30,6 +30,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/stdlib-expected-failures.txt"
 HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
 STDLIB_DIR="$REPO_ROOT/std"
@@ -108,6 +111,11 @@ while IFS= read -r -d $'\0' f; do
         ACTUAL_STR="${ACTUAL_STR}${relpath}"$'\n'
     fi
 done < <(find "$STDLIB_DIR" -name '*.hew' -not -path '*/target/*' -print0 | sort -z)
+
+# A find that matched nothing type-checks nothing and reports no failures,
+# which agrees with any expected-failures list. Floor the enumeration before
+# the ratchet reads anything into it.
+corpus_floor_assert "stdlib-ratchet-files" "$TOTAL" || exit 1
 
 # Sort actual for deterministic display.
 sorted_actual=""

@@ -34,24 +34,51 @@
 # behaves identically when run outside the ratchet→differential handoff. The
 # file must exist and be non-empty when the flag is given — a missing/empty
 # handoff file is a wiring bug, not a reason to silently fall back and mask it.
+#
+# CORPUS FLOOR: the comparison above is `[[ "$O0_OUTCOMES" == "$O2_OUTCOMES" ]]`,
+# and TWO EMPTY SETS MATCH. A wrong directory, a renamed fixture set or a build
+# that produced no tests would otherwise print "PASSED (0 tests)" and stay green
+# forever while proving nothing about miscompiles. So the outcome set is floored:
+# against scripts/corpus-floors.tsv for the default corpus, and against a
+# caller-supplied --min-outcomes for any other corpus. A caller that points the
+# gate somewhere else must say how big that somewhere else is.
+#
+#   scripts/o2-differential.sh --tests-dir <dir> --min-outcomes <n>
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
 HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
-TESTS_DIR="$REPO_ROOT/tests/hew"
+DEFAULT_TESTS_DIR="$REPO_ROOT/tests/hew"
+TESTS_DIR="$DEFAULT_TESTS_DIR"
 O0_OUTCOMES_FILE=""
+MIN_OUTCOMES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tests-dir) shift; TESTS_DIR="$1"; shift ;;
         --o0-outcomes) shift; O0_OUTCOMES_FILE="$1"; shift ;;
+        --min-outcomes) shift; MIN_OUTCOMES="$1"; shift ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "error: unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+if [[ "$TESTS_DIR" != "$DEFAULT_TESTS_DIR" && -z "$MIN_OUTCOMES" ]]; then
+    echo "error: --tests-dir points at a corpus this gate has no floor for; pass --min-outcomes <n>" >&2
+    echo "       The O0/O2 comparison passes vacuously on an empty outcome set, so every" >&2
+    echo "       corpus this gate runs over must declare how many outcomes it expects." >&2
+    exit 1
+fi
+if [[ -n "$MIN_OUTCOMES" && ! "$MIN_OUTCOMES" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: --min-outcomes must be a positive integer, got '$MIN_OUTCOMES'" >&2
+    exit 1
+fi
 
 if [[ ! -x "$HEW_BIN" ]]; then
     echo "error: hew binary not found/executable at $HEW_BIN" >&2
@@ -112,10 +139,28 @@ if [[ "$O0_OUTCOMES" == "__NO_SUMMARY__" || "$O2_OUTCOMES" == "__NO_SUMMARY__" ]
     exit 1
 fi
 
+# Floor the enumeration BEFORE comparing: an empty or shrunken outcome set
+# satisfies the comparison below without proving anything.
+n_o0="$(printf '%s\n' "$O0_OUTCOMES" | grep -c . || true)"
+n_o2="$(printf '%s\n' "$O2_OUTCOMES" | grep -c . || true)"
+echo ""
+if [[ -n "$MIN_OUTCOMES" ]]; then
+    for pair in "O0:$n_o0" "O2:$n_o2"; do
+        if [[ "${pair#*:}" -lt "$MIN_OUTCOMES" ]]; then
+            echo "==> Differential gate: FAILED — ${pair%%:*} run produced ${pair#*:} outcome(s), below the" >&2
+            echo "    caller-declared floor of $MIN_OUTCOMES for $TESTS_DIR." >&2
+            exit 1
+        fi
+    done
+    echo "outcome floor OK: O0=$n_o0 O2=$n_o2 (caller floor $MIN_OUTCOMES)"
+else
+    corpus_floor_assert "o2-differential-outcomes" "$n_o0" "O0 run" || exit 1
+    corpus_floor_assert "o2-differential-outcomes" "$n_o2" "O2 run" || exit 1
+fi
+
 if [[ "$O0_OUTCOMES" == "$O2_OUTCOMES" ]]; then
-    n="$(printf '%s\n' "$O0_OUTCOMES" | grep -c . || true)"
     echo ""
-    echo "==> Differential gate: PASSED — O0 and O2 outcome sets identical ($n tests)"
+    echo "==> Differential gate: PASSED — O0 and O2 outcome sets identical ($n_o0 tests)"
     exit 0
 fi
 

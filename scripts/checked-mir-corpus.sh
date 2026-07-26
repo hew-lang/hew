@@ -41,6 +41,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/corpus-floor.sh"
 CORPUS="$ROOT/examples/v05/checked-mir"
 GOLDEN="$CORPUS/golden"
 MANIFEST="$GOLDEN/MANIFEST.sha256"
@@ -247,6 +250,12 @@ if [[ ${#fixtures[@]} -eq 0 ]]; then
     echo "checked-mir-corpus: no fixtures under $CORPUS" >&2
     exit 2
 fi
+
+# The stale-golden check below catches a fixture deleted on its own, but a
+# fixture deleted TOGETHER with its goldens leaves a smaller corpus that still
+# verifies clean. The tracked count closes that: both halves of the deletion
+# have to be admitted in scripts/corpus-floors.tsv, in the same commit.
+corpus_floor_assert "checked-mir-fixtures" "${#fixtures[@]}" || exit 1
 
 case "$MODE" in
 golden)

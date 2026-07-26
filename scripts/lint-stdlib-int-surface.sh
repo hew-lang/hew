@@ -5,7 +5,8 @@
 # See docs/stdlib-style-contract.md for the full contract.
 #
 # Exit 0 — no violations found.
-# Exit 1 — one or more removed-alias uses detected.
+# Exit 1 — one or more removed-alias uses detected, or the stdlib file set came
+#          back smaller than scripts/corpus-floors.tsv says it should be.
 #
 # Usage:
 #   bash scripts/lint-stdlib-int-surface.sh
@@ -14,13 +15,20 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
 
 FILES=$(git ls-files 'std/**/*.hew' 'std/*.hew' || true)
 
-if [ -z "$FILES" ]; then
-    echo "[stdlib-int-surface] No stdlib .hew files found — nothing to check." >&2
-    exit 0
+# "No files matched" is the failure mode this lint is most likely to hit and
+# least likely to notice: a moved stdlib or a changed pathspec scans nothing
+# and reports a clean surface. Count first, floor, then scan.
+file_count=0
+if [ -n "$FILES" ]; then
+    file_count=$(printf '%s\n' "$FILES" | grep -c .)
 fi
+corpus_floor_assert "stdlib-int-surface-files" "$file_count" || exit 1
 
 FAIL=0
 

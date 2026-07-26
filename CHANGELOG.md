@@ -254,6 +254,18 @@ structured changelog.
   sandbox packages, `hew-std-encoding-toml` is included in the wasm32-wasip1
   runtime archives, and the WASM packages are published to GitHub Packages.
   (#1865, closes #1855; #1847, closes #1678; #1837)
+- **Targets no CI job reached are removed.** `make check-gate-reachability`
+  proves every gate-shaped Makefile target is invoked by a CI workflow step, and
+  the targets that failed it are gone: `test-all`, `test-hew`, `test-stdlib`,
+  `test-real-timing`, `test-lane`, `test-lane-all`, `test-fast`, `lane-gates`,
+  `fuzz-smoke`, `grammar`, `install-check`, and the `profile.lane`
+  nextest tier they shared. Use `make test-rust` for the workspace suite,
+  `make test-hew-ratchet` and `make test-stdlib-ratchet` for the ratcheted `.hew`
+  and stdlib sweeps, `make fuzz-oracle` for the fuzz corpus, and
+  `cargo nextest run -p <crate> --profile ci` for fast per-crate iteration. The
+  same gate now proves the reverse direction too: every `make <target>` written
+  in tracked documentation or in a script comment must name a target the
+  Makefile still defines.
 
 ## [0.5.0] — 2026-06-11
 
@@ -491,7 +503,7 @@ the structured changelog.
   `make test-stdlib-ratchet` compare failing tests against a tracked set and fail
   closed if any new failures appear. Both ratchet snapshots are empty for this
   release: 745/745 `.hew` suite tests pass, stdlib type-check 71/71.
-- **Per-crate lane test tier (`make test-lane`):** A narrower nextest profile
+- **Per-crate lane test tier (`test-lane`):** A narrower nextest profile
   (`profile.lane`) covers in-process tests only and excludes the subprocess-
   spawning exec/e2e/oracle corpus, enabling fast per-crate iteration without
   paying the full suite.

@@ -1,0 +1,30 @@
+[package]
+name = "hew-build-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository = "https://github.com/hew-lang/hew"
+description = "Content-addressed build identity shared by the Hew driver and libhew.a"
+publish = false
+
+[dependencies]
+# Only pulled in by the `scan` feature, which is enabled exclusively for
+# build-dependency copies of this crate. The driver depends on this crate
+# WITHOUT `scan`, so neither crate enters the shipped `hew` binary. `toml`
+# reads the crate manifests, which is how the input crate set is derived from
+# the dependency graph rather than hand-listed.
+sha2 = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+
+[dev-dependencies]
+# A dependency on itself with `scan` on, so `cargo test`/`cargo clippy --tests`
+# actually compile and exercise the scanner. Without it the feature is only
+# ever enabled for build-dependency copies, which no test target sees, and the
+# scanner's tests silently never run.
+hew-build-identity = { path = ".", features = ["scan"] }
+
+[features]
+scan = ["dep:sha2", "dep:toml"]
+
+[lints]
+workspace = true

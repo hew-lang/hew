@@ -71,6 +71,11 @@ forced-cancel-test = []
 # integration tests can read them. Adds no production dependencies.
 clone-failure-test = []
 
+[build-dependencies]
+# Computes the build identity this crate's staticlib is stamped with. Enabled
+# with `scan` only here, in the build graph; nothing of it reaches the runtime.
+hew-build-identity = { path = "../hew-build-identity", features = ["scan"] }
+
 [dependencies]
 # CBOR body codec (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.
 ciborium = "0.2"

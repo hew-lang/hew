@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 hew-analysis = { path = "../hew-analysis" }
+hew-build-identity = { path = "../hew-build-identity" }
 hew-compile = { path = "../hew-compile" }
 hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }
@@ -49,6 +50,13 @@ libc.workspace = true
 fd-lock.workspace = true
 hew-testutil = { path = "../hew-testutil" }
 object = "0.39"
+# tests/build_script.rs `include!`s build.rs, so the test targets need the same
+# feature set the build script itself is compiled with. Declaring it here (not
+# on the normal dependency) keeps `sha2` out of the shipped `hew` binary.
+hew-build-identity = { path = "../hew-build-identity", features = ["scan"] }
+
+[build-dependencies]
+hew-build-identity = { path = "../hew-build-identity", features = ["scan"] }
 
 [lints]
 workspace = true

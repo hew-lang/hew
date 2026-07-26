@@ -24,6 +24,7 @@
 //! ```
 
 mod args;
+mod build_identity;
 mod compile;
 mod diagnostic;
 mod diagnostic_json;

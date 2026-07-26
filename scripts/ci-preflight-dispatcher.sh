@@ -47,6 +47,7 @@ command_timeout_floor() {
         "make test-doc-examples") echo 45 ;;
         "make sandbox-parity") echo 150 ;;
         "make checked-mir-verify") echo 45 ;;
+        "make checked-mir-run") echo 420 ;;
         "make ll-diff") echo 45 ;;
         "make hew-check-all") echo 300 ;;
         *) echo 0 ;;
@@ -103,6 +104,7 @@ CI_REQUIRED_CHECKS=(
     "Fuzz-oracle ratchet (ci.yml: make fuzz-oracle)	make fuzz-oracle"
     "Sandbox parity (ci.yml: make sandbox-parity)	make sandbox-parity"
     "Checked-MIR golden corpus (ci.yml: make checked-mir-verify)	make checked-mir-verify"
+    "Checked-MIR corpus execution (ci.yml: make checked-mir-run)	make checked-mir-run"
     "Per-function .ll byte-identity corpus (ci.yml: make ll-diff)	make ll-diff"
     "Doc-fence typecheck ratchet (ci.yml: make test-doc-examples)	make test-doc-examples"
     "Repo-wide hew corpus sweep (ci.yml: make hew-check-all)	make hew-check-all"
@@ -712,6 +714,10 @@ case "$LANE" in
         # Run the same golden diff here so the drift is caught locally rather than
         # at hosted CI.  Fast (~45s), well within this lane's budget.
         add_command "make checked-mir-verify"
+        # The golden diff never loads the programs.  Execute the corpus too, so
+        # a retype that changes runtime behaviour fails here instead of leaving
+        # a byte-identical dump over a crashing binary.
+        add_command "make checked-mir-run"
         ;;
     cli)
         add_command "cargo fmt --all -- --check"
@@ -740,6 +746,11 @@ case "$LANE" in
         # this step the drift only surfaces at hosted CI's Build & test (Linux)
         # job, costing a full hosted cycle.  Fast (compile-and-compare, ~45s).
         add_command "make checked-mir-verify"
+        # A drop-plan edit can leave every golden byte-identical and still make
+        # the compiled fixture crash — the goldens are text, nothing runs them.
+        # checked-mir-run builds and executes the corpus and diffs exit status
+        # and stdout, so that failure mode surfaces here.
+        add_command "make checked-mir-run"
         ;;
     vertical-slice)
         add_command "cargo fmt --all -- --check"
@@ -832,6 +843,7 @@ case "$LANE" in
         add_command "make doc-ratchet-selftest"
         add_command "make sandbox-parity"
         add_command "make checked-mir-verify"
+        add_command "make checked-mir-run"
         add_command "make ll-diff"
         add_command "make hew-check-all"
         ;;

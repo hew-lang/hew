@@ -600,6 +600,17 @@ jobs:
         # into dump_mir.  The hew binary is already built by this point.
         run: make checked-mir-verify
 
+      - name: Execute checked-MIR corpus
+        if: env.RUN_CODE_PATH == 'true'
+        # Builds and runs every examples/v05/checked-mir/*.hew fixture and
+        # diffs exit status + stdout against its committed .expected sibling.
+        # checked-mir-verify above only diffs dumped text; it never loads the
+        # program, so a fixture can segfault on every run while the goldens
+        # stay byte-identical.  This step is the one that would have caught
+        # that.  Runnability is read back from the compiler (raw MIR declares
+        # main), and the expectation set is closed both ways.
+        run: make checked-mir-run
+
       - name: Verify per-function .ll byte-identity corpus
         if: env.RUN_CODE_PATH == 'true'
         # Recompiles every tests/ll-oracle/corpus/*.hew fixture (native and

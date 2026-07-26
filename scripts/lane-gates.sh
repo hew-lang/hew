@@ -22,8 +22,8 @@
 #      reimplementation of it.
 #   4. Codegen/MIR corpus drift — lanes touching hew-codegen-rs/, hew-mir/,
 #      examples/*/checked-mir/, or adding a .hew fixture automatically enter
-#      the codegen/MIR tier, which adds `make checked-mir-verify` and
-#      `make hew-check-all`.
+#      the codegen/MIR tier, which adds `make checked-mir-verify`,
+#      `make checked-mir-run` and `make hew-check-all`.
 #
 # Not a preflight replacement. `make ci-preflight` (scripts/ci-preflight-dispatcher.sh)
 # remains the required pre-push gate; this is a narrower, faster, standalone
@@ -40,10 +40,11 @@
 #   2. cargo clippy --workspace --tests -- -D warnings
 #   3. cargo nextest run --profile lane -p <crate1> [-p <crate2> ...]
 #   4. codegen/MIR tier only: make checked-mir-verify
-#   5. codegen/MIR tier only: make hew-check-all
-#   6. commit-body lint (orchestration-framing delegation + literal-\n +
+#   5. codegen/MIR tier only: make checked-mir-run
+#   6. codegen/MIR tier only: make hew-check-all
+#   7. commit-body lint (orchestration-framing delegation + literal-\n +
 #      tombstone-word checks over ${BASE_REF}..HEAD)
-#   7. make fuzz-oracle (skippable via --skip-oracle)
+#   8. make fuzz-oracle (skippable via --skip-oracle)
 
 set -euo pipefail
 
@@ -58,6 +59,7 @@ LANE_GATES_TIMEOUT_FMT="${LANE_GATES_TIMEOUT_FMT:-60}"
 LANE_GATES_TIMEOUT_CLIPPY="${LANE_GATES_TIMEOUT_CLIPPY:-300}"
 LANE_GATES_TIMEOUT_TESTS="${LANE_GATES_TIMEOUT_TESTS:-180}"
 LANE_GATES_TIMEOUT_CHECKED_MIR="${LANE_GATES_TIMEOUT_CHECKED_MIR:-600}"
+LANE_GATES_TIMEOUT_CHECKED_MIR_RUN="${LANE_GATES_TIMEOUT_CHECKED_MIR_RUN:-900}"
 LANE_GATES_TIMEOUT_HEW_CHECK_ALL="${LANE_GATES_TIMEOUT_HEW_CHECK_ALL:-600}"
 LANE_GATES_TIMEOUT_ORACLE="${LANE_GATES_TIMEOUT_ORACLE:-600}"
 
@@ -389,6 +391,8 @@ if (( DRY_RUN == 1 )); then
     if (( CODEGEN_MIR_TIER == 1 )); then
         echo "  ${_dry_step}. make checked-mir-verify  (budget: ${LANE_GATES_TIMEOUT_CHECKED_MIR}s)"
         _dry_step=$((_dry_step + 1))
+        echo "  ${_dry_step}. make checked-mir-run  (budget: ${LANE_GATES_TIMEOUT_CHECKED_MIR_RUN}s)"
+        _dry_step=$((_dry_step + 1))
         echo "  ${_dry_step}. make hew-check-all  (budget: ${LANE_GATES_TIMEOUT_HEW_CHECK_ALL}s)"
         _dry_step=$((_dry_step + 1))
     fi
@@ -452,6 +456,12 @@ if should_run_next; then
 fi
 if (( CODEGEN_MIR_TIER == 1 )) && should_run_next; then
     run_step "make checked-mir-verify" "make checked-mir-verify" "$LANE_GATES_TIMEOUT_CHECKED_MIR" || true
+fi
+# The golden diff proves the dumped text did not move; it never runs the
+# programs.  Executing the corpus is the step that fails when a drop-plan or
+# codegen edit leaves the dump identical and the compiled fixture crashing.
+if (( CODEGEN_MIR_TIER == 1 )) && should_run_next; then
+    run_step "make checked-mir-run" "make checked-mir-run" "$LANE_GATES_TIMEOUT_CHECKED_MIR_RUN" || true
 fi
 if (( CODEGEN_MIR_TIER == 1 )) && should_run_next; then
     run_step "make hew-check-all" "make hew-check-all" "$LANE_GATES_TIMEOUT_HEW_CHECK_ALL" || true

@@ -109,8 +109,18 @@ is_crash_status() {
 # has no `main` in its MIR and cannot be executed at all. Reading it back
 # from `--dump-mir raw` means the classification tracks the compiler on
 # every run, including a fixture that gains or loses `main`.
+#
+# Returns 0 (has main), 1 (no main), or 2 (the compiler could not dump the
+# fixture at all). The third case matters: a compiler that crashes while
+# dumping must not be read as "this fixture has no main", or a crashing
+# fixture would classify itself out of the gate — the defect this gate
+# exists to catch.
 fixture_has_main() {
-    "$HEW_BIN" compile --dump-mir raw "$1" 2>/dev/null | grep -qE '^fn main\('
+    local fixture="$1" dump="$2"
+    if ! "$HEW_BIN" compile --dump-mir raw "$fixture" >"$dump" 2>"$dump.err"; then
+        return 2
+    fi
+    grep -qE '^fn main\(' "$dump"
 }
 
 # The transcript a fixture must reproduce: exit status plus verbatim
@@ -145,7 +155,14 @@ execute_fixture() {
     local stdout_path="$workdir/$name.stdout"
     : >"$stdout_path"
     if [[ "$compile_status" -eq 0 ]]; then
-        ( cd "$scratch" && "$TIMEOUT_BIN" --kill-after=5s "${RUN_TIMEOUT_SECS}s" "$emit/$name" ) \
+        # The fixture runs under an inner shell rather than `exec`, so a fault
+        # is reaped and reported by that inner shell — its notice lands in the
+        # fixture's stderr capture, where it is useful diagnostics, instead of
+        # being printed by this script's shell across the gate's own output.
+        # The status still arrives as 128+signo.
+        # shellcheck disable=SC2016  # positional parameters expand in inner bash.
+        "$TIMEOUT_BIN" --kill-after=5s "${RUN_TIMEOUT_SECS}s" \
+            bash -c 'cd "$1" && "$2"; exit $?' _ "$scratch" "$emit/$name" \
             >"$stdout_path" 2>"$workdir/$name.stderr" || run_status=$?
     fi
     render_transcript "$compile_status" "$compile_log" "$run_status" "$stdout_path" "$transcript"
@@ -269,7 +286,15 @@ run)
     for f in "${fixtures[@]}"; do
         name="$(basename "$f" .hew)"
         expected="$CORPUS/$name.expected"
-        if ! fixture_has_main "$f"; then
+        classification=0
+        fixture_has_main "$f" "$tmpdir/$name.raw.mir" || classification=$?
+        if [[ "$classification" -eq 2 ]]; then
+            echo "CANNOT CLASSIFY: $HEW_BIN failed to dump raw MIR for $name.hew" >&2
+            head -20 "$tmpdir/$name.raw.mir.err" >&2
+            fail=1
+            continue
+        fi
+        if [[ "$classification" -eq 1 ]]; then
             # No `main` in the fixture's MIR: nothing to execute. The only
             # thing to assert is that no stale expectation claims otherwise.
             if [[ -f "$expected" ]]; then
@@ -294,6 +319,9 @@ run)
         else
             echo "TRANSCRIPT MISMATCH: $name" >&2
             head -40 "$tmpdir/$name.transcript.diff" >&2
+            if is_crash_status "$LAST_RUN_STATUS"; then
+                echo "  $name died rather than returned (status $LAST_RUN_STATUS)" >&2
+            fi
             if [[ -s "$tmpdir/$name.stderr" ]]; then
                 echo "  stderr:" >&2
                 head -20 "$tmpdir/$name.stderr" >&2
@@ -332,7 +360,13 @@ expect)
     for f in "${fixtures[@]}"; do
         name="$(basename "$f" .hew)"
         expected="$CORPUS/$name.expected"
-        if ! fixture_has_main "$f"; then
+        classification=0
+        fixture_has_main "$f" "$tmpdir/$name.raw.mir" || classification=$?
+        if [[ "$classification" -eq 2 ]]; then
+            echo "  REFUSED $name — the compiler cannot dump its raw MIR" >&2
+            continue
+        fi
+        if [[ "$classification" -eq 1 ]]; then
             if [[ -f "$expected" ]]; then
                 echo "  STALE   $name.expected (fixture declares no main; delete it)" >&2
             fi

@@ -887,6 +887,12 @@ fn unresolved_hew_wasm_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
     Ok(imports.into_iter().collect())
 }
 
+/// Resolves the combined runtime + stdlib archive and proves it belongs to this
+/// driver before it reaches the link line.
+///
+/// The identity check lives here, inside resolution, rather than at the call
+/// site: every native link goes through this function, so there is no path that
+/// can obtain an archive without having validated it.
 fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
@@ -894,11 +900,9 @@ fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
 
     for c in &candidates {
         if c.exists() {
-            return Ok(c
-                .canonicalize()
-                .unwrap_or_else(|_| c.clone())
-                .display()
-                .to_string());
+            let resolved = c.canonicalize().unwrap_or_else(|_| c.clone());
+            crate::build_identity::verify_archive(&resolved)?;
+            return Ok(resolved.display().to_string());
         }
     }
 

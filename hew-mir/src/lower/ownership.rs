@@ -7,8 +7,8 @@ use super::{
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
     FreshVecGetCloneProjectionBase, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
     HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    OwnedLocalEntry, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance, Projection,
-    ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass,
+    OwnedLocalEntry, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
+    Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass,
     ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
     SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
     SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
@@ -65,12 +65,27 @@ impl Builder {
     /// dispositions it off the scope-exit set via
     /// [`Builder::set_owned_local_disposition`] when its release is handled
     /// mid-lowering.
+    ///
+    /// # The warrant
+    ///
+    /// `warrant` is an [`OwnerMintWarrant`], which cannot be constructed outside
+    /// [`crate::lower::owner_mint`] and cannot be constructed there without
+    /// naming the value the owner is for and putting its provenance to the
+    /// per-function ledger and/or the module authority. A seam that wants to
+    /// mint an owner therefore cannot decide ownership from the binding's type
+    /// alone: the signature will not let it. When the warrant answers foreign
+    /// the mint is WITHHELD — the value keeps no caller-side release, which is
+    /// the leak-not-double-free direction.
     pub(crate) fn register_owned_local(
         &mut self,
         binding: BindingId,
         name: String,
         ty: ResolvedTy,
+        warrant: OwnerMintWarrant,
     ) {
+        if warrant.withholds_mint() {
+            return;
+        }
         let place = self
             .binding_locals
             .get(&binding)
@@ -92,6 +107,7 @@ impl Builder {
         site: SiteId,
         local: u32,
         ty: ResolvedTy,
+        warrant: OwnerMintWarrant,
     ) -> BindingId {
         let binding =
             BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - self.synthetic_owned_temp_bindings);
@@ -104,7 +120,7 @@ impl Builder {
         });
         self.binding_locals.insert(binding, Place::Local(local));
         self.record_binding_scope(binding);
-        self.register_owned_local(binding, name.to_string(), ty);
+        self.register_owned_local(binding, name.to_string(), ty, warrant);
         binding
     }
 
@@ -156,11 +172,13 @@ impl Builder {
             return;
         }
         let fact = self.fresh_vec_get_clone_projection_bases.remove(fact_index);
+        let warrant = self.owner_warrant_for_admitted_temp(object);
         self.register_synthetic_owned_local(
             SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
             fact.site,
             fact.local,
             fact.ty,
+            warrant,
         );
     }
     /// Register a `let`-bound field projection whose result is a byte-copy
@@ -181,7 +199,11 @@ impl Builder {
         name: String,
         ty: ResolvedTy,
         provenance: ValueProvenance,
+        warrant: OwnerMintWarrant,
     ) {
+        if warrant.withholds_mint() {
+            return;
+        }
         let place = self
             .binding_locals
             .get(&binding)
@@ -333,11 +355,51 @@ impl Builder {
             | HirExprKind::RecordCloneCall { .. } => {
                 self.value_is_free_of_opaque_foreign_provenance(arg)
             }
-            // A string-producing concat/interpolation allocates a fresh buffer;
-            // a bare string `Literal` is excluded above by being a non-producer
-            // arm (it interns a static — freeing it is unsound).
-            HirExprKind::Binary { .. } | HirExprKind::Unary { .. } => {
-                matches!(ty, ResolvedTy::String)
+            // U6 — a string-producing concat/interpolation allocates a fresh
+            // buffer; a bare string `Literal` is excluded above by being a
+            // non-producer arm (it interns a static — freeing it is unsound).
+            //
+            // This arm does NOT ask the authority, and that is deliberate: it is
+            // closed by a TYPE-AND-OPERATOR exclusion instead, because asking
+            // would be wrong here. `f"{h}"` over a proven-foreign `h` still
+            // produces a fresh domestic buffer; a strict query over the operand
+            // tree would answer OPAQUE and withhold the mint, leaking the
+            // concat result. The value minted is never the operand.
+            //
+            // The exclusion, stated mechanically:
+            //   * the only `BinaryOp` that can carry `ResolvedTy::String` is
+            //     `Add` (concat) — every other operator is either arithmetic,
+            //     bitwise, comparison (`bool`), logical (`bool`), or a range;
+            //   * a string-typed `Add` lowers to `hew_string_concat`, which
+            //     `malloc`s a fresh rc==1 buffer and memcpys bytes OUT OF its
+            //     borrowed operands. The result pointer is provably not any
+            //     operand's pointer, so no foreign allocation can be the minted
+            //     value regardless of operand provenance;
+            //   * no `UnaryOp` produces a string at all (`Not`/`BitNot` are
+            //     integral or `bool`, `Negate` is numeric, `RawDeref` never
+            //     reaches MIR). The arm is unreachable at string type.
+            //
+            // Both halves are pinned by a `debug_assert` that FIRES if a shape
+            // outside the exclusion ever arrives, rather than silently minting.
+            HirExprKind::Binary { op, .. } => {
+                let concat = matches!(ty, ResolvedTy::String) && matches!(op, super::BinaryOp::Add);
+                debug_assert!(
+                    concat || !matches!(ty, ResolvedTy::String),
+                    "a string-typed `Binary` reached the temp-owner mint with \
+                     operator {op:?}, which is not the fresh-allocating concat: \
+                     the U6 type-and-operator exclusion no longer holds and the \
+                     minted value may be an operand rather than a fresh buffer"
+                );
+                concat
+            }
+            HirExprKind::Unary { .. } => {
+                debug_assert!(
+                    !matches!(ty, ResolvedTy::String),
+                    "a string-typed `Unary` reached the temp-owner mint; no \
+                     unary operator allocates a string, so the U6 exclusion no \
+                     longer holds"
+                );
+                false
             }
             // A string-returning direct `Call` whose callee carries the runtime
             // `produces_fresh_owned_string` contract: the `cstring` transforms
@@ -462,17 +524,25 @@ impl Builder {
         .and_then(|(arg, place_index)| {
             let ty = self.copy_in_param_embed_temp_owned_ty(callee, arg)?;
             let place = arg_places.get(place_index).copied()?;
-            Some((arg.site, place, ty))
+            Some((arg, place, ty))
         });
-        let Some((site, Place::Local(local), ty)) = candidate else {
+        let Some((candidate_arg, Place::Local(local), ty)) = candidate else {
             return;
         };
+        let site = candidate_arg.site;
         // Fresh constructors must never lower into a parameter slot. Keep the
         // mint fail-closed if that invariant ever changes.
         if self.parameter_locals.contains(&local) {
             return;
         }
-        self.register_synthetic_owned_local(SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, site, local, ty);
+        let warrant = self.owner_warrant_for_admitted_temp(candidate_arg);
+        self.register_synthetic_owned_local(
+            SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
+            site,
+            local,
+            ty,
+            warrant,
+        );
     }
     /// Whether a direct-`Call` callee resolves to a runtime symbol carrying the
     /// `produces_fresh_owned_string` ownership contract. The symbol is resolved
@@ -914,11 +984,21 @@ impl Builder {
             CallScrutineeAdmission::Admit => {}
         }
         let ty = self.call_scrutinee_owned_ty(scrutinee)?;
+        // The admission token above says the CALLEE is a proven fresh owner;
+        // this asks the remaining half — whether the value that callee hands
+        // back, or any value the ledger already refused an owner for, reaches
+        // the temp. A withheld warrant means no owner at all, so the caller
+        // must see `None` rather than a bindable-but-ownerless temp.
+        let warrant = self.owner_warrant_for_admitted_temp(scrutinee);
+        if warrant.withholds_mint() {
+            return None;
+        }
         let binding = self.register_synthetic_owned_local(
             SYNTHETIC_CALL_SCRUTINEE_NAME,
             scrutinee.site,
             scrutinee_local,
             ty.clone(),
+            warrant,
         );
         Some((binding, ty))
     }
@@ -928,11 +1008,13 @@ impl Builder {
         snapshot_local: u32,
         ty: ResolvedTy,
     ) -> BindingId {
+        let warrant = self.owner_warrant_for_admitted_temp(scrutinee);
         let binding = self.register_synthetic_owned_local(
             SYNTHETIC_WHILE_LET_ITERATION_NAME,
             scrutinee.site,
             snapshot_local,
             ty,
+            warrant,
         );
         self.back_edge_only_iteration_owners.insert(binding);
         binding
@@ -983,11 +1065,13 @@ impl Builder {
             });
             return;
         };
+        let warrant = self.owner_warrant_for_admitted_temp(expr);
         self.register_synthetic_owned_local(
             SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
             expr.site,
             local,
             ty,
+            warrant,
         );
     }
     pub(crate) fn record_iteration_owner_drop(
@@ -3124,6 +3208,246 @@ impl Builder {
         }
         self.proven_foreign_bindings.insert(binding);
         true
+    }
+
+    /// The payload-binder twin of [`Self::note_let_binder_proven_foreign`]:
+    /// decide whether a binder projected OUT of `scrutinee` must be refused a
+    /// scope-exit owner, and record the answer in the ledger.
+    ///
+    /// `match` / `if let` / `while let` / `let else` payload binders at every
+    /// nesting depth, and the `Binding` arm predicate, all bind a field of the
+    /// scrutinee, so the provenance question is the SCRUTINEE's. It is put to
+    /// the same proven-foreign query and the same ledger the `let` binder reads,
+    /// with the same polarity: withholding requires proof.
+    ///
+    /// # No `string` carve-out here, deliberately
+    ///
+    /// The `let` binder exempts `ResolvedTy::String` because a root
+    /// `extern "C" -> string` is ADOPTED at the call edge into a refcounted Hew
+    /// buffer, so that binding really owns its value. Adoption is defined at
+    /// `return_ty == String` and NOWHERE else — not for a `string` field of a
+    /// returned record, not for a `string` inside a returned `Option`/`Result`.
+    /// A payload binder is exactly those un-adopted positions: the `string` it
+    /// binds is a pointer the host still owns. Importing the carve-out here
+    /// would mint precisely the release the adoption ABI does not back.
+    pub(crate) fn note_payload_binder_proven_foreign(
+        &mut self,
+        binding: BindingId,
+        scrutinee: &HirExpr,
+        binding_ty: &ResolvedTy,
+    ) -> bool {
+        if !crate::model::ty_owns_heap_mir(
+            binding_ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+        ) {
+            return false;
+        }
+        let foreign = self
+            .call_scrutinee_provenance
+            .fresh_owner_verdicts
+            .value_carries_proven_foreign_provenance(scrutinee)
+            || crate::return_provenance::value_reads_a_proven_foreign_binding(
+                scrutinee,
+                &self.proven_foreign_bindings,
+            );
+        if foreign {
+            self.proven_foreign_bindings.insert(binding);
+        }
+        foreign
+    }
+
+    /// The rebind twin: a binding the ledger already refused an owner for must
+    /// not acquire one by being rebound or restored, and the fact propagates
+    /// onto the new binding so a chain of rebinds cannot launder it.
+    pub(crate) fn note_rebind_proven_foreign(
+        &mut self,
+        binding: BindingId,
+        source: BindingId,
+        binding_ty: &ResolvedTy,
+    ) -> bool {
+        if !crate::model::ty_owns_heap_mir(
+            binding_ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+        ) {
+            return false;
+        }
+        if !self.proven_foreign_bindings.contains(&source) {
+            return false;
+        }
+        self.proven_foreign_bindings.insert(binding);
+        true
+    }
+
+    /// Refuse a call that MOVES a proven-foreign value into a position whose
+    /// release obligation this frame hands to someone else.
+    ///
+    /// # Why this exists at the caller
+    ///
+    /// A callee-owned parameter — a `consume` `#[resource]` parameter, an
+    /// owned-carrier parameter, a CONSUME-classified heap-owning enum
+    /// parameter, an actor-handler message parameter — is minted a scope-exit
+    /// owner inside the CALLEE, from the parameter's type. That frame cannot ask
+    /// the provenance question: there is no HIR expression for a parameter's
+    /// value, and the per-function proven-foreign ledger is populated only by
+    /// binder seams in the body, which lower strictly after `lower_params`, so a
+    /// parameter binding is provably absent from it. Answering "unknown ⇒ no
+    /// mint" there would withhold every callee-side parameter release in the
+    /// language — every `consume` parameter and every actor message would leak.
+    ///
+    /// So the question is asked HERE, where the argument is an expression this
+    /// module can walk, and the answer is enforced by refusing the transfer.
+    /// With the transfer refused, the callee's type-driven mint is provably
+    /// never a mint over a proven-foreign value — which is what makes
+    /// [`Builder::owner_warrant_for_owned_parameter`] sound rather than merely
+    /// unfalsified.
+    ///
+    /// # Why the PROVEN query, and what residual that leaves
+    ///
+    /// This consumer REJECTS a program. Reading the strict mint-side query would
+    /// reject every call that forwards a value produced by an indirect or
+    /// unanalysed callee into a `consume` parameter — ordinary code that never
+    /// touches an extern. The threshold is therefore proof, exactly as at the
+    /// `let` binder, and the residual is the same one: an indirect callee whose
+    /// return really is foreign is not seen. That residual is finding U12 and is
+    /// closed only by making indirect calls resolvable.
+    ///
+    /// Returns `true` when a diagnostic was pushed. Scalars are exempt: with no
+    /// heap to release the callee's mint frees nothing.
+    pub(crate) fn reject_opaque_foreign_ownership_transfer(
+        &mut self,
+        arg: &HirExpr,
+        sink: &str,
+    ) -> bool {
+        let ty = self.subst_ty(&arg.ty);
+        if !crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts) {
+            return false;
+        }
+        let foreign = self
+            .call_scrutinee_provenance
+            .fresh_owner_verdicts
+            .value_carries_proven_foreign_provenance(arg)
+            || crate::return_provenance::value_reads_a_proven_foreign_binding(
+                arg,
+                &self.proven_foreign_bindings,
+            );
+        if !foreign {
+            return false;
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: format!("ownership transfer of a proven-foreign value into {sink}"),
+                site: arg.site,
+            },
+            note: format!(
+                "{sink} takes ownership of this `{}`, so the release obligation leaves this \
+                 frame and the receiving side mints its own scope-exit drop from the \
+                 parameter's type. This value provably carries a handle a declared, \
+                 non-audited `extern` produced, so that drop would free a handle this program \
+                 never owned. Build the value from values this module owns, or clone it \
+                 explicitly before handing it over.",
+                ty.user_facing()
+            ),
+        });
+        true
+    }
+
+    /// The whole argument list of a direct call, checked against this module's
+    /// own parameter-ownership tables. Returns `true` when any argument was
+    /// refused and the caller must abandon the lowering.
+    ///
+    /// # The predicate MIRRORS `lower_params`, it does not approximate it
+    ///
+    /// The only thing this function needs to detect is "the callee will mint a
+    /// scope-exit owner over this parameter". `lower_params` has exactly four
+    /// such mints and this is the free-call half of them, condition for
+    /// condition:
+    ///
+    /// * `param_consume == Some(true)` — the affine `#[resource]` CONSUME
+    ///   parameter, minted at any type;
+    /// * `call_param_owned_carrier == Some(true)`, minus the two type classes
+    ///   `register_owned_call_carrier_param` excludes up front (indirect enums
+    ///   and machines, which carry their own move/drop authority);
+    /// * `call_param_consume.is_consume()` **conjoined with**
+    ///   `ty_is_heap_owning_enum_composite` — the #2732 enum-composite callee
+    ///   drop.
+    ///
+    /// The remaining two mints are `ActorHandler`-convention only, so their
+    /// caller is the mailbox hand-off in `lower_actor_send`, not a direct call.
+    ///
+    /// The conjunction in the third bullet is load-bearing and was measured:
+    /// `call_param_consume` is a body-escape summary, not a mint predicate. The
+    /// `string::fmt` display shim carries `ProvenConsume` on its `string`
+    /// parameter and mints nothing at all, because the enum-composite type gate
+    /// excludes it. Reading the summary alone refused
+    /// `println(f"…{h.label}…")` for every proven-foreign `h` — a program with
+    /// no double release in it. Refusing where the callee does not mint is not
+    /// "fail closed", it is a false rejection, so the caller-side question is
+    /// asked at precisely the callee-side mint conditions and nowhere else.
+    pub(crate) fn reject_opaque_foreign_call_arg_transfers(
+        &mut self,
+        callee_item: Option<hew_hir::ItemId>,
+        hir_args: &[HirExpr],
+    ) -> bool {
+        let Some(callee_item) = callee_item else {
+            return false;
+        };
+        let mut refused = false;
+        for (index, arg) in hir_args.iter().enumerate() {
+            if !self.callee_mints_an_owner_for_param(callee_item, index, arg) {
+                continue;
+            }
+            refused |=
+                self.reject_opaque_foreign_ownership_transfer(arg, "a callee-owned parameter");
+        }
+        refused
+    }
+
+    /// True iff `lower_params` will register a scope-exit owner for parameter
+    /// `index` of `callee_item` when that callee is lowered. See
+    /// [`Builder::reject_opaque_foreign_call_arg_transfers`] for the mapping
+    /// onto the four `lower_params` mint sites.
+    fn callee_mints_an_owner_for_param(
+        &self,
+        callee_item: hew_hir::ItemId,
+        index: usize,
+        arg: &HirExpr,
+    ) -> bool {
+        let key = (callee_item, index);
+        // Arm 1 — the affine `#[resource]` CONSUME parameter. Minted at any
+        // type, and it short-circuits both arms below exactly as
+        // `!param_is_consumed` does in `lower_params`.
+        if self.param_ownership.param_consume.get(&key).copied() == Some(true) {
+            return true;
+        }
+        let ty = self.subst_ty(&arg.ty);
+        // Arm 2 — the owned-call-carrier parameter, up to the two type classes
+        // `register_owned_call_carrier_param` excludes before it even consults
+        // the snapshot plan.
+        let carrier = self
+            .param_ownership
+            .call_param_owned_carrier
+            .get(&key)
+            .copied()
+            == Some(true)
+            && !crate::lower::drop_plan::ty_is_indirect_enum(&ty, &self.enum_layouts)
+            && !self.ty_is_machine(&ty);
+        if carrier {
+            return true;
+        }
+        // Arm 3 — the #2732 heap-owning enum-composite callee drop. Both
+        // conjuncts are required: the summary alone is a body-escape fact, not
+        // a mint predicate.
+        self.param_ownership
+            .call_param_consume
+            .get(&key)
+            .is_some_and(|verdict| verdict.is_consume())
+            && crate::lower::ty_is_heap_owning_enum_composite(
+                &ty,
+                &self.record_field_orders,
+                &self.enum_layouts,
+            )
     }
 
     /// The ONE composite-provenance query every mint site in this builder asks.

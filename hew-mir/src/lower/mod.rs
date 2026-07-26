@@ -64,6 +64,7 @@ mod expr;
 mod facts;
 mod machine_synth;
 mod move_value;
+mod owner_mint;
 mod ownership;
 mod pattern;
 mod rc_intrinsic;
@@ -74,6 +75,12 @@ mod task;
 mod temp_drop;
 
 use self::pattern::{project_match_ownership_mode, ProjectMatchOwnershipMode};
+
+/// The owner-mint warrant. Re-exported here so every lowering submodule reaches
+/// it through `super::`, exactly as it reaches [`Builder`] — while the type's
+/// fields, and therefore its construction, stay private to
+/// [`self::owner_mint`]. See that module for why that is the whole close.
+pub(crate) use self::owner_mint::OwnerMintWarrant;
 
 /// Crate-visible re-export of the layout-key mangler for the MIR-owned
 /// thunk-synthesis registry (`crate::thunk_requirements`), which must resolve
@@ -5968,7 +5975,9 @@ impl Builder {
             }
             if param_is_consumed {
                 let owned_ty = self.subst_ty(&param.ty);
-                self.register_owned_local(param.id, param.name.clone(), owned_ty.clone());
+                // U3 — see `owner_warrant_for_owned_parameter`.
+                let warrant = self.owner_warrant_for_owned_parameter(param.id, &owned_ty);
+                self.register_owned_local(param.id, param.name.clone(), owned_ty.clone(), warrant);
                 // Register the param in the function's top body scope so it
                 // participates in the elaborator's path-sensitive drop passes
                 // (forward-`Goto` scope-close + per-exit narrowing) exactly like
@@ -6033,8 +6042,7 @@ impl Builder {
                     &self.record_field_orders,
                     &self.enum_layouts,
                 ) {
-                    self.register_owned_local(param.id, param.name.clone(), owned_ty);
-                    self.binding_scope.insert(param.id, func.body.scope);
+                    self.register_owned_param(param, owned_ty, func.body.scope);
                     callee_owns_param = true;
                 }
             }
@@ -6072,8 +6080,7 @@ impl Builder {
             {
                 let owned_ty = self.subst_ty(&param.ty);
                 if self.is_owned_aggregate_record_ty(&owned_ty) {
-                    self.register_owned_local(param.id, param.name.clone(), owned_ty);
-                    self.binding_scope.insert(param.id, func.body.scope);
+                    self.register_owned_param(param, owned_ty, func.body.scope);
                 }
             }
             // The mailbox copy transfers ownership of a top-level indirect-enum
@@ -6084,8 +6091,7 @@ impl Builder {
             {
                 let owned_ty = self.subst_ty(&param.ty);
                 if crate::lower::drop_plan::ty_is_indirect_enum(&owned_ty, &self.enum_layouts) {
-                    self.register_owned_local(param.id, param.name.clone(), owned_ty);
-                    self.binding_scope.insert(param.id, func.body.scope);
+                    self.register_owned_param(param, owned_ty, func.body.scope);
                 }
             }
             if !callee_owns_param {
@@ -6094,6 +6100,23 @@ impl Builder {
                 }
             }
         }
+    }
+
+    /// Register a parameter this frame's callee-side rules say the callee OWNS.
+    ///
+    /// U3 — the warrant is built by
+    /// [`Builder::owner_warrant_for_owned_parameter`], which explains why the
+    /// provenance question for a parameter is answered at the CALLER and what
+    /// enforces that.
+    fn register_owned_param(
+        &mut self,
+        param: &hew_hir::HirBinding,
+        owned_ty: ResolvedTy,
+        scope: hew_hir::ScopeId,
+    ) {
+        let warrant = self.owner_warrant_for_owned_parameter(param.id, &owned_ty);
+        self.register_owned_local(param.id, param.name.clone(), owned_ty, warrant);
+        self.binding_scope.insert(param.id, scope);
     }
 
     fn seed_fn_param_provenance(&mut self, param: &hew_hir::HirBinding) {

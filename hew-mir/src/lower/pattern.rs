@@ -1886,13 +1886,21 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            // U1 — the payload binder's owner is minted over a field of the
+            // scrutinee, so the provenance question is the scrutinee's. The
+            // warrant is what `register_owned_local` requires; the seed gate
+            // alone can no longer reach it.
+            let warrant =
+                self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
+            let keep_for_drop_elab =
+                self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
             let binding_is_string = matches!(binding_ty, ResolvedTy::String);
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
+                    warrant,
                 );
                 if ty_is_generator_handle(&binding_ty) {
                     if let Some(scope) = self.active_scopes.last().copied() {
@@ -1961,10 +1969,13 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(*binding_id);
-            let keep_for_drop_elab =
-                consume_owned && self.binding_seeds_drop_elaboration(&binding_ty);
+            let warrant =
+                self.owner_warrant_for_scrutinee_payload(*binding_id, scrutinee, &binding_ty);
+            let keep_for_drop_elab = consume_owned
+                && self.binding_seeds_drop_elaboration(&binding_ty)
+                && !warrant.withholds_mint();
             if keep_for_drop_elab {
-                self.register_owned_local(*binding_id, name.clone(), binding_ty.clone());
+                self.register_owned_local(*binding_id, name.clone(), binding_ty.clone(), warrant);
             }
             let dest = self.alloc_local(binding_ty);
             self.push_instr(Instr::Move {
@@ -3314,9 +3325,52 @@ impl Builder {
             // fresh-allocating) is `∅`, while a non-string heap `Binary` is not.
             HirExprKind::StructInit { .. }
             | HirExprKind::TupleLiteral { .. }
-            | HirExprKind::MachineVariantCtor { .. }
-            | HirExprKind::Binary { .. } => {
+            | HirExprKind::MachineVariantCtor { .. } => {
                 if self.scrutinee_precise_bits(scrutinee).is_fresh() {
+                    ProjectedPayloadOrigin::EphemeralTemp
+                } else {
+                    ProjectedPayloadOrigin::Reject(
+                        ProjectedPayloadRejectReason::AliasesCallerStorage,
+                    )
+                }
+            }
+            // U10 — Group C1 `Binary`, split out of the shared gate above and
+            // given an explicit TYPE-AND-OPERATOR exclusion rather than relying
+            // on `is_fresh()` to happen to answer `false` for everything else.
+            //
+            // Ephemeral admission here says "the payload move-out needs no
+            // neutralize because the scrutinee's storage is not re-readable".
+            // At heap-owning type that claim is only true of the fresh
+            // `hew_string_concat` buffer: it is `malloc`ed at the site and its
+            // bytes are copied OUT OF the borrowed operands, so no operand's
+            // allocation — foreign or domestic — is the classified value. Any
+            // other heap-owning `Binary` fails closed to `Reject`.
+            //
+            // Non-heap `Binary` (integer/float arithmetic, comparisons) keeps
+            // the previous gate exactly: it records no heap provenance, so the
+            // classification is inert.
+            //
+            // The `debug_assert` is the fire-if-one-ever-arrives pin: it
+            // compares the explicit exclusion against the freshness gate that
+            // used to carry this arm alone, and trips if the two ever disagree.
+            HirExprKind::Binary { op, .. } => {
+                let ty = self.subst_ty(&scrutinee.ty);
+                let owns_heap = crate::model::ty_owns_heap_mir(
+                    &ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                );
+                let admissible = !owns_heap
+                    || (matches!(ty, ResolvedTy::String) && matches!(op, super::BinaryOp::Add));
+                let precise_fresh = self.scrutinee_precise_bits(scrutinee).is_fresh();
+                debug_assert!(
+                    admissible || !precise_fresh,
+                    "a heap-owning `Binary` scrutinee outside the string-concat \
+                     exclusion was classified fresh by the precise bits: the \
+                     U10 exclusion no longer holds and a non-fresh allocation \
+                     could be admitted as an ephemeral temp"
+                );
+                if admissible && precise_fresh {
                     ProjectedPayloadOrigin::EphemeralTemp
                 } else {
                     ProjectedPayloadOrigin::Reject(
@@ -3899,12 +3953,19 @@ impl Builder {
                     ty: binding_ty.clone(),
                 });
                 self.record_binding_scope(binding.binding);
-                let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+                let warrant = self.owner_warrant_for_scrutinee_payload(
+                    binding.binding,
+                    scrutinee,
+                    &binding_ty,
+                );
+                let keep_for_drop_elab =
+                    self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
                 if keep_for_drop_elab {
                     self.register_owned_local(
                         binding.binding,
                         binding.name.clone(),
                         binding_ty.clone(),
+                        warrant,
                     );
                     // A Weak.upgrade match binder aliases the payload slot in
                     // the fresh Option owner. The Option remains the sole owner
@@ -4107,9 +4168,20 @@ impl Builder {
                     ty: binding_ty.clone(),
                 });
                 self.record_binding_scope(binding.binding);
-                let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+                let warrant = self.owner_warrant_for_scrutinee_payload(
+                    binding.binding,
+                    scrutinee,
+                    &binding_ty,
+                );
+                let keep_for_drop_elab =
+                    self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
                 if keep_for_drop_elab {
-                    self.register_owned_local(binding.binding, binding.name.clone(), binding_ty);
+                    self.register_owned_local(
+                        binding.binding,
+                        binding.name.clone(),
+                        binding_ty,
+                        warrant,
+                    );
                 }
                 let dest = self.alloc_local(binding.ty.clone());
                 self.push_instr(Instr::Move {

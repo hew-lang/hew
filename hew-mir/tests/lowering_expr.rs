@@ -18,6 +18,7 @@ mod cstring_container_domain_canary;
 mod elaborate;
 #[path = "lowering_expr/extern_wrapper_result_opacity.rs"]
 mod extern_wrapper_result_opacity;
+
 #[path = "lowering_expr/forawait_loopvar_release.rs"]
 mod forawait_loopvar_release;
 #[path = "lowering_expr/fresh_vec_projection_owner.rs"]
@@ -52,6 +53,8 @@ mod monomorph_lowering_test;
 mod numeric_cast_lowering;
 #[path = "lowering_expr/owned_string_temp_drop_canary.rs"]
 mod owned_string_temp_drop_canary;
+#[path = "lowering_expr/owner_mint_warrant_seams.rs"]
+mod owner_mint_warrant_seams;
 #[path = "lowering_expr/plain_vec_local_drop.rs"]
 mod plain_vec_local_drop;
 #[path = "lowering_expr/polymorphic_mir_typeparam.rs"]

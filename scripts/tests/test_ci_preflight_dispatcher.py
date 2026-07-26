@@ -456,6 +456,38 @@ def test_types_lane_includes_checked_mir_verify() -> None:
     )
 
 
+def test_compiler_pipeline_lane_includes_checked_mir_run() -> None:
+    """A MIR-changing diff also executes the checked-MIR corpus.
+
+    checked-mir-verify only diffs dumped text; it never loads the compiled
+    fixtures.  A drop-plan edit can leave every golden byte-identical and still
+    make a fixture segfault on every run, which is how a segfaulting
+    channel_auto_close_scope shipped with every gate green.  This ratchet locks
+    the execution step in next to the golden diff.
+    """
+    result = run_dispatcher("hew-mir/src/lower/drop_plan.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+    assert "make checked-mir-run" in result.stdout, (
+        f"Expected 'make checked-mir-run' in the compiler-pipeline profile.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
+def test_types_lane_includes_checked_mir_run() -> None:
+    """A type-checker change also executes the checked-MIR corpus.
+
+    Type inference feeds MIR lowering and therefore runtime behaviour, not just
+    the dumped text, so the execution gate runs here alongside the golden diff.
+    """
+    result = run_dispatcher("hew-types/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: types" in result.stdout, result.stdout
+    assert "make checked-mir-run" in result.stdout, (
+        f"Expected 'make checked-mir-run' in the types profile.\nstdout:\n{result.stdout}"
+    )
+
+
 def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> None:
     """The compiler-pipeline and types lanes delegate hew-cli consumer-corpus
     coverage to make test-compiler-pipeline: its nextest invocation must keep

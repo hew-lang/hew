@@ -79,6 +79,7 @@
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-smoke fuzz-oracle fuzz-oracle-selftest
 .PHONY: ll-diff ll-golden ll-identity-selftest
+.PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 
 # ── Configuration ───────────────────────────────────────────────────────────
@@ -802,6 +803,21 @@ checked-mir-verify: hew
 
 checked-mir-golden: hew
 	bash scripts/checked-mir-corpus.sh golden
+
+# Execution gate for the same corpus: build and run every fixture and diff
+# a transcript (exit status + verbatim stdout) against its committed
+# `<name>.expected` sibling.  Dumping is not running — a fixture can
+# segfault on every execution while every golden stays byte-identical, so
+# checked-mir-verify alone is not evidence that a drop-elaboration or
+# codegen change is correct.  Runnability is read back from the compiler
+# (a fixture is runnable exactly when its raw MIR declares `main`), and
+# the expectation set is closed both ways: a fixture with `main` and no
+# expectation fails, an expectation for a fixture without `main` fails.
+checked-mir-run: hew runtime stdlib check-libhew-fresh
+	bash scripts/checked-mir-corpus.sh run
+
+checked-mir-expect: hew runtime stdlib check-libhew-fresh
+	bash scripts/checked-mir-corpus.sh expect
 
 # Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
 # pure codegen refactor (dedup, extract-helper, file-split) emits zero changed

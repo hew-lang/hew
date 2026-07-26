@@ -21,6 +21,10 @@ impl ActorMsg for Worker {
 
 fn main() -> i64 {
     Node::set_transport("tcp");
+    // Protocol v2 requires a durable identity before Node::start; without it
+    // start fails, register/lookup never see a running node, and main returns
+    // the lookup-failure code 30.
+    Node::load_keys("/tmp/hew-checked-mir-node-lookup-send.key");
     Node::start("127.0.0.1:0");
     let worker = spawn Worker(count: 0);
     Node::register("node-lookup-worker", worker);

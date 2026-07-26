@@ -715,6 +715,16 @@
         "name": "LocalPid"
       },
       {
+        "id": "type:Location",
+        "kind": "record",
+        "name": "Location"
+      },
+      {
+        "id": "type:NodeId",
+        "kind": "record",
+        "name": "NodeId"
+      },
+      {
         "id": "type:Option.type.i64",
         "kind": "enum",
         "name": "Option"
@@ -813,7 +823,7 @@
       }
     ]
   },
-  "package_id": "pkg:c4bde80a125f5651",
+  "package_id": "pkg:7790986448c2429c",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

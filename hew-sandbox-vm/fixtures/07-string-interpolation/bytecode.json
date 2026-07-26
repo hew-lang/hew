@@ -244,6 +244,16 @@
         "name": "LocalPid"
       },
       {
+        "id": "type:Location",
+        "kind": "record",
+        "name": "Location"
+      },
+      {
+        "id": "type:NodeId",
+        "kind": "record",
+        "name": "NodeId"
+      },
+      {
         "id": "type:RemotePid",
         "kind": "record",
         "name": "RemotePid"
@@ -329,7 +339,7 @@
       }
     ]
   },
-  "package_id": "pkg:52da08fdaae03f0b",
+  "package_id": "pkg:e6deacf49c36e019",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

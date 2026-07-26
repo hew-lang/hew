@@ -309,6 +309,16 @@
         "name": "LocalPid"
       },
       {
+        "id": "type:Location",
+        "kind": "record",
+        "name": "Location"
+      },
+      {
+        "id": "type:NodeId",
+        "kind": "record",
+        "name": "NodeId"
+      },
+      {
         "id": "type:Point",
         "kind": "record",
         "name": "Point"
@@ -399,7 +409,7 @@
       }
     ]
   },
-  "package_id": "pkg:3bd62aac5308a4f6",
+  "package_id": "pkg:03188bbb572d7781",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

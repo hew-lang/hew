@@ -827,12 +827,6 @@ test-runtime-net:
 test-runtime-unit:
 	cargo nextest run --profile ci -p hew-runtime --no-default-features
 
-# Real-timing quarantine gate: the genuinely-real wall-clock / OS-timing tests
-# (SIGKILL delivery to a process group + the two-process loopback ask) that run
-# serialized in the `real-timing` nextest group (max-threads = 1; see
-# .config/nextest.toml) and are kept off the lane/smoke fast tiers.  Scoped to the
-# owning crates so the gate stays prompt.  Keep this selector in sync with the
-# `real-timing` group membership in .config/nextest.toml.
 # Ratcheted wrappers for the Hew-language test suites.
 #
 # These targets run the suites through scripts/hew-suite-ratchet.sh and

@@ -1,0 +1,514 @@
+"""Unit tests for scripts/check-gate-reachability.py.
+
+The primary regression this guards is the defect the checker itself shipped
+with: it read every workflow as RAW TEXT and never parsed jobs, steps or
+triggers, so a MENTION counted as an EDGE. `make playground-wasi-check` was
+reported "invoked directly by a CI workflow step" on the strength of a
+release-gate.yml comment that said the gate was NOT wired yet. A comment, a
+string echoed to the log, an `if: false` job, a disabled step, and a step in a
+workflow nothing can trigger must all be non-edges; only a step that can
+actually run and actually invokes the target counts.
+
+The other two classes covered here are the filter parsers. `default-filter` is
+a boolean expression, and the original `-\\s*(binary|package|test)\\(…\\)`
+pattern silently skipped the leading `not package(hew-wasm)`, so a
+five-exclusion filter was reported as "4/4 compensated". Inline `-E` filters
+were matched only in single quotes, and any `--workspace` run counted as
+compensation for a filtered one — including a `--workspace --exclude P` run
+that does not execute P at all. Either hole lets the checker certify that
+tests run when they run nowhere, which is the exact failure this file exists
+to make impossible to reintroduce.
+"""
+
+import importlib.util
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "check-gate-reachability.py"
+
+spec = importlib.util.spec_from_file_location("check_gate_reachability", SCRIPT)
+gate = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+# Registered before execution because the module defines dataclasses, which
+# look their own module up in sys.modules while the class body is executing.
+sys.modules["check_gate_reachability"] = gate
+spec.loader.exec_module(gate)
+
+KNOWN = {"playground-wasi-check", "lint", "test", "miri"}
+
+
+def load_workflow(text: str) -> "gate.Workflow":
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "synthetic.yml"
+        path.write_text(text)
+        return gate._load_workflow(path)
+
+
+def edges(text: str) -> set[str]:
+    """Gate targets a synthetic workflow actually invokes."""
+    workflow = load_workflow(text)
+    commands = gate.ci_step_commands([workflow])
+    return gate.make_targets_in("\n".join(c for _, c in commands), KNOWN)
+
+
+# ── Finding 1: structural parse ───────────────────────────────────────────────
+
+
+def test_a_yaml_comment_naming_a_target_is_not_an_edge() -> None:
+    # The literal shape that produced the false 54/54: a TODO saying the gate
+    # is not wired, counted as the wiring.
+    found = edges(
+        """
+name: synthetic
+on:
+  push:
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      # TODO(playground-wasi-gate): add `make playground-wasi-check` here once
+      # the curated_playground_examples_run_under_wasi test is un-ignored.
+      - name: Something else
+        run: cargo build
+"""
+    )
+    assert found == set(), f"a YAML comment must not be an edge, got {found}"
+
+
+def test_a_shell_comment_inside_a_run_body_is_not_an_edge() -> None:
+    found = edges(
+        """
+on: [push]
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          # make lint runs locally; CI does not run it here
+          cargo build
+"""
+    )
+    assert found == set(), f"a shell comment must not be an edge, got {found}"
+
+
+def test_an_echoed_target_name_is_not_an_edge() -> None:
+    found = edges(
+        """
+on: [push]
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "remember to run make lint before pushing"
+"""
+    )
+    assert found == set(), f"echo prints, it does not invoke; got {found}"
+
+
+def test_a_statically_false_job_is_not_an_edge() -> None:
+    found = edges(
+        """
+on: [push]
+jobs:
+  gate:
+    if: false
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make lint
+"""
+    )
+    assert found == set(), f"an `if: false` job runs nothing, got {found}"
+
+
+def test_a_statically_false_step_is_not_an_edge() -> None:
+    found = edges(
+        """
+on: [push]
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make lint
+        if: ${{ false }}
+      - run: make test
+"""
+    )
+    assert found == {"test"}, f"a disabled step must not count, got {found}"
+
+
+def test_a_workflow_nothing_can_trigger_is_not_ci() -> None:
+    called = load_workflow(
+        """
+on:
+  workflow_call:
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make lint
+"""
+    )
+    assert gate.triggerable([called]) == [], (
+        "a workflow_call-only workflow that nothing calls never runs, so a "
+        "gate invoked only there is not reached"
+    )
+    assert gate.ci_step_commands([called]) == []
+
+
+def test_a_called_workflow_is_ci_when_a_live_workflow_calls_it() -> None:
+    caller = load_workflow(
+        """
+on: [push]
+jobs:
+  delegate:
+    uses: ./.github/workflows/synthetic.yml
+"""
+    )
+    called = load_workflow(
+        """
+on:
+  workflow_call:
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make lint
+"""
+    )
+    # Synthetic files live outside .github/, so give the callee the path the
+    # caller names.
+    called.rel = ".github/workflows/synthetic.yml"
+    live = {w.rel for w in gate.triggerable([caller, called])}
+    assert called.rel in live, "a called workflow does run"
+
+
+def test_an_unknown_trigger_fails_closed() -> None:
+    try:
+        load_workflow(
+            """
+on:
+  invented_event:
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make lint
+"""
+        )
+    except gate.YamlError:
+        return
+    raise AssertionError(
+        "an unrecognised trigger must fail closed: guessing whether it fires "
+        "decides whether every gate under it is reached"
+    )
+
+
+def test_yaml_subset_parser_rejects_what_it_cannot_model() -> None:
+    for source, why in [
+        ("a: &anchor 1\nb: *anchor\n", "anchors/aliases"),
+        ("a: 1\n\tb: 2\n", "tabs"),
+        ("a: 1\na: 2\n", "duplicate keys"),
+        ("---\na: 1\n---\nb: 2\n", "multi-document streams"),
+    ]:
+        try:
+            gate.parse_yaml(source, "synthetic")
+        except gate.YamlError:
+            continue
+        raise AssertionError(f"parser must refuse {why} rather than mis-read them")
+
+
+def test_the_real_release_gate_workflow_no_longer_claims_the_wasi_gate() -> None:
+    # The stale TODO is gone, and nothing in any workflow names the target;
+    # it is reached (if at all) by a containment proof, never by a mention.
+    text = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text()
+    assert "playground-wasi-check" not in text
+
+
+# ── Finding 2: the nextest filterset grammar ──────────────────────────────────
+
+
+def test_leading_not_is_counted_as_an_exclusion() -> None:
+    atoms = gate.filterset_exclusions(
+        "not package(hew-wasm) - binary(parity) - binary(playground)"
+    )
+    rendered = {str(a) for a in atoms}
+    assert rendered == {
+        "package(hew-wasm)",
+        "binary(parity)",
+        "binary(playground)",
+    }, rendered
+    # Counterfactual for the pattern that shipped: it only saw terms after a
+    # `-`, so it reported two of these three.
+    old = re.findall(
+        r"-\s*(binary|package|test)\(([^)]+)\)",
+        "not package(hew-wasm) - binary(parity) - binary(playground)",
+    )
+    assert len(old) == 2 < len(atoms), (
+        "the old regex must be shown to under-report; if it now agrees, this "
+        "test no longer proves anything"
+    )
+
+
+def test_every_negation_spelling_is_counted() -> None:
+    for text in [
+        "not package(a) and not package(b)",
+        "!package(a) & !package(b)",
+        "all() - package(a) - package(b)",
+        "not (package(a) or package(b))",
+    ]:
+        atoms = {str(a) for a in gate.filterset_exclusions(text)}
+        assert atoms == {"package(a)", "package(b)"}, f"{text} -> {atoms}"
+
+
+def test_a_filter_whose_subtracted_set_cannot_be_named_fails_closed() -> None:
+    for text in ["package(a) or package(b)", "not package(a) or package(b)"]:
+        try:
+            gate.filterset_exclusions(text)
+        except gate.FiltersetError:
+            continue
+        raise AssertionError(
+            f"{text!r} does not reduce to a set of subtracted terms; reporting "
+            "a partial exclusion list is how '4/4 compensated' happened"
+        )
+
+
+def test_the_real_profile_ci_filter_has_five_exclusions() -> None:
+    atoms = {str(a) for a in gate.profile_ci_exclusions()}
+    assert "package(hew-wasm)" in atoms, (
+        "the live `not package(hew-wasm)` term must be in the parsed set"
+    )
+    text = gate.NEXTEST_TOML.read_text()
+    line = re.search(r'^\s*default-filter\s*=\s*"([^"]*)"', text, re.M)
+    assert line is not None
+    # Proof that the parsed set equals the actual set: every selector call in
+    # the source line is accounted for, and nothing was invented.
+    literal = {
+        f"{kind}({value})"
+        for kind, value in re.findall(
+            r"\b(binary_id|binary|package|test)\(([^)]+)\)", line.group(1)
+        )
+    }
+    assert atoms == literal, f"parsed {atoms} != written {literal}"
+
+
+# ── Finding 3: `-E` parsing and compensation ──────────────────────────────────
+
+
+def parse(command: str) -> "gate.CargoInvocation":
+    invocation = gate.parse_cargo_command("synthetic", command)
+    assert invocation is not None, command
+    return invocation
+
+
+def test_every_dash_e_spelling_is_recognised() -> None:
+    for command in [
+        "cargo nextest run --workspace -E 'not binary(oracle)'",
+        'cargo nextest run --workspace -E "not binary(oracle)"',
+        "cargo nextest run --workspace -E=not-binary",
+        "cargo nextest run --workspace --filter-expr 'not binary(oracle)'",
+        "cargo nextest run --workspace --filter-expr='not binary(oracle)'",
+    ]:
+        assert parse(command).filtered, f"unrecognised filter form: {command}"
+    # A double-quoted filter was invisible to the single-quote-only pattern.
+    old = re.compile(r"-E\s+'([^']*)'")
+    assert not old.search('cargo nextest run --workspace -E "not binary(oracle)"'), (
+        "the shipped pattern must be shown to miss the double-quoted form"
+    )
+
+
+def test_a_positional_test_name_filter_counts_as_filtering() -> None:
+    assert parse("cargo nextest run --workspace some_test_name").filtered
+
+
+def test_an_unfiltered_run_is_not_reported_as_filtered() -> None:
+    assert not parse("cargo nextest run --workspace --profile ci").filtered
+    assert not parse(
+        "cargo llvm-cov nextest --workspace --profile ci --lcov --output-path lcov.info"
+    ).filtered, "a flag value is not a test-name filter"
+
+
+def test_an_unclassified_flag_with_a_value_fails_closed() -> None:
+    try:
+        gate.parse_cargo_command(
+            "synthetic", "cargo nextest run --workspace --invented-flag some_value"
+        )
+    except SystemExit:
+        return
+    raise AssertionError(
+        "a bare word after an unknown flag is either a value to skip or a "
+        "test-name filter to count; guessing decides whether the run is "
+        "reported as filtered"
+    )
+
+
+def test_a_workspace_run_that_excludes_the_package_does_not_compensate() -> None:
+    filtered = parse("cargo nextest run -p hew-cabi -E 'not test(slow)'")
+    compensating = parse("cargo nextest run --workspace --exclude hew-cabi")
+    assert gate.uncompensated_packages(filtered, [compensating], ["hew-cabi"]) == [
+        "hew-cabi"
+    ], (
+        "a --workspace run carrying --exclude P executes nothing of P, so it "
+        "cannot compensate a filtered run of P"
+    )
+
+
+def test_a_competing_filter_does_not_compensate() -> None:
+    filtered = parse("cargo nextest run -p hew-cabi -E 'not test(slow)'")
+    also_filtered = parse("cargo nextest run --workspace -E 'not binary(oracle)'")
+    assert gate.uncompensated_packages(filtered, [also_filtered], ["hew-cabi"]) == [
+        "hew-cabi"
+    ], "a run that is itself filtered does not prove the filtered set ran"
+
+
+def test_a_genuine_unfiltered_run_does_compensate() -> None:
+    filtered = parse("cargo nextest run -p hew-cabi -E 'not test(slow)'")
+    full = parse("cargo nextest run --workspace --profile ci")
+    assert gate.uncompensated_packages(filtered, [full], ["hew-cabi"]) == []
+
+
+# ── Containment proofs ────────────────────────────────────────────────────────
+
+
+def test_containment_refuses_an_opaque_command() -> None:
+    recipes = {"opaque-check": "bash scripts/something.sh"}
+    assert not gate.prove_contained(
+        "opaque-check",
+        {},
+        recipes,
+        set(),
+        {"opaque-check"},
+        [],
+        [],
+        ["hew-cabi"],
+        set(),
+    ), "a script CI never runs is a wire-or-cut decision, not a proof"
+
+
+def test_containment_refuses_an_env_prefixed_command() -> None:
+    recipes = {"asan-ish": "RUSTFLAGS=-Zsanitizer=address cargo test --workspace"}
+    blobs = ["cargo nextest run --workspace --profile ci"]
+    assert not gate.prove_contained(
+        "asan-ish", {}, recipes, set(), {"asan-ish"}, [], blobs, ["hew-cabi"], set()
+    ), "a sanitizer-flagged run proves something the plain CI run does not"
+
+
+def test_containment_accepts_a_narrower_selection_of_what_ci_runs() -> None:
+    recipes = {"test-cabi-only": "cargo nextest run --profile ci -p hew-cabi"}
+    blobs = ["cargo nextest run --workspace --profile ci"]
+    assert gate.prove_contained(
+        "test-cabi-only",
+        {},
+        recipes,
+        set(),
+        {"test-cabi-only"},
+        [],
+        blobs,
+        ["hew-cabi"],
+        set(),
+    )
+
+
+def test_containment_refuses_a_binary_profile_ci_subtracts() -> None:
+    recipes = {"parity-check": "cargo test -p hew-sandbox-wasm --test parity"}
+    blobs = ["cargo nextest run --workspace --profile ci"]
+    assert not gate.prove_contained(
+        "parity-check",
+        {},
+        recipes,
+        set(),
+        {"parity-check"},
+        [],
+        blobs,
+        ["hew-sandbox-wasm"],
+        {"parity"},
+    ), "the CI run subtracts binary(parity), so it does not contain this"
+
+
+# ── End to end ────────────────────────────────────────────────────────────────
+
+
+def test_real_repo_state_passes_the_full_check() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
+    # Structural YAML parsing was the fix for finding 1, and the obvious
+    # implementation is PyYAML. Nothing in this repo installs it: no workflow
+    # runs pip, and there is no requirements file, so the checker would fail
+    # to import on every CI runner and — depending on how it was invoked —
+    # take the gate out silently. Hence the hand-written subset parser.
+    source = SCRIPT.read_text()
+    for banned in ("yaml", "tomllib", "toml", "tomli", "ruamel"):
+        assert not re.search(rf"^\s*import {banned}\b", source, re.MULTILINE), (
+            f"check-gate-reachability.py must not import {banned}: CI installs "
+            "no Python packages, and the tooling baseline is Python 3.10"
+        )
+        assert not re.search(rf"^\s*from {banned}\b", source, re.MULTILINE), (
+            f"check-gate-reachability.py must not import from {banned}"
+        )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"compile(open({str(SCRIPT)!r}).read(), {str(SCRIPT)!r}, 'exec')",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+_TESTS = [
+    test_a_yaml_comment_naming_a_target_is_not_an_edge,
+    test_a_shell_comment_inside_a_run_body_is_not_an_edge,
+    test_an_echoed_target_name_is_not_an_edge,
+    test_a_statically_false_job_is_not_an_edge,
+    test_a_statically_false_step_is_not_an_edge,
+    test_a_workflow_nothing_can_trigger_is_not_ci,
+    test_a_called_workflow_is_ci_when_a_live_workflow_calls_it,
+    test_an_unknown_trigger_fails_closed,
+    test_yaml_subset_parser_rejects_what_it_cannot_model,
+    test_the_real_release_gate_workflow_no_longer_claims_the_wasi_gate,
+    test_leading_not_is_counted_as_an_exclusion,
+    test_every_negation_spelling_is_counted,
+    test_a_filter_whose_subtracted_set_cannot_be_named_fails_closed,
+    test_the_real_profile_ci_filter_has_five_exclusions,
+    test_every_dash_e_spelling_is_recognised,
+    test_a_positional_test_name_filter_counts_as_filtering,
+    test_an_unfiltered_run_is_not_reported_as_filtered,
+    test_an_unclassified_flag_with_a_value_fails_closed,
+    test_a_workspace_run_that_excludes_the_package_does_not_compensate,
+    test_a_competing_filter_does_not_compensate,
+    test_a_genuine_unfiltered_run_does_compensate,
+    test_containment_refuses_an_opaque_command,
+    test_containment_refuses_an_env_prefixed_command,
+    test_containment_accepts_a_narrower_selection_of_what_ci_runs,
+    test_containment_refuses_a_binary_profile_ci_subtracts,
+    test_real_repo_state_passes_the_full_check,
+    test_script_stays_python_3_10_compatible_with_no_new_dependency,
+]
+
+if __name__ == "__main__":
+    failures = 0
+    for test in _TESTS:
+        try:
+            test()
+            print(f"PASS {test.__name__}")
+        except AssertionError as exc:
+            print(f"FAIL {test.__name__}: {exc}")
+            failures += 1
+    if failures:
+        raise SystemExit(f"{failures}/{len(_TESTS)} tests failed")
+    print(f"All {len(_TESTS)} tests passed.")

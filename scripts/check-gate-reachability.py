@@ -18,18 +18,49 @@ This gate closes it, in four directions:
   A3  every exclusion is compensated:
       a) CI never runs a nextest profile other than `ci` (so a fast local tier
          cannot quietly become the CI tier);
-      b) every `binary(...)`/`package(...)`/`test(...)` term subtracted from
-         `profile.ci`'s default-filter is named by a CI-reached invocation;
+      b) every selector subtracted by `profile.ci`'s default-filter is named by
+         a CI-reached invocation;
       c) `#[ignore]` is permitted only in a crate whose ignored tests are run by
          a CI-reached target (`--run-ignored` / `-- --ignored`); and
-      d) every inline `-E` filter a CI step passes to nextest is compensated by
-         some other CI step that runs the same crate scope unfiltered. An `-E`
-         is an exclusion like any other: without a compensating unfiltered run,
-         the tests it subtracts execute in no job at all.
+      d) every inline `-E` filter a CI step passes to nextest is compensated,
+         package by package, by an unfiltered CI run over the same packages. An
+         `-E` is an exclusion like any other: without a compensating unfiltered
+         run, the tests it subtracts execute in no job at all.
 
 There is deliberately no waiver list. An unreached gate is either wired in or
 deleted; "tracked for later" is how the eight orphans got there in the first
 place. A gate this checker cannot see is a gate that is not running.
+
+# What counts as an edge
+
+An edge from CI to a gate exists only when a step that CAN RUN invokes it. The
+first version of this checker read every workflow as one raw string, so a
+MENTION was an edge: `release-gate.yml` carried
+`# TODO(playground-wasi-gate): add \\`make playground-wasi-check\\` here once …`
+and the checker reported `playground-wasi-check` as reached — a comment saying
+the gate is NOT wired was counted as wiring. A gate whose own defect class is
+"looks connected, executes nowhere" cannot afford that.
+
+So the workflows are parsed structurally (`parse_yaml` below, a fail-closed
+subset parser — no third-party dependency, matching every other Python gate in
+`scripts/`), and only these produce edges:
+
+  * a workflow that can trigger. A workflow with no `on:` trigger, or one whose
+    only trigger is `workflow_call` with no caller, never runs.
+  * a job with no statically-false `if:`. `if: false` is a disabled job.
+  * a step with no statically-false `if:`, carrying a `run:` body — plus the
+    `run:` steps of a local composite action the step `uses:`.
+  * that `run:` body with SHELL COMMENTS STRIPPED. Same rule one level down: a
+    `# make foo` inside a script is a note, not an invocation.
+
+A dynamic `if:` (`needs.changes.outputs.docs == 'true'`, `env.RUN_CODE_PATH`)
+IS an edge: that step can run. Proving which pull requests it runs on is the
+path-filter oracle's job, not this one's.
+
+`continue-on-error: true` is also an edge. The advisory sanitizer jobs really
+do execute their gate; whether a job BLOCKS a merge is a different axis from
+whether it RUNS, and conflating the two here would demand deleting deliberately
+advisory jobs. A0/A1/A2/A3 answer "does it run".
 
 Usage:
   scripts/check-gate-reachability.py            # check
@@ -40,12 +71,15 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MAKEFILE = REPO_ROOT / "Makefile"
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+ACTION_DIR = REPO_ROOT / ".github" / "actions"
 DISPATCHER = REPO_ROOT / "scripts" / "ci-preflight-dispatcher.sh"
 NEXTEST_TOML = REPO_ROOT / ".config" / "nextest.toml"
 ROOT_CARGO = REPO_ROOT / "Cargo.toml"
@@ -70,6 +104,28 @@ GATE_NAME_RE = re.compile(
 # iteration tier (which excludes most of the corpus) stand in for the CI tier.
 CI_ALLOWED_NEXTEST_PROFILES = {"ci"}
 
+# GitHub workflow triggers this checker understands. An unknown key under `on:`
+# is a parse failure, not a shrug: a trigger nobody modelled could be one that
+# never fires, and every reachability answer downstream would be wrong.
+KNOWN_TRIGGERS = {
+    "push",
+    "pull_request",
+    "pull_request_target",
+    "workflow_dispatch",
+    "workflow_call",
+    "workflow_run",
+    "schedule",
+    "release",
+    "merge_group",
+    "repository_dispatch",
+    "issue_comment",
+    "issues",
+}
+
+# Triggers that fire on their own. `workflow_call` only fires when another
+# workflow calls it, which is resolved separately.
+SELF_FIRING_TRIGGERS = KNOWN_TRIGGERS - {"workflow_call"}
+
 
 class Findings:
     def __init__(self) -> None:
@@ -78,6 +134,611 @@ class Findings:
     def fail(self, assertion: str, subject: str, detail: str) -> None:
         self.failures.append(f"  FAIL [{assertion}] {subject}\n       {detail}")
 
+    def count(self, assertion: str) -> int:
+        return sum(1 for f in self.failures if f"[{assertion}]" in f)
+
+
+# ── A fail-closed YAML subset parser ──────────────────────────────────────────
+#
+# Deliberately NOT PyYAML: every other Python gate in scripts/ runs on a bare
+# stdlib interpreter (there is no pip step in any workflow and no requirements
+# file in the tree), and a reachability gate that cannot start on a fresh
+# checkout is a gate that does not run. The subset covers what GitHub workflow
+# files actually use — block mappings, block sequences, block scalars, flow
+# sequences/mappings of scalars — and raises on everything else (anchors,
+# aliases, tags, multi-document streams, multi-line plain scalars, tab
+# indentation). Fail closed: an unparsed construct is an error, never an
+# empty result that silently reports "nothing to check here".
+
+
+class YamlError(Exception):
+    """A workflow this checker refuses to guess about."""
+
+
+@dataclass
+class _Line:
+    number: int
+    indent: int
+    text: str
+
+
+_KEY_RE = re.compile(
+    r"""^(?P<key>'[^']*'|"[^"]*"|[^\s:#][^:#]*?)\s*:(?=\s|$)(?P<rest>.*)$"""
+)
+_BLOCK_SCALAR_RE = re.compile(
+    r"^(?P<style>[|>])(?P<chomp>[-+]?)(?P<explicit>\d*)\s*(?:#.*)?$"
+)
+
+
+def _scan_lines(text: str, source: str) -> list[_Line]:
+    lines: list[_Line] = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        stripped = raw.lstrip(" ")
+        indent = len(raw) - len(stripped)
+        if raw[:indent].count("\t"):
+            raise YamlError(f"{source}:{number}: tab in indentation")
+        lines.append(_Line(number, indent, raw[indent:]))
+    return lines
+
+
+def _significant(lines: list[_Line], index: int) -> int:
+    """Index of the next line that is neither blank nor comment-only."""
+    while index < len(lines):
+        text = lines[index].text
+        if text.strip() and not text.lstrip().startswith("#"):
+            return index
+        index += 1
+    return len(lines)
+
+
+def _strip_comment(value: str) -> str:
+    """Drop a trailing `#` comment from a plain scalar.
+
+    YAML starts a comment at a `#` preceded by whitespace or line start, in a
+    plain scalar regardless of any quote characters around it — a plain scalar
+    has no quoting. Matching that exactly is the point: the runner sees the
+    same truncation, so the checker must not read a command the job never gets.
+    """
+    for i, ch in enumerate(value):
+        if ch == "#" and (i == 0 or value[i - 1] in " \t"):
+            return value[:i]
+    return value
+
+
+def _unquote(token: str, source: str, number: int) -> str:
+    token = token.strip()
+    if len(token) >= 2 and token[0] == token[-1] == "'":
+        return token[1:-1].replace("''", "'")
+    if len(token) >= 2 and token[0] == token[-1] == '"':
+        body = token[1:-1]
+        out: list[str] = []
+        i = 0
+        while i < len(body):
+            if body[i] == "\\" and i + 1 < len(body):
+                nxt = body[i + 1]
+                out.append({"n": "\n", "t": "\t", "\\": "\\", '"': '"'}.get(nxt, nxt))
+                i += 2
+                continue
+            out.append(body[i])
+            i += 1
+        return "".join(out)
+    if token[:1] in {"&", "*", "!"}:
+        raise YamlError(
+            f"{source}:{number}: anchors, aliases and tags are not supported "
+            f"({token!r}); this checker will not guess what they expand to"
+        )
+    return token
+
+
+def _scalar(token: str, source: str, number: int) -> object:
+    token = token.strip()
+    if token in {"", "~", "null"}:
+        return None
+    if token in {"true", "True", "yes", "on"}:
+        return True
+    if token in {"false", "False", "no", "off"}:
+        return False
+    return _unquote(token, source, number)
+
+
+def _flow_items(body: str, source: str, number: int) -> list[str]:
+    items: list[str] = []
+    depth = 0
+    quote = ""
+    current = ""
+    for ch in body:
+        if quote:
+            current += ch
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "'\"":
+            quote = ch
+            current += ch
+            continue
+        if ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            items.append(current)
+            current = ""
+            continue
+        current += ch
+    if current.strip():
+        items.append(current)
+    if quote or depth:
+        raise YamlError(f"{source}:{number}: unterminated flow collection")
+    return items
+
+
+def _parse_flow(token: str, source: str, number: int) -> object:
+    token = token.strip()
+    if token.startswith("["):
+        if not token.endswith("]"):
+            raise YamlError(f"{source}:{number}: multi-line flow sequence")
+        return [
+            _scalar(item, source, number)
+            for item in _flow_items(token[1:-1], source, number)
+        ]
+    if not token.endswith("}"):
+        raise YamlError(f"{source}:{number}: multi-line flow mapping")
+    out: dict[str, object] = {}
+    for item in _flow_items(token[1:-1], source, number):
+        key, sep, value = item.partition(":")
+        if not sep:
+            raise YamlError(f"{source}:{number}: flow mapping entry without a value")
+        out[_unquote(key, source, number)] = _scalar(value, source, number)
+    return out
+
+
+def _fold(body: list[str]) -> str:
+    """Fold a `>` block scalar the way YAML does.
+
+    Line breaks between equally-indented non-empty lines become spaces; a blank
+    line becomes a newline; a more-indented line keeps its own breaks. This is
+    load-bearing, not cosmetic: `run: >-` with `cargo nextest run --workspace`
+    on one line and `--exclude hew-cabi` on the next is ONE command, and a
+    checker that reads them as two would see an unfiltered workspace run that
+    the job never issues.
+    """
+    out = ""
+    for index, line in enumerate(body):
+        more_indented = line[:1] == " "
+        if index == 0:
+            out = line
+            continue
+        previous = body[index - 1]
+        if not line.strip():
+            out += "\n"
+        elif not previous.strip():
+            out += line
+        elif more_indented or previous[:1] == " ":
+            out += "\n" + line
+        else:
+            out += " " + line
+    return out
+
+
+def _chomp(text: str, chomp: str) -> str:
+    if chomp == "-":
+        return text.rstrip("\n")
+    if chomp == "+":
+        return text
+    return text.rstrip("\n") + "\n" if text.strip() else ""
+
+
+def _parse_block_scalar(
+    lines: list[_Line],
+    index: int,
+    parent_indent: int,
+    header: re.Match[str],
+    source: str,
+) -> tuple[str, int]:
+    if header.group("explicit"):
+        raise YamlError(
+            f"{source}:{lines[index - 1].number}: explicit block-scalar indentation "
+            "indicators are not supported"
+        )
+    body_indent: int | None = None
+    body: list[str] = []
+    while index < len(lines):
+        line = lines[index]
+        if not line.text.strip():
+            body.append("")
+            index += 1
+            continue
+        if line.indent <= parent_indent:
+            break
+        if body_indent is None:
+            body_indent = line.indent
+        if line.indent < body_indent:
+            break
+        body.append(" " * (line.indent - body_indent) + line.text)
+        index += 1
+    while body and not body[-1].strip():
+        body.pop()
+    text = "\n".join(body) if header.group("style") == "|" else _fold(body)
+    return _chomp(text + "\n" if body else "", header.group("chomp")), index
+
+
+def _parse_value(
+    lines: list[_Line], index: int, indent: int, rest: str, source: str
+) -> tuple[object, int]:
+    """Parse the value of `key:` whose remainder on the line is `rest`."""
+    line = lines[index]
+    body = rest.strip()
+    block = _BLOCK_SCALAR_RE.match(body) if body else None
+    if block:
+        return _parse_block_scalar(lines, index + 1, indent, block, source)
+    if not body or body.startswith("#"):
+        nxt = _significant(lines, index + 1)
+        if nxt < len(lines) and lines[nxt].indent > indent:
+            return _parse_node(lines, nxt, lines[nxt].indent, source)
+        if (
+            nxt < len(lines)
+            and lines[nxt].indent == indent
+            and lines[nxt].text.startswith("-")
+        ):
+            return _parse_node(lines, nxt, indent, source)
+        return None, index + 1
+    stripped = _strip_comment(body).strip() if body[0] not in "'\"[{" else body
+    if stripped[:1] in "[{":
+        return _parse_flow(stripped, source, line.number), index + 1
+    nxt = _significant(lines, index + 1)
+    if nxt < len(lines) and lines[nxt].indent > indent:
+        raise YamlError(
+            f"{source}:{lines[nxt].number}: multi-line plain scalar continuing "
+            f"{line.text.split(':')[0].strip()!r}; quote it or use a block scalar"
+        )
+    return _scalar(stripped, source, line.number), index + 1
+
+
+def _parse_mapping(
+    lines: list[_Line], index: int, indent: int, source: str
+) -> tuple[dict[str, object], int]:
+    out: dict[str, object] = {}
+    while True:
+        index = _significant(lines, index)
+        if index >= len(lines):
+            break
+        line = lines[index]
+        if line.indent < indent:
+            break
+        if line.indent > indent:
+            raise YamlError(f"{source}:{line.number}: unexpected indentation")
+        if line.text.startswith("- "):
+            raise YamlError(f"{source}:{line.number}: sequence item inside a mapping")
+        match = _KEY_RE.match(line.text)
+        if not match:
+            raise YamlError(
+                f"{source}:{line.number}: not a mapping entry: {line.text!r}"
+            )
+        key = _unquote(match.group("key"), source, line.number)
+        value, index = _parse_value(lines, index, indent, match.group("rest"), source)
+        if key in out:
+            raise YamlError(f"{source}:{line.number}: duplicate key {key!r}")
+        out[key] = value
+    return out, index
+
+
+def _parse_sequence(
+    lines: list[_Line], index: int, indent: int, source: str
+) -> tuple[list[object], int]:
+    out: list[object] = []
+    while True:
+        index = _significant(lines, index)
+        if index >= len(lines):
+            break
+        line = lines[index]
+        if line.indent < indent:
+            break
+        if line.indent > indent or not line.text.startswith("-"):
+            break
+        after = line.text[1:]
+        if not after.strip() or after.lstrip().startswith("#"):
+            nxt = _significant(lines, index + 1)
+            if nxt < len(lines) and lines[nxt].indent > indent:
+                value, index = _parse_node(lines, nxt, lines[nxt].indent, source)
+            else:
+                value, index = None, index + 1
+            out.append(value)
+            continue
+        if not after.startswith(" "):
+            raise YamlError(f"{source}:{line.number}: `-` must be followed by a space")
+        content_indent = indent + 1 + (len(after) - len(after.lstrip(" ")))
+        content = after.lstrip(" ")
+        if not _KEY_RE.match(content) and not content.startswith("- "):
+            out.append(_scalar(_strip_comment(content), source, line.number))
+            index += 1
+            continue
+        lines[index] = _Line(line.number, content_indent, content)
+        value, index = _parse_node(lines, index, content_indent, source)
+        out.append(value)
+    return out, index
+
+
+def _parse_node(
+    lines: list[_Line], index: int, indent: int, source: str
+) -> tuple[object, int]:
+    index = _significant(lines, index)
+    if index >= len(lines):
+        return None, index
+    if lines[index].text.startswith("-") and (
+        len(lines[index].text) == 1 or lines[index].text[1] in " \t"
+    ):
+        return _parse_sequence(lines, index, indent, source)
+    return _parse_mapping(lines, index, indent, source)
+
+
+def parse_yaml(text: str, source: str) -> object:
+    """Parse the YAML subset GitHub workflow files use, or raise `YamlError`."""
+    lines = _scan_lines(text, source)
+    start = _significant(lines, 0)
+    if start < len(lines) and lines[start].text.strip() == "---":
+        start += 1
+    if any(line.text.strip() == "---" for line in lines[start:]):
+        raise YamlError(f"{source}: multi-document streams are not supported")
+    value, index = _parse_node(lines, start, 0, source)
+    index = _significant(lines, index)
+    if index < len(lines):
+        raise YamlError(f"{source}:{lines[index].number}: trailing content")
+    return value
+
+
+# ── Workflow model ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Step:
+    workflow: str
+    job: str
+    name: str
+    run: str | None
+    uses: str | None
+    disabled: bool
+
+    @property
+    def where(self) -> str:
+        return f"{self.workflow}: {self.job} / {self.name}"
+
+
+@dataclass
+class Job:
+    workflow: str
+    ident: str
+    disabled: bool
+    calls: str | None
+    steps: list[Step] = field(default_factory=list)
+
+
+@dataclass
+class Workflow:
+    rel: str
+    triggers: set[str]
+    jobs: list[Job] = field(default_factory=list)
+
+
+def _is_statically_false(condition: object) -> bool:
+    """True only for a condition that can NEVER be true.
+
+    `if: false` and `if: ${{ false }}` are disabled markers. Everything else —
+    `needs.changes.outputs.docs == 'true'`, `env.RUN_CODE_PATH == 'true'` — CAN
+    be true, so the step it guards is a real edge.
+    """
+    if condition is None:
+        return False
+    if condition is False:
+        return True
+    text = str(condition).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    return text.lower() in {"false", "0"}
+
+
+def _require_mapping(value: object, source: str, what: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise YamlError(
+            f"{source}: {what} must be a mapping, got {type(value).__name__}"
+        )
+    return value
+
+
+def _triggers_of(document: dict[str, object], source: str) -> set[str]:
+    if "on" not in document:
+        raise YamlError(f"{source}: workflow has no `on:` trigger block")
+    raw = document["on"]
+    if raw is None:
+        raise YamlError(f"{source}: empty `on:` trigger block")
+    if isinstance(raw, str):
+        names = {raw}
+    elif isinstance(raw, list):
+        names = {str(item) for item in raw}
+    elif isinstance(raw, dict):
+        names = set(raw)
+    else:
+        raise YamlError(f"{source}: unsupported `on:` block")
+    unknown = sorted(names - KNOWN_TRIGGERS)
+    if unknown:
+        raise YamlError(
+            f"{source}: unknown workflow trigger(s) {', '.join(unknown)}. Add them to "
+            "KNOWN_TRIGGERS once their firing conditions are modelled; until then "
+            "this checker will not claim to know whether the workflow runs."
+        )
+    return names
+
+
+def _composite_run_steps(uses: str) -> list[str]:
+    """`run:` bodies of a local composite action, so a gate moved into one is
+    still an edge. A remote action (`actions/checkout@sha`) is opaque and
+    contributes nothing."""
+    if not uses.startswith("./.github/actions/"):
+        return []
+    action_dir = REPO_ROOT / uses[2:]
+    for candidate in ("action.yml", "action.yaml"):
+        path = action_dir / candidate
+        if not path.is_file():
+            continue
+        rel = str(path.relative_to(REPO_ROOT))
+        document = _require_mapping(parse_yaml(path.read_text(), rel), rel, "action")
+        runs = document.get("runs")
+        if not isinstance(runs, dict):
+            return []
+        steps = runs.get("steps")
+        if not isinstance(steps, list):
+            return []
+        out: list[str] = []
+        for step in steps:
+            if isinstance(step, dict) and isinstance(step.get("run"), str):
+                out.append(step["run"])
+        return out
+    raise YamlError(f"{uses}: local composite action has no action.yml")
+
+
+def _load_workflow(path: Path) -> Workflow:
+    rel = (
+        str(path.relative_to(REPO_ROOT))
+        if path.is_relative_to(REPO_ROOT)
+        else str(path)
+    )
+    document = _require_mapping(parse_yaml(path.read_text(), rel), rel, "workflow")
+    workflow = Workflow(rel=rel, triggers=_triggers_of(document, rel))
+    jobs = _require_mapping(document.get("jobs"), rel, "`jobs:`")
+    for ident, raw in jobs.items():
+        body = _require_mapping(raw, rel, f"job `{ident}`")
+        calls = body.get("uses")
+        job = Job(
+            workflow=rel,
+            ident=ident,
+            disabled=_is_statically_false(body.get("if")),
+            calls=calls if isinstance(calls, str) else None,
+        )
+        steps = body.get("steps")
+        if steps is None and job.calls is None:
+            raise YamlError(f"{rel}: job `{ident}` has neither `steps:` nor `uses:`")
+        if steps is not None and not isinstance(steps, list):
+            raise YamlError(f"{rel}: job `{ident}` has a non-list `steps:`")
+        for index, raw_step in enumerate(steps or []):
+            body_step = _require_mapping(
+                raw_step, rel, f"step {index} of job `{ident}`"
+            )
+            run = body_step.get("run")
+            uses = body_step.get("uses")
+            if run is not None and not isinstance(run, str):
+                raise YamlError(
+                    f"{rel}: job `{ident}` step {index} has a non-string `run:`"
+                )
+            if run is None and uses is None:
+                raise YamlError(
+                    f"{rel}: job `{ident}` step {index} has neither `run:` nor `uses:`"
+                )
+            job.steps.append(
+                Step(
+                    workflow=rel,
+                    job=ident,
+                    name=str(body_step.get("name") or uses or f"step {index}"),
+                    run=run,
+                    uses=uses if isinstance(uses, str) else None,
+                    disabled=job.disabled or _is_statically_false(body_step.get("if")),
+                )
+            )
+        workflow.jobs.append(job)
+    return workflow
+
+
+def workflow_files() -> list[Path]:
+    return sorted(WORKFLOW_DIR.glob("*.yml")) + sorted(WORKFLOW_DIR.glob("*.yaml"))
+
+
+def load_workflows() -> list[Workflow]:
+    return [_load_workflow(path) for path in workflow_files()]
+
+
+def triggerable(workflows: list[Workflow]) -> list[Workflow]:
+    """Workflows that can actually start.
+
+    A `workflow_call`-only workflow runs only when another workflow that itself
+    runs calls it; the closure below resolves that. A workflow no trigger can
+    fire is not CI, and a gate whose only invocation lives there is not run.
+    """
+    live = {w.rel for w in workflows if w.triggers & SELF_FIRING_TRIGGERS}
+    changed = True
+    while changed:
+        changed = False
+        for workflow in workflows:
+            if workflow.rel in live:
+                continue
+            for caller in workflows:
+                if caller.rel not in live:
+                    continue
+                for job in caller.jobs:
+                    if job.disabled or not job.calls:
+                        continue
+                    target = job.calls.lstrip("./")
+                    if workflow.rel.endswith(target) or target.endswith(workflow.rel):
+                        live.add(workflow.rel)
+                        changed = True
+    return [w for w in workflows if w.rel in live]
+
+
+def strip_shell_comments(script: str) -> str:
+    """Drop `#` comments from a shell/PowerShell body.
+
+    One level below the YAML fix and the same defect: `# make foo` inside a
+    `run:` script is a note about a gate, not a step that runs it. A `#` counts
+    as a comment when it starts a word outside quotes; `${FOO#bar}` and
+    `"a#b"` are left alone.
+    """
+    out: list[str] = []
+    for line in script.splitlines():
+        result = ""
+        quote = ""
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if quote:
+                if char == quote:
+                    quote = ""
+                result += char
+                index += 1
+                continue
+            if char in "'\"":
+                quote = char
+                result += char
+                index += 1
+                continue
+            if char == "#" and (index == 0 or line[index - 1] in " \t"):
+                break
+            result += char
+            index += 1
+        out.append(result)
+    return "\n".join(out)
+
+
+def ci_step_commands(workflows: list[Workflow]) -> list[tuple[str, str]]:
+    """(where, command text) for every CI step that can run and executes shell.
+
+    This is THE definition of "CI runs this" for every axis below: a runnable
+    step of a triggerable workflow, comment-stripped, plus the `run:` bodies of
+    any local composite action it uses.
+    """
+    out: list[tuple[str, str]] = []
+    for workflow in triggerable(workflows):
+        for job in workflow.jobs:
+            for step in job.steps:
+                if step.disabled:
+                    continue
+                if step.run is not None:
+                    out.append(
+                        (step.where, executing_text(strip_shell_comments(step.run)))
+                    )
+                if step.uses:
+                    for body in _composite_run_steps(step.uses):
+                        out.append(
+                            (step.where, executing_text(strip_shell_comments(body)))
+                        )
+    return out
+
 
 # ── Makefile ──────────────────────────────────────────────────────────────────
 
@@ -85,7 +746,11 @@ RULE_RE = re.compile(r"^([A-Za-z0-9_./%-]+(?:\s+[A-Za-z0-9_./%-]+)*)\s*:(?!=)\s*
 
 
 def parse_makefile(text: str) -> tuple[set[str], dict[str, set[str]], dict[str, str]]:
-    """Return (phony targets, target → prerequisites, target → recipe text)."""
+    """Return (phony targets, target → prerequisites, target → recipe text).
+
+    Recipe text is comment-stripped for the same reason workflow bodies are: a
+    commented-out `$(MAKE) foo` in a recipe is not a call.
+    """
     phony: set[str] = set()
     prereqs: dict[str, set[str]] = {}
     recipes: dict[str, str] = {}
@@ -93,7 +758,7 @@ def parse_makefile(text: str) -> tuple[set[str], dict[str, set[str]], dict[str, 
     for raw in text.splitlines():
         if raw.startswith("\t"):
             for tgt in current:
-                recipes[tgt] = recipes.get(tgt, "") + raw + "\n"
+                recipes[tgt] = recipes.get(tgt, "") + strip_shell_comments(raw) + "\n"
             continue
         if raw.startswith(".PHONY:"):
             phony.update(raw[len(".PHONY:") :].split())
@@ -116,11 +781,26 @@ def parse_makefile(text: str) -> tuple[set[str], dict[str, set[str]], dict[str, 
     return phony, prereqs, recipes
 
 
-# ── Roots: what CI and the dispatcher invoke directly ─────────────────────────
+# ── Roots: what CI invokes directly ───────────────────────────────────────────
 
 MAKE_INVOKE_RE = re.compile(
-    r"(?<![\w-])g?make\s+((?:[A-Za-z0-9_.-]+\s+)*[A-Za-z0-9_.-]+)"
+    r"(?<![\w-])g?make[^\S\n]+((?:[A-Za-z0-9_.-]+[^\S\n]+)*[A-Za-z0-9_.-]+)"
 )
+
+
+# Commands that print their arguments instead of running them. `echo "run make
+# foo"` names a target without invoking it — the same class of false edge as a
+# comment, one layer further in.
+_NON_EXECUTING_RE = re.compile(r"^@?-?(echo|printf|:)\b")
+
+
+def executing_text(script: str) -> str:
+    """`script` with the pure-output commands removed."""
+    return "\n".join(
+        segment
+        for segment in _command_segments(script)
+        if not _NON_EXECUTING_RE.match(_strip_keywords(" ".join(segment.split())))
+    )
 
 
 def make_targets_in(text: str, known: set[str]) -> set[str]:
@@ -128,7 +808,10 @@ def make_targets_in(text: str, known: set[str]) -> set[str]:
 
     Multi-target invocations (`make verify-ffi test-verify-ffi`) count for each
     named target; trailing VAR=value arguments are not targets and are dropped
-    by the `known` filter.
+    by the `known` filter. The separator class excludes newlines: `make lint`
+    followed by `make test` on the next line is two invocations, and a pattern
+    that let `\\s` swallow the break would read the second `make` as an
+    argument of the first and stop scanning there.
     """
     found: set[str] = set()
     for match in MAKE_INVOKE_RE.finditer(text):
@@ -138,14 +821,6 @@ def make_targets_in(text: str, known: set[str]) -> set[str]:
             else:
                 break
     return found
-
-
-def workflow_files() -> list[Path]:
-    return sorted(WORKFLOW_DIR.glob("*.yml")) + sorted(WORKFLOW_DIR.glob("*.yaml"))
-
-
-def workflow_text() -> str:
-    return "\n".join(path.read_text() for path in workflow_files())
 
 
 # ── Reachability closure ──────────────────────────────────────────────────────
@@ -163,7 +838,7 @@ def close_over_makefile(
     while frontier:
         target = frontier.pop()
         nxt = set(prereqs.get(target, set()))
-        recipe = recipes.get(target, "")
+        recipe = executing_text(recipes.get(target, ""))
         for match in re.finditer(r"\$\(MAKE\)\s+([A-Za-z0-9_.-]+)", recipe):
             nxt.add(match.group(1))
         nxt |= make_targets_in(recipe, known)
@@ -172,46 +847,6 @@ def close_over_makefile(
                 reached.add(dep)
                 frontier.append(dep)
     return reached
-
-
-SELECTOR_RE = re.compile(
-    r"^\s*cargo nextest run\s+--profile ci\s+((?:[^\n]|\\\n)*)$", re.M
-)
-
-
-def selected_crates(recipe: str) -> list[str] | None:
-    """Crates a `cargo nextest run --profile ci -p ...` recipe selects.
-
-    Returns None when the recipe is anything else (a script, a shell loop, a
-    workspace run, or a run carrying an extra `-E` filter) — only a plain
-    per-crate selection can have its coverage proved by containment.
-    """
-    body = recipe.strip()
-    if body.count("\n") != body.replace("\\\n", "").count("\n"):
-        pass
-    flat = body.replace("\\\n", " ")
-    lines = [ln.strip() for ln in flat.splitlines() if ln.strip()]
-    if len(lines) != 1:
-        return None
-    line = lines[0]
-    if not line.startswith("cargo nextest run --profile ci "):
-        return None
-    rest = line[len("cargo nextest run --profile ci ") :].split()
-    crates: list[str] = []
-    i = 0
-    while i < len(rest):
-        token = rest[i]
-        if token == "-p" and i + 1 < len(rest):
-            crates.append(rest[i + 1])
-            i += 2
-            continue
-        if token in {"--no-fail-fast"}:
-            i += 1
-            continue
-        # Anything else (-E, --workspace, --no-default-features, …) changes what
-        # runs, so containment cannot be proved mechanically.
-        return None
-    return crates or None
 
 
 # ── A2 / A3 helpers ───────────────────────────────────────────────────────────
@@ -234,11 +869,13 @@ def crate_name(member_path: str) -> str:
 
 
 def ci_test_commands(
-    workflows: str, recipes: dict[str, str], reached: set[str]
+    step_commands: list[tuple[str, str]], recipes: dict[str, str], reached: set[str]
 ) -> list[str]:
-    """Text of every test invocation CI can reach: workflow bodies plus the
-    recipes of the Makefile targets CI reaches."""
-    return [workflows] + [recipes.get(t, "") for t in sorted(reached)]
+    """Text of every test invocation CI can reach: the commands of runnable CI
+    steps plus the recipes of the Makefile targets CI reaches."""
+    return [command for _, command in step_commands] + [
+        executing_text(recipes.get(t, "")) for t in sorted(reached)
+    ]
 
 
 WORKSPACE_RUN_RE = re.compile(
@@ -256,7 +893,187 @@ def crate_covered(crate: str, blobs: list[str]) -> bool:
     return False
 
 
-def profile_ci_exclusions() -> list[tuple[str, str]]:
+# ── The nextest filterset grammar ─────────────────────────────────────────────
+#
+# `default-filter` is a boolean expression, not a list of `- term()` suffixes.
+# The previous regex (`-\s*(binary|package|test)\(([^)]+)\)`) read only terms
+# immediately after a `-`, so the leading `not package(hew-wasm)` of
+#
+#   not package(hew-wasm) - binary(parity) - binary(parity_ratchet) …
+#
+# was invisible and the gate reported "4/4 exclusions compensated" over a
+# five-exclusion filter. A pattern cannot honestly cover this grammar: `not`,
+# `!`, `-`, `and`/`&`, `or`/`|`/`+`, `^`, parentheses and nesting all change
+# which tests are subtracted. So parse it, and refuse anything whose subtracted
+# set this checker cannot name.
+
+
+@dataclass
+class FilterAtom:
+    kind: str
+    value: str
+
+    def __str__(self) -> str:
+        return f"{self.kind}({self.value})"
+
+
+@dataclass
+class FilterNot:
+    operand: object
+
+
+@dataclass
+class FilterBinary:
+    op: str
+    left: object
+    right: object
+
+
+class FiltersetError(Exception):
+    """A filterset expression this checker will not guess about."""
+
+
+_FILTER_TOKEN_RE = re.compile(
+    r"""
+      (?P<space>\s+)
+    | (?P<call>(?:all|none|test|binary|binary_id|package|deps|rdeps|kind|platform)\s*\()
+    | (?P<word>[A-Za-z_][A-Za-z0-9_]*)
+    | (?P<op>[()!&|+^-])
+    """,
+    re.VERBOSE,
+)
+
+
+def _tokenize_filterset(text: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    while index < len(text):
+        match = _FILTER_TOKEN_RE.match(text, index)
+        if not match:
+            raise FiltersetError(
+                f"unexpected character at offset {index}: {text[index]!r}"
+            )
+        index = match.end()
+        if match.lastgroup == "space":
+            continue
+        if match.lastgroup == "call":
+            name = match.group().rstrip("( \t")
+            depth = 1
+            start = index
+            while index < len(text) and depth:
+                if text[index] == "(":
+                    depth += 1
+                elif text[index] == ")":
+                    depth -= 1
+                index += 1
+            if depth:
+                raise FiltersetError(f"unterminated `{name}(`")
+            tokens.append(("call", f"{name}:{text[start : index - 1]}"))
+            continue
+        if match.lastgroup == "word":
+            word = match.group().lower()
+            if word not in {"and", "or", "not"}:
+                raise FiltersetError(f"unknown bare word `{match.group()}`")
+            tokens.append(("op", {"and": "&", "or": "|", "not": "!"}[word]))
+            continue
+        tokens.append(("op", match.group()))
+    return tokens
+
+
+def _parse_filterset(
+    tokens: list[tuple[str, str]], pos: int, min_prec: int
+) -> tuple[object, int]:
+    precedence = {"|": 1, "+": 1, "^": 2, "&": 3, "-": 3}
+    kind, value = tokens[pos]
+    if kind == "op" and value == "!":
+        operand, pos = _parse_filterset(tokens, pos + 1, 4)
+        node: object = FilterNot(operand)
+    elif kind == "op" and value == "(":
+        node, pos = _parse_filterset(tokens, pos + 1, 0)
+        if pos >= len(tokens) or tokens[pos] != ("op", ")"):
+            raise FiltersetError("unbalanced `(`")
+        pos += 1
+    elif kind == "call":
+        name, _, argument = value.partition(":")
+        node = FilterAtom(name, argument.strip())
+        pos += 1
+    else:
+        raise FiltersetError(f"expected an expression, found `{value}`")
+    while pos < len(tokens):
+        kind, value = tokens[pos]
+        if kind != "op" or value not in precedence or precedence[value] < min_prec:
+            break
+        right, pos = _parse_filterset(tokens, pos + 1, precedence[value] + 1)
+        node = FilterBinary(value, node, right)
+    return node, pos
+
+
+def parse_filterset(text: str) -> object:
+    tokens = _tokenize_filterset(text)
+    if not tokens:
+        raise FiltersetError("empty filter expression")
+    node, pos = _parse_filterset(tokens, 0, 0)
+    if pos != len(tokens):
+        raise FiltersetError(
+            f"trailing tokens after a complete expression: {tokens[pos][1]!r}"
+        )
+    return node
+
+
+def _union_atoms(node: object) -> list[FilterAtom]:
+    """Atoms of a union-only subtree; anything else has no single subtracted set."""
+    if isinstance(node, FilterAtom):
+        if node.kind in {"all", "none"}:
+            raise FiltersetError(f"`{node.kind}()` cannot be attributed to a test set")
+        return [node]
+    if isinstance(node, FilterBinary) and node.op in {"|", "+"}:
+        return _union_atoms(node.left) + _union_atoms(node.right)
+    raise FiltersetError(
+        "a negated sub-expression this checker cannot decompose into the exact "
+        "set it subtracts"
+    )
+
+
+def filterset_exclusions(text: str) -> list[FilterAtom]:
+    """The selectors a default-filter SUBTRACTS, or raise.
+
+    Accepts only the shape whose subtracted set is unambiguous: a conjunction
+    (`&`, `and`, `-`) whose terms are `all()` or negations. `package(hew-cli)`
+    as a whole filter also excludes almost everything, but naming what it
+    subtracts means enumerating every other package — so it is refused, loudly,
+    rather than reported as "no exclusions".
+    """
+    root = parse_filterset(text)
+    terms: list[tuple[object, bool]] = []
+
+    def flatten(node: object, negated: bool) -> None:
+        if isinstance(node, FilterBinary) and node.op in {"&", "-"}:
+            flatten(node.left, negated)
+            flatten(node.right, negated or node.op == "-")
+            return
+        terms.append((node, negated))
+
+    flatten(root, False)
+    exclusions: list[FilterAtom] = []
+    for node, negated in terms:
+        if isinstance(node, FilterAtom) and node.kind == "all" and not negated:
+            continue
+        if negated and not isinstance(node, FilterNot):
+            exclusions.extend(_union_atoms(node))
+            continue
+        if isinstance(node, FilterNot) and not negated:
+            exclusions.extend(_union_atoms(node.operand))
+            continue
+        raise FiltersetError(
+            f"term `{node}` selects rather than subtracts; this checker cannot "
+            "name the tests such a filter removes. Express the exclusions as "
+            "negated terms, or teach the checker this shape — do not leave it "
+            "reporting a smaller exclusion set than the file has."
+        )
+    return exclusions
+
+
+def profile_ci_exclusions() -> list[FilterAtom]:
     text = NEXTEST_TOML.read_text()
     section = re.search(r"^\[profile\.ci\]$(.*?)^\[", text, re.S | re.M)
     if not section:
@@ -264,12 +1081,12 @@ def profile_ci_exclusions() -> list[tuple[str, str]]:
     filt = re.search(r'^default-filter\s*=\s*"([^"]*)"', section.group(1), re.M)
     if not filt:
         raise SystemExit("error: [profile.ci] has no default-filter to check")
-    return [
-        (kind, name)
-        for kind, name in re.findall(
-            r"-\s*(binary|package|test)\(([^)]+)\)", filt.group(1)
-        )
-    ]
+    try:
+        return filterset_exclusions(filt.group(1))
+    except FiltersetError as error:
+        raise SystemExit(
+            f"error: [profile.ci] default-filter {filt.group(1)!r}: {error}"
+        ) from error
 
 
 IGNORE_RE = re.compile(r"^\s*#\[ignore\b")
@@ -314,71 +1131,457 @@ def ignored_tests_run_for(crate: str, blobs: list[str]) -> bool:
     return False
 
 
-# ── A3d helpers: inline `-E` filter exclusions ────────────────────────────────
+# ── A3d: inline `-E` filter exclusions ────────────────────────────────────────
+#
+# Two defects fixed here. The old `-E\s+'([^']*)'` saw only single-quoted
+# filters, so `-E "not test(x)"` or a bare `-E not-a-quote` was silently no
+# filter at all; and the old witness accepted ANY run containing `--workspace`,
+# so a run that excluded the very crate being filtered "compensated" it. Both
+# let A3d report compensated while the tests ran nowhere — the class this axis
+# exists to detect. So: tokenise the command properly, and require an
+# unfiltered run PER PACKAGE of the filtered run's scope.
 
-RUN_KEY_RE = re.compile(r"^(\s*)run:\s*(.*)$")
 
+@dataclass
+class CargoInvocation:
+    """One `cargo …` command, tokenised.
 
-def run_commands(text: str) -> list[str]:
-    """Every `run:` command in a workflow, with folded/literal blocks joined.
-
-    A step's command may be a one-liner or a `>-`/`|` block; both must read as a
-    single command string or an `-E` on its own continuation line is invisible.
+    Every `-E` spelling nextest accepts is recognised — `-E expr`, `-E 'expr'`,
+    `-E "expr"`, `-E=expr`, `--filter-expr`, repeated — because the tokeniser is
+    a shell tokeniser rather than a quote-shaped regex. The old
+    `-E\\s+'([^']*)'` saw single quotes only, so `-E "not test(x)"` read as no
+    filter at all.
     """
-    commands: list[str] = []
-    lines = text.splitlines()
-    index = 0
-    while index < len(lines):
-        match = RUN_KEY_RE.match(lines[index])
-        if not match:
-            index += 1
-            continue
-        indent, inline = match.group(1), match.group(2).strip()
+
+    where: str
+    command: str
+    subcommand: str
+    workspace: bool
+    packages: set[str]
+    excludes: set[str]
+    expr_filters: list[str]
+    name_filters: list[str]
+    tokens: list[str]
+    probe: bool
+
+    @property
+    def filters(self) -> list[str]:
+        return self.expr_filters + self.name_filters
+
+    @property
+    def filtered(self) -> bool:
+        return bool(self.filters)
+
+    def scope(self, all_crates: list[str]) -> set[str]:
+        """Packages this command runs. A bare `cargo test` at a virtual
+        workspace root runs the whole workspace, same as `--workspace`."""
+        base = (
+            set(all_crates)
+            if self.workspace or not self.packages
+            else set(self.packages)
+        )
+        return base - self.excludes
+
+
+TEST_SUBCOMMANDS = {"nextest run", "test", "llvm-cov nextest", "llvm-cov test"}
+NEXTEST_SUBCOMMANDS = {"nextest run", "llvm-cov nextest"}
+# Flags that change only how cargo REPORTS, never what it checks or runs. A
+# containment proof may ignore these and nothing else.
+OUTPUT_ONLY_FLAGS = ("--message-format", "--color", "--quiet", "-q", "--verbose")
+
+# Flags that consume the next token. Anything else that looks like a flag is
+# treated as boolean — and if an UNKNOWN long flag is followed by a bare word,
+# the checker stops rather than guess, because that word is either a value it
+# must skip or a test-name filter it must count, and the two answers disagree
+# about whether the run is filtered.
+_VALUE_FLAGS = {
+    "--profile",
+    "--test",
+    "--bin",
+    "--example",
+    "--features",
+    "--target",
+    "--target-dir",
+    "--config",
+    "--config-file",
+    "--manifest-path",
+    "--output-path",
+    "--output-dir",
+    "--status-level",
+    "--final-status-level",
+    "--failure-output",
+    "--success-output",
+    "--run-ignored",
+    "--ignore-filename-regex",
+    "--cargo-profile",
+    "--test-threads",
+    "--retries",
+    "--partition",
+    "--message-format",
+    "--color",
+    "-j",
+    "--jobs",
+    "-E",
+    "--filter-expr",
+    "--filter-expression",
+    "-p",
+    "--package",
+    "--exclude",
+}
+
+# Long flags that take no value; every other unknown long flag is ambiguous.
+_BOOLEAN_FLAGS = {
+    "--workspace",
+    "--all",
+    "--all-targets",
+    "--all-features",
+    "--no-default-features",
+    "--no-fail-fast",
+    "--no-run",
+    "--no-capture",
+    "--nocapture",
+    "--lib",
+    "--tests",
+    "--benches",
+    "--examples",
+    "--doc",
+    "--release",
+    "--locked",
+    "--offline",
+    "--frozen",
+    "--verbose",
+    "--quiet",
+    "--lcov",
+    "--html",
+    "--json",
+    "--summary-only",
+    "--no-report",
+    "--branch",
+    "--version",
+    "--help",
+    "--hide-progress-bar",
+    "--ignore-default-filter",
+}
+
+CARGO_CMD_RE = re.compile(r"(?<![\w./-])cargo(?![\w-])")
+_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;\n]")
+
+
+def _command_segments(script: str) -> list[str]:
+    """Split a shell body into the individual commands it runs."""
+    return [
+        segment.strip()
+        for segment in _SEGMENT_SPLIT_RE.split(script.replace("\\\n", " "))
+        if segment.strip()
+    ]
+
+
+def parse_cargo_command(where: str, segment: str) -> CargoInvocation | None:
+    """Model one `cargo` command, or fail closed.
+
+    Returns None when the segment runs no cargo at all. Raises when it does but
+    cannot be tokenised: a command this checker cannot read is a command whose
+    filters and package scope it cannot check, and guessing is how a filtered
+    run gets certified as unfiltered.
+    """
+    if not CARGO_CMD_RE.search(segment):
+        return None
+    try:
+        tokens = shlex.split(segment, comments=False)
+    except ValueError as error:
+        raise SystemExit(
+            f"error: {where}: cannot tokenise a cargo command ({error}): {segment!r}. "
+            "A command this checker cannot read is a command whose filters it "
+            "cannot check."
+        ) from error
+    try:
+        start = next(i for i, t in enumerate(tokens) if t == "cargo")
+    except StopIteration:
+        return None
+    index = start + 1
+    if index < len(tokens) and tokens[index].startswith("+"):
         index += 1
-        if inline and not inline.startswith((">", "|")):
-            commands.append(inline)
-            continue
-        body: list[str] = []
-        while index < len(lines):
-            line = lines[index]
-            if line.strip() and len(line) - len(line.lstrip()) <= len(indent):
-                break
-            body.append(line.strip())
+    if index >= len(tokens):
+        return None
+    subcommand = tokens[index]
+    index += 1
+    if subcommand in {"nextest", "llvm-cov"} and index < len(tokens):
+        if tokens[index] in {"run", "test", "nextest"}:
+            subcommand = f"{subcommand} {tokens[index]}"
             index += 1
-        commands.append(" ".join(part for part in body if part))
-    return commands
+    invocation = CargoInvocation(
+        where=where,
+        command=segment,
+        subcommand=subcommand,
+        workspace=False,
+        packages=set(),
+        excludes=set(),
+        expr_filters=[],
+        name_filters=[],
+        tokens=tokens,
+        probe="--version" in tokens or "--help" in tokens,
+    )
+    saw_double_dash = False
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if token == "--":
+            saw_double_dash = True
+            continue
+        if saw_double_dash:
+            continue
+        if token in {"-E", "--filter-expr", "--filter-expression"}:
+            if index >= len(tokens):
+                raise SystemExit(f"error: {where}: `{token}` with no expression")
+            invocation.expr_filters.append(tokens[index])
+            index += 1
+            continue
+        if token.startswith(("-E=", "--filter-expr=", "--filter-expression=")):
+            invocation.expr_filters.append(token.split("=", 1)[1])
+            continue
+        if token in {"-p", "--package"}:
+            invocation.packages.add(tokens[index])
+            index += 1
+            continue
+        if token.startswith(("-p=", "--package=")):
+            invocation.packages.add(token.split("=", 1)[1])
+            continue
+        if token == "--exclude":
+            invocation.excludes.add(tokens[index])
+            index += 1
+            continue
+        if token.startswith("--exclude="):
+            invocation.excludes.add(token.split("=", 1)[1])
+            continue
+        if token in {"--workspace", "--all"}:
+            invocation.workspace = True
+            continue
+        if token.startswith("-"):
+            if token in _VALUE_FLAGS:
+                index += 1
+                continue
+            if (
+                token.startswith("--")
+                and "=" not in token
+                and token not in _BOOLEAN_FLAGS
+                and index < len(tokens)
+                and not tokens[index].startswith("-")
+            ):
+                raise SystemExit(
+                    f"error: {where}: unclassified flag `{token}` followed by "
+                    f"`{tokens[index]}` in {segment!r}. Add it to _VALUE_FLAGS or "
+                    "_BOOLEAN_FLAGS: whether that word is a value or a test-name "
+                    "filter decides whether this run counts as filtered, and "
+                    "guessing is how a filtered run gets certified as unfiltered."
+                )
+            continue
+        # A bare positional is a test-name filter: it narrows the run exactly
+        # like `-E` does, so it must be treated as one.
+        invocation.name_filters.append(token)
+    return invocation
 
 
-DASH_E_RE = re.compile(r"-E\s+'([^']*)'")
-SELECTOR_RE = re.compile(r"(binary|package|test)\(([^)]*)\)")
+def cargo_commands_in(where: str, script: str) -> list[CargoInvocation]:
+    out: list[CargoInvocation] = []
+    for segment in _command_segments(script):
+        invocation = parse_cargo_command(where, segment)
+        if invocation is not None:
+            out.append(invocation)
+    return out
 
 
-def nextest_runs_in_ci() -> list[tuple[str, str]]:
-    """(workflow-relative path, command) for every CI nextest invocation."""
-    runs: list[tuple[str, str]] = []
-    for path in workflow_files():
-        rel = str(path.relative_to(REPO_ROOT))
-        for command in run_commands(path.read_text()):
-            if re.search(r"cargo\s+(?:nextest\s+run|llvm-cov\s+nextest)", command):
-                runs.append((rel, command))
+def nextest_runs(
+    step_commands: list[tuple[str, str]], recipes: dict[str, str], reached: set[str]
+) -> list[CargoInvocation]:
+    """Every nextest invocation CI can reach — workflow steps AND the recipes of
+    CI-reached Makefile targets. `make test-cabi` is a real unfiltered run of
+    hew-cabi; a compensation check that only looked at workflow bodies would
+    miss it and demand a duplicate step."""
+    sources = list(step_commands)
+    sources += [
+        (f"Makefile: {target}", recipes.get(target, "")) for target in sorted(reached)
+    ]
+    runs: list[CargoInvocation] = []
+    for where, script in sources:
+        for invocation in cargo_commands_in(where, script):
+            if invocation.subcommand in NEXTEST_SUBCOMMANDS and not invocation.probe:
+                runs.append(invocation)
     return runs
 
 
-def unfiltered_cover(runs: list[tuple[str, str]]) -> str | None:
-    """A CI nextest run over the whole workspace that carries no `-E`.
+def uncompensated_packages(
+    run: CargoInvocation, runs: list[CargoInvocation], all_crates: list[str]
+) -> list[str]:
+    """Packages the filtered `run` narrows that NO unfiltered CI run executes.
 
-    Deliberately coarse: a run whose own `-E` happens not to mention a given
-    selector is not accepted as compensation, because a second filter can still
-    remove the same tests by a different term. Only a genuinely unfiltered
-    workspace run proves the subtracted tests execute somewhere. Which *crates*
-    that run covers is A2's question, not this one's.
+    Per package, not per command: `--workspace --exclude hew-cabi` genuinely
+    compensates every package except hew-cabi, and `make test-cabi` compensates
+    that one. What is never accepted is a "witness" that excludes the very
+    package it is supposed to vouch for — the old check took any `--workspace`
+    run, `--exclude`s and all, which let A3d certify a filter while the tests it
+    subtracts ran nowhere.
     """
-    for rel, command in runs:
-        if DASH_E_RE.search(command):
+    covered: set[str] = set()
+    for other in runs:
+        if other is run or other.filtered:
             continue
-        if "--workspace" in command:
-            return f"{rel}: {command.strip()[:90]}"
-    return None
+        covered |= other.scope(all_crates)
+    return sorted(run.scope(all_crates) - covered)
+
+
+# ── Containment: proving a target CI never names is nevertheless run ──────────
+#
+# `make test`, `make test-rust` and `make lint` are local entry points that fan
+# out to work CI does in pieces — CI cannot run `make test-rust` verbatim,
+# because its workspace run has no `--exclude hew-cabi` and that crate's
+# cfg(test) symbols collide with hew-runtime's at link time. Deleting the
+# developer entry point is not the answer, and neither is a waiver.
+#
+# So: a PROOF, uniform and mechanical. A target no CI step invokes is reached
+# only when every prerequisite is reached AND every command in its recipe is
+# one CI already runs. Anything the rules below cannot classify leaves the
+# target unreached — `lint-wasm-todo`'s `bash scripts/lint-wasm-todo-issue-ref.sh`
+# is not provable by any of them, which is exactly why it had to be wired into
+# a workflow rather than argued about.
+
+# Shell keywords that can prefix a real command (`if cargo …`, `then cargo …`).
+# They are stripped so the command behind them is judged on its own merits: a
+# blanket `^if .*` rule would class `if cargo nextest run -E weird; then` as
+# harmless scaffolding, which is the shape of the very hole this file exists to
+# close.
+_LEADING_KEYWORDS = ("if", "elif", "while", "until", "then", "else", "do", "!")
+
+# Commands that assert nothing about the code under test: shell bookkeeping,
+# progress output, and preconditions on build artefacts. `test -f target/…`
+# is here because it asserts the BUILD produced a file, not that any behaviour
+# holds — the surrounding cargo commands carry the verdict.
+SCAFFOLDING_RE = re.compile(
+    r"""^@?-?(
+          set\s+[-+]\w+
+        | echo\b.*
+        | printf\b.*
+        | true | false | :
+        | fi | done | esac
+        | for\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+[^`$]*
+        | command\s+-v\b.*
+        | cd\s+\S+
+        | test\s+-[efxdsr]\s+target/\S+
+        )$""",
+    re.VERBOSE | re.S,
+)
+
+
+def _strip_keywords(text: str) -> str:
+    words = text.split()
+    while words and words[0].strip("@-") in _LEADING_KEYWORDS:
+        words.pop(0)
+    return " ".join(words)
+
+
+def _covers_flags(inner: CargoInvocation, outer: CargoInvocation) -> bool:
+    """Every significant flag of `inner` also appears in `outer`.
+
+    Output-only flags are ignored on the OUTER side only: CI may render clippy
+    as JSON for SARIF, but it may not quietly drop `-D warnings` or add an
+    `--exclude` the inner command does not have.
+    """
+    inner_flags = [t for t in inner.tokens if t.startswith("-")]
+    outer_flags = {t for t in outer.tokens if t.startswith("-")}
+    if any(
+        flag not in outer_flags and not flag.startswith(OUTPUT_ONLY_FLAGS)
+        for flag in inner_flags
+    ):
+        return False
+    return not outer.excludes - inner.excludes
+
+
+def _command_is_covered(
+    segment: str,
+    where: str,
+    reached: set[str],
+    known: set[str],
+    ci_cargo: list[CargoInvocation],
+    blobs: list[str],
+    all_crates: list[str],
+    excluded_binaries: set[str],
+) -> bool:
+    text = _strip_keywords(" ".join(segment.split()))
+    if not text or SCAFFOLDING_RE.match(text):
+        return True
+    targets = make_targets_in(text, known) | {
+        m.group(1) for m in re.finditer(r"\$\(MAKE\)\s+([A-Za-z0-9_.-]+)", text)
+    }
+    if targets:
+        return targets <= reached
+    invocation = parse_cargo_command(where, text)
+    if invocation is None:
+        return False
+    if invocation.probe:
+        return True
+    if not text.lstrip("@").startswith("cargo"):
+        # A leading `VAR=value` (a sanitizer RUSTFLAGS, a redirected target dir)
+        # changes what the command proves. Fail closed.
+        return False
+    if invocation.subcommand in TEST_SUBCOMMANDS:
+        # A test selection is contained when CI runs every package it names.
+        # Narrowing (`--test bin`, a test-name filter) only shrinks the set —
+        # unless the binary it names is one profile.ci subtracts, in which case
+        # the CI run does NOT include it and there is nothing to contain.
+        for index, token in enumerate(invocation.tokens):
+            if token == "--test" and index + 1 < len(invocation.tokens):
+                if invocation.tokens[index + 1] in excluded_binaries:
+                    return False
+        return all(
+            crate_covered(crate, blobs) for crate in invocation.scope(all_crates)
+        )
+    if invocation.subcommand in {"clippy", "fmt"}:
+        return any(
+            other.subcommand == invocation.subcommand
+            and (
+                other.workspace
+                or not other.packages
+                or invocation.packages <= other.packages
+            )
+            and _covers_flags(invocation, other)
+            for other in ci_cargo
+        )
+    return False
+
+
+def prove_contained(
+    target: str,
+    prereqs: dict[str, set[str]],
+    recipes: dict[str, str],
+    reached: set[str],
+    known: set[str],
+    ci_cargo: list[CargoInvocation],
+    blobs: list[str],
+    all_crates: list[str],
+    excluded_binaries: set[str],
+) -> bool:
+    # Gate-shaped prerequisites must themselves be reached. Build prerequisites
+    # (`stdlib`, `runtime`, `wasm-runtime`) are out of A1's scope for the same
+    # reason they are not gates: they produce artefacts, not verdicts.
+    gate_prereqs = {
+        prereq
+        for prereq in prereqs.get(target, set())
+        if prereq in known and GATE_NAME_RE.match(prereq)
+    }
+    if not gate_prereqs <= reached:
+        return False
+    for segment in _command_segments(recipes.get(target, "")):
+        if not _command_is_covered(
+            segment,
+            f"Makefile: {target}",
+            reached,
+            known,
+            ci_cargo,
+            blobs,
+            all_crates,
+            excluded_binaries,
+        ):
+            return False
+    return True
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -391,13 +1594,30 @@ def main() -> int:
     makefile_text = MAKEFILE.read_text()
     phony, prereqs, recipes = parse_makefile(makefile_text)
     known = set(prereqs) | phony
-    workflows = workflow_text()
-    dispatcher = DISPATCHER.read_text()
+    try:
+        workflows = load_workflows()
+    except YamlError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    live = triggerable(workflows)
+    step_commands = ci_step_commands(workflows)
+    ci_text = "\n".join(command for _, command in step_commands)
+
+    print(
+        f"==> parsed {len(workflows)} workflow(s); {len(live)} can trigger; "
+        f"{len(step_commands)} runnable step command(s)"
+    )
+    if verbose:
+        for workflow in workflows:
+            state = "live" if workflow in live else "NEVER TRIGGERS"
+            print(
+                f"      {workflow.rel}: {','.join(sorted(workflow.triggers))} [{state}]"
+            )
 
     # ── A0: this checker is itself reached by CI ──────────────────────────────
-    print("==> A0: reachability gate is invoked by CI")
-    if SELF_TARGET in make_targets_in(workflows, known) or re.search(
-        r"check-gate-reachability\.py", workflows
+    print("\n==> A0: reachability gate is invoked by CI")
+    if SELF_TARGET in make_targets_in(ci_text, known) or re.search(
+        r"check-gate-reachability\.py", ci_text
     ):
         print(f"     ok — a CI workflow step runs `{SELF_TARGET}`.")
     else:
@@ -417,7 +1637,21 @@ def main() -> int:
     # this script exists to close. The reverse direction (a CI-required step
     # missing from the dispatcher) is check-preflight-ci-parity.sh's job, so
     # between the two every gate is pinned to both graphs.
-    roots = make_targets_in(workflows, known)
+    members = workspace_members()
+    crates = [crate_name(m) for m in members]
+    exclusions = profile_ci_exclusions()
+    excluded_binaries = {
+        atom.value.lstrip("~=")
+        for atom in exclusions
+        if atom.kind in {"binary", "binary_id"}
+    }
+    ci_cargo = [
+        invocation
+        for where, script in step_commands
+        for invocation in cargo_commands_in(where, script)
+    ]
+
+    roots = make_targets_in(ci_text, known)
     reached = close_over_makefile(roots, prereqs, recipes, known)
 
     gates = sorted(t for t in phony if GATE_NAME_RE.match(t))
@@ -426,20 +1660,40 @@ def main() -> int:
         print("    Roots (invoked directly by a CI workflow step):")
         for t in sorted(roots):
             print(f"      - {t}")
-    # A per-crate selector is reached when everything it selects already runs in
-    # CI. That is a containment PROOF, not an exemption: `make test-types` is a
-    # narrower spelling of tests the CI workspace run executes, so it cannot
-    # hide an unrun assertion. A selector naming a crate CI does not run stays
-    # unreached and must be wired or cut like anything else.
-    selector_blobs = ci_test_commands(workflows, recipes, reached)
-    covered_selectors = set()
-    for target in gates:
-        if target in reached:
-            continue
-        picked = selected_crates(recipes.get(target, ""))
-        if picked and all(crate_covered(c, selector_blobs) for c in picked):
-            covered_selectors.add(target)
-    reached |= covered_selectors
+    # Then the containment proof, to a fixpoint: a target CI never names is
+    # reached when every prerequisite is reached and every command in its recipe
+    # is one CI runs anyway. `make test-rust` is the workspace suite CI runs in
+    # pieces; `make lint` is CI's clippy invocation plus prerequisites that are
+    # each their own CI step. A target with one unclassifiable command — a bash
+    # script, a sanitizer-flagged run, a `cargo miri test` — is NOT proved, and
+    # stays a wire-or-cut decision.
+    proved: set[str] = set()
+    while True:
+        blobs = ci_test_commands(step_commands, recipes, reached)
+        newly = {
+            target
+            for target in gates
+            if target not in reached
+            and prove_contained(
+                target,
+                prereqs,
+                recipes,
+                reached,
+                known,
+                ci_cargo,
+                blobs,
+                crates,
+                excluded_binaries,
+            )
+        }
+        if not newly:
+            break
+        proved |= newly
+        reached = close_over_makefile(reached | newly, prereqs, recipes, known)
+    if verbose and proved:
+        print("    Proved contained (CI runs every command they run):")
+        for t in sorted(proved):
+            print(f"      - {t}")
 
     unreached = [t for t in gates if t not in reached]
     for target in unreached:
@@ -449,14 +1703,12 @@ def main() -> int:
             "reached by no CI workflow step. Wire it into the job where it "
             "belongs, or delete the target and everything that exists only to "
             "serve it. A local-preflight-only edge does not count: it never "
-            "runs on a pull request.",
+            "runs on a pull request, and neither does a mention in a comment.",
         )
     print(f"    {len(gates) - len(unreached)}/{len(gates)} gate targets reached.")
 
     # ── A2: every workspace crate is tested by CI ─────────────────────────────
-    members = workspace_members()
-    crates = [crate_name(m) for m in members]
-    blobs = ci_test_commands(workflows, recipes, reached)
+    blobs = ci_test_commands(step_commands, recipes, reached)
     print(f"\n==> A2: workspace crate coverage ({len(crates)} crates)")
     uncovered = [c for c in crates if not crate_covered(c, blobs)]
     for crate in uncovered:
@@ -473,7 +1725,7 @@ def main() -> int:
     # ── A3a: CI runs only the ci nextest profile ──────────────────────────────
     print("\n==> A3a: CI uses no fast-tier nextest profile")
     bad_profiles = sorted(
-        set(re.findall(r"--profile\s+([A-Za-z0-9_-]+)", workflows))
+        set(re.findall(r"--profile\s+([A-Za-z0-9_-]+)", ci_text))
         - CI_ALLOWED_NEXTEST_PROFILES
     )
     # `--profile` also names cargo build profiles (release, dev); only flag the
@@ -493,28 +1745,34 @@ def main() -> int:
     print(f"     ok — {len(bad_profiles)} disallowed profile use(s) in workflows.")
 
     # ── A3b: profile.ci exclusions are compensated ────────────────────────────
-    exclusions = profile_ci_exclusions()
     print(f"\n==> A3b: profile.ci default-filter exclusions ({len(exclusions)})")
-    for kind, name in exclusions:
-        token = name.lstrip("~")
-        if kind == "package":
+    for atom in exclusions:
+        token = atom.value.lstrip("~=")
+        if atom.kind == "package":
             covered = crate_covered(token, blobs)
-        else:
+        elif atom.kind in {"binary", "binary_id", "test"}:
             covered = any(
                 re.search(rf"(?<![\w-]){re.escape(token)}(?![\w-])", b) for b in blobs
+            )
+        else:
+            raise SystemExit(
+                f"error: profile.ci subtracts `{atom}`, whose compensation this "
+                "checker cannot express. Teach it that selector or state the "
+                "exclusion in terms it can check."
             )
         if not covered:
             findings.fail(
                 "A3b",
-                f"{kind}({name})",
+                str(atom),
                 "subtracted from profile.ci's default-filter and named by no CI "
                 "step or CI-reached Makefile target, so nothing runs it. Route it "
                 "back into the CI run, give it a dedicated step, or delete it.",
             )
         elif verbose:
-            print(f"  ok  {kind}({name}) run by a CI-reached invocation")
+            print(f"  ok  {atom} run by a CI-reached invocation")
     print(
-        f"    {len(exclusions) - sum(1 for f in findings.failures if '[A3b]' in f)}/{len(exclusions)} exclusions compensated."
+        f"    {len(exclusions) - findings.count('A3b')}/{len(exclusions)} "
+        "exclusions compensated."
     )
 
     # ── A3c: #[ignore] only where CI runs ignored tests ───────────────────────
@@ -537,32 +1795,25 @@ def main() -> int:
             print(f"  ok  {crate}: ignored tests run by a CI-reached target")
 
     # ── A3d: inline `-E` exclusions are compensated ───────────────────────────
-    ci_runs = nextest_runs_in_ci()
-    filtered = [
-        (rel, cmd, expr) for rel, cmd in ci_runs for expr in DASH_E_RE.findall(cmd)
-    ]
-    print(f"\n==> A3d: inline `-E` filter exclusions ({len(filtered)})")
-    for rel, command, expr in filtered:
-        selectors = sorted(
-            {f"{kind}({name})" for kind, name in SELECTOR_RE.findall(expr)}
-        )
-        witness = unfiltered_cover(ci_runs)
-        if witness is None:
+    runs = nextest_runs(step_commands, recipes, reached)
+    filtered = [run for run in runs if run.filtered]
+    print(f"\n==> A3d: filtered nextest runs ({len(filtered)} of {len(runs)})")
+    for run in filtered:
+        missing = uncompensated_packages(run, runs, crates)
+        if missing:
             findings.fail(
                 "A3d",
-                f"{rel}: -E '{expr}'",
-                "this step filters its nextest run and no CI step runs the "
-                f"workspace unfiltered, so {', '.join(selectors)} is subtracted "
-                "everywhere. An `-E` is only honest when some other job runs the "
-                "same scope with no filter; wire that job, or delete the tests "
-                "this expression hides.",
+                f"{run.where}: {' '.join(f'-E {f!r}' for f in run.filters)}",
+                "this step filters its nextest run and no unfiltered CI run "
+                f"executes {', '.join(missing)}, so whatever the filter subtracts "
+                "for those packages is subtracted everywhere. A `--workspace` run "
+                "that --excludes the package does not vouch for it. Wire an "
+                "unfiltered run, or delete the tests this expression hides.",
             )
         elif verbose:
-            print(f"  ok  -E '{expr}' compensated by {witness}")
-    if filtered and not any("[A3d]" in f for f in findings.failures):
-        print(
-            f"    {len(filtered)}/{len(filtered)} inline `-E` exclusions compensated."
-        )
+            print(f"  ok  {run.where}: {run.filters} compensated per package")
+    if filtered and not findings.count("A3d"):
+        print(f"    {len(filtered)}/{len(filtered)} filtered runs compensated.")
 
     # ── Verdict ───────────────────────────────────────────────────────────────
     print("")

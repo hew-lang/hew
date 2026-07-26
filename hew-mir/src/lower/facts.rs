@@ -2114,8 +2114,7 @@ fn fn_body_returns_fresh_owner(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, bool>
 /// [`crate::return_provenance::compute_fn_return_launders_opaque_extern`] is
 /// conjoined into it ONCE, inside
 /// [`crate::return_provenance::FreshOwnerVerdicts`], and that authority is the
-/// only thing [`callee_returns_fresh_owner`] and
-/// [`callee_returns_analyzed_fresh_owner`] can be called with.
+/// only thing [`callee_returns_fresh_owner`] can be called with.
 fn return_value_may_alias_borrow(
     expr: &HirExpr,
     body: &hew_hir::HirBlock,
@@ -2124,74 +2123,34 @@ fn return_value_may_alias_borrow(
     crate::return_provenance::coarse_may_alias_borrow_in_body(expr, body, fresh)
 }
 /// Resolve a `Call` callee to its freshness fact, read from the SINGLE
-/// table-aware authority ([`FreshOwnerVerdicts`]).
+/// table-aware authority ([`FreshOwnerVerdicts`]): `true` only when `callee`
+/// resolves to a function body this module's freshness fixpoint actually
+/// ANALYZED, proved fresh, AND proved free of any ownership-opaque extern on
+/// every return path.
 ///
 /// - A declared `extern "C"` callee with no audited fresh-owner return contract
 ///   is vetoed FIRST, by NAME. Its call site's `ResolvedRef::Item` carries a
-///   placeholder id, so no id lookup can catch it; without this veto the
-///   body-less fallback below would classify an un-audited host as a fresh-owner
-///   producer.
+///   placeholder id, so no id lookup can catch it — an id lookup would also
+///   COLLIDE with the module-fn summary space.
 /// - A statically-resolved item callee (`BindingRef { resolved: Item(id) }`)
 ///   reads its authority row: the coarse interprocedural verdict CONJOINED with
 ///   the opaque-extern laundering veto. A Hew function that forwards a by-value
 ///   parameter is `false` (the coarse fixpoint); a Hew wrapper that launders an
 ///   opaque extern's return is `false` too (the taint fixpoint), transitively.
-/// - A resolved item callee with NO row is a compiler-emitted body-less item —
-///   an aggregate constructor or a runtime primitive (`hew_string_repeat`,
-///   `hew_vec_*`, …). Both return a freshly-owned value by the cross-ABI
-///   owned-return contract: a callee returning a heap type hands back a value
-///   the caller owns and must free, so it cannot be a borrowed alias of an
-///   argument (an extern that returned an un-retained borrow would double-free
-///   in EVERY caller that frees the result — that is an ABI violation at the
-///   extern boundary, the same trust the `RecordCloneCall` / `Index` / `Slice`
-///   arms already extend to the `hew_*_clone` / `hew_*_get_clone` primitives
-///   they lower to). A DECLARED extern can never reach this arm: the name veto
-///   above claims it. Classified fresh.
+/// - A resolved item callee with NO row is an item this module never analysed —
+///   a compiler-emitted body-less item, a cross-module item, or the placeholder
+///   id of a declared extern. It answers `false`: not-analysed is not a
+///   freshness proof, and the worst case of declining is a missed drop, never a
+///   caller-side double release.
 /// - Any other callee shape (an unresolved name, a value-typed fn pointer, an
 ///   indirect/closure call) is not statically resolvable and fails closed.
-pub(super) fn callee_returns_fresh_owner(
-    callee: &HirExpr,
-    verdicts: &crate::return_provenance::FreshOwnerVerdicts,
-) -> bool {
-    let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
-        return false;
-    };
-    let symbol = match resolved {
-        ResolvedRef::Builtin(family) => family.c_symbol(),
-        _ => name.as_str(),
-    };
-    if verdicts.symbol_is_ownership_opaque_extern(symbol) {
-        return false;
-    }
-    if let ResolvedRef::Item(item_id) = resolved {
-        verdicts.item_returns_fresh_owner(*item_id)
-    } else {
-        false
-    }
-}
-/// The OWNERSHIP-SAFE sibling of [`callee_returns_fresh_owner`]: `true` only
-/// when `callee` resolves to a function body this module's freshness fixpoint
-/// actually ANALYZED, proved fresh, AND proved free of any ownership-opaque
-/// extern on every return path.
-///
-/// [`callee_returns_fresh_owner`] answers `true` for a resolved item that is
-/// ABSENT from the summary (`unwrap_or(true)`) — the cross-ABI owned-return
-/// fallback that covers aggregate constructors and runtime primitives. A
-/// declared `extern "C"` fn is also body-less, so that fallback silently
-/// classifies an un-audited host as a fresh-owner producer; and because an
-/// extern's declaration id never matches its call site's resolved id, the
-/// lookup is an id COLLISION against the module-fn summary space as well.
-///
-/// A consumer that mints a caller-side RELEASE obligation from the answer must
-/// use this variant: an absent row is NOT fresh. Worst case is a leak; the
-/// fallback's worst case is a double release.
 ///
 /// # The row must be TABLE-DERIVED, not merely present
 ///
-/// Requiring a `true` row in the plain summary is not enough, because that
-/// summary is built before and independently of the extern contract table and
-/// its own leaf policy launders a body-less extern into `Fresh`. A single Hew
-/// frame is then enough to restore the forbidden caller drop:
+/// Requiring a `true` row in the plain coarse summary is not enough, because
+/// that summary is built before and independently of the extern contract table
+/// and its own leaf policy launders a body-less extern into `Fresh`. A single
+/// Hew frame is then enough to restore the forbidden caller drop:
 ///
 /// ```hew
 /// extern "C" { fn host_string() -> string; }
@@ -2213,7 +2172,7 @@ pub(super) fn callee_returns_fresh_owner(
 /// answers `true` here.
 ///
 /// [`ExternContractTable`]: crate::return_provenance::ExternContractTable
-pub(super) fn callee_returns_analyzed_fresh_owner(
+pub(super) fn callee_returns_fresh_owner(
     callee: &HirExpr,
     verdicts: &crate::return_provenance::FreshOwnerVerdicts,
 ) -> bool {
@@ -2230,7 +2189,7 @@ pub(super) fn callee_returns_analyzed_fresh_owner(
     let ResolvedRef::Item(item_id) = resolved else {
         return false;
     };
-    verdicts.item_returns_analyzed_fresh_owner(*item_id)
+    verdicts.item_returns_fresh_owner(*item_id)
 }
 /// True when `callee` names a statically-resolved Item — a free function (whose
 /// body the freshness fixpoint analyzed), an extern / runtime primitive, or an
@@ -4096,14 +4055,17 @@ mod call_param_verdict_tests {
 
 #[cfg(test)]
 mod analyzed_freshness_strictness {
-    //! [`callee_returns_analyzed_fresh_owner`] must not inherit
-    //! [`callee_returns_fresh_owner`]'s `unwrap_or(true)` cross-ABI fallback.
+    //! [`callee_returns_fresh_owner`] must answer `true` ONLY for an item this
+    //! module analysed and proved clean.
     //!
-    //! That fallback exists so an aggregate constructor / runtime primitive
-    //! (a resolved item with no body in this module) reads as an owned return.
-    //! A declared `extern "C"` fn is body-less too, so any consumer that mints a
-    //! caller-side RELEASE obligation from the answer would hand a drop to an
-    //! un-audited host — the double-release the strict variant closes.
+    //! The reader used to fall back to `unwrap_or(true)` for an absent row, on
+    //! the theory that a body-less resolved item (an aggregate constructor, a
+    //! runtime primitive) returns an owned value by the cross-ABI contract. A
+    //! declared `extern "C"` fn is body-less too, so that fallback handed a
+    //! caller-side RELEASE obligation to an un-audited host — and it made an
+    //! EMPTY authority answer fresh for EVERY id. Both are closed here: an
+    //! absent row is not a freshness proof, so an empty authority grants
+    //! nothing.
     use super::*;
 
     fn callee_with(resolved: ResolvedRef) -> HirExpr {
@@ -4140,13 +4102,42 @@ mod analyzed_freshness_strictness {
     fn an_absent_row_is_not_fresh() {
         let fresh = rows(&[]);
         assert!(
-            callee_returns_fresh_owner(&item_callee(7), &fresh),
-            "guard: the legacy fallback classifies a body-less resolved item fresh"
+            !callee_returns_fresh_owner(&item_callee(7), &fresh),
+            "the reader must require a body this module ANALYZED; an absent row \
+             (an extern, a cross-module item, an un-analysed compiler-emitted \
+             item) is NOT a freshness proof"
         );
+    }
+
+    /// The empty authority must be UNABLE to report fresh — the shape F1
+    /// described, where a default-constructed authority answered `true` for
+    /// every id and minted the caller release the type exists to forbid.
+    ///
+    /// The type no longer has a `Default`, so the only empty authority left to
+    /// test is the one the empty `CallScrutineeProvenance` carries — the value a
+    /// builder holds before the module context is threaded in. It must grant
+    /// nothing, for an arbitrary id AND for the id space the real rows use.
+    #[test]
+    fn an_empty_authority_cannot_report_fresh() {
+        let empty = crate::return_provenance::CallScrutineeProvenance::default();
+        for id in [0_u32, 1, 7, 99, u32::MAX] {
+            assert!(
+                !callee_returns_fresh_owner(&item_callee(id), &empty.fresh_owner_verdicts),
+                "an authority with no analysed rows must not license a release \
+                 for item {id}"
+            );
+            assert!(
+                !empty
+                    .fresh_owner_verdicts
+                    .item_returns_fresh_owner(hew_hir::ItemId(id)),
+                "and the row reader itself must fail closed for item {id}"
+            );
+        }
+        // The same emptiness at the reader assembled from explicit parts: no
+        // rows, no extern names, no fresh answer.
         assert!(
-            !callee_returns_analyzed_fresh_owner(&item_callee(7), &fresh),
-            "the strict variant must require a body this module ANALYZED; an \
-             absent row (an extern, a cross-module item) is NOT a freshness proof"
+            !callee_returns_fresh_owner(&item_callee(7), &rows(&[])),
+            "an explicitly empty row set must not license a release either"
         );
     }
 
@@ -4154,13 +4145,10 @@ mod analyzed_freshness_strictness {
     fn an_analyzed_false_row_is_not_fresh() {
         let fresh = rows(&[(7, false)]);
         assert!(
-            !callee_returns_analyzed_fresh_owner(&item_callee(7), &fresh),
-            "a forwarder the fixpoint proved non-fresh stays non-fresh"
-        );
-        assert!(
             !callee_returns_fresh_owner(&item_callee(7), &fresh),
-            "and the PERMISSIVE reader must decline the same row — the taint is \
-             written into the authority's rows, not conjoined per consumer"
+            "a forwarder the fixpoint proved non-fresh stays non-fresh — the \
+             taint is written into the authority's rows, not conjoined per \
+             consumer"
         );
     }
 
@@ -4179,12 +4167,8 @@ mod analyzed_freshness_strictness {
         }
         assert!(
             !callee_returns_fresh_owner(&callee, &verdicts),
-            "a direct opaque-extern callee must not read as a fresh owner at the \
-             permissive reader either — an id lookup cannot catch it"
-        );
-        assert!(
-            !callee_returns_analyzed_fresh_owner(&callee, &verdicts),
-            "nor at the strict reader"
+            "a direct opaque-extern callee must not read as a fresh owner — an \
+             id lookup cannot catch it, only the NAME veto can"
         );
     }
 
@@ -4218,10 +4202,7 @@ mod analyzed_freshness_strictness {
         );
         (
             coarse[&id],
-            callee_returns_analyzed_fresh_owner(
-                &item_callee(id.0),
-                &provenance.fresh_owner_verdicts,
-            ),
+            callee_returns_fresh_owner(&item_callee(id.0), &provenance.fresh_owner_verdicts),
         )
     }
 
@@ -4326,7 +4307,7 @@ mod analyzed_freshness_strictness {
     fn an_indirect_callee_fails_closed() {
         let callee = callee_with(ResolvedRef::Binding(hew_hir::BindingId(3)));
         assert!(
-            !callee_returns_analyzed_fresh_owner(&callee, &rows(&[(7, true)])),
+            !callee_returns_fresh_owner(&callee, &rows(&[(7, true)])),
             "a closure value / fn-pointer parameter is not a resolved item and \
              must fail closed"
         );

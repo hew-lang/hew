@@ -1,7 +1,7 @@
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
-    callee_returns_analyzed_fresh_owner, callee_returns_fresh_owner, machine_layout_name_matches,
-    mangle_layout_key, monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
+    callee_returns_fresh_owner, machine_layout_name_matches, mangle_layout_key,
+    monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
@@ -369,7 +369,10 @@ impl Builder {
                     // authority, by NAME (its call site's resolved id is a
                     // placeholder). The aggregate-constructor / runtime-primitive
                     // fallback survives because only extern names are vetoed.
-                    callee_returns_fresh_owner(callee, &self.fresh_owner_verdicts)
+                    callee_returns_fresh_owner(
+                        callee,
+                        &self.call_scrutinee_provenance.fresh_owner_verdicts,
+                    )
                 }
             }
             _ => false,
@@ -497,17 +500,18 @@ impl Builder {
     /// * a KNOWN runtime symbol is rejected here outright, so the runtime
     ///   contract keeps its veto — a catalogued callee returning a BORROWED or
     ///   receiver-interior-alias string can never be laundered into a mint;
-    /// * every OTHER shape must satisfy [`callee_returns_analyzed_fresh_owner`]
+    /// * every OTHER shape must satisfy [`callee_returns_fresh_owner`]
     ///   against the module's fresh-owner authority
-    ///   (`Builder::fresh_owner_verdicts`). That single object carries BOTH
+    ///   (`CallScrutineeProvenance::fresh_owner_verdicts`). That single object
+    ///   carries BOTH
     ///   vetoes: a declared `extern "C"` callee is rejected by NAME unless the
     ///   audited extern contract table proves its return is a fresh `+1` owner
     ///   (interim: no heap-returning extern carries such a row, so every one is
     ///   ownership-OPAQUE), and a Hew callee is rejected unless the module-global
     ///   least-fixpoint proved its body fresh (generic origins included) AND free
-    ///   of opaque-extern laundering on every return path. The `unwrap_or(true)`
-    ///   cross-ABI fallback is deliberately NOT inherited here: a body-less
-    ///   resolved item is not a proof of freshness. So a Hew wrapper
+    ///   of opaque-extern laundering on every return path. The authority has no
+    ///   permissive cross-ABI fallback: a body-less, un-analysed resolved item
+    ///   is not a proof of freshness and reads `false`. So a Hew wrapper
     ///   (`fn w() -> string { unsafe { host_string() } }`), a wrapper of a
     ///   wrapper, a generic wrapper and a recursive-looking wrapper all stay
     ///   rejected, and a callee that forwards, projects, or launders a by-value
@@ -523,7 +527,7 @@ impl Builder {
         if crate::runtime_symbols::is_known_runtime_symbol(Self::callee_symbol_name(callee)) {
             return false;
         }
-        callee_returns_analyzed_fresh_owner(callee, &self.fresh_owner_verdicts)
+        callee_returns_fresh_owner(callee, &self.call_scrutinee_provenance.fresh_owner_verdicts)
     }
     /// The ARGUMENT-side sibling of
     /// [`FreshOwnerVerdicts::symbol_is_ownership_opaque_extern`], which is the
@@ -2621,7 +2625,7 @@ impl Builder {
         //     every reachable value is a materialised owner with no live alias.
         Self::expr_is_materialized_owner(
             base,
-            &self.fresh_owner_verdicts,
+            &self.call_scrutinee_provenance.fresh_owner_verdicts,
             &self.funcupdate_param_ids,
         )
     }

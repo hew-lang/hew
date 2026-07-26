@@ -303,7 +303,7 @@ impl Builder {
         target_symbol == "hew_vec_set_owned"
             && (Self::expr_is_materialized_owner(
                 value,
-                &self.fresh_owner_verdicts,
+                &self.call_scrutinee_provenance.fresh_owner_verdicts,
                 &self.funcupdate_param_ids,
             ) || self.is_consumed_bound_local(value))
     }

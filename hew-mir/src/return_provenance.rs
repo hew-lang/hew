@@ -1102,10 +1102,10 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
 /// the defect reappeared one call site at a time, because the coarse `HashMap`
 /// stayed reachable and a new consumer could always read it directly.
 ///
-/// So the veto lives in the TYPE. The rows are private, the only constructor is
-/// [`FreshOwnerVerdicts::build`] (crate-private, called once from
-/// [`build_call_scrutinee_provenance`]), and every ownership consumer takes a
-/// `&FreshOwnerVerdicts`. A coarse `HashMap<ItemId, bool>` is not
+/// So the veto lives in the TYPE. The rows are private, the only analysing
+/// constructor is [`FreshOwnerVerdicts::build`] (module-private, called once
+/// from [`build_call_scrutinee_provenance`]), and every ownership consumer takes
+/// a `&FreshOwnerVerdicts`. A coarse `HashMap<ItemId, bool>` is not
 /// type-compatible with any of those signatures, so no consumer — present or
 /// future — can obtain a "fresh" answer for a laundering wrapper.
 ///
@@ -1126,19 +1126,27 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
 /// table filters on `string`, so a record, a tuple, an enum and a `Vec` element
 /// are covered identically.
 ///
-/// # Fallbacks
+/// # No fallback: an absent row is NOT a fresh owner
 ///
-/// [`FreshOwnerVerdicts::item_returns_fresh_owner`] keeps the coarse
-/// `unwrap_or(true)` for an ABSENT row — the cross-ABI owned-return contract
-/// that covers aggregate constructors and compiler-minted runtime primitives,
-/// none of which are declared externs and none of which the laundering fixpoint
-/// can taint. [`FreshOwnerVerdicts::item_returns_analyzed_fresh_owner`] drops
-/// that fallback entirely: only a row this module ANALYZED and proved clean
-/// answers `true`. A consumer whose worst case is a double release uses the
-/// latter; a consumer whose worst case is a missed move/clone optimisation uses
-/// the former.
-#[derive(Debug, Default, Clone)]
-pub struct FreshOwnerVerdicts {
+/// [`FreshOwnerVerdicts::item_returns_fresh_owner`] is the ONE reader and it
+/// fails CLOSED: `true` only for an id this module analysed AND proved clean.
+/// A missing row means "not analysed", and not-analysed never grants a release.
+/// The earlier permissive `unwrap_or(true)` sibling is gone: it made an EMPTY
+/// authority answer fresh for every id, so any way of obtaining an empty
+/// authority — a derived `Default`, a not-yet-threaded field — minted exactly
+/// the caller release this type exists to forbid. Costing an absent row a
+/// missed move/clone optimisation is the price; the alternative price was a
+/// double release.
+///
+/// The type therefore has NO `Default`. It can only come from
+/// [`FreshOwnerVerdicts::build`] (the real conjunction), from the module-private
+/// [`FreshOwnerVerdicts::denying_all`] (an explicitly empty authority that
+/// grants nothing, needed only to stand up a [`CallScrutineeProvenance`] that
+/// has not been built yet), or — under `#[cfg(test)]` only — from
+/// `from_parts_for_tests`. It is `pub(crate)`: no consumer outside this crate
+/// can name it, hold it, or construct one.
+#[derive(Debug, Clone)]
+pub(crate) struct FreshOwnerVerdicts {
     /// `ItemId` → coarse freshness ∧ ¬laundering. Private: the whole point.
     rows: HashMap<hew_hir::ItemId, bool>,
     /// Declared `extern "C"` fn names with no audited fresh-owner return.
@@ -1146,13 +1154,12 @@ pub struct FreshOwnerVerdicts {
 }
 
 impl FreshOwnerVerdicts {
-    /// The ONLY constructor. Crate-private so the conjunction cannot be skipped
-    /// by a caller that happens to hold a coarse map.
+    /// The ONLY analysing constructor. Module-private so the conjunction cannot
+    /// be skipped by a caller that happens to hold a coarse map.
     ///
     /// The row set is the UNION of the coarse fixpoint's keys and the taint
     /// set's: a laundering id that the coarse fixpoint somehow never keyed
-    /// still lands as an explicit `false` rather than falling through to the
-    /// `unwrap_or(true)` fallback.
+    /// still lands as an explicit `false` rather than as an absent row.
     fn build(
         coarse_fresh_returns: &HashMap<hew_hir::ItemId, bool>,
         launders_opaque_extern: &HashSet<hew_hir::ItemId>,
@@ -1177,20 +1184,33 @@ impl FreshOwnerVerdicts {
         }
     }
 
-    /// The table-aware freshness verdict for a resolved item, keeping the
-    /// coarse cross-ABI `unwrap_or(true)` fallback for a body-less item the
-    /// module summary never keyed (an aggregate constructor, a compiler-minted
-    /// runtime primitive). A laundering wrapper is keyed and reads `false`.
-    #[must_use]
-    pub fn item_returns_fresh_owner(&self, id: hew_hir::ItemId) -> bool {
-        self.rows.get(&id).copied().unwrap_or(true)
+    /// The explicitly EMPTY authority: no analysed rows, no declared externs.
+    ///
+    /// It grants NOTHING — every [`Self::item_returns_fresh_owner`] query
+    /// answers `false`, because an absent row is not a freshness proof. Named,
+    /// rather than a `Default` derive, so that "I have not been given the real
+    /// authority yet" is written out at the one place that means it: the
+    /// [`CallScrutineeProvenance`] `Default` that backs a lowering builder
+    /// before the module context is threaded in. Module-private: no other
+    /// module can mint one.
+    fn denying_all() -> Self {
+        Self {
+            rows: HashMap::new(),
+            opaque_extern_names: HashSet::new(),
+        }
     }
 
-    /// The strict sibling: `true` ONLY for a body this module analyzed, proved
-    /// fresh, and proved free of opaque-extern laundering. An absent row is not
-    /// a proof — worst case a leak, never a double release.
+    /// The table-aware freshness verdict for a resolved item: `true` ONLY for an
+    /// id whose body this module analysed, proved fresh, and proved free of
+    /// opaque-extern laundering.
+    ///
+    /// FAIL CLOSED. An absent row means "not analysed" — a declared extern's
+    /// placeholder call-site id, a cross-module item, an aggregate constructor,
+    /// a compiler-minted runtime primitive — and not-analysed never licenses a
+    /// caller-side release. The worst case is a missed drop (a leak); the
+    /// permissive alternative's worst case was a double release.
     #[must_use]
-    pub fn item_returns_analyzed_fresh_owner(&self, id: hew_hir::ItemId) -> bool {
+    pub(crate) fn item_returns_fresh_owner(&self, id: hew_hir::ItemId) -> bool {
         self.rows.get(&id) == Some(&true)
     }
 
@@ -1198,7 +1218,7 @@ impl FreshOwnerVerdicts {
     /// fresh-owner return contract — an ownership-OPAQUE callee whose result
     /// may be an interior, static or retained host pointer.
     #[must_use]
-    pub fn symbol_is_ownership_opaque_extern(&self, symbol: &str) -> bool {
+    pub(crate) fn symbol_is_ownership_opaque_extern(&self, symbol: &str) -> bool {
         self.opaque_extern_names.contains(symbol)
     }
 
@@ -1228,11 +1248,14 @@ impl FreshOwnerVerdicts {
 ///
 /// `Default` (empty) fails SAFE: an empty summary classifies every module-fn
 /// callee as an unknown item → interim `LegacyModuleCall` (today's fail-open
-/// mint), never a wrongly-Fresh admit and never a spurious reject. The live
-/// pipeline always threads the fully-built context; the empty default only backs
-/// `Builder::default()` in unit tests that do not exercise a forwarder scrutinee.
-#[derive(Debug, Default, Clone)]
-pub struct CallScrutineeProvenance {
+/// mint), never a wrongly-Fresh admit and never a spurious reject, and its
+/// authority ([`FreshOwnerVerdicts::denying_all`]) grants no release at all. The
+/// live pipeline always threads the fully-built context; the empty default only
+/// backs `Builder::default()` in unit tests that do not exercise a forwarder
+/// scrutinee. It is hand-written rather than derived because the authority has
+/// no `Default` of its own — the empty case must be spelled out, not inferred.
+#[derive(Debug, Clone)]
+pub(crate) struct CallScrutineeProvenance {
     /// Per-module-fn `ItemId` → precise three-state return provenance.
     pub provenance: HashMap<hew_hir::ItemId, ReturnProvenance>,
     /// Every declared `extern "C"` fn NAME. A call to an extern dispatches by
@@ -1269,12 +1292,24 @@ pub struct CallScrutineeProvenance {
     /// * the name-keyed direct-extern veto, because an extern call site's
     ///   resolved id is a placeholder that no id lookup can catch.
     ///
-    /// Empty default fails SAFE for the strict reader (an absent row is not a
-    /// freshness proof, so the release mint declines) and reproduces today's
-    /// coarse behaviour for the permissive reader.
+    /// Empty default grants NOTHING: with no analysed rows every freshness
+    /// query fails closed, so a builder that has not been handed the module
+    /// authority cannot mint a caller-side release.
     ///
     /// [`compute_fn_return_launders_opaque_extern`]: crate::return_provenance::compute_fn_return_launders_opaque_extern
     pub fresh_owner_verdicts: FreshOwnerVerdicts,
+}
+
+impl Default for CallScrutineeProvenance {
+    fn default() -> Self {
+        Self {
+            provenance: HashMap::new(),
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
+            fresh_owner_verdicts: FreshOwnerVerdicts::denying_all(),
+        }
+    }
 }
 
 /// Build the module-global preflight context: the precise return-provenance
@@ -1285,7 +1320,7 @@ pub struct CallScrutineeProvenance {
     clippy::implicit_hasher,
     reason = "built once over the pipeline's default-hasher origin_fns map"
 )]
-pub fn build_call_scrutinee_provenance(
+pub(crate) fn build_call_scrutinee_provenance(
     module: &hew_hir::HirModule,
     origin_fns: &HashMap<hew_hir::ItemId, &HirFn>,
     coarse_fresh_returns: &HashMap<hew_hir::ItemId, bool>,

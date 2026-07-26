@@ -578,23 +578,6 @@ struct Builder {
     /// (match-arm payload, let-else, loop var), is ABSENT or `false` — the gate
     /// then fails closed. See `base_is_safe_for_destructive_funcupdate`.
     pub(crate) funcupdate_base_proven: HashMap<BindingId, bool>,
-    /// The module-global TABLE-AWARE fresh-owner authority: the single object
-    /// every ownership consumer asks "does this call hand back a fresh owner I
-    /// may drop, move, or consume". It is the coarse interprocedural freshness
-    /// fixpoint (`compute_fn_returns_fresh_owner`) CONJOINED with the
-    /// opaque-extern laundering veto and the direct-extern name veto — see
-    /// `crate::return_provenance::FreshOwnerVerdicts`.
-    ///
-    /// Consulted by `expr_is_materialized_owner` (funcupdate base, Vec
-    /// push/set MOVE routing), by the caller-side borrowed-temp-arg mint, and
-    /// by the reassign may-alias scan. The COARSE map is never threaded here:
-    /// it is a local in `lower_module` consumed only by the authority builder,
-    /// so a laundering wrapper cannot be read as fresh at any consumer.
-    ///
-    /// `Rc` so child builders share it cheaply; the empty default reproduces
-    /// today's coarse fallback for the permissive reader and fails every
-    /// release mint closed for the strict one.
-    pub(crate) fresh_owner_verdicts: Rc<crate::return_provenance::FreshOwnerVerdicts>,
     /// Module-global call-scrutinee return-provenance context (#2648) for the
     /// preflight admission classifier (`classify_call_scrutinee_admission`). Maps
     /// each module-fn `ItemId` to its precise three-state return provenance, the
@@ -603,6 +586,18 @@ struct Builder {
     /// as an unknown item → interim `LegacyModuleCall` fail-open (sound —
     /// preserves today's mint, never a wrongly-Fresh admit). See
     /// `crate::return_provenance::CallScrutineeProvenance`.
+    ///
+    /// Its `fresh_owner_verdicts` field is the ONE place a builder holds the
+    /// TABLE-AWARE fresh-owner authority — the object every ownership consumer
+    /// asks "does this call hand back a fresh owner I may drop, move, or
+    /// consume". It is the coarse interprocedural freshness fixpoint
+    /// (`compute_fn_returns_fresh_owner`) CONJOINED with the opaque-extern
+    /// laundering veto and the direct-extern name veto. The builder deliberately
+    /// keeps NO second copy: one holder, one authority. The COARSE map is never
+    /// threaded here at all — it is a local in `lower_module` consumed only by
+    /// the authority builder, so a laundering wrapper cannot be read as fresh at
+    /// any consumer, and an un-threaded (default) context grants nothing because
+    /// the authority fails closed on every absent row.
     pub(crate) call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance>,
     /// Per-function local-binding freshness facts (#2648 S2b) consumed by the
     /// caller-side argument scan: which of the CURRENT function's locals are
@@ -3089,11 +3084,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             &origin_fns,
             &coarse_fn_returns_fresh,
         ));
-    // THE freshness authority every body-lowering builder sees: the coarse proof
-    // conjoined with the opaque-extern laundering veto and the direct-extern name
-    // veto. `Rc` so child builders share it without re-cloning.
-    let fresh_owner_verdicts: Rc<crate::return_provenance::FreshOwnerVerdicts> =
-        Rc::new(call_scrutinee_provenance.fresh_owner_verdicts.clone());
     // Module-global RAII-2 (#1295) param-ownership facts: which affine
     // `#[resource]` free-fn value params are CONSUME vs BORROW, and the
     // call-arg `SiteId`s whose over-stamped `Consume` intent is downgraded to a
@@ -3145,7 +3135,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                         None,
                         &module_fn_names,
                         &module_generic_fn_names,
-                        &fresh_owner_verdicts,
                         &call_scrutinee_provenance,
                         &param_ownership,
                         &trait_impl_index,
@@ -3197,7 +3186,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     None,
                     &module_fn_names,
                     &module_generic_fn_names,
-                    &fresh_owner_verdicts,
                     &call_scrutinee_provenance,
                     &param_ownership,
                     &trait_impl_index,
@@ -3238,7 +3226,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
-                    &fresh_owner_verdicts,
                     &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
@@ -3280,7 +3267,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
-                    &fresh_owner_verdicts,
                     &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
@@ -3368,7 +3354,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &classification_enum_layouts,
                     &module_fn_names,
                     &module_generic_fn_names,
-                    &fresh_owner_verdicts,
                     &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
@@ -3434,7 +3419,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             None,
             &module_fn_names,
             &module_generic_fn_names,
-            &fresh_owner_verdicts,
             &call_scrutinee_provenance,
             &param_ownership,
             &trait_impl_index,
@@ -4831,7 +4815,6 @@ pub(crate) fn lower_function(
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
-    fresh_owner_verdicts: &Rc<crate::return_provenance::FreshOwnerVerdicts>,
     call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     trait_impl_index: &HashMap<
@@ -4880,7 +4863,6 @@ pub(crate) fn lower_function(
             .unwrap_or_default(),
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
-        fresh_owner_verdicts: fresh_owner_verdicts.clone(),
         call_scrutinee_provenance: call_scrutinee_provenance.clone(),
         param_ownership: param_ownership.clone(),
         trait_impl_index: trait_impl_index.clone(),
@@ -4930,7 +4912,8 @@ pub(crate) fn lower_function(
         }
     }
     builder.lower_params(func);
-    builder.funcupdate_base_proven = compute_funcupdate_base_provenance(func, fresh_owner_verdicts);
+    builder.funcupdate_base_proven =
+        compute_funcupdate_base_provenance(func, &call_scrutinee_provenance.fresh_owner_verdicts);
     // #2648 S2b — the caller arg-scan's per-function local freshness facts,
     // computed under the SAME module tables the S1 fixpoint used.
     builder.call_scrutinee_local_freshness =

@@ -7065,7 +7065,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
-            fresh_owner_verdicts: crate::return_provenance::FreshOwnerVerdicts::default(),
+            ..CallScrutineeProvenance::default()
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -7109,7 +7109,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
-            fresh_owner_verdicts: crate::return_provenance::FreshOwnerVerdicts::default(),
+            ..CallScrutineeProvenance::default()
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -7147,7 +7147,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
-            fresh_owner_verdicts: crate::return_provenance::FreshOwnerVerdicts::default(),
+            ..CallScrutineeProvenance::default()
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -7185,7 +7185,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
-            fresh_owner_verdicts: crate::return_provenance::FreshOwnerVerdicts::default(),
+            ..CallScrutineeProvenance::default()
         });
         let callee = expr(
             HirExprKind::BindingRef {

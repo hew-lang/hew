@@ -1346,10 +1346,12 @@ impl Builder {
             // forward that argument's heap into its return).
             HirExprKind::Call { callee, args } => {
                 !callee_is_resolved_item(callee)
-                    || (!callee_returns_fresh_owner(callee, &self.fresh_owner_verdicts)
-                        && args
-                            .iter()
-                            .any(|a| self.reassign_rhs_may_alias_binding(a, binding)))
+                    || (!callee_returns_fresh_owner(
+                        callee,
+                        &self.call_scrutinee_provenance.fresh_owner_verdicts,
+                    ) && args
+                        .iter()
+                        .any(|a| self.reassign_rhs_may_alias_binding(a, binding)))
             }
             // A projection aliases iff its object chain reaches the binding.
             HirExprKind::FieldAccess { object, .. } => {

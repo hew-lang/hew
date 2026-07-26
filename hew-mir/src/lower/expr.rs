@@ -4567,7 +4567,7 @@ impl Builder {
                     && args.len() == 1
                     && Self::expr_is_materialized_owner(
                         &args[0],
-                        &self.fresh_owner_verdicts,
+                        &self.call_scrutinee_provenance.fresh_owner_verdicts,
                         &self.funcupdate_param_ids,
                     ) {
                     "hew_vec_push_owned_move".to_string()
@@ -4598,7 +4598,7 @@ impl Builder {
                     && args.len() == 2
                     && Self::expr_is_materialized_owner(
                         &args[1],
-                        &self.fresh_owner_verdicts,
+                        &self.call_scrutinee_provenance.fresh_owner_verdicts,
                         &self.funcupdate_param_ids,
                     ) {
                     "hew_vec_set_owned_move".to_string()

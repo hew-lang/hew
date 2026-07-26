@@ -32,13 +32,22 @@ LOCAL_PID_STABLE_EXPORTS = {
     "hew_local_pid_actor_id",
     "hew_local_pid_ask",
     "hew_local_pid_ask_with_channel",
-    "hew_local_pid_link",
-    "hew_local_pid_monitor",
     "hew_local_pid_send",
     "hew_local_pid_supervisor_is_running",
     "hew_local_pid_supervisor_stop",
     "hew_local_pid_unlink",
     "hew_supervisor_direct_id",
+}
+# `link` and `monitor` are NOT user-declarable. Their raw two-argument form
+# takes the destination from the caller, so an `extern "rt"` declaration could
+# put a lifecycle signal on a third party's system queue. The user surface is
+# one-argument -- `link(target)` / `monitor(target)` -- and the MIR lowering
+# supplies `hew_actor_self()` as arg0, which makes the destination structurally
+# the calling actor. Their `unlink` / `demonitor` siblings stay stable above
+# because removing a registration produces no signal.
+LOCAL_PID_NON_DECLARABLE_EXPORTS = {
+    "hew_local_pid_link",
+    "hew_local_pid_monitor",
 }
 
 spec = importlib.util.spec_from_file_location("verify_ffi_symbols", SCRIPT)
@@ -182,6 +191,12 @@ def test_local_pid_runtime_surface_is_jit_stable() -> None:
     assert LOCAL_PID_STABLE_EXPORTS <= classification["stable"]
     assert not (LOCAL_PID_STABLE_EXPORTS & classification["codegen-stable"])
     assert not (LOCAL_PID_STABLE_EXPORTS & classification["internal"])
+
+    # The withdrawn pair must stay out of reach of `extern "rt"`: they are real
+    # runtime exports, but not user-declarable in any tier.
+    assert LOCAL_PID_NON_DECLARABLE_EXPORTS <= runtime_exports
+    assert not (LOCAL_PID_NON_DECLARABLE_EXPORTS & classification["stable"])
+    assert not (LOCAL_PID_NON_DECLARABLE_EXPORTS & classification["stable-stdlib"])
 
 
 _TESTS = [

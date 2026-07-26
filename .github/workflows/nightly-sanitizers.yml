@@ -149,7 +149,7 @@ jobs:
           #   4. Runs clean-probe (zero findings), leak-probe (must catch the
           #      Hew generated-code malloc leak), clean-probe CLI-link (zero
           #      findings).
-          scripts/asan-fixture-check.sh
+          make asan-fixtures
 
   # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime TSan — data-race detection for the actor runtime
@@ -198,6 +198,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: target/sanitizer-runtime-tsan
           RUSTFLAGS: -Zsanitizer=thread -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer
+          SANITIZER_RUST_TARGET: x86_64-unknown-linux-gnu
           # halt_on_error=1 surfaces races immediately rather than summarising
           # them at process exit, which makes CI output easier to triage.
           TSAN_OPTIONS: halt_on_error=1
@@ -215,12 +216,11 @@ jobs:
           # slowdown makes timing-sensitive timer tests unreliable under
           # parallel load; (b) single-threaded ensures TSan race reports are
           # isolated to the test that triggered them, not cross-test noise.
-          cargo +nightly test \
-            --target x86_64-unknown-linux-gnu \
-            -p hew-runtime \
-            --no-default-features \
-            --lib \
-            -- --test-threads=1
+          #
+          # The invocation itself lives in the Makefile's `tsan` target so this
+          # job and a local run cannot drift; TSAN_OPTIONS above overrides the
+          # target's local-friendly default.
+          make tsan
 
   # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime Miri — aliasing / uninit-read / provenance for the runtime

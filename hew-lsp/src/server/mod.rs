@@ -6748,20 +6748,6 @@ machine Traffic {
         );
     }
 
-    // W4.023 Stage 0: pending-upstream-substrate — W3.006 (slice-2 tuple substrate)
-    // Do not unignore until W3.006 tuple support lands and the parser accepts
-    // positional-field type declarations (`type Pair(i32, i32)`).
-    #[test]
-    #[ignore = "pending-upstream-substrate W3.006: tuple-record type syntax not yet parsed"]
-    fn v05_record_tuple_literal_lsp_coverage() {
-        assert_v05_lsp_fixture(
-            "v05_record_tuple_literal",
-            include_str!("../../tests/fixtures/v05_record_tuple_literal.hew"),
-            "record_tuple_probe",
-            &["Pair", "record_tuple_probe", "record_tuple_literal"],
-        );
-    }
-
     #[test]
     fn v05_is_operator_lsp_coverage() {
         let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
@@ -7503,22 +7489,6 @@ machine Traffic {
         let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
         // rfind finds <T: Describable>; assert navigation reaches the declaration.
         assert_v05_goto_definition("v05_trait_bounds", source, "Describable");
-    }
-
-    /// Substrate-pending: the reference engine returns only the declaration site
-    /// when queried at the type-bound position `<T: Describable>`.
-    /// `min_count=1` is trivially satisfiable and does not prove declaration +
-    /// use-site behaviour; this test is therefore reclassified as ignored rather
-    /// than kept as a green accepted-surface assertion.
-    /// Unignore and raise to `min_count >= 3` (declaration + `impl Describable`
-    /// header + `<T: Describable>` type-bound) when the reference engine gains
-    /// full trait-name cross-reference tracking.
-    #[test]
-    #[ignore = "substrate: reference engine returns declaration-only for trait names; min_count=1 does not prove cross-reference behaviour"]
-    fn v05_trait_bounds_trait_name_find_references_includes_declaration() {
-        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
-        // When unignored this should assert >= 3: declaration + impl header + type-bound.
-        assert_v05_find_references("v05_trait_bounds", source, "Describable", 3);
     }
 
     /// The last occurrence of `show` in the fixture is the `holder.show()` call

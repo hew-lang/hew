@@ -2039,34 +2039,6 @@ fn eval_wasm_integer_overflow_exits_with_trap_code_201() {
     );
 }
 
-// Follow-on eval work owns unignoring the broader WASI eval/stdout suite. This ignored
-// ratchet proves attributed traps do not collapse to Hew panic code 101.
-#[ignore = "blocked on WASM divide-by-zero trap exit code collapsing to 1 instead of 202"]
-#[test]
-fn eval_wasm_divide_by_zero_exits_with_trap_code_202() {
-    require_codegen();
-    support::require_wasi_runner();
-
-    let output = Command::new(hew_binary())
-        .args([
-            "eval",
-            "--target",
-            "wasm32-wasi",
-            "let a: i64 = 10; let b: i64 = 0; a / b",
-        ])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
-    assert_eq!(
-        output.status.code(),
-        Some(202),
-        "expected child exit code 202 (Hew divide by zero via WASM), got {:?}",
-        output.status.code()
-    );
-}
-
 // WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
 #[cfg_attr(windows, ignore)]
 #[test]

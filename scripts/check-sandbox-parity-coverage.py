@@ -28,11 +28,9 @@ The contract this script enforces:
   1. Every binary containing a VM spawn marker (see below) must be excluded
      WHOLE, by name (`binary(<name>)`, never a narrower `test(<name>)`),
      from the generic nextest default-filter in .config/nextest.toml's
-     [profile.default], [profile.ci], AND [profile.lane] -- so plain
+     [profile.default] AND [profile.ci] -- so plain
      `cargo nextest run --workspace` on any platform (macOS/Windows/FreeBSD/
-     release-gate/`make test`), and the local `make test-lane`/
-     `make test-lane-all`/`make test-fast` developer-iteration tier (all of
-     which run `--profile lane`), never touch it.
+     release-gate/`make test`) never touches it.
   2. Every such binary must be named in the Makefile's `sandbox-parity`
      recipe's `cargo test -p hew-sandbox-wasm --test <name> ...` line, so
      the dedicated provisioned gate still runs every test in it (including
@@ -70,7 +68,7 @@ MAKEFILE = REPO_ROOT / "Makefile"
 
 VM_MARKER_STRING = "hew-sandbox-vm"
 
-REQUIRED_PROFILES = ("default", "ci", "lane")
+REQUIRED_PROFILES = ("default", "ci")
 
 
 def extract_functions(text: str) -> dict[str, str]:
@@ -279,7 +277,7 @@ def main() -> int:
 
     print(
         "     Every VM-dependent binary is wholly excluded from generic nextest "
-        "runs (profile.default, profile.ci, and profile.lane) and fully covered "
+        "runs (profile.default and profile.ci) and fully covered "
         "by `make sandbox-parity`."
     )
     return 0

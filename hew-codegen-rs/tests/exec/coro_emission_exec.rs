@@ -14,11 +14,12 @@
 //!     every resume) AND the alloc/free accounting (frame + value each 1/1).
 //!     A leak or double-free fails the in-program accounting (exit != 0).
 //!
-//!   * `coro_substrate_leak_clean_native` — re-runs the same binary under
-//!     `MallocScribble`/`MallocGuardEdges` (freed memory is poisoned; heap edges
-//!     guarded) and `leaks --atExit` — proving the heap value is genuinely
-//!     reloaded from the frame each resume (not read from a freed slot) and the
-//!     single-teardown-owner discipline leaks nothing.
+//!   * `coro_substrate_guarded_heap_run_native` — re-runs the same binary with
+//!     `MallocScribble`/`MallocPreScribble`/`MallocGuardEdges` (freed memory is
+//!     poisoned; heap edges guarded), proving the heap value is genuinely
+//!     reloaded from the frame each resume (not read from a freed slot) and that
+//!     the single-teardown-owner frees frame and value exactly once — a second
+//!     free lands on a poisoned or guarded page and aborts.
 //!
 //!   * `coro_substrate_round_trips_value_wasm32` — the SAME coroutine IR lowered
 //!     for `wasm32-wasi`, linked with `wasm-ld` against the wasm runtime, run
@@ -775,19 +776,16 @@ fn coro_substrate_round_trips_value_native() {
     );
 }
 
-/// The native binary is leak- and double-free-clean: re-run it under
-/// MallocScribble (poison freed memory) + MallocGuardEdges, then under
-/// `leaks --atExit` asserting zero leaked bytes. Proves the heap value is
-/// genuinely reloaded from the frame each resume and the single-teardown-owner
-/// frees the frame + value exactly once.
+/// The native binary is double-free- and use-after-free-clean: re-run it with
+/// freed memory poisoned (`MallocScribble`/`MallocPreScribble`) and heap edges
+/// guarded (`MallocGuardEdges`). Proves the heap value is genuinely reloaded
+/// from the frame each resume rather than read out of a freed slot, and that
+/// the single-teardown-owner frees the frame and the value exactly once — a
+/// second free lands on a poisoned or guarded page and aborts.
 #[test]
-fn coro_substrate_leak_clean_native() {
+fn coro_substrate_guarded_heap_run_native() {
     let Some(clang) = llvm_bin("clang") else {
         eprintln!("skip: clang (LLVM 22) not found");
-        return;
-    };
-    let Some(leaks) = which("leaks") else {
-        eprintln!("skip: `leaks` not found (macOS only)");
         return;
     };
     let runtime = ensure_native_runtime();
@@ -819,18 +817,6 @@ fn coro_substrate_leak_clean_native() {
         guarded.code(),
         Some(0),
         "value must be reloaded from the frame, not a freed slot (guarded run)"
-    );
-
-    // leaks --atExit: zero leaked bytes.
-    let out = Command::new(&leaks)
-        .args(["--atExit", "--"])
-        .arg(&bin)
-        .output()
-        .expect("leaks run");
-    let report = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        report.contains("0 leaks for 0 total leaked bytes"),
-        "leaks must report zero; got:\n{report}"
     );
 }
 

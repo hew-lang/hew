@@ -1251,42 +1251,6 @@ mod assoc_types_slice1 {
             "expected BoundsNotSatisfied citing `Option` and `Display`; got: {bound_err:?}"
         );
     }
-
-    // TODO(assoc-types slice 2 / parser): `TraitDecl` does not yet parse a
-    // `where` clause at the trait header, so `trait Foo where Self::Bar:
-    // Display { ... }` cannot be tested end-to-end. Once the parser
-    // surfaces `TraitDecl.where_clause`, drop the `#[ignore]` and verify
-    // the bound is enforced on impls whose `Self::Bar` binding does not
-    // satisfy `Display`.
-    #[test]
-    #[ignore = "trait-header where-clause syntax not yet parsed; see TODO above"]
-    fn assoc_type_where_clause_bound_enforced() {
-        let (errors, _warnings) = parse_and_check_with_stdlib(
-            r"
-            trait Show where Self::Out: Display {
-                type Out;
-                fn show(val: Self) -> Self::Out;
-            }
-
-            type Widget {}
-
-            type Plain {}
-
-            impl Show for Widget {
-                type Out = Plain;
-                fn show(val: Widget) -> Plain { Plain {} }
-            }
-            ",
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)
-                    && e.message.contains("Display")
-                    && e.message.contains("Plain")),
-            "expected BoundsNotSatisfied citing Display and Plain; got: {errors:?}"
-        );
-    }
 }
 
 // ── Associated-types — slice 2 (T::Bar projection in generic signatures) ──

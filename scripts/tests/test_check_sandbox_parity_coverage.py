@@ -16,11 +16,9 @@ a platform without `hew-sandbox-vm` set up. This is exactly the
 fixed by dropping per-test/call-graph attribution entirely and requiring
 that ANY marker anywhere in a file condemns the WHOLE binary.
 
-Also covers REQUIRED_PROFILES itself: profile.default and profile.ci are
-not the only generic (unprovisioned) nextest entry points -- `make
-test-lane`, `make test-lane-all`, and `make test-fast` all run `cargo
-nextest run --profile lane`, so profile.lane must be checked identically
-or a VM-dependent binary can leak into that tier unnoticed.
+Also covers REQUIRED_PROFILES itself: every generic (unprovisioned)
+nextest entry point must be checked, or a VM-dependent binary can leak
+into an unchecked tier unnoticed.
 """
 
 import contextlib
@@ -291,27 +289,26 @@ def test_real_repo_state_passes_the_full_check() -> None:
         assert f"excludes whole binary {binary}" in result.stdout
 
 
-def test_lane_is_a_required_profile() -> None:
-    # make test-lane / make test-lane-all / make test-fast all run generic
-    # `cargo nextest run --profile lane`, so it must be checked exactly like
-    # profile.default and profile.ci -- not just those two.
-    assert "lane" in check_sandbox_parity_coverage.REQUIRED_PROFILES
+def test_every_generic_profile_is_required() -> None:
+    # Both generic (unprovisioned) nextest entry points must be checked. A
+    # profile that carries a default-filter but is missing from this tuple is
+    # a tier a VM-dependent binary can leak into unnoticed.
+    assert set(check_sandbox_parity_coverage.REQUIRED_PROFILES) == {"default", "ci"}
 
 
-def test_removing_binary_exclusion_from_profile_lane_fails_the_checker() -> None:
+def test_removing_binary_exclusion_from_profile_ci_fails_the_checker() -> None:
     # Sabotage proof: drop parity_ratchet's `binary(parity_ratchet)` from
-    # [profile.lane]'s default-filter ONLY (profile.default and profile.ci
-    # keep their real exclusions) and confirm the checker fails specifically
-    # on profile.lane -- proving lane is actually enforced, not just listed.
+    # [profile.ci]'s default-filter ONLY (profile.default keeps its real
+    # exclusions) and confirm the checker fails specifically on profile.ci --
+    # proving ci is actually enforced, not just listed.
     real_text = check_sandbox_parity_coverage.NEXTEST_TOML.read_text()
     sabotaged_text = _remove_binary_exclusion_in_profile(
-        real_text, "lane", "parity_ratchet"
+        real_text, "ci", "parity_ratchet"
     )
 
     with _sabotaged_nextest_toml(sabotaged_text):
         default_filter = check_sandbox_parity_coverage.default_filter_line("default")
         ci_filter = check_sandbox_parity_coverage.default_filter_line("ci")
-        lane_filter = check_sandbox_parity_coverage.default_filter_line("lane")
         assert (
             check_sandbox_parity_coverage.excludes_binary(
                 default_filter, "parity_ratchet"
@@ -320,10 +317,6 @@ def test_removing_binary_exclusion_from_profile_lane_fails_the_checker() -> None
         )
         assert (
             check_sandbox_parity_coverage.excludes_binary(ci_filter, "parity_ratchet")
-            is True
-        )
-        assert (
-            check_sandbox_parity_coverage.excludes_binary(lane_filter, "parity_ratchet")
             is False
         )
 
@@ -331,11 +324,10 @@ def test_removing_binary_exclusion_from_profile_lane_fails_the_checker() -> None
 
     assert exit_code == 1
     assert (
-        "FAIL [profile.lane] does not exclude VM-dependent binary `parity_ratchet`"
+        "FAIL [profile.ci] does not exclude VM-dependent binary `parity_ratchet`"
         in output
     )
     assert "FAIL [profile.default] does not exclude" not in output
-    assert "FAIL [profile.ci] does not exclude" not in output
 
     # Restoring the real file must make the checker pass again -- confirms
     # the failure above was caused by the sabotage, not a leaked patch.
@@ -355,8 +347,8 @@ def test_deleting_profile_default_filter_line_entirely_fails_default_only() -> N
     # profile.default. The fix bounds the lookup to `_profile_table_span` --
     # the text strictly between [profile.default]'s own header and the next
     # header line of any kind -- so with the key gone it must return "" for
-    # profile.default and leave profile.ci/profile.lane's real values
-    # completely unaffected.
+    # profile.default and leave profile.ci's real value completely
+    # unaffected.
     real_text = check_sandbox_parity_coverage.NEXTEST_TOML.read_text()
     sabotaged_text = _delete_filter_line_in_profile(real_text, "default")
     assert sabotaged_text != real_text
@@ -364,7 +356,6 @@ def test_deleting_profile_default_filter_line_entirely_fails_default_only() -> N
     with _sabotaged_nextest_toml(sabotaged_text):
         default_filter = check_sandbox_parity_coverage.default_filter_line("default")
         ci_filter = check_sandbox_parity_coverage.default_filter_line("ci")
-        lane_filter = check_sandbox_parity_coverage.default_filter_line("lane")
 
         # The bug this guards against: without table-bounded lookup, this
         # would equal ci's filter value (a non-empty string containing
@@ -377,17 +368,12 @@ def test_deleting_profile_default_filter_line_entirely_fails_default_only() -> N
             is False
         )
 
-        # profile.ci and profile.lane must be completely untouched by the
-        # sabotage -- proving the deletion was scoped to profile.default's
-        # own table and did not corrupt or get borrowed by its neighbours.
+        # profile.ci must be completely untouched by the sabotage --
+        # proving the deletion was scoped to profile.default's own table and
+        # did not corrupt or get borrowed by its neighbour.
         assert "binary(parity_ratchet)" in ci_filter
-        assert "binary(parity_ratchet)" in lane_filter
         assert (
             check_sandbox_parity_coverage.excludes_binary(ci_filter, "parity_ratchet")
-            is True
-        )
-        assert (
-            check_sandbox_parity_coverage.excludes_binary(lane_filter, "parity_ratchet")
             is True
         )
 
@@ -401,10 +387,9 @@ def test_deleting_profile_default_filter_line_entirely_fails_default_only() -> N
             f"FAIL [profile.default] does not exclude VM-dependent binary `{binary}`"
             in output
         )
-    # profile.ci and profile.lane must report zero failures -- the sabotage
-    # must not leak a false failure OR a false pass into either of them.
+    # profile.ci must report zero failures -- the sabotage must not leak a
+    # false failure OR a false pass into it.
     assert "FAIL [profile.ci] does not exclude" not in output
-    assert "FAIL [profile.lane] does not exclude" not in output
 
     exit_code_after_restore, output_after_restore = _run_main_capturing_output(
         ["--verbose"]
@@ -449,7 +434,7 @@ def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
     # The section-bounded lookup itself must still work end-to-end against
     # the real repo file (belt-and-suspenders alongside
     # test_real_repo_state_passes_the_full_check).
-    for profile in ("default", "ci", "lane"):
+    for profile in ("default", "ci"):
         filter_value = check_sandbox_parity_coverage.default_filter_line(profile)
         assert "binary(parity_ratchet)" in filter_value
 
@@ -463,8 +448,8 @@ _TESTS = [
     test_excludes_binary_accepts_whole_binary_exclusion,
     test_real_parity_ratchet_file_is_whole_binary_vm_dependent,
     test_real_repo_state_passes_the_full_check,
-    test_lane_is_a_required_profile,
-    test_removing_binary_exclusion_from_profile_lane_fails_the_checker,
+    test_every_generic_profile_is_required,
+    test_removing_binary_exclusion_from_profile_ci_fails_the_checker,
     test_deleting_profile_default_filter_line_entirely_fails_default_only,
     test_script_stays_python_3_10_compatible_with_no_new_dependency,
 ]

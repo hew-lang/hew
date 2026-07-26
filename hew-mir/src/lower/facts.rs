@@ -4324,4 +4324,226 @@ mod analyzed_freshness_strictness {
              must fail closed"
         );
     }
+
+    /// Lower `source`, run the REAL fixpoints, and ask the authority's COMPOSITE
+    /// query about the tail expression of the function `name`.
+    ///
+    /// As with [`freshness_verdicts`], nothing is seeded: the extern contract
+    /// table, the analysed set and the taint set all come out of the same
+    /// derivation the module lowering performs.
+    fn tail_is_free_of_opaque_foreign_provenance(source: &str, name: &str) -> bool {
+        let module = crate::return_provenance::tests::lower_source(source);
+        let origin_fns: HashMap<hew_hir::ItemId, &HirFn> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(f) => Some((f.id, f)),
+                _ => None,
+            })
+            .collect();
+        let Some(f) = origin_fns.values().find(|f| f.name == name) else {
+            panic!("no function named `{name}` in the lowered module");
+        };
+        let Some(tail) = f.body.tail.as_ref() else {
+            panic!("function `{name}` must end in a tail expression");
+        };
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        let provenance = crate::return_provenance::build_call_scrutinee_provenance(
+            &module,
+            &origin_fns,
+            &coarse,
+        );
+        provenance
+            .fresh_owner_verdicts
+            .value_is_free_of_opaque_foreign_provenance(tail)
+    }
+
+    /// Same derivation as [`tail_is_free_of_opaque_foreign_provenance`], but
+    /// asking the DUAL — the suppression-side query.
+    fn tail_carries_proven_foreign_provenance(source: &str, name: &str) -> bool {
+        let module = crate::return_provenance::tests::lower_source(source);
+        let origin_fns: HashMap<hew_hir::ItemId, &HirFn> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(f) => Some((f.id, f)),
+                _ => None,
+            })
+            .collect();
+        let Some(f) = origin_fns.values().find(|f| f.name == name) else {
+            panic!("no function named `{name}` in the lowered module");
+        };
+        let Some(tail) = f.body.tail.as_ref() else {
+            panic!("function `{name}` must end in a tail expression");
+        };
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        let provenance = crate::return_provenance::build_call_scrutinee_provenance(
+            &module,
+            &origin_fns,
+            &coarse,
+        );
+        provenance
+            .fresh_owner_verdicts
+            .value_carries_proven_foreign_provenance(tail)
+    }
+
+    const RECORD_DECL: &str = "record Outer { inner: string }\n\
+         extern \"C\" {\n    fn host_string() -> string;\n}\n";
+
+    #[test]
+    fn a_direct_root_extern_call_is_proven_foreign() {
+        assert!(tail_carries_proven_foreign_provenance(
+            &format!("{RECORD_DECL}fn t() -> string {{ unsafe {{ host_string() }} }}"),
+            "t"
+        ));
+    }
+
+    #[test]
+    fn a_hew_wrapper_over_a_root_extern_is_proven_foreign() {
+        assert!(tail_carries_proven_foreign_provenance(
+            &format!(
+                "{RECORD_DECL}fn w() -> string {{ unsafe {{ host_string() }} }}\n\
+                 fn t() -> string {{ w() }}"
+            ),
+            "t"
+        ));
+    }
+
+    #[test]
+    fn a_domestic_value_is_not_proven_foreign() {
+        assert!(!tail_carries_proven_foreign_provenance(
+            &format!("{RECORD_DECL}fn t() -> Outer {{ Outer {{ inner: \"x\" }} }}"),
+            "t"
+        ));
+    }
+
+    /// The polarity that separates the two queries. The strict, MINT-side query
+    /// must read an unresolvable callee as foreign; the suppression-side query
+    /// must read the same callee as domestic, because being wrong here costs a
+    /// LEAK in code that never touches an extern rather than a double release.
+    #[test]
+    fn an_unresolvable_callee_is_opaque_to_the_strict_query_and_not_proven_to_the_dual() {
+        let source = format!("{RECORD_DECL}fn t(f: fn() -> string) -> string {{ f() }}");
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&source, "t"),
+            "the mint-side query must refuse an indirect callee"
+        );
+        assert!(
+            !tail_carries_proven_foreign_provenance(&source, "t"),
+            "the suppression-side query must not claim proof from an indirect callee"
+        );
+    }
+
+    #[test]
+    fn an_empty_authority_answers_no_to_the_proven_foreign_query() {
+        let module = crate::return_provenance::tests::lower_source(&format!(
+            "{RECORD_DECL}fn t() -> string {{ unsafe {{ host_string() }} }}"
+        ));
+        let f = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(f) if f.name == "t" => Some(f),
+                _ => None,
+            })
+            .expect("fn t");
+        let tail = f.body.tail.as_ref().expect("tail");
+        let empty = crate::return_provenance::FreshOwnerVerdicts::from_parts_for_tests(
+            HashMap::new(),
+            HashSet::new(),
+        );
+        assert!(
+            !empty.value_carries_proven_foreign_provenance(tail),
+            "an authority built from no module analysis proves nothing"
+        );
+    }
+
+    #[test]
+    fn a_domestic_record_literal_is_free_of_foreign_provenance() {
+        let src =
+            format!("{RECORD_DECL}fn mk(i: i64) -> Outer {{ Outer {{ inner: f\"tok{{i}}\" }} }}");
+        assert!(
+            tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "the composite rule must not be a blanket stop: a container built \
+             entirely from domestic values keeps its caller-side mint"
+        );
+    }
+
+    #[test]
+    fn a_record_literal_embedding_a_direct_extern_is_not_free() {
+        let src = format!(
+            "{RECORD_DECL}fn mk() -> Outer {{ Outer {{ inner: unsafe {{ host_string() }} }} }}"
+        );
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "F2: the OUTER record genuinely is fresh, but every composite \
+             release in this compiler is recursive, so minting an owner over it \
+             schedules a release of the host's handle in `inner`"
+        );
+    }
+
+    #[test]
+    fn a_record_literal_embedding_a_wrapper_is_not_free() {
+        let src = format!(
+            "{RECORD_DECL}fn wrapper() -> string {{ unsafe {{ host_string() }} }}\n\
+             fn mk() -> Outer {{ Outer {{ inner: wrapper() }} }}"
+        );
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "the composite query runs the SAME taint transfer as the return \
+             channel, so a laundering Hew frame between the extern and the field \
+             does not buy ownership"
+        );
+    }
+
+    #[test]
+    fn a_tuple_embedding_a_direct_extern_is_not_free() {
+        let src =
+            format!("{RECORD_DECL}fn mk() -> (string, i64) {{ (unsafe {{ host_string() }}, 1) }}");
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "the rule is about COMPOSITES, not about one container syntax: a \
+             tuple's recursive release reaches the foreign element too"
+        );
+    }
+
+    #[test]
+    fn a_nested_record_embedding_a_direct_extern_is_not_free() {
+        let src = format!(
+            "record Mid {{ o: Outer }}\n{RECORD_DECL}\
+             fn mk() -> Mid {{ Mid {{ o: Outer {{ inner: unsafe {{ host_string() }} }} }} }}"
+        );
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "a foreign handle buried at any depth taints the whole spine, since \
+             the outermost release walks all of it"
+        );
+    }
+
+    #[test]
+    fn an_empty_authority_answers_no_to_the_composite_query() {
+        // The same unrepresentability the row reader has: an authority that
+        // never ran the module analysis must not certify ANY value clean. The
+        // taint policy's own body-less-item clause would otherwise classify
+        // every call `Fresh` against an empty extern table — a `Default`-shaped
+        // fail-open reintroduced at a new query.
+        let empty = crate::return_provenance::CallScrutineeProvenance::default();
+        let literal = HirExpr {
+            node: hew_hir::HirNodeId(0),
+            site: hew_hir::SiteId(0),
+            ty: ResolvedTy::I64,
+            value_class: hew_hir::ValueClass::CowValue,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(hew_hir::HirLiteral::Integer(1)),
+            span: hew_parser::ast::Span::default(),
+        };
+        assert!(
+            !empty
+                .fresh_owner_verdicts
+                .value_is_free_of_opaque_foreign_provenance(&literal),
+            "an authority with no module analysis behind it must decline even \
+             for an integer literal — the query reports a PROOF, and an empty \
+             authority has proved nothing"
+        );
+    }
 }

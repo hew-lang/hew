@@ -357,3 +357,256 @@ fn direct_extern_result_pushed_into_a_vec_stays_copy_in() {
     );
     assert_eq!(call_count(&p, "main", "hew_vec_push_owned"), 1);
 }
+
+/// F2 — the COMPOSITE rule. The outer record literal genuinely IS fresh: this
+/// frame allocated it. The defect was taking that freshness to imply ownership
+/// of every field, so the outer value's mint scheduled a RECURSIVE release that
+/// reached the host's handle in `inner`.
+///
+/// Every composite release in this compiler is generated from the container's
+/// LAYOUT, not from a per-field provenance map, so there is no drop plan that
+/// frees the container's spine while sparing a foreign field. The container is
+/// therefore not minted at all.
+#[test]
+fn record_literal_embedding_a_direct_extern_mints_no_owner_and_no_drop() {
+    let p = main_with(
+        "record Outer { inner: Holder }\n\
+         fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() }",
+        "unsafe { borrowOuter(Outer { inner: host_record() }); }",
+    );
+    assert_eq!(
+        synthetic_binds(&p, "main"),
+        0,
+        "freshness of the CONTAINER is not ownership of its contents: the \
+         recursive release of `Outer` would free the host's `Holder`"
+    );
+    assert_eq!(
+        record_in_place_drops(&p, "main"),
+        0,
+        "and no in-place release may be scheduled over the container either"
+    );
+}
+
+/// The same composite one Hew frame away from the extern. The composite query
+/// runs the SAME taint transfer as the return channel, so a laundering wrapper
+/// between the extern and the field buys no ownership.
+#[test]
+fn record_literal_embedding_a_wrapper_mints_no_owner_and_no_drop() {
+    let p = main_with(
+        "record Outer { inner: Holder }\n\
+         fn wrapRecord() -> Holder { unsafe { host_record() } }\n\
+         fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() }",
+        "borrowOuter(Outer { inner: wrapRecord() });",
+    );
+    assert_eq!(synthetic_binds(&p, "main"), 0);
+    assert_eq!(record_in_place_drops(&p, "main"), 0);
+}
+
+/// COUNTERFACTUAL for the two cases above: the identical container built from a
+/// DOMESTIC field keeps its mint and gets exactly one release. Reverting the
+/// composite rule flips the two zeros above to one; deleting the composite mint
+/// outright flips these to zero. Only the real rule satisfies both.
+#[test]
+fn record_literal_of_a_domestic_field_keeps_its_mint_and_drops_once() {
+    let p = main_with(
+        "record Outer { inner: Holder }\n\
+         fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }\n\
+         fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() }",
+        "borrowOuter(Outer { inner: mkRecord(1) });",
+    );
+    assert_eq!(
+        synthetic_binds(&p, "main"),
+        1,
+        "control: a container whose every field is domestic still earns its \
+         caller-side temp owner"
+    );
+    assert_eq!(
+        record_in_place_drops(&p, "main"),
+        1,
+        "and EXACTLY one in-place release balances it"
+    );
+}
+
+/// The rule is about COMPOSITES, not about one container syntax: a tuple
+/// literal reaches the same three mint predicates, and its recursive release
+/// reaches its foreign element too. Pinned at the Vec seam because the
+/// borrowing-callee seam does not currently mint for tuple arguments at all
+/// (measured: the domestic control mints zero there, so that shape would be a
+/// vacuous assertion).
+#[test]
+fn tuple_embedding_a_direct_extern_pushed_into_a_vec_stays_copy_in() {
+    let p = main_with(
+        "",
+        "var v: Vec<(Holder, i64)> = Vec::new();\n    unsafe { v.push((host_record(), 1)); }",
+    );
+    assert_eq!(
+        call_count(&p, "main", "hew_vec_push_owned_move"),
+        0,
+        "a tuple is as composite as a record: moving it in hands the Vec's \
+         teardown a release of the host's handle"
+    );
+    assert_eq!(call_count(&p, "main", "hew_vec_push_owned"), 1);
+}
+
+/// COUNTERFACTUAL for the tuple: a domestic pair still MOVES in.
+#[test]
+fn tuple_of_a_domestic_value_pushed_into_a_vec_still_moves() {
+    let p = main_with(
+        "fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }",
+        "var v: Vec<(Holder, i64)> = Vec::new();\n    v.push((mkRecord(1), 1));",
+    );
+    assert_eq!(call_count(&p, "main", "hew_vec_push_owned_move"), 1);
+    assert_eq!(call_count(&p, "main", "hew_vec_push_owned"), 0);
+}
+
+/// A foreign handle buried at depth taints the whole spine, because the
+/// outermost release walks all of it.
+#[test]
+fn nested_container_embedding_a_direct_extern_mints_no_owner() {
+    let p = main_with(
+        "record Outer { inner: Holder }\n\
+         record Mid { o: Outer }\n\
+         fn borrowMid(m: Mid) -> i64 { m.o.inner.label.len() }",
+        "unsafe { borrowMid(Mid { o: Outer { inner: host_record() } }); }",
+    );
+    assert_eq!(synthetic_binds(&p, "main"), 0);
+    assert_eq!(record_in_place_drops(&p, "main"), 0);
+}
+
+fn not_yet_implemented_count(p: &IrPipeline, needle: &str) -> usize {
+    p.diagnostics
+        .iter()
+        .filter(|d| match &d.kind {
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. } => {
+                construct.contains(needle)
+            }
+            _ => false,
+        })
+        .count()
+}
+
+/// F3 — HashMap/HashSet ingress. Unlike the Vec seam there is no COPY-IN
+/// fallback: `hew-runtime`'s hashmap documents ingress as MOVE by ABI and says
+/// copy-in is intentionally absent. So "fail closed" here cannot mean "route
+/// the other way" — it must mean refusing the ingress, because accepting it
+/// hands the map's teardown a release of the host's handle.
+#[test]
+fn hashmap_insert_of_a_wrapped_extern_record_fails_closed() {
+    let p = main_with(
+        "fn wrapRecord() -> Holder { unsafe { host_record() } }",
+        "var m: HashMap<i64, Holder> = HashMap::new();\n    m.insert(1, wrapRecord());",
+    );
+    assert_eq!(
+        not_yet_implemented_count(&p, "ownership-opaque provenance"),
+        1,
+        "exactly one fail-closed diagnostic: {:#?}",
+        p.diagnostics
+    );
+}
+
+/// The same for a DIRECT extern operand — the seam must not depend on whether a
+/// Hew frame happens to sit in between.
+#[test]
+fn hashmap_insert_of_a_direct_extern_record_fails_closed() {
+    let p = main_with(
+        "",
+        "var m: HashMap<i64, Holder> = HashMap::new();\n    unsafe { m.insert(1, host_record()); }",
+    );
+    assert_eq!(
+        not_yet_implemented_count(&p, "ownership-opaque provenance"),
+        1,
+        "exactly one fail-closed diagnostic: {:#?}",
+        p.diagnostics
+    );
+}
+
+/// COUNTERFACTUAL for F3: a domestic producer at the same seam still compiles
+/// and still MOVES in. Reverting the reject makes the two cases above report
+/// zero diagnostics; widening it into a blanket stop makes this one report a
+/// diagnostic. Only the provenance-directed reject satisfies both.
+#[test]
+fn hashmap_insert_of_a_domestic_record_still_compiles() {
+    let p = main_with(
+        "fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }",
+        "var m: HashMap<i64, Holder> = HashMap::new();\n    m.insert(1, mkRecord(1));",
+    );
+    assert_eq!(
+        not_yet_implemented_count(&p, "ownership-opaque provenance"),
+        0,
+        "a domestic value at the collection seam must be unaffected: {:#?}",
+        p.diagnostics
+    );
+}
+
+/// And the same for `HashSet`, whose ingress carries the identical move contract.
+#[test]
+fn hashset_insert_of_a_wrapped_extern_string_fails_closed() {
+    let p = main_with(
+        "fn wrapper() -> string { unsafe { host_string() } }",
+        "var s: HashSet<string> = HashSet::new();\n    s.insert(wrapper());",
+    );
+    assert_eq!(
+        not_yet_implemented_count(&p, "ownership-opaque provenance"),
+        1,
+        "exactly one fail-closed diagnostic: {:#?}",
+        p.diagnostics
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The `let` binder. Seeding drop elaboration from a binding's TYPE alone means
+// a binder over an opaque foreign producer gets a scope-exit release the
+// program never earned. These pin the proven-foreign veto and, just as
+// importantly, the three places it must NOT reach.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_let_bound_direct_extern_record_gets_no_scope_exit_drop() {
+    let p = main_with("", "var i: i64 = 0;\n    while i < 2 {\n        let h = unsafe { host_record() };\n        let n = h.label.len();\n        println(f\"x={n}\");\n        i = i + 1;\n    }");
+    assert_eq!(
+        record_in_place_drops(&p, "main"),
+        0,
+        "a binder over a root extern's record must not be released by the caller"
+    );
+}
+
+#[test]
+fn a_let_bound_domestic_record_still_gets_its_scope_exit_drop() {
+    let p = main_with(
+        "fn mk(n: i64) -> Holder { Holder { label: f\"x{n}\" } }",
+        "var i: i64 = 0;\n    while i < 2 {\n        let h = mk(i);\n        let n = h.label.len();\n        println(f\"x={n}\");\n        i = i + 1;\n    }",
+    );
+    assert_eq!(
+        record_in_place_drops(&p, "main"),
+        3,
+        "the veto is provenance-directed: a domestic producer keeps its release \
+         at each of the loop body's three exit edges"
+    );
+}
+
+#[test]
+fn a_let_bound_record_embedding_a_direct_extern_gets_no_scope_exit_drop() {
+    let p = main_with(
+        "record Outer { inner: Holder }",
+        "var i: i64 = 0;\n    while i < 2 {\n        let o = Outer { inner: unsafe { host_record() } };\n        let n = o.inner.label.len();\n        println(f\"x={n}\");\n        i = i + 1;\n    }",
+    );
+    assert_eq!(
+        record_in_place_drops(&p, "main"),
+        0,
+        "the foreign fact must travel with the binder into a container"
+    );
+}
+
+#[test]
+fn a_let_bound_extern_string_keeps_its_adoption_drop() {
+    let p = main_with(
+        "",
+        "let s = unsafe { host_string() };\n    let n = s.len();\n    println(f\"x={n}\");",
+    );
+    assert_eq!(
+        cow_heap_drops(&p, "main"),
+        1,
+        "a root `extern -> string` is ADOPTED at the call edge, so the binder \
+         holds a value the program really owns and its release must survive"
+    );
+}

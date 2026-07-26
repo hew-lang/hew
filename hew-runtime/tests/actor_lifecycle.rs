@@ -451,12 +451,16 @@ fn ask_freed_queued_messages_unblock_caller() {
         // which should signal the reply channel.
         actor.stop();
 
-        // Wait on the reply channel with a short timeout. If orphan
-        // handling is broken, this will block for the full timeout.
+        // Wait on the reply channel. If orphan handling is broken this
+        // blocks for the full timeout, so the timeout has to be long
+        // enough that "unblocked promptly" and "timed out" are separated
+        // by real margin — an assertion bar equal to the wait timeout has
+        // none, and fails on a loaded machine for a correct unblock that
+        // happened to land near the boundary.
         let start = std::time::Instant::now();
         // SAFETY: ch is a valid reply channel; hew_reply_wait_timeout is
         // documented to return null and unblock on orphaned channels.
-        let reply = unsafe { hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 200) };
+        let reply = unsafe { hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 2_000) };
         let elapsed = start.elapsed();
 
         // The reply may be null (orphaned — actor stopped before
@@ -464,8 +468,10 @@ fn ask_freed_queued_messages_unblock_caller() {
         // Both are correct; the test verifies that the caller is
         // UNBLOCKED promptly, not that the reply is always null.
         assert!(
-            elapsed.as_millis() < 200,
-            "reply channel should be unblocked promptly, took {}ms",
+            elapsed.as_millis() < 500,
+            "reply channel should be unblocked promptly, took {}ms \
+             (the 2000ms wait timeout means anything near that is a real \
+             failure to unblock, not scheduling noise)",
             elapsed.as_millis()
         );
         if !reply.is_null() {

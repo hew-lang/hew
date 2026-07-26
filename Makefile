@@ -905,6 +905,7 @@ test-ux-examples: hew-native runtime $(LIBHEW_READY)
 	  done; \
 	done; \
 	echo "  $$pass passed, $$fail failed"; \
+	bash scripts/lib/corpus-floor.sh ux-example-expectations "$$((pass + fail))" || exit 1; \
 	if [ $$fail -gt 0 ]; then \
 	  echo "ERROR: $$fail tutorial(s) failed — run \`hew run <file>\` to reproduce"; \
 	  exit 1; \
@@ -987,6 +988,7 @@ test-surface-examples: hew-native runtime $(LIBHEW_READY)
 	  fi; \
 	done; \
 	echo "  $$pass passed, $$fail failed"; \
+	bash scripts/lib/corpus-floor.sh surface-example-expectations "$$((pass + fail))" || exit 1; \
 	if [ $$fail -gt 0 ]; then \
 	  echo "ERROR: $$fail surface example(s) failed — run \`hew run <file>\` to reproduce"; \
 	  exit 1; \
@@ -1212,9 +1214,11 @@ leak-scan:
 # Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
 hew-fmt-check: hew
 	@echo "==> hew-fmt-check: checking std/ and examples/ .hew sources"
-	@find std examples -name "*.hew" -print0 \
+	@total=$$(find std examples -name "*.hew" | wc -l | tr -d ' '); \
+	bash scripts/lib/corpus-floor.sh hew-fmt-check-files "$$total" || exit 1; \
+	find std examples -name "*.hew" -print0 \
 	    | xargs -0 $(DEBUG_DIR)/hew fmt --check \
-	    && echo "hew-fmt-check passed: all .hew sources are formatted." \
+	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
 # Repo-wide hew check sweep over all tracked .hew files (excluding intentional

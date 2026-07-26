@@ -99,8 +99,15 @@ Where the privileged and the legitimate question are separable, SPLIT rather
 than remove: `hew_mailbox_has_user_messages` answers "is there work for me"
 from the `stable` tier while the system-aware `hew_mailbox_has_messages` stays
 `internal`. Where they are not separable — destruction is not — the whole
-symbol moves, and its constructors move with it so the tier never offers an
-allocation whose release symbol it withholds.
+symbol moves, and its constructors move with it *when the object would
+otherwise be stranded*: a raw `hew_mailbox_new` mailbox is owned by nobody but
+its holder, so a `stable` constructor with an `internal` release symbol is a
+leak factory. That is a test about tracking, not a reflex. `hew_actor_free`
+moved to `internal` for the same destruction reason and the spawn family stayed
+`stable`, because a spawned actor is runtime-tracked — the live-actor registry,
+the scheduler and the supervision tree all hold it, and `hew_runtime_cleanup`,
+`hew_actor_group_destroy` and supervisor teardown reclaim it — so withholding
+the raw destructor strands nothing.
 
 Validating that a caller picked one of the seven `HewSysMsg` kinds checks the
 VALUE, not the ORIGIN, and is not a substitute. The legitimate producers are
@@ -155,6 +162,19 @@ the gate still fails on a transitive reach, so a green run means something.
 This does not replace the judgement above; it replaces the enumeration. The
 question "is this edge authenticated?" is still answered by a human, but the
 question "which edges are there?" is no longer answered by reading.
+
+An edge waiver has one limit worth naming, because the first draft of this
+section ran into it. Cutting `free_actor_resources_with_options →
+hew_mailbox_free` makes the gate green for *every* caller of that edge at once,
+including `hew_actor_free` — the very symbol the transitive rule was written to
+catch. What the waiver can honestly say is "the runtime, not the caller, chose
+to reclaim this actor", and that sentence is false for a destructor a user
+`extern "rt"` block may name and point at any actor it holds. So
+`hew_actor_free` is `internal`, and the waiver covers only the routes where the
+sentence is true: spawn rollback, `hew_exit` / runtime cleanup, and supervisor
+and group teardown. Run `python3 scripts/sys-lane-closure.py --explain
+hew_actor_free` after deleting the edge to see the witness path this reasoning
+is about.
 
 ## JIT host requirements
 

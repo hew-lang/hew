@@ -1790,9 +1790,20 @@ mod assoc_types_slice2 {
     ///   the caller-supplied index.
     /// - `hew_supervisor_add_child_spec` / `_dynamic` carry a caller-supplied
     ///   `HewChildSpec.sys_dispatch` into `hew_actor_set_sys_dispatch`.
+    /// - `hew_actor_free` destroys the same system queue as `hew_mailbox_free`,
+    ///   four calls away, on a caller-chosen actor at a caller-chosen moment.
+    ///   It reads as clean only if the property is read off its own body; the
+    ///   moment `scripts/sys-lane-closure.py` computes the property over the
+    ///   call graph it names this symbol with a witness path. Its constructors
+    ///   deliberately do NOT move with it, unlike `hew_mailbox_new*`: a spawned
+    ///   actor is runtime-tracked and reclaimed by `hew_runtime_cleanup`,
+    ///   `hew_actor_group_destroy` and supervisor teardown, so withholding the
+    ///   raw destructor is not the leak factory withholding `hew_mailbox_free`
+    ///   from raw `hew_mailbox_new` holders would have been.
     #[test]
     fn extern_rt_system_lane_symbols_rejected() {
         for sym in [
+            "hew_actor_free",
             "hew_actor_set_sys_dispatch",
             "hew_mailbox_free",
             "hew_mailbox_has_messages",

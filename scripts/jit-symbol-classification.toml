@@ -52,7 +52,6 @@ stable = [
   "hew_actor_current_id",
   "hew_actor_demonitor",
   "hew_actor_exit_unhandled",
-  "hew_actor_free",
   "hew_actor_gen_sink_complete",
   "hew_actor_gen_sink_register",
   "hew_actor_get_budget",
@@ -1300,6 +1299,19 @@ codegen-stable = [
 internal = [
   "_start",
   "hew_actor_drain_outcome_free",
+  # `hew_actor_free` is the actor-side twin of `hew_mailbox_free`: it destroys
+  # the private system queue, four calls down, on an actor pointer the caller
+  # chooses at a moment the caller chooses. `scripts/sys-lane-closure.py` names
+  # it with a witness path the instant the teardown edge is not waived, and no
+  # value of the waiver reason changes the fact that a user-declarable
+  # destructor is a user-declarable destruction of system state. Unlike
+  # `hew_mailbox_new*`, the constructors do NOT move with it: a spawned actor is
+  # runtime-TRACKED (live-actor registry, scheduler, supervision tree) and is
+  # reclaimed by `hew_runtime_cleanup`, `hew_actor_group_destroy` and supervisor
+  # teardown, so withholding the raw destructor strands nothing. A raw mailbox
+  # was untracked, which is why that constructor family was a leak factory and
+  # this one is not.
+  "hew_actor_free",
   "hew_actor_drain_set",
   "hew_actor_state_lock_poison_after_panic",
   "hew_actor_state_lock_release_after_panic",
@@ -1614,14 +1626,23 @@ published. No caller-supplied function pointer reaches the slot and there is \
 no window in which another thread can observe the actor without one."""
 
 "free_actor_resources_with_options -> hew_mailbox_free" = """
-Accounted teardown, native. This is the edge behind `hew_actor_free destroys \
-the system lane through a call`. Two things make it safe rather than merely \
-tolerated. Ordering: teardown reaches lane destruction only after the actor \
-is latched terminal and untracked, so no signal that could still have been \
-dispatched is discarded. Non-silence: hew_mailbox_free retires through \
+Accounted teardown, native. This is the edge every actor-lifecycle route \
+reaches system-queue destruction through. The user-declarable raw destructor \
+is NOT one of those routes any more: `hew_actor_free` moved to `internal` \
+precisely because an edge waiver cannot make a caller-chosen destruction of \
+caller-chosen actor state authenticated. What the waiver covers is the set \
+that remains -- spawn rollback, `hew_exit`/runtime cleanup, supervisor and \
+group teardown -- where the runtime, not the caller, decides that this actor \
+is being reclaimed. Two things make those safe rather than merely tolerated. \
+Ordering: teardown reaches queue destruction only after the actor is latched \
+terminal and untracked, so no signal that could still have been dispatched is \
+discarded. Non-silence: hew_mailbox_free retires through \
 mailbox::retire_pending_sys_lane, which names every discarded signal via \
-HewSysMsg::name() and counts it into sys_lane_signals_retired() -- a lane \
-teardown can no longer happen without leaving a countable trace."""
+HewSysMsg::name() and counts it into sys_lane_signals_retired() -- a teardown \
+can no longer happen without leaving a countable trace. \
+`hew_supervisor_remove_child` is the closest remaining stable caller: it \
+destroys a child the supervisor already owns and whose teardown ordering the \
+supervisor controls, not an arbitrary actor pointer."""
 
 "free_actor_resources_wasm_with_options -> hew_mailbox_free" = """
 The wasm mirror of the edge above, retiring through \

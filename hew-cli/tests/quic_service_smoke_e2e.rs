@@ -39,23 +39,51 @@ fn build_example_binary(source: &Path, output_path: &Path) {
     );
 }
 
+/// Addresses the readiness probe has to cover.
+///
+/// The example asks for `":PORT"`, which `hew-std` resolves against its default
+/// bind host, so the server owns the wildcard `0.0.0.0:PORT`. The wildcard entry
+/// therefore has to come first; the loopback entry keeps the probe honest if the
+/// example ever binds a specific interface instead.
+const PROBE_HOSTS: [&str; 2] = ["0.0.0.0", "127.0.0.1"];
+
 fn pick_free_udp_port() -> u16 {
-    UdpSocket::bind("127.0.0.1:0")
+    // Discover on the wildcard the server will actually bind, so the port is
+    // free on every interface rather than on loopback alone.
+    UdpSocket::bind("0.0.0.0:0")
         .expect("bind udp socket for port discovery")
         .local_addr()
         .expect("discover local udp port")
         .port()
 }
 
-fn udp_port_is_bound(port: u16) -> Result<bool, String> {
-    match UdpSocket::bind(("127.0.0.1", port)) {
+fn udp_addr_is_bound(host: &str, port: u16) -> Result<bool, String> {
+    match UdpSocket::bind((host, port)) {
         Ok(socket) => {
             drop(socket);
             Ok(false)
         }
         Err(error) if error.kind() == ErrorKind::AddrInUse => Ok(true),
-        Err(error) => Err(format!("cannot probe UDP port {port}: {error}")),
+        Err(error) => Err(format!("cannot probe UDP {host}:{port}: {error}")),
     }
+}
+
+/// Report whether anything on this host holds `port` for UDP.
+///
+/// Probing loopback alone is not portable. Winsock rejects a second bind only
+/// when the address matches exactly, so on Windows `127.0.0.1:PORT` stays
+/// bindable while the server holds `0.0.0.0:PORT`, and a loopback-only probe
+/// reports "free" forever even though the server is up and serving. BSD and
+/// Linux treat the wildcard as overlapping every specific address, which is why
+/// the loopback-only probe happened to work there. Checking both addresses is
+/// correct on all three.
+fn udp_port_is_bound(port: u16) -> Result<bool, String> {
+    for host in PROBE_HOSTS {
+        if udp_addr_is_bound(host, port)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn read_pipe<T: Read>(mut stream: T, name: &str) -> Result<Vec<u8>, String> {
@@ -159,7 +187,7 @@ impl RunningChild {
                 Ok(false) => {
                     assert!(
                         start.elapsed() < timeout,
-                        "server did not bind UDP port {port} within {timeout:?}"
+                        "server did not bind UDP port {port} on any of {PROBE_HOSTS:?} within {timeout:?}"
                     );
                     std::thread::sleep(POLL_INTERVAL);
                 }
@@ -182,6 +210,23 @@ impl Drop for RunningChild {
             }
         }
     }
+}
+
+/// Guard for the defect that made this file's smoke test fail on Windows only:
+/// the readiness probe must observe a socket bound to the wildcard address,
+/// which is what `quic.new_server(":PORT")` ends up holding. A probe that
+/// cannot see the thing it polls reports "not ready" until the deadline
+/// expires, with no hint that the observation — not the server — is at fault.
+#[test]
+fn quic_readiness_probe_observes_a_wildcard_udp_bind() {
+    let held = UdpSocket::bind("0.0.0.0:0").expect("bind wildcard probe socket");
+    let port = held.local_addr().expect("discover local udp port").port();
+
+    assert_eq!(
+        udp_port_is_bound(port),
+        Ok(true),
+        "readiness probe cannot observe a UDP socket bound to 0.0.0.0:{port}",
+    );
 }
 
 // This example was ignored on the claim that the QUIC stream/connection stdlib

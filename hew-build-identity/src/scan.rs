@@ -1,49 +1,93 @@
-//! Build-script half of the identity scheme: hashing the source input set.
+//! Build-script half of the identity scheme: hashing the archive's input set.
 //!
 //! Gated behind the `scan` feature so that only build-dependency copies of this
-//! crate pull in `sha2`. The driver depends on the crate without the feature
-//! and gets the format constants alone.
+//! crate pull in `sha2` and `toml`. The driver depends on the crate without the
+//! feature and gets the format constants alone.
+//!
+//! Everything the scan covers is *derived*, never listed by hand:
+//!
+//! * the crates come from [`ROOT_INPUT_CRATE`]'s non-dev path-dependency
+//!   closure, so a workspace crate newly linked into the archive is covered the
+//!   day it is added;
+//! * the embedded assets come from the `include_str!` / `include_bytes!` sites
+//!   in those crates' sources, so the next dashboard file is covered without
+//!   anyone remembering;
+//! * the build configuration comes from the `option_env!` sites, so a
+//!   compile-time knob cannot change the archive behind the digest's back.
+//!
+//! The workspace manifest and lockfile are inputs too: a lockfile-selected
+//! dependency bump changes the archive's bytes while every crate source in the
+//! closure stays byte-identical.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::{INPUT_CRATES, INPUT_FILE_EXTENSIONS, INPUT_FILE_NAMES, STAMP_LEN, STAMP_SYMBOL};
+use crate::{
+    INPUT_FILE_EXTENSIONS, INPUT_FILE_NAMES, ROOT_INPUT_CRATE, STAMP_LEN, WORKSPACE_INPUT_FILES,
+};
 
 /// Domain separator mixed into the digest so the scheme can be revised without
 /// a previously-stamped archive ever colliding with a new-scheme driver.
-const DOMAIN: &[u8] = b"hew-build-identity-v1\n";
+///
+/// `v2` is the widened domain: the dependency closure, the workspace manifest
+/// and lockfile, embedded assets and `option_env!` configuration. `v1` covered
+/// three hand-listed crates' Rust sources only.
+const DOMAIN: &[u8] = b"hew-build-identity-v2\n";
+
+/// Macros whose string-literal argument names a file compiled into the crate.
+const ASSET_MACROS: [&str; 2] = ["include_str", "include_bytes"];
+
+/// Macro that reads build configuration into the compiled code.
+const CONFIG_MACRO: &str = "option_env";
 
 /// A computed build identity plus the exact inputs it was computed from.
 #[derive(Debug, Clone)]
 pub struct Identity {
     digest: String,
+    crates: Vec<String>,
     files: Vec<PathBuf>,
     dirs: Vec<PathBuf>,
+    env_vars: Vec<String>,
 }
 
 impl Identity {
-    /// Lower-case hex SHA-256 digest of the runtime + stdlib source set.
+    /// Lower-case hex SHA-256 digest of the archive's input set.
     #[must_use]
     pub fn digest(&self) -> &str {
         &self.digest
     }
 
-    /// Source files that contributed to [`Identity::digest`].
+    /// Workspace crates whose sources contributed to [`Identity::digest`].
+    #[must_use]
+    pub fn crates(&self) -> &[String] {
+        &self.crates
+    }
+
+    /// Files that contributed to [`Identity::digest`].
     #[must_use]
     pub fn files(&self) -> &[PathBuf] {
         &self.files
+    }
+
+    /// Environment variables whose values contributed to [`Identity::digest`].
+    #[must_use]
+    pub fn env_vars(&self) -> &[String] {
+        &self.env_vars
     }
 
     /// Prints the `cargo:rerun-if-changed` directives that keep the identity live.
     ///
     /// Both the files and the directories that contain them are declared: file
     /// entries catch edits, directory entries catch additions and removals
-    /// (which change a directory's mtime but no tracked file's).
+    /// (which change a directory's mtime but no tracked file's). The
+    /// `option_env!` variables are declared too, so flipping a compile-time
+    /// knob recomputes the digest instead of leaving a stale one baked in.
     pub fn emit_cargo_rerun_directives(&self) {
         for dir in &self.dirs {
             println!("cargo:rerun-if-changed={}", dir.display());
@@ -51,26 +95,33 @@ impl Identity {
         for file in &self.files {
             println!("cargo:rerun-if-changed={}", file.display());
         }
+        for name in &self.env_vars {
+            println!("cargo:rerun-if-env-changed={name}");
+        }
     }
 
     /// Renders the Rust source for the `#[no_mangle]` static that stamps the
-    /// identity into `libhew.a` / `hew.lib`.
+    /// identity into an archive under `symbol`.
     ///
-    /// The emitted item uses Rust 2024 `#[unsafe(no_mangle)]` spelling because
-    /// its only consumer, `hew-lib`, is a 2024-edition crate.
+    /// Each archive uses its own symbol name so that an umbrella staticlib can
+    /// contain the stamps of the crates it links without a duplicate-symbol
+    /// clash; the payload string, which is what the driver reads, is the same.
+    ///
+    /// The emitted item uses the Rust 2024 `#[unsafe(no_mangle)]` spelling,
+    /// which every edition in this workspace accepts.
     #[must_use]
-    pub fn stamp_static_source(&self) -> String {
+    pub fn stamp_static_source(&self, symbol: &str) -> String {
         let payload = format!("{}{}", crate::STAMP_PREFIX, self.digest);
         debug_assert_eq!(payload.len(), STAMP_LEN);
         format!(
-            "/// Build identity of the runtime + stdlib sources this archive was built from.\n\
+            "/// Build identity of the sources this archive was built from.\n\
              ///\n\
              /// The compiler driver carries the same digest and refuses to link an\n\
              /// archive whose stamp disagrees, so a fresh driver can never silently\n\
-             /// pair with a stale `libhew.a`. Generated by `build.rs`; do not edit.\n\
+             /// pair with a stale archive. Generated by `build.rs`; do not edit.\n\
              #[used]\n\
              #[unsafe(no_mangle)]\n\
-             pub static {STAMP_SYMBOL}: [u8; {len}] = *b\"{payload}\\0\";\n",
+             pub static {symbol}: [u8; {len}] = *b\"{payload}\\0\";\n",
             len = STAMP_LEN + 1,
         )
     }
@@ -81,6 +132,17 @@ impl Identity {
 pub enum Error {
     /// A required input directory is missing from the workspace.
     MissingInputCrate(PathBuf),
+    /// A required workspace-level input (manifest, lockfile) is missing.
+    MissingWorkspaceFile(PathBuf),
+    /// A crate manifest could not be read or parsed.
+    Manifest(PathBuf, String),
+    /// A path dependency does not name a sibling crate of the workspace root.
+    UnsupportedDependencyPath(PathBuf, String),
+    /// An `include_str!`, `include_bytes!` or `option_env!` argument is not a
+    /// plain string literal, so what it names cannot be identified.
+    UnsupportedMacroArgument(PathBuf, String),
+    /// An embedded asset inside the scanned crates does not exist.
+    MissingAsset(PathBuf, PathBuf),
     /// The scan found no source files at all — refuse rather than hash nothing.
     NoInputs,
     /// A filesystem error while walking or reading the input set.
@@ -93,14 +155,41 @@ impl fmt::Display for Error {
             Self::MissingInputCrate(path) => write!(
                 f,
                 "build identity input crate not found: {} (expected a full Hew \
-                 workspace checkout containing {})",
-                path.display(),
-                INPUT_CRATES.join(", ")
+                 workspace checkout rooted at {ROOT_INPUT_CRATE})",
+                path.display()
+            ),
+            Self::MissingWorkspaceFile(path) => write!(
+                f,
+                "build identity workspace input not found: {}",
+                path.display()
+            ),
+            Self::Manifest(path, detail) => {
+                write!(f, "build identity cannot read {}: {detail}", path.display())
+            }
+            Self::UnsupportedDependencyPath(manifest, path) => write!(
+                f,
+                "{} declares a path dependency on `{path}`; the build identity \
+                 scan only understands sibling workspace crates spelled `../<crate>`",
+                manifest.display()
+            ),
+            Self::UnsupportedMacroArgument(path, macro_name) => write!(
+                f,
+                "{} calls {macro_name}! with something other than a plain string \
+                 literal, so what it embeds cannot be added to the build identity. \
+                 Spell it as a literal — otherwise the archive changes without the \
+                 identity moving",
+                path.display()
+            ),
+            Self::MissingAsset(source, asset) => write!(
+                f,
+                "{} embeds {}, which does not exist",
+                source.display(),
+                asset.display()
             ),
             Self::NoInputs => write!(
                 f,
-                "build identity scan matched no source files under {}",
-                INPUT_CRATES.join(", ")
+                "build identity scan matched no source files under \
+                 {ROOT_INPUT_CRATE}'s dependency closure"
             ),
             Self::Io(path, err) => {
                 write!(f, "build identity scan failed on {}: {err}", path.display())
@@ -113,48 +202,69 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(_, err) => Some(err),
-            Self::MissingInputCrate(_) | Self::NoInputs => None,
+            Self::MissingInputCrate(_)
+            | Self::MissingWorkspaceFile(_)
+            | Self::Manifest(_, _)
+            | Self::UnsupportedDependencyPath(_, _)
+            | Self::UnsupportedMacroArgument(_, _)
+            | Self::MissingAsset(_, _)
+            | Self::NoInputs => None,
         }
     }
 }
 
-/// Computes the build identity of the runtime + stdlib sources under `workspace_root`.
+/// Computes the build identity of everything that feeds the archive.
 ///
 /// The digest covers, for every input file in a stable order: its
 /// workspace-relative path (normalised to `/` separators so the ordering does
-/// not depend on the host), its length, and its bytes. Content changes,
-/// renames, additions and deletions all move the digest; bumping the package
-/// version alone does not.
+/// not depend on the host), its length and its bytes; then every `option_env!`
+/// name the scanned sources read, with its current value or an explicit unset
+/// marker. Content changes, renames, additions, deletions, a lockfile
+/// dependency bump, an edited embedded asset and a flipped compile-time knob
+/// all move the digest; bumping the package version alone does not.
 ///
 /// # Errors
 ///
-/// Returns [`Error::MissingInputCrate`] when an input crate directory is
-/// absent, [`Error::NoInputs`] when the scan matches nothing, and
-/// [`Error::Io`] when a directory cannot be walked or a file cannot be read.
-/// There is no "unknown identity" success value: an identity that cannot be
-/// computed must stop the build rather than produce an archive nothing can
-/// validate.
+/// Returns [`Error::MissingInputCrate`] when a crate in the closure is absent,
+/// [`Error::MissingWorkspaceFile`] when the workspace manifest or lockfile is
+/// absent, [`Error::Manifest`] or [`Error::UnsupportedDependencyPath`] when a
+/// manifest cannot be understood, [`Error::UnsupportedMacroArgument`] or
+/// [`Error::MissingAsset`] when an embedded asset cannot be identified,
+/// [`Error::NoInputs`] when the scan matches nothing, and [`Error::Io`] when a
+/// directory cannot be walked or a file cannot be read. There is no "unknown
+/// identity" success value: an identity that cannot be computed must stop the
+/// build rather than produce an archive nothing can validate.
 pub fn compute(workspace_root: &Path) -> Result<Identity, Error> {
-    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    let crates = input_crates(workspace_root)?;
+
+    let mut files: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut dirs: Vec<PathBuf> = Vec::new();
-
-    let mut crates: Vec<&str> = INPUT_CRATES.to_vec();
-    crates.sort_unstable();
-
-    for crate_dir in crates {
-        let root = workspace_root.join(crate_dir);
-        if !root.is_dir() {
-            return Err(Error::MissingInputCrate(root));
-        }
-        collect(&root, crate_dir, &mut files, &mut dirs)?;
+    for crate_dir in &crates {
+        collect(
+            &workspace_root.join(crate_dir),
+            crate_dir,
+            &mut files,
+            &mut dirs,
+        )?;
     }
-
     if files.is_empty() {
         return Err(Error::NoInputs);
     }
 
-    files.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    dirs.sort_unstable();
+    for name in WORKSPACE_INPUT_FILES {
+        let path = workspace_root.join(name);
+        if !path.is_file() {
+            return Err(Error::MissingWorkspaceFile(path));
+        }
+        files.insert((*name).to_string(), path);
+    }
+
+    let crate_roots: Vec<PathBuf> = crates
+        .iter()
+        .map(|name| workspace_root.join(name))
+        .collect();
+    let (assets, env_vars) = scan_macro_sites(&files, &crate_roots)?;
+    files.extend(assets);
 
     let mut hasher = Sha256::new();
     hasher.update(DOMAIN);
@@ -165,24 +275,127 @@ pub fn compute(workspace_root: &Path) -> Result<Identity, Error> {
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
+    hasher.update(b"\nbuild-configuration\n");
+    for name in &env_vars {
+        hasher.update(name.as_bytes());
+        hasher.update([0u8]);
+        match std::env::var(name) {
+            Ok(value) => {
+                hasher.update([1u8]);
+                hasher.update(value.as_bytes());
+            }
+            Err(_) => hasher.update([0u8]),
+        }
+        hasher.update([0u8]);
+    }
 
     let mut digest = String::with_capacity(crate::DIGEST_HEX_LEN);
     for byte in hasher.finalize() {
         write!(&mut digest, "{byte:02x}").expect("writing to a String cannot fail");
     }
 
+    dirs.sort_unstable();
     Ok(Identity {
         digest,
-        files: files.into_iter().map(|(_, path)| path).collect(),
+        crates,
+        files: files.into_values().collect(),
         dirs,
+        env_vars: env_vars.into_iter().collect(),
     })
+}
+
+/// Resolves the crates whose sources reach the archive.
+///
+/// The closure starts at [`ROOT_INPUT_CRATE`] and follows every path
+/// dependency and build dependency, skipping dev dependencies because test
+/// code is not linked into the staticlib.
+///
+/// # Errors
+///
+/// Returns [`Error::MissingInputCrate`], [`Error::Manifest`],
+/// [`Error::UnsupportedDependencyPath`] or [`Error::Io`]; see [`compute`].
+pub fn input_crates(workspace_root: &Path) -> Result<Vec<String>, Error> {
+    let mut resolved: BTreeSet<String> = BTreeSet::new();
+    let mut pending = vec![ROOT_INPUT_CRATE.to_string()];
+
+    while let Some(name) = pending.pop() {
+        if !resolved.insert(name.clone()) {
+            continue;
+        }
+        let dir = workspace_root.join(&name);
+        if !dir.is_dir() {
+            return Err(Error::MissingInputCrate(dir));
+        }
+        pending.extend(path_dependencies(&dir.join("Cargo.toml"))?);
+    }
+
+    Ok(resolved.into_iter().collect())
+}
+
+/// Sibling workspace crates that `manifest` depends on, ignoring dev deps.
+fn path_dependencies(manifest: &Path) -> Result<Vec<String>, Error> {
+    let text =
+        fs::read_to_string(manifest).map_err(|err| Error::Io(manifest.to_path_buf(), err))?;
+    let table: toml::Table = text
+        .parse()
+        .map_err(|err: toml::de::Error| Error::Manifest(manifest.to_path_buf(), err.to_string()))?;
+
+    let mut found = Vec::new();
+    collect_path_dependencies(&table, manifest, &mut found)?;
+    if let Some(targets) = table.get("target").and_then(toml::Value::as_table) {
+        for cfg in targets.values() {
+            if let Some(cfg) = cfg.as_table() {
+                collect_path_dependencies(cfg, manifest, &mut found)?;
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn collect_path_dependencies(
+    table: &toml::Table,
+    manifest: &Path,
+    found: &mut Vec<String>,
+) -> Result<(), Error> {
+    // `dev-dependencies` is deliberately absent: nothing reached only through
+    // it is compiled into the archive.
+    for section in ["dependencies", "build-dependencies"] {
+        let Some(deps) = table.get(section).and_then(toml::Value::as_table) else {
+            continue;
+        };
+        for spec in deps.values() {
+            let Some(path) = spec
+                .as_table()
+                .and_then(|spec| spec.get("path"))
+                .and_then(toml::Value::as_str)
+            else {
+                continue;
+            };
+            found.push(sibling_crate_name(path, manifest)?);
+        }
+    }
+    Ok(())
+}
+
+/// Every workspace member sits directly under the workspace root, so a path
+/// dependency reads exactly `../<crate>`. Anything else is refused rather than
+/// guessed at: a dependency the scan cannot place is one it cannot hash.
+fn sibling_crate_name(path: &str, manifest: &Path) -> Result<String, Error> {
+    let name = path.strip_prefix("../").unwrap_or("");
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
+        return Err(Error::UnsupportedDependencyPath(
+            manifest.to_path_buf(),
+            path.to_string(),
+        ));
+    }
+    Ok(name.to_string())
 }
 
 /// Recursively collects identity inputs under `dir`, skipping Cargo `target/` trees.
 fn collect(
     dir: &Path,
     rel_prefix: &str,
-    files: &mut Vec<(String, PathBuf)>,
+    files: &mut BTreeMap<String, PathBuf>,
     dirs: &mut Vec<PathBuf>,
 ) -> Result<(), Error> {
     dirs.push(dir.to_path_buf());
@@ -211,7 +424,7 @@ fn collect(
         if !is_input_file(name) {
             continue;
         }
-        files.push((format!("{rel_prefix}/{name}"), path));
+        files.insert(format!("{rel_prefix}/{name}"), path);
     }
 
     Ok(())
@@ -225,6 +438,302 @@ fn is_input_file(name: &str) -> bool {
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| INPUT_FILE_EXTENSIONS.contains(&ext))
+}
+
+/// Finds the embedded assets and build-configuration knobs the sources use.
+///
+/// Assets that resolve outside the scanned crate directories are left out on
+/// purpose: in this workspace every one of them is a test fixture reading a
+/// `std/*.hew` file, which is not compiled into the archive. Tying the
+/// archive's identity to those would rebuild it on every stdlib edit.
+fn scan_macro_sites(
+    files: &BTreeMap<String, PathBuf>,
+    crate_roots: &[PathBuf],
+) -> Result<(BTreeMap<String, PathBuf>, BTreeSet<String>), Error> {
+    let mut assets: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut env_vars: BTreeSet<String> = BTreeSet::new();
+
+    for (rel, path) in files {
+        if Path::new(rel).extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let text = fs::read(path).map_err(|err| Error::Io(path.clone(), err))?;
+        let sites = macro_call_sites(&text)
+            .map_err(|name| Error::UnsupportedMacroArgument(path.clone(), name))?;
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+
+        for (macro_name, literal) in sites {
+            if macro_name == CONFIG_MACRO {
+                env_vars.insert(literal);
+                continue;
+            }
+            let asset = normalise(&dir.join(literal));
+            let Some(rel_asset) = relative_to_any(&asset, crate_roots) else {
+                continue;
+            };
+            if !asset.is_file() {
+                return Err(Error::MissingAsset(path.clone(), asset));
+            }
+            assets.insert(rel_asset, asset);
+        }
+    }
+
+    Ok((assets, env_vars))
+}
+
+/// Renders `path` relative to whichever crate root contains it, `/`-separated.
+fn relative_to_any(path: &Path, crate_roots: &[PathBuf]) -> Option<String> {
+    for root in crate_roots {
+        let Ok(rest) = path.strip_prefix(root) else {
+            continue;
+        };
+        let name = root.file_name()?.to_str()?;
+        let rest: Vec<&str> = rest
+            .components()
+            .filter_map(|part| part.as_os_str().to_str())
+            .collect();
+        return Some(format!("{name}/{}", rest.join("/")));
+    }
+    None
+}
+
+/// Resolves `.` and `..` textually; the asset may not exist when this is called.
+fn normalise(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Finds every `include_str!`/`include_bytes!`/`option_env!` call site in a
+/// Rust source file and returns its string-literal argument.
+///
+/// This is a lexical pass, not a text search. It walks the source skipping
+/// comments, string literals and character literals, so a macro named in a doc
+/// comment or quoted inside a test fixture is not mistaken for a call — and,
+/// equally, a real call is never missed because a fixture happened to mention
+/// it earlier in the file.
+///
+/// # Errors
+///
+/// Returns the macro's name when a call site's argument is not a plain string
+/// literal. What it names cannot be identified, and skipping it silently is
+/// exactly what let an embedded asset change the archive without moving the
+/// digest.
+fn macro_call_sites(source: &[u8]) -> Result<Vec<(&'static str, String)>, String> {
+    let mut found = Vec::new();
+    let mut at = 0;
+
+    while at < source.len() {
+        if let Some(end) = comment_end(source, at) {
+            at = end;
+            continue;
+        }
+        if let Some(end) = raw_string_end(source, at) {
+            at = end;
+            continue;
+        }
+        match source[at] {
+            b'"' => {
+                at = string_end(source, at + 1);
+                continue;
+            }
+            b'\'' => {
+                at = char_literal_end(source, at);
+                continue;
+            }
+            byte if is_ident_start(byte) => {}
+            _ => {
+                at += 1;
+                continue;
+            }
+        }
+
+        let name_end = ident_end(source, at);
+        let Some(name) = macro_name(&source[at..name_end]) else {
+            at = name_end;
+            continue;
+        };
+        let Some(open) = macro_delimiter(source, name_end) else {
+            // A bare mention, not an invocation.
+            at = name_end;
+            continue;
+        };
+        let argument = skip_whitespace(source, open + 1);
+        if source.get(argument) != Some(&b'"') {
+            return Err(name.to_string());
+        }
+        let end = string_end(source, argument + 1);
+        found.push((name, unescape(&source[argument + 1..end - 1], name)?));
+        at = end;
+    }
+
+    Ok(found)
+}
+
+/// Matches an identifier against the macros the digest cares about.
+fn macro_name(ident: &[u8]) -> Option<&'static str> {
+    ASSET_MACROS
+        .into_iter()
+        .chain([CONFIG_MACRO])
+        .find(|name| name.as_bytes() == ident)
+}
+
+/// The offset of the opening delimiter when an invocation starts at `at`.
+fn macro_delimiter(source: &[u8], at: usize) -> Option<usize> {
+    if source.get(at) != Some(&b'!') {
+        return None;
+    }
+    let open = skip_whitespace(source, at + 1);
+    matches!(source.get(open), Some(b'(' | b'[' | b'{')).then_some(open)
+}
+
+/// The offset of the first byte at or after `at` that is not ASCII whitespace.
+fn skip_whitespace(source: &[u8], mut at: usize) -> usize {
+    while source.get(at).is_some_and(u8::is_ascii_whitespace) {
+        at += 1;
+    }
+    at
+}
+
+/// The offset just past a line or (nesting) block comment starting at `at`.
+fn comment_end(source: &[u8], at: usize) -> Option<usize> {
+    if source.get(at) != Some(&b'/') {
+        return None;
+    }
+    match source.get(at + 1) {
+        Some(b'/') => {
+            let mut cursor = at + 2;
+            while cursor < source.len() && source[cursor] != b'\n' {
+                cursor += 1;
+            }
+            Some(cursor)
+        }
+        Some(b'*') => {
+            let mut depth = 1usize;
+            let mut cursor = at + 2;
+            while cursor < source.len() && depth > 0 {
+                if source[cursor] == b'/' && source.get(cursor + 1) == Some(&b'*') {
+                    depth += 1;
+                    cursor += 2;
+                } else if source[cursor] == b'*' && source.get(cursor + 1) == Some(&b'/') {
+                    depth -= 1;
+                    cursor += 2;
+                } else {
+                    cursor += 1;
+                }
+            }
+            Some(cursor)
+        }
+        _ => None,
+    }
+}
+
+/// The offset just past a raw string literal starting at `at`, else `None`.
+///
+/// Handles the `r`, `br` and `cr` prefixes with any number of hashes.
+fn raw_string_end(source: &[u8], at: usize) -> Option<usize> {
+    let prefix = match source.get(at)? {
+        b'r' => 0,
+        b'b' | b'c' if source.get(at + 1) == Some(&b'r') => 1,
+        _ => return None,
+    };
+    let mut hashes = 0;
+    while source.get(at + prefix + 1 + hashes) == Some(&b'#') {
+        hashes += 1;
+    }
+    if source.get(at + prefix + 1 + hashes) != Some(&b'"') {
+        return None;
+    }
+
+    let mut cursor = at + prefix + hashes + 2;
+    while cursor < source.len() {
+        if source[cursor] == b'"'
+            && source
+                .get(cursor + 1..cursor + 1 + hashes)
+                .is_some_and(|tail| tail.iter().all(|byte| *byte == b'#'))
+        {
+            return Some(cursor + 1 + hashes);
+        }
+        cursor += 1;
+    }
+    Some(source.len())
+}
+
+/// The offset just past a string literal whose contents start at `at`.
+fn string_end(source: &[u8], mut at: usize) -> usize {
+    while at < source.len() {
+        match source[at] {
+            b'\\' => at += 2,
+            b'"' => return at + 1,
+            _ => at += 1,
+        }
+    }
+    source.len()
+}
+
+/// A `'` starts either a character literal or a lifetime; only the literal
+/// spans further than one byte.
+fn char_literal_end(source: &[u8], at: usize) -> usize {
+    if source.get(at + 1) == Some(&b'\\') {
+        let mut cursor = at + 2;
+        while cursor < source.len() && source[cursor] != b'\'' {
+            cursor += 1;
+        }
+        return (cursor + 1).min(source.len());
+    }
+    if source.get(at + 2) == Some(&b'\'') {
+        return at + 3;
+    }
+    at + 1
+}
+
+/// Whether `byte` can start a Rust identifier, for the ASCII subset we scan.
+fn is_ident_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+/// The offset just past the identifier starting at `at`.
+fn ident_end(source: &[u8], mut at: usize) -> usize {
+    while source
+        .get(at)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        at += 1;
+    }
+    at
+}
+
+/// Unescapes the subset of Rust string escapes a path or variable name can use.
+fn unescape(literal: &[u8], macro_name: &str) -> Result<String, String> {
+    let mut out = Vec::with_capacity(literal.len());
+    let mut at = 0;
+    while at < literal.len() {
+        if literal[at] != b'\\' {
+            out.push(literal[at]);
+            at += 1;
+            continue;
+        }
+        match literal.get(at + 1) {
+            Some(b'\\') => out.push(b'\\'),
+            Some(b'"') => out.push(b'"'),
+            Some(b'\'') => out.push(b'\''),
+            Some(b'n') => out.push(b'\n'),
+            Some(b'r') => out.push(b'\r'),
+            Some(b't') => out.push(b'\t'),
+            Some(b'0') => out.push(0),
+            _ => return Err(macro_name.to_string()),
+        }
+        at += 2;
+    }
+    String::from_utf8(out).map_err(|_| macro_name.to_string())
 }
 
 /// Resolves the workspace root from a build script's `CARGO_MANIFEST_DIR`.
@@ -242,17 +751,51 @@ pub fn workspace_root_from_manifest_dir(manifest_dir: &Path) -> Result<PathBuf, 
 
 #[cfg(test)]
 mod tests {
-    use super::{compute, is_input_file};
+    use super::{compute, input_crates, is_input_file, macro_call_sites, Error};
+    use std::collections::BTreeSet;
     use std::fs;
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
+    /// Builds a miniature workspace: `hew-lib` depending on `hew-runtime`,
+    /// which depends on `hew-cabi` and, only for tests, on `hew-testkit`.
+    fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("hew-build-identity-{name}"));
         let _ = fs::remove_dir_all(&dir);
-        for krate in super::INPUT_CRATES {
-            fs::create_dir_all(dir.join(krate)).expect("create input crate dir");
-            fs::write(dir.join(krate).join("Cargo.toml"), b"[package]\n").expect("write manifest");
-        }
+        fs::create_dir_all(&dir).expect("create workspace root");
+        fs::write(dir.join("Cargo.toml"), b"[workspace]\n").expect("write workspace manifest");
+        fs::write(dir.join("Cargo.lock"), b"version = 4\n").expect("write lockfile");
+
+        manifest(
+            &dir,
+            "hew-lib",
+            "[dependencies]\nhew-runtime = { path = \"../hew-runtime\" }\n",
+        );
+        manifest(
+            &dir,
+            "hew-runtime",
+            "[dependencies]\nhew-cabi = { path = \"../hew-cabi\" }\n\n\
+             [dev-dependencies]\nhew-testkit = { path = \"../hew-testkit\" }\n",
+        );
+        manifest(&dir, "hew-cabi", "");
+        manifest(&dir, "hew-testkit", "");
+        fs::write(dir.join("hew-lib").join("lib.rs"), b"fn a() {}\n").expect("write source");
         dir
+    }
+
+    fn manifest(root: &Path, name: &str, body: &str) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).expect("create crate dir");
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\n\n{body}"),
+        )
+        .expect("write manifest");
+    }
+
+    fn digest_of(dir: &Path) -> String {
+        compute(dir).expect("compute").digest().to_string()
     }
 
     #[test]
@@ -265,70 +808,334 @@ mod tests {
     }
 
     #[test]
-    fn digest_changes_when_source_content_changes() {
-        let dir = scratch("content");
-        let src = dir.join("hew-runtime").join("lib.rs");
-        fs::write(&src, b"fn a() {}\n").expect("write source");
-        let before = compute(&dir).expect("compute").digest().to_string();
-        fs::write(&src, b"fn b() {}\n").expect("rewrite source");
-        let after = compute(&dir).expect("compute").digest().to_string();
+    fn the_crate_set_is_the_non_dev_path_dependency_closure() {
+        let dir = scratch("closure");
+        assert_eq!(
+            input_crates(&dir).expect("closure"),
+            vec![
+                "hew-cabi".to_string(),
+                "hew-lib".to_string(),
+                "hew-runtime".to_string()
+            ],
+            "a dev dependency is not linked into the archive and must stay out"
+        );
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn digest_changes_when_a_transitive_crate_changes() {
+        let dir = scratch("transitive");
+        let before = digest_of(&dir);
+        fs::write(dir.join("hew-cabi").join("abi.rs"), b"fn abi() {}\n").expect("write source");
+        assert_ne!(before, digest_of(&dir));
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn digest_changes_when_the_lockfile_changes() {
+        let dir = scratch("lockfile");
+        let before = digest_of(&dir);
+        fs::write(dir.join("Cargo.lock"), b"version = 4\n# bumped\n").expect("rewrite lockfile");
+        assert_ne!(
+            before,
+            digest_of(&dir),
+            "a lockfile-selected dependency bump changes the archive"
+        );
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn digest_changes_when_the_workspace_manifest_changes() {
+        let dir = scratch("workspace-manifest");
+        let before = digest_of(&dir);
+        fs::write(dir.join("Cargo.toml"), b"[workspace]\n# bumped\n").expect("rewrite manifest");
+        assert_ne!(before, digest_of(&dir));
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn digest_changes_when_an_embedded_asset_changes() {
+        let dir = scratch("asset");
+        fs::create_dir_all(dir.join("hew-runtime").join("dashboard")).expect("create asset dir");
+        let asset = dir.join("hew-runtime").join("dashboard").join("index.html");
+        fs::write(&asset, b"<h1>old</h1>").expect("write asset");
+        fs::write(
+            dir.join("hew-runtime").join("server.rs"),
+            b"const D: &str = include_str!(\"dashboard/index.html\");\n",
+        )
+        .expect("write source");
+
+        let before = digest_of(&dir);
+        fs::write(&asset, b"<h1>new</h1>").expect("rewrite asset");
+        assert_ne!(before, digest_of(&dir));
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn an_embedded_asset_outside_the_crates_is_not_an_input() {
+        let dir = scratch("asset-outside");
+        fs::create_dir_all(dir.join("fixtures")).expect("create fixture dir");
+        let fixture = dir.join("fixtures").join("case.hew");
+        fs::write(&fixture, b"old\n").expect("write fixture");
+        fs::write(
+            dir.join("hew-lib").join("fixture.rs"),
+            b"const F: &str = include_str!(\"../fixtures/case.hew\");\n",
+        )
+        .expect("write source");
+
+        let before = digest_of(&dir);
+        fs::write(&fixture, b"new\n").expect("rewrite fixture");
+        assert_eq!(
+            before,
+            digest_of(&dir),
+            "a fixture outside the crates is not compiled into the archive"
+        );
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_missing_embedded_asset_fails_closed() {
+        let dir = scratch("asset-missing");
+        fs::write(
+            dir.join("hew-lib").join("bad.rs"),
+            b"const D: &str = include_str!(\"gone.html\");\n",
+        )
+        .expect("write source");
+        assert!(matches!(compute(&dir), Err(Error::MissingAsset(_, _))));
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn an_unidentifiable_asset_path_fails_closed() {
+        let dir = scratch("asset-computed");
+        fs::write(
+            dir.join("hew-lib").join("bad.rs"),
+            b"const D: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/x\"));\n",
+        )
+        .expect("write source");
+        assert!(matches!(
+            compute(&dir),
+            Err(Error::UnsupportedMacroArgument(_, _))
+        ));
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn digest_changes_when_a_build_configuration_knob_changes() {
+        let dir = scratch("option-env");
+        fs::write(
+            dir.join("hew-runtime").join("cap.rs"),
+            b"const CAP: Option<&str> = option_env!(\"HEW_IDENTITY_TEST_CAP\");\n",
+        )
+        .expect("write source");
+
+        let before = digest_of(&dir);
+        // SAFETY: this test process is the only reader of a variable named for
+        // this test, and the value is restored before returning.
+        unsafe { std::env::set_var("HEW_IDENTITY_TEST_CAP", "64") };
+        let after = digest_of(&dir);
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("HEW_IDENTITY_TEST_CAP") };
+
         assert_ne!(before, after);
+        assert_eq!(before, digest_of(&dir));
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
     fn digest_is_stable_for_identical_content() {
         let dir = scratch("stable");
-        fs::write(dir.join("hew-std").join("lib.rs"), b"fn a() {}\n").expect("write source");
-        let first = compute(&dir).expect("compute").digest().to_string();
-        let second = compute(&dir).expect("compute").digest().to_string();
-        assert_eq!(first, second);
+        assert_eq!(digest_of(&dir), digest_of(&dir));
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
     fn digest_changes_when_a_source_file_is_added() {
         let dir = scratch("added");
-        fs::write(dir.join("hew-lib").join("lib.rs"), b"fn a() {}\n").expect("write source");
-        let before = compute(&dir).expect("compute").digest().to_string();
+        let before = digest_of(&dir);
         fs::write(dir.join("hew-lib").join("extra.rs"), b"fn a() {}\n").expect("write source");
-        let after = compute(&dir).expect("compute").digest().to_string();
-        assert_ne!(before, after);
+        assert_ne!(before, digest_of(&dir));
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
     fn build_outputs_do_not_feed_the_digest() {
         let dir = scratch("target-skip");
-        fs::write(dir.join("hew-runtime").join("lib.rs"), b"fn a() {}\n").expect("write source");
-        let before = compute(&dir).expect("compute").digest().to_string();
+        let before = digest_of(&dir);
         let out = dir.join("hew-runtime").join("target").join("debug");
         fs::create_dir_all(&out).expect("create target dir");
         fs::write(out.join("generated.rs"), b"fn generated() {}\n").expect("write output");
-        let after = compute(&dir).expect("compute").digest().to_string();
-        assert_eq!(before, after);
+        assert_eq!(before, digest_of(&dir));
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
     fn a_missing_input_crate_fails_closed() {
         let dir = scratch("missing");
-        fs::remove_dir_all(dir.join("hew-std")).expect("remove input crate");
-        assert!(compute(&dir).is_err());
+        fs::remove_dir_all(dir.join("hew-cabi")).expect("remove input crate");
+        assert!(matches!(compute(&dir), Err(Error::MissingInputCrate(_))));
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_missing_lockfile_fails_closed() {
+        let dir = scratch("no-lock");
+        fs::remove_file(dir.join("Cargo.lock")).expect("remove lockfile");
+        assert!(matches!(compute(&dir), Err(Error::MissingWorkspaceFile(_))));
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
     fn the_rendered_stamp_round_trips_through_the_reader() {
         let dir = scratch("stamp");
-        fs::write(dir.join("hew-lib").join("lib.rs"), b"fn a() {}\n").expect("write source");
         let identity = compute(&dir).expect("compute");
-        let source = identity.stamp_static_source();
+        let source = identity.stamp_static_source(crate::STAMP_SYMBOL);
         let start = source.find(crate::STAMP_PREFIX).expect("stamp in source");
         assert_eq!(
             crate::digest_from_stamp(&source.as_bytes()[start..]),
             Some(identity.digest())
         );
         fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// This crate lives directly under the workspace root.
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-build-identity sits under the workspace root")
+            .to_path_buf()
+    }
+
+    /// The digest's input set and the build graph's input set must be the same
+    /// set. `scripts/libhew-inputs.py` is what makes Make rebuild the archive;
+    /// [`compute`] is what makes the driver refuse it. If they disagree, either
+    /// an edit changes the archive without moving the digest, or the digest
+    /// moves without the archive being rebuilt and the driver refuses its own
+    /// library. Neither is allowed to happen quietly, so they are compared over
+    /// the real workspace here.
+    #[test]
+    fn the_build_graph_sees_exactly_the_files_the_digest_covers() {
+        let workspace = workspace_root();
+        let script = workspace.join("scripts/libhew-inputs.py");
+
+        let output = match Command::new("python3").arg(&script).arg("files").output() {
+            Ok(output) => output,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                eprintln!("skipping: python3 is not installed");
+                return;
+            }
+            Err(err) => panic!("running {}: {err}", script.display()),
+        };
+        assert!(
+            output.status.success(),
+            "{} failed: {}",
+            script.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let from_script: BTreeSet<String> = String::from_utf8(output.stdout)
+            .expect("utf-8")
+            .lines()
+            .map(str::to_string)
+            .collect();
+
+        let identity = compute(&workspace).expect("scanning the real workspace");
+        let from_scan: BTreeSet<String> = identity
+            .files()
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&workspace)
+                    .expect("input file inside the workspace")
+                    .to_str()
+                    .expect("utf-8 path")
+                    .to_string()
+            })
+            .collect();
+
+        let only_in_scan: Vec<&String> = from_scan.difference(&from_script).collect();
+        let only_in_script: Vec<&String> = from_script.difference(&from_scan).collect();
+        assert!(
+            only_in_scan.is_empty() && only_in_script.is_empty(),
+            "the digest and the build graph disagree about the archive's inputs\n\
+             hashed but not tracked by make: {only_in_scan:?}\n\
+             tracked by make but not hashed: {only_in_script:?}"
+        );
+        assert!(!from_scan.is_empty(), "the input set cannot be empty");
+    }
+
+    #[test]
+    fn a_macro_name_in_prose_is_not_a_call_site() {
+        let source = concat!(
+            "/// parses it via `include_str",
+            "!` and pins the arms\n",
+            "const D: &str = include_str",
+            "!(\"real.html\");\n",
+        );
+        assert_eq!(
+            macro_call_sites(source.as_bytes()),
+            Ok(vec![("include_str", "real.html".to_string())])
+        );
+    }
+
+    #[test]
+    fn a_macro_name_inside_a_literal_is_not_a_call_site() {
+        let source = concat!(
+            "const FIXTURE: &str = \"include_str",
+            "!(\\\"nope.html\\\")\";\n",
+            "const R: &str = r#\"option_env",
+            "!(\"NOPE\")\"#;\n",
+            "const D: &str = include_str",
+            "!(\"real.html\");\n",
+        );
+        assert_eq!(
+            macro_call_sites(source.as_bytes()),
+            Ok(vec![("include_str", "real.html".to_string())])
+        );
+    }
+
+    #[test]
+    fn block_comments_and_lifetimes_do_not_swallow_the_rest_of_the_file() {
+        let source = concat!(
+            "/* outer /* nested include_bytes",
+            "!(\"x\") */ still comment */\n",
+            "fn f<'a>(x: &'a str, c: char) { let _ = ('\\'', c); }\n",
+            "const D: &str = include_str",
+            "!(\"a.html\");\n",
+        );
+        assert_eq!(
+            macro_call_sites(source.as_bytes()),
+            Ok(vec![("include_str", "a.html".to_string())])
+        );
+    }
+
+    #[test]
+    fn a_non_literal_macro_argument_is_refused() {
+        let source = concat!(
+            "const D: &str = include_str",
+            "!(concat",
+            "!(env",
+            "!(\"OUT_DIR\"), \"/x\"));\n",
+        );
+        assert_eq!(
+            macro_call_sites(source.as_bytes()),
+            Err("include_str".to_string())
+        );
+    }
+
+    #[test]
+    fn configuration_knobs_are_collected_alongside_assets() {
+        let source = concat!(
+            "const CAP: Option<&str> = option_env",
+            "!(\"HEW_CAP\");\n",
+            "const B: &[u8] = include_bytes",
+            "!(\"logo.png\");\n",
+        );
+        assert_eq!(
+            macro_call_sites(source.as_bytes()),
+            Ok(vec![
+                ("option_env", "HEW_CAP".to_string()),
+                ("include_bytes", "logo.png".to_string()),
+            ])
+        );
     }
 }

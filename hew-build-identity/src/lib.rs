@@ -9,9 +9,10 @@
 //!
 //! This crate defines the single stamp format that closes that gap:
 //!
-//! * `hew-lib`'s build script computes [`scan::compute`] over the runtime and
-//!   stdlib sources and emits a `#[no_mangle]` static holding the stamp, so the
-//!   digest is physically present inside the archive.
+//! * every crate whose staticlib the driver can link — `hew-lib`, and
+//!   `hew-runtime` / `hew-std` for WASM — computes [`scan::compute`] over the
+//!   same input set in its build script and emits a `#[no_mangle]` static
+//!   holding the stamp, so the digest is physically present inside the archive.
 //! * `hew-cli`'s build script computes the same digest and bakes it into the
 //!   driver.
 //! * At link time the driver reads the archive's stamp back and refuses to link
@@ -38,19 +39,29 @@ pub const STAMP_LEN: usize = STAMP_PREFIX.len() + DIGEST_HEX_LEN;
 /// Name of the `#[no_mangle]` static that `hew-lib` exports to carry the stamp.
 pub const STAMP_SYMBOL: &str = "HEW_BUILD_IDENTITY_V1";
 
-/// Workspace-relative crate directories whose sources define the identity.
+/// The package whose staticlib *is* the archive.
 ///
-/// This is deliberately the same input set that `scripts/check-libhew-fresh.sh`
-/// scans: `hew-lib` is the umbrella staticlib, and it links `hew-runtime` plus
-/// the consolidated `hew-std` archive. An edit to any of the three changes the
-/// bytes of `libhew.a` and must therefore change the identity.
-pub const INPUT_CRATES: [&str; 3] = ["hew-lib", "hew-runtime", "hew-std"];
+/// Its non-dev path-dependency closure — resolved from the manifests, never
+/// listed by hand — is the set of crates whose sources define the identity.
+/// `hew-lib` is the umbrella staticlib; it links `hew-runtime`, the
+/// consolidated `hew-std` archive and everything those pull in, and an edit
+/// anywhere in that closure changes the bytes of `libhew.a`.
+pub const ROOT_INPUT_CRATE: &str = "hew-lib";
 
 /// File names and extensions that participate in the digest.
 pub const INPUT_FILE_EXTENSIONS: [&str; 1] = ["rs"];
 
 /// Exact file names that participate in the digest regardless of extension.
 pub const INPUT_FILE_NAMES: [&str; 2] = ["Cargo.toml", "build.rs"];
+
+/// Workspace-root files that participate in the digest.
+///
+/// The lockfile pins every external dependency the archive compiles against, so
+/// `cargo update` changes the linked code while every crate source stays
+/// byte-identical; the workspace manifest carries the shared dependency
+/// versions, the profiles and the lint configuration. Without both, two
+/// non-equivalent archives can carry the same digest.
+pub const WORKSPACE_INPUT_FILES: [&str; 2] = ["Cargo.toml", "Cargo.lock"];
 
 /// Returns `true` when `candidate` is a well-formed identity digest.
 ///

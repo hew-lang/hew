@@ -155,20 +155,26 @@ LIBHEW_NAME := libhew.a
 endif
 LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
 
-# Sources that feed the archive. Deliberately the same input set that
-# scripts/check-libhew-fresh.sh scans and that hew-build-identity hashes into
-# the link-time stamp, so the build graph, the mtime check and the driver's
-# fail-closed check all agree on what "stale" means.
+# Sources that feed the archive. The list is produced by the same derivation
+# the driver's identity digest uses — hew-lib's non-dev path-dependency
+# closure, its Rust sources and manifests, the embedded assets its code names
+# with include_str!/include_bytes!, and the workspace manifest and lockfile —
+# so the build graph, the mtime check and the driver's fail-closed check all
+# agree on what "stale" means. hew-build-identity has a test that runs the
+# script and asserts the two input sets are identical.
 #
-# hew-build-identity belongs here even though none of its code runs at runtime:
-# it is hew-lib's build dependency, and its scanner and domain separator decide
-# what stamp lands in the archive. Leaving it out meant a scanner change
+# hew-build-identity is in the closure as hew-lib's build dependency even
+# though none of its code runs at runtime: its scanner and domain separator
+# decide what stamp lands in the archive. Leaving it out meant a scanner change
 # produced a new driver beside an archive make still considered current — a
 # driver that then refused its own fresh-looking archive.
-LIBHEW_SRC_DIRS := hew-lib hew-runtime hew-std hew-build-identity
-LIBHEW_SRCS := $(shell find $(LIBHEW_SRC_DIRS) \
-	\( -name '*.rs' -o -name 'Cargo.toml' -o -name 'build.rs' \) \
-	-not -path '*/target/*' 2>/dev/null)
+LIBHEW_INPUTS_SCRIPT := scripts/libhew-inputs.py
+LIBHEW_SRC_DIRS := $(shell $(LIBHEW_INPUTS_SCRIPT) crates)
+LIBHEW_SRCS := $(shell $(LIBHEW_INPUTS_SCRIPT) files)
+ifeq ($(strip $(LIBHEW_SRCS)),)
+$(error $(LIBHEW_INPUTS_SCRIPT) produced no inputs for $(LIBHEW_NAME); refusing to \
+treat the archive as having no sources. Run '$(LIBHEW_INPUTS_SCRIPT) files' to see why)
+endif
 
 # Prerequisite bundle for every target that LINKS a native Hew program.
 # `$(LIBHEW)` rebuilds the archive through the file rule when a source moved;

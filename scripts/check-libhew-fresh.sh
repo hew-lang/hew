@@ -74,32 +74,33 @@ get_mtime() {
 
 lib_mtime=$(get_mtime "$LIBHEW")
 
-# Scan source inputs: all .rs files, Cargo.toml, and build.rs under
-# hew-lib/, hew-runtime/, hew-std/ and hew-build-identity/ — the crates that
-# feed libhew.a. The hew-lib umbrella links hew-runtime plus the consolidated
-# hew-std staticlib, so a stdlib edit changes libhew.a and must count toward
-# freshness; hew-build-identity is hew-lib's build dependency and decides which
-# stamp the archive carries, so a scanner edit makes the archive stale too.
+# Scan the archive's input set. The list comes from scripts/libhew-inputs.py,
+# which derives it the same way the driver's identity digest does: hew-lib's
+# non-dev path-dependency closure (hew-runtime, hew-std, hew-cabi and the
+# hew-build-identity build dependency that decides which stamp the archive
+# carries), those crates' Rust sources and manifests, the assets their code
+# embeds with include_str!/include_bytes!, and the workspace manifest and
+# lockfile. Scanning a hand-written list instead is how an input that changes
+# the archive ends up not counting toward freshness.
+if ! src_list="$("${REPO_ROOT}/scripts/libhew-inputs.py" files)"; then
+    echo "error: could not resolve the archive's input set" >&2
+    exit 1
+fi
+
 latest_src_mtime=0
 latest_src_file=""
 
-while IFS= read -r -d '' f; do
-    mtime=$(get_mtime "$f")
+while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    mtime=$(get_mtime "${REPO_ROOT}/${f}")
     if (( mtime > latest_src_mtime )); then
         latest_src_mtime=$mtime
-        latest_src_file="$f"
+        latest_src_file="${REPO_ROOT}/${f}"
     fi
-done < <(find \
-    "${REPO_ROOT}/hew-lib" \
-    "${REPO_ROOT}/hew-runtime" \
-    "${REPO_ROOT}/hew-std" \
-    "${REPO_ROOT}/hew-build-identity" \
-    \( -name "*.rs" -o -name "Cargo.toml" -o -name "build.rs" \) \
-    -not -path "*/target/*" \
-    -print0)
+done <<< "$src_list"
 
 if (( latest_src_mtime == 0 )); then
-    echo "error: no source files found under hew-lib/, hew-runtime/, hew-std/ or hew-build-identity/" >&2
+    echo "error: the archive's input set is empty; refusing to certify ${LIBHEW} as fresh" >&2
     exit 1
 fi
 

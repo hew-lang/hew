@@ -23,7 +23,10 @@ fn main() {
 
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     let generated = out_dir.join("build_identity.rs");
-    write_if_changed(&generated, &identity.stamp_static_source());
+    write_if_changed(
+        &generated,
+        &identity.stamp_static_source(hew_build_identity::STAMP_SYMBOL),
+    );
 
     println!("cargo:rustc-env=HEW_BUILD_IDENTITY={}", identity.digest());
 }

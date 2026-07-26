@@ -1787,7 +1787,9 @@ dependencies = [
 name = "hew-build-identity"
 version = "0.6.0-rc1"
 dependencies = [
+ "hew-build-identity",
  "sha2 0.11.0",
+ "toml",
 ]
 
 [[package]]

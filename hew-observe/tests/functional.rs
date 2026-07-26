@@ -106,7 +106,7 @@ impl Drop for ChildGuard {
 }
 
 #[test]
-#[ignore = "run by `make observe-functional-test` with built compiler artifacts"]
+#[ignore = "run by `make observe-functional-test`, invoked by the \"Run hew observe functional harness\" step in .github/workflows/ci.yml"]
 fn profiler_endpoint_captures_fixture_observability_data() {
     let fixture = build_fixture_binary();
     let port = reserve_local_port();
@@ -137,7 +137,7 @@ fn profiler_endpoint_captures_fixture_observability_data() {
 }
 
 #[test]
-#[ignore = "run by `make observe-functional-test` with the positive endpoint test"]
+#[ignore = "run by `make observe-functional-test`, invoked by the \"Run hew observe functional harness\" step in .github/workflows/ci.yml"]
 fn observe_snapshot_validation_rejects_no_data() {
     let snapshot = Snapshot {
         scrape: "actors_live 0\nactors_turns_total 0\nheap_live_bytes 0\n".to_owned(),

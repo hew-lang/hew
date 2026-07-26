@@ -52,10 +52,12 @@
 //! None of the above uses a sleep, or a retry-until-pass loop, as proof.
 //! Bounded polling for readiness/deadlines exists only as a hang backstop.
 //!
-//! Both tests below are `#[ignore]`d (see each attribute for why) and run
-//! via `make libhew-link-race-test`, matching the existing
-//! `make observe-functional-test` convention for heavy, artifact-dependent
-//! proving gates that should not gate routine `cargo nextest run`.
+//! Both tests below are `#[ignore]`d out of routine `cargo nextest run`
+//! because they fork real `cargo`/`hew` subprocesses. They are not skipped:
+//! `make libhew-link-race-test` runs them, and CI invokes that target in the
+//! "Run libhew bootstrap-race proof" step of .github/workflows/ci.yml. If that
+//! step is ever removed, delete the `#[ignore]` attributes or these tests —
+//! an ignore with nothing behind it is a skip wearing a test's name.
 //!
 //! Unix-only: the fixed writer/reader roles shell real `cargo`/`hew`
 //! subprocesses, chmod a spy wrapper, use `fd_lock`-based barriers exactly
@@ -1062,7 +1064,7 @@ fn run_gated_arm(exe: &Path, test_name: &str, scratch: &Path) -> GatedArmResult 
 /// happened across all 9 participants sharing one run id -- lock-exclusion
 /// guarantees, not timing bets.
 #[test]
-#[ignore = "run by `make libhew-link-race-test` with the `hew` binary and libhew.a built"]
+#[ignore = "run by `make libhew-link-race-test`, invoked by the \"Run libhew bootstrap-race proof\" step in .github/workflows/ci.yml"]
 fn concurrent_link_survives_libhew_bootstrap_race() {
     if maybe_run_child_role() {
         return;
@@ -1127,7 +1129,7 @@ fn concurrent_link_survives_libhew_bootstrap_race() {
 /// re-check under the same lock finds the stamp already fresh and never
 /// reaches `build_fn` at all.
 #[test]
-#[ignore = "run by `make libhew-link-race-test` with the `hew` binary and libhew.a built"]
+#[ignore = "run by `make libhew-link-race-test`, invoked by the \"Run libhew bootstrap-race proof\" step in .github/workflows/ci.yml"]
 fn stamp_sharing_across_real_processes_builds_exactly_once() {
     if maybe_run_child_role() {
         return;

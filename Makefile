@@ -19,7 +19,7 @@
 #   make release      — build everything (release, optimized)
 #   make pre-release  — release + validate on all platforms before tagging
 #   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
-#   make hew          — just the compiler driver
+#   make hew          — alias for hew-native (a driver-only build cannot link)
 #   make hew-native   — compiler driver + native libhew archive for `hew build`
 #   make adze         — just the package manager
 #   make observe      — just the TUI observer (hew-observe)
@@ -102,6 +102,39 @@ RELEASE_LIB_DIR := target/release-lib
 WASM_DEBUG_DIR  := target/wasm32-wasip1/debug
 WASM_RELEASE_DIR := target/wasm32-wasip1/release
 
+# ── The combined runtime + stdlib archive as a real file target ─────────────
+#
+# `cargo build -p hew-cli` produces the compiler DRIVER only; linking a compiled
+# Hew program additionally needs hew-lib's staticlib sitting beside it. Naming
+# the archive as a file (rather than hiding it behind a .PHONY target) is what
+# lets make rebuild it when a runtime or stdlib source changes, instead of
+# assuming whatever is already on disk is current.
+#
+# Cargo emits `hew.lib` on MSVC and `libhew.a` everywhere else; keep the whole
+# build graph cross-platform so a fresh Windows host uses the same edges as
+# Linux/macOS rather than a bespoke manual `cargo build -p hew-lib` follow-up.
+ifeq ($(OS),Windows_NT)
+LIBHEW_NAME := hew.lib
+else
+LIBHEW_NAME := libhew.a
+endif
+LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
+
+# Sources that feed the archive. Deliberately the same input set that
+# scripts/check-libhew-fresh.sh scans and that hew-build-identity hashes into
+# the link-time stamp, so the build graph, the mtime check and the driver's
+# fail-closed check all agree on what "stale" means.
+LIBHEW_SRC_DIRS := hew-lib hew-runtime hew-std
+LIBHEW_SRCS := $(shell find $(LIBHEW_SRC_DIRS) \
+	\( -name '*.rs' -o -name 'Cargo.toml' -o -name 'build.rs' \) \
+	-not -path '*/target/*' 2>/dev/null)
+
+# Prerequisite bundle for every target that LINKS a native Hew program.
+# `$(LIBHEW)` rebuilds the archive through the file rule when a source moved;
+# the order-only `check-libhew-fresh` then re-asserts freshness at the point of
+# use without itself forcing a rebuild.
+LIBHEW_READY := $(LIBHEW) | check-libhew-fresh
+
 # Host triple used to populate lib/<triple>/ for target-aware lib lookup.
 HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
 ifeq ($(shell uname -s),Darwin)
@@ -128,7 +161,7 @@ FUZZ_SMOKE_SECONDS ?= 45
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew adze observe runtime stdlib wasm-runtime assemble
+all: hew-native adze observe runtime stdlib wasm-runtime assemble
 
 # Convenience alias — rebuilds all debug artifacts including libhew.a.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
@@ -136,18 +169,23 @@ build: all
 
 # ── Rust targets ────────────────────────────────────────────────────────────
 
-# Build the hew compiler driver (debug).
-hew:
-	cargo build -p hew-cli
+# `hew` used to run `cargo build -p hew-cli`, which produces the compiler
+# DRIVER only. The link step for a compiled program also needs hew-lib's
+# staticlib beside that driver, so the target handed out a compiler that could
+# not link a single program — and the resulting undefined-symbol wall reads
+# like a compiler bug. There is no legitimate use for that pairing, so `hew`
+# is now exactly `hew-native`. If you truly want the driver alone (to check
+# that it compiles, say), run `cargo build -p hew-cli` and own the consequence.
+hew: hew-native
 
-# Build the native artifacts required for `hew build` from a source checkout.
-# `cargo build -p hew-cli` only produces the driver; the link step also needs
-# hew-lib's staticlib next to the driver (`target/debug/libhew.a` on Unix,
-# `target/debug/hew.lib` on Windows).  Keep this target cross-platform so fresh
-# Windows hosts use the same build graph as Linux/macOS rather than a bespoke
-# manual `cargo build -p hew-lib` follow-up.
-hew-native:
-	cargo build -p hew-cli -p hew-lib
+# Build the native artifacts required for `hew build` from a source checkout:
+# the driver plus hew-lib's staticlib (`target/debug/libhew.a` on Unix,
+# `target/debug/hew.lib` on Windows). The archive comes from the $(LIBHEW) file
+# rule, so a runtime or stdlib edit rebuilds it instead of leaving a stale one
+# in place. Keep this target cross-platform so fresh Windows hosts use the same
+# build graph as Linux/macOS.
+hew-native: $(LIBHEW)
+	cargo build -p hew-cli
 
 # Build the adze package manager (debug)
 adze:
@@ -159,7 +197,7 @@ adze:
 observe:
 	cargo build -p hew-observe
 
-observe-functional-test: hew-native observe
+observe-functional-test: hew-native observe $(LIBHEW_READY)
 	cargo test -p hew-observe --test functional -- --ignored --nocapture
 
 # Real multi-process proof that `hew_testutil::ensure_hew_lib_built` closes
@@ -169,7 +207,7 @@ observe-functional-test: hew-native observe
 # hew-testutil/tests/libhew_link_race.rs) because it repeatedly shells real
 # cargo/hew subprocesses; run explicitly here instead, same convention as
 # observe-functional-test above.
-libhew-link-race-test: hew-native
+libhew-link-race-test: hew-native $(LIBHEW_READY)
 	cargo test -p hew-testutil --test libhew_link_race -- --ignored --nocapture --test-threads=1
 
 # Build the runtime static library (debug)
@@ -179,8 +217,19 @@ runtime:
 # Build libhew.a — the combined runtime + stdlib static library.
 # The hew-lib umbrella crate depends on hew-runtime + all stdlib crates;
 # Cargo produces a single deduplicated staticlib.
-stdlib:
+#
+# `stdlib` is the human-facing alias; $(LIBHEW) below is the rule that does the
+# work and carries the source prerequisites.
+stdlib: $(LIBHEW)
+
+# The archive rebuilds whenever any hew-lib / hew-runtime / hew-std source
+# moves, or the dependency graph changes. Cargo leaves the archive's mtime
+# alone when nothing changed, so stamp it here: the file rule has just proven
+# the archive is current, and recording that keeps make (and the mtime-based
+# freshness check) from re-running on every invocation.
+$(LIBHEW): $(LIBHEW_SRCS) Cargo.toml Cargo.lock
 	cargo build -p hew-lib
+	@touch $@
 
 # Build the WASM runtime + the consolidated stdlib archive (libhew_std.a)
 wasm-runtime:
@@ -241,7 +290,7 @@ sandbox-vm-deps:
 # target is the one place that provisions the npm toolchain and then runs
 # every test in all four binaries via plain `cargo test`, so nothing is
 # silently skipped anywhere.
-sandbox-parity: hew stdlib sandbox-vm-deps
+sandbox-parity: hew-native sandbox-vm-deps $(LIBHEW_READY)
 	npm --prefix hew-sandbox-vm run build
 	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
 
@@ -276,22 +325,29 @@ ci-preflight:
 # test_runner_e2e, parity) and hew-wasm; see .config/nextest.toml [profile.smoke].
 #
 # Build-graph note: cargo clippy and cargo nextest both compile the hew-cli
-# library, so `make hew` (cargo build -p hew-cli) after them only pays for the
-# final link step (~1–2 s on a warm tree).  Some nextest smoke tests execute
-# `hew run`, which links against target/debug/libhew.a; build the stdlib archive
-# before nextest so a fresh checkout does not fail smoke with "cannot find
-# libhew.a". Running `make hew` here also eliminates the redundant compile
-# triggered by make lint → hew-fmt-check later in the fallback lane
+# library, so `make hew-native` after them only pays for the final link step
+# (~1–2 s on a warm tree).  Some nextest smoke tests execute `hew run`, which
+# links against the combined archive; bring it up to date AND assert its
+# freshness before nextest so a fresh checkout does not fail smoke with
+# "cannot find libhew.a" and a carried-over target dir cannot feed a stale one
+# to the tests. Running `make hew-native` here also eliminates the redundant
+# compile triggered by make lint → hew-fmt-check later in that same run
 # (hew-fmt-check requires target/debug/hew but nextest does not produce it).
 ci-preflight-smoke:
 	cargo fmt --all -- --check
-	$(MAKE) stdlib
+	$(MAKE) check-libhew-fresh
 	cargo nextest run --workspace --profile smoke
-	$(MAKE) hew
+	$(MAKE) hew-native
 
-# Assert that target/debug/libhew.a is not stale relative to hew-lib and hew-runtime sources.
-# Run after `make stdlib` as a fast gate; exits non-zero if the .a predates any source input.
-check-libhew-fresh:
+# Assert that libhew.a is not stale relative to hew-lib, hew-runtime and
+# hew-std sources. Depends on the archive's file rule so the assertion runs
+# against an archive make has already brought up to date, and is wired as an
+# ORDER-ONLY prerequisite of every target that links a native Hew program (see
+# $(LIBHEW_READY)) so it fires at the point of use locally, not only in CI
+# after the damage is done. This is the mtime/build-graph half; the driver's
+# embedded build-identity check is the point-of-link half, and neither
+# subsumes the other.
+check-libhew-fresh: $(LIBHEW)
 	scripts/check-libhew-fresh.sh --debug-dir $(DEBUG_DIR)
 
 # Opt-in merge-queue parity preflight.
@@ -350,7 +406,7 @@ fuzz-smoke: fuzz-corpus
 # Prereqs mirror test-vertical-slice: libhew.a must be fresh so native links
 # do not test against stale runtime/stdlib archives.
 FUZZ_ORACLE_FULL ?=
-fuzz-oracle: hew runtime stdlib check-libhew-fresh
+fuzz-oracle: hew-native runtime $(LIBHEW_READY)
 	@if [ -n "$(FUZZ_ORACLE_FULL)" ]; then \
 		python3 scripts/fuzz/run-oracle.py --full --timeout 30; \
 	else \
@@ -360,7 +416,7 @@ fuzz-oracle: hew runtime stdlib check-libhew-fresh
 # Oracle self-tests: three independently-failable checks that prove the
 # harness has teeth (flags real crashes) and honours the ratchet contract
 # (unexpected-pass and unexpected-fail both fail closed).
-fuzz-oracle-selftest: hew runtime stdlib check-libhew-fresh
+fuzz-oracle-selftest: hew-native runtime $(LIBHEW_READY)
 	bash scripts/fuzz/oracle-selftest.sh
 
 bootstrap: install-hooks
@@ -459,7 +515,7 @@ wasm-dist: wasm
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: | hew adze observe runtime stdlib wasm-runtime
+assemble: | hew-native adze observe runtime stdlib wasm-runtime
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@# assemble-release makes build/std a symlink to ../std; reset it so the
 	@# flat std stub loop below cannot rewrite tracked std/*.hew files in root.
@@ -617,11 +673,11 @@ test-all: test test-stdlib test-hew test-ux-examples test-surface-examples test-
 # cached archive (e.g. one predating the hew_cont_* continuation substrate)
 # would be linked against freshly-emitted coro objects and fail with
 # undefined-symbol errors on a target dir carried across commits.
-test-rust: stdlib wasm-runtime runtime
+test-rust: wasm-runtime runtime $(LIBHEW_READY)
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
 		set -e; \
 		cargo nextest run --workspace --profile ci --no-run; \
-		test -f target/debug/libhew.a; \
+		test -f $(LIBHEW); \
 		cargo nextest run --workspace --profile ci; \
 	else \
 		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
@@ -647,7 +703,7 @@ test-cli:
 # (libhew_runtime.a for wasm32-wasip1) is needed by wasm32-wasi eval tests
 # even when they are expected to fail before codegen (the linker search runs
 # before the fast typecheck path reports its diagnostic).
-test-compiler-pipeline: stdlib wasm-runtime
+test-compiler-pipeline: wasm-runtime $(LIBHEW_READY)
 	cargo nextest run --profile ci \
 		-p hew-lexer \
 		-p hew-parser \
@@ -661,19 +717,19 @@ test-compiler-pipeline: stdlib wasm-runtime
 # End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
 # Build libhew first and verify freshness so native fixture links do not test
 # against stale runtime/stdlib archives on a fresh checkout or CI runner.
-test-vertical-slice: hew runtime stdlib check-libhew-fresh
+test-vertical-slice: hew-native runtime $(LIBHEW_READY)
 	bash tests/vertical-slice/run.sh
 
 # Cross-module package-import oracle: fixtures importing the in-tree
 # `hew::testffi` package through `hew run --pkg-path` — imported-actor value
 # asks, imported-type trait methods, and the [native] auto-link path.
-test-pkg-import: hew runtime stdlib check-libhew-fresh
+test-pkg-import: hew-native runtime $(LIBHEW_READY)
 	bash tests/pkg-import/run.sh
 
 # Package-manager consumer oracle: publish-like local setup, `hew package
 # install`, lock/materialization assertions, `hew check`, and exact `hew run`
 # stdout under an isolated HOME.
-test-package-install: hew adze runtime stdlib check-libhew-fresh
+test-package-install: hew-native adze runtime $(LIBHEW_READY)
 	bash tests/package-install/run.sh
 
 # Golden MIR corpus (examples/v05/checked-mir): byte-identical --dump-mir
@@ -814,7 +870,7 @@ test-stdlib: hew
 	  exit 1; \
 	fi
 
-test-hew: hew runtime stdlib
+test-hew: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running Hew test files"
 	$(DEBUG_DIR)/hew test tests/hew/
 
@@ -832,14 +888,14 @@ test-hew: hew runtime stdlib
 # the identical O0 pass a second time (CI sets this across both targets in the
 # same job; plain `make test-hew-ratchet` / `make test-o2-differential` with no
 # env var keep their original standalone behaviour).
-test-hew-ratchet: hew runtime stdlib
+test-hew-ratchet: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running Hew test suite (ratcheted)"
 	scripts/hew-suite-ratchet.sh $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 # The -O0-vs-O2 differential-exec parity gate: every compiled `.hew` program
 # must behave identically at -O0 and -O2. The no-miscompile oracle for the LLVM
 # middle-end pipeline (RC9). A divergence is a miscompile and a full stop.
-test-o2-differential: hew runtime stdlib
+test-o2-differential: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running -O0-vs-O2 differential-exec parity gate"
 	scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
@@ -857,7 +913,7 @@ test-stdlib-ratchet: hew
 # .expected file.  Any tutorial whose .expected output diverges from `hew run`
 # output fails the gate, catching dialect regressions before they reach users.
 #
-test-ux-examples: hew runtime stdlib
+test-ux-examples: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running ux + progressive tutorials against .expected"
 	@fail=0; pass=0; \
 	for corpus in examples/ux examples/progressive; do \
@@ -923,7 +979,7 @@ test-ux-examples: hew runtime stdlib
 #   shape.
 SURFACE_EXAMPLES_UNGATED := examples/v05/surfaces/scanner_tokens.hew
 
-test-surface-examples: hew runtime stdlib
+test-surface-examples: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running v0.5 surface examples against .expected"
 	@fail=0; pass=0; \
 	ungated="$(SURFACE_EXAMPLES_UNGATED)"; \

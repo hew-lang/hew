@@ -190,7 +190,10 @@ to reclaim this actor", and that sentence is false for a destructor a user
 `extern "rt"` block may name and point at any actor it holds. So
 `hew_actor_free` is `internal`, and the waiver covers only the routes where the
 sentence is true: spawn rollback, `hew_exit` / runtime cleanup, and supervisor
-and group teardown. Run `python3 scripts/sys-lane-closure.py --explain
+and group teardown. `hew_supervisor_remove_child` moved to `internal` for the
+same reason and at the same limit: it reached the raw destructor on a
+caller-selected child index, and supervisor ownership does not change what the
+call reaches. Run `python3 scripts/sys-lane-closure.py --explain
 hew_actor_free` after deleting the edge to see the witness path this reasoning
 is about.
 

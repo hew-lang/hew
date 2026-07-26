@@ -586,7 +586,6 @@ stable = [
   "hew_supervisor_is_running",
   "hew_supervisor_new",
   "hew_supervisor_nested_get",
-  "hew_supervisor_remove_child",
   "hew_supervisor_restart_await_blocking",
   "hew_supervisor_restart_await_detach",
   "hew_supervisor_restart_await_suspend",
@@ -1552,6 +1551,20 @@ internal = [
   "hew_supervisor_handle_crash",
   "hew_supervisor_notify_child_actor_event",
   "hew_supervisor_notify_child_supervisor_escalation",
+  # SYSTEM-LANE PROVENANCE BOUNDARY. `hew_supervisor_remove_child` takes a
+  # supervisor and a caller-selected child index and reaches
+  # `actor::hew_actor_free` on the named child — the same raw destructor that
+  # was itself withdrawn for destroying system-queue state on a caller-chosen
+  # actor at a caller-chosen moment. Removing a live child while its EXIT,
+  # DOWN or supervisor events are still queued destroys them; picking the
+  # index is picking which actor that happens to. The previous audit argued
+  # supervisor ownership made this a scoped lifecycle capability rather than a
+  # raw destruction, but ownership does not change what the call reaches, and
+  # the transitive rule in docs/internal/jit-host-abi.md is not conditioned on
+  # who owns the object. Nothing is stranded: no codegen path emits it, no
+  # `.hew` source names it, and `hew_supervisor_stop`, `hew_actor_group_destroy`
+  # and `hew_runtime_cleanup` still reclaim supervised children.
+  "hew_supervisor_remove_child",
   # Test-introspection probe: arms a one-shot pause on the calling thread's
   # current task scope's next spawned task, so the forced-cancellation
   # fixture (#2437) can prove a task observes cancellation before any of its
@@ -1702,10 +1715,11 @@ terminal and untracked, so no signal that could still have been dispatched is \
 discarded. Non-silence: hew_mailbox_free retires through \
 mailbox::retire_pending_sys_lane, which names every discarded signal via \
 HewSysMsg::name() and counts it into sys_lane_signals_retired() -- a teardown \
-can no longer happen without leaving a countable trace. \
-`hew_supervisor_remove_child` is the closest remaining stable caller: it \
-destroys a child the supervisor already owns and whose teardown ordering the \
-supervisor controls, not an arbitrary actor pointer."""
+can no longer happen without leaving a countable trace. Both properties are \
+tests, not prose: teardown_latches_terminal_and_untracks_before_freeing_queue \
+and teardown_of_a_pending_signal_moves_the_retirement_counter. No \
+user-declarable caller reaches this edge at all any more -- \
+hew_supervisor_remove_child was the last one and is now internal."""
 
 "free_actor_resources_wasm_with_options -> hew_mailbox_free" = """
 The wasm mirror of the edge above, retiring through \

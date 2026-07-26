@@ -1820,6 +1820,11 @@ mod assoc_types_slice2 {
     ///   stable-pid forwarders to those same two and move with them; their
     ///   `_unlink` / `_demonitor` siblings stay `stable` because removing a
     ///   registration produces no signal.
+    /// - `hew_supervisor_remove_child` reaches `hew_actor_free` on a
+    ///   caller-selected child index, so it destroys the same system queue the
+    ///   raw destructor was withdrawn for destroying — and removing a live
+    ///   child discards whatever lifecycle signals were still queued for it.
+    ///   Supervisor ownership does not change what the call reaches.
     #[test]
     fn extern_rt_system_lane_symbols_rejected() {
         for sym in [
@@ -1845,6 +1850,7 @@ mod assoc_types_slice2 {
             "hew_supervisor_handle_crash",
             "hew_supervisor_notify_child_actor_event",
             "hew_supervisor_notify_child_supervisor_escalation",
+            "hew_supervisor_remove_child",
         ] {
             let extern_item = make_extern_rt_block(&[sym]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));

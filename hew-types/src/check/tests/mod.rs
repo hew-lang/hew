@@ -38,6 +38,7 @@ mod patterns;
 mod records;
 mod supervisor;
 mod traits;
+mod value_param_mutation;
 mod wasm;
 mod wire;
 

@@ -356,7 +356,7 @@ impl Parser<'_> {
         } else {
             self.expect(&Token::FatArrow)?;
         }
-        // Decide block-ness from the token that opens the arm body, not from
+        // Decide block-ness from the tokens that open the arm body, not from
         // the parsed AST: `break`/`continue` desugar to `Expr::Block` (a
         // one-statement block wrapping `Stmt::Break`/`Stmt::Continue`) in
         // expression position, which would otherwise satisfy
@@ -365,7 +365,11 @@ impl Parser<'_> {
         // opening a hole where a missing comma swallows the next arm's
         // pattern as part of `break`'s value. The token check is local and
         // cannot be fooled by a future desugar.
-        let body_looks_like_block = self.peek() == Some(&Token::LeftBrace);
+        //
+        // `arm_body_opens_block` accepts every opener `is_block_expr` accepts —
+        // not just `{` — so `if`/`match`/`unsafe`/`scope`/`select`/`fork {`/
+        // `after(..) {` arm bodies keep their optional trailing comma.
+        let body_looks_like_block = self.arm_body_opens_block();
         let body = self.parse_expr()?;
         if self.peek() == Some(&Token::RightBrace) {
             self.eat(&Token::Comma); // trailing comma optional on last arm

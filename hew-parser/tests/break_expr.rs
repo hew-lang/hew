@@ -8,7 +8,7 @@
 //! form already produces, mirroring how `return` was made expression-capable.
 
 use hew_parser::ast::{Block, Expr, Item, MatchArm, Stmt};
-use hew_parser::parse;
+use hew_parser::{parse, ParseDiagnosticKind};
 
 /// Parse a source string wrapping a statement inside a function and return
 /// the function's body block (`while`/`loop` are statements, not
@@ -204,10 +204,77 @@ fn continue_expr_desugar_matches_explicit_block_form() {
 
 // ── Reject: the trailing-comma hole (stage 2) ───────────────────────────────
 
+/// Parse a full source string and assert it reports a missing `,`, so a test
+/// that means "the comma is mandatory here" cannot pass on some unrelated
+/// syntax error.
+fn parse_err_missing_comma(src: &str) {
+    let result = parse(src);
+    assert!(
+        result.errors.iter().any(|e| matches!(
+            &e.kind,
+            ParseDiagnosticKind::UnexpectedToken { expected, .. } if expected == "`,`"
+        )),
+        "expected a missing-comma error for `{src}`, got: {:#?}",
+        result.errors
+    );
+}
+
 #[test]
 fn comma_less_break_arm_followed_by_another_arm_still_errors() {
     // A desugared `break` IS an `Expr::Block`; naively reusing `is_block_expr`
     // on the resulting AST would make the trailing comma optional here too,
     // silently swallowing the next arm's pattern as part of `break`'s value.
     parse_err("fn f() { while true { match 1 { 1 => break 2 => 3, _ => 0 } } }");
+}
+
+#[test]
+fn comma_less_desugared_arms_all_still_error() {
+    // Every `break`/`continue` spelling desugars to a one-statement
+    // `Expr::Block`. None of their opening tokens is in the block-opening set,
+    // so all of them keep requiring the separator.
+    parse_err_missing_comma("fn f() { while true { match 1 { 1 => break _ => 0 } } }");
+    parse_err_missing_comma("fn f() { while true { match 1 { 1 => continue _ => 0 } } }");
+    parse_err_missing_comma("fn f() { loop { match 1 { 1 => break 7 _ => 0 } } }");
+    parse_err_missing_comma("fn f() { 'a: while true { match 1 { 1 => break 'a _ => 0 } } }");
+    parse_err_missing_comma("fn f() { 'a: while true { match 1 { 1 => continue 'a _ => 0 } } }");
+}
+
+// ── Accept: every block-opening arm body keeps its optional comma ───────────
+
+#[test]
+fn comma_less_block_opening_arms_parse() {
+    // One case per variant `Parser::is_block_expr` accepts. Written out by hand
+    // rather than taken from the corpus: `fmt` emits `,` after every arm, so a
+    // corpus-derived case cannot exercise the comma-less spelling at all.
+
+    // Expr::Block
+    parse_ok("fn f() { match 1 { 1 => { 1 } _ => 0 } }");
+    // Expr::If
+    parse_ok("fn f() { match 1 { 1 => if c { 1 } else { 2 } _ => 0 } }");
+    // Expr::IfLet
+    parse_ok("fn f() { match 1 { 1 => if let Some(v) = o { v } else { 2 } _ => 0 } }");
+    // Expr::Match
+    parse_ok("fn f() { match 1 { 1 => match x { _ => 1 } _ => 0 } }");
+    // Expr::UnsafeBlock
+    parse_ok("fn f() { match 1 { 1 => unsafe { 1 } _ => 0 } }");
+    // Expr::Select
+    parse_ok("fn f() { match 1 { 1 => select { m from ch => m, } _ => 0 } }");
+    // Expr::Scope
+    parse_ok("fn f() { match 1 { 1 => scope { 1 } _ => 0 } }");
+    // Expr::ForkBlock — a brace must follow `fork`, and `fork`/`after` blocks
+    // are only legal inside a `scope`.
+    parse_ok("fn f() { scope { let v = match 1 { 1 => fork { 1 } _ => 0 }; } }");
+    // Expr::ScopeDeadline
+    parse_ok("fn f() { scope { let v = match 1 { 1 => after(1s) { 1 } _ => 0 }; } }");
+}
+
+#[test]
+fn comma_less_non_block_arms_still_error() {
+    // The set is the tokens that OPEN a block-bodied expression, not every
+    // token that happens to be a `{` or a keyword: a map literal, a `gen`
+    // block and a `fork` child binding are not `is_block_expr`, so they keep
+    // requiring the comma exactly as before.
+    parse_err_missing_comma("fn f() { match 1 { 1 => {\"a\": 1} _ => 0 } }");
+    parse_err_missing_comma("fn f() { match 1 { 1 => gen { yield 1; } _ => 0 } }");
+    parse_err_missing_comma("fn f() { scope { let v = match 1 { 1 => fork g() _ => 0 }; } }");
 }

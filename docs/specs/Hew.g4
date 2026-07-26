@@ -551,11 +551,36 @@ ifLetStmt
     ;
 
 matchStmt
-    : 'match' expr '{' matchArm* '}'
+    : 'match' expr '{' ( matchArm* lastMatchArm )? '}'
     ;
 
+// The trailing comma after an arm body is optional exactly when the body is
+// block-bodied — see `blockBodiedExpr` — and mandatory otherwise.  The parser
+// decides this from the token that OPENS the body, not from the shape of the
+// parsed body, because `break`/`continue` in expression position parse to a
+// one-statement block yet have no `{` in the source; they take the `expr ','`
+// alternative.
 matchArm
-    : pattern guard? '=>' ( block | expr ','? )
+    : pattern guard? '=>' ( blockBodiedExpr ','? | expr ',' )
+    ;
+
+// The final arm before the closing '}' needs no separator, whatever its body.
+lastMatchArm
+    : pattern guard? '=>' expr ','?
+    ;
+
+// Expression forms whose body is a brace-delimited block.  These need neither
+// a trailing ',' as a match arm nor a trailing ';' as a statement.
+blockBodiedExpr
+    : block
+    | ifExpr
+    | ifLetExpr
+    | matchExpr
+    | unsafeBlock
+    | selectExpr
+    | scopeExpr
+    | 'fork' block                          // only valid inside a scope body
+    | scopeDeadline                         // only valid inside a scope body
     ;
 
 guard
@@ -737,7 +762,7 @@ ifLetExpr
     ;
 
 matchExpr
-    : 'match' expr '{' matchArm* '}'
+    : 'match' expr '{' ( matchArm* lastMatchArm )? '}'
     ;
 
 literal

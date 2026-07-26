@@ -763,6 +763,37 @@ impl Parser<'_> {
         )
     }
 
+    /// Returns true if the token at the cursor opens an expression that
+    /// `is_block_expr` would accept — decided purely from the source tokens,
+    /// without parsing.
+    ///
+    /// This is the token-side twin of [`Self::is_block_expr`] and must stay in
+    /// step with it: one entry here per variant listed there. Callers that need
+    /// "is this body block-bodied?" *before* the body is parsed use this, so a
+    /// desugar that rewrites a non-block spelling into `Expr::Block` cannot
+    /// change the answer.
+    pub(crate) fn arm_body_opens_block(&self) -> bool {
+        match self.peek() {
+            // `if` → Expr::If / Expr::IfLet, `match` → Expr::Match,
+            // `scope` → Expr::Scope, `unsafe` → Expr::UnsafeBlock,
+            // `select` → Expr::Select. Each of these openers has exactly one
+            // expression form, so the token alone settles it.
+            Some(Token::If | Token::Match | Token::Scope | Token::Unsafe | Token::Select) => true,
+            // Expr::Block — but a `{` that opens a map literal is not a block,
+            // and `parse_primary` splits the two on exactly this lookahead.
+            Some(Token::LeftBrace) => {
+                !(matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
+                    && self.peek_at(self.pos + 2) == Some(&Token::Colon))
+            }
+            // Expr::ForkBlock only when a brace follows; bare `fork` and
+            // `fork name = expr` build Expr::ForkChild, which is not block-like.
+            Some(Token::Fork) => self.peek_at(self.pos + 1) == Some(&Token::LeftBrace),
+            // Expr::ScopeDeadline
+            Some(Token::After) => self.looks_like_scope_deadline(),
+            _ => false,
+        }
+    }
+
     pub(crate) fn fork_starts_child_binding(&self) -> bool {
         self.peek().is_some_and(Self::is_ident_token)
             && self.peek_at(self.pos + 1) == Some(&Token::Equal)

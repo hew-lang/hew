@@ -30,8 +30,12 @@ done
 echo "==> Release binary smoke test"
 
 if (( NO_BUILD == 0 )); then
-    echo "==> Building hew-cli (release)"
+    # Build BOTH halves. `cargo build --release -p hew-cli` alone produces a
+    # driver with no matching archive to link against, which is the exact
+    # pairing `make hew` was collapsed into `hew-native` to prevent.
+    echo "==> Building hew-cli (release) and hew-lib (release-lib)"
     cargo build --release -p hew-cli 2>&1
+    cargo build -p hew-lib --profile release-lib 2>&1
 fi
 
 HEW="$REPO_ROOT/target/release/hew"

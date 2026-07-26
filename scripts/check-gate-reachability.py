@@ -70,6 +70,13 @@ do execute their gate; whether a job BLOCKS a merge is a different axis from
 whether it RUNS, and conflating the two here would demand deleting deliberately
 advisory jobs. A0/A1/A2/A3 answer "does it run".
 
+Inside the Makefile the two edges are a PREREQUISITE of an already-reached
+target and a `$(MAKE) x` in its recipe — both read after variable expansion
+(`makefile_variables` below), because a prerequisite list written as a bundle
+variable is an edge make follows and a literal reader does not see. Both flow
+strictly forward from the CI roots: being the prerequisite of an UNREACHED
+target proves nothing, or every orphan could vouch for itself.
+
 Usage:
   scripts/check-gate-reachability.py            # check
   scripts/check-gate-reachability.py --verbose  # include the reached sets
@@ -753,24 +760,187 @@ def ci_step_commands(workflows: list[Workflow]) -> list[tuple[str, str]]:
 
 RULE_RE = re.compile(r"^([A-Za-z0-9_./%-]+(?:\s+[A-Za-z0-9_./%-]+)*)\s*:(?!=)\s*(.*)$")
 
+# ── Variable expansion ────────────────────────────────────────────────────────
+#
+# Reading the Makefile as literal text hides edges behind names. When the
+# archive freshness work made the link prerequisites a bundle,
+#
+#   LIBHEW_READY := $(LIBHEW) | check-libhew-fresh
+#   observe-functional-test: hew-native observe $(LIBHEW_READY)
+#
+# the prerequisite list of a CI-reached target became the seven characters
+# `$(LIBHEW_READY)`, and `check-libhew-fresh` — which make runs every time that
+# target is built — vanished from the graph this checker walks. The gate then
+# demanded a direct `make check-libhew-fresh` step, which would run the check
+# a second time for no reason. The edge was always there; the reader could not
+# see it.
+#
+# So expand. Not by implementing make — by inlining exactly the assignments
+# that can be inlined without guessing, and leaving every other reference
+# standing verbatim:
+#
+#   * one top-level `=` or `:=` assignment of the name, and no other;
+#   * a value built only from literal text, `$$`, and further `$(NAME)`
+#     references.
+#
+# A name assigned inside an `ifeq`, defaulted with `?=` (the environment
+# outranks it), appended to with `+=`, or bound to a `$(shell …)`/`$(if …)`
+# call is NOT inlined, and neither is anything that references it. That is the
+# fail-closed direction: an unexpanded reference matches no target name and no
+# command shape, so it can only ever cost reachability, never grant it.
+#
+# The result is also a normal form. `$(LIBHEW)` reduces to
+# `$(CARGO_NATIVE_OUT)/debug/$(LIBHEW_NAME)` — still opaque at both ends, but
+# reduced identically wherever it appears, so a prerequisite and a recipe that
+# name the same artefact become the same token.
+
+VARIABLE_REF_RE = re.compile(r"\$[({]([A-Za-z_][A-Za-z0-9_]*)[)}]")
+
+ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(::=|:=|\+=|\?=|!=|=)\s*(.*)$")
+
+INLINABLE_OPERATORS = {"=", ":=", "::="}
+
+CONDITIONAL_OPEN = ("ifeq", "ifneq", "ifdef", "ifndef")
+
+
+def _has_unmodelled_expansion(value: str) -> bool:
+    """True when `value` holds a `$` construct this expander refuses to model.
+
+    Only `$$` and a bare `$(NAME)` / `${NAME}` reference are modelled. A
+    function call, an automatic variable, a computed name — anything else —
+    disqualifies the whole assignment rather than being silently dropped from
+    the middle of a value, which would fabricate a path that make never uses.
+    """
+    rest = value
+    while True:
+        index = rest.find("$")
+        if index < 0:
+            return False
+        tail = rest[index:]
+        if tail.startswith("$$"):
+            rest = tail[2:]
+            continue
+        match = VARIABLE_REF_RE.match(tail)
+        if not match:
+            return True
+        rest = tail[match.end() :]
+
+
+def _logical_lines(text: str) -> list[str]:
+    """`text` with backslash continuations joined, so an assignment is one line."""
+    out: list[str] = []
+    pending = ""
+    for line in text.splitlines():
+        if line.endswith("\\"):
+            pending += line[:-1]
+            continue
+        out.append(pending + line)
+        pending = ""
+    if pending:
+        out.append(pending)
+    return out
+
+
+def makefile_variables(text: str) -> dict[str, str]:
+    """The variable assignments this reader is willing to inline."""
+    values: dict[str, str] = {}
+    rejected: set[str] = set()
+    depth = 0
+    for line in _logical_lines(text):
+        if line.startswith("\t"):
+            continue
+        bare = line.split("#", 1)[0].strip()
+        if not bare:
+            continue
+        head = bare.split(None, 1)[0]
+        if head in CONDITIONAL_OPEN:
+            depth += 1
+            continue
+        if head == "endif":
+            depth = max(0, depth - 1)
+            continue
+        if head in {"else", "define", "endef", "export", "unexport", "override"}:
+            # `else` may carry an `ifeq` of its own; either way the branch body
+            # that follows is conditional, and `define`/`export` are shapes this
+            # reader does not model.
+            continue
+        match = ASSIGNMENT_RE.match(bare)
+        if not match:
+            continue
+        name, operator, value = match.group(1), match.group(2), match.group(3).strip()
+        if (
+            name in values
+            or depth > 0
+            or operator not in INLINABLE_OPERATORS
+            or _has_unmodelled_expansion(value)
+        ):
+            rejected.add(name)
+            continue
+        values[name] = value
+    for name in rejected:
+        values.pop(name, None)
+    return values
+
+
+def expand_makefile_text(
+    text: str, variables: dict[str, str], seen: frozenset[str] = frozenset()
+) -> str:
+    """`text` with every inlinable variable reference replaced by its value.
+
+    `seen` breaks reference cycles: a name already being expanded is left
+    standing rather than recursed into.
+    """
+    out: list[str] = []
+    rest = text
+    while rest:
+        index = rest.find("$")
+        if index < 0:
+            out.append(rest)
+            break
+        out.append(rest[:index])
+        tail = rest[index:]
+        if tail.startswith("$$"):
+            out.append("$$")
+            rest = tail[2:]
+            continue
+        match = VARIABLE_REF_RE.match(tail)
+        name = match.group(1) if match else ""
+        if match and name in variables and name not in seen:
+            out.append(expand_makefile_text(variables[name], variables, seen | {name}))
+            rest = tail[match.end() :]
+            continue
+        out.append(tail[:1])
+        rest = tail[1:]
+    return "".join(out)
+
 
 def parse_makefile(text: str) -> tuple[set[str], dict[str, set[str]], dict[str, str]]:
     """Return (phony targets, target → prerequisites, target → recipe text).
 
-    Recipe text is comment-stripped for the same reason workflow bodies are: a
-    commented-out `$(MAKE) foo` in a recipe is not a call.
+    Rule lines and recipes are read through `expand_makefile_text`, so a
+    prerequisite list or a build-artefact path written as a variable is seen as
+    the graph make sees. Recipe text is comment-stripped for the same reason
+    workflow bodies are: a commented-out `$(MAKE) foo` in a recipe is not a
+    call.
+
+    An order-only `|` separator is left in the prerequisite list, where it
+    matches no target name and is dropped by the callers' `in known` filter.
+    Order-only says WHEN a prerequisite is brought up to date, not WHETHER, so
+    it makes no difference to reachability.
     """
+    variables = makefile_variables(text)
     phony: set[str] = set()
     prereqs: dict[str, set[str]] = {}
     recipes: dict[str, str] = {}
     current: list[str] = []
     for raw in text.splitlines():
         if raw.startswith("\t"):
+            line = expand_makefile_text(raw, variables)
             for tgt in current:
-                recipes[tgt] = recipes.get(tgt, "") + strip_shell_comments(raw) + "\n"
+                recipes[tgt] = recipes.get(tgt, "") + strip_shell_comments(line) + "\n"
             continue
         if raw.startswith(".PHONY:"):
-            phony.update(raw[len(".PHONY:") :].split())
+            phony.update(expand_makefile_text(raw[len(".PHONY:") :], variables).split())
             current = []
             continue
         stripped = raw.split("#", 1)[0].rstrip()
@@ -778,7 +948,7 @@ def parse_makefile(text: str) -> tuple[set[str], dict[str, set[str]], dict[str, 
             if not stripped:
                 current = []
             continue
-        match = RULE_RE.match(stripped)
+        match = RULE_RE.match(expand_makefile_text(stripped, variables))
         if not match:
             current = []
             continue

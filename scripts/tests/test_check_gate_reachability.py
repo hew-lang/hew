@@ -371,6 +371,126 @@ def test_a_genuine_unfiltered_run_does_compensate() -> None:
     assert gate.uncompensated_packages(filtered, [full], ["hew-cabi"]) == []
 
 
+# ── Finding 5: prerequisite lists written as variables ────────────────────────
+#
+# `check-libhew-fresh` runs on every build of every target that links a native
+# Hew program, because it is an order-only prerequisite of the bundle those
+# targets depend on. The checker still called it unreached: the bundle is a
+# variable, and a reader that does not expand variables sees the seven
+# characters `$(LIBHEW_READY)` where the graph has an edge. The demand that
+# followed — wire a direct `make check-libhew-fresh` step — would have run the
+# check twice and taught the next reader that a redundant step is how you
+# satisfy this gate.
+#
+# The counterfactual matters more than the fix: expanding variables must not
+# turn "is a prerequisite of something" into reachability. Only a prerequisite
+# of an already-REACHED target is reached.
+
+
+def variables(makefile: str) -> dict[str, str]:
+    return gate.makefile_variables(makefile)
+
+
+def test_a_prerequisite_bundle_behind_a_variable_is_an_edge() -> None:
+    _, prereqs, _ = gate.parse_makefile(
+        "LIB := build/lib.a\n"
+        "READY := $(LIB) | check-lib-fresh\n"
+        "\n"
+        "functional-test: hew-native $(READY)\n"
+        "\tcargo test --test functional\n"
+    )
+    assert "check-lib-fresh" in prereqs["functional-test"], (
+        "an order-only prerequisite reached through a variable is still run "
+        f"whenever the target is built; got {prereqs['functional-test']}"
+    )
+    assert "build/lib.a" in prereqs["functional-test"]
+
+
+def test_a_prerequisite_of_an_unreached_target_confers_no_reachability() -> None:
+    makefile = (
+        "READY := | check-lib-fresh\n"
+        "\n"
+        "reached-gate: $(READY)\n"
+        "\tcargo nextest run --workspace --profile ci\n"
+        "\n"
+        "check-lib-fresh:\n"
+        "\tscripts/check-lib-fresh.sh\n"
+        "\n"
+        "orphan-gate: check-orphan-fresh\n"
+        "\tbash scripts/orphan.sh\n"
+        "\n"
+        "check-orphan-fresh:\n"
+        "\tbash scripts/orphan-fresh.sh\n"
+    )
+    phony, prereqs, recipes = gate.parse_makefile(makefile)
+    known = set(prereqs) | phony
+    reached = gate.close_over_makefile({"reached-gate"}, prereqs, recipes, known)
+    assert "check-lib-fresh" in reached, "a prerequisite of a reached target is reached"
+    assert "check-orphan-fresh" not in reached, (
+        "orphan-gate is reached by nothing, so being ITS prerequisite proves "
+        "nothing; reachability flows forward from CI roots or not at all"
+    )
+    assert "orphan-gate" not in reached
+
+
+def test_a_conditionally_assigned_variable_is_not_inlined() -> None:
+    values = variables(
+        "ifeq ($(OS),Windows_NT)\nLIBNAME := hew.lib\nelse\nLIBNAME := libhew.a\nendif\n"
+    )
+    assert "LIBNAME" not in values, (
+        "two branches assign it; picking one would invent a path make may never "
+        "use, so every reference must stay verbatim"
+    )
+    assert gate.expand_makefile_text("$(LIBNAME)", values) == "$(LIBNAME)"
+
+
+def test_a_variable_the_expander_cannot_evaluate_is_not_inlined() -> None:
+    values = variables(
+        "OUT := $(shell scripts/cargo-output-dir.py --root)\n"
+        "FLAG := $(if $(TRIPLE),--target $(TRIPLE),)\n"
+        "DEFAULTED ?= host\n"
+        "APPENDED := a\nAPPENDED += b\n"
+        "PLAIN := build\n"
+    )
+    assert set(values) == {"PLAIN"}, (
+        "a shell call, a conditional function, an environment-overridable "
+        f"default and an append are all unmodelled; kept {sorted(values)}"
+    )
+
+
+def test_expansion_leaves_an_opaque_reference_standing_as_one_token() -> None:
+    values = variables(
+        "ROOT := $(shell scripts/cargo-output-dir.py --root)\n"
+        "DEBUG := $(ROOT)/debug\n"
+        "LIB := $(DEBUG)/$(NAME)\n"
+    )
+    expanded = gate.expand_makefile_text("$(LIB)", values)
+    assert expanded == "$(ROOT)/debug/$(NAME)", expanded
+    assert len(expanded.split()) == 1, (
+        "inlining the $(shell …) text would have split one artefact path into "
+        "several prerequisites, none of which make ever names"
+    )
+
+
+def test_a_reference_cycle_terminates() -> None:
+    values = variables("A := $(B)\nB := $(A)\n")
+    assert gate.expand_makefile_text("$(A)", values) in {"$(A)", "$(B)"}
+
+
+def test_a_shell_dollar_in_a_recipe_is_not_a_variable_reference() -> None:
+    values = {"f": "SHOULD-NOT-APPEAR"}
+    assert gate.expand_makefile_text("$$(basename $$f)", values) == "$$(basename $$f)"
+
+
+def test_the_real_makefile_reaches_check_libhew_fresh_through_its_consumers() -> None:
+    phony, prereqs, recipes = gate.parse_makefile(gate.MAKEFILE.read_text())
+    consumers = {t for t, deps in prereqs.items() if "check-libhew-fresh" in deps}
+    assert "observe-functional-test" in consumers, (
+        "observe-functional-test depends on the archive-ready bundle, which "
+        f"carries the freshness check; consumers seen: {sorted(consumers)}"
+    )
+
+
 # ── Containment proofs ────────────────────────────────────────────────────────
 
 
@@ -608,6 +728,14 @@ _TESTS = [
     test_a_workspace_run_that_excludes_the_package_does_not_compensate,
     test_a_competing_filter_does_not_compensate,
     test_a_genuine_unfiltered_run_does_compensate,
+    test_a_prerequisite_bundle_behind_a_variable_is_an_edge,
+    test_a_prerequisite_of_an_unreached_target_confers_no_reachability,
+    test_a_conditionally_assigned_variable_is_not_inlined,
+    test_a_variable_the_expander_cannot_evaluate_is_not_inlined,
+    test_expansion_leaves_an_opaque_reference_standing_as_one_token,
+    test_a_reference_cycle_terminates,
+    test_a_shell_dollar_in_a_recipe_is_not_a_variable_reference,
+    test_the_real_makefile_reaches_check_libhew_fresh_through_its_consumers,
     test_containment_refuses_an_opaque_command,
     test_containment_refuses_an_env_prefixed_command,
     test_containment_accepts_a_narrower_selection_of_what_ci_runs,

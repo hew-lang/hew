@@ -11,13 +11,6 @@
 //! The compiler resolves stdlib modules by `.hew` path, not by crate, so the
 //! `.hew` source tree and package manifests under `std/` are unchanged.
 
-// Build identity stamp. This crate's staticlib is put on the WASM link line
-// directly, without going through hew-lib's umbrella archive, so it carries its
-// own copy of the digest the driver checks. Without it a wasm program links
-// whatever libhew_std.a is on disk — a copied or cached one included — with
-// nothing tying it to the driver that produced the object.
-include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
-
 // Force-link hew-runtime so the linker can resolve the runtime `#[no_mangle]`
 // symbols (`hew_vec_*`, `hew_bytes_*`, …) that hew-cabi declares as `extern "C"`,
 // and so modules that use runtime Rust paths (e.g. the datetime/parse-error slot

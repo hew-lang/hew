@@ -17,7 +17,6 @@ members = [
   "hew-wasm",
   "hew-sandbox-wasm",
   "hew-analysis",
-  "hew-build-identity",
   "hew-compile",
   "hew-hir",
   "hew-mir",

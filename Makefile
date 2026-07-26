@@ -156,19 +156,12 @@ LIBHEW_NAME := libhew.a
 endif
 LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
 
-# Sources that feed the archive. The list is produced by the same derivation
-# the driver's identity digest uses — hew-lib's non-dev path-dependency
-# closure, its Rust sources and manifests, the embedded assets its code names
-# with include_str!/include_bytes!, and the workspace manifest and lockfile —
-# so the build graph, the mtime check and the driver's fail-closed check all
-# agree on what "stale" means. hew-build-identity has a test that runs the
-# script and asserts the two input sets are identical.
-#
-# hew-build-identity is in the closure as hew-lib's build dependency even
-# though none of its code runs at runtime: its scanner and domain separator
-# decide what stamp lands in the archive. Leaving it out meant a scanner change
-# produced a new driver beside an archive make still considered current — a
-# driver that then refused its own fresh-looking archive.
+# Sources that feed the archive. The list is derived, never hand-listed:
+# hew-lib's non-dev path-dependency closure, its Rust sources and manifests,
+# the embedded assets its code names with include_str!/include_bytes!, and the
+# workspace manifest and lockfile — so the build graph and the mtime check
+# agree on what "stale" means. Deriving it is the point: a hand-written list is
+# how an input that changes the archive ends up not counting toward freshness.
 LIBHEW_INPUTS_SCRIPT := scripts/libhew-inputs.py
 LIBHEW_SRC_DIRS := $(shell $(LIBHEW_INPUTS_SCRIPT) crates)
 LIBHEW_SRCS := $(shell $(LIBHEW_INPUTS_SCRIPT) files)
@@ -281,8 +274,7 @@ $(LIBHEW): $(LIBHEW_SRCS)
 
 # Build the WASM runtime + the consolidated stdlib archive (libhew_std.a).
 #
-# Real file rules over the same input set as $(LIBHEW), for the same reason:
-# the driver refuses a wasm archive whose stamp disagrees with its own, so a
+# Real file rules over the same input set as $(LIBHEW), for the same reason: a
 # phony target that rebuilds only when asked leaves `make wasm-runtime` able to
 # report success over an archive from an older checkout.
 WASM_RUNTIME_LIB := $(WASM_DEBUG_DIR)/libhew_runtime.a
@@ -406,9 +398,7 @@ ci-preflight-smoke:
 # against an archive make has already brought up to date, and is wired as an
 # ORDER-ONLY prerequisite of every target that links a native Hew program (see
 # $(LIBHEW_READY)) so it fires at the point of use locally, not only in CI
-# after the damage is done. This is the mtime/build-graph half; the driver's
-# embedded build-identity check is the point-of-link half, and neither
-# subsumes the other.
+# after the damage is done.
 check-libhew-fresh: $(LIBHEW)
 	scripts/check-libhew-fresh.sh --debug-dir $(DEBUG_DIR)
 

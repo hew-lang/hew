@@ -6,12 +6,8 @@
 # actually writes to against the newest input file that feeds the archive.
 # Exits 0 if the archive is current; exits 1 if it predates any input.
 #
-# This is the build-graph half of the staleness defence. The other half lives in
-# the compiler driver, which embeds a digest of the same input set and refuses
-# to link an archive whose stamp disagrees (see hew-build-identity). Neither
-# subsumes the other: this check runs before a build step consumes the archive,
-# the driver's runs at the moment of link and therefore also covers direct
-# `cargo build`, IDE builds and copied-in artefacts.
+# This runs before a build step consumes the archive, so a stale archive is
+# reported where it can still be fixed rather than at the linker.
 #
 # Usage: scripts/check-libhew-fresh.sh [--debug-dir <dir>]
 #   --debug-dir <dir>   Override the Cargo output dir. The default is whatever
@@ -75,13 +71,12 @@ get_mtime() {
 lib_mtime=$(get_mtime "$LIBHEW")
 
 # Scan the archive's input set. The list comes from scripts/libhew-inputs.py,
-# which derives it the same way the driver's identity digest does: hew-lib's
-# non-dev path-dependency closure (hew-runtime, hew-std, hew-cabi and the
-# hew-build-identity build dependency that decides which stamp the archive
-# carries), those crates' Rust sources and manifests, the assets their code
-# embeds with include_str!/include_bytes!, and the workspace manifest and
-# lockfile. Scanning a hand-written list instead is how an input that changes
-# the archive ends up not counting toward freshness.
+# which derives it rather than hand-listing it: hew-lib's non-dev
+# path-dependency closure (hew-runtime, hew-std, hew-cabi), those crates' Rust
+# sources and manifests, the assets their code embeds with
+# include_str!/include_bytes!, and the workspace manifest and lockfile.
+# Scanning a hand-written list instead is how an input that changes the archive
+# ends up not counting toward freshness.
 if ! src_list="$("${REPO_ROOT}/scripts/libhew-inputs.py" files)"; then
     echo "error: could not resolve the archive's input set" >&2
     exit 1

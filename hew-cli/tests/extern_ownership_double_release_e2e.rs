@@ -1123,3 +1123,685 @@ fn a_wrapped_extern_record_in_a_borrowing_argument_sees_no_caller_release() {
          the zero above is a measurement rather than a blind probe:\n{stdout}"
     );
 }
+
+/// F1 — the interim fail-open at the call-scrutinee admission, counted exactly.
+///
+/// `wrap()` returns a heap `Option<Holder>` whose payload the HOST minted. The
+/// admission classifier used to route an `OPAQUE`-only module call down an
+/// interim branch that COMPILED and MINTED the `__hew_call_scrutinee` owner
+/// regardless of provenance — a fail-open annotated as temporary, which is
+/// still a fail-open. The scrutinee owner's release then walked the enum and
+/// freed the host's `label`.
+///
+/// Both former fail-open arms now ask the one authority, which vetoes `wrap`
+/// through its taint row. Measured against the pre-fix compiler this fixture
+/// reports `releases=8` over eight frames AND STILL EXITS 0 — the exact count
+/// is what catches it.
+const MATCH_WRAPPED_EXTERN_ENUM: &str = r#"record Holder { label: string }
+
+extern "C" {
+    fn spy_make_holder() -> Holder;
+    fn spy_made() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
+}
+
+fn wrap() -> Option<Holder> { Some(unsafe { spy_make_holder() }) }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        match wrap() {
+            Some(h) => { total = total + h.label.len(); }
+            None => {}
+        }
+        i = i + 1;
+    }
+    let made = unsafe { spy_made() };
+    let releases = unsafe { spy_releases() };
+    println(f"total={total}");
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+#[test]
+fn a_match_over_a_wrapped_extern_enum_sees_no_caller_release() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_record_match", RECORD_SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "match_wrapped_enum",
+        MATCH_WRAPPED_EXTERN_ENUM,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: the host must have minted all eight handles:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "total"),
+        72,
+        "guard: every payload must have been readable — `host-made` is nine \
+         bytes, eight times:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        0,
+        "DOUBLE RELEASE at the call-scrutinee admission: the interim \
+         `LegacyModuleCall` arm minted a scrutinee owner over an enum whose \
+         payload the host minted and still owns. Admission must consult the \
+         freshness authority, with no branch that answers permissively:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        1,
+        "the release counter itself must have teeth: one real \
+         `hew_string_drop` from the host must read as exactly one release, so \
+         the zero above is a measurement rather than a blind probe:\n{stdout}"
+    );
+}
+
+/// COUNTERFACTUAL for F1: the identical program over a DOMESTIC producer. The
+/// scrutinee owner is still minted and still balances to zero net releases of
+/// the host's handles, so the assertion above cannot be satisfied by simply
+/// switching the scrutinee mint off.
+///
+/// The spy still mints the eight observed handles — the program hands each one
+/// straight back through `spy_keep` — but the matched enum is built by a Hew
+/// frame, so the veto must not fire.
+const MATCH_OVER_A_DOMESTIC_ENUM: &str = r#"extern "C" {
+    fn spy_retained() -> i64;
+    fn spy_bad_headers() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
+    fn spy_retain(s: string) -> i64;
+}
+
+fn mkopt(i: i64) -> Option<string> { Some(f"tok{i}") }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        match mkopt(i) {
+            Some(s) => {
+                unsafe { spy_retain(s); }
+                total = total + 1;
+            }
+            None => {}
+        }
+        i = i + 1;
+    }
+    let bad = unsafe { spy_bad_headers() };
+    println(f"bad={bad}");
+    let made = unsafe { spy_retained() };
+    let releases = unsafe { spy_releases() };
+    println(f"total={total}");
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+#[test]
+fn a_match_over_a_domestic_enum_keeps_working() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_domestic_match", SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "match_domestic_enum",
+        MATCH_OVER_A_DOMESTIC_ENUM,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: all eight domestic handles must have reached the spy:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        0,
+        "control: a domestic producer's scrutinee must still balance — the F1 \
+         fix is provenance-directed, not a blanket stop on scrutinee \
+         ownership:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        1,
+        "the counter must have teeth here too:\n{stdout}"
+    );
+}
+
+/// F2 — the COMPOSITE rule, counted exactly.
+///
+/// The `Outer` literal genuinely IS fresh: this frame allocated it. The defect
+/// was reading that freshness as ownership of every FIELD, so the caller-owned
+/// temp minted over `Outer` scheduled a recursive release that reached the
+/// `Holder` the host had just returned.
+///
+/// Measured against the pre-fix compiler this fixture reports `releases=8`.
+const RECORD_LITERAL_EMBEDDING_A_DIRECT_EXTERN: &str = r#"record Holder { label: string }
+record Outer { inner: Holder, tag: i64 }
+
+extern "C" {
+    fn spy_make_holder() -> Holder;
+    fn spy_made() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
+}
+
+fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() + o.tag }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        total = total + borrowOuter(Outer { inner: unsafe { spy_make_holder() }, tag: 0 });
+        i = i + 1;
+    }
+    let made = unsafe { spy_made() };
+    let releases = unsafe { spy_releases() };
+    println(f"total={total}");
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+#[test]
+fn a_record_literal_embedding_a_direct_extern_sees_no_caller_release() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_record_embed", RECORD_SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "record_embed",
+        RECORD_LITERAL_EMBEDDING_A_DIRECT_EXTERN,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: the host must have minted all eight handles:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "total"),
+        72,
+        "guard: every embedded record must have been readable:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        0,
+        "DOUBLE RELEASE at a composite mint: freshness of the CONTAINER was \
+         taken to imply ownership of its FIELDS, so the outer record's \
+         recursive release freed the host's handle. A container with an \
+         opaque-provenance embed must not be minted at all:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        1,
+        "the release counter itself must have teeth: one real \
+         `hew_string_drop` from the host must read as exactly one release, so \
+         the zero above is a measurement rather than a blind probe:\n{stdout}"
+    );
+}
+
+/// COUNTERFACTUAL for F2: the identical container built from a DOMESTIC field
+/// still gets its mint and still releases exactly once per frame, so the zero
+/// above cannot be satisfied by deleting the composite mint. The spy counts
+/// only the host's handles, and this program never asks the host for one; the
+/// teeth check therefore reads the domestic handle it retained.
+const RECORD_LITERAL_OF_A_DOMESTIC_FIELD: &str = r#"extern "C" {
+    fn spy_retained() -> i64;
+    fn spy_bad_headers() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
+    fn spy_retain(s: string) -> i64;
+}
+
+record Holder { label: string }
+record Outer { inner: Holder, tag: i64 }
+
+fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
+
+fn borrowOuter(o: Outer) -> i64 {
+    unsafe { spy_retain(o.inner.label); }
+    o.tag + 1
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        total = total + borrowOuter(Outer { inner: mkHolder(i), tag: 0 });
+        i = i + 1;
+    }
+    let bad = unsafe { spy_bad_headers() };
+    println(f"bad={bad}");
+    let made = unsafe { spy_retained() };
+    let releases = unsafe { spy_releases() };
+    println(f"total={total}");
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+#[test]
+fn a_record_literal_of_a_domestic_field_keeps_working() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_domestic_embed", SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "domestic_embed",
+        RECORD_LITERAL_OF_A_DOMESTIC_FIELD,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: all eight domestic handles must have reached the spy:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "total"),
+        8,
+        "guard: every container must have been readable:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        reported(&stdout, "releases") + 1,
+        "control: the counter must still have teeth for the domestic shape — \
+         one host release reads as exactly one more:\n{stdout}"
+    );
+}
+
+/// Build `source` and return the compiler's combined output, asserting the
+/// build FAILED. Used where the correct answer is a refusal rather than a
+/// number: a seam whose ABI offers no safe route must not lower at all.
+fn build_expecting_failure(dir: &Path, name: &str, source: &str, lib: Option<&Path>) -> String {
+    let prog = dir.join(format!("{name}.hew"));
+    std::fs::write(&prog, source).expect("write fixture .hew");
+    let bin = dir.join(name);
+
+    let mut compile = Command::new(hew_binary());
+    compile.arg("build");
+    if let Some(lib) = lib {
+        compile.arg("--link-lib").arg(lib);
+    }
+    compile.arg(&prog).arg("-o").arg(&bin).current_dir(dir);
+    let compiled = run_bounded_command(compile, "hew build");
+    assert!(
+        !compiled.status.success(),
+        "`hew build` must REFUSE {name}, but it succeeded:\n{}",
+        describe_output(&compiled),
+    );
+    assert!(
+        !bin.exists(),
+        "a refused build must emit no binary for {name}"
+    );
+    describe_output(&compiled)
+}
+
+/// F3 — collection ingress. `m.insert(k, wrapHolder())` moved a host-owned
+/// record into the map, and the map's teardown released it.
+///
+/// Unlike the Vec seam there is no copy-in route to fall back to:
+/// `hew-runtime`'s hashmap pins ingress as MOVE by ABI and records that copy-in
+/// is intentionally absent. Failing CLOSED therefore has to mean refusing the
+/// ingress — the alternative is a silent double release, which is what the four
+/// preceding rounds shipped.
+///
+/// This is the only fix in this revision that costs expressiveness. Lifting it
+/// needs a copy-in hashmap ingress (a `hew_hashmap_insert_owned` that clones
+/// the value the way `hew_vec_push_owned` does), at which point this seam
+/// becomes a route choice like the Vec one rather than a refusal.
+const HASHMAP_INSERT_OF_A_WRAPPED_EXTERN_RECORD: &str = r#"record Holder { label: string }
+
+extern "C" {
+    fn spy_make_holder() -> Holder;
+}
+
+fn wrapHolder() -> Holder { unsafe { spy_make_holder() } }
+
+fn main() -> i64 {
+    var m: HashMap<i64, Holder> = HashMap::new();
+    m.insert(1, wrapHolder());
+    m.len()
+}
+"#;
+
+#[test]
+fn a_hashmap_insert_of_a_wrapped_extern_record_is_refused() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_record_map", RECORD_SPY_RUST) else {
+        return;
+    };
+
+    let out = build_expecting_failure(
+        dir.path(),
+        "hashmap_ingress",
+        HASHMAP_INSERT_OF_A_WRAPPED_EXTERN_RECORD,
+        Some(&spy),
+    );
+    assert!(
+        out.contains("ownership-opaque provenance"),
+        "the refusal must name the reason, not fail for some unrelated cause:\n{out}"
+    );
+}
+
+/// COUNTERFACTUAL for F3: the identical program over a DOMESTIC producer must
+/// still compile, still move in, and still run clean. Reverting the reject makes
+/// the case above compile; widening it into a blanket stop makes this one fail.
+const HASHMAP_INSERT_OF_A_DOMESTIC_RECORD: &str = r#"record Holder { label: string }
+
+fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
+
+fn main() -> i64 {
+    var m: HashMap<i64, Holder> = HashMap::new();
+    var s: HashSet<string> = HashSet::new();
+    var i: i64 = 0;
+    while i < 8 {
+        m.insert(i, mkHolder(i));
+        s.insert(f"k{i}");
+        i = i + 1;
+    }
+    println(f"m={m.len()}");
+    println(f"s={s.len()}");
+    0
+}
+"#;
+
+#[test]
+fn a_hashmap_insert_of_a_domestic_record_still_compiles_and_runs() {
+    require_codegen();
+    let dir = tempdir();
+    let stdout = build_and_run(
+        dir.path(),
+        "hashmap_domestic",
+        HASHMAP_INSERT_OF_A_DOMESTIC_RECORD,
+        None,
+    );
+    assert_eq!(
+        reported(&stdout, "m"),
+        8,
+        "control: domestic collection ingress must be untouched:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "s"),
+        8,
+        "and so must HashSet's:\n{stdout}"
+    );
+}
+
+/// The `let` binder. Seeding drop elaboration from the binding's TYPE alone
+/// gives a binder over an opaque foreign producer a scope-exit release the
+/// program never earned — the same defect as F1/F2, reached through the
+/// simplest construct in the language.
+const LET_BOUND_DIRECT_EXTERN_RECORD: &str = r#"record Holder { label: string }
+
+extern "C" {
+    fn spy_make_holder() -> Holder;
+    fn spy_made() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        let h = unsafe { spy_make_holder() };
+        total = total + h.label.len();
+        i = i + 1;
+    }
+    let made = unsafe { spy_made() };
+    let releases = unsafe { spy_releases() };
+    println(f"total={total}");
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+#[test]
+fn a_let_bound_extern_record_sees_no_caller_release() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_letbind", RECORD_SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "letbind",
+        LET_BOUND_DIRECT_EXTERN_RECORD,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: the host must have minted all eight handles:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "total"),
+        72,
+        "guard: every bound record must have been readable:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        0,
+        "DOUBLE RELEASE at a `let` binder: the scope-exit drop was seeded from \
+         the binding's TYPE without ever asking where the value came from, so \
+         leaving the loop body freed the host's handle:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        1,
+        "the release counter itself must have teeth:\n{stdout}"
+    );
+}
+
+/// The same binder, but the foreign value is first placed in a fresh container
+/// — the fact has to travel WITH the binder, not just be read off the
+/// initializer at the moment of binding.
+const LET_BOUND_EXTERN_RECORD_INSIDE_A_CONTAINER: &str = r#"record Holder { label: string }
+record Outer { inner: Holder, tag: i64 }
+
+extern "C" {
+    fn spy_make_holder() -> Holder;
+    fn spy_made() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        let h = unsafe { spy_make_holder() };
+        let o = Outer { inner: h, tag: 0 };
+        total = total + o.inner.label.len() + o.tag;
+        i = i + 1;
+    }
+    let made = unsafe { spy_made() };
+    let releases = unsafe { spy_releases() };
+    println(f"total={total}");
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+#[test]
+fn a_container_over_a_let_bound_extern_record_sees_no_caller_release() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_letbind_embed", RECORD_SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "letbind_embed",
+        LET_BOUND_EXTERN_RECORD_INSIDE_A_CONTAINER,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: the host must have minted all eight handles:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "total"),
+        72,
+        "guard: every embedded record must have been readable:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        0,
+        "DOUBLE RELEASE: the foreign fact must travel with the BINDER into the \
+         container, not be read only off a container's own initializer:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        1,
+        "the release counter itself must have teeth:\n{stdout}"
+    );
+}
+
+/// CONTROL for the binder rule: an identically shaped binder over a DOMESTIC
+/// producer still compiles, still runs and still leaves the counter with
+/// teeth.
+///
+/// The release-count COUNTERFACTUAL for this construct lives at the MIR seam
+/// (`extern_wrapper_result_opacity::a_let_bound_domestic_record_still_gets_\
+/// its_scope_exit_drop`, which pins three `RecordInPlace` drops against the
+/// foreign shape's zero). It cannot be taken here: handing a heap field to an
+/// extern already releases the caller's obligation for it — an extern's
+/// argument disposition is unknowable, so the compiler must assume the host
+/// consumed it — which means the spy can never witness a domestic record's own
+/// drop. Every existing domestic control in this file is shaped the same way
+/// for the same reason.
+const LET_BOUND_DOMESTIC_RECORD: &str = r#"extern "C" {
+    fn spy_retained() -> i64;
+    fn spy_bad_headers() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
+    fn spy_retain(s: string) -> i64;
+}
+
+record Holder { label: string }
+
+fn mkHolder(i: i64) -> Holder { Holder { label: f"tok{i}" } }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        let h = mkHolder(i);
+        unsafe { spy_retain(h.label); }
+        total = total + 1;
+        i = i + 1;
+    }
+    let retained = unsafe { spy_retained() };
+    let bad = unsafe { spy_bad_headers() };
+    let releases = unsafe { spy_releases() };
+    println(f"total={total}");
+    println(f"retained={retained}");
+    println(f"bad={bad}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
+}
+"#;
+
+#[test]
+fn a_let_bound_domestic_record_still_releases_once_per_frame() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_letbind_domestic", SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "letbind_domestic",
+        LET_BOUND_DOMESTIC_RECORD,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "retained"),
+        8,
+        "guard: the spy must have seen all eight domestic labels:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "bad"),
+        0,
+        "guard: every observed label must have carried a Hew string header:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "total"),
+        8,
+        "guard: every domestic binder must have been readable:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        reported(&stdout, "releases") + 1,
+        "control: the counter must still have teeth for the domestic shape — \
+         one host release reads as exactly one more:\n{stdout}"
+    );
+}

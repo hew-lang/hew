@@ -246,6 +246,22 @@ expect_check_fail_contains() {
   grep -qF -- "${expected_substr}" "${reject_output}"
 }
 
+# Like expect_check_fail_contains, but also asserts a substring is ABSENT from
+# the diagnostic. Used where the wrong help text is itself the bug: pointing a
+# user at a construct the compiler then rejects (#2810).
+expect_check_fail_contains_without() {
+  local fixture_path="$1"
+  local expected_substr="$2"
+  local forbidden_substr="$3"
+  local label="$4"
+  expect_check_fail_contains "${fixture_path}" "${expected_substr}" "${label}"
+  if grep -qF -- "${forbidden_substr}" "${reject_output}"; then
+    echo "expected ${label} diagnostic NOT to contain: ${forbidden_substr}" >&2
+    cat "${reject_output}" >&2
+    exit 1
+  fi
+}
+
 expect_check_fail_error_count() {
   local fixture_path="$1"
   local expected_count="$2"
@@ -743,6 +759,22 @@ expect_check_fail_contains \
   "by-value parameter" \
   "mutable by-value aggregate param"
 
+# #2810: the same guard on a CONCRETE record. `Account { balance: i64 }` has a
+# computable Copy layout, which is what the old "not Copy-layout" predicate
+# keyed on, so this shape compiled clean and silently debited a private copy.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/var_by_value_param_record.hew" \
+  "\`var acc\` on a by-value parameter of type \`Account\` has no caller-visible effect" \
+  "mutable by-value record param"
+
+# #2810: and the help text that routed users into that shape. The immutable
+# assignment must name the by-value parameter instead of suggesting \`var acc\`.
+expect_check_fail_contains_without \
+  "${ROOT}/tests/vertical-slice/reject/immutable_value_param_help_avoids_var.hew" \
+  "\`acc\` is a by-value parameter of type \`Account\`; mutating it has no caller-visible effect" \
+  "consider changing this to \`var acc\`" \
+  "immutable by-value param help"
+
 run_accept_expect_status "assert_eq" 0
 run_accept_expect_status "assert_ne" 0
 run_accept_expect_status "sleep_duration" 0
@@ -761,6 +793,11 @@ run_accept_expect_stdout "init_suspension_resumes"
 # state_drop_fn is the single free site (closed exactly once at teardown), so
 # the handle is not double-freed. Exact-stdout oracle prints the drained item.
 run_accept_expect_stdout "sink_half_in_actor_state"
+
+# The reverse direction of #2810: `var` on a by-value `Vec` parameter IS
+# caller-visible, so the widened ineffective-var guard must leave it alone and
+# both writes must reach the caller. Exact-stdout oracle: `9` then `3`.
+run_accept_expect_stdout "var_vec_param_caller_visible"
 
 # Static trait dispatch through supertrait bounds:
 # - reject missing concrete dispatch target at checker time, before MIR;

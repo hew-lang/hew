@@ -1,0 +1,20 @@
+// #2810: `var` on a by-value parameter of a concrete record type. The
+// mutation applies to a private copy, so the caller's account is untouched
+// while the function returns a plausible balance.
+//
+// Before the guard was widened this compiled clean, `hew check` reported OK,
+// and the program printed `60` beside a caller balance of `100`.
+type Account {
+    balance: i64
+}
+
+fn withdraw(var acc: Account, amount: i64) -> i64 {
+    acc.balance = acc.balance - amount;
+    return acc.balance;
+}
+
+fn main() -> i64 {
+    let acc = Account { balance: 100 };
+    let after = withdraw(acc, 40);
+    return after + acc.balance;
+}

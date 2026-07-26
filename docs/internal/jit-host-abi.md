@@ -137,7 +137,7 @@ the lowering emits. The stable-pid forwarders `hew_local_pid_link` /
 `_demonitor` siblings stay `stable`, because removing a registration produces
 no signal.
 
-The test is whether the caller can put the system lane into a state the runtime
+The test is whether the caller can put the system channel into a state the runtime
 did not derive from an authenticated event, read it, or destroy it.
 
 ### The property is TRANSITIVE, and it is computed

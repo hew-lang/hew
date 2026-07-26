@@ -1495,14 +1495,14 @@ pub(crate) fn sys_lane_signals_retired() -> usize {
     SYS_LANE_SIGNALS_RETIRED.load(std::sync::atomic::Ordering::Acquire)
 }
 
-/// Retire the undispatched system lane at teardown, reporting every signal.
+/// Retire the undispatched system queue at teardown, reporting every signal.
 ///
 /// WASM parity counterpart of `mailbox::retire_pending_sys_lane`: the scheduler
-/// is the lane's only legitimate consumer, so a mailbox that is being destroyed
-/// loses whatever is still queued — but it loses it VISIBLY. Each node is
+/// is its only legitimate consumer, so a mailbox that is being destroyed loses
+/// whatever is still queued — but it loses it VISIBLY. Each node is
 /// decoded through the closed [`HewSysMsg`] namespace, counted, and named,
 /// which is what makes user-declarable actor teardown an accounted destruction
-/// of system-lane state rather than a silent one.
+/// of system-side state rather than a silent one.
 fn retire_pending_sys_lane(mailbox: &mut HewMailboxWasm) -> usize {
     let mut retired = 0usize;
     let mailbox_addr = std::ptr::from_ref(mailbox);

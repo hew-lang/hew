@@ -2744,10 +2744,10 @@ pub(crate) fn sys_lane_signals_retired() -> usize {
     SYS_LANE_SIGNALS_RETIRED.load(Ordering::Acquire)
 }
 
-/// Retire the undispatched system lane, then release the queue's sentinel.
+/// Retire the undispatched system queue, then release the queue's sentinel.
 ///
-/// The scheduler is the system lane's only legitimate consumer. Once a mailbox
-/// is being destroyed there is no consumer left, so anything still queued is
+/// The scheduler is the only legitimate consumer of the system queue. Once a
+/// mailbox is being destroyed there is no consumer left, so anything queued is
 /// lost by construction — but it must not be lost QUIETLY. Every node is
 /// decoded through the closed [`HewSysMsg`] namespace, counted in
 /// [`SYS_LANE_SIGNALS_RETIRED`], and named on stderr before it is freed, so the

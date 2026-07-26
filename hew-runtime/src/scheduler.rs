@@ -730,6 +730,13 @@ pub extern "C" fn hew_runtime_cleanup() {
     // can still reference it. Dropping it frees the scheduler (deques, parkers,
     // stealers, global queue) and the now-empty live-actor registry.
     drop(runtime::take_default());
+
+    // Every actor this runtime intended to reclaim has now been reclaimed, so
+    // this is the one point where the actor-box balance is a statement about
+    // the whole program. Disarmed by default; `HEW_ACTOR_LEAK_CHECK=1` turns an
+    // imbalance into a diagnostic and a distinct exit status, which is what
+    // makes a leaked actor visible to a caller that can only see exit status.
+    crate::actor_balance::verdict_after_runtime_cleanup();
 }
 
 /// Run the canonical runtime cleanup chain from a compiled native `main` return.

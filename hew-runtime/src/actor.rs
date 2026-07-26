@@ -1813,8 +1813,21 @@ pub(crate) unsafe fn cleanup_all_actors() {
     // before finalizing each actor.  LIVE_ACTORS is not held here, so
     // pinned senders can re-acquire it freely (e.g. enqueue_resume).
 
+    let mut skipped_free_for_selftest = false;
+
     for live_actors::ActorPtr(actor) in actors.into_values() {
         if actor.is_null() {
+            continue;
+        }
+        // Counterfactual for the actor-box balance oracle: with
+        // `HEW_ACTOR_LEAK_SELFTEST=skip-free` armed, omit the free of exactly
+        // one actor this sweep would otherwise reclaim. The same program must
+        // then exit `HEW_EXIT_ACTOR_LEAK`; if it still exits cleanly, the
+        // accounting in `actor_balance` has stopped proving anything and the
+        // corpus gate that relies on it fails. Inert unless
+        // `HEW_ACTOR_LEAK_CHECK=1` is also set — see `actor_balance`.
+        if !skipped_free_for_selftest && crate::actor_balance::leak_selftest_skips_free() {
+            skipped_free_for_selftest = true;
             continue;
         }
         // SAFETY: actor is valid (from LIVE_ACTORS); scheduler is shut down.
@@ -2118,6 +2131,9 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
         unsafe { mailbox::hew_mailbox_free(mb) };
     }
 
+    // The single site that reclaims an actor box; the balancing half of the
+    // `record_actor_box_alloc` in `spawn_actor_internal`.
+    crate::actor_balance::record_actor_box_free();
     // SAFETY: Actor was allocated with Box::new / Box::into_raw.
     drop(unsafe { Box::from_raw(actor) });
 }
@@ -2238,6 +2254,9 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mb) };
     }
 
+    // The single site that reclaims an actor box; the balancing half of the
+    // `record_actor_box_alloc` in `spawn_actor_internal`.
+    crate::actor_balance::record_actor_box_free();
     // SAFETY: Actor was allocated with Box::new / Box::into_raw.
     drop(unsafe { Box::from_raw(actor) });
 }
@@ -2845,6 +2864,11 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     };
     let actor = build_spawned_actor(config, identity, init_state, arena);
     let raw = Box::into_raw(actor);
+    // The single site that mints an actor box. Counted here, at the allocation
+    // itself, so the balance in `actor_balance` is over the boxes the runtime
+    // actually handed out (see that module for why exit status alone cannot
+    // see a leaked actor).
+    crate::actor_balance::record_actor_box_alloc();
     register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
     if !unsafe { finalize_spawned_actor(raw, identity.id) } {
@@ -2909,6 +2933,11 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     };
     let actor = build_spawned_actor(config, identity, init_state, arena);
     let raw = Box::into_raw(actor);
+    // The single site that mints an actor box. Counted here, at the allocation
+    // itself, so the balance in `actor_balance` is over the boxes the runtime
+    // actually handed out (see that module for why exit status alone cannot
+    // see a leaked actor).
+    crate::actor_balance::record_actor_box_alloc();
     register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
     if !unsafe { finalize_spawned_actor(raw, identity.id) } {

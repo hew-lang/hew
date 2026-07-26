@@ -4989,6 +4989,16 @@ loop {
 
 `break` and `continue` are pure control-flow statements. A `break` may carry an expression (`break expr;`) — the parser accepts this syntax, but the expression is evaluated for side effects only and its value is **discarded**. Loop-as-expression (`let x = loop { break 42; }`) is not supported.
 
+This is orthogonal to where `break`, `continue`, and `return` may be *written*.
+All three are `!`-typed (`Ty::Never`) and may appear wherever an expression is
+expected — a match-arm body, an `else` block's tail, an operand of `&&`/`||` —
+not only as the last statement of a block. A diverging arm's `!` type unifies
+with any other arm's type, so `match d { 0 => break, _ => d }` type-checks
+exactly like `match d { 0 => { break; } _ => d }`; the two spellings parse to
+the identical tree. This does not make loops value-producing — `break`'s
+`Never` type describes control flow leaving the match, not a value the loop
+itself returns.
+
 **Grammar:**
 
 ```ebnf

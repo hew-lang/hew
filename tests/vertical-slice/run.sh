@@ -1755,6 +1755,11 @@ run_accept_expect_stdout "match_diverging_arm_result_type"
 # `return` as a bare expression-position match-arm body (v0.6 error-prop):
 # `0 => return Err(...)` propagates the error; the value arm sets the result.
 run_accept_expect_stdout "return_in_match_arm"
+# `break`/`continue` as bare expression-position match-arm bodies (v0.6 loop
+# ergonomics): `None => break` desugars to the already-working `{ break; }`
+# shape, so it needs no new MIR/type-checker support.
+run_accept_expect_stdout "break_in_match_arm"
+run_accept_expect_stdout "continue_in_match_arm"
 # let-else bind-or-bail (v0.6 error-prop): `let Ok(n) = e else { return … };`
 # binds the Ok payload into the enclosing scope (used after the statement) or
 # diverges through the else block.

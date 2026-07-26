@@ -52,8 +52,6 @@ const EXPECTED_WASI_UNSUPPORTED: &[&str] = &[
     "types/method_clone",
 ];
 
-// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
@@ -117,8 +115,6 @@ fn curated_playground_examples_run_under_wasi() {
     }
 }
 
-// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     require_wasi_runner();
@@ -153,8 +149,6 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     );
 }
 
-// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn task_scope_stays_on_the_fail_closed_diagnostic_path_under_wasi() {
     require_wasi_runner();
@@ -215,8 +209,6 @@ fn main() -> i64 {
     );
 }
 
-// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn toml_encoding_round_trips_under_wasi() {
     require_wasi_runner();
@@ -250,8 +242,6 @@ fn toml_encoding_round_trips_under_wasi() {
     assert_eq!(stdout.as_ref(), "hew\n", "stderr:\n{stderr}");
 }
 
-// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn wasm_channel_send_full_traps_instead_of_dropping() {
     require_wasi_runner();
@@ -375,8 +365,6 @@ const HASHMAP_HASHSET_LAYOUT_EXPECTED: &str = "len=2\n\
      set_contains_removed=false\n\
      set_len_after_remove=1\n";
 
-// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn wasm_hashmap_hashset_layout_run_pass() {
     require_wasi_runner();
@@ -504,8 +492,6 @@ const HASHMAP_HASHSET_OWNERSHIP_EXPECTED: &str = "alpha=third\n\
      set_has_kept=true\n\
      set_len=2\n";
 
-// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn wasm_hashmap_hashset_layout_ownership_run_pass() {
     require_wasi_runner();
@@ -554,8 +540,6 @@ fn native_hashmap_hashset_ownership_matches_wasi_output() {
     );
 }
 
-// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn wasi_run_timeout_terminates_a_non_terminating_program() {
     require_wasi_runner();

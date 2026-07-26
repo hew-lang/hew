@@ -1800,11 +1800,20 @@ mod assoc_types_slice2 {
     ///   `hew_actor_group_destroy` and supervisor teardown, so withholding the
     ///   raw destructor is not the leak factory withholding `hew_mailbox_free`
     ///   from raw `hew_mailbox_new` holders would have been.
+    /// - `hew_actor_trap` takes BOTH of a system signal's inputs from its
+    ///   arguments: `actor` chooses which actor is driven terminal and whose
+    ///   links, monitors and parent supervisor are notified, and `error_code`
+    ///   chooses the terminal state and the reason the resulting `Exit` /
+    ///   `Down` / `ChildCrashed` carries. Declaring it would let a program
+    ///   compose a lifecycle event for any actor it holds a handle to. No
+    ///   codegen path emits it — a compiled trap lowers to
+    ///   `hew_trap_with_code` — so the demotion strands no language feature.
     #[test]
     fn extern_rt_system_lane_symbols_rejected() {
         for sym in [
             "hew_actor_free",
             "hew_actor_set_sys_dispatch",
+            "hew_actor_trap",
             "hew_mailbox_free",
             "hew_mailbox_has_messages",
             "hew_mailbox_new",

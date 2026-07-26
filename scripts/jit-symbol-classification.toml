@@ -93,7 +93,6 @@ stable = [
   "hew_actor_spawn_opts",
   "hew_actor_spawn_opts_adopt",
   "hew_actor_stop",
-  "hew_actor_trap",
   "hew_actor_try_send",
   "hew_actor_unlink",
   "hew_actor_wake",
@@ -1315,6 +1314,25 @@ internal = [
   "hew_actor_drain_set",
   "hew_actor_state_lock_poison_after_panic",
   "hew_actor_state_lock_release_after_panic",
+  # `hew_actor_trap` is the runtime's crash entry point, and it took BOTH of a
+  # system signal's inputs from its arguments: `actor` chooses which actor goes
+  # terminal and whose links, monitors and parent supervisor are notified, and
+  # `error_code` chooses the terminal state (`Crashed` when nonzero, `Stopped`
+  # otherwise) and the reason the resulting `Exit` / `Down` / `ChildCrashed`
+  # carries. A user program that could declare this symbol in an `extern` rt
+  # block could therefore compose a lifecycle event for an actor it merely
+  # holds a handle to, which is exactly the capability the three
+  # `hew_actor_trap -> ...` authenticated edges below claim no caller has. The
+  # edges are kept — the runtime's own crash paths still need them — but their
+  # premise is now true of every remaining caller, because no remaining caller
+  # is user-declarable.
+  #
+  # Nothing is stranded by the move. No codegen path emits it: a compiled trap
+  # lowers to `hew_trap_with_code` (`hew-codegen-rs/src/llvm.rs`), not to this,
+  # and no `.hew` source in the tree names it. The runtime reaches it from its
+  # own panic/fault/terminate-hook recovery, and an AOT embedder can still link
+  # it.
+  "hew_actor_trap",
   "hew_actor_register_type",
   "hew_actor_send_aliased",
   "hew_machine_emit_step_exit",
@@ -1497,7 +1515,10 @@ internal = [
   #
   # The legitimate producer is `hew_actor_trap`, which CAS-transitions the
   # child terminal in the same call before notifying — its event is
-  # authenticated by the transition it just performed.
+  # authenticated by the transition it just performed. It is `internal` for
+  # the same reason the four below are: its own arguments choose the subject
+  # and the reason. What separates it is that no user-declarable caller
+  # remains, so every surviving call site reports a crash the runtime detected.
   "hew_supervisor_add_child_dynamic",
   "hew_supervisor_handle_crash",
   "hew_supervisor_notify_child_actor_event",
@@ -1575,19 +1596,25 @@ the DOWN that the monitor contract owes the caller, addressed to the caller \
 and carrying the runtime's own recorded reason."""
 
 "hew_actor_trap -> hew_supervisor_notify_child_actor_event" = """
-Authenticated producer. hew_actor_trap reports a crash the runtime detected in \
-the trapping actor; the notification goes to that actor's registered parent \
-supervisor, whose identity is runtime state, and the payload is the crash \
-record. The caller names no destination and writes no message body. Reached \
-transitively by hew_actor_stop / hew_actor_close / hew_actor_group_stop_all \
-via call_terminate_fn -> handle_crash_recovery when a terminate hook panics."""
+Authenticated producer. hew_actor_trap is NOT user-declarable (internal tier, \
+asserted by extern_rt_system_lane_symbols_rejected), which is what makes the \
+rest of this reason true: it was demoted precisely because its `actor` and \
+`error_code` arguments let a caller choose both the subject and the reason of \
+the event. Every remaining caller is a runtime crash path that reports a crash \
+the runtime detected in the trapping actor; the notification goes to that \
+actor's registered parent supervisor, whose identity is runtime state, and the \
+payload is the crash record. Reached transitively by hew_actor_stop / \
+hew_actor_close / hew_actor_group_stop_all via call_terminate_fn -> \
+handle_crash_recovery when a terminate hook panics — those callers name the \
+actor they already own and supply no code at all."""
 
 "hew_actor_trap -> propagate_exit_to_links" = """
-Authenticated producer. The trapping actor has died; propagate_exit_to_links \
-fans the EXIT out to the link set the runtime recorded for it. The caller \
-supplies neither the recipients (they are whoever linked to this actor) nor \
-the reason (it is the crash record). Refusing this edge would mean links \
-cannot fire, which is the whole contract of hew_actor_link."""
+Authenticated producer, and see the edge above for why hew_actor_trap itself \
+is no longer user-declarable. The trapping actor has died; \
+propagate_exit_to_links fans the EXIT out to the link set the runtime recorded \
+for it. No remaining caller supplies the recipients (they are whoever linked \
+to this actor) or the reason (it is the crash record). Refusing this edge \
+would mean links cannot fire, which is the whole contract of link()."""
 
 "hew_actor_trap -> notify_monitors_on_death" = """
 The third and last of hew_actor_trap's death fan-outs (links, monitors, \

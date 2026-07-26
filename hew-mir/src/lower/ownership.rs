@@ -2913,6 +2913,7 @@ impl Builder {
                     && !crate::return_provenance::value_reads_a_proven_foreign_binding(
                         expr,
                         proven_foreign,
+                        fresh.declared_release_types(),
                     )
                     && Self::classify_whole_param_embeds(
                         expr,
@@ -2928,6 +2929,7 @@ impl Builder {
                     && !crate::return_provenance::value_reads_a_proven_foreign_binding(
                         expr,
                         proven_foreign,
+                        fresh.declared_release_types(),
                     )
                     && Self::classify_whole_param_embeds(
                         expr,
@@ -3187,6 +3189,9 @@ impl Builder {
             || crate::return_provenance::value_reads_a_proven_foreign_binding(
                 value,
                 &self.proven_foreign_bindings,
+                self.call_scrutinee_provenance
+                    .fresh_owner_verdicts
+                    .declared_release_types(),
             )
     }
 
@@ -3250,6 +3255,9 @@ impl Builder {
             || crate::return_provenance::value_reads_a_proven_foreign_binding(
                 scrutinee,
                 &self.proven_foreign_bindings,
+                self.call_scrutinee_provenance
+                    .fresh_owner_verdicts
+                    .declared_release_types(),
             );
         if foreign {
             self.proven_foreign_bindings.insert(binding);
@@ -3331,6 +3339,9 @@ impl Builder {
             || crate::return_provenance::value_reads_a_proven_foreign_binding(
                 arg,
                 &self.proven_foreign_bindings,
+                self.call_scrutinee_provenance
+                    .fresh_owner_verdicts
+                    .declared_release_types(),
             );
         if !foreign {
             return false;
@@ -3486,6 +3497,9 @@ impl Builder {
         crate::return_provenance::value_reads_a_proven_foreign_binding(
             expr,
             &self.proven_foreign_bindings,
+            self.call_scrutinee_provenance
+                .fresh_owner_verdicts
+                .declared_release_types(),
         )
     }
     pub(crate) fn consume_moved_builtin_method_arg(&mut self, operand: &HirExpr) {

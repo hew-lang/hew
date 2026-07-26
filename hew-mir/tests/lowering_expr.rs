@@ -14,6 +14,8 @@ mod closure_env_ownership;
 mod conditional_move_drop;
 #[path = "lowering_expr/cstring_container_domain_canary.rs"]
 mod cstring_container_domain_canary;
+#[path = "lowering_expr/declared_release_adoption.rs"]
+mod declared_release_adoption;
 #[path = "lowering_expr/elaborate.rs"]
 mod elaborate;
 #[path = "lowering_expr/extern_wrapper_result_opacity.rs"]

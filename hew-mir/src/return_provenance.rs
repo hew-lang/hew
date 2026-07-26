@@ -53,6 +53,182 @@ use hew_hir::{
 use hew_types::ResolvedTy;
 
 // ---------------------------------------------------------------------------
+// The DECLARED-RELEASE authority — the third provenance class
+// ---------------------------------------------------------------------------
+
+/// The named types whose release this program DECLARES, rather than the
+/// compiler deriving it from the type's layout.
+///
+/// # The provenance class the two taint policies could not express
+///
+/// Both policies below sort a value into one of two classes: domestic (mintable)
+/// or ownership-opaque foreign (never mintable). Neither can express the class
+/// in between — a handle whose ORIGIN is foreign but whose RELEASE this program
+/// has taken responsibility for. That class already exists in the language and
+/// was already carved out once, ad hoc: a root `extern "C" -> string` is
+/// ADOPTED at the call edge (`emit_extern_malloc_string_adoption` copies the
+/// foreign C string into a refcounted Hew buffer and `free`s the raw pointer),
+/// and the `let` binder exempts `ResolvedTy::String` for exactly that reason.
+///
+/// `#[resource]` is the same class, spelled by the user instead of by the ABI:
+///
+/// ```hew
+/// #[opaque] type Dq {}
+/// #[resource] type Handle { raw: Dq; }
+/// impl Handle {
+///     fn close(self) { unsafe { hew_deque_free(self.raw) }; }
+/// }
+/// Handle { raw: unsafe { hew_deque_new() } }   // <- an ADOPTION
+/// ```
+///
+/// Constructing that record is the program taking delivery of the host's handle
+/// and naming `close` as its release. Reading the construction as "a container
+/// embedding a foreign value" withholds the owner and the handle is never
+/// closed at all.
+///
+/// # Why the composite-ownership rule does not reach these types
+///
+/// The rule the container mints enforce —
+/// [`FreshOwnerVerdicts::value_is_free_of_opaque_foreign_provenance`] — rests on
+/// a stated premise: *every composite release in this compiler is recursive and
+/// generated from the container's LAYOUT, so there is no drop plan that frees
+/// the container's spine while sparing a field.* For a `#[resource]` record that
+/// premise is false. Its drop plan is
+/// [`IrPipeline::resource_record_close`](crate::model::IrPipeline::resource_record_close):
+/// codegen's `__hew_record_drop_inplace_<R>` thunk calls the user's
+/// `<R>::close(self)` as the FIRST step, and only then tears the fields down
+/// field-wise. The declared destructor IS the per-value drop plan the rule
+/// assumed did not exist.
+///
+/// # Membership, and the clause that keeps it sound
+///
+/// A type is admitted when all three hold:
+///
+/// 1. it carries `ResourceMarker::Resource` in the module's
+///    [`TypeClassTable`](hew_hir::TypeClassTable);
+/// 2. that same table entry names its close method — the identical
+///    `(marker, close)` entry `resource_record_close` reads to seed the thunk,
+///    so this authority and codegen cannot disagree about which types have a
+///    declared release;
+/// 3. **every declared field is one the post-close field-wise teardown cannot
+///    free** — a scalar leaf, or an `#[opaque]` handle declared in this module
+///    (an `#[opaque]` decl is a pointer-width slot with no fields and no
+///    structural drop).
+///
+/// Clause 3 is the whole soundness argument and it is why this is not simply
+/// "`#[resource]` types are exempt". The thunk runs `close(self)` and THEN the
+/// field-wise teardown. For a type that satisfies clause 3 the second half frees
+/// nothing, so the type's entire release is the one declared call and no
+/// compiler-generated free can reach an operand. A `#[resource]` type with a
+/// heap-owning field — `#[resource] type Conn { raw: Sock; log: string; }` — is
+/// NOT admitted: its `log` really is torn down field-wise after `close`, so a
+/// foreign value in that position would be freed by a plan the program never
+/// declared, and its operands' provenance must keep flowing. That is the
+/// fail-closed direction, and it costs a leak rather than a double release.
+///
+/// An EMPTY table admits nothing, so every default/unbuilt authority keeps the
+/// pre-existing two-class behaviour.
+#[derive(Debug, Clone, Default)]
+pub struct DeclaredReleaseTypes {
+    /// Admitted type names, stored under both the declaration's spelling and
+    /// its short name so a qualified construction site resolves.
+    names: HashSet<String>,
+}
+
+impl DeclaredReleaseTypes {
+    /// Build from the module's type declarations and its `#[resource]` close
+    /// registry. See the type docs for the three admission clauses.
+    #[must_use]
+    pub fn from_module(module: &hew_hir::HirModule) -> Self {
+        let opaque_handles: HashSet<&str> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hew_hir::HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut names = HashSet::new();
+        for item in &module.items {
+            let hew_hir::HirItem::TypeDecl(decl) = item else {
+                continue;
+            };
+            // Clauses 1 and 2 — the `#[resource]` marker AND a declared close,
+            // read from the one table codegen's thunk synthesis reads.
+            let declares_close = module
+                .type_classes
+                .get(decl.name.as_str())
+                .or_else(|| module.type_classes.get(hew_types::short_name(&decl.name)))
+                .is_some_and(|(marker, close)| {
+                    matches!(marker, hew_hir::ResourceMarker::Resource) && close.is_some()
+                });
+            if !declares_close || decl.fields.is_empty() {
+                continue;
+            }
+            // Clause 3 — the post-close field-wise teardown must free nothing.
+            if !decl.fields.iter().all(|field| {
+                field_is_released_only_by_the_declared_close(&field.ty, &opaque_handles)
+            }) {
+                continue;
+            }
+            names.insert(decl.name.clone());
+            names.insert(hew_types::short_name(&decl.name).to_string());
+        }
+        Self { names }
+    }
+
+    /// True when a construction of `name` is an adoption: the constructed
+    /// value's whole release is the type's declared close.
+    #[must_use]
+    pub fn release_is_declared(&self, name: &str) -> bool {
+        self.names.contains(name) || self.names.contains(hew_types::short_name(name))
+    }
+
+    /// True when this authority admits no type at all — the state every
+    /// unbuilt/default authority is in, and the state that reproduces the
+    /// pre-existing two-class behaviour exactly.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+}
+
+/// True for a field type the `#[resource]` record-drop thunk's post-close
+/// field-wise teardown provably does not free: a scalar leaf, or a named
+/// `#[opaque]` handle declared in this module.
+///
+/// Deliberately narrow. It answers from the field type's own spelling plus the
+/// module's `#[opaque]` declaration set, so an unknown or unresolved named type
+/// answers `false` and its declaring `#[resource]` type is simply not admitted.
+/// Widening this to "not heap-owning under the layout registry" would admit more
+/// types, but a layout registry that is absent or partial reads a composite as
+/// non-heap, which is the permissive direction — the exact `Default`-shaped
+/// fail-open the authority was hardened against.
+fn field_is_released_only_by_the_declared_close(
+    ty: &ResolvedTy,
+    opaque_handles: &HashSet<&str>,
+) -> bool {
+    if ty_is_scalar_non_heap(ty) {
+        return true;
+    }
+    let ResolvedTy::Named {
+        name,
+        args,
+        is_opaque,
+        ..
+    } = ty
+    else {
+        return false;
+    };
+    if !args.is_empty() {
+        return false;
+    }
+    *is_opaque
+        || opaque_handles.contains(name.as_str())
+        || opaque_handles.contains(hew_types::short_name(name))
+}
+
+// ---------------------------------------------------------------------------
 // The three-state may-alias lattice
 // ---------------------------------------------------------------------------
 
@@ -188,6 +364,23 @@ pub trait LeafPolicy {
         let _ = enclosing;
         AliasBits::OPAQUE
     }
+
+    /// True when constructing the record named `name` ADOPTS its operands: the
+    /// constructed value's whole release is the type's declared close, so no
+    /// compiler-generated free can reach an operand and the operands'
+    /// provenance does not flow into the construction. See
+    /// [`DeclaredReleaseTypes`].
+    ///
+    /// Defaults to `false`, which is what keeps this confined to the two
+    /// OWNERSHIP-provenance policies. [`CoarsePolicy`] and [`PrecisePolicy`]
+    /// answer a different question — may this return value alias a by-value
+    /// heap PARAMETER of the returning function — and for that question an
+    /// adoption proves nothing: `Handle { raw: p }` over a borrowed parameter
+    /// `p` still aliases `p`. They keep the default and stay byte-identical.
+    fn construction_release_is_declared(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
 }
 
 /// The single structural walk. Structural arms are identical for every policy;
@@ -304,8 +497,18 @@ fn return_alias_bits_scoped<P: LeafPolicy>(
         | HirExprKind::Index { .. }
         | HirExprKind::Slice { .. }
         | HirExprKind::Literal(_) => AliasBits::EMPTY,
-        // A construction aliases a parameter iff one of its owned operands does.
-        HirExprKind::StructInit { fields, base, .. } => {
+        // A construction aliases a parameter iff one of its owned operands does
+        // — unless the construction is an ADOPTION, in which case the value's
+        // whole release is the type's declared close and no compiler-generated
+        // free reaches an operand. A functional-update base is excluded: it
+        // re-wraps an already-constructed owner rather than taking delivery of
+        // fresh operands, so it keeps the union.
+        HirExprKind::StructInit {
+            name, fields, base, ..
+        } => {
+            if base.is_none() && policy.construction_release_is_declared(name) {
+                return AliasBits::EMPTY;
+            }
             let mut bits = fields.iter().fold(AliasBits::EMPTY, |acc, (_, v)| {
                 acc | return_alias_bits_scoped(v, policy, scope)
             });
@@ -698,6 +901,8 @@ pub struct OpaqueExternTaintPolicy<'a> {
     pub analyzed: &'a HashSet<hew_hir::ItemId>,
     /// The taint set under construction (the fixpoint state).
     pub tainted: &'a HashSet<hew_hir::ItemId>,
+    /// The types whose release the program declares — the adoption boundary.
+    pub declared_release: &'a DeclaredReleaseTypes,
 }
 
 impl LeafPolicy for OpaqueExternTaintPolicy<'_> {
@@ -747,6 +952,10 @@ impl LeafPolicy for OpaqueExternTaintPolicy<'_> {
         // foreign value either. Same reasoning as `leaf_bits`.
         AliasBits::EMPTY
     }
+
+    fn construction_release_is_declared(&self, name: &str) -> bool {
+        self.declared_release.release_is_declared(name)
+    }
 }
 
 /// The DUAL of [`OpaqueExternTaintPolicy`], used to SUPPRESS a release rather
@@ -780,6 +989,8 @@ pub struct ProvenForeignPolicy<'a> {
     pub analyzed: &'a HashSet<hew_hir::ItemId>,
     /// The proven-foreign taint set (the fixpoint state).
     pub tainted: &'a HashSet<hew_hir::ItemId>,
+    /// The types whose release the program declares — the adoption boundary.
+    pub declared_release: &'a DeclaredReleaseTypes,
 }
 
 impl LeafPolicy for ProvenForeignPolicy<'_> {
@@ -835,6 +1046,10 @@ impl LeafPolicy for ProvenForeignPolicy<'_> {
     fn missing_position_bits(&self, _enclosing: &HirExpr) -> AliasBits {
         AliasBits::EMPTY
     }
+
+    fn construction_release_is_declared(&self, name: &str) -> bool {
+        self.declared_release.release_is_declared(name)
+    }
 }
 
 /// Reads a set of BINDINGS the enclosing lowering has already proven foreign,
@@ -850,6 +1065,7 @@ impl LeafPolicy for ProvenForeignPolicy<'_> {
 #[derive(Debug)]
 struct ProvenForeignBindingPolicy<'a> {
     foreign: &'a HashSet<BindingId>,
+    declared_release: &'a DeclaredReleaseTypes,
 }
 
 impl LeafPolicy for ProvenForeignBindingPolicy<'_> {
@@ -869,6 +1085,10 @@ impl LeafPolicy for ProvenForeignBindingPolicy<'_> {
 
     fn missing_position_bits(&self, _enclosing: &HirExpr) -> AliasBits {
         AliasBits::EMPTY
+    }
+
+    fn construction_release_is_declared(&self, name: &str) -> bool {
+        self.declared_release.release_is_declared(name)
     }
 }
 
@@ -914,11 +1134,19 @@ fn composite_position_bits<P: LeafPolicy>(expr: &HirExpr, policy: &P) -> Option<
 pub(crate) fn value_reads_a_proven_foreign_binding(
     expr: &HirExpr,
     foreign: &HashSet<BindingId>,
+    declared_release: &DeclaredReleaseTypes,
 ) -> bool {
     if foreign.is_empty() {
         return false;
     }
-    return_alias_bits(expr, &ProvenForeignBindingPolicy { foreign }).contains(AliasBits::OPAQUE)
+    return_alias_bits(
+        expr,
+        &ProvenForeignBindingPolicy {
+            foreign,
+            declared_release,
+        },
+    )
+    .contains(AliasBits::OPAQUE)
 }
 
 /// The ONE explicit path by which a body-less resolved item keeps the cross-ABI
@@ -969,6 +1197,7 @@ fn bodyless_item_is_audited_owned_return(
 pub fn compute_fn_return_launders_opaque_extern(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     extern_table: &ExternContractTable,
+    declared_release: &DeclaredReleaseTypes,
 ) -> HashSet<hew_hir::ItemId> {
     let analyzed: HashSet<hew_hir::ItemId> = fns.keys().copied().collect();
     let mut tainted: HashSet<hew_hir::ItemId> = HashSet::new();
@@ -982,6 +1211,7 @@ pub fn compute_fn_return_launders_opaque_extern(
                 extern_table,
                 analyzed: &analyzed,
                 tainted: &tainted,
+                declared_release,
             };
             let mut return_values: Vec<&HirExpr> = Vec::new();
             crate::lower::collect_return_values_in_block(&f.body, &mut return_values);
@@ -1023,6 +1253,7 @@ pub fn compute_fn_return_launders_opaque_extern(
 pub fn compute_fn_return_carries_proven_foreign(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     extern_table: &ExternContractTable,
+    declared_release: &DeclaredReleaseTypes,
 ) -> HashSet<hew_hir::ItemId> {
     let analyzed: HashSet<hew_hir::ItemId> = fns.keys().copied().collect();
     let mut tainted: HashSet<hew_hir::ItemId> = HashSet::new();
@@ -1036,6 +1267,7 @@ pub fn compute_fn_return_carries_proven_foreign(
                 extern_table,
                 analyzed: &analyzed,
                 tainted: &tainted,
+                declared_release,
             };
             let mut return_values: Vec<&HirExpr> = Vec::new();
             crate::lower::collect_return_values_in_block(&f.body, &mut return_values);
@@ -1426,6 +1658,11 @@ pub(crate) struct FreshOwnerVerdicts {
     /// callee. Carried for [`Self::value_carries_proven_foreign_provenance`],
     /// whose consumer removes a release rather than adding one.
     carries_proven_foreign: HashSet<hew_hir::ItemId>,
+    /// The types whose release this program DECLARES rather than the compiler
+    /// deriving it from their layout — the adoption boundary, carried so both
+    /// value-position queries below apply the identical rule the two module
+    /// fixpoints were computed under. See [`DeclaredReleaseTypes`].
+    declared_release: DeclaredReleaseTypes,
     /// `true` only for an authority produced by [`Self::build`] from a real
     /// module analysis. [`Self::denying_all`] sets it `false`, and every query
     /// that could otherwise answer PERMISSIVELY denies outright.
@@ -1452,6 +1689,7 @@ impl FreshOwnerVerdicts {
         launders_opaque_extern: &HashSet<hew_hir::ItemId>,
         carries_proven_foreign: &HashSet<hew_hir::ItemId>,
         extern_table: &ExternContractTable,
+        declared_release: &DeclaredReleaseTypes,
     ) -> Self {
         let mut rows: HashMap<hew_hir::ItemId, bool> = coarse_fresh_returns
             .iter()
@@ -1474,6 +1712,7 @@ impl FreshOwnerVerdicts {
             analyzed,
             launders_opaque_extern: launders_opaque_extern.clone(),
             carries_proven_foreign: carries_proven_foreign.clone(),
+            declared_release: declared_release.clone(),
             from_module_analysis: true,
         }
     }
@@ -1496,6 +1735,7 @@ impl FreshOwnerVerdicts {
             analyzed: HashSet::new(),
             launders_opaque_extern: HashSet::new(),
             carries_proven_foreign: HashSet::new(),
+            declared_release: DeclaredReleaseTypes::default(),
             from_module_analysis: false,
         }
     }
@@ -1520,6 +1760,15 @@ impl FreshOwnerVerdicts {
     #[must_use]
     pub(crate) fn symbol_is_ownership_opaque_extern(&self, symbol: &str) -> bool {
         self.opaque_extern_names.contains(symbol)
+    }
+
+    /// The adoption boundary this authority was built with, so the per-function
+    /// ledger query ([`value_reads_a_proven_foreign_binding`]) walks under the
+    /// SAME rule as the two module fixpoints and the two value queries. There is
+    /// one table and one place it comes from.
+    #[must_use]
+    pub(crate) fn declared_release_types(&self) -> &DeclaredReleaseTypes {
+        &self.declared_release
     }
 
     /// The COMPOSITE provenance query: `true` only when `expr` is PROVEN to
@@ -1581,6 +1830,7 @@ impl FreshOwnerVerdicts {
             extern_table: &self.extern_table,
             analyzed: &self.analyzed,
             tainted: &self.launders_opaque_extern,
+            declared_release: &self.declared_release,
         };
         !return_alias_bits(expr, &policy).contains(AliasBits::OPAQUE)
     }
@@ -1622,6 +1872,7 @@ impl FreshOwnerVerdicts {
             extern_table: &self.extern_table,
             analyzed: &self.analyzed,
             tainted: &self.carries_proven_foreign,
+            declared_release: &self.declared_release,
         };
         return_alias_bits(expr, &policy).contains(AliasBits::OPAQUE)
     }
@@ -1650,6 +1901,7 @@ impl FreshOwnerVerdicts {
             analyzed,
             launders_opaque_extern: HashSet::new(),
             carries_proven_foreign: HashSet::new(),
+            declared_release: DeclaredReleaseTypes::default(),
             from_module_analysis: true,
         }
     }
@@ -1757,15 +2009,20 @@ pub(crate) fn build_call_scrutinee_provenance(
     // opaque-extern laundering summary vetoes, plus the direct-extern name veto.
     // The coarse map is passed in rather than recomputed so both consumers read
     // one fixpoint, and it is consumed HERE — no builder ever sees it.
+    // The adoption boundary, read off the module's own type declarations
+    // BEFORE either fixpoint runs, so both are computed under the identical
+    // rule the value-position queries later apply.
+    let declared_release = DeclaredReleaseTypes::from_module(module);
     let launders_opaque_extern =
-        compute_fn_return_launders_opaque_extern(origin_fns, &extern_table);
+        compute_fn_return_launders_opaque_extern(origin_fns, &extern_table, &declared_release);
     let carries_proven_foreign =
-        compute_fn_return_carries_proven_foreign(origin_fns, &extern_table);
+        compute_fn_return_carries_proven_foreign(origin_fns, &extern_table, &declared_release);
     let fresh_owner_verdicts = FreshOwnerVerdicts::build(
         coarse_fresh_returns,
         &launders_opaque_extern,
         &carries_proven_foreign,
         &extern_table,
+        &declared_release,
     );
     CallScrutineeProvenance {
         provenance,

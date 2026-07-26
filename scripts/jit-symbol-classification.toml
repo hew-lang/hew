@@ -65,8 +65,6 @@ stable = [
   "hew_actor_group_wait_all",
   "hew_actor_group_wait_timeout",
   "hew_actor_is_hibernating",
-  "hew_actor_link",
-  "hew_actor_monitor",
   "hew_actor_pid",
   "hew_actor_ref_is_alive",
   "hew_actor_ref_is_local",
@@ -329,8 +327,6 @@ stable = [
   "hew_local_pid_actor_id",
   "hew_local_pid_ask",
   "hew_local_pid_ask_with_channel",
-  "hew_local_pid_link",
-  "hew_local_pid_monitor",
   "hew_local_pid_send",
   "hew_local_pid_supervisor_child_get",
   "hew_local_pid_supervisor_is_running",
@@ -1147,6 +1143,25 @@ stable-stdlib = [
 # enforces this). JIT hosts must expose these in the same symbol map as `stable`.
 codegen-stable = [
   "hew_actor_cooperate",
+  # SYSTEM-LANE PROVENANCE BOUNDARY (this entry and `hew_actor_monitor`).
+  # Installing a link or a monitor on an ALREADY-TERMINAL peer synthesizes the
+  # `Exit` / `Down` the contract owes on the spot, straight onto a system
+  # queue (`link.rs` send_exit_signal, `monitor.rs` deliver_down_message).
+  # The reason comes from the runtime's own death record, but the DESTINATION
+  # is the first argument — so while the raw 2-arg symbols were `stable`, a
+  # program holding a terminal handle and any live handle could put an EXIT or
+  # a DOWN on a third party's system queue at a moment of its choosing.
+  #
+  # The 2-arg shape exists only to satisfy codegen. The user-facing surface is
+  # 1-arg — `link(target)` / `monitor(target)` — and
+  # `hew-mir/src/lower/actor.rs` synthesizes `hew_actor_self()` as arg0 for
+  # every call it emits, matching Erlang/OTP `link(Pid)`. Withdrawing the raw
+  # symbols therefore makes the destination structurally the CALLING actor:
+  # user code can only cause its own actor to receive the signal it just asked
+  # for. `link_monitor_subject_is_always_the_self_handle` asserts the
+  # lowering, so a future 2-arg surface has to delete a test to reappear.
+  "hew_actor_link",
+  "hew_actor_monitor",
   "hew_actor_park_lifecycle_cont",
   # SYSTEM-LANE PROVENANCE BOUNDARY. Installs the actor's system dispatch
   # entry point from a caller-supplied function pointer, with a non-atomic
@@ -1394,6 +1409,20 @@ internal = [
   "hew_fault_inject_delay",
   "hew_fault_inject_drop",
   "hew_is_shutting_down",
+  # SYSTEM-LANE PROVENANCE BOUNDARY (both entries). These are the stable-pid
+  # forwarders to `hew_actor_link` / `hew_actor_monitor`: they resolve two
+  # caller-supplied local pids to actor pointers and call straight through, so
+  # they carry the same already-terminal-peer signal synthesis with the same
+  # caller-chosen destination. Leaving them user-declarable would reopen by
+  # forwarder exactly what withdrawing the raw symbols closes, and the
+  # authenticated edge on the callee would hide it — the waiver deletes the
+  # `hew_actor_link -> send_exit_signal` pair, so a caller one hop above never
+  # trips the gate. Neither has a codegen caller or any caller at all in the
+  # tree, so they fail closed to `internal` per the ambiguity rule above. The
+  # sibling `hew_local_pid_unlink` / `_demonitor` stay `stable`: removing a
+  # registration produces no signal.
+  "hew_local_pid_link",
+  "hew_local_pid_monitor",
   # SYSTEM-LANE PROVENANCE BOUNDARY (every `hew_mailbox_*` entry below). The
   # system queue is a runtime-private lane: the only legitimate producers are
   # runtime paths that derive the signal from authenticated actor state (a real
@@ -1578,9 +1607,13 @@ Authenticated producer. hew_actor_link only reaches send_exit_signal on the \
 already-dead-peer race: the caller asked to be linked to an actor that has \
 since gone terminal, so the runtime synthesises the EXIT the link would have \
 produced had the ordering been the other way. The reason code is read from \
-the runtime's own death record, never from the caller, and the destination is \
-the linking actor itself -- the caller cannot address a third party or choose \
-what the signal says."""
+the runtime's own death record, never from the caller. The DESTINATION is \
+arg0, which is why this symbol is no longer user-declarable: the only surface \
+that can reach it is the compiler's link(target) lowering, and \
+hew-mir/src/lower/actor.rs synthesises hew_actor_self() as arg0 for every \
+call it emits. The signal therefore lands on the linking actor itself and \
+cannot be addressed at a third party. Asserted by \
+link_monitor_subject_is_always_the_self_handle."""
 
 "deliver_cross_node_link_exit -> send_exit_signal" = """
 Authenticated producer. The transport observed the remote side go away \
@@ -1590,10 +1623,13 @@ stable symbols reach it only by driving the transport; none of them supplies \
 the reason or the destination."""
 
 "hew_actor_monitor -> deliver_down_message" = """
-Authenticated producer, same shape as hew_actor_link: the monitored actor was \
-already terminal when the monitor was installed, so the runtime synthesises \
-the DOWN that the monitor contract owes the caller, addressed to the caller \
-and carrying the runtime's own recorded reason."""
+Authenticated producer, same shape as hew_actor_link and closed the same way: \
+the monitored actor was already terminal when the monitor was installed, so \
+the runtime synthesises the DOWN that the monitor contract owes, carrying the \
+runtime's own recorded reason. The watcher is arg0, so the symbol is \
+codegen-stable and the only surface that reaches it is monitor(target), whose \
+lowering synthesises hew_actor_self() as arg0. Asserted by \
+link_monitor_subject_is_always_the_self_handle."""
 
 "hew_actor_trap -> hew_supervisor_notify_child_actor_event" = """
 Authenticated producer. hew_actor_trap is NOT user-declarable (internal tier, \

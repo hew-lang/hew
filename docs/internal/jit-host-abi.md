@@ -114,13 +114,31 @@ VALUE, not the ORIGIN, and is not a substitute. The legitimate producers are
 runtime paths whose event is authenticated by a transition they perform
 themselves — `hew_actor_trap` CAS-transitions the child terminal before
 notifying its supervisor — not entry points that accept a composed event.
+`hew_actor_trap` is itself `internal` for that reason: it took the subject
+(`actor`) and the reason (`error_code`) from its own arguments, so as a
+`stable` symbol it *was* an entry point that accepts a composed event. What
+makes the remaining call sites authenticated is that none of them is
+user-declarable.
 
 Capability-scoped requests are NOT ingress: `hew_actor_stop` latches a stop
-flag on an actor the caller already holds, and `hew_actor_link` / `_monitor`
-install a watcher whose `Exit` / `Down` is minted later by the runtime from a
-real death. Both stay `stable`. The test is whether the caller can put the
-system lane into a state the runtime did not derive from an authenticated
-event, read it, or destroy it.
+flag on an actor the caller already holds, and `link` / `monitor` install a
+watcher whose `Exit` / `Down` is minted later by the runtime from a real death.
+That is the general case, but not the whole of it. When the peer is ALREADY
+terminal, installation has no later death to wait for, so it synthesizes the
+signal the contract owes immediately — and the destination is the runtime
+ABI's first argument. The raw 2-arg `hew_actor_link` / `hew_actor_monitor` are
+therefore `codegen-stable`, not `stable`: the user surface is 1-arg, and
+`hew-mir/src/lower/actor.rs` synthesizes `hew_actor_self()` as arg0 for every
+call it emits, so the destination is structurally the CALLING actor and a
+program can only cause its own actor to receive a signal it just asked for.
+`link_monitor_subject_is_always_the_self_handle` asserts that over every form
+the lowering emits. The stable-pid forwarders `hew_local_pid_link` /
+`hew_local_pid_monitor` moved to `internal` with them; the `_unlink` /
+`_demonitor` siblings stay `stable`, because removing a registration produces
+no signal.
+
+The test is whether the caller can put the system lane into a state the runtime
+did not derive from an authenticated event, read it, or destroy it.
 
 ### The property is TRANSITIVE, and it is computed
 

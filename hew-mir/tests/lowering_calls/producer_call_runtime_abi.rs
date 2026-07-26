@@ -506,6 +506,106 @@ fn value_needed_monitor_emits_call_runtime_abi_with_result_dest() {
     );
 }
 
+/// The system-message destination of link/monitor is STRUCTURAL, not a matter
+/// of caller discipline.
+///
+/// Installing a link or a monitor on an already-terminal peer synthesizes the
+/// `Exit` / `Down` the contract owes on the spot, straight onto a system
+/// queue. The reason comes from the runtime's death record, but the
+/// destination is ABI arg0 — so a 2-arg caller could put that signal on a
+/// third party's system queue at a moment of its choosing. That is why
+/// `hew_actor_link` / `hew_actor_monitor` are `codegen-stable` rather than
+/// `stable`: the checker refuses an `extern "rt"` declaration, and the only
+/// remaining producer is this lowering.
+///
+/// This test is the other half of that argument. It asserts over EVERY
+/// link/monitor call the lowering emits, in statement and value position and
+/// inside an actor receive handler, that arg0 is a local written by a
+/// `hew_actor_self()` call in the same function — never the user's argument,
+/// which is always arg1. A user program can therefore only cause its OWN
+/// actor to receive the signal it just asked for.
+///
+/// If a 2-arg user surface is ever introduced, this test has to be deleted to
+/// make it pass, which is the point.
+#[test]
+fn link_monitor_subject_is_always_the_self_handle() {
+    let source = r"
+        actor Watched {
+            receive fn ping() {
+                return
+            }
+        }
+
+        actor Watcher {
+            receive fn arm(t: Watched) {
+                link(t);
+                monitor(t);
+                let r = link(t);
+                let _ = r;
+                let m = monitor(t);
+                let _ = m;
+                return
+            }
+        }
+
+        fn main() -> i64 {
+            let a = spawn Watched;
+            let b = spawn Watched;
+            link(a);
+            monitor(b);
+            let r = link(a);
+            let _ = r;
+            let m = monitor(b);
+            let _ = m;
+            return 0;
+        }
+    ";
+    let pipeline = pipeline_with_tc(source);
+
+    let mut checked = 0_usize;
+    for raw in &pipeline.raw_mir {
+        let self_dests: Vec<Place> = calls_for(raw, "hew_actor_self")
+            .iter()
+            .filter_map(|c| c.dest())
+            .collect();
+        for symbol in ["hew_actor_link", "hew_actor_monitor"] {
+            for call in calls_for(raw, symbol) {
+                checked += 1;
+                assert_eq!(
+                    call.args().len(),
+                    2,
+                    "{symbol} in `{}` must carry exactly two handles; got {:?}",
+                    raw.name,
+                    call.args()
+                );
+                assert!(
+                    self_dests.contains(&call.args()[0]),
+                    "{symbol} in `{}` must take its subject from a hew_actor_self() \
+                     call in the same function, so the synthesized Exit/Down can only \
+                     land on the CALLING actor. arg0 was {:?}; hew_actor_self wrote \
+                     {:?}",
+                    raw.name,
+                    call.args()[0],
+                    self_dests
+                );
+                assert!(
+                    !self_dests.contains(&call.args()[1]),
+                    "{symbol} in `{}` must take the user target as arg1, distinct \
+                     from the synthesized self handle; got {:?}",
+                    raw.name,
+                    call.args()[1]
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        checked, 8,
+        "expected all four link/monitor forms in both `main` and an actor \
+         receive handler to lower; only {checked} calls were seen"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // actor unlink lowering — mirroring link/monitor
 // ---------------------------------------------------------------------------

@@ -1808,12 +1808,28 @@ mod assoc_types_slice2 {
     ///   compose a lifecycle event for any actor it holds a handle to. No
     ///   codegen path emits it — a compiled trap lowers to
     ///   `hew_trap_with_code` — so the demotion strands no language feature.
+    /// - `hew_actor_link` / `hew_actor_monitor` synthesize the `Exit` / `Down`
+    ///   the contract owes when the peer is ALREADY terminal, straight onto a
+    ///   system queue, addressed to ABI arg0. The reason is the runtime's own
+    ///   death record, but the destination is the caller's first argument, so
+    ///   a 2-arg caller could put a lifecycle signal on a third party's system
+    ///   queue. The user surface is 1-arg — `link(target)` / `monitor(target)`
+    ///   — and the MIR lowering synthesizes `hew_actor_self()` as arg0, so
+    ///   withdrawing the raw symbols makes the destination structurally the
+    ///   CALLING actor. `hew_local_pid_link` / `hew_local_pid_monitor` are the
+    ///   stable-pid forwarders to those same two and move with them; their
+    ///   `_unlink` / `_demonitor` siblings stay `stable` because removing a
+    ///   registration produces no signal.
     #[test]
     fn extern_rt_system_lane_symbols_rejected() {
         for sym in [
             "hew_actor_free",
+            "hew_actor_link",
+            "hew_actor_monitor",
             "hew_actor_set_sys_dispatch",
             "hew_actor_trap",
+            "hew_local_pid_link",
+            "hew_local_pid_monitor",
             "hew_mailbox_free",
             "hew_mailbox_has_messages",
             "hew_mailbox_new",

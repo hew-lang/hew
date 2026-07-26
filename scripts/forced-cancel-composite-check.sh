@@ -8,10 +8,10 @@
 # the cancel-exit edge, never load the unstored `return_slot` alloca. A Rust
 # unit test over the codegen helper in isolation cannot prove this — the
 # defect is only observable through the compiled ABI boundary a real
-# `.hew` program's runtime reads. `make test-lane` cannot exercise it either:
-# the trigger requires a task's OWN entry-block cooperate check to observe
-# cancellation before it stores anything, which a normal build cannot force
-# deterministically (see `hew-runtime`'s `forced-cancel-test` feature).
+# `.hew` program's runtime reads. A plain `cargo nextest` run cannot exercise
+# it either: the trigger requires a task's OWN entry-block cooperate check to
+# observe cancellation before it stores anything, which a normal build cannot
+# force deterministically (see `hew-runtime`'s `forced-cancel-test` feature).
 #
 # This script builds `hew` + `libhew.a` with `--features
 # hew-runtime/forced-cancel-test`, compiles+links the probe fixture against

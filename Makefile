@@ -681,8 +681,6 @@ assemble-release:
 
 test: test-rust
 
-# test-all: the full sweep including the Hew JIT test suite.
-# Hew tests (~354 functions through the Rust JIT path) are omitted from the
 # Build the combined runtime+stdlib static lib, the native runtime staticlib,
 # and the WASM runtime before running the full workspace test suite.  Several
 # hew-cli integration tests (eval_e2e, eval_wasm_*) call `hew eval` which needs
@@ -1425,5 +1423,4 @@ uninstall:
 clean:
 	rm -rf $(BUILD_DIR)
 	cargo clean
-	rm -rf $(GRAMMAR_OUT) .tmp/Hew.g4
 	rm -rf $(COV_DIR)

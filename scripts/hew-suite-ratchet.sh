@@ -13,8 +13,8 @@
 # on nothing would silently accept regressions.  This ratchet is the middle
 # path: known failures are explicitly tracked, anything else is a hard fail.
 #
-# WHEN OBSOLETE: When the list is empty and all tests are green, remove the
-# ratchet wrapper and wire make test-hew directly into gates.
+# WHEN OBSOLETE: When the list is empty and all tests are green, drop the
+# ratchet wrapper and have the gate target run `hew test tests/hew/` directly.
 #
 # REAL SOLUTION: Fix the underlying failures (tracked per entry in the list).
 #

@@ -7,7 +7,7 @@ check that neither of them runs. That blind spot let eight gate targets, an
 entire test crate, a whole test binary and a pile of `#[ignore]`d tests sit in
 the tree looking like coverage while executing nowhere.
 
-This gate closes it, in four directions:
+This gate closes it, in five directions:
 
   A0  self-anchor — this checker is invoked by a CI workflow step.
   A1  every gate-shaped Makefile target is reached by a CI workflow step, by the
@@ -26,10 +26,18 @@ This gate closes it, in four directions:
          package by package, by an unfiltered CI run over the same packages. An
          `-E` is an exclusion like any other: without a compensating unfiltered
          run, the tests it subtracts execute in no job at all.
+  A4  every `make <target>` written in tracked documentation, or in a script or
+      workflow comment, names a target the Makefile still defines. A0..A3 all
+      read the same edge CI -> Makefile; this one reads docs -> Makefile, which
+      is why deleting a target could leave an invocation of `test-all` in the
+      CONTRIBUTING table with nothing to notice it.
 
 There is deliberately no waiver list. An unreached gate is either wired in or
 deleted; "tracked for later" is how the eight orphans got there in the first
-place. A gate this checker cannot see is a gate that is not running.
+place. A gate this checker cannot see is a gate that is not running. A4 has no
+skip list either: a doc that means to show a command shape rather than a real
+target writes the target as a metavariable (`make <target>`), which is a
+property of the example, not a licence for one file to be wrong.
 
 # What counts as an edge
 
@@ -72,6 +80,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1584,6 +1593,221 @@ def prove_contained(
     return True
 
 
+# ── A4: every documented `make <target>` names a target that exists ───────────
+#
+# A0..A3 all prove the same direction: CI -> Makefile. Nothing proved the
+# reverse, docs -> Makefile, so deleting a target left every documented
+# invocation of it dangling in silence. An invocation of `test-all` sat in the
+# CONTRIBUTING test-suite table after the target was gone, and the first person
+# to find out would have been a new contributor typing it and getting `No rule to
+# make target`. A gate that can only see one direction of an edge is exactly how
+# that stayed invisible, so this checks the other one.
+#
+# Sources are the tracked text that routes a human to a command: Markdown, and
+# the build/CI script layer. Where `make` is EXECUTABLE (shell, Makefile,
+# workflow bodies) both code and comments are read; where it can only ever be
+# prose (Python, TOML) comments and backticked spans are, because a bare
+# invocation inside a Python string is test data or a generated fixture, not an
+# instruction to anybody. Rust sources are out of scope: they document code, and
+# "make a second copy" is English, not a command.
+#
+# WHAT COUNTS AS A REFERENCE. Prose is full of the verb "make", so reading every
+# `make <word>` as an invocation would bury the signal. Two rules, both about
+# the shape of the text rather than which file it lives in:
+#
+#   * at COMMAND POSITION — the start of a Markdown code span or fenced line, or
+#     after a shell separator in script code — every following target token is a
+#     reference. That is a command a reader can copy and run.
+#   * MID-PROSE — anywhere else, only the single next token, and only when it is
+#     target-shaped (carries a hyphen). An invocation of test-hew written in the
+#     middle of a sentence is an invocation; make a second copy is a sentence. A
+#     commit subject quoted in backticks (`fix(build): make Windows source builds
+#     link-ready`) is prose under this rule, which is what it is.
+#
+# ILLUSTRATIVE EXAMPLES. A doc showing the SHAPE of a command rather than a real
+# target writes the target as a metavariable — `make <target>`, `make $(GATE)`,
+# `make foo-%`. Anything carrying `<>`, `$`, `{}`, `%`, `[]` or `...` is not a
+# name make could resolve either, so the checker skips it and the reader sees a
+# placeholder instead of something that looks runnable and is not. That is the
+# entire exemption mechanism, and it is a property of how the example is written,
+# not a list of files allowed to be wrong. There is no skip list here for the
+# same reason there is none in A1: the first file on it would be the one that
+# needed fixing.
+#
+# THE RESIDUAL. A hyphenated English compound directly after the verb — "make
+# distinct-but-equal keys collide" — is read as a target by the mid-prose rule.
+# That is the price of catching an invocation nobody wrapped in backticks, and it
+# is why the scan stops at the files where invocations actually live. When it
+# does bite, the answer is to reword or backtick the sentence, never to exempt
+# the file: an exemption would take that file's real invocations out of the check
+# along with the false one.
+
+# Where `make <target>` can be an executed command as well as documentation.
+EXECUTABLE_SUFFIXES = (".sh", ".bash", ".yml", ".yaml", ".mk")
+EXECUTABLE_NAMES = {"Makefile", "GNUmakefile"}
+# Where it can only ever be prose: comments and backticked spans are read, the
+# rest is data — a bare `make <target>` in a Python string is a generated
+# fixture or test input, not an instruction to anybody.
+COMMENT_ONLY_SUFFIXES = (".py", ".toml")
+
+_FENCE_RE = re.compile(r"^\s{0,3}(?P<fence>`{3,}|~{3,})")
+_INLINE_CODE_RE = re.compile(r"(?P<ticks>`+)(?P<body>[^\n]+?)(?P=ticks)")
+_DOC_MAKE_RE = re.compile(r"(?<![\w./-])g?make(?=[^\S\n]+\S)")
+_COMMAND_POSITION_RE = re.compile(r"(?:^|[|&;(]|\$\(|\bsudo\b|\benv\b)\s*$")
+_COMMAND_END_RE = re.compile(r"[|&;\n)`]")
+_METAVARIABLE_RE = re.compile(r"[<>${}%*\[\]]|\.\.\.")
+_TARGET_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_TARGET_SHAPED_RE = re.compile(r"^[A-Za-z0-9_.]+-[A-Za-z0-9_.-]*$")
+
+
+@dataclass(frozen=True)
+class MakeReference:
+    """A `make <target>` a reader is told to run, and where it is written."""
+
+    target: str
+    where: str
+
+
+def tracked_files(root: Path = REPO_ROOT) -> list[str]:
+    """Every path git tracks under `root`.
+
+    Fail closed: an untracked working copy is not this checker's subject, and a
+    git invocation that fails is an error rather than an empty file list that
+    would report "nothing to check" and pass.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [path for path in result.stdout.split("\0") if path]
+
+
+def split_shell_comment(line: str) -> tuple[str, str]:
+    """(code, comment) for one line, splitting at a `#` that starts a word.
+
+    Same `#` rule as strip_shell_comments: inside quotes, or glued to the
+    previous character as in `${FOO#bar}`, it is not a comment.
+    """
+    quote = ""
+    for index, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            continue
+        if char == "#" and (index == 0 or line[index - 1] in " \t"):
+            return line[:index], line[index + 1 :]
+    return line, ""
+
+
+def markdown_chunks(text: str) -> list[tuple[int, str, bool]]:
+    """(line number, chunk, prose) for the code a Markdown file shows a reader.
+
+    Fenced blocks and inline code spans only. Prose outside them is prose: it
+    can say "make sure the runtime is built" without naming a target, and
+    reading it as a command is how a checker earns the reputation of crying
+    wolf. Every real invocation in this tree is already written as code,
+    because that is what documentation conventions are for.
+    """
+    chunks: list[tuple[int, str, bool]] = []
+    fence = ""
+    for number, line in enumerate(text.splitlines(), start=1):
+        match = _FENCE_RE.match(line)
+        if not fence:
+            if match:
+                fence = match.group("fence")[0] * 3
+                continue
+            for span in _INLINE_CODE_RE.finditer(line):
+                chunks.append((number, span.group("body"), False))
+        else:
+            if match and match.group("fence")[0] * 3 == fence:
+                fence = ""
+                continue
+            chunks.append((number, line, False))
+    return chunks
+
+
+def script_chunks(text: str, executable: bool) -> list[tuple[int, str, bool]]:
+    """(line number, chunk, prose) for a script, Makefile or workflow file.
+
+    A comment is read as prose, plus its backticked spans as code — the repo
+    writes invocations in comments the same way its Markdown does. Code is read
+    as code where `make` is something the file can actually run; where it is
+    not, a backticked span is still a command a reader is being shown, so those
+    are read wherever they appear.
+    """
+    chunks: list[tuple[int, str, bool]] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        code, comment = split_shell_comment(line)
+        if executable and code.strip():
+            chunks.append((number, code, False))
+        elif not executable:
+            for span in _INLINE_CODE_RE.finditer(code):
+                chunks.append((number, span.group("body"), False))
+        if comment:
+            chunks.append((number, comment, True))
+            for span in _INLINE_CODE_RE.finditer(comment):
+                chunks.append((number, span.group("body"), False))
+    return chunks
+
+
+def make_references_in(chunk: str, prose: bool) -> list[str]:
+    """Target names invoked by `make`/`gmake` in one chunk of text."""
+    found: list[str] = []
+    for match in _DOC_MAKE_RE.finditer(chunk):
+        tail = _COMMAND_END_RE.split(chunk[match.end() :])[0]
+        at_command_position = not prose and bool(
+            _COMMAND_POSITION_RE.search(chunk[: match.start()])
+        )
+        for word in tail.split():
+            # Options and `VAR=value` overrides sit between `make` and its
+            # targets; neither is a target.
+            if word.startswith("-") or "=" in word:
+                continue
+            word = word.rstrip(".,;:")
+            if _METAVARIABLE_RE.search(word) or not _TARGET_TOKEN_RE.match(word):
+                break
+            if at_command_position:
+                found.append(word)
+                continue
+            if _TARGET_SHAPED_RE.match(word):
+                found.append(word)
+            break
+    return found
+
+
+def documented_make_references(root: Path = REPO_ROOT) -> list[MakeReference]:
+    """Every `make <target>` a tracked doc, script or workflow tells you to run."""
+    seen: set[tuple[str, str]] = set()
+    references: list[MakeReference] = []
+    for path in tracked_files(root):
+        name = Path(path).name
+        if path.endswith(".md"):
+            reader = markdown_chunks
+        elif path.endswith(EXECUTABLE_SUFFIXES) or name in EXECUTABLE_NAMES:
+            reader = lambda text: script_chunks(text, executable=True)  # noqa: E731
+        elif path.endswith(COMMENT_ONLY_SUFFIXES):
+            reader = lambda text: script_chunks(text, executable=False)  # noqa: E731
+        else:
+            continue
+        try:
+            text = (root / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for number, chunk, prose in reader(text):
+            for target in make_references_in(chunk, prose):
+                key = (target, f"{path}:{number}")
+                if key not in seen:
+                    seen.add(key)
+                    references.append(MakeReference(target, key[1]))
+    return references
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -1815,19 +2039,41 @@ def main() -> int:
     if filtered and not findings.count("A3d"):
         print(f"    {len(filtered)}/{len(filtered)} filtered runs compensated.")
 
+    # ── A4: documented targets exist ──────────────────────────────────────────
+    references = documented_make_references()
+    print(f"\n==> A4: documented `make` targets exist ({len(references)} reference(s))")
+    dangling = [ref for ref in references if ref.target not in known]
+    for ref in dangling:
+        findings.fail(
+            "A4",
+            f"{ref.where}: make {ref.target}",
+            "this file tells a reader to run a target the Makefile does not "
+            "define, so following it produces `No rule to make target`. Point it "
+            "at the surviving target, restate the instruction against whatever "
+            "enforces it now, or write it as a metavariable if it is only "
+            "illustrating a command shape.",
+        )
+    print(
+        f"    {len(references) - len(dangling)}/{len(references)} references resolve."
+    )
+    if verbose:
+        for ref in sorted(references, key=lambda r: r.where):
+            print(f"  ok  {ref.where}: make {ref.target}")
+
     # ── Verdict ───────────────────────────────────────────────────────────────
     print("")
     if findings.failures:
         print("\n".join(findings.failures))
         print("")
-        print(f"FAIL: {len(findings.failures)} unreached gate(s).")
+        print(f"FAIL: {len(findings.failures)} finding(s).")
         print("      Every entry above is a WIRE-OR-CUT decision, not a waiver:")
         print("      attach it to the job where it belongs, or delete it.")
         print("      This gate has no exemption list by design.")
         return 1
 
     print("==> Gate reachability: every gate target, workspace crate, profile.ci")
-    print("    exclusion, inline `-E` filter and `#[ignore]`d crate is reached by CI.")
+    print("    exclusion, inline `-E` filter and `#[ignore]`d crate is reached by")
+    print("    CI, and every documented `make` target exists.")
     return 0
 
 

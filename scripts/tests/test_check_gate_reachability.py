@@ -21,6 +21,7 @@ to make impossible to reintroduce.
 """
 
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -442,6 +443,121 @@ def test_real_repo_state_passes_the_full_check() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+# ── Finding 4: docs -> Makefile was never checked ─────────────────────────────
+#
+# A0..A3 read one direction of the edge, CI -> Makefile. Deleting a target
+# therefore left every documented invocation of it dangling with nothing to
+# notice, which is how the CONTRIBUTING test-suite table came to hand a new
+# contributor a command that produces `No rule to make target`. These pin A4's
+# two halves: it must SEE a real invocation written in documentation, and it
+# must NOT see the verb "make" in ordinary prose, or the gate becomes noise
+# somebody switches off.
+
+MISSING = "no-such-target"
+
+
+def references(chunk: str, prose: bool = False) -> list[str]:
+    return gate.make_references_in(chunk, prose)
+
+
+def test_a_dead_target_in_a_doc_code_span_is_a_reference() -> None:
+    found = references(f"make {MISSING}")
+    assert found == [MISSING], f"a documented invocation must be seen, got {found}"
+
+
+def test_the_verb_make_in_prose_is_not_a_reference() -> None:
+    for sentence in (
+        "make sure the runtime is built first",
+        "deep-copy the state; make a second copy for restart",
+        "this would make one entry shadow another",
+    ):
+        found = references(sentence, prose=True)
+        assert found == [], f"prose is not an invocation: {sentence!r} gave {found}"
+
+
+def test_a_hyphenated_english_compound_is_the_accepted_residual() -> None:
+    # The mid-prose rule reads the next token when it carries a hyphen, so a
+    # hyphenated compound sitting directly after the verb is read as a target.
+    # This pins the cost rather than hiding it: it is why A4 does not read Rust
+    # sources, where that phrasing is common, and the fix when it does bite is to
+    # reword or backtick the sentence — never a per-file skip, which would take
+    # the file's real invocations out of the check along with the false one.
+    found = references("this would make distinct-but-equal keys collide", prose=True)
+    assert found == ["distinct-but-equal"], f"got {found}"
+
+
+def test_a_hyphenated_target_in_prose_is_still_a_reference() -> None:
+    # The stale comments in the two ratchet wrappers were exactly this shape:
+    # an invocation embedded in a sentence, with no backticks to mark it as a
+    # command. Restricting A4 to code spans alone would have missed all three.
+    found = references("wire make test-hew directly into gates", prose=True)
+    assert found == ["test-hew"], f"expected the target name, got {found}"
+
+
+def test_a_commit_subject_in_backticks_is_prose() -> None:
+    # LESSONS.md quotes commit subjects in code spans. `fix(build): make Windows
+    # source builds link-ready` is a sentence that happens to sit in backticks,
+    # and reading it as an invocation of four targets is how a checker earns a
+    # reputation for crying wolf.
+    found = references("fix(build): make Windows source builds link-ready")
+    assert found == [], f"a quoted commit subject is not an invocation, got {found}"
+
+
+def test_a_metavariable_target_is_not_a_reference() -> None:
+    # This is the entire exemption mechanism: an example showing the SHAPE of a
+    # command writes a placeholder, so the reader is never handed something that
+    # looks runnable and is not. There is no per-file skip to reach for instead.
+    for illustrative in ("make <target>", "make $(GATE)", "make ${GATE}", "make foo-%"):
+        found = references(illustrative)
+        assert found == [], f"{illustrative!r} is illustrative, got {found}"
+
+
+def test_flags_and_variable_overrides_are_not_targets() -> None:
+    found = references("make -j8 fuzz-oracle FUZZ_ORACLE_FULL=1")
+    assert found == ["fuzz-oracle"], f"expected one target, got {found}"
+
+
+def test_every_target_of_a_multi_target_invocation_is_a_reference() -> None:
+    found = references("make verify-ffi test-verify-ffi")
+    assert found == ["verify-ffi", "test-verify-ffi"], f"got {found}"
+
+
+def test_a_python_string_is_data_and_its_comment_is_not() -> None:
+    chunks = gate.script_chunks(
+        f'FIXTURE = "make {MISSING}"  # see make test-rust\n', executable=False
+    )
+    found = [
+        t for _, chunk, prose in chunks for t in gate.make_references_in(chunk, prose)
+    ]
+    assert found == ["test-rust"], (
+        "a target name inside a Python string literal is generated fixture text, "
+        f"but its comment is documentation; got {found}"
+    )
+
+
+def test_a_dead_reference_in_a_tracked_doc_is_found_end_to_end() -> None:
+    # The counterfactual, run against a real git checkout rather than a string:
+    # a doc that is tracked, and an identical one that is not, must differ.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env = {
+            "GIT_CONFIG_GLOBAL": str(root / "gitconfig"),
+            "GIT_CONFIG_SYSTEM": str(root / "gitconfig"),
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": tmp,
+        }
+        subprocess.run(["git", "init", "-q", tmp], check=True, env=env)
+        (root / "CONTRIBUTING.md").write_text(f"Run `make {MISSING}` before pushing.\n")
+        (root / "UNTRACKED.md").write_text(
+            f"Run `make {MISSING}-too` before pushing.\n"
+        )
+        subprocess.run(["git", "add", "CONTRIBUTING.md"], cwd=tmp, check=True, env=env)
+        found = gate.documented_make_references(root)
+    assert [(r.target, r.where) for r in found] == [(MISSING, "CONTRIBUTING.md:1")], (
+        f"expected the tracked doc's dead reference and nothing else, got {found}"
+    )
+
+
 def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
     # Structural YAML parsing was the fix for finding 1, and the obvious
     # implementation is PyYAML. Nothing in this repo installs it: no workflow
@@ -498,6 +614,16 @@ _TESTS = [
     test_containment_refuses_a_binary_profile_ci_subtracts,
     test_real_repo_state_passes_the_full_check,
     test_script_stays_python_3_10_compatible_with_no_new_dependency,
+    test_a_dead_target_in_a_doc_code_span_is_a_reference,
+    test_the_verb_make_in_prose_is_not_a_reference,
+    test_a_hyphenated_english_compound_is_the_accepted_residual,
+    test_a_hyphenated_target_in_prose_is_still_a_reference,
+    test_a_commit_subject_in_backticks_is_prose,
+    test_a_metavariable_target_is_not_a_reference,
+    test_flags_and_variable_overrides_are_not_targets,
+    test_every_target_of_a_multi_target_invocation_is_a_reference,
+    test_a_python_string_is_data_and_its_comment_is_not,
+    test_a_dead_reference_in_a_tracked_doc_is_found_end_to_end,
 ]
 
 if __name__ == "__main__":

@@ -110,7 +110,7 @@ CI_REQUIRED_CHECKS=(
     "Repo-wide hew corpus sweep (ci.yml: make hew-check-all)	make hew-check-all"
     "C-ABI crate tests (ci.yml: make test-cabi)	make test-cabi"
     "Sanitizer gate wiring (ci.yml: make check-sanitizer-gate)	make check-sanitizer-gate"
-    "Gate reachability (ci.yml: make check-gate-reachability)	make check-gate-reachability"
+    "Gate reachability + documented targets (ci.yml: make check-gate-reachability)	make check-gate-reachability"
     "UX + progressive tutorial oracle (ci.yml: make test-ux-examples)	make test-ux-examples"
     "Surface-example ledger gate (ci.yml: make test-surface-examples)	make test-surface-examples"
     "Package-install consumer oracle (ci.yml: make test-package-install)	make test-package-install"

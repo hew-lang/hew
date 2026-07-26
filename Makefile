@@ -39,7 +39,8 @@
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make licenses                  — regenerate THIRD-PARTY-LICENSES from current Cargo.lock
 #   make licenses-check            — verify THIRD-PARTY-LICENSES is current (used in CI)
-#   make check-gate-reachability   — verify every gate target/crate/exclusion is reached by CI
+#   make check-gate-reachability   — verify every gate target/crate/exclusion is reached by CI,
+#                                    and every documented make target exists
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates

@@ -214,7 +214,7 @@ jobs:
       - name: Verify sanitizer gate wiring
         run: make check-sanitizer-gate
 
-      - name: Verify every gate target is reachable from CI
+      - name: Verify gate reachability and documented make targets
         run: make check-gate-reachability
       # <<< CI-PARITY-STEPS
 

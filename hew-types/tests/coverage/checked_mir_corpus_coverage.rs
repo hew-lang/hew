@@ -207,7 +207,6 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "Node::connect",
     "Node::id",
     "Node::identity_key",
-    "Node::load_keys",
     // -- Cross-node link surface. An explicit `link(RemotePid<T>)` lowers to
     //    `hew_node_link_remote_location`, but exercising it requires a two-process
     //    distributed program (the link only materializes across a node

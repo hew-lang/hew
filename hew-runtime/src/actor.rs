@@ -2456,6 +2456,20 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
+    // Parked continuation ownership is retired only by the pre-timer shutdown
+    // sweep (or an explicit free/stop cancellation while its machinery is
+    // known live). This choke point can run after the timer wheel has gone, so
+    // it must never make a second destroy attempt. In particular, Done and
+    // Resuming still own a frame even though the actor latch may look terminal.
+    // Preserve the complete actor -- including all reply/cancel/sink debts --
+    // when that earlier ownership proof failed.
+    if crate::coro_exec::has_live_parked_cont(a) {
+        crate::set_last_error(
+            "WASM actor cleanup refused: live continuation survived pre-timer retirement",
+        );
+        return;
+    }
+
     // Every route into this function abandons the actor: the box is about to go
     // away. If it was parked mid-`ask`, its suspend edge moved the caller's
     // reply-sender reference into `suspended_reply_channel` and no resume will
@@ -2476,18 +2490,6 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
         a.gen_sink.load(Ordering::Acquire).is_null(),
         "WASM actor carried a native-only registered generator sink"
     );
-
-    // C1 abandonment teardown (D-C1) — parity with the native
-    // `free_actor_resources_with_options`. A never-woken `Suspended` actor freed
-    // at shutdown owns a live coroutine frame; destroy it exactly once before
-    // reclaiming the box or the frame leaks. WASM is single-threaded so no
-    // resume can race, but the source shape mirrors native so both free paths
-    // read as one invariant (`raii-native-wasm-parity`).
-    if crate::coro_exec::has_live_parked_cont(a) {
-        // SAFETY: `a` is the actor being freed; single-threaded, no concurrent
-        // dispatch can race this teardown.
-        let _ = unsafe { crate::coro_exec::destroy_parked(a) };
-    }
 
     // Run codegen-generated state-drop on the live state so types
     // implementing `impl Drop` release their resources before the
@@ -7334,9 +7336,8 @@ pub(crate) unsafe fn cancel_parked_activation_for_free_wasm(a: &HewActor) {
     }
 }
 
-/// Abandon every WASM activation still parked after the cooperative run queue
-/// has drained, while the timer/cancel machinery its cleanup outline may enter
-/// is still alive.
+/// Retire every WASM actor whose only remaining owner is pre-timer scheduler
+/// state: parked continuations and sleeping timer registrations.
 ///
 /// This is the WASM ownership point corresponding to native
 /// [`retire_parked_activations`], but its proof is target-specific rather than
@@ -7350,11 +7351,13 @@ pub(crate) unsafe fn cancel_parked_activation_for_free_wasm(a: &HewActor) {
 /// - the timer wheel and periodic registry are torn down only *after* this
 ///   sweep, so a `coro.destroy` cleanup may still cancel its registration.
 ///
-/// Iterating a snapshot without draining keeps actor-box ownership in
-/// [`cleanup_all_actors`]. This sweep owns only parked activations and the debts
-/// made terminal by winning their single destroy guard. A refused destroy
-/// leaves the actor `Suspended`; ordinary cleanup then leaks it fail-closed
-/// rather than guessing at ownership.
+/// `Sleeping` does not own a coroutine continuation. Its sole external owner is
+/// the timer-wheel registration, so this same window cancels that registration
+/// after winning an exact `Sleeping -> Stopped` transition. Iterating a
+/// snapshot without draining keeps actor-box ownership in
+/// [`cleanup_all_actors`]. A refused continuation destroy leaves the actor and
+/// its debts intact; ordinary cleanup then leaks it fail-closed rather than
+/// guessing at ownership.
 ///
 /// # Safety
 ///
@@ -7368,7 +7371,23 @@ pub(crate) unsafe fn retire_parked_activations_wasm() {
         }
         // SAFETY: the pointer remains tracked for this whole non-draining pass;
         // single-threaded post-drain shutdown prevents a concurrent free.
-        unsafe { cancel_parked_activation_for_free_wasm(&*actor) };
+        let a = unsafe { &*actor };
+        if a.actor_state
+            .compare_exchange(
+                HewActorState::Sleeping as i32,
+                HewActorState::Stopped as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            // SAFETY: this is the single-threaded pre-wheel shutdown window.
+            unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor) };
+            continue;
+        }
+        // SAFETY: the same snapshot/exclusivity proof applies to the parked
+        // continuation helper.
+        unsafe { cancel_parked_activation_for_free_wasm(a) };
     }
 }
 
@@ -7398,13 +7417,6 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     // waits on a reply that is never coming.
     // SAFETY: `a` is the actor being freed; nothing else runs on this thread,
     // so no resume can be driving the frame.
-    #[cfg(not(target_arch = "wasm32"))]
-    fault_close_registered_gen_sink(a);
-    #[cfg(target_arch = "wasm32")]
-    debug_assert!(
-        a.gen_sink.load(Ordering::Acquire).is_null(),
-        "WASM actor carried a native-only registered generator sink"
-    );
     // SAFETY: `a` is the actor being freed; no dispatch is in progress on this
     // single cooperative thread.
     unsafe { cancel_parked_activation_for_free_wasm(a) };

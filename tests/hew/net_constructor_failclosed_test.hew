@@ -172,6 +172,25 @@ fn test_websocket_listen_reports_a_bind_failure_instead_of_a_null_backed_server(
     }
 }
 
+#[test]
+fn test_websocket_listen_reports_an_unparsable_address_as_invalid_argument() {
+    match websocket.listen("not an address") {
+        Ok(server) => {
+            server.close();
+            panic("expected an unparsable address to be rejected");
+        },
+        Err(err) => {
+            match err {
+                NetError::InvalidArgument(detail) => {
+                    testing.assert_eq_str(detail, "websocket.listen: cannot bind `not an address`");
+                    testing.assert_eq_str(websocket.last_error(), detail);
+                },
+                _ => panic(f"expected InvalidArgument, got {net.net_error_message(err)}"),
+            }
+        },
+    }
+}
+
 /// A refused connection used to be reported by a null handle plus a message on
 /// stderr, so the caller saw a `Conn` it could not tell from a live one.
 #[test]

@@ -983,11 +983,29 @@ fn connect_preserving_errno(
 /// protocol/handshake failure with no syscall behind it.
 fn ws_errno_of(err: &tungstenite::Error) -> i64 {
     match err {
-        tungstenite::Error::Io(io_err) => io_err.raw_os_error().map_or(0, i64::from),
+        tungstenite::Error::Io(io_err) => ws_io_errno(io_err),
         tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(_)) => 0,
         tungstenite::Error::Url(_) | tungstenite::Error::HttpFormat(_) => -1,
         _ => 0,
     }
+}
+
+/// Classify a WebSocket I/O failure without inventing a platform errno.
+///
+/// A raw errno remains authoritative. `InvalidInput` and `InvalidData` are
+/// pre-syscall grammar failures and use the module's `-1` `InvalidArgument`
+/// sentinel; other errors without a raw errno remain unclassified as zero.
+fn ws_io_errno(err: &io::Error) -> i64 {
+    if let Some(errno) = err.raw_os_error() {
+        return i64::from(errno);
+    }
+    if matches!(
+        err.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+    ) {
+        return -1;
+    }
+    0
 }
 
 /// Route an outbound WebSocket message through the write-side socket when available.
@@ -1583,7 +1601,7 @@ pub unsafe extern "C" fn hew_ws_server_new(addr: *const c_char) -> *mut HewWsSer
             }
             Err(err) => {
                 set_ws_last_error(
-                    err.raw_os_error().map_or(0, i64::from),
+                    ws_io_errno(&err),
                     format!("websocket.listen: cannot prepare listener on `{addr_str}`: {err}"),
                 );
                 std::ptr::null_mut()
@@ -1591,7 +1609,7 @@ pub unsafe extern "C" fn hew_ws_server_new(addr: *const c_char) -> *mut HewWsSer
         },
         Err(err) => {
             set_ws_last_error(
-                err.raw_os_error().map_or(0, i64::from),
+                ws_io_errno(&err),
                 format!("websocket.listen: cannot bind `{addr_str}`"),
             );
             std::ptr::null_mut()
@@ -3166,6 +3184,20 @@ mod tests {
         // SAFETY: Passing null is explicitly handled by hew_ws_server_new.
         let server = unsafe { hew_ws_server_new(std::ptr::null()) };
         assert!(server.is_null());
+    }
+
+    #[test]
+    fn server_malformed_addr_is_invalid_argument_not_other_zero() {
+        let addr = c"not an address";
+        // SAFETY: addr is a valid C string.
+        let server = unsafe { hew_ws_server_new(addr.as_ptr()) };
+        assert!(server.is_null());
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert_eq!(
+            ws_last_error_text(),
+            "websocket.listen: cannot bind `not an address`"
+        );
+        assert_eq!(hew_ws_last_errno(), -1);
     }
 
     /// Server port with null returns -1.

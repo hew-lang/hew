@@ -77,10 +77,17 @@ def check_floor(key: str, actual: int, context: str = "") -> str | None:
                 "empty or\n"
                 "              shrunken enumeration passes every comparison "
                 "vacuously.\n"
-                f"              If the removal is intended, set the count to "
-                f"{actual} in\n"
-                f"              {REGISTRY_DISPLAY} in the SAME commit and "
-                "justify it in the body."
+                + (
+                    "              An enumeration of zero is never a floor — "
+                    "if this gate has\n"
+                    "              no corpus left, delete the row and the "
+                    "assertion together."
+                    if actual == 0
+                    else f"              If the removal is intended, set the "
+                    f"count to {actual} in\n"
+                    f"              {REGISTRY_DISPLAY} in the SAME commit and "
+                    "justify it in the body."
+                )
             )
         return head + (
             f"              The corpus GREW. Set the count to {actual} in "

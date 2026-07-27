@@ -104,8 +104,13 @@ corpus_floor_assert() {
                 echo "              The corpus SHRANK. Everything this gate compares, it now" >&2
                 echo "              compares over less than it did last time — an empty or" >&2
                 echo "              shrunken enumeration passes every comparison vacuously." >&2
-                echo "              If the removal is intended, set the count to $actual in" >&2
-                echo "              $where in the SAME commit and justify it in the body." >&2
+                if [ "$actual" -eq 0 ]; then
+                    echo "              An enumeration of zero is never a floor — if this gate has" >&2
+                    echo "              no corpus left, delete the row and the assertion together." >&2
+                else
+                    echo "              If the removal is intended, set the count to $actual in" >&2
+                    echo "              $where in the SAME commit and justify it in the body." >&2
+                fi
             else
                 echo "              The corpus GREW. Set the count to $actual in $where in the" >&2
                 echo "              SAME commit that adds the fixtures — that is how the next" >&2

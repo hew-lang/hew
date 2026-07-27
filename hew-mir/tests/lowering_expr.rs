@@ -4,6 +4,8 @@
 
 #[path = "lowering_expr/anonymous_owned_temp_drop.rs"]
 mod anonymous_owned_temp_drop;
+#[path = "lowering_expr/binder_shape_release_sweep.rs"]
+mod binder_shape_release_sweep;
 #[path = "lowering_expr/binop_bitwise_logical.rs"]
 mod binop_bitwise_logical;
 #[path = "lowering_expr/bytes_literal_lowering.rs"]

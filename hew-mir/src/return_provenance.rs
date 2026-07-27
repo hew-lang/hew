@@ -1377,6 +1377,130 @@ pub fn method_return_provenance(emitted_symbol: &str) -> AliasBits {
     }
 }
 
+/// Every `VecElementProfile` the dispatch authority can be asked about.
+///
+/// The product is deliberately UNCONSTRAINED — it enumerates combinations no
+/// real element ever has (`is_owned` with a `Str` ABI, say). That over-breadth
+/// is the safe direction: [`placeholder_method_return_provenance`] UNIONS the
+/// answers, so a spurious profile can only add `{OPAQUE}` and push the verdict
+/// further fail-closed. Constraining it could only remove an `{OPAQUE}`
+/// contributor, which is the unsafe direction.
+fn every_vec_element_profile() -> impl Iterator<Item = hew_types::vec_authority::VecElementProfile>
+{
+    use hew_types::vec_authority::{VecElementProfile, VecElementToken};
+    const TOKENS: &[Option<VecElementToken>] = &[
+        None,
+        Some(VecElementToken::Bool),
+        Some(VecElementToken::I8),
+        Some(VecElementToken::U8),
+        Some(VecElementToken::I16),
+        Some(VecElementToken::U16),
+        Some(VecElementToken::I32),
+        Some(VecElementToken::I64),
+        Some(VecElementToken::F32),
+        Some(VecElementToken::F64),
+        Some(VecElementToken::Str),
+        Some(VecElementToken::Ptr),
+        Some(VecElementToken::Layout),
+    ];
+    TOKENS.iter().flat_map(|abi| {
+        (0..16u8).map(move |mask| VecElementProfile {
+            abi: *abi,
+            is_owned: mask & 1 != 0,
+            is_copy_layout: mask & 2 != 0,
+            is_function_like: mask & 4 != 0,
+            is_abstract: mask & 8 != 0,
+        })
+    })
+}
+
+/// Return-provenance of a method call whose HIR `target_symbol` is a
+/// PLACEHOLDER rather than the symbol the call site will actually emit, or
+/// `None` when the placeholder is not one this can answer.
+///
+/// # Why a placeholder needs its own answer
+///
+/// [`method_return_provenance`] is keyed on the EMITTED symbol, and that is not
+/// negotiable — keying on a family would admit the receiver-alias class it
+/// exists to reject. But two HIR shapes never carry the emitted symbol:
+///
+///  * a `HashMap::get`, which the checker records as `hew_hashmap_get_layout`
+///    while lowering ALWAYS emits the fresh-owner clone choke
+///    (`hew_hashmap_get_clone_layout` — `lower_hashmap_index_trap`); and
+///  * an element-typed `Vec<T>` method on a GENERIC spine, whose checker
+///    dispatch left a `hew_vec_*_FAMILY` placeholder because the element was
+///    still a type parameter.
+///
+/// Looking those spellings up in the emitted-symbol contract yields `Untracked`
+/// → `{OPAQUE}`, so the summary of `fn first<T>(v: Vec<T>) -> Option<T> {
+/// v.get(0) }` read "may alias the receiver" even though every element class it
+/// can ever be instantiated at emits `hew_vec_get_clone`, a proved `+1` owner.
+/// The consumer then withheld a legitimate release.
+///
+/// # The missing input, and how it is supplied
+///
+/// The input the emitted-symbol resolution needs is the ELEMENT CLASS, and that
+/// is genuinely unreachable here: this summary is computed once over the
+/// pre-monomorphisation origin function, where the element is still `T`.
+///
+/// Failing closed on an unreachable input is not the only option. The element
+/// class is drawn from a FINITE, enumerable domain, and the resolver
+/// ([`hew_types::vec_authority::resolve_runtime_symbol`], the same authority the
+/// call lowering consults) is a total function of it. So instead of asking "what
+/// does this site emit?" — unanswerable — ask "what could it emit, over every
+/// element class?" and UNION the contracts of the answers. When every resolvable
+/// element class agrees on a proved-owner symbol, the verdict is knowable
+/// WITHOUT the missing input. When they disagree, the union carries `{OPAQUE}`
+/// and the result is exactly the fail-closed answer this replaced.
+///
+/// That makes the widening additive-only by construction: the union is over a
+/// superset of the reachable profiles, so it can never be MORE permissive than a
+/// per-monomorphisation resolution would be.
+///
+/// A placeholder with no resolvable profile at all (an element ABI the authority
+/// only ever reports `Deferred`/`Unavailable`/`Unsupported` for) yields `None`,
+/// and the caller falls back to the raw-symbol contract — still fail-closed.
+#[must_use]
+pub fn placeholder_method_return_provenance(
+    target_symbol: &str,
+    target_family: hew_types::MethodTargetFamily,
+) -> Option<AliasBits> {
+    use hew_types::vec_authority::{
+        resolve_runtime_symbol, VecResolutionContext, VecSymbolResolution,
+    };
+    use hew_types::{HashMapMethod, MethodTargetFamily};
+
+    // `HashMap::get -> Option<V>` is the degenerate quantification: the emitted
+    // symbol does not depend on the element class at all.
+    if matches!(
+        target_family,
+        MethodTargetFamily::HashMap(HashMapMethod::Get)
+    ) {
+        return Some(method_return_provenance("hew_hashmap_get_clone_layout"));
+    }
+
+    if !target_symbol.ends_with("_FAMILY") {
+        return None;
+    }
+    let MethodTargetFamily::Vec(vec_method) = target_family else {
+        return None;
+    };
+
+    let mut resolved_any = false;
+    let mut bits = AliasBits::EMPTY;
+    for profile in every_vec_element_profile() {
+        if let VecSymbolResolution::Resolved(symbol) = resolve_runtime_symbol(
+            vec_method,
+            profile,
+            VecResolutionContext::MonomorphizedPlaceholder,
+        ) {
+            resolved_any = true;
+            bits |= method_return_provenance(&symbol);
+        }
+    }
+    resolved_any.then_some(bits)
+}
+
 // ---------------------------------------------------------------------------
 // Audited ExternFn owned-return contract table [F3] — EMPTY/fail-closed interim
 // ---------------------------------------------------------------------------
@@ -3701,6 +3825,69 @@ pub fn is_builtin_fresh_ctor(name: &str) -> bool {
     matches!(name, "Vec::new" | "HashMap::new" | "HashSet::new")
 }
 
+/// The stdlib catalog's IDENTITY JOIN: the emitted runtime symbol a body-less
+/// resolved callee will actually lower to, or `None` when the callee is not a
+/// catalog shim row.
+///
+/// # Why an identity join and not a name lookup
+///
+/// `LowerCtx::seed_stdlib_fn_registry` mints one `ItemId(u32::MAX - index)` per
+/// `stdlib_catalog::entries()` row and registers that SAME id under BOTH
+/// spellings a call site can carry — the row's surface `name` (`to_upper_str`,
+/// `to_string_i64`) and, when the row's linkage declares one, its emitted
+/// runtime `symbol` (`hew_string_to_uppercase`, `hew_i64_to_string`). So the
+/// callee's `(name, ItemId)` pair is a compiler-minted identity, and this
+/// function is its inverse.
+///
+/// Both halves are required, and each closes a forgery direction:
+///
+/// * **id without name.** The id band is not exclusively the catalog's:
+///   `SYNTHETIC_OPTION_ITEM` / `SYNTHETIC_RESULT_ITEM` are `u32::MAX - 1` and
+///   `u32::MAX - 2`, which index real catalog rows. Requiring the name to match
+///   the row rejects those.
+/// * **name without id.** A user `fn hew_string_to_uppercase()` or an
+///   `extern "C" { fn hew_string_to_uppercase(); }` carries a REAL source
+///   `ItemId`, whose `u32::MAX - id` is far past the end of the catalog. This is
+///   the same discipline the audited-argument table applies to `hew_fs_rename`:
+///   a declaration cannot claim a runtime row by spelling its name.
+///
+/// Only the three linkages that DECLARE an emitted C symbol
+/// ([`BuiltinLinkage::runtime_symbol`]) join. A `CompilerIntrinsic`,
+/// `PrintIntercept`, `CalleeNameDispatchOnly`, `NodeRegisterByPid` or
+/// `LayoutDescriptorSymbol` row has no single emitted callee whose ownership
+/// contract could be read, so it does not join and keeps its caller's
+/// fail-closed answer.
+#[must_use]
+pub fn stdlib_shim_emitted_symbol(name: &str, id: hew_hir::ItemId) -> Option<&'static str> {
+    let index = usize::try_from(u32::MAX - id.0).ok()?;
+    let entry = hew_hir::stdlib_catalog::entries().get(index)?;
+    let symbol = entry.linkage.runtime_symbol()?;
+    (entry.name == name || symbol == name).then_some(symbol)
+}
+
+/// The provenance of a call to a body-less stdlib catalog shim, read from the
+/// ONE emitted-symbol ownership contract ([`method_return_provenance`]).
+///
+/// `Some(CallClass::Fresh)` ONLY when that contract proves the result is a new
+/// `+1` owner. Every other answer — a borrowed getter, an interior alias of the
+/// receiver, an untracked result, or a callee that is not a catalog shim at all
+/// — is `None`, which leaves the caller's own fail-closed answer in place. The
+/// function can therefore only ever turn an `Opaque` fall-through into `Fresh`;
+/// it can never narrow an admission the caller already made.
+///
+/// This is not new trust. [`PrecisePolicy`] already reads
+/// [`method_return_provenance`] at its `ResolvedImplCall` leaf, for the same
+/// question about the same values; the catalog simply did not join at the `Call`
+/// arm, so `Some(Row { name: "x".to_upper(), id: n })` read `{OPAQUE}` while
+/// `"x".to_upper()` reached in a method position read `∅`.
+#[must_use]
+pub fn stdlib_shim_return_class(name: &str, id: hew_hir::ItemId) -> Option<CallClass> {
+    let symbol = stdlib_shim_emitted_symbol(name, id)?;
+    method_return_provenance(symbol)
+        .is_fresh()
+        .then_some(CallClass::Fresh)
+}
+
 /// The Precise `LeafPolicy`: consumes the module provenance table (for the
 /// three-way `Call` resolution), the audited extern table, and the CURRENT
 /// function's local binding-provenance.
@@ -3761,7 +3948,19 @@ impl LeafPolicy for PrecisePolicy<'_> {
         // inside `new_ctx()`-style producers) — a fresh empty allocation.
         } else if self.extern_table.provenance_of(*id).is_fresh() || is_builtin_fresh_ctor(name) {
             CallClass::Fresh
-        // Clause 4: an unknown/missing item (absent from every table → Opaque).
+        // Clause 4: a body-less stdlib CATALOG shim, resolved through the
+        // compiler-minted `(name, ItemId)` identity and answered from the one
+        // emitted-symbol ownership contract. Additive only: a row that is not a
+        // proved `+1` producer, and any callee that is not a catalog shim, falls
+        // through to clause 5 unchanged.
+        //
+        // Without this join a fresh-owner shim reached through a `Call`
+        // (`Row { name: "x".to_upper(), .. }`) read `{OPAQUE}` while the SAME
+        // contract read `∅` for the same value reached through a method leaf,
+        // and the summary's consumer withheld a legitimate release.
+        } else if let Some(class) = stdlib_shim_return_class(name, *id) {
+            class
+        // Clause 5: an unknown/missing item (absent from every table → Opaque).
         // Never `unwrap_or(true)`.
         } else {
             CallClass::Opaque
@@ -3784,12 +3983,18 @@ impl LeafPolicy for PrecisePolicy<'_> {
                     AliasBits::OPAQUE
                 }
             }
-            // A method call → the emitted-symbol contract (S1: keyed on the
-            // placeholder `target_symbol`, sound-but-conservative — see the type
-            // doc).
-            HirExprKind::ResolvedImplCall { target_symbol, .. } => {
-                method_return_provenance(target_symbol)
-            }
+            // A method call → the EMITTED-symbol contract. When the HIR carries a
+            // placeholder instead of the symbol the site will emit, the
+            // placeholder is resolved against the same dispatch authority first
+            // (see [`placeholder_method_return_provenance`]); only a placeholder
+            // that authority cannot answer falls back to the raw-symbol lookup,
+            // which is fail-closed for every unknown spelling.
+            HirExprKind::ResolvedImplCall {
+                target_symbol,
+                target_family,
+                ..
+            } => placeholder_method_return_provenance(target_symbol, *target_family)
+                .unwrap_or_else(|| method_return_provenance(target_symbol)),
             // A binding reference to a tracked local reads its computed bits; a
             // by-value param not in the local map is `{PARAM}`.
             HirExprKind::BindingRef {
@@ -4225,6 +4430,106 @@ pub(crate) mod tests {
         assert!(method_return_provenance("hew_totally_unknown_symbol").is_opaque());
     }
 
+    // -- The stdlib catalog identity join -------------------------------------
+
+    /// The `ItemId` `seed_stdlib_fn_registry` mints for the catalog row at
+    /// `index`, computed the same way the seeder computes it.
+    fn catalog_item_id(index: usize) -> hew_hir::ItemId {
+        hew_hir::ItemId(u32::MAX - u32::try_from(index).expect("catalog index fits in u32"))
+    }
+
+    /// The index of the catalog row with the given surface name.
+    fn catalog_index_of(name: &str) -> usize {
+        hew_hir::stdlib_catalog::entries()
+            .iter()
+            .position(|entry| entry.name == name)
+            .unwrap_or_else(|| panic!("catalog row {name} must exist"))
+    }
+
+    #[test]
+    fn a_catalog_shim_joins_under_both_spellings_of_its_identity() {
+        // `seed_stdlib_fn_registry` registers ONE id under the row's surface
+        // name AND under its emitted runtime symbol, so a call site can carry
+        // either spelling. Both must join to the same emitted symbol.
+        let id = catalog_item_id(catalog_index_of("to_upper_str"));
+        assert_eq!(
+            stdlib_shim_emitted_symbol("to_upper_str", id),
+            Some("hew_string_to_uppercase")
+        );
+        assert_eq!(
+            stdlib_shim_emitted_symbol("hew_string_to_uppercase", id),
+            Some("hew_string_to_uppercase")
+        );
+        // …and the emitted symbol's audited contract is what answers, so the
+        // `Call` arm and the method leaf agree about the same value.
+        assert!(matches!(
+            stdlib_shim_return_class("hew_string_to_uppercase", id),
+            Some(CallClass::Fresh)
+        ));
+    }
+
+    #[test]
+    fn a_source_declaration_cannot_claim_a_catalog_row_by_spelling_its_name() {
+        // A user `fn`/`extern` spelling a runtime symbol carries a REAL source
+        // `ItemId`, which is nowhere near the catalog band. The name alone
+        // proves nothing — the same discipline the audited ARGUMENT table
+        // applies to a root declaration spelling `hew_fs_rename`.
+        for forged in [0_u32, 1, 7, 4096] {
+            assert_eq!(
+                stdlib_shim_emitted_symbol("hew_string_to_uppercase", hew_hir::ItemId(forged)),
+                None,
+                "a source item id must not resolve a catalog row"
+            );
+        }
+    }
+
+    #[test]
+    fn a_synthetic_id_colliding_with_the_catalog_band_cannot_claim_a_row() {
+        // The `u32::MAX - n` band is NOT exclusively the catalog's:
+        // `SYNTHETIC_OPTION_ITEM` is `u32::MAX - 1` and `SYNTHETIC_RESULT_ITEM`
+        // is `u32::MAX - 2`, both of which index real catalog rows. The name
+        // half of the identity is what rejects them.
+        for (offset, name) in [(1_usize, "Option"), (2, "Result")] {
+            assert_eq!(
+                stdlib_shim_emitted_symbol(name, catalog_item_id(offset)),
+                None,
+                "a synthetic item sharing the catalog id band must not join"
+            );
+        }
+    }
+
+    #[test]
+    fn the_join_is_additive_only_and_never_narrows() {
+        // A catalog row whose emitted symbol is NOT a proved `+1` producer
+        // answers `None`, leaving the caller's own fail-closed answer in place —
+        // the join can only ever turn an `Opaque` fall-through into `Fresh`.
+        let index = catalog_index_of("len_str");
+        let id = catalog_item_id(index);
+        assert_eq!(
+            stdlib_shim_emitted_symbol("len_str", id),
+            Some("hew_string_length"),
+            "the row must join"
+        );
+        assert!(method_return_provenance("hew_string_length").is_opaque());
+        assert!(
+            stdlib_shim_return_class("len_str", id).is_none(),
+            "a non-producer row must not answer at all"
+        );
+        // A row with no emitted C symbol (an intrinsic, a print intercept, a
+        // layout descriptor) has no single callee whose contract could be read,
+        // so it does not join either.
+        for (index, entry) in hew_hir::stdlib_catalog::entries().iter().enumerate() {
+            if entry.linkage.runtime_symbol().is_none() {
+                assert_eq!(
+                    stdlib_shim_emitted_symbol(entry.name, catalog_item_id(index)),
+                    None,
+                    "row {} has no emitted symbol and must not join",
+                    entry.name
+                );
+            }
+        }
+    }
+
     // -- Extern owned-return contract table (interim empty/fail-closed) [F3] --
 
     #[test]
@@ -4318,6 +4623,123 @@ pub(crate) mod tests {
             }
         }
         panic!("function {name} not found");
+    }
+
+    /// The generic-spine placeholder resolves to the SAME verdict the emitted
+    /// symbol would give, without the element class the site cannot see.
+    ///
+    /// `fn first<T>(v: Vec<T>) -> Option<T> { v.get(0) }` is summarised once,
+    /// over the pre-monomorphisation body, where the element is still `T`. The
+    /// checker left `hew_vec_get_FAMILY`; the emitted-symbol contract has no row
+    /// for that spelling and answers `{OPAQUE}`. But the dispatch authority
+    /// resolves EVERY element class it can resolve at all to `hew_vec_get_clone`,
+    /// a proved `+1` owner — so the verdict is knowable without the element.
+    #[test]
+    fn a_generic_vec_get_placeholder_is_fresh_over_every_element_class() {
+        use hew_types::{MethodTargetFamily, VecMethod};
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_vec_get_FAMILY",
+                MethodTargetFamily::Vec(VecMethod::Get),
+            ),
+            Some(AliasBits::EMPTY),
+            "every element class `Vec::get` resolves at all emits `hew_vec_get_clone`, so the \
+             generic spine's placeholder must read as fresh — reading it as `{{OPAQUE}}` is what \
+             withheld the release for `Some(g) => g` over a generic getter"
+        );
+        assert_eq!(
+            method_return_provenance("hew_vec_get_clone"),
+            AliasBits::EMPTY,
+            "the quantified answer must agree with the emitted-symbol contract it quantifies over"
+        );
+    }
+
+    /// The quantification is not a blanket "a placeholder is fresh". Every other
+    /// `Vec` method's emitted symbol genuinely depends on the element class, and
+    /// the element classes disagree — so the union carries `{OPAQUE}` and the
+    /// verdict stays exactly as fail-closed as before.
+    #[test]
+    fn a_family_placeholder_whose_element_classes_disagree_stays_opaque() {
+        use hew_types::{MethodTargetFamily, VecMethod};
+        for method in [
+            VecMethod::Push,
+            VecMethod::Pop,
+            VecMethod::Set,
+            VecMethod::Remove,
+            VecMethod::Contains,
+            VecMethod::Clear,
+            VecMethod::Clone,
+            VecMethod::Append,
+            VecMethod::Join,
+        ] {
+            assert_eq!(
+                placeholder_method_return_provenance(
+                    "hew_vec_x_FAMILY",
+                    MethodTargetFamily::Vec(method),
+                ),
+                Some(AliasBits::OPAQUE),
+                "{method:?} has no element-class-independent answer, so quantifying over the \
+                 element must leave it fail-closed"
+            );
+        }
+    }
+
+    /// `HashMap::get` is the degenerate quantification: lowering always emits the
+    /// fresh-owner clone choke, so the checker's `hew_hashmap_get_layout`
+    /// placeholder — which the emitted-symbol contract refuses — must not be the
+    /// spelling the walk reads.
+    #[test]
+    fn a_hashmap_get_placeholder_reads_the_clone_choke_not_the_layout_placeholder() {
+        use hew_types::{HashMapMethod, MethodTargetFamily};
+        assert_eq!(
+            method_return_provenance("hew_hashmap_get_layout"),
+            AliasBits::OPAQUE,
+            "the placeholder spelling itself must stay unknown to the emitted-symbol contract"
+        );
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_hashmap_get_layout",
+                MethodTargetFamily::HashMap(HashMapMethod::Get),
+            ),
+            Some(method_return_provenance("hew_hashmap_get_clone_layout")),
+            "the resolved answer must be the contract of the symbol the site EMITS"
+        );
+    }
+
+    /// A concrete call already carries the symbol it will emit. The placeholder
+    /// path must decline it so the raw-symbol contract stays authoritative —
+    /// otherwise a family verdict could override a specific one.
+    #[test]
+    fn a_concrete_emitted_symbol_is_not_rerouted_through_the_placeholder_path() {
+        use hew_types::{MethodTargetFamily, VecMethod};
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_vec_get_ptr",
+                MethodTargetFamily::Vec(VecMethod::Get),
+            ),
+            None,
+            "a resolved symbol is not a placeholder — `hew_vec_get_ptr` borrows the slot and must \
+             keep reading opaque from its own row, not inherit `Get`'s family verdict"
+        );
+        assert_eq!(
+            method_return_provenance("hew_vec_get_ptr"),
+            AliasBits::OPAQUE
+        );
+    }
+
+    /// A non-collection family never reaches the quantification at all.
+    #[test]
+    fn a_non_vec_family_placeholder_declines() {
+        use hew_types::{HashSetMethod, MethodTargetFamily};
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_hashset_x_FAMILY",
+                MethodTargetFamily::HashSet(HashSetMethod::Contains),
+            ),
+            None,
+            "only the two placeholder shapes this resolves are answerable here; every other \
+             family falls back to its own fail-closed row"
+        );
     }
 
     /// Fix (i) — the fresh-owner see-through. A helper that tail-returns a

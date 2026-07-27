@@ -663,6 +663,53 @@ unsafe fn retire_msg_node_ask_sender_ref(node: *mut HewMsgNode) {
     unsafe { retire_orphaned_ask_sender_ref(reply_channel) };
 }
 
+/// Reclaim every message still queued on the mailbox of an actor that is
+/// completing its terminal stop transition.
+///
+/// The system queue has dequeue priority over the user queue
+/// ([`mailbox_try_recv_with_origin`]), so `hew_actor_stop`'s shutdown sentinel
+/// is handed to the worker ahead of user messages that were enqueued BEFORE
+/// it. The worker breaks its message loop on the sentinel and finalizes the
+/// actor, leaving those user messages queued. A queued **ask** node owns a
+/// sender-side reply-channel reference, and that reference is what its caller
+/// is blocked on: until the node is freed, nothing marks the channel orphaned
+/// and nothing publishes the null reply that wakes the waiter. Left to
+/// `hew_mailbox_free` (which only runs at `hew_actor_free`) the caller blocks
+/// for its entire ask timeout — a stop that races a queued ask silently
+/// converts "actor stopped" into "caller hangs".
+///
+/// [`hew_msg_node_free`] retires each node's ask sender reference
+/// ([`retire_msg_node_ask_sender_ref`]), so draining here IS the wake: every
+/// stranded waiter is unblocked with the orphaned classification
+/// (`HEW_REPLY_FAIL_ACTOR_STOPPED`) it would have received had the mailbox been
+/// torn down. Any leftover system message (a second sentinel) is reclaimed on
+/// the same pass.
+///
+/// # Safety
+///
+/// `mb` must be null or a valid mailbox pointer, and the caller must be its
+/// SOLE consumer for the duration of the drain — the worker that owns the
+/// terminating activation, before it publishes the terminal state. `Stopping`
+/// is not quiescent (`actor_free_state_is_quiescent`), so a concurrent
+/// `hew_actor_free` cannot reach `hew_mailbox_free` while this runs.
+pub(crate) unsafe fn mailbox_reclaim_queued_on_stop(mb: *mut HewMailbox) {
+    if mb.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `mb` is valid.
+    let message_drop_fn = unsafe { (*mb).message_drop_fn };
+    loop {
+        // SAFETY: caller guarantees `mb` is valid and the sole-consumer
+        // invariant holds for this drain.
+        let node = unsafe { mailbox_try_recv_with_origin(mb) }.node;
+        if node.is_null() {
+            break;
+        }
+        // SAFETY: `node` was just dequeued and is exclusively owned here.
+        unsafe { hew_msg_node_free_with_message_drop(node, message_drop_fn) };
+    }
+}
+
 /// Free a [`HewMsgNode`] and its payload.
 ///
 /// # Safety

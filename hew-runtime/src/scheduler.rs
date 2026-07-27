@@ -1725,6 +1725,16 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 
     let cur_state = a.actor_state.load(Ordering::Acquire);
     if cur_state == HewActorState::Stopping as i32 {
+        // Reclaim anything still queued BEFORE the terminal state is published.
+        // The shutdown sentinel outranks the user queue, so this activation can
+        // reach `Stopping` with user messages — including asks whose callers are
+        // blocked on their reply channels — still in the mailbox. See
+        // `mailbox_reclaim_queued_on_stop` for why draining here is the wake.
+        //
+        // SAFETY: this worker owns the activation and is the mailbox's sole
+        // consumer; `Stopping` is not quiescent, so no concurrent
+        // `hew_actor_free` can be freeing the mailbox underneath the drain.
+        unsafe { mailbox::mailbox_reclaim_queued_on_stop(mailbox) };
         if a.actor_state
             .compare_exchange(
                 HewActorState::Stopping as i32,
@@ -2620,6 +2630,18 @@ fn activate_actor(actor: *mut HewActor) {
     // Check if actor transitioned to Stopping during dispatch (self-stop).
     let cur_state = a.actor_state.load(Ordering::Acquire);
     if cur_state == HewActorState::Stopping as i32 {
+        // Reclaim anything still queued BEFORE the terminal state is published.
+        // `hew_actor_stop` on a Running actor enqueues its shutdown sentinel on
+        // the SYSTEM queue, which `mailbox_try_recv_with_origin` dequeues ahead
+        // of user messages that were enqueued first — so the loop above breaks
+        // on the sentinel with those messages still queued. A queued ask holds
+        // the sender-side reply reference its caller is blocked on, and freeing
+        // the node is what retires it. See `mailbox_reclaim_queued_on_stop`.
+        //
+        // SAFETY: this worker owns the activation and is the mailbox's sole
+        // consumer; `Stopping` is not quiescent, so no concurrent
+        // `hew_actor_free` can be freeing the mailbox underneath the drain.
+        unsafe { mailbox::mailbox_reclaim_queued_on_stop(mailbox) };
         // Finalize: Stopping → Stopped.
         if a.actor_state
             .compare_exchange(

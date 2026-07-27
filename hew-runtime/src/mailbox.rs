@@ -66,11 +66,6 @@ fn untrack_ask_node_for_test(node: *mut HewMsgNode) {
 }
 
 #[cfg(test)]
-pub(crate) fn active_ask_node_count_for_test() -> usize {
-    ACTIVE_ASK_NODES.access(|nodes| nodes.len())
-}
-
-#[cfg(test)]
 pub(crate) fn ask_node_for_reply_channel_for_test(reply_channel: *mut c_void) -> *mut HewMsgNode {
     ACTIVE_ASK_NODES.access(|nodes| {
         nodes
@@ -78,6 +73,69 @@ pub(crate) fn ask_node_for_reply_channel_for_test(reply_channel: *mut c_void) ->
             .find_map(|(&node, &channel)| (channel == reply_channel.addr()).then_some(node))
             .map_or(ptr::null_mut(), ptr::without_provenance_mut)
     })
+}
+
+/// Deterministic producer rendezvous after the MPSC head swap but before the
+/// predecessor link is published.
+///
+/// The queue is deliberately inconsistent at this seam: a consumer observes
+/// the new head but cannot yet reach the node from its tail. Targeting the hook
+/// by reply-channel identity prevents unrelated concurrent mailbox tests from
+/// participating.
+#[cfg(test)]
+type MpscPostSwapPreLinkHook = (
+    usize,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(test)]
+static MPSC_POST_SWAP_PRE_LINK_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSwapPreLinkHook>> =
+    crate::lifetime::PoisonSafe::new(None);
+
+#[cfg(test)]
+pub(crate) struct MpscPostSwapPreLinkHookGuard;
+
+#[cfg(test)]
+impl MpscPostSwapPreLinkHookGuard {
+    pub(crate) fn install(
+        reply_channel: *mut c_void,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        MPSC_POST_SWAP_PRE_LINK_HOOK.access(|hook| {
+            assert!(hook.is_none(), "MPSC delayed-link hook already installed");
+            *hook = Some((reply_channel.addr(), entered.clone(), release.clone()));
+        });
+        (Self, entered, release)
+    }
+}
+
+#[cfg(test)]
+impl Drop for MpscPostSwapPreLinkHookGuard {
+    fn drop(&mut self) {
+        MPSC_POST_SWAP_PRE_LINK_HOOK.access(|hook| *hook = None);
+    }
+}
+
+#[cfg(test)]
+fn run_mpsc_post_swap_pre_link_hook(node: *mut HewMsgNode) {
+    // SAFETY: enqueue owns `node` exclusively until it publishes the
+    // predecessor link, and the hook only reads the initialized channel field.
+    let reply_channel = unsafe { (*node).reply_channel };
+    let rendezvous = MPSC_POST_SWAP_PRE_LINK_HOOK.access(|hook| {
+        hook.as_ref().and_then(|(target, entered, release)| {
+            (*target == reply_channel.addr()).then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
 }
 
 pub use crate::mailbox_header::HewSysMsg;
@@ -730,6 +788,38 @@ impl Drop for TerminalReclaimGuard<'_> {
     }
 }
 
+fn lock_terminal_reclaim(mailbox: &HewMailbox) -> TerminalReclaimGuard<'_> {
+    while mailbox
+        .terminal_reclaiming
+        .compare_exchange_weak(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        std::hint::spin_loop();
+    }
+    TerminalReclaimGuard(&mailbox.terminal_reclaiming)
+}
+
+/// Drain a mailbox while its terminal-reclaim lock is held.
+///
+/// # Safety
+///
+/// `mb` must point to `mailbox`, which must remain live for the call. The
+/// caller must hold `mailbox.terminal_reclaiming` and satisfy the terminal
+/// single-consumer contract documented on [`mailbox_reclaim_queued_terminal`].
+unsafe fn drain_queued_terminal_locked(mb: *mut HewMailbox, mailbox: &HewMailbox) {
+    let message_drop_fn = mailbox.message_drop_fn;
+    loop {
+        // SAFETY: the caller holds the terminal-reclaim lock and guarantees the
+        // mailbox's terminal single-consumer invariant.
+        let node = unsafe { mailbox_try_recv_with_origin(mb) }.node;
+        if node.is_null() {
+            break;
+        }
+        // SAFETY: `node` was just dequeued and is exclusively owned here.
+        unsafe { hew_msg_node_free_with_message_drop(node, message_drop_fn) };
+    }
+}
+
 /// Reclaim every message still queued when an actor becomes terminal.
 ///
 /// There are three ways a live node can remain behind a terminal transition:
@@ -780,25 +870,87 @@ pub(crate) unsafe fn mailbox_reclaim_queued_terminal(mb: *mut HewMailbox) {
     // retain their single-consumer contract; waiting (rather than try-locking)
     // guarantees a producer whose enqueue already completed gets a pass after
     // an earlier drainer that may just have observed the queue empty.
-    while mailbox
-        .terminal_reclaiming
-        .compare_exchange_weak(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        std::hint::spin_loop();
-    }
-    let _reclaim_guard = TerminalReclaimGuard(&mailbox.terminal_reclaiming);
+    let _reclaim_guard = lock_terminal_reclaim(mailbox);
 
-    let message_drop_fn = mailbox.message_drop_fn;
-    loop {
-        // SAFETY: caller guarantees `mb` is valid and the sole-consumer
-        // invariant holds for this drain.
-        let node = unsafe { mailbox_try_recv_with_origin(mb) }.node;
-        if node.is_null() {
-            break;
-        }
-        // SAFETY: `node` was just dequeued and is exclusively owned here.
-        unsafe { hew_msg_node_free_with_message_drop(node, message_drop_fn) };
+    // SAFETY: this function holds the terminal-reclaim lock and inherits the
+    // documented terminal single-consumer contract from its caller.
+    unsafe { drain_queued_terminal_locked(mb, mailbox) };
+}
+
+/// Conditionally reclaim queued terminal messages, then publish an ownership
+/// release while still holding the terminal-reclaim lock.
+///
+/// Testing `eligible`, draining, and calling `release` in one critical section
+/// closes both terminal handoffs:
+///
+/// - an external trap either observes the released activation and drains, or
+///   the activation observes the terminal state and drains before releasing;
+/// - a producer that finishes an MPSC predecessor link after the activation's
+///   last drain either precedes a later activation drain or observes the
+///   released owner and drains itself.
+///
+/// `release` is still called for a null mailbox; `eligible` is not, because
+/// there is no queue to reclaim.
+///
+/// # Safety
+///
+/// `mb` must be null or a valid mailbox pointer. For a non-null pointer, the
+/// caller must satisfy the safety contract of [`mailbox_reclaim_queued_terminal`]
+/// whenever `eligible` returns true. Neither callback may recursively acquire
+/// the mailbox's terminal-reclaim lock.
+pub(crate) unsafe fn mailbox_reclaim_queued_terminal_if_then<F, R>(
+    mb: *mut HewMailbox,
+    eligible: F,
+    release: R,
+) where
+    F: FnOnce() -> bool,
+    R: FnOnce(),
+{
+    if mb.is_null() {
+        release();
+        return;
+    }
+    // SAFETY: caller guarantees `mb` is valid.
+    let mailbox = unsafe { &*mb };
+    let _reclaim_guard = lock_terminal_reclaim(mailbox);
+
+    if eligible() {
+        // SAFETY: this function holds the terminal-reclaim lock; the true
+        // predicate proves the remaining terminal single-consumer condition.
+        unsafe { drain_queued_terminal_locked(mb, mailbox) };
+    }
+    release();
+}
+
+/// Reclaim queued terminal messages when `eligible` holds under the
+/// terminal-reclaim lock.
+///
+/// Evaluating the ownership predicate under the same lock used by the final
+/// activation drain makes the two outcomes exhaustive: either the producer
+/// observes an owner that must drain afterward, or it observes the released
+/// owner and performs the drain itself.
+///
+/// # Safety
+///
+/// `mb` must be null or a valid mailbox pointer. If `eligible` returns true,
+/// the caller must satisfy the safety contract of
+/// [`mailbox_reclaim_queued_terminal`]. `eligible` must not recursively acquire
+/// the mailbox's terminal-reclaim lock.
+pub(crate) unsafe fn mailbox_reclaim_queued_terminal_if<F>(mb: *mut HewMailbox, eligible: F)
+where
+    F: FnOnce() -> bool,
+{
+    if mb.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `mb` is valid.
+    let mailbox = unsafe { &*mb };
+    let _reclaim_guard = lock_terminal_reclaim(mailbox);
+
+    if eligible() {
+        // SAFETY: this function holds the terminal-reclaim lock; the true
+        // predicate proves the remaining terminal single-consumer condition.
+        unsafe { drain_queued_terminal_locked(mb, mailbox) };
     }
 }
 
@@ -973,6 +1125,8 @@ impl MpscQueue {
         unsafe { (*node).next.store(ptr::null_mut(), Ordering::Relaxed) };
 
         let prev = self.head.swap(node, Ordering::AcqRel);
+        #[cfg(test)]
+        run_mpsc_post_swap_pre_link_hook(node);
         // SAFETY: `prev` is either the stable stub or a previously-enqueued
         // live node. Linking with Release publishes `node` to the consumer.
         unsafe {

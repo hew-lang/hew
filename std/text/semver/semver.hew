@@ -23,9 +23,9 @@ import std::string;
 type Version {
     pre_release: string;
     build_meta: string;
-    maj: i64;
-    min: i64;
-    pat: i64;
+    maj: string;
+    min: string;
+    pat: string;
 }
 
 /// Methods available on a parsed `Version`.
@@ -58,15 +58,15 @@ trait VersionMethods {
 impl VersionMethods for Version {
     /// Return the major version number.
     fn major(ver: Version) -> i64 {
-        ver.maj
+        component_as_i64("major", ver.maj)
     }
     /// Return the minor version number.
     fn minor(ver: Version) -> i64 {
-        ver.min
+        component_as_i64("minor", ver.min)
     }
     /// Return the patch version number.
     fn patch(ver: Version) -> i64 {
-        ver.pat
+        component_as_i64("patch", ver.pat)
     }
     /// Return the pre-release label, or an empty string if none.
     fn pre(ver: Version) -> string {
@@ -92,6 +92,20 @@ impl VersionMethods for Version {
     /// No-op for compatibility (struct versions don't need manual freeing).
     fn free(ver: Version) {
         // No-op: struct versions are value types, no manual freeing needed.
+    }
+}
+
+// The historic component accessors return i64. Parsing and precedence are
+// unbounded per SemVer 2.0; when a caller explicitly asks an accessor to
+// narrow an oversized component, fail observably rather than fabricating a
+// sentinel. `to_string`, `compare`, and `matches` never narrow.
+fn component_as_i64(name: string, digits: string) -> i64 {
+    match string.to_int(digits) {
+        Some(value) => value,
+        None => {
+            panic(f"semver.Version.{name}: component does not fit in i64");
+            0
+        },
     }
 }
 
@@ -267,19 +281,7 @@ pub fn try_parse(s: string) -> Result<Version, string> {
     if !is_numeric_identifier(major_str) || !is_numeric_identifier(minor_str) || !is_numeric_identifier(patch_str) {
         return Err(f"semver: invalid version string: {s}");
     }
-    let major = match string.to_int(major_str) {
-        Some(n) => n,
-        None => return Err(f"semver: invalid version string: {s}"),
-    };
-    let minor = match string.to_int(minor_str) {
-        Some(n) => n,
-        None => return Err(f"semver: invalid version string: {s}"),
-    };
-    let patch = match string.to_int(patch_str) {
-        Some(n) => n,
-        None => return Err(f"semver: invalid version string: {s}"),
-    };
-    Ok(Version { pre_release: pre, build_meta: build, maj: major, min: minor, pat: patch })
+    Ok(Version { pre_release: pre, build_meta: build, maj: major_str, min: minor_str, pat: patch_str })
 }
 
 /// Parse a semantic version string.
@@ -291,7 +293,7 @@ pub fn parse(s: string) -> Version {
         Ok(v) => v,
         Err(err) => {
             panic(err);
-            Version { pre_release: "", build_meta: "", maj: 0, min: 0, pat: 0 }
+            Version { pre_release: "", build_meta: "", maj: "0", min: "0", pat: "0" }
         },
     }
 }
@@ -303,7 +305,7 @@ fn version_to_string(v: Version) -> string {
     let pat = v.pat;
     let pre = v.pre_release;
     let bld = v.build_meta;
-    var s = string.from_int(maj) + "." + string.from_int(min) + "." + string.from_int(pat);
+    var s = maj + "." + min + "." + pat;
     if pre.len() > 0 {
         s = s + "-" + pre;
     }
@@ -316,31 +318,18 @@ fn version_to_string(v: Version) -> string {
 // ── Comparison ────────────────────────────────────────────────────────
 /// Compare two versions according to SemVer 2.0 precedence rules.
 fn compare_versions(a: Version, b: Version) -> i64 {
-    // Extract fields into locals so integer comparisons see plain bindings.
     let a_maj = a.maj;
     let b_maj = b.maj;
     let a_min = a.min;
     let b_min = b.min;
     let a_pat = a.pat;
     let b_pat = b.pat;
-    if a_maj < b_maj {
-        return -1;
-    }
-    if a_maj > b_maj {
-        return 1;
-    }
-    if a_min < b_min {
-        return -1;
-    }
-    if a_min > b_min {
-        return 1;
-    }
-    if a_pat < b_pat {
-        return -1;
-    }
-    if a_pat > b_pat {
-        return 1;
-    }
+    let maj_cmp = compare_decimal_strings(a_maj, b_maj);
+    if maj_cmp != 0 { return maj_cmp; }
+    let min_cmp = compare_decimal_strings(a_min, b_min);
+    if min_cmp != 0 { return min_cmp; }
+    let pat_cmp = compare_decimal_strings(a_pat, b_pat);
+    if pat_cmp != 0 { return pat_cmp; }
     // Pre-release comparison per SemVer 2.0:
     // - Version without pre-release has higher precedence than one with
     // - If both have pre-release, compare dot-separated identifiers
@@ -505,34 +494,23 @@ fn matches_single(v: Version, constraint: string) -> bool {
     }
     let req_ver = parse(ver_str);
     let cmp = compare_versions(v, req_ver);
+    var matches = cmp == 0;
     if op == ">=" {
-        return cmp >= 0;
+        matches = cmp >= 0;
+    } else if op == "<=" {
+        matches = cmp <= 0;
+    } else if op == ">" {
+        matches = cmp > 0;
+    } else if op == "<" {
+        matches = cmp < 0;
+    } else if op == "!=" {
+        matches = cmp != 0;
+    } else if op == "^" {
+        matches = cmp >= 0 && v.maj == req_ver.maj;
+    } else if op == "~" {
+        matches = cmp >= 0 && v.maj == req_ver.maj && v.min == req_ver.min;
     }
-    if op == "<=" {
-        return cmp <= 0;
-    }
-    if op == ">" {
-        return cmp > 0;
-    }
-    if op == "<" {
-        return cmp < 0;
-    }
-    if op == "!=" {
-        return cmp != 0;
-    }
-    if op == "^" {
-        if cmp < 0 {
-            return false;
-        }
-        return v.maj == req_ver.maj;
-    }
-    if op == "~" {
-        if cmp < 0 {
-            return false;
-        }
-        return v.maj == req_ver.maj && v.min == req_ver.min;
-    }
-    cmp == 0
+    matches
 }
 
 // ── FFI ───────────────────────────────────────────────────────────────

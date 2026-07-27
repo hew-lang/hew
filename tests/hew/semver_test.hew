@@ -43,6 +43,28 @@ fn test_parse_large_component_values() {
     testing.assert_eq(v.patch(), 30);
 }
 
+#[test]
+fn test_unbounded_core_components_round_trip_and_compare_by_magnitude() {
+    let huge = semver.parse("184467440737095516161844674407370955161.2.3");
+    let smaller = semver.parse("99999999999999999999999999999999999999.9.9");
+    testing.assert_eq_str(
+        huge.to_string(),
+        "184467440737095516161844674407370955161.2.3",
+    );
+    testing.assert_eq(huge.compare(smaller), 1);
+}
+
+#[test]
+fn test_unbounded_minor_and_patch_participate_in_precedence() {
+    let minor_hi = semver.parse("1.100000000000000000000000000000000000000.0");
+    let minor_lo = semver.parse("1.99999999999999999999999999999999999999.999");
+    testing.assert_eq(minor_hi.compare(minor_lo), 1);
+
+    let patch_hi = semver.parse("1.0.100000000000000000000000000000000000000");
+    let patch_lo = semver.parse("1.0.99999999999999999999999999999999999999");
+    testing.assert_eq(patch_hi.compare(patch_lo), 1);
+}
+
 // ── to_string ─────────────────────────────────────────────────────────
 
 #[test]

@@ -6,7 +6,7 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (400 packages)
+  Apache License 2.0 (399 packages)
   MIT License (116 packages)
   Unicode License v3 (19 packages)
   ISC License (8 packages)
@@ -8581,7 +8581,6 @@ limitations under the License.
 Apache License 2.0
   * adze-cli 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-analysis 0.6.0-rc1 — https://github.com/hew-lang/hew
-  * hew-build-identity 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-cabi 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-capability-gen 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-cli 0.6.0-rc1 — https://github.com/hew-lang/hew

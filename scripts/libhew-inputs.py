@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """Lists the files whose contents define `libhew.a`.
 
-This is the build-graph half of the build-identity guarantee. The driver's
-half — `hew-build-identity`'s scanner — decides *what the digest covers*; this
-script decides *what makes Make rebuild the archive*. If the two disagree, an
-edit can either change the archive without moving the digest (a stale-pairing
-hole) or move the digest without rebuilding the archive (a driver that refuses
-its own library). `hew-build-identity` has a test that runs this script over
-the real workspace and asserts the two sets are identical, so the halves cannot
-drift apart unnoticed.
+This decides what makes Make rebuild the archive. An input that is missed here
+is an edit that changes the archive without rebuilding it, which is how a stale
+`libhew.a` reaches a link and fails as a wall of undefined `hew_*` symbols.
 
 The set is derived, never hand-listed:
 

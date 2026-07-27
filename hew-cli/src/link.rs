@@ -643,15 +643,12 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
 const WASM_OPTIONAL_LINK_ARCHIVES: [&str; 1] = ["libhew_std.a"];
 const WASM_RUNTIME_ARCHIVE: &str = "libhew_runtime.a";
 
-/// Resolves the WASM support archives and proves each one belongs to this
-/// driver before it reaches the link line.
+/// Resolves the WASM support archives for the link line.
 ///
-/// Like the native path, the identity check lives inside resolution rather than
-/// at the call site: every WASM link goes through this function, so there is no
-/// path that can obtain an archive without having validated it. These archives
-/// are `hew-runtime`'s and `hew-std`'s own staticlibs, built and cached
-/// independently of `libhew.a`, so a fresh driver would otherwise happily link
-/// a runtime copied in or left over from an older checkout.
+/// These archives are `hew-runtime`'s and `hew-std`'s own staticlibs, built and
+/// cached independently of `libhew.a`, so they are resolved from the
+/// target-specific directory cargo writes them to rather than from beside the
+/// driver.
 fn find_wasm_link_libs(target: &str) -> Result<Vec<String>, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
@@ -659,7 +656,7 @@ fn find_wasm_link_libs(target: &str) -> Result<Vec<String>, String> {
 
     let mut libs = Vec::new();
     for name in WASM_OPTIONAL_LINK_ARCHIVES {
-        if let Some(path) = find_optional_wasm_hew_lib(exe_dir, name, rust_target)? {
+        if let Some(path) = find_optional_wasm_hew_lib(exe_dir, name, rust_target) {
             libs.push(path);
         }
     }
@@ -676,23 +673,20 @@ fn wasm_runtime_target(target: &str) -> &str {
     }
 }
 
-/// An archive that is absent is a link without it; an archive that is present
-/// but does not match is a refusal. "Optional" governs whether the file has to
-/// exist, never whether a file that does exist has to be the right one.
+/// An archive that is absent is a link without it.
 fn find_optional_wasm_hew_lib(
     exe_dir: &std::path::Path,
     name: &str,
     triple: &str,
-) -> Result<Option<String>, String> {
+) -> Option<String> {
     for candidate in hew_wasm_lib_candidates(exe_dir, name, triple) {
         if candidate.exists() {
             let resolved = candidate.canonicalize().unwrap_or(candidate);
-            crate::build_identity::verify_archive(&resolved)?;
-            return Ok(Some(resolved.display().to_string()));
+            return Some(resolved.display().to_string());
         }
     }
 
-    Ok(None)
+    None
 }
 
 fn find_required_wasm_runtime_lib(
@@ -705,7 +699,6 @@ fn find_required_wasm_runtime_lib(
             let resolved = candidate
                 .canonicalize()
                 .unwrap_or_else(|_| candidate.clone());
-            crate::build_identity::verify_archive(&resolved)?;
             return Ok(resolved.display().to_string());
         }
     }
@@ -895,12 +888,7 @@ fn unresolved_hew_wasm_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
     Ok(imports.into_iter().collect())
 }
 
-/// Resolves the combined runtime + stdlib archive and proves it belongs to this
-/// driver before it reaches the link line.
-///
-/// The identity check lives here, inside resolution, rather than at the call
-/// site: every native link goes through this function, so there is no path that
-/// can obtain an archive without having validated it.
+/// Resolves the combined runtime + stdlib archive for the link line.
 fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
@@ -909,7 +897,6 @@ fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
     for c in &candidates {
         if c.exists() {
             let resolved = c.canonicalize().unwrap_or_else(|_| c.clone());
-            crate::build_identity::verify_archive(&resolved)?;
             return Ok(resolved.display().to_string());
         }
     }
@@ -2116,33 +2103,39 @@ mod tests {
         (root, exe_dir)
     }
 
-    /// The whole point of the finding: a wasm program used to link whatever
-    /// `libhew_runtime.a` was on disk. A copied or cached one from another
-    /// checkout carries no stamp of this driver's and must be refused, not
-    /// silently linked.
+    /// A wasm program links `hew-runtime`'s own staticlib, which cargo writes
+    /// under `<root>/<triple>/debug/` rather than beside the driver. Resolving
+    /// it from the target-specific directory is what makes the wasm link line
+    /// work at all.
     #[cfg_attr(windows, ignore)]
     #[test]
-    fn an_unstamped_wasm_runtime_archive_is_refused() {
-        let (_root, exe_dir) = wasm_archive_fixture(WASM_RUNTIME_ARCHIVE, b"stale archive bytes");
+    fn a_wasm_runtime_archive_resolves_from_the_target_directory() {
+        let (root, exe_dir) = wasm_archive_fixture(WASM_RUNTIME_ARCHIVE, b"archive bytes");
 
-        let error = find_required_wasm_runtime_lib(&exe_dir, "wasm32-wasip1")
-            .expect_err("an unstamped wasm runtime must be refused");
-        assert!(error.contains("refusing to link"), "{error}");
-        assert!(error.contains(WASM_RUNTIME_ARCHIVE), "{error}");
+        let resolved = find_required_wasm_runtime_lib(&exe_dir, "wasm32-wasip1")
+            .expect("the wasm runtime archive must resolve");
+        assert!(resolved.contains(WASM_RUNTIME_ARCHIVE), "{resolved}");
+        assert!(
+            std::path::Path::new(&resolved).starts_with(
+                root.path()
+                    .canonicalize()
+                    .expect("fixture root canonicalizes")
+            ),
+            "{resolved}"
+        );
     }
 
-    /// "Optional" decides whether the archive has to exist, not whether one
-    /// that does exist has to match. Skipping a mismatched `libhew_std.a` would
-    /// hand the program a link line silently missing the stdlib.
+    /// "Optional" governs whether the archive has to exist. One that does exist
+    /// must reach the link line — skipping it would hand the program a link
+    /// line silently missing the stdlib.
     #[cfg_attr(windows, ignore)]
     #[test]
-    fn an_unstamped_optional_wasm_archive_is_refused_not_skipped() {
-        let (_root, exe_dir) = wasm_archive_fixture("libhew_std.a", b"stale archive bytes");
+    fn a_present_optional_wasm_archive_is_not_skipped() {
+        let (_root, exe_dir) = wasm_archive_fixture("libhew_std.a", b"archive bytes");
 
-        let error = find_optional_wasm_hew_lib(&exe_dir, "libhew_std.a", "wasm32-wasip1")
-            .expect_err("an unstamped optional wasm archive must be refused");
-        assert!(error.contains("refusing to link"), "{error}");
-        assert!(error.contains("libhew_std.a"), "{error}");
+        let resolved = find_optional_wasm_hew_lib(&exe_dir, "libhew_std.a", "wasm32-wasip1")
+            .expect("a present optional wasm archive must resolve");
+        assert!(resolved.contains("libhew_std.a"), "{resolved}");
     }
 
     /// An absent optional archive is still absent, not an error.
@@ -2155,7 +2148,7 @@ mod tests {
 
         assert_eq!(
             find_optional_wasm_hew_lib(&exe_dir, "libhew_std.a", "wasm32-wasip1"),
-            Ok(None)
+            None
         );
     }
 

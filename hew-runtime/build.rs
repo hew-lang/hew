@@ -1,10 +1,4 @@
 fn main() {
-    // The WASM link line resolves this crate's staticlib directly instead of
-    // going through hew-lib's umbrella archive, so it needs its own stamp: a
-    // wasm program otherwise links whatever libhew_runtime.a happens to be on
-    // disk, with nothing tying it to the driver that produced the object.
-    hew_build_identity::scan::emit_stamp("hew-runtime", hew_build_identity::STAMP_SYMBOL_RUNTIME);
-
     // Pure Rust runtime — no C compilation needed.
     // Build scripts run on the host, so use Cargo's target cfg env vars rather
     // than `#[cfg(unix)]`/`#[cfg(windows)]` to avoid leaking native link flags

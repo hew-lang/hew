@@ -16,30 +16,6 @@ fn main() {
 
     let repo_dir = Path::new("..");
     emit_git_metadata(repo_dir);
-    emit_build_identity();
-}
-
-/// Bakes the runtime + stdlib build identity into the driver.
-///
-/// `link::find_hew_lib` reads the same digest back out of `libhew.a` and
-/// refuses to link when they disagree, which is what stops a fresh driver from
-/// pairing with a stale archive and failing at the linker with undefined
-/// `hew_*` symbols. Computing it here — rather than reusing the version
-/// string — is the whole point: the version does not move between commits, but
-/// the digest moves on every runtime or stdlib source edit.
-fn emit_build_identity() {
-    let manifest_dir = std::path::PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"),
-    );
-    let workspace_root = hew_build_identity::scan::workspace_root_from_manifest_dir(&manifest_dir)
-        .unwrap_or_else(|error| panic!("hew-cli build identity: {error}"));
-
-    // Fail closed: a driver with no identity could not validate any archive.
-    let identity = hew_build_identity::scan::compute(&workspace_root)
-        .unwrap_or_else(|error| panic!("hew-cli build identity: {error}"));
-    identity.emit_cargo_rerun_directives();
-
-    println!("cargo:rustc-env=HEW_BUILD_IDENTITY={}", identity.digest());
 }
 
 fn emit_git_metadata(repo_dir: &Path) {

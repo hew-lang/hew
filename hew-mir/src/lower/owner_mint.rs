@@ -34,6 +34,23 @@
 //!
 //! There is therefore no fourteenth seam to open later.
 //!
+//! # Where privacy stops, and what carries the claim there
+//!
+//! The three bullets above are claims about the REGISTRARS, and privacy really
+//! does carry them: their signatures demand an [`OwnerMintWarrant`] whose only
+//! constructors live here. They are NOT claims about the LEDGER those
+//! registrars write into. `Builder::owned_locals` is `pub(crate)` and
+//! `OwnedLocalEntry` is a private item of `lower/mod.rs` — which, in Rust,
+//! every child module of `lower` can see. So a direct `push` of an
+//! `OwnedLocalEntry` onto that ledger, written straight into `expr.rs`,
+//! compiles, mints a scope-exit owner, and asks nothing. The two push sites in
+//! the tree are both registrars, so nothing is wrong today; but "does not
+//! compile" was never what stopped a third one.
+//!
+//! `every_owned_locals_ledger_mint_site_sits_behind_a_warrant` below carries
+//! that half, as a property of the source over the whole crate rather than of
+//! the shapes anyone happened to construct.
+//!
 //! # Polarity, and why it differs between constructors
 //!
 //! The two queries have deliberately opposite fail-closed directions and the
@@ -371,5 +388,134 @@ mod tests {
         let warrant = OwnerMintWarrant::granting_for_tests();
         assert!(!warrant.withholds_mint());
         assert_eq!(warrant.origin(), OwnerMintOrigin::Initializer);
+    }
+
+    /// Every `.rs` file in this crate, walked at run time.
+    ///
+    /// A hard-coded `include_str!` list is what the ledger scan below must NOT
+    /// be: `Builder::owned_locals` is reachable from anywhere in `hew-mir`, so
+    /// a file added tomorrow has to be in scope without anyone remembering to
+    /// add it. `include_str!` cannot express that; a directory walk can.
+    fn crate_sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            let entries =
+                std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let rel = path
+                        .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let text = std::fs::read_to_string(&path)
+                        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+                    out.push((rel, text));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut out,
+        );
+        out.sort();
+        assert!(
+            out.len() > 20,
+            "the crate source walk must find the tree, not silently nothing — found {}",
+            out.len()
+        );
+        out
+    }
+
+    /// The ledger half of the module claim, which privacy alone does not carry.
+    ///
+    /// The three registrars are braced at compile time: their signatures demand
+    /// an [`OwnerMintWarrant`], which cannot be constructed outside this module
+    /// or without asking. The LEDGER they write into is not.
+    /// `Builder::owned_locals` is `pub(crate)` and `OwnedLocalEntry` is a
+    /// private item of `lower/mod.rs`, which in Rust means every child module of
+    /// `lower` can see it — so a direct `push` of an entry onto that ledger,
+    /// written in `expr.rs`, COMPILES, mints a scope-exit owner, and answers no
+    /// provenance question at all. Nothing in the tree does that today; the
+    /// point is that nothing was stopping it, so "a new mint site does not
+    /// compile until it produces a warrant" was true of the registrars and not
+    /// of the thing they register into.
+    ///
+    /// This closes it the same way `granting_from_source_inventory_is_closed`
+    /// closes the test-only constructor: as a property of the SOURCE, so it
+    /// holds for the mint site nobody has written yet. Every site that ADDS an
+    /// entry to the ledger must sit inside a function that demands a warrant.
+    /// Retraction sites (`set_owned_local_disposition`'s `&mut` walk) are not
+    /// scanned: dispositioning an existing entry off the scope-exit set removes
+    /// a release, which is the leak direction and is not an owner mint.
+    ///
+    /// The needles are assembled at run time so this test's own source does not
+    /// contain them and match itself — the same device
+    /// `every_warrant_constructor_asks_the_authority_or_the_ledger` uses.
+    #[test]
+    fn every_owned_locals_ledger_mint_site_sits_behind_a_warrant() {
+        // Spellings that ADD an entry to the ledger. `retain` / `iter_mut` are
+        // deliberately absent — see the doc comment.
+        const REGISTRAR_FILE: &str = "src/lower/ownership.rs";
+        let field = format!("owned_local{}", "s");
+        let adds: Vec<String> = ["push", "extend", "append", "insert", "resize"]
+            .iter()
+            .map(|verb| format!("{field}.{verb}"))
+            .collect();
+        let literal = format!("OwnedLocal{}", "Entry {");
+        let definition = format!("struct {literal}");
+        let mut sites = 0usize;
+        for (name, source) in crate_sources() {
+            // The declaration of the entry type is not a construction of one.
+            let literals = source.matches(&literal).count() - source.matches(&definition).count();
+            let count = adds
+                .iter()
+                .map(|a| source.matches(a.as_str()).count())
+                .sum::<usize>();
+            if literals == 0 && count == 0 {
+                continue;
+            }
+            assert_eq!(
+                name, REGISTRAR_FILE,
+                "{name} writes the owned-locals ledger directly. The ledger is \
+                 `pub(crate)` and the entry type is visible to every child of \
+                 `lower`, so this compiles — and mints a scope-exit owner having \
+                 asked the provenance authority nothing. Route it through \
+                 `register_owned_local` / `register_owned_local_alias` / \
+                 `register_synthetic_owned_local`, which demand an \
+                 `OwnerMintWarrant`."
+            );
+            sites += count;
+            // Each adding site must sit inside a function that demands one.
+            for add in &adds {
+                let mut from = 0usize;
+                while let Some(hit) = source[from..].find(add.as_str()) {
+                    let at = from + hit;
+                    let head = source[..at]
+                        .rfind("\n    pub(crate) fn ")
+                        .or_else(|| source[..at].rfind("\n    fn "))
+                        .unwrap_or_else(|| {
+                            panic!("{name}: `{add}` at byte {at} is not inside a method")
+                        });
+                    let signature = &source[head..at];
+                    assert!(
+                        signature.contains("warrant: OwnerMintWarrant"),
+                        "{name}: `{add}` reaches the ledger from a function that \
+                         does not demand an `OwnerMintWarrant`; the mint would be \
+                         decided without the provenance answer"
+                    );
+                    from = at + add.len();
+                }
+            }
+        }
+        assert_eq!(
+            sites, 2,
+            "expected exactly the two registrar push sites in {REGISTRAR_FILE}; a \
+             different count means a mint site was added or removed and this \
+             inventory must be re-read rather than re-numbered"
+        );
     }
 }

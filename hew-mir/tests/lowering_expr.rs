@@ -4,6 +4,8 @@
 
 #[path = "lowering_expr/anonymous_owned_temp_drop.rs"]
 mod anonymous_owned_temp_drop;
+#[path = "lowering_expr/audited_extern_argument_provenance.rs"]
+mod audited_extern_argument_provenance;
 #[path = "lowering_expr/audited_extern_result_provenance.rs"]
 mod audited_extern_result_provenance;
 #[path = "lowering_expr/binder_shape_release_sweep.rs"]

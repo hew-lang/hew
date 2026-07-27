@@ -1575,8 +1575,14 @@ pub struct ExternContractTable {
     /// returns: a `string` PARAMETER is a pointer the callee may retain or
     /// release no matter what the declaration says. So a name enters this set
     /// only when an AUDIT says so — see
-    /// [`build_extern_contract_table`] for the two admission clauses and the
-    /// argument that they are a proof rather than a fallback.
+    /// [`build_extern_contract_table`] for the two admission clauses, for the
+    /// argument that they are a proof rather than a fallback, and for why an
+    /// UNAUDITED parameter is read as possibly-taken (a leak) rather than as a
+    /// declared borrow (a double release).
+    ///
+    /// Admission keys on the SYMBOL, never on the declaring module's
+    /// [`hew_hir::ExternProvenance`]: the same extern reached as a root
+    /// compilation unit and through an import must get the same answer.
     borrowing_arg_names: HashSet<String>,
     /// Declared externs whose RESULT is provably not an un-releasable foreign
     /// handle — the set that answers "this call is not PROOF of foreignness".
@@ -1734,19 +1740,31 @@ impl ExternContractTable {
 /// as "the callee reads (or copies from) the parameter; **the caller keeps the
 /// drop obligation**", which is exactly the fact this set is read for.
 ///
-/// Two admission clauses, both required:
+/// Two admission clauses, both required, and NEITHER of them the declaring
+/// module's identity:
 ///
-/// 1. the declaration's [`hew_hir::ExternProvenance`] is `is_stdlib()` — the
-///    symbol belongs to this compiler's OWN runtime ABI, not to a foreign host.
-///    A root or user-package `extern` block that spells its symbol
-///    `hew_fs_rename` is `Root`/`Module(..)` provenance and is NOT admitted, so
-///    the audited row cannot be claimed by name-spoofing. This is the same
-///    positive per-declaration fact `foreign_decl_ids` already reads, not a
-///    name-prefix guess;
+/// 1. [`hew_types::jit_symbols::is_classified_hew_ffi_symbol`] claims the name,
+///    and the declaration's arity equals the audited contract's parameter
+///    count. This is the positive symbol identity the RESULT axis already
+///    requires (Clause A2/A3 below): the audited row is a fact about THIS
+///    compiler's own runtime symbol, keyed by the symbol, so a name it does not
+///    claim cannot claim the row and a declaration that disagrees with the
+///    audited signature is not a declaration of the audited callee;
 /// 2. the audited contract exists AND every parameter position is `Borrow`. A
 ///    `Consume` or `Retain` position anywhere in the signature, or an
 ///    [`crate::ffi_contracts::ExternOwnershipFact::Absent`] verdict, refuses the
 ///    name outright.
+///
+/// Clause 1 used to read [`hew_hir::ExternProvenance::is_stdlib`] instead. That
+/// made the answer depend on HOW the declaring file was handed to the compiler:
+/// `std/net/net.hew` reached through `import std::net` carries
+/// `Module("std.net")` and was admitted, while the SAME file as a root
+/// compilation unit carries `Root` and was not — so `connect_timeout` lost
+/// every one of its thirteen `host` releases on the root path, including the
+/// ordinary `return`. Round ten removed exactly this dependency from the RESULT
+/// axis; it was still live here, on the axis the same table had read first.
+/// Symbol identity is a property of the callee, which is what the question is
+/// about; the declaring module's spelling is a property of the invocation.
 ///
 /// Clause 2 is deliberately whole-signature rather than per-position. The
 /// consumer ([`crate::lower::temp_drop::string_call_borrows`]) asks one boolean
@@ -1755,6 +1773,35 @@ impl ExternContractTable {
 /// every argument of every admitted call. `hew_string_drop`
 /// (`params = [Consume]`) is refused by this clause, so the universal release
 /// can never be read as borrowing its argument.
+///
+/// # What an UNAUDITED extern argument means, and why
+///
+/// An extern with no audited row answers `false` here, and the consumer reads
+/// `false` as "the callee may have taken the handle" — so the caller withholds
+/// its release. The failure direction is a LEAK: a host that really borrows,
+/// but carries no row, keeps a buffer alive forever.
+///
+/// The alternative reading is available and tempting. Hew spells transfer as
+/// `consume`, and [`hew_hir::HirExternFn::param_consume`] carries that modifier
+/// per parameter, so "a non-`consume` extern parameter is a declared borrow"
+/// could be read straight off the declaration with no audit at all. It is
+/// rejected here for one reason: its failure direction is a DOUBLE RELEASE.
+/// Nothing in the front end requires an author to have thought about ownership
+/// at a heap-typed extern parameter — `ResourceBoundaryParamMustConsume` fires
+/// only for an affine `#[resource]`/`#[linear]` parameter, so an omitted
+/// `consume` on a `string` is indistinguishable from an omitted THOUGHT. Under
+/// that reading every such declaration silently licenses a caller-side free of
+/// a pointer the host may already have freed, and heap corruption is neither
+/// diagnosable nor recoverable, whereas the leak this file chooses is bounded,
+/// observable, and — as of this round — measured file by file by the
+/// release-count differential over the shipped corpora.
+///
+/// Making the declaration load-bearing is the right end state and is a
+/// front-end change, not a MIR one: the checker would have to REQUIRE an
+/// explicit disposition on every heap-typed extern parameter (a breaking
+/// surface rule) before an absent `consume` could be read as a considered
+/// borrow. Until it does, "borrow only where audited" is the reading whose
+/// mistakes leak instead of corrupting.
 ///
 /// # The RESULT axis — the two clauses that answer "not proof of foreignness"
 ///
@@ -1812,13 +1859,12 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
         if let hew_hir::HirItem::ExternFn(ef) = item {
             names.insert(ef.name.clone());
             decl_ids.insert(ef.id);
-            if ef.provenance.is_stdlib() {
-                if extern_all_params_audited_borrow(&ef.name) {
-                    borrowing_arg_names.insert(ef.name.clone());
-                }
-            } else {
+            if !ef.provenance.is_stdlib() {
                 foreign_decl_ids.insert(ef.id);
                 foreign_names.insert(ef.name.clone());
+            }
+            if extern_all_params_audited_borrow(&ef.name, ef.param_tys.len()) {
+                borrowing_arg_names.insert(ef.name.clone());
             }
             if extern_result_is_audited_owned_transfer(&ef.name, ef.param_tys.len())
                 || pointer_free_records.ty_is_pointer_free(&ef.return_ty)
@@ -1956,20 +2002,26 @@ fn field_ty_is_pointer_free(ty: &ResolvedTy, pointer_free: &HashSet<String>) -> 
     pointer_free.contains(name.as_str()) || pointer_free.contains(hew_types::short_name(name))
 }
 
-/// Clause 2 of the declared-borrow admission: the audited contract exists and
-/// EVERY parameter position is `Borrow`.
+/// The ARGUMENT-axis admission — see [`build_extern_contract_table`] for why
+/// each part is required. Structurally the mirror of
+/// [`extern_result_is_audited_owned_transfer`], and deliberately so: the two
+/// axes read the same audited rows, so they must key on the same identity.
 ///
 /// A zero-parameter contract vacuously satisfies "every position borrows" and
 /// is admitted; it has no heap argument to get wrong, and the consumer's
 /// question is only ever asked about a call that passes one.
-fn extern_all_params_audited_borrow(symbol: &str) -> bool {
+fn extern_all_params_audited_borrow(symbol: &str, declared_arity: usize) -> bool {
+    if !hew_types::jit_symbols::is_classified_hew_ffi_symbol(symbol) {
+        return false;
+    }
     crate::ffi_contracts::extern_ownership_contract(symbol)
         .contract()
         .is_some_and(|contract| {
-            contract
-                .params
-                .iter()
-                .all(|param| *param == crate::ffi_contracts::ExternParamOwnership::Borrow)
+            contract.params.len() == declared_arity
+                && contract
+                    .params
+                    .iter()
+                    .all(|param| *param == crate::ffi_contracts::ExternParamOwnership::Borrow)
         })
 }
 
@@ -5638,47 +5690,75 @@ fn main() {}
     }
 
     #[test]
-    fn a_root_declaration_cannot_claim_a_runtime_row_by_spelling_its_name() {
-        // `hew_fs_rename` DOES carry an all-`Borrow` audited contract. The row
-        // describes this compiler's own runtime ABI, so only a declaration whose
-        // provenance IS the standard library may read it. A root `extern` block
-        // that spells the same symbol is a different function that happens to
-        // share a name, and admitting it would let any user file forge a borrow
-        // proof for a host it wrote.
-        const SPOOF: &str = r#"extern "C" {
+    fn a_root_declaration_reads_the_same_audited_argument_row_as_an_import() {
+        // `hew_fs_rename` carries an all-`Borrow` audited contract. The row is a
+        // fact about the SYMBOL, so it must answer the same for a declaration
+        // reached as a root compilation unit as for one reached through
+        // `import std::fs` — the axis that cost `std/net/net.hew` thirteen
+        // `host` releases when this clause read `ExternProvenance::is_stdlib`.
+        const ROOT_UNIT: &str = r#"extern "C" {
     fn hew_fs_rename(from: string, to: string) -> i64;
 }
 fn main() {}
 "#;
-        let t = build_extern_contract_table(&tests::lower_source(SPOOF));
+        // The declaration is still checked against the audited signature: a
+        // block that declares a DIFFERENT function under a classified name is
+        // not a declaration of the audited callee, and says nothing about it.
+        const WRONG_ARITY: &str = r#"extern "C" {
+    fn hew_fs_rename(only_one: string) -> i64;
+}
+fn main() {}
+"#;
+        let t = build_extern_contract_table(&tests::lower_source(ROOT_UNIT));
         assert!(
-            extern_all_params_audited_borrow("hew_fs_rename"),
+            extern_all_params_audited_borrow("hew_fs_rename", 2),
             "guard: the audited table must actually carry an all-`Borrow` row \
              for `hew_fs_rename`, or this test proves nothing"
         );
         assert!(
-            !t.extern_borrows_audited_heap_args("hew_fs_rename"),
-            "a root-provenance declaration is foreign; the audited row belongs \
-             to the standard library's declaration of that symbol and must not \
-             be claimable by name"
+            t.extern_borrows_audited_heap_args("hew_fs_rename"),
+            "how the declaring file was handed to the compiler is not a property \
+             of what the callee does with its arguments"
         );
+        let t = build_extern_contract_table(&tests::lower_source(WRONG_ARITY));
+        assert!(
+            !t.extern_borrows_audited_heap_args("hew_fs_rename"),
+            "an arity that disagrees with the audited signature is a different \
+             function; the row must not be claimed by name alone"
+        );
+    }
+
+    #[test]
+    fn an_unclassified_symbol_is_not_admitted_by_its_declaration() {
+        // The ARGUMENT axis keys on the same positive symbol identity the
+        // RESULT axis uses. A host symbol the runtime does not classify has no
+        // audited row to read, so it is ownership-opaque and the caller
+        // withholds — a leak, never a double release.
+        const FOREIGN: &str = r#"extern "C" {
+    fn definitely_not_a_hew_runtime_symbol(s: string) -> i64;
+}
+fn main() {}
+"#;
+        let t = build_extern_contract_table(&tests::lower_source(FOREIGN));
+        assert!(t.is_extern_name("definitely_not_a_hew_runtime_symbol"));
+        assert!(!t.extern_borrows_audited_heap_args("definitely_not_a_hew_runtime_symbol"));
     }
 
     #[test]
     fn an_all_borrow_audited_signature_is_the_only_admitted_shape() {
         assert!(
-            extern_all_params_audited_borrow("hew_fs_rename"),
+            extern_all_params_audited_borrow("hew_fs_rename", 2),
             "`hew_fs_rename` is audited `params = [borrow, borrow]`: it reads \
              both paths and releases neither, so the caller keeps the sole drop \
              obligation for the temporaries it passes"
         );
         assert!(
-            !extern_all_params_audited_borrow("hew_string_drop"),
+            !extern_all_params_audited_borrow("hew_string_drop", 1),
             "the universal release consumes its argument; reading it as \
              borrowing would leave the caller a second release"
         );
         assert!(
-            !extern_all_params_audited_borrow("no_such_audited_symbol"),
+            !extern_all_params_audited_borrow("no_such_audited_symbol", 0),
             "an unaudited symbol has no contract at all and must not be \
              admitted by absence"
         );

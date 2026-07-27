@@ -636,7 +636,7 @@ impl Builder {
     /// returns no handle at all), which says nothing whatsoever about what it
     /// does with the `string` it is PASSED — the host may retain it or release it
     /// with `hew_string_drop`. `extern_borrows_audited_heap_args` is the argument
-    /// authority, and it is unconditionally empty today.
+    /// authority.
     ///
     /// This is the same veto, from the same table, that
     /// [`crate::lower::temp_drop::string_call_borrows`] applies ahead of its

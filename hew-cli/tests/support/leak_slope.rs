@@ -585,10 +585,22 @@ pub fn require_macos_poisoned_allocator() {
 /// allocator turns into an abort (double-free) or a poisoned read.
 pub fn run_under_malloc_scribble(bin: &Path) -> Output {
     require_macos_poisoned_allocator();
-    Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .unwrap_or_else(|error| panic!("run {} under poisoned allocator: {error}", bin.display()))
+        .env("MallocGuardEdges", "1");
+    try_run_bounded_command(
+        command,
+        format!("run {} under the poisoned allocator", bin.display()),
+        LEAKS_TIMEOUT,
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "probe {} did not finish under the poisoned allocator within \
+             {LEAKS_TIMEOUT:?}: {error}. A hung or deadlocked memory-safety \
+             probe has established nothing and must not report success.",
+            bin.display()
+        )
+    })
 }

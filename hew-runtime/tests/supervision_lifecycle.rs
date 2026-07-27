@@ -34,6 +34,7 @@ use hew_runtime::actor::{
 use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::hew_actor_link;
+use hew_runtime::mailbox_header::HewSysMsg;
 use hew_runtime::monitor::{hew_actor_demonitor, register_actor_monitor, HewDownMessage};
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_dynamic, hew_supervisor_add_child_spec, hew_supervisor_child_count,
@@ -41,7 +42,7 @@ use hew_runtime::supervisor::{
     hew_supervisor_set_child_lifecycle, hew_supervisor_set_child_state_drop,
     hew_supervisor_set_circuit_breaker, hew_supervisor_set_restart_notify,
     hew_supervisor_wait_restart, HewChildSpec, HEW_CIRCUIT_BREAKER_CLOSED,
-    HEW_CIRCUIT_BREAKER_OPEN, SYS_MSG_DOWN,
+    HEW_CIRCUIT_BREAKER_OPEN,
 };
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSupervisor};
 
@@ -159,14 +160,23 @@ impl MonitorDispatchSignal {
         *self.state.lock().unwrap() = MonitorDispatchState::default();
     }
 
-    fn record_dispatch(&self, msg_type: i32, data: *mut c_void, data_size: usize) {
+    /// Count an APPLICATION message. The watcher's two channels are separate
+    /// entry points now, so both feed this one counter to keep
+    /// `total_dispatches` meaning "messages this actor processed".
+    fn record_user_dispatch(&self) {
         let mut state = self.state.lock().unwrap();
         state.total_dispatches += 1;
-        if msg_type == SYS_MSG_DOWN
+        self.cond.notify_all();
+    }
+
+    fn record_dispatch(&self, sys_msg: i32, data: *mut c_void, data_size: usize) {
+        let mut state = self.state.lock().unwrap();
+        state.total_dispatches += 1;
+        if sys_msg == HewSysMsg::Down.as_i32()
             && !data.is_null()
             && data_size == std::mem::size_of::<HewDownMessage>()
         {
-            // SAFETY: SYS_MSG_DOWN payload size matches HewDownMessage.
+            // SAFETY: Down payload size matches HewDownMessage.
             let down = unsafe { (data.cast::<HewDownMessage>().cast_const()).read_unaligned() };
             state.down_messages.push(down);
         }
@@ -218,16 +228,26 @@ impl MonitorDispatchSignal {
 
 static MONITOR_DISPATCH_SIGNAL: MonitorDispatchSignal = MonitorDispatchSignal::new();
 
-unsafe extern "C-unwind" fn monitor_dispatch(
+unsafe extern "C-unwind" fn monitor_user_dispatch(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
-    msg_type: i32,
-    data: *mut c_void,
-    data_size: usize,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
     _borrow_mode: i32,
 ) -> *mut c_void {
-    MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
+    MONITOR_DISPATCH_SIGNAL.record_user_dispatch();
     std::ptr::null_mut()
+}
+
+unsafe extern "C-unwind" fn monitor_sys_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    sys_msg: i32,
+    data: *mut c_void,
+    data_size: usize,
+) {
+    MONITOR_DISPATCH_SIGNAL.record_dispatch(sys_msg, data, data_size);
 }
 
 unsafe extern "C-unwind" fn noop_dispatch(
@@ -328,6 +348,7 @@ fn supervised_actor_crash_and_restart() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
@@ -451,6 +472,7 @@ fn lifecycle_wrapper_fires_on_initial_spawn_and_restart() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
@@ -531,7 +553,7 @@ fn circuit_breaker_trips_on_repeated_crashes() {
     MONITOR_DISPATCH_SIGNAL.reset();
 
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 10, 60);
-    let watcher = TestActor::spawn(monitor_dispatch);
+    let watcher = TestActor::spawn_with_sys(monitor_user_dispatch, monitor_sys_dispatch);
     // SAFETY: sup and watcher are live for the test duration; child-mgmt FFI is raw.
     unsafe {
         hew_supervisor_set_restart_notify(sup.as_ptr());
@@ -549,6 +571,7 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
@@ -635,21 +658,17 @@ fn link_delivers_exit_on_crash() {
     static LINK_EXIT_RECEIVED: AtomicI32 = AtomicI32::new(0);
     static LINK_EXIT_SIGNAL: DispatchSignal = DispatchSignal::new();
 
-    unsafe extern "C-unwind" fn exit_detecting_dispatch(
+    unsafe extern "C-unwind" fn exit_detecting_sys_dispatch(
         _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
-        msg_type: i32,
+        sys_msg: i32,
         _data: *mut c_void,
         _data_size: usize,
-        _borrow_mode: i32,
-    ) -> *mut c_void {
-        // SYS_MSG_EXIT = 103
-        if msg_type == 103 {
+    ) {
+        if sys_msg == HewSysMsg::Exit.as_i32() {
             LINK_EXIT_RECEIVED.fetch_add(1, Ordering::SeqCst);
             LINK_EXIT_SIGNAL.record_dispatch();
         }
-
-        std::ptr::null_mut()
     }
 
     let _guard = TEST_LOCK
@@ -661,7 +680,7 @@ fn link_delivers_exit_on_crash() {
     LINK_EXIT_SIGNAL.reset();
 
     let actor_a = TestActor::spawn(counting_dispatch);
-    let actor_b = TestActor::spawn(exit_detecting_dispatch);
+    let actor_b = TestActor::spawn_with_sys(noop_dispatch, exit_detecting_sys_dispatch);
 
     // SAFETY: actors are live; reading id and FFI ops use the runtime's contract.
     unsafe {
@@ -730,20 +749,16 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
         }
     }
 
-    unsafe extern "C-unwind" fn exit_observing_dispatch(
+    unsafe extern "C-unwind" fn exit_observing_sys_dispatch(
         _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
-        msg_type: i32,
+        sys_msg: i32,
         _data: *mut c_void,
         _data_size: usize,
-        _borrow_mode: i32,
-    ) -> *mut c_void {
-        // SYS_MSG_EXIT = 103.
-        if msg_type == 103 {
+    ) {
+        if sys_msg == HewSysMsg::Exit.as_i32() {
             LINK_EXIT_RECEIVED.fetch_add(1, Ordering::SeqCst);
         }
-
-        std::ptr::null_mut()
     }
 
     let _guard = TEST_LOCK
@@ -760,7 +775,7 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
     let _order_hook_guard = CrashTeardownOrderHookGuard;
 
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
-    let linked = TestActor::spawn(exit_observing_dispatch);
+    let linked = TestActor::spawn_with_sys(noop_dispatch, exit_observing_sys_dispatch);
 
     // SAFETY: supervisor and standalone actor wrappers keep the
     // underlying handles live; child-management and link FFI are raw.
@@ -780,6 +795,7 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
@@ -807,7 +823,7 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
         );
 
         // Link standalone actor → supervised child.  When the child
-        // crashes, propagate_exit_to_links must enqueue SYS_MSG_EXIT in
+        // crashes, propagate_exit_to_links must enqueue HewSysMsg::Exit in
         // the standalone actor's mailbox.
         hew_actor_link(linked.as_ptr(), child);
 
@@ -883,7 +899,7 @@ fn monitor_detects_crash() {
     hew_deterministic_reset();
     MONITOR_DISPATCH_SIGNAL.reset();
 
-    let watcher = TestActor::spawn(monitor_dispatch);
+    let watcher = TestActor::spawn_with_sys(monitor_user_dispatch, monitor_sys_dispatch);
     let target = TestActor::spawn(noop_dispatch);
 
     // SAFETY: actors are live; monitor/fault-inject/send use runtime contract.
@@ -928,7 +944,7 @@ fn demonitor_before_crash_suppresses_down() {
     hew_deterministic_reset();
     MONITOR_DISPATCH_SIGNAL.reset();
 
-    let watcher = TestActor::spawn(monitor_dispatch);
+    let watcher = TestActor::spawn_with_sys(monitor_user_dispatch, monitor_sys_dispatch);
     let target = TestActor::spawn(noop_dispatch);
 
     // SAFETY: actors are live; monitor/demonitor/fault-inject use runtime contract.
@@ -973,7 +989,7 @@ fn late_monitor_after_crash_delivers_immediate_down() {
     hew_deterministic_reset();
     MONITOR_DISPATCH_SIGNAL.reset();
 
-    let watcher = TestActor::spawn(monitor_dispatch);
+    let watcher = TestActor::spawn_with_sys(monitor_user_dispatch, monitor_sys_dispatch);
     let target = TestActor::spawn(noop_dispatch);
 
     // SAFETY: actors are live; reading target id + fault-injecting use runtime contract.
@@ -1143,6 +1159,7 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
@@ -1236,6 +1253,7 @@ fn dynamic_child_restart_runs_state_drop() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
@@ -1327,6 +1345,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
@@ -1354,6 +1373,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,

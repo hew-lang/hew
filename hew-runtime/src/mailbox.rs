@@ -30,11 +30,12 @@ use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
-use crate::mailbox_header::{header_validate, normalize_coalesce_fallback};
+use crate::mailbox_header::{header_validate, normalize_coalesce_fallback, Origin};
 use crate::scheduler::{MESSAGES_RECEIVED, MESSAGES_SENT};
 use crate::set_last_error;
 use crate::tracing::HewTraceContext;
 
+pub use crate::mailbox_header::HewSysMsg;
 pub use crate::mailbox_header::{
     HEW_MSG_ENVELOPE_ALIAS_ACTIVE, HEW_MSG_ENVELOPE_ARENA_BACKED,
     HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER, HEW_MSG_ENVELOPE_FORKED,
@@ -72,6 +73,15 @@ impl Drop for MailboxAllocFailureGuard {
 pub(crate) fn fail_mailbox_alloc_on_nth(n: usize) -> MailboxAllocFailureGuard {
     FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| slot.set(n));
     MailboxAllocFailureGuard
+}
+
+/// Whether an injected allocation failure is still pending on this thread.
+///
+/// `should_fail_mailbox_alloc` disarms the trap only when it actually fires, so
+/// a still-armed trap after a call is proof that the call allocated nothing.
+#[cfg(test)]
+pub(crate) fn mailbox_alloc_failure_still_armed() -> bool {
+    FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| slot.get() != usize::MAX)
 }
 
 #[cfg(test)]
@@ -1025,8 +1035,11 @@ pub struct HewMailbox {
     message_drop_fn: Option<HewMessageDropFn>,
     /// Whether the mailbox has been closed.
     closed: std::sync::atomic::AtomicBool,
-    /// Whether a shutdown system message (`msg_type = -1`) has been enqueued.
-    stop_signal_sent: std::sync::atomic::AtomicBool,
+    /// Whether a stop has been requested on this mailbox.
+    ///
+    /// This flag IS the stop signal — there is no queued node. See
+    /// [`mailbox_request_stop`].
+    stop_requested: std::sync::atomic::AtomicBool,
     /// Condvar notified when a user message is consumed, waking blocked senders.
     not_full: Condvar,
     /// High-water mark: maximum `count` value observed.
@@ -1167,7 +1180,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
-        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
+        stop_requested: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: false,
@@ -1205,7 +1218,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
-        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
+        stop_requested: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1252,7 +1265,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
-        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
+        stop_requested: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1291,7 +1304,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         coalesce_fallback: HewOverflowPolicy::DropOld,
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
-        stop_signal_sent: std::sync::atomic::AtomicBool::new(false),
+        stop_requested: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: true,
@@ -2287,7 +2300,12 @@ pub(crate) unsafe fn hew_mailbox_send_guaranteed(
     HewError::Ok as i32
 }
 
-/// Send a system message, bypassing capacity limits.
+/// Send a runtime lifecycle signal, bypassing capacity limits.
+///
+/// `sys_msg` must be a [`HewSysMsg`] discriminant; any other value is refused
+/// (fail-closed) rather than enqueued, so the system queue can only ever carry
+/// members of the closed set. This is the privileged entry point — it is not
+/// reachable from `hew_actor_send`, which routes to the USER queue.
 ///
 /// # Safety
 ///
@@ -2295,24 +2313,37 @@ pub(crate) unsafe fn hew_mailbox_send_guaranteed(
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_send_sys(
     mb: *mut HewMailbox,
-    msg_type: i32,
+    sys_msg: i32,
     data: *mut c_void,
     size: usize,
 ) {
+    let Some(kind) = HewSysMsg::from_raw(sys_msg) else {
+        set_last_error(format!(
+            "hew_mailbox_send_sys: refusing system message with unknown kind {sys_msg}"
+        ));
+        eprintln!(
+            "hew_mailbox_send_sys: refusing system message with unknown kind {sys_msg} \
+             (the system queue carries only the closed HewSysMsg set)"
+        );
+        return;
+    };
     // SAFETY: forwarded caller contract.
-    let _ = unsafe { hew_mailbox_send_sys_checked(mb, msg_type, data, size) };
+    let _ = unsafe { mailbox_send_sys_checked(mb, kind, data, size) };
 }
 
 /// Internal checked system send. Returns false when the message node cannot be
 /// allocated; callers that claim one-shot delivery can then take an explicit
 /// controlled-failure path instead of silently losing the message.
 ///
+/// Takes the typed kind: no caller inside the runtime can put a value on the
+/// system queue that is not a lifecycle signal.
+///
 /// # Safety
 ///
 /// Same requirements as [`hew_mailbox_send`].
-pub(crate) unsafe fn hew_mailbox_send_sys_checked(
+pub(crate) unsafe fn mailbox_send_sys_checked(
     mb: *mut HewMailbox,
-    msg_type: i32,
+    sys_msg: HewSysMsg,
     data: *mut c_void,
     size: usize,
 ) -> bool {
@@ -2324,13 +2355,13 @@ pub(crate) unsafe fn hew_mailbox_send_sys_checked(
     // root must be minted only on the supervisor-dispatch side (via
     // `ensure_supervisor_trace_root`), never in or under the `hew_actor_trap`
     // signal-handler context that originates child-crash notifications.
-    let node = unsafe { msg_node_alloc_sys(msg_type, data, size, ptr::null_mut()) };
+    let node = unsafe { msg_node_alloc_sys(sys_msg.as_i32(), data, size, ptr::null_mut()) };
     if node.is_null() {
         set_last_error(format!(
-            "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"
+            "hew_mailbox_send_sys: failed to deliver system message ({sys_msg:?}, size={size})"
         ));
         eprintln!(
-            "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"
+            "hew_mailbox_send_sys: failed to deliver system message ({sys_msg:?}, size={size})"
         );
         return false;
     }
@@ -2338,6 +2369,21 @@ pub(crate) unsafe fn hew_mailbox_send_sys_checked(
     // SAFETY: `node` is freshly allocated and owned by this mailbox send.
     unsafe { enqueue_sys_node(mb, node) };
     true
+}
+
+/// Typed system send that ignores allocation failure.
+///
+/// # Safety
+///
+/// Same requirements as [`hew_mailbox_send`].
+pub(crate) unsafe fn mailbox_send_sys(
+    mb: *mut HewMailbox,
+    sys_msg: HewSysMsg,
+    data: *mut c_void,
+    size: usize,
+) {
+    // SAFETY: forwarded caller contract.
+    let _ = unsafe { mailbox_send_sys_checked(mb, sys_msg, data, size) };
 }
 
 unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {
@@ -2350,49 +2396,45 @@ unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Shutdown sentinel `msg_type` — re-exported from the target-independent
-/// [`crate::mailbox_header`] module (the single authority, shared with the WASM
-/// mailbox so the two cannot drift; the native `mailbox` module is
-/// `#[cfg(not(wasm32))]` and unavailable on wasm32). See
-/// [`mailbox_send_stop_sys_once`] and the interception in
-/// `scheduler::activate_actor`.
-pub(crate) use crate::mailbox_header::HEW_MAILBOX_SHUTDOWN_SENTINEL;
+/// Latch a stop request on this mailbox, OUT OF BAND.
+///
+/// The stop signal is this atomic bool, not a queued node. `hew_actor_stop`
+/// calls this for a Running actor and the per-message loop in
+/// `scheduler::activate_actor` reads it at loop top via
+/// [`mailbox_stop_requested`].
+///
+/// This function CANNOT FAIL. That is its whole point. Its predecessor,
+/// `mailbox_send_stop_sys_once`, allocated a sentinel `HewMsgNode` *before*
+/// latching the flag, so on allocation failure it returned `false` having
+/// neither enqueued the node nor set the flag — and both callers discarded the
+/// result. Under memory pressure a Running actor therefore never observed its
+/// own stop and ran until something else tore it down. There is no allocation
+/// on this path, so there is no such window.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer or null.
+pub(crate) unsafe fn mailbox_request_stop(mb: *mut HewMailbox) {
+    if mb.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees `mb` is valid when non-null.
+    let mb = unsafe { &*mb };
+    mb.stop_requested.store(true, Ordering::Release);
+}
 
-pub(crate) unsafe fn mailbox_send_stop_sys_once(mb: *mut HewMailbox) -> bool {
+/// Whether a stop has been requested on this mailbox.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer or null. A null mailbox is NOT a stop
+/// request (fail-closed against a spurious self-stop).
+pub(crate) unsafe fn mailbox_stop_requested(mb: *mut HewMailbox) -> bool {
     if mb.is_null() {
         return false;
     }
-    // SAFETY: Caller guarantees `mb` is valid.
-    let mb = unsafe { &*mb };
-
-    // SAFETY: stop signals carry no payload.
-    let node = unsafe {
-        msg_node_alloc(
-            HEW_MAILBOX_SHUTDOWN_SENTINEL,
-            ptr::null(),
-            0,
-            ptr::null_mut(),
-        )
-    };
-    if node.is_null() {
-        set_last_error("hew_actor_stop: failed to enqueue shutdown system message");
-        eprintln!("hew_actor_stop: failed to enqueue shutdown system message");
-        return false;
-    }
-
-    if mb
-        .stop_signal_sent
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        // SAFETY: `node` was allocated above and was not published to the queue.
-        unsafe { hew_msg_node_free(node) };
-        return false;
-    }
-
-    // SAFETY: `node` is freshly allocated and now owned by the system queue.
-    unsafe { enqueue_sys_node(mb, node) };
-    true
+    // SAFETY: Caller guarantees `mb` is valid when non-null.
+    unsafe { &*mb }.stop_requested.load(Ordering::Acquire)
 }
 
 /// Policy-aware push into the user queue.
@@ -2480,18 +2522,21 @@ pub unsafe extern "C" fn hew_mailbox_try_recv(mb: *mut HewMailbox) -> *mut HewMs
     unsafe { mailbox_try_recv_with_origin(mb) }.node
 }
 
-/// A received node plus the queue it came from.
+/// A received node plus the typed provenance of the queue it came from.
 ///
-/// The origin bit is load-bearing: the shutdown sentinel
-/// ([`HEW_MAILBOX_SHUTDOWN_SENTINEL`]) is disambiguated from an application
-/// message that merely shares its numeric value by which queue it arrived on,
-/// NOT by the value. `msg_type` is unrestricted `i32` in the public C ABI
-/// ([`hew_actor_send`] / `HewDispatchFn`) and codegen message tags are hashes,
-/// so a user message may legitimately carry `-1`; only a node dequeued from the
-/// **system** queue is the internal shutdown signal.
+/// The origin is the discriminator, and it is a TYPE: a lifecycle signal is
+/// `Origin::Sys(kind)` because of the queue it arrived on, never because its
+/// `msg_type` equals some reserved integer. `msg_type` is unrestricted `i32` in
+/// the public C ABI ([`hew_actor_send`] / `HewDispatchFn`) and codegen message
+/// tags are `SipHash` values, so a user message may legitimately carry any value
+/// including a `HewSysMsg` discriminant — it is still `Origin::User` and still
+/// goes to the user trampoline.
+///
+/// A system-queue node whose stored kind does not decode is refused
+/// (`Origin::User` is NOT the fallback; see `mailbox_try_recv_with_origin`).
 pub(crate) struct RecvNode {
     pub node: *mut HewMsgNode,
-    pub from_sys: bool,
+    pub origin: Origin,
 }
 
 /// Single-consumer receive that preserves system-vs-user provenance.
@@ -2513,9 +2558,28 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
     if !sys_node.is_null() {
         mb.sys_count.fetch_sub(1, Ordering::AcqRel);
         MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: `sys_node` is the non-null node just dequeued and is owned here.
+        let raw = unsafe { (*sys_node).msg_type };
+        let Some(kind) = HewSysMsg::from_raw(raw) else {
+            // Fail-closed: a system-queue node whose kind does not decode is
+            // NOT downgraded to a user message (that would hand it to the
+            // application trampoline). Every runtime producer goes through the
+            // typed `mailbox_send_sys*`, and the C entry point validates, so
+            // reaching here means memory corruption. Drop it and report.
+            eprintln!(
+                "[mailbox] refusing system-queue node with undecodable kind {raw} \
+                 (mailbox {mb:p}); dropping"
+            );
+            // SAFETY: `sys_node` is exclusively owned here and not published.
+            unsafe { hew_msg_node_free(sys_node) };
+            return RecvNode {
+                node: ptr::null_mut(),
+                origin: Origin::User,
+            };
+        };
         return RecvNode {
             node: sys_node,
-            from_sys: true,
+            origin: Origin::Sys(kind),
         };
     }
 
@@ -2529,7 +2593,7 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
             mb.not_full.notify_one();
             return RecvNode {
                 node,
-                from_sys: false,
+                origin: Origin::User,
             };
         }
     } else {
@@ -2540,14 +2604,14 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             return RecvNode {
                 node,
-                from_sys: false,
+                origin: Origin::User,
             };
         }
     }
 
     RecvNode {
         node: ptr::null_mut(),
-        from_sys: false,
+        origin: Origin::User,
     }
 }
 
@@ -2574,19 +2638,19 @@ pub unsafe extern "C" fn hew_mailbox_try_recv_sys(mb: *mut HewMailbox) -> *mut H
 
 // ── Queries ─────────────────────────────────────────────────────────────
 
-/// Returns `1` if either queue has messages, `0` otherwise.
+/// Returns `1` if the USER queue has messages, `0` otherwise.
+///
+/// This is the mailbox-holder's emptiness query: it answers "is there work for
+/// me" without revealing anything about the runtime-private system lane. It is
+/// the `stable` half of the split described on [`hew_mailbox_has_messages`].
 ///
 /// # Safety
 ///
 /// `mb` must be a valid mailbox pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
+pub unsafe extern "C" fn hew_mailbox_has_user_messages(mb: *mut HewMailbox) -> i32 {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
-
-    if mb.sys_count.load(Ordering::Acquire) > 0 {
-        return 1;
-    }
 
     if mb.use_slow_path {
         let q = mb.slow_path.lock_or_recover();
@@ -2594,6 +2658,29 @@ pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
     } else {
         i32::from(mb.count.load(Ordering::Acquire) > 0)
     }
+}
+
+/// Returns `1` if EITHER queue has messages, `0` otherwise.
+///
+/// System-lane aware, therefore runtime-internal: a caller that can distinguish
+/// an empty mailbox from one holding only a queued `Exit`/`Down`/supervisor
+/// signal has observed privileged state, which is ingress in the same sense
+/// that minting a system node is. Only the scheduler — the system queue's sole
+/// legitimate consumer — has a reason to ask this question, so this half stays
+/// `internal` and user code gets [`hew_mailbox_has_user_messages`] instead.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
+    // SAFETY: Caller guarantees `mb` is valid.
+    if unsafe { &*mb }.sys_count.load(Ordering::Acquire) > 0 {
+        return 1;
+    }
+
+    // SAFETY: Caller guarantees `mb` is valid.
+    unsafe { hew_mailbox_has_user_messages(mb) }
 }
 
 /// Return the number of user messages in the mailbox.
@@ -2634,6 +2721,76 @@ pub unsafe extern "C" fn hew_mailbox_capacity(mb: *const HewMailbox) -> usize {
 
 // ── Cleanup ─────────────────────────────────────────────────────────────
 
+/// Undispatched system-lane signals discarded by mailbox teardown, process-wide.
+///
+/// Mailbox teardown is the one place that destroys system-lane state, and it is
+/// reachable from user-declarable actor teardown (`hew_actor_free` →
+/// `free_actor_resources_*` → [`hew_mailbox_free`]). What made that reachability
+/// a defect was that the discard was SILENT: a capability holder could tear an
+/// actor down and every still-queued `Exit`/`Down`/supervisor signal simply
+/// vanished with no record anywhere. Counting and naming each one is what turns
+/// it into an accounted teardown — see [`retire_pending_sys_lane`].
+static SYS_LANE_SIGNALS_RETIRED: AtomicUsize = AtomicUsize::new(0);
+
+/// Read the process-wide count of system-lane signals discarded by teardown.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "teardown accounting readout is asserted on by the mailbox regressions"
+    )
+)]
+pub(crate) fn sys_lane_signals_retired() -> usize {
+    SYS_LANE_SIGNALS_RETIRED.load(Ordering::Acquire)
+}
+
+/// Retire the undispatched system queue, then release the queue's sentinel.
+///
+/// The scheduler is the only legitimate consumer of the system queue. Once a
+/// mailbox is being destroyed there is no consumer left, so anything queued is
+/// lost by construction — but it must not be lost QUIETLY. Every node is
+/// decoded through the closed [`HewSysMsg`] namespace, counted in
+/// [`SYS_LANE_SIGNALS_RETIRED`], and named on stderr before it is freed, so the
+/// loss is observable to whoever is looking at the run rather than invisible.
+///
+/// A raw value the closed namespace refuses is reported as `unknown`: teardown
+/// is not a place to start trusting an undecodable discriminant, and a silent
+/// skip would re-open the exact hole this exists to close.
+///
+/// # Safety
+///
+/// The caller must own `mailbox` exclusively (teardown), so the single-consumer
+/// contract on `sys_queue` is satisfied.
+unsafe fn retire_pending_sys_lane(mailbox: &HewMailbox) -> usize {
+    let mut retired = 0usize;
+    loop {
+        // SAFETY: teardown owns the mailbox exclusively, so this frame is the
+        // sole consumer for the duration of the drain.
+        let node = unsafe { mailbox.sys_queue.try_dequeue() };
+        if node.is_null() {
+            break;
+        }
+        // SAFETY: `try_dequeue` transferred exclusive ownership of `node`.
+        let raw = unsafe { (*node).msg_type };
+        let name = HewSysMsg::from_raw(raw).map_or("unknown", HewSysMsg::name);
+        eprintln!(
+            "[mailbox] warning: discarding undispatched system signal {name} ({raw}) \
+             at mailbox teardown (mailbox {mailbox:p})"
+        );
+        retired += 1;
+        // SAFETY: exclusive ownership was transferred by the dequeue.
+        unsafe { hew_msg_node_free(node) };
+    }
+    if retired > 0 {
+        SYS_LANE_SIGNALS_RETIRED.fetch_add(retired, Ordering::AcqRel);
+    }
+    // Release the queue's stable stub sentinel (the drain above left the queue
+    // empty, so this frees the sentinel and nothing else).
+    // SAFETY: exclusive teardown ownership, as above.
+    unsafe { mailbox.sys_queue.drain_and_free(None) };
+    retired
+}
+
 /// Free the mailbox, draining and freeing all remaining messages.
 ///
 /// # Safety
@@ -2660,9 +2817,10 @@ pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
     // SAFETY: No concurrent access — mailbox is exclusively owned.
     unsafe { mailbox.user_fast.drain_and_free(mailbox.message_drop_fn) };
 
-    // Drain lock-free system queue (stable stub + any remaining nodes).
+    // Retire the system queue (stable stub + any remaining nodes): accounted
+    // and named, never a silent discard.
     // SAFETY: No concurrent access — mailbox is exclusively owned.
-    unsafe { mailbox.sys_queue.drain_and_free(None) };
+    let _ = unsafe { retire_pending_sys_lane(&mailbox) };
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -3522,6 +3680,46 @@ mod tests {
         }
     }
 
+    /// The has-messages SPLIT: a queued system message is INVISIBLE to the
+    /// user-lane query and visible to the system-aware one. This is the
+    /// behavioural half of the classification move — `hew_mailbox_has_messages`
+    /// is `internal` precisely because it answers `1` here, which lets a
+    /// mailbox holder detect a pending supervisor/`Exit`/`Down` signal in an
+    /// otherwise-empty mailbox.
+    ///
+    /// Counterfactual: implement `hew_mailbox_has_user_messages` by delegating
+    /// to `hew_mailbox_has_messages` (the pre-split behaviour) and the first
+    /// assertion fails.
+    #[test]
+    fn user_lane_query_does_not_observe_a_queued_system_message() {
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let s: i32 = 99;
+
+            hew_mailbox_send_sys(mb, 2, (&raw const s).cast_mut().cast(), size_of::<i32>());
+
+            assert_eq!(
+                hew_mailbox_has_user_messages(mb),
+                0,
+                "the user-lane query must not reveal a queued system message"
+            );
+            assert_eq!(
+                hew_mailbox_has_messages(mb),
+                1,
+                "the system-aware scheduler query still sees the system lane"
+            );
+
+            // A user message is visible to both.
+            let u: i32 = 10;
+            hew_mailbox_send(mb, 1, (&raw const u).cast_mut().cast(), size_of::<i32>());
+            assert_eq!(hew_mailbox_has_user_messages(mb), 1);
+            assert_eq!(hew_mailbox_has_messages(mb), 1);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
     #[test]
     fn sys_messages_have_priority() {
         // SAFETY: test owns the mailbox exclusively; all pointers are valid.
@@ -3616,8 +3814,12 @@ mod tests {
                 hew_mailbox_send(mb, 0, p, size_of::<i32>()),
                 HewError::ErrMailboxFull as i32
             );
-            // System message should still succeed.
-            hew_mailbox_send_sys(mb, 99, p, size_of::<i32>());
+            // A real lifecycle signal should still succeed. It must be a
+            // member of the closed `HewSysMsg` set: this entry point refuses
+            // anything else, so an arbitrary integer here would make the
+            // assertion pass on the queued USER message alone.
+            hew_mailbox_send_sys(mb, HewSysMsg::ChildStopped.as_i32(), p, size_of::<i32>());
+            assert_eq!(hew_mailbox_sys_len(mb), 1);
             assert_eq!(hew_mailbox_has_messages(mb), 1);
 
             hew_mailbox_free(mb);
@@ -3795,6 +3997,40 @@ mod tests {
     // Regression test: fast-path mailbox teardown must retire queued
     // reply-bearing nodes via hew_msg_node_free so that ask waiters are
     // unblocked promptly rather than blocking until timeout.
+    /// Actor teardown is user-declarable (`hew_actor_free` is `stable`) and it
+    /// reaches system-lane DESTRUCTION through `hew_mailbox_free`. What made
+    /// that a defect was the silence: an undispatched `Exit`/`Down`/supervisor
+    /// signal vanished with no record. Teardown now counts and names every
+    /// signal it discards, which is the property that makes the reachability an
+    /// accounted destruction instead of a covert one.
+    ///
+    /// Counterfactual: restore the old body — `mailbox.sys_queue.drain_and_free(None)`
+    /// in place of `retire_pending_sys_lane` — and the delta below is 0, so the
+    /// assertion trips. The counter is process-wide and other tests tear down
+    /// mailboxes concurrently, so the assertion is a lower bound on the delta;
+    /// the counterfactual moves it to exactly zero, which is what makes the
+    /// bound non-vacuous.
+    #[test]
+    fn mailbox_teardown_accounts_for_the_system_signals_it_discards() {
+        let before = sys_lane_signals_retired();
+        // SAFETY: the test owns the mailbox exclusively for its whole lifetime.
+        unsafe {
+            let mb = hew_mailbox_new();
+            assert!(mailbox_send_sys_checked(
+                mb,
+                HewSysMsg::Exit,
+                ptr::null_mut(),
+                0
+            ));
+            assert_eq!(hew_mailbox_sys_len(mb), 1);
+            hew_mailbox_free(mb);
+        }
+        assert!(
+            sys_lane_signals_retired() > before,
+            "mailbox teardown must account for the undispatched system signal it discarded"
+        );
+    }
+
     #[test]
     fn drain_and_free_unblocks_reply_waiter() {
         // SAFETY: helper fully owns the mailbox pointer for the duration.

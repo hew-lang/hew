@@ -914,6 +914,9 @@ def expand_makefile_text(
     return "".join(out)
 
 
+MAKE_CONDITIONAL_RE = re.compile(r"^(ifeq|ifneq|ifdef|ifndef|else|endif)\b")
+
+
 def parse_makefile(text: str) -> tuple[set[str], dict[str, set[str]], dict[str, str]]:
     """Return (phony targets, target → prerequisites, target → recipe text).
 
@@ -947,6 +950,13 @@ def parse_makefile(text: str) -> tuple[set[str], dict[str, set[str]], dict[str, 
         if not stripped or stripped[0].isspace():
             if not stripped:
                 current = []
+            continue
+        # A conditional directive written at column 0 inside a rule does not end
+        # the rule — make evaluates it and the recipe lines on either arm still
+        # belong to the target above. Reading it as the end of the rule loses
+        # every recipe guarded by a host check, which is how `asan-fixtures` and
+        # `tsan` read as having no recipe at all.
+        if MAKE_CONDITIONAL_RE.match(stripped):
             continue
         match = RULE_RE.match(expand_makefile_text(stripped, variables))
         if not match:
@@ -2244,6 +2254,39 @@ def main() -> int:
     if verbose:
         for ref in sorted(references, key=lambda r: r.where):
             print(f"  ok  {ref.where}: make {ref.target}")
+
+    # ── A5: a declared target actually does something ─────────────────────────
+    #
+    # A0..A4 all resolve a NAME. None of them asked whether the name does any
+    # work. A `.PHONY` name with no recipe and no prerequisites is a legal,
+    # always-out-of-date target: make runs it, has nothing to run, and exits 0.
+    # So it satisfies every reachability check while enforcing nothing, and the
+    # gate it used to invoke stops running without one red build.
+    #
+    # That is how the sys-lane closure went silent — a rebase across a Makefile
+    # restructure carried the `.PHONY` line and the `lint` prerequisite but
+    # dropped the two recipe blocks, and `make lint` kept passing. A4 reported
+    # every reference resolving, correctly and uselessly: `verify-sys-lane-closure`
+    # existed, it just did nothing.
+    #
+    # A phony target with prerequisites and no recipe is an aggregator (`lint:
+    # a b c`) and is exactly right, so the failure is the conjunction: nothing to
+    # run AND nothing to bring up to date.
+    inert = sorted(
+        t for t in phony if not recipes.get(t, "").strip() and not prereqs.get(t)
+    )
+    print(f"\n==> A5: declared targets do work ({len(phony)} phony target(s))")
+    for target in inert:
+        findings.fail(
+            "A5",
+            f"Makefile: .PHONY {target}",
+            "this target is declared but has neither a recipe nor prerequisites, "
+            "so make resolves it and succeeds having done nothing. Every check "
+            "that only resolves the name passes while whatever it used to run "
+            "no longer runs. Restore its recipe, or delete the name from .PHONY "
+            "and from every target that lists it.",
+        )
+    print(f"    {len(phony) - len(inert)}/{len(phony)} phony targets do work.")
 
     # ── Verdict ───────────────────────────────────────────────────────────────
     print("")

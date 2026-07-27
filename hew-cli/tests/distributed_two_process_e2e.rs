@@ -1080,7 +1080,7 @@ fn monitor_watcher_node_death_prunes_target_table() {
 /// actor when the remote actor cleanly exits. The client spawns a linker that
 /// `link_remote(kv, CrashLinked)`s the remote actor, then tells the remote to
 /// stop. The cross-node link-down lands in the linker's MAILBOX as a
-/// `SYS_MSG_EXIT` and crashes it (terminal Crashed == 5) — NOT a monitor recv
+/// `HewSysMsg::Exit` and crashes it (terminal Crashed == 5) — NOT a monitor recv
 /// slot. The fixture polls the linker's terminal state (probe ledger) and
 /// asserts it reached Crashed.
 #[test]

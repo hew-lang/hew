@@ -33,6 +33,43 @@ ad-hoc per-shape heap walkers.
   (`std::link_monitor`) have been migrated to the `#[resource]` close model.
   (#1986)
 
+### Removed — actor system-message symbols (breaking)
+
+- **The runtime's system-message symbols are no longer user-declarable.** An
+  actor's Exit, Down and supervisor-lifecycle messages travel on a queue that is
+  separate from its user mailbox, and the symbols that produce, install, observe
+  or destroy state on that queue can no longer be named in an `extern "rt"`
+  block. Declaring any of them is now a compile error naming the symbol. The
+  affected symbols and their replacements:
+
+  | Removed from the user surface | Replacement |
+  | --- | --- |
+  | `hew_mailbox_has_messages` | `hew_mailbox_has_user_messages` — the old name answered "any message at all", including undelivered lifecycle signals, so a receive loop could spin on a message it could never read |
+  | `hew_actor_link`, `hew_actor_monitor` | the `link(target)` / `monitor(target)` language forms; the compiler supplies the calling actor as the subject |
+  | `hew_local_pid_link`, `hew_local_pid_monitor` | same |
+  | `hew_actor_trap` | `trap(code)` / an actor crash; the compiler lowers a trap to `hew_trap_with_code` |
+  | `hew_actor_free` | let the runtime reclaim the actor: `hew_actor_stop`, group teardown, or `hew_runtime_cleanup` |
+  | `hew_mailbox_new`, `hew_mailbox_new_bounded`, `hew_mailbox_new_coalesce`, `hew_mailbox_new_with_policy`, `hew_mailbox_free` | a mailbox is created and destroyed with its actor; use the spawn entry points |
+  | `hew_mailbox_send_sys`, `hew_mailbox_try_recv_sys`, `hew_mailbox_sys_len`, `hew_mailbox_try_recv` | none — lifecycle messages are delivered by the runtime to `#[on(exit)]` / `#[on(down)]`, and a receive is what an actor's `#[on(...)]` handlers already are |
+  | `hew_supervisor_start`, `hew_supervisor_add_child_spec`, `hew_supervisor_add_child_dynamic`, `hew_supervisor_remove_child`, `hew_supervisor_handle_crash` | the `supervise` language form; the compiler emits the whole construction sequence |
+  | `hew_supervisor_notify_child_event` | renamed `hew_supervisor_notify_child_actor_event` and not user-declarable |
+
+  A symbol staying linkable for ahead-of-time embedders is unchanged; what is
+  withdrawn is the ability for Hew source to declare it. `make lint` computes
+  the affected set from the call graph rather than from a list, so a symbol that
+  starts reaching system-message state is withdrawn automatically.
+
+### Changed — `HewChildSpec` layout (breaking ABI)
+
+- **`HewChildSpec` grew a trailing field and therefore changed size.** A
+  `sys_dispatch` slot is appended after `message_drop_fn` so every incarnation
+  of a supervised child — the initial spawn and each restart — registers the
+  child's system dispatch entry point from the spec itself. C and
+  ahead-of-time embedders that build a `HewChildSpec` by hand must add the
+  field; passing the previous, shorter struct leaves the runtime reading an
+  indeterminate function pointer. Hew source is unaffected: the compiler emits
+  the spec literal. See [`BREAKING.md`](BREAKING.md) for the old and new shapes.
+
 ### Security — distributed peer identity (breaking)
 
 - **Key-derived `NodeId` and protocol epoch 2.** A node's 128-bit identity is

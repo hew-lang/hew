@@ -68,7 +68,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check
+.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1152,7 +1152,7 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate verify-ffi hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check
+lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check
 	cargo clippy --workspace --tests -- -D warnings
 
 # Keep nightly FreeBSD coverage and both release-gate legs on one exact
@@ -1342,6 +1342,24 @@ verify-ffi:
 
 test-verify-ffi:
 	python3 scripts/tests/test_verify_ffi_symbols.py
+
+# ── System-lane closure ────────────────────────────────────────────────────
+# docs/internal/jit-host-abi.md forbids any `stable` symbol from producing,
+# installing, mutating, observing or destroying system-lane state. That is a
+# property of the transitive CALL GRAPH, not of a symbol's own body: four
+# hand-audits of the stable tier produced four different answers because each
+# read the symbols one at a time and none of them followed the calls. This
+# recomputes the closure from the lane operations outward and fails if a stable
+# symbol can reach one. Run it with --list-roots or --explain SYM to see why.
+verify-sys-lane-closure: test-sys-lane-closure
+	python3 scripts/sys-lane-closure.py
+
+# Self-test for the checker above: proves it still fails on a transitive reach,
+# that an authenticated edge clears only the caller it names, and that a stale
+# or unreasoned waiver fails rather than silently widening the stable tier.
+test-sys-lane-closure:
+	python3 scripts/tests/test_sys_lane_closure.py
+
 
 # ── Install / Uninstall ────────────────────────────────────────────────────
 # Installs release-built artifacts to $(DESTDIR)$(PREFIX).

@@ -6747,6 +6747,10 @@ pub(crate) fn emit_spawn_actor(
         })?;
     emit_actor_state_clone_drop_registration(fn_ctx, actor_name, spawned, actor_layout)?;
     crate::llvm::emit_actor_message_drop_registration(fn_ctx, actor_name, spawned)?;
+    // Register the SYSTEM dispatch entry point before the actor becomes
+    // reachable by program code, so a link/monitor established immediately
+    // after spawn finds a system channel already in place.
+    crate::llvm::emit_actor_sys_dispatch_registration(fn_ctx, actor_name, spawned)?;
 
     emit_actor_spawn_lifecycle(fn_ctx, actor_name, spawned, init_args)?;
     emit_periodic_handler_arming(fn_ctx, actor_name, spawned, actor_layout)?;
@@ -6946,6 +6950,12 @@ pub(crate) fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType
             ptr_ty.into(), // config: borrowed supervisor config buffer (null when no init_fn)
             i64_ty.into(), // config_size: bytes of `config` (0 when null)
             ptr_ty.into(), // message_drop_fn
+            // Trailing field mirroring `HewChildSpec.sys_dispatch`: the child
+            // actor's `__hew_actor_sys_dispatch_<Actor>` trampoline. Carried in
+            // the spec rather than set post-hoc because the initial supervised
+            // spawn happens inside `hew_supervisor_add_child_spec`, before any
+            // setter could run, and every restart re-registers from it.
+            ptr_ty.into(), // sys_dispatch
         ],
         false,
     )
@@ -7788,6 +7798,23 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         })?
         .as_global_value()
         .as_pointer_value();
+    // The child's SYSTEM dispatch entry point. Carried in the spec literal, not
+    // set post-hoc: the initial supervised spawn happens inside
+    // `hew_supervisor_add_child_spec`, before any setter could run, and the
+    // supervisor re-registers from this field on every restart — so a
+    // supervised actor receives `#[on(exit)]` / `#[on(down)]` signals on every
+    // incarnation, exactly like a directly-spawned one.
+    let sys_dispatch_name = crate::thunks::actor_sys_dispatch_fn_name(&child.actor_name);
+    let sys_dispatch_fn = llvm_mod
+        .get_function(&sys_dispatch_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "supervised child `{}` requires system dispatch trampoline `{sys_dispatch_name}`",
+                child.actor_name
+            ))
+        })?
+        .as_global_value()
+        .as_pointer_value();
 
     // ── Init-closure (config) path vs literal-template path ─────────────
     //
@@ -8062,7 +8089,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             }
         };
 
-    let field_values: [(u32, BasicValueEnum<'ctx>); 17] = [
+    let field_values: [(u32, BasicValueEnum<'ctx>); 18] = [
         (0, name_ptr.into()),
         (1, init_state_ptr),
         (2, init_state_size),
@@ -8090,6 +8117,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (14, config_ptr_for_spec), // config: borrowed supervisor config buffer (null when no thunk)
         (15, config_size_for_spec), // config_size: buffer size (0 when no thunk)
         (16, message_drop_fn.into()),
+        (17, sys_dispatch_fn.into()),
     ];
     for (field_idx, value) in field_values {
         let gep = builder

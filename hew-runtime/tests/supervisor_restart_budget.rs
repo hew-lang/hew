@@ -4,7 +4,7 @@
 //! crashes, including when timer threads are involved (delayed restarts).
 //! These tests exercise the fix for the data race where timer threads
 //! previously called `restart_with_budget_and_strategy` directly — now
-//! they post `SYS_MSG_DELAYED_RESTART` to the supervisor's mailbox so
+//! they post `HewSysMsg::DelayedRestart` to the supervisor's mailbox so
 //! all budget mutations happen on the single-threaded actor dispatch.
 //!
 //! The supervisor handle is owned by `TestSupervisor` so its Drop runs
@@ -130,6 +130,7 @@ fn concurrent_crashes_decrement_budget_correctly() {
                 coalesce_key_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
+                sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
@@ -209,6 +210,7 @@ fn budget_exhaustion_stops_supervisor() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
@@ -262,7 +264,7 @@ fn budget_exhaustion_stops_supervisor() {
 }
 
 /// Delayed restarts (via timer thread → mailbox) are actually processed:
-/// the supervisor receives the `SYS_MSG_DELAYED_RESTART` message and
+/// the supervisor receives the `HewSysMsg::DelayedRestart` message and
 /// restarts the child on its own actor thread.
 ///
 /// We force the delayed path by crashing a child twice in rapid succession.
@@ -296,6 +298,7 @@ fn delayed_restart_processed_via_mailbox() {
             coalesce_key_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
+            sys_dispatch: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
@@ -318,7 +321,7 @@ fn delayed_restart_processed_via_mailbox() {
         assert!(count >= 1, "first restart should complete");
 
         // Second crash — backoff is applied, timer thread is spawned.
-        // The restart goes through the SYS_MSG_DELAYED_RESTART path.
+        // The restart goes through the HewSysMsg::DelayedRestart path.
         let (child2, _) = wait_for_child(sup.as_ptr(), 0, 2000);
         crash_child(child2);
 
@@ -372,6 +375,7 @@ fn multiple_delayed_restarts_budget_consistent() {
                 coalesce_key_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
+                sys_dispatch: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,

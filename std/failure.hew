@@ -70,7 +70,7 @@ pub enum CrashAction {
 ///
 /// WHEN: the runtime substrate is already in place
 /// (`hew-runtime/src/link.rs::propagate_exit_to_links` enqueues
-/// `SYS_MSG_EXIT` in the linked actor's mailbox at the crashed actor's
+/// `HewSysMsg::Exit` in the linked actor's mailbox at the crashed actor's
 /// teardown phase, before any supervisor restart decision).  The user-
 /// facing hook attribute that surfaces this delivery is reserved for a
 /// future edition; this type is the stable name it will use.

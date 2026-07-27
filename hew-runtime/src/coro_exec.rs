@@ -651,6 +651,7 @@ mod tests {
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
+            sys_dispatch: None,
         })
     }
 
@@ -1089,6 +1090,7 @@ mod forced_ordering_probe {
             gen_sink: AtomicPtr::new(ptr::null_mut()),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
+            sys_dispatch: None,
         })
     }
 

@@ -3,8 +3,8 @@
 use hew_runtime::actor::hew_actor_get_error;
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::{hew_actor_link, hew_actor_unlink};
+use hew_runtime::mailbox_header::HewSysMsg;
 use hew_runtime::monitor::{hew_actor_demonitor, register_actor_monitor, HewDownMessage};
-use hew_runtime::supervisor::{SYS_MSG_DOWN, SYS_MSG_EXIT};
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor};
 use std::ffi::c_void;
 use std::ptr;
@@ -49,13 +49,13 @@ impl MonitorDispatchSignal {
         *self.state.lock().unwrap() = MonitorDispatchState::default();
     }
 
-    fn record_dispatch(&self, msg_type: i32, data: *mut c_void, data_size: usize) {
+    fn record_dispatch(&self, sys_msg: i32, data: *mut c_void, data_size: usize) {
         let mut state = self.state.lock().unwrap();
-        if msg_type == SYS_MSG_DOWN
+        if sys_msg == HewSysMsg::Down.as_i32()
             && !data.is_null()
             && data_size == std::mem::size_of::<HewDownMessage>()
         {
-            // SAFETY: The runtime sent a SYS_MSG_DOWN payload with the exact
+            // SAFETY: The runtime sent a Down payload with the exact
             // expected size, so reading the packed value is valid here.
             let down = unsafe { (data.cast::<HewDownMessage>().cast_const()).read_unaligned() };
             state.down_messages.push(down);
@@ -106,13 +106,13 @@ impl ExitDispatchSignal {
         *self.state.lock().unwrap() = ExitDispatchState::default();
     }
 
-    fn record_dispatch(&self, msg_type: i32, data: *mut c_void, data_size: usize) {
+    fn record_dispatch(&self, sys_msg: i32, data: *mut c_void, data_size: usize) {
         let mut state = self.state.lock().unwrap();
-        if msg_type == SYS_MSG_EXIT
+        if sys_msg == HewSysMsg::Exit.as_i32()
             && !data.is_null()
             && data_size == std::mem::size_of::<ExitMessageView>()
         {
-            // SAFETY: The runtime sent a SYS_MSG_EXIT payload with the exact
+            // SAFETY: The runtime sent an Exit payload with the exact
             // expected size, so reading the packed value is valid here.
             let exit = unsafe { (data.cast::<ExitMessageView>().cast_const()).read_unaligned() };
             state.exit_messages.push(exit);
@@ -156,28 +156,24 @@ unsafe extern "C-unwind" fn test_dispatch(
     std::ptr::null_mut()
 }
 
-unsafe extern "C-unwind" fn monitor_dispatch(
+unsafe extern "C-unwind" fn monitor_sys_dispatch(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
-    msg_type: i32,
+    sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-    _borrow_mode: i32,
-) -> *mut c_void {
-    MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
-    std::ptr::null_mut()
+) {
+    MONITOR_DISPATCH_SIGNAL.record_dispatch(sys_msg, data, data_size);
 }
 
-unsafe extern "C-unwind" fn exit_dispatch(
+unsafe extern "C-unwind" fn exit_sys_dispatch(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
-    msg_type: i32,
+    sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-    _borrow_mode: i32,
-) -> *mut c_void {
-    EXIT_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
-    std::ptr::null_mut()
+) {
+    EXIT_DISPATCH_SIGNAL.record_dispatch(sys_msg, data, data_size);
 }
 
 #[test]
@@ -220,7 +216,7 @@ fn test_monitor_after_crash_delivers_down_without_stale_registration() {
     hew_deterministic_reset();
     MONITOR_DISPATCH_SIGNAL.reset();
 
-    let watcher = TestActor::spawn(monitor_dispatch);
+    let watcher = TestActor::spawn_with_sys(test_dispatch, monitor_sys_dispatch);
     let target = TestActor::spawn(test_dispatch);
 
     // SAFETY: target is a live actor; reading its id field through the raw
@@ -262,7 +258,7 @@ fn test_link_after_crash_delivers_exit_without_stale_registration() {
     hew_deterministic_reset();
     EXIT_DISPATCH_SIGNAL.reset();
 
-    let survivor = TestActor::spawn(exit_dispatch);
+    let survivor = TestActor::spawn_with_sys(test_dispatch, exit_sys_dispatch);
     let target = TestActor::spawn(test_dispatch);
 
     // SAFETY: target is a live actor; reading its id field through the raw

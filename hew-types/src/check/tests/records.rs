@@ -1745,6 +1745,165 @@ mod assoc_types_slice2 {
         }
     }
 
+    /// The SYSTEM-LANE provenance boundary. The sys/user channel split makes
+    /// provenance structural inside the mailbox — a user-queue node can never
+    /// be dispatched as a system message — but the classification table is the
+    /// other ingress authority. Every runtime export that PRODUCES, INSTALLS,
+    /// MUTATES, OBSERVES, or DESTROYS system-lane state must therefore be
+    /// rejected in `extern "rt"`; a `stable` classification would re-open by
+    /// symbol exactly what the queue split closes by type.
+    ///
+    /// The first pass over this table used the narrower property "mints a
+    /// system node, drains one, or installs a dispatch pointer" and missed the
+    /// observers and the destructor. Observation and destruction are ingress:
+    /// telling an empty mailbox from one holding a queued `Exit` reads
+    /// privileged state, and freeing the mailbox discards it.
+    ///
+    /// Each of these was `stable` before the audit:
+    ///
+    /// - `hew_actor_set_sys_dispatch` installs the system entry point with a
+    ///   non-atomic store whose contract requires exclusive post-spawn
+    ///   registration (writing `None` after registration silently drops every
+    ///   later lifecycle signal).
+    /// - `hew_mailbox_send_sys` mints an arbitrary `HewSysMsg` node on any
+    ///   mailbox; `hew_mailbox_try_recv_sys` pops one out from under the
+    ///   scheduler (the queue's only legitimate consumer); `hew_mailbox_sys_len`
+    ///   observes the private lane.
+    /// - `hew_mailbox_try_recv` dequeues the SYSTEM queue first and returns the
+    ///   raw node with its provenance stripped, so it is strictly more powerful
+    ///   than `hew_mailbox_try_recv_sys` and breaks the same single-consumer
+    ///   contract against the scheduler.
+    /// - `hew_mailbox_has_messages` reveals whether an otherwise-empty mailbox
+    ///   holds a pending lifecycle signal. Its user-lane-only half,
+    ///   `hew_mailbox_has_user_messages`, stays `stable` — the legitimate
+    ///   question is separable from the privileged one, so it is split, not
+    ///   removed (asserted below).
+    /// - `hew_mailbox_free` drains and frees the system queue, silently
+    ///   discarding every pending lifecycle signal before the scheduler's sole
+    ///   consumer dispatches it. Destruction is NOT separable from the object,
+    ///   so this one moves whole; `hew_mailbox_new{,_bounded,_with_policy,
+    ///   _coalesce}` move with it so no `stable` constructor is left minting an
+    ///   allocation whose release symbol the tier withholds.
+    /// - `hew_supervisor_notify_child_actor_event`, its escalation sibling, and
+    ///   `hew_supervisor_handle_crash` put a caller-composed `ChildEvent` on a
+    ///   supervisor's system queue, whose dispatch frees the LIVE child named by
+    ///   the caller-supplied index.
+    /// - `hew_supervisor_add_child_spec` / `_dynamic` carry a caller-supplied
+    ///   `HewChildSpec.sys_dispatch` into `hew_actor_set_sys_dispatch`.
+    /// - `hew_actor_free` destroys the same system queue as `hew_mailbox_free`,
+    ///   four calls away, on a caller-chosen actor at a caller-chosen moment.
+    ///   It reads as clean only if the property is read off its own body; the
+    ///   moment `scripts/sys-lane-closure.py` computes the property over the
+    ///   call graph it names this symbol with a witness path. Its constructors
+    ///   deliberately do NOT move with it, unlike `hew_mailbox_new*`: a spawned
+    ///   actor is runtime-tracked and reclaimed by `hew_runtime_cleanup`,
+    ///   `hew_actor_group_destroy` and supervisor teardown, so withholding the
+    ///   raw destructor is not the leak factory withholding `hew_mailbox_free`
+    ///   from raw `hew_mailbox_new` holders would have been.
+    /// - `hew_actor_trap` takes BOTH of a system signal's inputs from its
+    ///   arguments: `actor` chooses which actor is driven terminal and whose
+    ///   links, monitors and parent supervisor are notified, and `error_code`
+    ///   chooses the terminal state and the reason the resulting `Exit` /
+    ///   `Down` / `ChildCrashed` carries. Declaring it would let a program
+    ///   compose a lifecycle event for any actor it holds a handle to. No
+    ///   codegen path emits it — a compiled trap lowers to
+    ///   `hew_trap_with_code` — so the demotion strands no language feature.
+    /// - `hew_actor_link` / `hew_actor_monitor` synthesize the `Exit` / `Down`
+    ///   the contract owes when the peer is ALREADY terminal, straight onto a
+    ///   system queue, addressed to ABI arg0. The reason is the runtime's own
+    ///   death record, but the destination is the caller's first argument, so
+    ///   a 2-arg caller could put a lifecycle signal on a third party's system
+    ///   queue. The user surface is 1-arg — `link(target)` / `monitor(target)`
+    ///   — and the MIR lowering synthesizes `hew_actor_self()` as arg0, so
+    ///   withdrawing the raw symbols makes the destination structurally the
+    ///   CALLING actor. `hew_local_pid_link` / `hew_local_pid_monitor` are the
+    ///   stable-pid forwarders to those same two and move with them; their
+    ///   `_unlink` / `_demonitor` siblings stay `stable` because removing a
+    ///   registration produces no signal.
+    /// - `hew_supervisor_remove_child` reaches `hew_actor_free` on a
+    ///   caller-selected child index, so it destroys the same system queue the
+    ///   raw destructor was withdrawn for destroying — and removing a live
+    ///   child discards whatever lifecycle signals were still queued for it.
+    ///   Supervisor ownership does not change what the call reaches.
+    /// - `hew_supervisor_start` installs the runtime's own system dispatch
+    ///   trampoline on the supervisor actor. The installed value is a constant
+    ///   code address, but the call is still a system-dispatch installation and
+    ///   the closure gate refuses to authenticate an edge whose caller is
+    ///   user-declarable rather than take that distinction on trust.
+    #[test]
+    fn extern_rt_system_lane_symbols_rejected() {
+        for sym in [
+            "hew_actor_free",
+            "hew_actor_link",
+            "hew_actor_monitor",
+            "hew_actor_set_sys_dispatch",
+            "hew_actor_trap",
+            "hew_local_pid_link",
+            "hew_local_pid_monitor",
+            "hew_mailbox_free",
+            "hew_mailbox_has_messages",
+            "hew_mailbox_new",
+            "hew_mailbox_new_bounded",
+            "hew_mailbox_new_coalesce",
+            "hew_mailbox_new_with_policy",
+            "hew_mailbox_send_sys",
+            "hew_mailbox_sys_len",
+            "hew_mailbox_try_recv",
+            "hew_mailbox_try_recv_sys",
+            "hew_supervisor_add_child_dynamic",
+            "hew_supervisor_add_child_spec",
+            "hew_supervisor_handle_crash",
+            "hew_supervisor_notify_child_actor_event",
+            "hew_supervisor_notify_child_supervisor_escalation",
+            "hew_supervisor_remove_child",
+            "hew_supervisor_start",
+        ] {
+            let extern_item = make_extern_rt_block(&[sym]);
+            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+            let output = checker.check_program(&Program {
+                items: vec![(extern_item, 0..60)],
+                module_doc: None,
+                module_graph: None,
+            });
+            assert!(
+                output.errors.iter().any(|e| matches!(&e.kind,
+                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                    if symbol_name == sym
+                )),
+                "system-lane symbol {sym} must be rejected in extern \"rt\"; \
+                 got: {:?}",
+                output.errors
+            );
+        }
+    }
+
+    /// The other half of the has-messages SPLIT: user code keeps a way to ask
+    /// about its OWN lane. Without this assertion the split could silently
+    /// degrade into a plain removal — moving `hew_mailbox_has_messages` to
+    /// `internal` and never landing the replacement would leave a mailbox
+    /// holder with no emptiness query at all, and the rejection test above
+    /// would still pass.
+    #[test]
+    fn extern_rt_user_lane_mailbox_query_accepted() {
+        let sym = "hew_mailbox_has_user_messages";
+        let extern_item = make_extern_rt_block(&[sym]);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            items: vec![(extern_item, 0..60)],
+            module_doc: None,
+            module_graph: None,
+        });
+        assert!(
+            !output.errors.iter().any(|e| matches!(&e.kind,
+                TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
+                if symbol_name == sym
+            )),
+            "the user-lane query {sym} must remain declarable in extern \"rt\"; \
+             got: {:?}",
+            output.errors
+        );
+    }
+
     /// The stream/sink error channel splits producer from consumer: the
     /// `set_last_error` setters are `internal` (AOT-only, called by hew-cabi
     /// forwarders in native packages) and MUST be rejected in `extern "rt"` — a

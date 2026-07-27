@@ -5331,6 +5331,17 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_actor_set_state_clone" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_actor_set_sys_dispatch(actor: *mut HewActor,
+        //                            sys_dispatch: HewSysDispatchFn) -> void
+        // (`hew-runtime/src/actor.rs`). Registers the codegen-emitted
+        // `__hew_actor_sys_dispatch_<Actor>` trampoline on a freshly spawned
+        // actor. The SECOND dispatch entry point: the scheduler routes nodes
+        // dequeued with system-queue provenance here and application messages
+        // to `dispatch`, so the two `msg_type` namespaces cannot overlap.
+        // Emitted at spawn time, after `hew_actor_spawn`.
+        "hew_actor_set_sys_dispatch" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // hew_actor_set_state_drop(actor: *mut HewActor,
         //                          state_drop_fn: unsafe extern "C" fn(*mut c_void)) -> void
         // (`hew-runtime/src/actor.rs:3097-3108`). Paired sibling of

@@ -4590,6 +4590,36 @@ pub(crate) fn emit_actor_state_clone_drop_registration<'ctx>(
     Ok(())
 }
 
+/// Register the actor's SYSTEM dispatch entry point on a freshly spawned
+/// actor.
+///
+/// Emitted immediately after `hew_actor_spawn` / `hew_actor_spawn_opts`,
+/// alongside the state clone/drop registration and before any lifecycle hook
+/// runs — so the actor is not observable by program code until both dispatch
+/// channels are in place. The runtime null-tolerates a null `spawned` (OOM)
+/// via `cabi_guard!`.
+pub(crate) fn emit_actor_sys_dispatch_registration<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+    spawned: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let symbol = crate::thunks::actor_sys_dispatch_fn_name(actor_name);
+    let sys_fn = fn_ctx.llvm_mod.get_function(&symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "spawn `{actor_name}` requires emitted system dispatch trampoline `{symbol}`"
+        ))
+    })?;
+    fn_ctx.call_runtime_void(
+        "hew_actor_set_sys_dispatch",
+        &[
+            spawned.into(),
+            sys_fn.as_global_value().as_pointer_value().into(),
+        ],
+        "hew_actor_set_sys_dispatch_call",
+        "hew_actor_set_sys_dispatch call",
+    )
+}
+
 pub(crate) fn emit_actor_message_drop_registration<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     actor_name: &str,
@@ -30884,6 +30914,17 @@ fn build_module_for_target<'ctx>(
             &fn_symbols,
             &record_layouts,
             &pipeline.enum_layouts,
+        )?;
+        // The SECOND dispatch entry point. Emitted for every actor, including
+        // those declaring neither `#[on(exit)]` nor `#[on(down)]`: an unhandled
+        // EXIT must still crash the actor through the controlled crash path.
+        crate::thunks::emit_actor_sys_dispatch_trampoline(
+            ctx,
+            &llvm_mod,
+            &target_data,
+            actor,
+            &fn_symbols,
+            &record_layouts,
         )?;
         if actor.coalesce_key_plan.is_some() {
             crate::thunks::emit_coalesce_key_fn(

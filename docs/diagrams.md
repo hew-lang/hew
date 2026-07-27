@@ -52,14 +52,14 @@ stateDiagram-v2
     Idle --> Runnable: message arrives / timer fires
     Runnable --> Running: scheduler picks actor<br/>(worker thread)
     Running --> Idle: budget exhausted /<br/>no more messages
-    Running --> Stopping: self.stop() /<br/>supervisor shutdown (SYS_MSG_SUPERVISOR_STOP)
+    Running --> Stopping: self.stop() /<br/>supervisor shutdown (SupervisorStop)
     Stopping --> Stopped: cleanup complete
 
     Running --> Crashed: unrecoverable trap
     Idle --> Crashed: unrecoverable trap
     Stopping --> Crashed: unrecoverable trap
 
-    Crashed --> Stopped: crash finalized,<br/>supervisor notified (SYS_MSG_CHILD_CRASHED)
+    Crashed --> Stopped: crash finalized,<br/>supervisor notified (ChildCrashed)
 
     Stopped --> [*]
 ```
@@ -115,13 +115,15 @@ sequenceDiagram
 
     Worker->>Worker: pop from local deque (LIFO)<br/>or steal from peer (FIFO)<br/>or steal_batch_and_pop from global
     Worker->>Receiver: set state → Running
-    Worker->>Mailbox: hew_mailbox_try_recv()
-    Mailbox->>Worker: HewMsgNode
-    Worker->>Receiver: dispatch(state, msg_type, data, data_size)
 
     loop up to HEW_MSG_BUDGET (256)
-        Worker->>Mailbox: hew_mailbox_try_recv()
-        Mailbox->>Worker: next HewMsgNode (or empty)
+        Worker->>Mailbox: try_recv (system queue first, then user)
+        Mailbox->>Worker: HewMsgNode + Origin (or empty)
+        alt Origin::Sys(kind)
+            Worker->>Receiver: sys_dispatch(kind, data, data_size)<br/>(#[on(exit)] / #[on(down)])
+        else Origin::User
+            Worker->>Receiver: dispatch(state, msg_type, data, data_size)
+        end
     end
 
     Worker->>Receiver: set state → Idle<br/>(budget exhausted or no messages)
@@ -129,7 +131,14 @@ sequenceDiagram
 
 **Mailbox internals** (`hew-runtime/src/mailbox.rs`):
 
-- Dual-queue design: fast lock-free MPSC (Vyukov queue) + slow Mutex-guarded VecDeque
+- Separate user and system queues. Which queue a node arrived on IS its
+  provenance: a receive returns the node together with an `Origin`, and a
+  lifecycle signal is `Origin::Sys(kind)` because of the queue, never because
+  its `msg_type` matched a reserved integer
+- The system queue is runtime-private. `hew_mailbox_has_user_messages` is the
+  actor's emptiness query; the queue-spanning `hew_mailbox_has_messages` and
+  every system-queue send, receive and length call are runtime-internal
+- Dual-path user queue: fast lock-free MPSC (Vyukov queue) + slow Mutex-guarded VecDeque
 - Configurable `HewOverflowPolicy`: Block, DropNew, DropOld, Fail, Coalesce
 - Optional `coalesce_key_fn` for in-place message replacement
 
@@ -344,7 +353,7 @@ stateDiagram-v2
 
     Healthy --> Stopped: all children stopped normally
     Escalating --> Stopped: no parent supervisor
-    Escalating --> Escalating: escalate to parent<br/>(SYS_MSG_CHILD_CRASHED)
+    Escalating --> Escalating: escalate to parent<br/>(ChildSupervisorEscalated)
 
     Stopped --> [*]
 
@@ -367,15 +376,26 @@ stateDiagram-v2
 | `RESTART_TRANSIENT` | 1     | Restart only on crash (not normal stop) |
 | `RESTART_TEMPORARY` | 2     | Never restart                           |
 
-**System messages:**
+**System messages** (`HewSysMsg`, `hew-runtime/src/mailbox_header.rs`):
 
-| Message                   | Value | Trigger                     |
-| ------------------------- | ----- | --------------------------- |
-| `SYS_MSG_CHILD_STOPPED`   | 100   | Child stopped normally      |
-| `SYS_MSG_CHILD_CRASHED`   | 101   | Child crashed               |
-| `SYS_MSG_SUPERVISOR_STOP` | 102   | Supervisor shutdown command |
-| `SYS_MSG_EXIT`            | 103   | Exit signal                 |
-| `SYS_MSG_DOWN`            | 104   | Monitored actor down        |
+These travel on a mailbox's system queue and are delivered through a dispatch
+entry point separate from the application trampoline, so they share no
+namespace with application message tags — an application `msg_type` is
+unrestricted over the full `i32` range and cannot express a lifecycle signal.
+The set is closed: a stop is a state transition rather than a message, so there
+is no `Shutdown` variant and no reserved `msg_type` encoding a stop. None of
+these variants is reachable from Hew source; the runtime is their only
+producer.
+
+| Variant                    | Trigger                                       |
+| -------------------------- | --------------------------------------------- |
+| `ChildStopped`             | Child stopped normally                        |
+| `ChildCrashed`             | Child crashed                                 |
+| `SupervisorStop`           | Supervisor shutdown command                   |
+| `Exit`                     | Exit signal from a linked actor               |
+| `Down`                     | Monitored actor down                          |
+| `DelayedRestart`           | Timer thread → supervisor restart handoff     |
+| `ChildSupervisorEscalated` | Child supervisor exhausted its restart budget |
 
 ---
 

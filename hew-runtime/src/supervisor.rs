@@ -17,9 +17,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::actor::{self, HewActor, HewActorOpts};
-use crate::internal::types::{HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn};
+use crate::internal::types::{
+    HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn, HewSysDispatchFn,
+};
 use crate::io_time::hew_now_ms;
 use crate::mailbox;
+use crate::mailbox_header::HewSysMsg;
 use crate::pool::{HewActorPool, PoolStrategy};
 use crate::scheduler;
 use crate::set_last_error;
@@ -431,19 +434,7 @@ fn trap_kind_name(code: i32) -> &'static str {
     }
 }
 
-/// System message types for supervisor events.
-const SYS_MSG_CHILD_STOPPED: i32 = 100;
-const SYS_MSG_CHILD_CRASHED: i32 = 101;
-const SYS_MSG_SUPERVISOR_STOP: i32 = 102;
-
-/// Link propagation system message (when linked actor crashes).
-pub const SYS_MSG_EXIT: i32 = 103;
-/// Monitor notification system message (when monitored actor dies).
-pub const SYS_MSG_DOWN: i32 = 104;
-/// Delayed restart: timer thread → supervisor mailbox (avoids budget race).
-const SYS_MSG_DELAYED_RESTART: i32 = 105;
-
-/// Payload for [`SYS_MSG_DELAYED_RESTART`] system messages.
+/// Payload for [`HewSysMsg::DelayedRestart`] system messages.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct DelayedRestartEvent {
@@ -551,9 +542,22 @@ pub struct HewChildSpec {
     pub config_size: usize,
     /// Typed destructor for queued message payloads evicted before dispatch.
     pub message_drop_fn: Option<mailbox::HewMessageDropFn>,
+    /// The child actor's SYSTEM dispatch entry point
+    /// (`__hew_actor_sys_dispatch_<Actor>`), or `None` when the actor declares
+    /// no `#[on(exit)]` / `#[on(down)]` hook.
+    ///
+    /// Carried IN the spec rather than set post-hoc so EVERY incarnation gets
+    /// it: the initial supervised spawn happens inside `add_child_spec` before
+    /// any setter could run, and each restart re-registers from this field.
+    ///
+    /// ABI: the final trailing `#[repr(C)]` field; the codegen-emitted
+    /// `hew_child_spec_struct_type` mirror appends a matching `ptr` slot.
+    /// Field-order drift here is wrong-code at the FFI boundary.
+    pub sys_dispatch: Option<HewSysDispatchFn>,
 }
 
-/// Child lifecycle event (sent as system message payload).
+/// Child lifecycle event (payload of [`HewSysMsg::ChildStopped`] /
+/// [`HewSysMsg::ChildCrashed`]).
 ///
 /// `crash_code` carries the trap-kind integer (`HEW_TRAP_*` constants, 201–205,
 /// or other actor-defined error codes) captured from the child actor's
@@ -562,11 +566,32 @@ pub struct HewChildSpec {
 /// Routing this through the event payload lets the supervisor record the real
 /// trap code in crash-stats and forward it to a registered `on_crash` handler
 /// instead of falling back to the historical SIGSEGV placeholder (`11`).
+///
+/// `child_index` is `u32`: a negative index is unrepresentable. It formerly
+/// carried `-1` to retag the whole record as a child-SUPERVISOR escalation,
+/// which silently changed the meaning of the sibling `child_id` field
+/// (actor id → index in `child_supervisors`). That case is now
+/// [`HewSysMsg::ChildSupervisorEscalated`] with its own payload, so no field's
+/// meaning depends on another's value.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct ChildEvent {
-    child_index: c_int,
+    child_index: u32,
     child_id: u64,
+    exit_state: c_int,
+    crash_code: c_int,
+}
+
+/// Payload of [`HewSysMsg::ChildSupervisorEscalated`]: a child SUPERVISOR
+/// exhausted its restart budget and escalated to this supervisor.
+///
+/// A distinct type from [`ChildEvent`] because it names a distinct thing:
+/// `supervisor_index` indexes `child_supervisors`, not `children`. No field
+/// here changes another field's meaning.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct ChildSupervisorEscalation {
+    supervisor_index: u32,
     exit_state: c_int,
     crash_code: c_int,
 }
@@ -930,6 +955,7 @@ struct InternalChildSpec {
     init_state: *mut c_void,
     init_state_size: usize,
     dispatch: Option<HewDispatchFn>,
+    sys_dispatch: Option<HewSysDispatchFn>,
     restart_policy: c_int,
     mailbox_capacity: c_int,
     overflow: c_int,
@@ -1038,6 +1064,7 @@ impl Default for InternalChildSpec {
             init_state: ptr::null_mut(),
             init_state_size: 0,
             dispatch: None,
+            sys_dispatch: None,
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
@@ -1144,9 +1171,9 @@ fn supervisor_actor_id(sup: &HewSupervisor) -> u64 {
 
 /// Escalate a failure to the parent supervisor.
 ///
-/// Sends a `SYS_MSG_CHILD_CRASHED` system message with `child_index = -1`
-/// to indicate a child supervisor (not actor) has failed. `child_id` carries
-/// this supervisor's index in the parent's `child_supervisors` vec.
+/// Sends a [`HewSysMsg::ChildSupervisorEscalated`] signal carrying this
+/// supervisor's index in the parent's `child_supervisors` vec. Its own typed
+/// variant, not a `ChildCrashed` retagged by a negative index.
 ///
 /// # Safety
 ///
@@ -1157,9 +1184,15 @@ fn escalate_to_parent(sup: &HewSupervisor) {
     if parent.self_actor.is_null() {
         return;
     }
-    let event = ChildEvent {
-        child_index: -1,
-        child_id: sup.index_in_parent as u64,
+    let Ok(supervisor_index) = u32::try_from(sup.index_in_parent) else {
+        eprintln!(
+            "[supervisor] refusing to escalate: child-supervisor index {} exceeds u32",
+            sup.index_in_parent
+        );
+        return;
+    };
+    let event = ChildSupervisorEscalation {
+        supervisor_index,
         exit_state: HewActorState::Crashed as c_int,
         // Child-supervisor escalation: no single trap code applies to the
         // subtree-restart-budget exhaustion that triggered this escalation.
@@ -1171,11 +1204,11 @@ fn escalate_to_parent(sup: &HewSupervisor) {
         let mb = (*parent.self_actor)
             .mailbox
             .cast::<crate::mailbox::HewMailbox>();
-        mailbox::hew_mailbox_send_sys(
+        mailbox::mailbox_send_sys(
             mb,
-            SYS_MSG_CHILD_CRASHED,
+            HewSysMsg::ChildSupervisorEscalated,
             (&raw const event).cast::<c_void>().cast_mut(),
-            std::mem::size_of::<ChildEvent>(),
+            std::mem::size_of::<ChildSupervisorEscalation>(),
         );
         let current = (*parent.self_actor).actor_state.load(Ordering::Acquire);
         if current == HewActorState::Idle as i32
@@ -1580,10 +1613,10 @@ fn current_actor_supervisor(current: *mut HewActor) -> *mut HewSupervisor {
         if !(*current).supervisor.is_null() {
             return (*current).supervisor.cast::<HewSupervisor>();
         }
-        let Some(dispatch) = (*current).dispatch else {
+        let Some(sys_dispatch) = (*current).sys_dispatch else {
             return ptr::null_mut();
         };
-        if std::ptr::fn_addr_eq(dispatch, supervisor_dispatch as HewDispatchFn)
+        if std::ptr::fn_addr_eq(sys_dispatch, supervisor_sys_dispatch as HewSysDispatchFn)
             && !(*current).state.is_null()
         {
             return (*current).state.cast::<HewSupervisor>();
@@ -1891,6 +1924,7 @@ unsafe fn stop_supervisor_owned(
 /// caller is responsible for pushing the result onto the `children` vec).
 unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
     // Copy scalar fields out before any mutable borrow of child_specs.
+    let child_sys_dispatch = sup.child_specs[index].sys_dispatch;
     let (opts, state_drop_fn, state_clone_fn, lifecycle_fn, init_fn, config) = {
         let spec = &sup.child_specs[index];
         let opts = HewActorOpts {
@@ -2071,6 +2105,13 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
                 (*new_child).supervisor_child_index = index as i32;
             }
         }
+
+        // Register the child's SYSTEM entry point on every incarnation. It is
+        // carried in the spec, not set post-hoc by the program, so a restarted
+        // child receives `#[on(exit)]` / `#[on(down)]` signals exactly as its
+        // predecessor did.
+        // SAFETY: new_child was just spawned and is valid.
+        unsafe { actor::hew_actor_set_sys_dispatch(new_child, child_sys_dispatch) };
 
         // Register the state-drop callback so restarted actors free their
         // heap-allocated fields (e.g. Vec, String) on teardown.
@@ -2569,9 +2610,9 @@ unsafe fn apply_restart(
                 {
                     let event = DelayedRestartEvent { child_index: idx };
                     let mb = (*s.self_actor).mailbox.cast::<crate::mailbox::HewMailbox>();
-                    mailbox::hew_mailbox_send_sys(
+                    mailbox::mailbox_send_sys(
                         mb,
-                        SYS_MSG_DELAYED_RESTART,
+                        HewSysMsg::DelayedRestart,
                         (&raw const event).cast::<c_void>().cast_mut(),
                         std::mem::size_of::<DelayedRestartEvent>(),
                     );
@@ -2608,34 +2649,34 @@ unsafe fn apply_restart(
     unsafe { restart_with_budget_and_strategy(sup, failed_index) };
 }
 
-/// Supervisor dispatch function (handles system messages).
-/// The supervisor's `HewDispatchFn` trampoline. D-A.2: the dispatch ABI returns
-/// a nullable suspend handle; the supervisor is an internal copy-mode actor that
-/// never suspends, so it always returns `null` (run-to-completion). The dispatch
-/// logic lives in `supervisor_dispatch_impl` (which keeps the early-`return`
-/// control flow); this thin wrapper threads the run-to-completion null handle.
-unsafe extern "C-unwind" fn supervisor_dispatch(
+/// The supervisor's [`HewSysDispatchFn`] — its SYSTEM entry point.
+///
+/// Registered as `HewActor.sys_dispatch`, never as `dispatch`, so it is
+/// reachable ONLY from nodes dequeued with `Origin::Sys`. A `hew_actor_send`
+/// to the supervisor's actor handle lands on the user queue and can never
+/// arrive here, which is what makes a forged supervision event — the
+/// `take_child_slot` + `hew_actor_free` of a LIVE child — unrepresentable
+/// rather than merely gated.
+///
+/// The dispatch logic lives in `supervisor_sys_dispatch_impl` (which keeps the
+/// early-`return` control flow).
+unsafe extern "C-unwind" fn supervisor_sys_dispatch(
     ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
-    msg_type: i32,
+    sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-    borrow_mode: i32,
-) -> *mut c_void {
+) {
     // SAFETY: forwards the caller's invariants unchanged to the impl.
-    unsafe { supervisor_dispatch_impl(ctx, state, msg_type, data, data_size, borrow_mode) };
-    std::ptr::null_mut()
+    unsafe { supervisor_sys_dispatch_impl(ctx, state, sys_msg, data, data_size) };
 }
 
-unsafe fn supervisor_dispatch_impl(
+unsafe fn supervisor_sys_dispatch_impl(
     ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
-    msg_type: i32,
+    sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-    // P5-RX sub-stage 1: copy-vs-borrow receipt discriminant (HewDispatchFn).
-    // The supervisor is an internal copy-mode actor; always 0, ignored.
-    _borrow_mode: i32,
 ) {
     if state.is_null() {
         return;
@@ -2647,8 +2688,16 @@ unsafe fn supervisor_dispatch_impl(
         return;
     }
 
-    match msg_type {
-        SYS_MSG_CHILD_STOPPED | SYS_MSG_CHILD_CRASHED => {
+    // Fail-closed decode. The scheduler already validated this value against
+    // the closed set; re-decoding here keeps the callee independent of that
+    // guarantee rather than trusting a raw integer.
+    let Some(kind) = HewSysMsg::from_raw(sys_msg) else {
+        eprintln!("[supervisor] refusing system signal with unknown kind {sys_msg}");
+        return;
+    };
+
+    match kind {
+        HewSysMsg::ChildStopped | HewSysMsg::ChildCrashed => {
             if data.is_null() || data_size < std::mem::size_of::<ChildEvent>() {
                 return;
             }
@@ -2664,18 +2713,6 @@ unsafe fn supervisor_dispatch_impl(
             // sampled trace id instead of an unsampled zero-parent fallback.
             crate::tracing::ensure_supervisor_trace_root();
 
-            // child_index == -1 signals a child supervisor escalation.
-            if event.child_index < 0 {
-                let Ok(idx) = usize::try_from(event.child_id) else {
-                    stop_and_maybe_escalate(sup);
-                    return;
-                };
-                // SAFETY: parent supervisor is valid for the lifetime of this dispatch.
-                unsafe { restart_child_supervisor_with_budget(sup, idx) };
-                return;
-            }
-
-            #[expect(clippy::cast_sign_loss, reason = "child_index is non-negative")]
             let idx = event.child_index as usize;
             if idx >= sup.child_count {
                 return;
@@ -2694,7 +2731,22 @@ unsafe fn supervisor_dispatch_impl(
             // cancellation propagation per f4df6354).
             unsafe { apply_restart(sup, idx, event.exit_state, event.crash_code, ctx) };
         }
-        SYS_MSG_SUPERVISOR_STOP => {
+        HewSysMsg::ChildSupervisorEscalated => {
+            if data.is_null() || data_size < std::mem::size_of::<ChildSupervisorEscalation>() {
+                return;
+            }
+            // SAFETY: data is valid for at least sizeof(ChildSupervisorEscalation).
+            let event = unsafe { &*data.cast::<ChildSupervisorEscalation>() };
+            crate::tracing::ensure_supervisor_trace_root();
+            let idx = event.supervisor_index as usize;
+            if idx >= sup.child_supervisors.len() {
+                stop_and_maybe_escalate(sup);
+                return;
+            }
+            // SAFETY: parent supervisor is valid for the lifetime of this dispatch.
+            unsafe { restart_child_supervisor_with_budget(sup, idx) };
+        }
+        HewSysMsg::SupervisorStop => {
             sup.cancelled.store(true, Ordering::Release);
             sup.running.store(0, Ordering::Release);
             // Stop child supervisors recursively.
@@ -2712,7 +2764,7 @@ unsafe fn supervisor_dispatch_impl(
                 }
             }
         }
-        SYS_MSG_DELAYED_RESTART => {
+        HewSysMsg::DelayedRestart => {
             if data.is_null() || data_size < std::mem::size_of::<DelayedRestartEvent>() {
                 return;
             }
@@ -2728,7 +2780,8 @@ unsafe fn supervisor_dispatch_impl(
                 unsafe { restart_with_budget_and_strategy(sup, idx) };
             }
         }
-        _ => {}
+        // A supervisor's own actor is never linked or monitored by the runtime.
+        HewSysMsg::Exit | HewSysMsg::Down => {}
     }
 }
 
@@ -2918,6 +2971,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         coalesce_key_fn: sp.coalesce_key_fn,
         coalesce_fallback: sp.coalesce_fallback,
         message_drop_fn: sp.message_drop_fn,
+        sys_dispatch: sp.sys_dispatch,
         restart_delay_ms: 0,
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
@@ -2970,16 +3024,26 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     // Create the supervisor's own actor. We pass a dummy state (the sup
     // pointer itself) and override it after spawn.
     // SAFETY: spawning with the supervisor dispatch function.
+    // The supervisor actor has NO application handlers: its entire protocol is
+    // lifecycle signals, so it registers only the SYSTEM entry point. With
+    // `dispatch` left `None`, any message a program sends to the supervisor's
+    // actor handle is freed unread instead of reaching supervision logic.
     let self_actor = unsafe {
         actor::hew_actor_spawn(
             sup.cast::<HewSupervisor>().cast::<c_void>(),
             std::mem::size_of::<HewSupervisor>(),
-            Some(supervisor_dispatch),
+            None,
         )
     };
     if self_actor.is_null() {
         s.running.store(0, Ordering::Release);
         return -1;
+    }
+    // SAFETY: `self_actor` is the freshly spawned supervisor actor; no other
+    // thread can observe it before this call returns because the supervisor's
+    // `self_actor` slot is still null.
+    unsafe {
+        actor::hew_actor_set_sys_dispatch(self_actor, Some(supervisor_sys_dispatch));
     }
 
     // Override the actor's state to point to our supervisor struct directly
@@ -3005,16 +3069,21 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     0
 }
 
-/// Notify the supervisor that a child has stopped or crashed.
+/// Notify the supervisor that a supervised child ACTOR has stopped or crashed.
+///
+/// `child_index` is `u32`: the escalation case that formerly rode this same
+/// symbol with `child_index = -1` is now
+/// [`hew_supervisor_notify_child_supervisor_escalation`], so no caller —
+/// external, JIT, or generated — can express the retagging value.
 ///
 /// # Safety
 ///
 /// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
 /// - The supervisor must have been started with [`hew_supervisor_start`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_notify_child_event(
+pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
     sup: *mut HewSupervisor,
-    child_index: c_int,
+    child_index: u32,
     child_id: u64,
     exit_state: c_int,
     crash_code: c_int,
@@ -3033,18 +3102,18 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
         crash_code,
     };
 
-    let msg_type = if exit_state == HewActorState::Crashed as c_int {
-        SYS_MSG_CHILD_CRASHED
+    let kind = if exit_state == HewActorState::Crashed as c_int {
+        HewSysMsg::ChildCrashed
     } else {
-        SYS_MSG_CHILD_STOPPED
+        HewSysMsg::ChildStopped
     };
 
     // SAFETY: self_actor is valid, mailbox is valid.
     unsafe {
         let mb = (*s.self_actor).mailbox.cast::<crate::mailbox::HewMailbox>();
-        mailbox::hew_mailbox_send_sys(
+        mailbox::mailbox_send_sys(
             mb,
-            msg_type,
+            kind,
             (&raw const event).cast::<c_void>().cast_mut(),
             std::mem::size_of::<ChildEvent>(),
         );
@@ -3053,6 +3122,65 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
     // Wake up the supervisor actor.
     // SAFETY: self_actor is valid.
     unsafe {
+        let current = (*s.self_actor).actor_state.load(Ordering::Acquire);
+        if current == HewActorState::Idle as i32
+            && (*s.self_actor)
+                .actor_state
+                .compare_exchange(
+                    HewActorState::Idle as i32,
+                    HewActorState::Runnable as i32,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+        {
+            scheduler::sched_enqueue(s.self_actor);
+        }
+    }
+}
+
+/// Notify the supervisor that a child SUPERVISOR exhausted its restart budget
+/// and escalated.
+///
+/// The sibling of [`hew_supervisor_notify_child_actor_event`], split out so the
+/// two events cannot be confused: `supervisor_index` indexes
+/// `child_supervisors`, a different collection from the one an actor event
+/// indexes. The old single symbol distinguished them by `child_index == -1`,
+/// which silently retagged the meaning of the neighbouring id field.
+///
+/// # Safety
+///
+/// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+/// - The supervisor must have been started with [`hew_supervisor_start`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_notify_child_supervisor_escalation(
+    sup: *mut HewSupervisor,
+    supervisor_index: u32,
+    exit_state: c_int,
+    crash_code: c_int,
+) {
+    cabi_guard!(sup.is_null());
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &*sup };
+    if s.self_actor.is_null() {
+        return;
+    }
+
+    let event = ChildSupervisorEscalation {
+        supervisor_index,
+        exit_state,
+        crash_code,
+    };
+
+    // SAFETY: self_actor is valid, mailbox is valid.
+    unsafe {
+        let mb = (*s.self_actor).mailbox.cast::<crate::mailbox::HewMailbox>();
+        mailbox::mailbox_send_sys(
+            mb,
+            HewSysMsg::ChildSupervisorEscalated,
+            (&raw const event).cast::<c_void>().cast_mut(),
+            std::mem::size_of::<ChildSupervisorEscalation>(),
+        );
         let current = (*s.self_actor).actor_state.load(Ordering::Acquire);
         if current == HewActorState::Idle as i32
             && (*s.self_actor)
@@ -3320,6 +3448,7 @@ mod tests {
                 init_state: ptr::null_mut(),
                 init_state_size: 0,
                 dispatch: Some(noop_child_dispatch),
+                sys_dispatch: None,
                 restart_policy: RESTART_TEMPORARY,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
@@ -3343,6 +3472,119 @@ mod tests {
         }
     }
 
+    /// Installs a worker-backed scheduler for tests that need real dispatch,
+    /// and tears it down symmetrically. `runtime_test_guard` alone installs a
+    /// worker-LESS placeholder, so nothing would ever run a handler.
+    struct RealSchedulerGuard;
+
+    impl RealSchedulerGuard {
+        fn new() -> Self {
+            crate::scheduler::init_real_scheduler_for_test();
+            Self
+        }
+    }
+
+    impl Drop for RealSchedulerGuard {
+        fn drop(&mut self) {
+            crate::scheduler::hew_sched_shutdown();
+            crate::scheduler::hew_runtime_cleanup();
+        }
+    }
+
+    /// Byte-compatible replica of the internal supervision event payload, as
+    /// an attacker holding a supervisor's actor handle would hand-build it.
+    /// Declared independently of `ChildEvent` so the forgery test keeps its
+    /// teeth even if the internal struct is retyped.
+    #[repr(C)]
+    struct ForgedChildEvent {
+        child_index: c_int,
+        child_id: u64,
+        exit_state: c_int,
+        crash_code: c_int,
+    }
+
+    /// A supervision event forged on the USER queue must never free a live
+    /// child.
+    ///
+    /// `hew_actor_send` is public C ABI and routes to the USER queue. Before
+    /// the sys/user channel split, `supervisor_dispatch_impl` matched on the
+    /// raw `msg_type` VALUE with no provenance gate, so a forged `ChildEvent`
+    /// delivered on the user queue drove `take_child_slot` +
+    /// `hew_actor_free` on a live child — a use-after-free reachable with no
+    /// hash collision. Supervision events now arrive only through the typed
+    /// system dispatch entry point, which the user queue cannot reach.
+    #[test]
+    fn user_queue_supervision_value_does_not_free_a_live_child() {
+        let _rt = crate::runtime_test_guard();
+        let _sched = RealSchedulerGuard::new();
+        // SAFETY: the test owns the supervisor tree for the whole body.
+        unsafe {
+            let (sup, child, self_actor) = make_supervisor_with_child();
+            let child_id = (*child).id;
+            assert!(
+                actor::is_actor_live_with_id(child_id, child),
+                "precondition: the child is live before the forged send"
+            );
+
+            // The forged payload an attacker holding the supervisor's actor
+            // handle would build: index 0, the live child's id, Crashed.
+            let forged = ForgedChildEvent {
+                child_index: 0,
+                child_id,
+                exit_state: HewActorState::Crashed as c_int,
+                crash_code: 0,
+            };
+            // Every value in the former reserved block, not just the
+            // supervision one: none may reach the system handler.
+            for forged_type in 100..=105_i32 {
+                crate::actor::hew_actor_send(
+                    self_actor,
+                    forged_type,
+                    (&raw const forged).cast::<c_void>().cast_mut(),
+                    std::mem::size_of::<ForgedChildEvent>(),
+                );
+            }
+
+            let freed = wait_for_condition(std::time::Duration::from_secs(2), || {
+                !actor::is_actor_live_with_id(child_id, child)
+            });
+            assert!(
+                !freed,
+                "a user-queue send of a reserved system value freed a LIVE \
+                 supervised child (use-after-free)"
+            );
+            assert_eq!(
+                hew_supervisor_child_count(sup),
+                1,
+                "the forged user-queue send must not alter the child roster"
+            );
+
+            // NON-VACUITY: "the child survived" only means something if the
+            // supervisor was actually running and WOULD have acted on a real
+            // event. Deliver the same ChildCrashed by its legitimate route —
+            // the privileged system send — and require that it does reclaim
+            // the child. The forgery and the real thing carry identical bytes;
+            // only the channel differs, which is the whole point.
+            hew_supervisor_notify_child_actor_event(
+                sup,
+                0,
+                child_id,
+                HewActorState::Crashed as c_int,
+                0,
+            );
+            assert!(
+                wait_for_condition(std::time::Duration::from_secs(2), || {
+                    !actor::is_actor_live_with_id(child_id, child)
+                }),
+                "the supervision path must be live: an event delivered on the \
+                 SYSTEM channel must reclaim the child, otherwise the forgery \
+                 assertions above prove nothing"
+            );
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
     static TEARDOWN_RACE_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     unsafe extern "C" fn count_teardown_race_state_drop(_state: *mut c_void) {
@@ -3361,6 +3603,7 @@ mod tests {
                 init_state: std::ptr::from_ref(&initial_state).cast_mut().cast(),
                 init_state_size: std::mem::size_of::<u64>(),
                 dispatch: Some(noop_child_dispatch),
+                sys_dispatch: None,
                 restart_policy: RESTART_TEMPORARY,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
@@ -4428,6 +4671,7 @@ mod tests {
                 init_state: ptr::null_mut(),
                 init_state_size: 0,
                 dispatch: Some(noop_child_dispatch),
+                sys_dispatch: None,
                 restart_policy: RESTART_TEMPORARY,
                 mailbox_capacity: 1,
                 overflow: 0, // HewOverflowPolicy::Block
@@ -5447,6 +5691,7 @@ mod tests {
                 init_state: std::ptr::from_ref(&*template).cast_mut().cast::<c_void>(),
                 init_state_size: std::mem::size_of::<HeapState>(),
                 dispatch: Some(noop_child_dispatch),
+                sys_dispatch: None,
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
@@ -5831,6 +6076,7 @@ mod tests {
                 init_state: std::ptr::from_ref(&*template).cast_mut().cast::<c_void>(),
                 init_state_size: std::mem::size_of::<HeapState>(),
                 dispatch: Some(noop_child_dispatch),
+                sys_dispatch: None,
                 restart_policy: RESTART_TEMPORARY,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
@@ -5940,15 +6186,20 @@ pub unsafe extern "C" fn hew_supervisor_handle_crash(
     // SAFETY: caller guarantees `child` is a valid HewActor pointer.
     let child_ref = unsafe { &*child };
 
-    // Find the child index in the supervisor's children array.
-    let idx = child_ref.supervisor_child_index;
-    if idx < 0 {
+    // Find the child index in the supervisor's children array. An unassigned
+    // index (the `-1` initial value) means this actor is not a supervised
+    // child of anyone: refuse rather than reinterpret.
+    let Ok(child_index) = u32::try_from(child_ref.supervisor_child_index) else {
+        return;
+    };
+    let index = child_index as usize;
+    if index >= s.child_count {
         return;
     }
-
-    #[expect(clippy::cast_sign_loss, reason = "guarded by idx >= 0 check above")]
-    let index = idx as usize;
-    if index >= s.child_count {
+    // The child must actually occupy the slot it names. A stale index left
+    // behind by the swap-remove in `hew_supervisor_remove_child` would
+    // otherwise mis-target a live sibling.
+    if s.children[index] != child {
         return;
     }
 
@@ -5961,7 +6212,13 @@ pub unsafe extern "C" fn hew_supervisor_handle_crash(
     // Notify the supervisor actor via the event system.
     // SAFETY: sup is valid and child_id / exit_state are read from valid memory.
     unsafe {
-        hew_supervisor_notify_child_event(sup, idx, child_ref.id, exit_state, crash_code);
+        hew_supervisor_notify_child_actor_event(
+            sup,
+            child_index,
+            child_ref.id,
+            exit_state,
+            crash_code,
+        );
     }
 }
 
@@ -6911,6 +7168,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         coalesce_key_fn: sp.coalesce_key_fn,
         coalesce_fallback: sp.coalesce_fallback,
         message_drop_fn: sp.message_drop_fn,
+        sys_dispatch: sp.sys_dispatch,
         restart_delay_ms: 0,
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
@@ -8456,6 +8714,7 @@ mod pool_slot_tests {
             init_state: ptr::null_mut(),
             init_state_size: 0,
             dispatch: Some(noop_child_dispatch),
+            sys_dispatch: None,
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,

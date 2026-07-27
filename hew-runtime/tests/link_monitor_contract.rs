@@ -15,8 +15,8 @@
 
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::hew_actor_link;
+use hew_runtime::mailbox_header::HewSysMsg;
 use hew_runtime::monitor::{hew_actor_demonitor, register_actor_monitor, HewDownMessage};
-use hew_runtime::supervisor::{SYS_MSG_DOWN, SYS_MSG_EXIT};
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor};
 use std::ffi::c_void;
 use std::sync::{Condvar, Mutex};
@@ -50,13 +50,13 @@ impl ExitSignal {
         self.state.lock().unwrap().clear();
     }
 
-    fn record(&self, msg_type: i32, data: *mut c_void, data_size: usize) {
+    fn record(&self, sys_msg: i32, data: *mut c_void, data_size: usize) {
         let mut state = self.state.lock().unwrap();
-        if msg_type == SYS_MSG_EXIT
+        if sys_msg == HewSysMsg::Exit.as_i32()
             && !data.is_null()
             && data_size == std::mem::size_of::<ExitMessageView>()
         {
-            // SAFETY: The runtime sent a SYS_MSG_EXIT payload with the exact
+            // SAFETY: The runtime sent an Exit payload with the exact
             // expected size, so the cast and unaligned read are valid.
             let msg = unsafe { (data.cast::<ExitMessageView>().cast_const()).read_unaligned() };
             state.push(msg);
@@ -101,12 +101,12 @@ impl DownSignal {
         self.state.lock().unwrap().clear();
     }
 
-    fn record(&self, msg_type: i32, data: *mut c_void, data_size: usize) {
-        if msg_type == SYS_MSG_DOWN
+    fn record(&self, sys_msg: i32, data: *mut c_void, data_size: usize) {
+        if sys_msg == HewSysMsg::Down.as_i32()
             && !data.is_null()
             && data_size == std::mem::size_of::<HewDownMessage>()
         {
-            // SAFETY: runtime sent SYS_MSG_DOWN with exact expected size.
+            // SAFETY: runtime sent a Down payload with exact expected size.
             let msg = unsafe { (data.cast::<HewDownMessage>().cast_const()).read_unaligned() };
             let mut state = self.state.lock().unwrap();
             state.push(msg);
@@ -148,28 +148,24 @@ unsafe extern "C-unwind" fn noop_dispatch(
     std::ptr::null_mut()
 }
 
-unsafe extern "C-unwind" fn exit_capture_dispatch(
+unsafe extern "C-unwind" fn exit_capture_sys_dispatch(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
-    msg_type: i32,
+    sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-    _borrow_mode: i32,
-) -> *mut c_void {
-    EXIT_SIGNAL.record(msg_type, data, data_size);
-    std::ptr::null_mut()
+) {
+    EXIT_SIGNAL.record(sys_msg, data, data_size);
 }
 
-unsafe extern "C-unwind" fn down_capture_dispatch(
+unsafe extern "C-unwind" fn down_capture_sys_dispatch(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
-    msg_type: i32,
+    sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-    _borrow_mode: i32,
-) -> *mut c_void {
-    DOWN_SIGNAL.record(msg_type, data, data_size);
-    std::ptr::null_mut()
+) {
+    DOWN_SIGNAL.record(sys_msg, data, data_size);
 }
 
 // ── Contract tests ───────────────────────────────────────────────────────────
@@ -216,7 +212,7 @@ fn link_to_dead_actor_sends_exit_and_does_not_panic() {
     hew_deterministic_reset();
     EXIT_SIGNAL.reset();
 
-    let survivor = TestActor::spawn(exit_capture_dispatch);
+    let survivor = TestActor::spawn_with_sys(noop_dispatch, exit_capture_sys_dispatch);
     let target = TestActor::spawn(noop_dispatch);
 
     // SAFETY: reading the id field via a valid live pointer is the runtime's
@@ -267,7 +263,7 @@ fn monitor_to_dead_actor_returns_ok() {
     hew_deterministic_reset();
     DOWN_SIGNAL.reset();
 
-    let watcher = TestActor::spawn(down_capture_dispatch);
+    let watcher = TestActor::spawn_with_sys(noop_dispatch, down_capture_sys_dispatch);
     let target = TestActor::spawn(noop_dispatch);
 
     // SAFETY: reading id via valid live pointer.

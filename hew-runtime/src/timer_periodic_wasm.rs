@@ -534,6 +534,7 @@ mod tests {
                 gen_sink: AtomicPtr::new(ptr::null_mut()),
                 local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
                 spawn_serial: id,
+                sys_dispatch: None,
             }));
             Self { actor, counter }
         }

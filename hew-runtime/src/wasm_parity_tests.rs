@@ -353,6 +353,7 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         gen_sink: AtomicPtr::new(std::ptr::null_mut()),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         spawn_serial: 1,
+        sys_dispatch: None,
     })
 }
 

@@ -439,6 +439,7 @@ bb0:                                              ; preds = %entry
   call void @hew_actor_set_state_drop(ptr %hew_actor_spawn_call, ptr @__hew_state_drop_Adder)
   call void @hew_actor_set_state_clone(ptr %hew_actor_spawn_call, ptr @__hew_state_clone_Adder)
   call void @hew_actor_set_message_drop(ptr %hew_actor_spawn_call, ptr @__hew_message_drop_Adder)
+  call void @hew_actor_set_sys_dispatch(ptr %hew_actor_spawn_call, ptr @__hew_actor_sys_dispatch_Adder)
   store ptr %hew_actor_spawn_call, ptr %local_2, align 8
   store i64 100, ptr %local_3, align 8
   %"actor_send receiver" = load ptr, ptr %local_2, align 8
@@ -1202,8 +1203,8 @@ unknown_msg_type:                                 ; preds = %payload_src
   call void @llvm.trap()
   unreachable
 
-dispatch_done:                                    ; preds = %msg_sys_exit_unhandled, %msg_sys_down_ignored, %msg_311929158, %msg_1995638644
-  %dispatch_suspend_handle = phi ptr [ null, %msg_1995638644 ], [ null, %msg_311929158 ], [ null, %msg_sys_down_ignored ], [ null, %msg_sys_exit_unhandled ]
+dispatch_done:                                    ; preds = %msg_311929158, %msg_1995638644
+  %dispatch_suspend_handle = phi ptr [ null, %msg_1995638644 ], [ null, %msg_311929158 ]
   ret ptr %dispatch_suspend_handle
 
 borrow_src:                                       ; preds = %entry
@@ -1219,8 +1220,6 @@ payload_src:                                      ; preds = %copy_src, %borrow_p
   switch i32 %2, label %unknown_msg_type [
     i32 1995638644, label %msg_1995638644
     i32 311929158, label %msg_311929158
-    i32 103, label %msg_sys_exit_unhandled
-    i32 104, label %msg_sys_down_ignored
   ]
 
 borrow_payload_null:                              ; preds = %borrow_src
@@ -1243,15 +1242,6 @@ msg_311929158:                                    ; preds = %payload_src
   store i64 %call_add, ptr %actor_reply_slot, align 8
   %hew_reply_call = call i1 @hew_reply(ptr %hew_get_reply_channel_call, ptr %actor_reply_slot, i64 ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64))
   br label %dispatch_done
-
-msg_sys_exit_unhandled:                           ; preds = %payload_src
-  %exit_reason_ptr = getelementptr inbounds nuw { i64, i32, i32 }, ptr %payload_src_ptr, i32 0, i32 1
-  %exit_reason = load i32, ptr %exit_reason_ptr, align 4
-  call void @hew_actor_exit_unhandled(i32 %exit_reason)
-  br label %dispatch_done
-
-msg_sys_down_ignored:                             ; preds = %payload_src
-  br label %dispatch_done
 }
 
 declare ptr @hew_msg_envelope_payload_ptr(ptr)
@@ -1262,10 +1252,42 @@ declare ptr @hew_get_reply_channel()
 
 declare i1 @hew_reply(ptr, ptr, i64)
 
-declare void @hew_actor_exit_unhandled(i32)
-
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
 declare void @llvm.trap() #0
+
+define internal void @__hew_actor_sys_dispatch_Adder(ptr %0, ptr %1, i32 %2, ptr %3, i64 %4) {
+entry:
+  switch i32 %2, label %sys_dispatch_done [
+    i32 4, label %sys_exit_guard
+    i32 5, label %sys_down_guard
+  ]
+
+sys_dispatch_done:                                ; preds = %sys_exit_payload_ok, %sys_down_payload_ok, %sys_down_guard, %sys_exit_guard, %entry
+  ret void
+
+sys_exit_guard:                                   ; preds = %entry
+  %sys_payload_big_enough = icmp uge i64 %4, ptrtoint (ptr getelementptr ({ i64, i32, i32 }, ptr null, i32 1) to i64)
+  %sys_payload_non_null = icmp ne ptr %3, null
+  %sys_payload_ok = and i1 %sys_payload_big_enough, %sys_payload_non_null
+  br i1 %sys_payload_ok, label %sys_exit_payload_ok, label %sys_dispatch_done
+
+sys_down_guard:                                   ; preds = %entry
+  %sys_payload_big_enough1 = icmp uge i64 %4, ptrtoint (ptr getelementptr ({ i64, i32, i32, i64, i64, i64, i32, i32 }, ptr null, i32 1) to i64)
+  %sys_payload_non_null2 = icmp ne ptr %3, null
+  %sys_payload_ok3 = and i1 %sys_payload_big_enough1, %sys_payload_non_null2
+  br i1 %sys_payload_ok3, label %sys_down_payload_ok, label %sys_dispatch_done
+
+sys_exit_payload_ok:                              ; preds = %sys_exit_guard
+  %exit_reason_ptr = getelementptr inbounds nuw { i64, i32, i32 }, ptr %3, i32 0, i32 1
+  %exit_reason = load i32, ptr %exit_reason_ptr, align 4
+  call void @hew_actor_exit_unhandled(i32 %exit_reason)
+  br label %sys_dispatch_done
+
+sys_down_payload_ok:                              ; preds = %sys_down_guard
+  br label %sys_dispatch_done
+}
+
+declare void @hew_actor_exit_unhandled(i32)
 
 define internal void @__hew_message_drop_Adder(i32 %0, ptr %1, i64 %2) {
 entry:
@@ -1438,6 +1460,8 @@ declare void @hew_actor_set_state_drop(ptr, ptr)
 declare void @hew_actor_set_state_clone(ptr, ptr)
 
 declare void @hew_actor_set_message_drop(ptr, ptr)
+
+declare void @hew_actor_set_sys_dispatch(ptr, ptr)
 
 declare i32 @hew_actor_send_by_id(i64, ptr, i32, ptr, i64)
 

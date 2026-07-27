@@ -4296,7 +4296,7 @@ pub(crate) fn handle_inbound_unlink(payload: &crate::envelope::LinkReqPayload) {
 
 /// Handle an inbound `CTRL_LINK_DOWN`: a node owning an actor we LINK
 /// reports it reached a terminal state. Fire the cross-node link cascade —
-/// synthesize a `SYS_MSG_EXIT` into the LOCAL linked actor's MAILBOX and crash it
+/// synthesize a `HewSysMsg::Exit` into the LOCAL linked actor's MAILBOX and crash it
 /// (for `CrashLinked`), keyed by the local actor id stored in our link entry.
 ///
 /// A monitor DOWN queues a typed mailbox notification; a `CrashLinked` link DOWN
@@ -4360,7 +4360,7 @@ pub(crate) fn fan_out_monitor_lost_for_identity(dead_node: crate::node_identity:
     // watcher on the dead node — the death-signal must fire on the PARTITION
     // terminal cause too (firing only on a clean exit / crash would fail-open: a
     // linked actor surviving its dead peer). For CrashLinked this synthesizes a
-    // SYS_MSG_EXIT into the LOCAL linked actor's mailbox and crashes it. The
+    // HewSysMsg::Exit into the LOCAL linked actor's mailbox and crashes it. The
     // one-shot slot makes this exactly-once vs a definitive CTRL_LINK_DOWN that
     // may already have fired.
     let link_downs = rt

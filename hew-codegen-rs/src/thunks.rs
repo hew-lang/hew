@@ -30,9 +30,7 @@ use hew_mir::{
     SpawnEnvFieldOwnership, StateFieldCloneKind,
 };
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
-use hew_runtime::supervisor::{
-    SYS_MSG_DOWN as RUNTIME_SYS_MSG_DOWN, SYS_MSG_EXIT as RUNTIME_SYS_MSG_EXIT,
-};
+use hew_runtime::mailbox_header::HewSysMsg;
 use hew_types::{BuiltinType, ResolvedTy};
 
 use crate::layout::mix_into_hash_acc;
@@ -2456,6 +2454,15 @@ pub(crate) fn message_drop_fn_name(actor_name: &str) -> String {
     format!("__hew_message_drop_{}", mangle_dotted_name(actor_name))
 }
 
+/// Symbol of an actor's SYSTEM dispatch trampoline — the single naming
+/// authority shared by the emitter and every registration site.
+pub(crate) fn actor_sys_dispatch_fn_name(actor_name: &str) -> String {
+    format!(
+        "__hew_actor_sys_dispatch_{}",
+        mangle_dotted_name(actor_name)
+    )
+}
+
 /// Emit the runtime-registered key extractor for one coalescing actor.
 ///
 /// The callback rebuilds the same anonymous payload struct used by
@@ -2741,6 +2748,552 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
     Ok(drop_fn)
 }
 
+/// Emit `__hew_actor_sys_dispatch_<Actor>` — the actor's SYSTEM dispatch entry
+/// point, registered on the actor via `hew_actor_set_sys_dispatch`.
+///
+/// The second, disjoint dispatch channel. The scheduler selects it from the
+/// dequeued node's `Origin`, so nothing an application sends through
+/// `hew_actor_send` can reach these arms and nothing here can be reached by an
+/// application `msg_type`. Before the split both lived in ONE switch keyed on a
+/// raw `i32`, which is why `hew_actor_send(actor, 103, null, 0)` — a legal
+/// public C-ABI call — landed on the EXIT arm and forged a crash.
+///
+/// Signature (mirrors `HewSysDispatchFn`,
+/// `hew-runtime/src/internal/types.rs`):
+/// `void(ptr ctx, ptr state, i32 sys_msg, ptr data, size_t data_size)`.
+/// `sys_msg` is a `HewSysMsg` discriminant the runtime already validated
+/// through `HewSysMsg::from_raw`.
+///
+/// EVERY arm bounds-checks `data_size` against the payload struct it is about
+/// to read before taking a single GEP. The old in-switch arms read a 16-byte
+/// `ExitMessage` and a 48-byte `HewDownMessage` with no size check at all —
+/// `data_size` was never read anywhere in the trampoline — so an undersized or
+/// null payload produced an out-of-bounds read.
+///
+/// Emitted for EVERY actor, including one that declares neither hook: a
+/// non-trapping actor must still CRASH on an unhandled EXIT (the OTP
+/// "linked processes die together" semantic), which is the
+/// `hew_actor_exit_unhandled` arm.
+pub(crate) fn emit_actor_sys_dispatch_trampoline<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    layout: &ActorLayout,
+    fn_symbols: &FnSymbolMap<'ctx>,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let size_ty = runtime_size_ty(ctx, llvm_mod);
+    let sys_name = actor_sys_dispatch_fn_name(&layout.name);
+    let fn_ty = ctx.void_type().fn_type(
+        &[
+            ptr_ty.into(),  // ctx
+            ptr_ty.into(),  // state
+            i32_ty.into(),  // sys_msg (HewSysMsg discriminant)
+            ptr_ty.into(),  // data
+            size_ty.into(), // data_size
+        ],
+        false,
+    );
+    let sys_fn = llvm_mod.add_function(&sys_name, fn_ty, Some(Linkage::Internal));
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(sys_fn, "entry");
+    let done_bb = ctx.append_basic_block(sys_fn, "sys_dispatch_done");
+
+    builder.position_at_end(entry);
+    let sys_msg = sys_fn
+        .get_nth_param(2)
+        .ok_or_else(|| {
+            CodegenError::FailClosed("sys dispatch trampoline missing sys_msg param".into())
+        })?
+        .into_int_value();
+    let sys_payload = sys_fn
+        .get_nth_param(3)
+        .ok_or_else(|| CodegenError::FailClosed("sys dispatch missing data param".into()))?
+        .into_pointer_value();
+    let data_size = sys_fn
+        .get_nth_param(4)
+        .ok_or_else(|| CodegenError::FailClosed("sys dispatch missing data_size param".into()))?
+        .into_int_value();
+
+    // `data_size >= size_of(T) && data != null` — the guard that did not exist
+    // before this split. Emitted per arm so each payload type is checked
+    // against its own size, and always as real control flow reaching `done_bb`
+    // (a refusal, never a trap: an under-sized lifecycle payload is a
+    // malformed signal, not an actor fault).
+    let guard_payload = |bb_name: &str,
+                         struct_ty: inkwell::types::StructType<'ctx>,
+                         from_bb: inkwell::basic_block::BasicBlock<'ctx>|
+     -> Result<inkwell::basic_block::BasicBlock<'ctx>, CodegenError> {
+        builder.position_at_end(from_bb);
+        let needed = struct_ty.size_of().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor sys dispatch `{sys_name}`: payload type has no static size"
+            ))
+        })?;
+        let needed = if needed.get_type() == size_ty {
+            needed
+        } else if size_ty.get_bit_width() < i64_ty.get_bit_width() {
+            builder
+                .build_int_truncate(needed, size_ty, "sys_payload_size_trunc")
+                .llvm_ctx("sys payload size trunc")?
+        } else {
+            builder
+                .build_int_z_extend(needed, size_ty, "sys_payload_size_zext")
+                .llvm_ctx("sys payload size zext")?
+        };
+        let big_enough = builder
+            .build_int_compare(
+                IntPredicate::UGE,
+                data_size,
+                needed,
+                "sys_payload_big_enough",
+            )
+            .llvm_ctx("sys payload size compare")?;
+        let non_null = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                sys_payload,
+                ptr_ty.const_null(),
+                "sys_payload_non_null",
+            )
+            .llvm_ctx("sys payload null compare")?;
+        let ok = builder
+            .build_and(big_enough, non_null, "sys_payload_ok")
+            .llvm_ctx("sys payload guard")?;
+        let ok_bb = ctx.append_basic_block(sys_fn, bb_name);
+        builder
+            .build_conditional_branch(ok, ok_bb, done_bb)
+            .llvm_ctx("sys payload guard branch")?;
+        Ok(ok_bb)
+    };
+
+    let u64_ty = ctx.i64_type();
+    let exit_msg_st = ctx.struct_type(&[u64_ty.into(), i32_ty.into(), i32_ty.into()], false);
+    let down_msg_size_st = ctx.struct_type(
+        &[
+            u64_ty.into(),
+            i32_ty.into(),
+            i32_ty.into(),
+            u64_ty.into(),
+            u64_ty.into(),
+            u64_ty.into(),
+            i32_ty.into(),
+            i32_ty.into(),
+        ],
+        false,
+    );
+
+    let exit_guard_bb = ctx.append_basic_block(sys_fn, "sys_exit_guard");
+    let down_guard_bb = ctx.append_basic_block(sys_fn, "sys_down_guard");
+    builder.position_at_end(entry);
+    // Default arm: a lifecycle kind this actor type has nothing to do (child
+    // events go to supervisors, Shutdown is consumed by the scheduler). The
+    // runtime already refused anything outside the closed `HewSysMsg` set, so
+    // "not for me" is a no-op, not a fault.
+    builder
+        .build_switch(
+            sys_msg,
+            done_bb,
+            &[
+                (
+                    i32_ty.const_int(HewSysMsg::Exit.as_i32().cast_unsigned().into(), false),
+                    exit_guard_bb,
+                ),
+                (
+                    i32_ty.const_int(HewSysMsg::Down.as_i32().cast_unsigned().into(), false),
+                    down_guard_bb,
+                ),
+            ],
+        )
+        .llvm_ctx("actor sys dispatch switch")?;
+
+    let exit_bb = guard_payload("sys_exit_payload_ok", exit_msg_st, exit_guard_bb)?;
+    let down_bb = guard_payload("sys_down_payload_ok", down_msg_size_st, down_guard_bb)?;
+
+    let on_exit_bb = layout.on_exit_symbol.as_ref().map(|_| exit_bb);
+    let unhandled_exit_bb = if layout.on_exit_symbol.is_none() {
+        Some(exit_bb)
+    } else {
+        None
+    };
+    let on_down_bb = layout.on_down_symbol.as_ref().map(|_| down_bb);
+    let ignored_down_bb = if layout.on_down_symbol.is_none() {
+        Some(down_bb)
+    } else {
+        None
+    };
+
+    // M-7-R: emit the `HewSysMsg::Exit` → `#[on(exit)]` case body. The runtime
+    // delivers `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind:
+    // i32 }` as the message payload; unpack `crashed_actor_id` and `crash_kind`
+    // (the M-6 projection) and call `__on_exit(ctx, actor_id, crash_kind,
+    // borrow_mode)`. The hook is a run-to-completion ActorHandler returning unit,
+    // so the dispatch contributes `null` to the suspend-handle phi.
+    if let (Some(on_exit_bb), Some(on_exit_symbol)) = (on_exit_bb, &layout.on_exit_symbol) {
+        builder.position_at_end(on_exit_bb);
+        let on_exit_sym = fn_symbols.get(on_exit_symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor sys dispatch `{sys_name}` references undeclared on_exit handler \
+                 `{on_exit_symbol}`"
+            ))
+        })?;
+        let (on_exit_fn, _on_exit_ret, _on_exit_unit) =
+            on_exit_sym.real(on_exit_symbol, "actor sys dispatch on_exit handler")?;
+
+        // The ExitMessage layout (hew-runtime/src/link.rs) is
+        // `{ u64 crashed_actor_id, i32 reason, i32 crash_kind }`. Read
+        // `crashed_actor_id` (field 0) and `crash_kind` (field 2) from the
+        // payload by their natural #[repr(C)] offsets via a matching LLVM struct.
+        let u64_ty = ctx.i64_type();
+        let exit_msg_st = ctx.struct_type(&[u64_ty.into(), i32_ty.into(), i32_ty.into()], false);
+        let actor_id_ptr = builder
+            .build_struct_gep(exit_msg_st, sys_payload, 0, "exit_actor_id_ptr")
+            .llvm_ctx("on_exit actor_id gep")?;
+        let actor_id = builder
+            .build_load(u64_ty, actor_id_ptr, "exit_actor_id")
+            .llvm_ctx("on_exit actor_id load")?;
+        let crash_kind_ptr = builder
+            .build_struct_gep(exit_msg_st, sys_payload, 2, "exit_crash_kind_ptr")
+            .llvm_ctx("on_exit crash_kind gep")?;
+        let crash_kind = builder
+            .build_load(i32_ty, crash_kind_ptr, "exit_crash_kind")
+            .llvm_ctx("on_exit crash_kind load")?;
+
+        let ctx_arg = sys_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("sys dispatch missing ctx param".into()))?;
+        // ABI: `__on_exit(ctx, __exit_actor_id: u64, __exit_kind_tag: i32)` — the
+        // ActorHandler convention (ctx-leading) plus the two unpacked
+        // CrashNotification fields. `__on_exit` is NOT a `__recv__` symbol, so it
+        // does NOT carry the trailing `borrow_mode` arg (that ABI growth is gated
+        // on the `__recv__` symbol in `declare_function`).
+        let on_exit_args: Vec<BasicMetadataValueEnum> = vec![
+            ctx_arg.into(),
+            metadata_value_from_basic(actor_id),
+            metadata_value_from_basic(crash_kind),
+        ];
+        builder
+            .build_call(on_exit_fn, &on_exit_args, "call_on_exit")
+            .llvm_ctx("actor sys dispatch on_exit call")?;
+        builder
+            .build_unconditional_branch(done_bb)
+            .llvm_ctx("actor sys dispatch on_exit branch")?;
+    }
+
+    if let (Some(on_down_bb), Some(on_down_symbol)) = (on_down_bb, &layout.on_down_symbol) {
+        builder.position_at_end(on_down_bb);
+        let on_down_sym = fn_symbols.get(on_down_symbol).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "actor sys dispatch `{sys_name}` references undeclared on_down handler \
+                 `{on_down_symbol}`"
+            ))
+        })?;
+        let (on_down_fn, _on_down_ret, _on_down_unit) =
+            on_down_sym.real(on_down_symbol, "actor sys dispatch on_down handler")?;
+
+        // `HewDownMessage` is a fixed 48-byte record. Its tail starting at
+        // `node_hi` is layout-compatible with the canonical 32-byte Location.
+        let u64_ty = ctx.i64_type();
+        let down_msg_st = ctx.struct_type(
+            &[
+                u64_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+                u64_ty.into(),
+                u64_ty.into(),
+                u64_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+            ],
+            false,
+        );
+        let load_down_field =
+            |index: u32, name: &str| -> Result<BasicValueEnum<'ctx>, CodegenError> {
+                let ptr = builder
+                    .build_struct_gep(down_msg_st, sys_payload, index, &format!("{name}_ptr"))
+                    .llvm_ctx("on_down payload gep")?;
+                let ty = down_msg_st
+                    .get_field_type_at_index(index)
+                    .ok_or_else(|| CodegenError::FailClosed("invalid DOWN field index".into()))?;
+                builder
+                    .build_load(ty, ptr, name)
+                    .llvm_ctx("on_down payload load")
+            };
+        let monitor_id = load_down_field(0, "down_monitor_id")?;
+        let target_kind = load_down_field(1, "down_target_kind")?;
+        let reason_kind = load_down_field(2, "down_reason_kind")?;
+        let node_hi = load_down_field(3, "down_node_hi")?.into_int_value();
+        let node_lo = load_down_field(4, "down_node_lo")?.into_int_value();
+        let slot = load_down_field(5, "down_slot")?;
+        let session_incarnation = load_down_field(6, "down_session_incarnation")?.into_int_value();
+        let crash_kind = load_down_field(7, "down_crash_kind")?;
+        let location_ty = resolve_ty(
+            ctx,
+            target_data,
+            &ResolvedTy::named_builtin("Location", hew_types::BuiltinType::Location, Vec::new()),
+            record_layouts,
+        )?;
+        let BasicTypeEnum::StructType(location_st) = location_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "actor sys dispatch `{sys_name}` resolved Location to non-struct {location_ty:?}"
+            )));
+        };
+        if location_st.count_fields() != 5 {
+            return Err(CodegenError::FailClosed(format!(
+                "actor sys dispatch `{sys_name}` resolved Location with {} fields, expected 5",
+                location_st.count_fields()
+            )));
+        }
+        let location_ptr = builder
+            .build_alloca(location_st, "down_location_ptr")
+            .llvm_ctx("on_down location alloca")?;
+        for (index, value) in [
+            (0, node_hi.as_basic_value_enum()),
+            (1, node_lo.as_basic_value_enum()),
+            (2, slot.as_basic_value_enum()),
+            (3, session_incarnation.as_basic_value_enum()),
+            (4, i32_ty.const_zero().as_basic_value_enum()),
+        ] {
+            let field_ptr = builder
+                .build_struct_gep(
+                    location_st,
+                    location_ptr,
+                    index,
+                    &format!("down_location_field_{index}_ptr"),
+                )
+                .llvm_ctx("on_down Location field gep")?;
+            builder
+                .build_store(field_ptr, value)
+                .llvm_ctx("on_down Location field store")?;
+        }
+        let location = builder
+            .build_load(location_st, location_ptr, "down_location")
+            .llvm_ctx("on_down location load")?;
+
+        let target_kind_int = target_kind.into_int_value();
+        let reason_kind_int = reason_kind.into_int_value();
+        let slot_int = slot.into_int_value();
+        let crash_kind_int = crash_kind.into_int_value();
+        let target_known = builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                target_kind_int,
+                i32_ty.const_int(1, false),
+                "down_target_known",
+            )
+            .llvm_ctx("validate DOWN target tag")?;
+        let reason_known = builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                reason_kind_int,
+                i32_ty.const_int(3, false),
+                "down_reason_known",
+            )
+            .llvm_ctx("validate DOWN reason tag")?;
+        let crash_known = builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                crash_kind_int,
+                i32_ty.const_int(2, false),
+                "down_crash_kind_known",
+            )
+            .llvm_ctx("validate DOWN crash tag")?;
+        let crash_is_zero = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                crash_kind_int,
+                i32_ty.const_zero(),
+                "down_crash_kind_zero",
+            )
+            .llvm_ctx("validate DOWN non-crash payload")?;
+        let reason_is_crashed = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                reason_kind_int,
+                i32_ty.const_int(1, false),
+                "down_reason_is_crashed",
+            )
+            .llvm_ctx("classify DOWN crash reason")?;
+        let crash_consistent = builder
+            .build_select(
+                reason_is_crashed,
+                crash_known,
+                crash_is_zero,
+                "down_crash_consistent",
+            )
+            .llvm_ctx("validate DOWN crash payload consistency")?
+            .into_int_value();
+        let target_is_local = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                target_kind_int,
+                i32_ty.const_zero(),
+                "down_target_is_local",
+            )
+            .llvm_ctx("classify DOWN target")?;
+        let node_hi_zero = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                node_hi,
+                u64_ty.const_zero(),
+                "down_node_hi_zero",
+            )
+            .llvm_ctx("validate local DOWN node_hi")?;
+        let node_lo_zero = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                node_lo,
+                u64_ty.const_zero(),
+                "down_node_lo_zero",
+            )
+            .llvm_ctx("validate local DOWN node_lo")?;
+        let session_zero = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                session_incarnation,
+                i32_ty.const_zero(),
+                "down_session_zero",
+            )
+            .llvm_ctx("validate local DOWN session")?;
+        let slot_nonzero = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                slot_int,
+                u64_ty.const_zero(),
+                "down_slot_nonzero",
+            )
+            .llvm_ctx("validate DOWN slot")?;
+        let local_location_zero = builder
+            .build_and(node_hi_zero, node_lo_zero, "down_local_node_zero")
+            .llvm_ctx("validate local DOWN node")?;
+        let local_location_zero = builder
+            .build_and(
+                local_location_zero,
+                session_zero,
+                "down_local_location_zero",
+            )
+            .llvm_ctx("validate local DOWN location")?;
+        let local_valid = builder
+            .build_and(local_location_zero, slot_nonzero, "down_local_valid")
+            .llvm_ctx("validate local DOWN fields")?;
+        let node_nonzero = builder
+            .build_or(
+                builder
+                    .build_not(node_hi_zero, "down_node_hi_nonzero")
+                    .llvm_ctx("validate remote DOWN node_hi")?,
+                builder
+                    .build_not(node_lo_zero, "down_node_lo_nonzero")
+                    .llvm_ctx("validate remote DOWN node_lo")?,
+                "down_node_nonzero",
+            )
+            .llvm_ctx("validate remote DOWN node")?;
+        let session_nonzero = builder
+            .build_not(session_zero, "down_session_nonzero")
+            .llvm_ctx("validate remote DOWN session")?;
+        let remote_valid = builder
+            .build_and(node_nonzero, slot_nonzero, "down_remote_node_slot_valid")
+            .llvm_ctx("validate remote DOWN node and slot")?;
+        let remote_valid = builder
+            .build_and(remote_valid, session_nonzero, "down_remote_valid")
+            .llvm_ctx("validate remote DOWN fields")?;
+        let target_fields_valid = builder
+            .build_select(
+                target_is_local,
+                local_valid,
+                remote_valid,
+                "down_target_fields_valid",
+            )
+            .llvm_ctx("validate DOWN target fields")?
+            .into_int_value();
+        let tags_valid = builder
+            .build_and(target_known, reason_known, "down_tags_valid")
+            .llvm_ctx("validate DOWN tags")?;
+        let payload_valid = builder
+            .build_and(tags_valid, crash_consistent, "down_reason_payload_valid")
+            .llvm_ctx("validate DOWN reason payload")?;
+        let payload_valid = builder
+            .build_and(payload_valid, target_fields_valid, "down_payload_valid")
+            .llvm_ctx("validate DOWN payload")?;
+        let valid_down_bb = ctx.append_basic_block(sys_fn, "msg_sys_down_valid");
+        builder
+            .build_conditional_branch(payload_valid, valid_down_bb, done_bb)
+            .llvm_ctx("branch on DOWN payload validity")?;
+        builder.position_at_end(valid_down_bb);
+
+        let ctx_arg = sys_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("sys dispatch missing ctx param".into()))?;
+        let on_down_args: Vec<BasicMetadataValueEnum> = vec![
+            ctx_arg.into(),
+            metadata_value_from_basic(monitor_id),
+            metadata_value_from_basic(target_kind),
+            metadata_value_from_basic(reason_kind),
+            metadata_value_from_basic(location),
+            metadata_value_from_basic(slot),
+            metadata_value_from_basic(crash_kind),
+        ];
+        builder
+            .build_call(on_down_fn, &on_down_args, "call_on_down")
+            .llvm_ctx("actor sys dispatch on_down call")?;
+        builder
+            .build_unconditional_branch(done_bb)
+            .llvm_ctx("actor sys dispatch on_down branch")?;
+    }
+
+    if let Some(ignored_down_bb) = ignored_down_bb {
+        builder.position_at_end(ignored_down_bb);
+        builder
+            .build_unconditional_branch(done_bb)
+            .llvm_ctx("actor sys dispatch ignored DOWN branch")?;
+    }
+
+    // Emit the unhandled-`HewSysMsg::Exit` case body — a non-trapping actor
+    // crashes via the controlled crash path. Read `reason` (field 1 of the
+    // `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind: i32 }`
+    // payload) and call `hew_actor_exit_unhandled(reason)`, which longjmps to the
+    // scheduler crash frame (terminal Crashed, the carried reason stamped) — never
+    // the exhaustiveness `llvm.trap` (UB / SIGILL on Linux).
+    if let Some(unhandled_exit_bb) = unhandled_exit_bb {
+        builder.position_at_end(unhandled_exit_bb);
+        let u64_ty = ctx.i64_type();
+        let exit_msg_st = ctx.struct_type(&[u64_ty.into(), i32_ty.into(), i32_ty.into()], false);
+        let reason_ptr = builder
+            .build_struct_gep(exit_msg_st, sys_payload, 1, "exit_reason_ptr")
+            .llvm_ctx("unhandled exit reason gep")?;
+        let reason = builder
+            .build_load(i32_ty, reason_ptr, "exit_reason")
+            .llvm_ctx("unhandled exit reason load")?;
+        let exit_unhandled_fn = llvm_mod
+            .get_function("hew_actor_exit_unhandled")
+            .unwrap_or_else(|| {
+                let sig = ctx.void_type().fn_type(&[i32_ty.into()], false);
+                llvm_mod.add_function("hew_actor_exit_unhandled", sig, Some(Linkage::External))
+            });
+        builder
+            .build_call(
+                exit_unhandled_fn,
+                &[metadata_value_from_basic(reason)],
+                "call_exit_unhandled",
+            )
+            .llvm_ctx("actor sys dispatch unhandled exit call")?;
+        // hew_actor_exit_unhandled longjmps to the scheduler crash frame inside a
+        // dispatch, so control never returns here; branch to done_bb to satisfy
+        // the CFG (the branch is unreachable in practice).
+        builder
+            .build_unconditional_branch(done_bb)
+            .llvm_ctx("actor sys dispatch unhandled exit branch")?;
+    }
+
+    builder.position_at_end(done_bb);
+    builder
+        .build_return(None)
+        .llvm_ctx("actor sys dispatch return")?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     ctx: &'ctx Context,
@@ -2929,59 +3482,13 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
         cases.push((i32_ty.const_int(handler.msg_type as u64, false), bb));
     }
 
-    // M-7-R: route `SYS_MSG_EXIT` (103) to the actor's `#[on(exit)]` hook when
-    // one is declared. The case block (emitted after the handler arms) unpacks
-    // the `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind: i32 }`
-    // payload and calls `__on_exit(ctx, actor_id, crash_kind)`.
-    let on_exit_bb = if layout.on_exit_symbol.is_some() {
-        let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_exit");
-        cases.push((
-            i32_ty.const_int(RUNTIME_SYS_MSG_EXIT.cast_unsigned().into(), false),
-            bb,
-        ));
-        Some(bb)
-    } else {
-        None
-    };
-    // A non-trapping actor (no `#[on(exit)]`) receiving a `SYS_MSG_EXIT`
-    // must CRASH via the controlled crash path — the OTP "linked processes die
-    // together" semantic — NOT fall through to the `default_bb` exhaustiveness
-    // `llvm.trap` (which is UB: it SIGILLs on Linux and only accidentally
-    // produced a terminal state on macOS). Route this case to a block that reads
-    // the carried reason and calls `hew_actor_exit_unhandled`, which longjmps to
-    // the scheduler crash frame (terminal `Crashed`, the carried reason stamped).
-    let unhandled_exit_bb = if layout.on_exit_symbol.is_none() {
-        let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_exit_unhandled");
-        cases.push((
-            i32_ty.const_int(RUNTIME_SYS_MSG_EXIT.cast_unsigned().into(), false),
-            bb,
-        ));
-        Some(bb)
-    } else {
-        None
-    };
-    // DOWN is always consumed by actor dispatch. Actors with a typed hook receive
-    // the reconstructed notification; actors without one explicitly ignore it.
-    let on_down_bb = if layout.on_down_symbol.is_some() {
-        let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_down");
-        cases.push((
-            i32_ty.const_int(RUNTIME_SYS_MSG_DOWN.cast_unsigned().into(), false),
-            bb,
-        ));
-        Some(bb)
-    } else {
-        None
-    };
-    let ignored_down_bb = if layout.on_down_symbol.is_none() {
-        let bb = ctx.append_basic_block(dispatch_fn, "msg_sys_down_ignored");
-        cases.push((
-            i32_ty.const_int(RUNTIME_SYS_MSG_DOWN.cast_unsigned().into(), false),
-            bb,
-        ));
-        Some(bb)
-    } else {
-        None
-    };
+    // This trampoline is the APPLICATION channel only. Lifecycle signals (EXIT /
+    // DOWN) are emitted into `__hew_actor_sys_dispatch_<Actor>` by
+    // `emit_actor_sys_dispatch_trampoline` and reach it through the actor's
+    // `sys_dispatch` slot, which the scheduler selects from the dequeued node's
+    // `Origin`. No arm here may switch on a `HewSysMsg` discriminant: doing so
+    // would put the two namespaces back into one integer space, which is
+    // exactly what let `hew_actor_send(actor, 103, null, 0)` forge a crash.
     builder
         .build_switch(msg_type, default_bb, &cases)
         .llvm_ctx("actor dispatch switch")?;
@@ -3353,371 +3860,6 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
                 .llvm_ctx("actor dispatch branch")?;
             return_incomings.push((ptr_ty.const_null(), pred));
         }
-    }
-
-    // M-7-R: emit the `SYS_MSG_EXIT` → `#[on(exit)]` case body. The runtime
-    // delivers `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind:
-    // i32 }` as the message payload; unpack `crashed_actor_id` and `crash_kind`
-    // (the M-6 projection) and call `__on_exit(ctx, actor_id, crash_kind,
-    // borrow_mode)`. The hook is a run-to-completion ActorHandler returning unit,
-    // so the dispatch contributes `null` to the suspend-handle phi.
-    if let (Some(on_exit_bb), Some(on_exit_symbol)) = (on_exit_bb, &layout.on_exit_symbol) {
-        builder.position_at_end(on_exit_bb);
-        let on_exit_sym = fn_symbols.get(on_exit_symbol).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "actor dispatch `{dispatch_name}` references undeclared on_exit handler \
-                 `{on_exit_symbol}`"
-            ))
-        })?;
-        let (on_exit_fn, _on_exit_ret, _on_exit_unit) =
-            on_exit_sym.real(on_exit_symbol, "actor dispatch on_exit handler")?;
-
-        // The ExitMessage layout (hew-runtime/src/link.rs) is
-        // `{ u64 crashed_actor_id, i32 reason, i32 crash_kind }`. Read
-        // `crashed_actor_id` (field 0) and `crash_kind` (field 2) from the
-        // payload by their natural #[repr(C)] offsets via a matching LLVM struct.
-        let u64_ty = ctx.i64_type();
-        let exit_msg_st = ctx.struct_type(&[u64_ty.into(), i32_ty.into(), i32_ty.into()], false);
-        let actor_id_ptr = builder
-            .build_struct_gep(exit_msg_st, payload_src, 0, "exit_actor_id_ptr")
-            .llvm_ctx("on_exit actor_id gep")?;
-        let actor_id = builder
-            .build_load(u64_ty, actor_id_ptr, "exit_actor_id")
-            .llvm_ctx("on_exit actor_id load")?;
-        let crash_kind_ptr = builder
-            .build_struct_gep(exit_msg_st, payload_src, 2, "exit_crash_kind_ptr")
-            .llvm_ctx("on_exit crash_kind gep")?;
-        let crash_kind = builder
-            .build_load(i32_ty, crash_kind_ptr, "exit_crash_kind")
-            .llvm_ctx("on_exit crash_kind load")?;
-
-        let ctx_arg = dispatch_fn
-            .get_nth_param(0)
-            .ok_or_else(|| CodegenError::FailClosed("dispatch missing ctx param".into()))?;
-        // ABI: `__on_exit(ctx, __exit_actor_id: u64, __exit_kind_tag: i32)` — the
-        // ActorHandler convention (ctx-leading) plus the two unpacked
-        // CrashNotification fields. `__on_exit` is NOT a `__recv__` symbol, so it
-        // does NOT carry the trailing `borrow_mode` arg (that ABI growth is gated
-        // on the `__recv__` symbol in `declare_function`).
-        let on_exit_args: Vec<BasicMetadataValueEnum> = vec![
-            ctx_arg.into(),
-            metadata_value_from_basic(actor_id),
-            metadata_value_from_basic(crash_kind),
-        ];
-        builder
-            .build_call(on_exit_fn, &on_exit_args, "call_on_exit")
-            .llvm_ctx("actor dispatch on_exit call")?;
-        builder
-            .build_unconditional_branch(after_bb)
-            .llvm_ctx("actor dispatch on_exit branch")?;
-        return_incomings.push((ptr_ty.const_null(), on_exit_bb));
-    }
-
-    if let (Some(on_down_bb), Some(on_down_symbol)) = (on_down_bb, &layout.on_down_symbol) {
-        builder.position_at_end(on_down_bb);
-        let on_down_sym = fn_symbols.get(on_down_symbol).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "actor dispatch `{dispatch_name}` references undeclared on_down handler \
-                 `{on_down_symbol}`"
-            ))
-        })?;
-        let (on_down_fn, _on_down_ret, _on_down_unit) =
-            on_down_sym.real(on_down_symbol, "actor dispatch on_down handler")?;
-
-        // `HewDownMessage` is a fixed 48-byte record. Its tail starting at
-        // `node_hi` is layout-compatible with the canonical 32-byte Location.
-        let u64_ty = ctx.i64_type();
-        let down_msg_st = ctx.struct_type(
-            &[
-                u64_ty.into(),
-                i32_ty.into(),
-                i32_ty.into(),
-                u64_ty.into(),
-                u64_ty.into(),
-                u64_ty.into(),
-                i32_ty.into(),
-                i32_ty.into(),
-            ],
-            false,
-        );
-        let load_down_field =
-            |index: u32, name: &str| -> Result<BasicValueEnum<'ctx>, CodegenError> {
-                let ptr = builder
-                    .build_struct_gep(down_msg_st, payload_src, index, &format!("{name}_ptr"))
-                    .llvm_ctx("on_down payload gep")?;
-                let ty = down_msg_st
-                    .get_field_type_at_index(index)
-                    .ok_or_else(|| CodegenError::FailClosed("invalid DOWN field index".into()))?;
-                builder
-                    .build_load(ty, ptr, name)
-                    .llvm_ctx("on_down payload load")
-            };
-        let monitor_id = load_down_field(0, "down_monitor_id")?;
-        let target_kind = load_down_field(1, "down_target_kind")?;
-        let reason_kind = load_down_field(2, "down_reason_kind")?;
-        let node_hi = load_down_field(3, "down_node_hi")?.into_int_value();
-        let node_lo = load_down_field(4, "down_node_lo")?.into_int_value();
-        let slot = load_down_field(5, "down_slot")?;
-        let session_incarnation = load_down_field(6, "down_session_incarnation")?.into_int_value();
-        let crash_kind = load_down_field(7, "down_crash_kind")?;
-        let location_ty = resolve_ty(
-            ctx,
-            target_data,
-            &ResolvedTy::named_builtin("Location", hew_types::BuiltinType::Location, Vec::new()),
-            record_layouts,
-        )?;
-        let BasicTypeEnum::StructType(location_st) = location_ty else {
-            return Err(CodegenError::FailClosed(format!(
-                "actor dispatch `{dispatch_name}` resolved Location to non-struct {location_ty:?}"
-            )));
-        };
-        if location_st.count_fields() != 5 {
-            return Err(CodegenError::FailClosed(format!(
-                "actor dispatch `{dispatch_name}` resolved Location with {} fields, expected 5",
-                location_st.count_fields()
-            )));
-        }
-        let location_ptr = builder
-            .build_alloca(location_st, "down_location_ptr")
-            .llvm_ctx("on_down location alloca")?;
-        for (index, value) in [
-            (0, node_hi.as_basic_value_enum()),
-            (1, node_lo.as_basic_value_enum()),
-            (2, slot.as_basic_value_enum()),
-            (3, session_incarnation.as_basic_value_enum()),
-            (4, i32_ty.const_zero().as_basic_value_enum()),
-        ] {
-            let field_ptr = builder
-                .build_struct_gep(
-                    location_st,
-                    location_ptr,
-                    index,
-                    &format!("down_location_field_{index}_ptr"),
-                )
-                .llvm_ctx("on_down Location field gep")?;
-            builder
-                .build_store(field_ptr, value)
-                .llvm_ctx("on_down Location field store")?;
-        }
-        let location = builder
-            .build_load(location_st, location_ptr, "down_location")
-            .llvm_ctx("on_down location load")?;
-
-        let target_kind_int = target_kind.into_int_value();
-        let reason_kind_int = reason_kind.into_int_value();
-        let slot_int = slot.into_int_value();
-        let crash_kind_int = crash_kind.into_int_value();
-        let target_known = builder
-            .build_int_compare(
-                IntPredicate::ULE,
-                target_kind_int,
-                i32_ty.const_int(1, false),
-                "down_target_known",
-            )
-            .llvm_ctx("validate DOWN target tag")?;
-        let reason_known = builder
-            .build_int_compare(
-                IntPredicate::ULE,
-                reason_kind_int,
-                i32_ty.const_int(3, false),
-                "down_reason_known",
-            )
-            .llvm_ctx("validate DOWN reason tag")?;
-        let crash_known = builder
-            .build_int_compare(
-                IntPredicate::ULE,
-                crash_kind_int,
-                i32_ty.const_int(2, false),
-                "down_crash_kind_known",
-            )
-            .llvm_ctx("validate DOWN crash tag")?;
-        let crash_is_zero = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                crash_kind_int,
-                i32_ty.const_zero(),
-                "down_crash_kind_zero",
-            )
-            .llvm_ctx("validate DOWN non-crash payload")?;
-        let reason_is_crashed = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                reason_kind_int,
-                i32_ty.const_int(1, false),
-                "down_reason_is_crashed",
-            )
-            .llvm_ctx("classify DOWN crash reason")?;
-        let crash_consistent = builder
-            .build_select(
-                reason_is_crashed,
-                crash_known,
-                crash_is_zero,
-                "down_crash_consistent",
-            )
-            .llvm_ctx("validate DOWN crash payload consistency")?
-            .into_int_value();
-        let target_is_local = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                target_kind_int,
-                i32_ty.const_zero(),
-                "down_target_is_local",
-            )
-            .llvm_ctx("classify DOWN target")?;
-        let node_hi_zero = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                node_hi,
-                u64_ty.const_zero(),
-                "down_node_hi_zero",
-            )
-            .llvm_ctx("validate local DOWN node_hi")?;
-        let node_lo_zero = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                node_lo,
-                u64_ty.const_zero(),
-                "down_node_lo_zero",
-            )
-            .llvm_ctx("validate local DOWN node_lo")?;
-        let session_zero = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                session_incarnation,
-                i32_ty.const_zero(),
-                "down_session_zero",
-            )
-            .llvm_ctx("validate local DOWN session")?;
-        let slot_nonzero = builder
-            .build_int_compare(
-                IntPredicate::NE,
-                slot_int,
-                u64_ty.const_zero(),
-                "down_slot_nonzero",
-            )
-            .llvm_ctx("validate DOWN slot")?;
-        let local_location_zero = builder
-            .build_and(node_hi_zero, node_lo_zero, "down_local_node_zero")
-            .llvm_ctx("validate local DOWN node")?;
-        let local_location_zero = builder
-            .build_and(
-                local_location_zero,
-                session_zero,
-                "down_local_location_zero",
-            )
-            .llvm_ctx("validate local DOWN location")?;
-        let local_valid = builder
-            .build_and(local_location_zero, slot_nonzero, "down_local_valid")
-            .llvm_ctx("validate local DOWN fields")?;
-        let node_nonzero = builder
-            .build_or(
-                builder
-                    .build_not(node_hi_zero, "down_node_hi_nonzero")
-                    .llvm_ctx("validate remote DOWN node_hi")?,
-                builder
-                    .build_not(node_lo_zero, "down_node_lo_nonzero")
-                    .llvm_ctx("validate remote DOWN node_lo")?,
-                "down_node_nonzero",
-            )
-            .llvm_ctx("validate remote DOWN node")?;
-        let session_nonzero = builder
-            .build_not(session_zero, "down_session_nonzero")
-            .llvm_ctx("validate remote DOWN session")?;
-        let remote_valid = builder
-            .build_and(node_nonzero, slot_nonzero, "down_remote_node_slot_valid")
-            .llvm_ctx("validate remote DOWN node and slot")?;
-        let remote_valid = builder
-            .build_and(remote_valid, session_nonzero, "down_remote_valid")
-            .llvm_ctx("validate remote DOWN fields")?;
-        let target_fields_valid = builder
-            .build_select(
-                target_is_local,
-                local_valid,
-                remote_valid,
-                "down_target_fields_valid",
-            )
-            .llvm_ctx("validate DOWN target fields")?
-            .into_int_value();
-        let tags_valid = builder
-            .build_and(target_known, reason_known, "down_tags_valid")
-            .llvm_ctx("validate DOWN tags")?;
-        let payload_valid = builder
-            .build_and(tags_valid, crash_consistent, "down_reason_payload_valid")
-            .llvm_ctx("validate DOWN reason payload")?;
-        let payload_valid = builder
-            .build_and(payload_valid, target_fields_valid, "down_payload_valid")
-            .llvm_ctx("validate DOWN payload")?;
-        let valid_down_bb = ctx.append_basic_block(dispatch_fn, "msg_sys_down_valid");
-        builder
-            .build_conditional_branch(payload_valid, valid_down_bb, default_bb)
-            .llvm_ctx("branch on DOWN payload validity")?;
-        builder.position_at_end(valid_down_bb);
-
-        let ctx_arg = dispatch_fn
-            .get_nth_param(0)
-            .ok_or_else(|| CodegenError::FailClosed("dispatch missing ctx param".into()))?;
-        let on_down_args: Vec<BasicMetadataValueEnum> = vec![
-            ctx_arg.into(),
-            metadata_value_from_basic(monitor_id),
-            metadata_value_from_basic(target_kind),
-            metadata_value_from_basic(reason_kind),
-            metadata_value_from_basic(location),
-            metadata_value_from_basic(slot),
-            metadata_value_from_basic(crash_kind),
-        ];
-        builder
-            .build_call(on_down_fn, &on_down_args, "call_on_down")
-            .llvm_ctx("actor dispatch on_down call")?;
-        builder
-            .build_unconditional_branch(after_bb)
-            .llvm_ctx("actor dispatch on_down branch")?;
-        return_incomings.push((ptr_ty.const_null(), valid_down_bb));
-    }
-
-    if let Some(ignored_down_bb) = ignored_down_bb {
-        builder.position_at_end(ignored_down_bb);
-        builder
-            .build_unconditional_branch(after_bb)
-            .llvm_ctx("actor dispatch ignored DOWN branch")?;
-        return_incomings.push((ptr_ty.const_null(), ignored_down_bb));
-    }
-
-    // Emit the unhandled-`SYS_MSG_EXIT` case body — a non-trapping actor
-    // crashes via the controlled crash path. Read `reason` (field 1 of the
-    // `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind: i32 }`
-    // payload) and call `hew_actor_exit_unhandled(reason)`, which longjmps to the
-    // scheduler crash frame (terminal Crashed, the carried reason stamped) — never
-    // the exhaustiveness `llvm.trap` (UB / SIGILL on Linux).
-    if let Some(unhandled_exit_bb) = unhandled_exit_bb {
-        builder.position_at_end(unhandled_exit_bb);
-        let u64_ty = ctx.i64_type();
-        let exit_msg_st = ctx.struct_type(&[u64_ty.into(), i32_ty.into(), i32_ty.into()], false);
-        let reason_ptr = builder
-            .build_struct_gep(exit_msg_st, payload_src, 1, "exit_reason_ptr")
-            .llvm_ctx("unhandled exit reason gep")?;
-        let reason = builder
-            .build_load(i32_ty, reason_ptr, "exit_reason")
-            .llvm_ctx("unhandled exit reason load")?;
-        let exit_unhandled_fn = llvm_mod
-            .get_function("hew_actor_exit_unhandled")
-            .unwrap_or_else(|| {
-                let sig = ctx.void_type().fn_type(&[i32_ty.into()], false);
-                llvm_mod.add_function("hew_actor_exit_unhandled", sig, Some(Linkage::External))
-            });
-        builder
-            .build_call(
-                exit_unhandled_fn,
-                &[metadata_value_from_basic(reason)],
-                "call_exit_unhandled",
-            )
-            .llvm_ctx("actor dispatch unhandled exit call")?;
-        // hew_actor_exit_unhandled longjmps to the scheduler crash frame inside a
-        // dispatch, so control never returns here; branch to after_bb to satisfy
-        // the CFG (the branch is unreachable in practice).
-        builder
-            .build_unconditional_branch(after_bb)
-            .llvm_ctx("actor dispatch unhandled exit branch")?;
-        return_incomings.push((ptr_ty.const_null(), unhandled_exit_bb));
     }
 
     builder.position_at_end(default_bb);

@@ -1,6 +1,7 @@
 //! Tests for std::text::unicode codepoint boundaries.
 
 import std::testing;
+
 import std::text::unicode;
 
 #[test]
@@ -12,4 +13,80 @@ fn test_valid_codepoint_case_mapping_still_works() {
 fn test_invalid_i64_codepoint_does_not_narrow_to_ascii() {
     testing.assert_eq(unicode.to_upper(4294967393), 4294967393);
     testing.assert_false(unicode.is_upper(4294967361));
+}
+
+// ── Punctuation is the Unicode P* category group ──────────────────────
+fn assert_punct(cp: i64, what: string) {
+    if !unicode.is_punct(cp) {
+        panic(f"expected {what} (U+{cp}) to be punctuation");
+    }
+}
+
+fn assert_not_punct(cp: i64, what: string) {
+    if unicode.is_punct(cp) {
+        panic(f"expected {what} (U+{cp}) not to be punctuation");
+    }
+}
+
+#[test]
+fn test_is_punct_covers_every_punctuation_minor_category() {
+    assert_punct(0x5F, "Pc LOW LINE");
+    assert_punct(0x203F, "Pc UNDERTIE");
+    assert_punct(0x2D, "Pd HYPHEN-MINUS");
+    assert_punct(0x2E17, "Pd DOUBLE OBLIQUE HYPHEN");
+    assert_punct(0x28, "Ps LEFT PARENTHESIS");
+    assert_punct(0x2045, "Ps LEFT SQUARE BRACKET WITH QUILL");
+    assert_punct(0x29, "Pe RIGHT PARENTHESIS");
+    assert_punct(0x2046, "Pe RIGHT SQUARE BRACKET WITH QUILL");
+    assert_punct(0xAB, "Pi LEFT-POINTING DOUBLE ANGLE QUOTATION MARK");
+    assert_punct(0x2018, "Pi LEFT SINGLE QUOTATION MARK");
+    assert_punct(0xBB, "Pf RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK");
+    assert_punct(0x2019, "Pf RIGHT SINGLE QUOTATION MARK");
+    assert_punct(0x21, "Po EXCLAMATION MARK");
+    assert_punct(0x3002, "Po IDEOGRAPHIC FULL STOP");
+}
+
+#[test]
+fn test_is_punct_covers_scalars_the_hand_written_range_list_omitted() {
+    assert_punct(0x55A, "ARMENIAN APOSTROPHE");
+    assert_punct(0x589, "ARMENIAN FULL STOP");
+    assert_punct(0x5C0, "HEBREW PUNCTUATION PASEQ");
+    assert_punct(0x60C, "ARABIC COMMA");
+    assert_punct(0x61F, "ARABIC QUESTION MARK");
+    assert_punct(0x964, "DEVANAGARI DANDA");
+    assert_punct(0xE4F, "THAI CHARACTER FONGMAN");
+    assert_punct(0x10FB, "GEORGIAN PARAGRAPH SEPARATOR");
+    assert_punct(0x1400, "CANADIAN SYLLABICS HYPHEN");
+    assert_punct(0x166E, "CANADIAN SYLLABICS FULL STOP");
+    assert_punct(0x2E2E, "REVERSED QUESTION MARK");
+    assert_punct(0xA60D, "VAI COMMA");
+    assert_punct(0x10100, "AEGEAN WORD SEPARATOR LINE");
+    assert_punct(0x1BC9F, "DUPLOYAN PUNCTUATION CHINOOK FULL STOP");
+}
+
+#[test]
+fn test_is_punct_rejects_non_punctuation() {
+    assert_not_punct(0x41, "LATIN CAPITAL LETTER A");
+    assert_not_punct(0x39, "DIGIT NINE");
+    assert_not_punct(0x20, "SPACE");
+    assert_not_punct(0x24, "DOLLAR SIGN (Sc, not P*)");
+    assert_not_punct(0x2B, "PLUS SIGN (Sm, not P*)");
+    assert_not_punct(0x3C, "LESS-THAN SIGN (Sm, not P*)");
+    assert_not_punct(0x5E, "CIRCUMFLEX ACCENT (Sk, not P*)");
+    assert_not_punct(0x60, "GRAVE ACCENT (Sk, not P*)");
+    assert_not_punct(0x7C, "VERTICAL LINE (Sm, not P*)");
+    assert_not_punct(0x7E, "TILDE (Sm, not P*)");
+    assert_not_punct(0xA6, "BROKEN BAR (So, not P*)");
+    assert_not_punct(0x3004, "JAPANESE INDUSTRIAL STANDARD SYMBOL (So, not P*)");
+}
+
+#[test]
+fn test_is_punct_rejects_values_that_are_not_unicode_scalars() {
+    assert_not_punct(-1, "a negative codepoint");
+    assert_not_punct(0xD800, "a high surrogate");
+    assert_not_punct(0xDFFF, "a low surrogate");
+    assert_not_punct(0x110000, "one past the last scalar");
+    // Beyond i32: narrowing before validating would wrap this onto U+0021.
+    assert_not_punct(4294967296 + 33, "a value that wraps to `!` when narrowed");
+    assert_not_punct(9223372036854775807, "i64::MAX");
 }

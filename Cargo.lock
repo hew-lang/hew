@@ -1952,6 +1952,7 @@ dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
  "fd-lock",
+ "finl_unicode",
  "flate2",
  "hew-cabi",
  "hew-runtime-testkit",

@@ -1844,6 +1844,23 @@ impl ExternContractTable {
 /// declaration is a pointer-width slot that IS the foreign-handle shape this
 /// whole authority exists to refuse. The narrow structural predicate answers
 /// `false` for anything unresolved.
+///
+/// # Clause C — the measured transfer, and the only MINT for a pointer
+///
+/// `fresh_return_names` additionally admits a name under
+/// [`extern_result_is_measured_transfer`]. That is a strictly stronger bar than
+/// Clauses A and B, because it is the only admission here that hands a
+/// pointer-bearing result to the drop plan as a fresh sole owner. It requires
+/// Clause A, a declared return type whose type-directed drop plan discharges
+/// through exactly the audited release symbol, and — the load-bearing part — an
+/// audited `result-retention = "transferred"`, which is recorded only where an
+/// executable oracle measured the runtime's actual retention behaviour. See
+/// that function for the clause-by-clause argument.
+///
+/// Clause C deliberately widens ONLY the name-keyed `fresh_return_names` beyond
+/// the `AliasBits::EMPTY` row it already writes: an extern call site's
+/// `ResolvedRef::Item` carries a placeholder id, so the name-keyed set is the
+/// one every reader of this authority actually consults for an extern.
 #[must_use]
 pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContractTable {
     let mut rows: HashMap<hew_hir::ItemId, ReturnProvenance> = HashMap::new();
@@ -1855,6 +1872,14 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
     let mut borrowing_arg_names: HashSet<String> = HashSet::new();
     let mut audited_domestic_return_names: HashSet<String> = HashSet::new();
     let pointer_free_records = PointerFreeRecords::from_module(module);
+    let type_decls: HashMap<&str, &hew_hir::HirTypeDecl> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+            _ => None,
+        })
+        .collect();
     for item in &module.items {
         if let hew_hir::HirItem::ExternFn(ef) = item {
             names.insert(ef.name.clone());
@@ -1871,7 +1896,7 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
             {
                 audited_domestic_return_names.insert(ef.name.clone());
             }
-            // The MINT-side admission, and the only line here the strict
+            // The MINT-side admission, and the only lines here the strict
             // policy reads. `ty_is_scalar_non_heap` is the degenerate case of
             // `ty_is_pointer_free`: an `i64` return is admitted because it
             // cannot carry a handle, and a record whose fields are
@@ -1884,8 +1909,13 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
             // foreign handle, the taint travels out through
             // `cron_error_from_result`, and the ordinary `+1` string the error
             // carrier holds gets no owner at all.
+            //
+            // The third disjunct is the only one that mints for a value that
+            // DOES carry a pointer, and it mints solely on a measured retention
+            // answer — see `extern_result_is_measured_transfer`.
             if ty_is_scalar_non_heap(&ef.return_ty)
                 || pointer_free_records.ty_is_pointer_free(&ef.return_ty)
+                || extern_result_is_measured_transfer(&ef.name, ef, &type_decls)
             {
                 rows.insert(ef.id, AliasBits::EMPTY);
                 fresh_return_names.insert(ef.name.clone());
@@ -1921,6 +1951,156 @@ fn extern_result_is_audited_owned_transfer(symbol: &str, declared_arity: usize) 
                 && contract.params.len() == declared_arity
         })
 }
+
+/// Clause C of the RESULT-axis admission, and the ONLY clause that mints a
+/// caller-side release for a POINTER-BEARING extern result.
+///
+/// Clauses A and B answer "this result is not proof of foreignness", which only
+/// ever suppresses a taint. Minting is the other direction and needs the harder
+/// fact: that the buffer handed back is the caller's to release, and that
+/// releasing it exactly once balances the runtime. Getting that wrong upward is
+/// a reachable double free, so every conjunct below is load-bearing.
+///
+/// C1. Clause A holds — an audited `[[ownership.contracts]]` row exists for a
+///     symbol this compiler's own runtime claims, its result is owned, it names
+///     a release, and the declaration's arity matches the audited signature. A
+///     declaration that disagrees with the audited signature is not a
+///     declaration of the audited callee.
+///
+/// C2. the row's RETENTION axis reads `transferred`. This is the conjunct that
+///     carries the answer, and it is a strictly different question from C1:
+///     `fresh` says the allocation is new, not that the callee stopped
+///     referring to it. A callee that allocates AND keeps the pointer — to free
+///     it later, to overwrite it on the next call, or to hand the same address
+///     back again — yields a value the caller must not release. Both members of
+///     the `*_last_error` family are `hew_*` C-string returns and only one of
+///     them transfers (hew-lang/hew#2828): `hew_process_last_error` copies its
+///     thread-local into a fresh header-aware allocation and keeps nothing,
+///     while `hew_last_error` hands back the interior of the `CString` the
+///     runtime stores. Absence of the axis is the fail-closed reading and is
+///     the state of nearly every row, so this clause admits only what an
+///     executable oracle has actually measured.
+///
+/// C3. the audited release symbol is EXACTLY the release the compiler's own
+///     type-directed drop plan emits for the declared return type, at `Shallow`
+///     depth. This is what ties the AUDITED release to the release that will
+///     actually run. The mint does not emit the row's release symbol; it marks
+///     the value a fresh sole owner and lets the drop plan derive the release
+///     from the declared type. Without this conjunct a row naming
+///     `hew_json_free` would license a `hew_string_drop` against an allocation
+///     that release never balances. See [`declared_return_release`] for the
+///     derivation and for why a type whose discharge is not a single release is
+///     refused.
+///
+/// Fail-closed in every direction: any conjunct answering `false` restores the
+/// pre-existing verdict, which is `{OPAQUE}` ⇒ no mint ⇒ a leak. A leak is
+/// bounded and is measured file by file by the release-count differential; a
+/// double free is neither.
+fn extern_result_is_measured_transfer(
+    symbol: &str,
+    decl: &hew_hir::HirExternFn,
+    decls: &HashMap<&str, &hew_hir::HirTypeDecl>,
+) -> bool {
+    let ReturnRelease::One(planned) = declared_return_release(&decl.return_ty, decls, 0) else {
+        return false;
+    };
+    if !extern_result_is_audited_owned_transfer(symbol, decl.param_tys.len()) {
+        return false;
+    }
+    crate::ffi_contracts::extern_ownership_contract(symbol)
+        .contract()
+        .is_some_and(|contract| {
+            contract.result_retention == crate::ffi_contracts::ExternResultRetention::Transferred
+                && contract.release_symbol == planned
+                && contract.discharge_depth == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+        })
+}
+
+/// What the compiler's type-directed drop plan will emit for a declared type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReturnRelease {
+    /// Nothing is released: the value owns no heap.
+    Nothing,
+    /// The whole value discharges through exactly this one release symbol.
+    One(&'static str),
+    /// The type is unresolvable here, or its discharge is not a single release
+    /// (an `#[opaque]` handle, a generic instantiation, a record mixing two
+    /// release symbols, a shape this function does not model). Never admitted.
+    Unresolved,
+}
+
+/// The single release symbol the type-directed drop plan emits for `ty`,
+/// resolved from THIS module's own type declarations.
+///
+/// Same discipline as [`PointerFreeRecords`]: structural, module-local, and
+/// `Unresolved` for anything it cannot resolve. It never consults a layout
+/// registry, because an absent or partial registry reads a composite as
+/// non-heap, which is the permissive direction.
+///
+/// `Nothing` is not a licence either — a value with no heap in it is Clause B's
+/// business, and Clause C requires `One`, so a contract can only ever be
+/// honoured against a release the plan will really emit. A record mixing two
+/// release symbols answers `Unresolved`: the contract names ONE release symbol,
+/// so it cannot be the balancing release for a value that needs two, and the
+/// audit is then not describing what the caller would do.
+fn declared_return_release(
+    ty: &ResolvedTy,
+    decls: &HashMap<&str, &hew_hir::HirTypeDecl>,
+    depth: usize,
+) -> ReturnRelease {
+    /// Bounds the record walk. A record cannot contain itself by value, but the
+    /// walk must terminate on a malformed or mutually recursive declaration
+    /// without trusting that.
+    const MAX_RECORD_DEPTH: usize = 8;
+
+    if ty_is_scalar_non_heap(ty) {
+        return ReturnRelease::Nothing;
+    }
+    match ty {
+        ResolvedTy::String => ReturnRelease::One(STRING_RELEASE_SYMBOL),
+        ResolvedTy::Bytes => ReturnRelease::One(BYTES_RELEASE_SYMBOL),
+        ResolvedTy::Named {
+            name,
+            args,
+            is_opaque,
+            ..
+        } => {
+            if *is_opaque || !args.is_empty() || depth >= MAX_RECORD_DEPTH {
+                return ReturnRelease::Unresolved;
+            }
+            let Some(decl) = decls
+                .get(name.as_str())
+                .or_else(|| decls.get(hew_types::short_name(name)))
+            else {
+                return ReturnRelease::Unresolved;
+            };
+            if decl.is_opaque || decl.fields.is_empty() {
+                return ReturnRelease::Unresolved;
+            }
+            let mut planned = ReturnRelease::Nothing;
+            for field in &decl.fields {
+                match declared_return_release(&field.ty, decls, depth + 1) {
+                    ReturnRelease::Nothing => {}
+                    ReturnRelease::Unresolved => return ReturnRelease::Unresolved,
+                    ReturnRelease::One(symbol) => match planned {
+                        ReturnRelease::One(seen) if seen != symbol => {
+                            return ReturnRelease::Unresolved;
+                        }
+                        _ => planned = ReturnRelease::One(symbol),
+                    },
+                }
+            }
+            planned
+        }
+        _ => ReturnRelease::Unresolved,
+    }
+}
+
+/// The one release the type-directed drop plan emits for a `string`.
+const STRING_RELEASE_SYMBOL: &str = "hew_string_drop";
+
+/// The one release the type-directed drop plan emits for `bytes`.
+const BYTES_RELEASE_SYMBOL: &str = "hew_bytes_drop";
 
 /// Clause B of the RESULT-axis admission: the module's records that provably
 /// contain no pointer, resolved from the module's own type declarations.
@@ -4199,13 +4379,32 @@ impl LeafPolicy for PrecisePolicy<'_> {
         // Clause 0: an extern call dispatches by NAME — its call-site id is the
         // PLACEHOLDER `ItemId(0)`, so an id lookup would collide with a real
         // module fn's summary (leaking that fn's `PARAM` bits into the extern
-        // caller — the jwt/encrypt false-reject contamination). No
-        // heap-returning extern is trusted in the interim → `{OPAQUE}`; a
-        // scalar-returning extern also lands here (sound: over-approximation
-        // only widens toward Opaque, and its consumers' scalar results are
-        // short-circuited by type at the leaves).
+        // caller — the jwt/encrypt false-reject contamination). The name-keyed
+        // audited authority is exactly the query that avoids that collision, so
+        // it is the one asked here, and it is the SAME set
+        // `OpaqueExternTaintPolicy` reads: an extern admitted as an audited
+        // fresh owner hands back a value that aliases no parameter and carries
+        // no opaque origin, which is what `∅` means. Everything else stays
+        // `{OPAQUE}`.
+        //
+        // The set is narrow by construction: a pointer-free result (a scalar,
+        // or a module record of scalar leaves) which owns no heap at all and so
+        // is vacuously `∅`; and — the only pointer-bearing case — a result
+        // whose contract carries a MEASURED `result-retention = "transferred"`
+        // and whose audited release is the one the drop plan will emit for the
+        // declared type (see `build_extern_contract_table` Clause C).
+        //
+        // Reading `{OPAQUE}` for those was an over-approximation, and it is the
+        // one that withheld the release from every Hew wrapper around the
+        // `*_last_error` family: such a wrapper's whole body is the extern
+        // call, so `{OPAQUE}` here propagates to every caller and no owner is
+        // ever minted for the error string.
         if self.extern_table.is_extern_name(name) {
-            return CallClass::Opaque;
+            return if self.extern_table.extern_return_is_audited_fresh_owner(name) {
+                CallClass::Fresh
+            } else {
+                CallClass::Opaque
+            };
         }
         // Clause 1: a resolved module fn → its summary (with arg substitution).
         if let Some(bits) = self.provenance.get(id) {
@@ -5770,5 +5969,289 @@ fn main() {}
         assert!(!t.is_extern_name("not_declared"));
         assert!(!t.extern_return_is_audited_fresh_owner("not_declared"));
         assert!(!t.extern_borrows_audited_heap_args("not_declared"));
+    }
+}
+
+#[cfg(test)]
+mod measured_extern_result_transfer {
+    //! Clause C — the only MINT-side admission for a pointer-bearing extern
+    //! result, and the compiler half of hew-lang/hew#2828.
+    //!
+    //! The point of these tests is that the admission tracks the RECORDED
+    //! ANSWER and nothing else. Not the name shape, not `result = "fresh"`, not
+    //! the fact that the return type happens to own heap.
+    use super::*;
+
+    fn table_for(source: &str) -> ExternContractTable {
+        build_extern_contract_table(&tests::lower_source(source))
+    }
+
+    #[test]
+    fn a_measured_transfer_is_minted() {
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_process_last_error() -> string;
+}
+fn main() {}
+"#;
+        let t = table_for(SOURCE);
+        assert!(
+            t.extern_return_is_audited_fresh_owner("hew_process_last_error"),
+            "the runtime copies its thread-local message into a fresh \
+             header-aware allocation and keeps no pointer into it, so the \
+             caller holds the sole owner and owes exactly one release"
+        );
+    }
+
+    #[test]
+    fn the_whole_measured_family_is_minted() {
+        // Every symbol the oracles established, read back through the same
+        // admission path a real declaration takes.
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_tls_last_error() -> string;
+    fn hew_smtp_last_error() -> string;
+    fn hew_cron_last_error() -> string;
+    fn hew_datetime_last_error() -> string;
+    fn hew_json_last_error() -> string;
+    fn hew_toml_last_error() -> string;
+    fn hew_yaml_last_error() -> string;
+    fn hew_xml_last_error() -> string;
+    fn hew_msgpack_last_error() -> string;
+    fn hew_http_last_error() -> string;
+    fn hew_quic_last_error() -> string;
+    fn hew_stream_last_error() -> string;
+}
+fn main() {}
+"#;
+        let t = table_for(SOURCE);
+        for name in [
+            "hew_tls_last_error",
+            "hew_smtp_last_error",
+            "hew_cron_last_error",
+            "hew_datetime_last_error",
+            "hew_json_last_error",
+            "hew_toml_last_error",
+            "hew_yaml_last_error",
+            "hew_xml_last_error",
+            "hew_msgpack_last_error",
+            "hew_http_last_error",
+            "hew_quic_last_error",
+            "hew_stream_last_error",
+        ] {
+            assert!(
+                t.extern_return_is_audited_fresh_owner(name),
+                "`{name}` carries a measured `result-retention = \"transferred\"` \
+                 row, so its result is the caller's to release"
+            );
+        }
+    }
+
+    #[test]
+    fn a_measured_record_return_is_minted_through_its_heap_field() {
+        // `TlsReadFfiResult { data: bytes; status: i32 }` is not pointer-free,
+        // so Clause B refuses it. Its whole discharge is one `hew_bytes_drop`,
+        // which is exactly what the audited row names, and the retention answer
+        // is measured — so Clause C admits it, and the `Result<bytes, ..>` that
+        // `tls.read` builds from it regains its scrutinee release.
+        const SOURCE: &str = r#"type TlsReadFfiResult {
+    data: bytes;
+    status: i32;
+}
+extern "C" {
+    fn hew_tls_read_result(stream: i64, size: i32) -> TlsReadFfiResult;
+}
+fn main() {}
+"#;
+        assert!(
+            table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_tls_read_result"),
+            "a record whose only heap field discharges through the audited \
+             release symbol is the caller's to release"
+        );
+    }
+
+    #[test]
+    fn a_fresh_result_without_a_measured_retention_is_refused() {
+        // `hew_bytes_to_string` is audited `result = "fresh"`, released by
+        // `hew_string_drop`, shallow — identical on every axis Clause A reads.
+        // It is refused for the one reason that matters: nobody has established
+        // that the callee keeps no pointer into what it returned. Absence is
+        // the answer "not established", and that costs a leak rather than a
+        // double free.
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_bytes_to_string(b: bytes) -> string;
+}
+fn main() {}
+"#;
+        let contract = crate::ffi_contracts::extern_ownership_contract("hew_bytes_to_string")
+            .contract()
+            .expect("guard: hew_bytes_to_string must be audited, or this proves nothing");
+        assert_eq!(
+            contract.result,
+            crate::ffi_contracts::ExternResultOwnership::Fresh
+        );
+        assert_eq!(contract.release_symbol, STRING_RELEASE_SYMBOL);
+        assert_eq!(
+            contract.result_retention,
+            crate::ffi_contracts::ExternResultRetention::Unspecified
+        );
+        assert!(
+            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_bytes_to_string"),
+            "`fresh` says the allocation is new, not that the callee stopped \
+             referring to it; only the retention axis answers that"
+        );
+    }
+
+    #[test]
+    fn the_borrowing_member_of_the_family_is_refused() {
+        // `hew_last_error` shares the family's name shape and its C-string
+        // return, and hands back the interior of a `CString` the runtime keeps.
+        // The recorded answer is `borrowed`, which fails Clause A before the
+        // retention axis is even consulted.
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_last_error() -> string;
+}
+fn main() {}
+"#;
+        assert!(
+            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_last_error"),
+            "the family is not uniform, and the authority must read the answer \
+             per symbol rather than generalise from the shared prefix"
+        );
+    }
+
+    #[test]
+    fn a_release_the_drop_plan_would_not_emit_is_refused() {
+        // Clause C3. `hew_json_array_new` is audited `fresh`, but its release is
+        // `hew_json_free` at `deep` depth. Declaring it `-> string` would have
+        // the drop plan emit `hew_string_drop` against an allocation that
+        // release does not balance, so the audited release must be exactly the
+        // one the declared type's drop plan emits.
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_json_array_new() -> string;
+}
+fn main() {}
+"#;
+        let contract = crate::ffi_contracts::extern_ownership_contract("hew_json_array_new")
+            .contract()
+            .expect("guard: hew_json_array_new must be audited, or this proves nothing");
+        assert_eq!(
+            contract.result,
+            crate::ffi_contracts::ExternResultOwnership::Fresh
+        );
+        assert_ne!(contract.release_symbol, STRING_RELEASE_SYMBOL);
+        assert!(
+            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_json_array_new"),
+            "an audited release the type-directed drop plan will not emit \
+             licenses nothing"
+        );
+    }
+
+    #[test]
+    fn an_arity_that_disagrees_with_the_audited_signature_is_refused() {
+        // The row is a fact about the audited callee. A block declaring a
+        // different function under the same name is not a declaration of it.
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_process_last_error(unexpected: i64) -> string;
+}
+fn main() {}
+"#;
+        assert!(
+            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_process_last_error"),
+            "a measured answer about a zero-argument callee says nothing about \
+             a one-argument declaration wearing its name"
+        );
+    }
+
+    #[test]
+    fn an_unclassified_host_symbol_is_refused() {
+        const SOURCE: &str = r#"extern "C" {
+    fn host_last_error() -> string;
+}
+fn main() {}
+"#;
+        assert!(
+            !table_for(SOURCE).extern_return_is_audited_fresh_owner("host_last_error"),
+            "a foreign host symbol has no measured row, so its result stays \
+             ownership-opaque"
+        );
+    }
+
+    #[test]
+    fn a_declared_return_resolves_to_the_release_the_plan_emits() {
+        // The C3 derivation, exercised directly so the refusals above are
+        // pinned to a stated rule rather than to whatever the table happens to
+        // hold. An `#[opaque]` handle, a generic instantiation and a record
+        // mixing two release symbols are all `Unresolved`, which Clause C
+        // refuses.
+        const SOURCE: &str = r"type Pod {
+    a: i32;
+    b: i64;
+}
+type OneHeap {
+    data: bytes;
+    status: i32;
+}
+type MixedHeap {
+    text: string;
+    data: bytes;
+}
+#[opaque]
+type Handle {
+}
+fn main() {}
+";
+        let module = tests::lower_source(SOURCE);
+        let decls: HashMap<&str, &hew_hir::HirTypeDecl> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+                _ => None,
+            })
+            .collect();
+        let named = |name: &str| ResolvedTy::Named {
+            name: name.to_string(),
+            args: vec![],
+            is_opaque: false,
+            builtin: None,
+        };
+
+        assert_eq!(
+            declared_return_release(&ResolvedTy::String, &decls, 0),
+            ReturnRelease::One("hew_string_drop")
+        );
+        assert_eq!(
+            declared_return_release(&ResolvedTy::Bytes, &decls, 0),
+            ReturnRelease::One("hew_bytes_drop")
+        );
+        assert_eq!(
+            declared_return_release(&ResolvedTy::I64, &decls, 0),
+            ReturnRelease::Nothing
+        );
+        assert_eq!(
+            declared_return_release(&named("Pod"), &decls, 0),
+            ReturnRelease::Nothing,
+            "a record of scalar leaves releases nothing — Clause B's business, \
+             and never a licence under Clause C"
+        );
+        assert_eq!(
+            declared_return_release(&named("OneHeap"), &decls, 0),
+            ReturnRelease::One("hew_bytes_drop")
+        );
+        assert_eq!(
+            declared_return_release(&named("MixedHeap"), &decls, 0),
+            ReturnRelease::Unresolved,
+            "a contract names ONE release symbol, so it cannot be the balancing \
+             release for a value that needs two"
+        );
+        assert_eq!(
+            declared_return_release(&named("Handle"), &decls, 0),
+            ReturnRelease::Unresolved,
+            "an `#[opaque]` declaration is the foreign-handle shape this \
+             authority exists to refuse"
+        );
+        assert_eq!(
+            declared_return_release(&named("NotDeclaredHere"), &decls, 0),
+            ReturnRelease::Unresolved
+        );
     }
 }

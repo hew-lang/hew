@@ -83,40 +83,15 @@ const REJECTED: &str = "REJECTED";
 /// release fails this test and forces the entry to be removed rather than
 /// letting the debt quietly become the new normal.
 const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
-    (
-        "examples/net/tls_client.hew",
-        "main",
-        48,
-        "`match tls.read(..)` over a `Result<bytes, net.NetError>`: the \
-         call-scrutinee owner mint is declined because `net.NetError`'s string \
-         payload is laundered out of `hew_tls_last_error`, a heap-returning \
-         extern with no MINT-side audited row. Deleting the `LegacyModuleCall` \
-         fail-open that used to mint here was deliberate — it minted a \
-         caller-side release over values a Hew wrapper had laundered out of an \
-         ownership-opaque extern, which frees a pointer this program may not \
-         own. The replacement is an audited fresh-RETURN row source for the \
-         `*_last_error` family, which licenses a release instead of guessing \
-         one; until it lands this is an error-path leak, which is the safe \
-         side of that trade.",
-    ),
-    (
-        "examples/smtp_client.hew",
-        "main",
-        35,
-        "Same shape, via `hew_smtp_last_error`: `match send_plain(..)`'s \
-         `Err(msg)` payload gets no release. `send_plain` forwards an error \
-         string built by `smtp_err`, which reads the opaque extern, so the \
-         freshness fixpoint cannot prove the returned `Result` fresh.",
-    ),
-    (
-        "std/time/cron/cron.hew",
-        "Expr::next",
-        3,
-        "Same shape, via `hew_cron_last_error` behind `cron_error_message`. \
-         The Err arm of `Expr::next` panics, so the withheld scrutinee release \
-         is unreachable on the normal path; it is listed because the count \
-         moved, not because the program leaks in practice.",
-    ),
+    // Empty, and it is meant to stay that way. The three cells that stood here
+    // — `examples/net/tls_client.hew::main` at 48, `examples/smtp_client.hew::main`
+    // at 35 and `std/time/cron/cron.hew::Expr::next` at 3 — all named an
+    // unlanded answer to "who owns the buffer a `*_last_error` extern returns?"
+    // as their reason. That answer landed (hew-lang/hew#2828): it is recorded
+    // per symbol as `result-retention` on the `[[ownership.contracts]]` rows in
+    // scripts/jit-symbol-classification.toml, measured by the oracles named
+    // there, and read by `build_extern_contract_table`'s Clause C. All three
+    // cells are back at their `main` counts.
 ];
 
 fn capture_mode() -> bool {

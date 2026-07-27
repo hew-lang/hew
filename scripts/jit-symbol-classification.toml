@@ -12,6 +12,7 @@
 #   params = ["borrow" | "consume" | "retain", ...]
 #   release-symbol = "<hew_* release function or type-directed drop thunk>" | ""
 #   discharge-depth = "shallow" | "deep" | "none"
+#   result-retention = "transferred"   (optional; owned results only)
 #
 # `fresh` transfers a newly owned allocation to the caller. `retained`
 # transfers an additional reference to an existing ref-counted allocation.
@@ -19,6 +20,34 @@
 # `none` carries no owned result. Fresh and retained results must name their
 # release symbol and whether that release recursively discharges children.
 # Borrowed and none results use an empty release symbol and depth "none".
+#
+# `result-retention` is the RETENTION axis and answers a DIFFERENT question
+# from `result`: does the callee keep a pointer into the allocation it just
+# returned? `fresh` says the allocation is new; it does not say the callee
+# stopped referring to it. A callee that allocates AND keeps the pointer — to
+# free it later, to overwrite it on the next call, or to hand the same address
+# back again — produces a value the caller must not release, and that
+# difference is invisible on the `result` axis alone. It is a real difference
+# inside this runtime: hew_process_last_error copies its thread-local message
+# into a fresh header-aware allocation and keeps nothing, while hew_last_error
+# hands back the interior of the CString the runtime stores and keeps
+# everything.
+#
+# "transferred" therefore means: the callee provably keeps no pointer into the
+# returned allocation, the caller holds the SOLE owner, and `release-symbol` is
+# the balancing release. It is the only spelling, it is only legal on an owned
+# result, and it is the ONLY thing that licenses the compiler to mint a
+# caller-side release for a pointer-bearing extern result
+# (hew_mir::return_provenance::build_extern_contract_table).
+#
+# ABSENCE is the fail-closed default and means the question has not been
+# answered for that symbol — no mint, which costs a leak rather than a double
+# free. A row may claim "transferred" only once an executable oracle has
+# established it for that symbol by measuring the runtime's actual retention
+# behaviour: distinct addresses for two live results, refcount 1 at handoff,
+# and the callee's own state surviving the caller's release. Those oracles are
+# hew-runtime/tests/last_error_result_retention.rs and
+# hew-std/src/last_error_retention.rs (hew-lang/hew#2828).
 #
 # Three-tier model (rationale: Option A chosen over Option B for substrate
 # clarity — the tier boundary is a compile-time contract, not just a doc claim):
@@ -1937,6 +1966,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-std/src/toml.rs:109-123 allocates a string value copy.
 [[ownership.contracts]]
@@ -2514,6 +2544,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_last_error_kind"
@@ -2860,12 +2891,29 @@ params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
+# hew_last_error (hew-runtime/src/lib.rs) is the slot hew_process_last_error
+# reads, and it is the member of the *_last_error family whose answer is the
+# OTHER one: it returns `LAST_ERROR.with(|e| s.as_ptr())` — the interior of the
+# thread-local CString the runtime keeps — so the pointer is valid only until
+# the next error mutation and is never the caller's to release. Two consecutive
+# calls hand back the SAME address, which is what
+# hew-runtime/tests/last_error_result_retention.rs measures. Recorded as a
+# borrow so the authority reads the answer instead of inferring one from the
+# name shape; `borrowed` is refused by every mint clause by construction.
+[[ownership.contracts]]
+symbol = "hew_last_error"
+result = "borrowed"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
 [[ownership.contracts]]
 symbol = "hew_process_last_error"
 result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_process_result_exit_code"
@@ -3414,6 +3462,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_msgpack_to_json_hew"
@@ -3594,6 +3643,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_datetime_minute"
@@ -3674,6 +3724,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_cron_next_hew"
@@ -3888,6 +3939,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_http_request_hew"
@@ -4086,13 +4138,20 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
+# The `data` field is a fresh refcount-1 bytes allocation copied out of the
+# decrypted read buffer (`read_tls_vec` -> `hew_bytes_from_static`); the stream
+# keeps no pointer into it, which
+# hew-std/src/tls.rs::read_result_transfers_the_decrypted_buffer measures over a
+# real loopback handshake.
 [[ownership.contracts]]
 symbol = "hew_tls_read_result"
 result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_tls_write_result"
@@ -4130,6 +4189,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_smtp_send"
@@ -4343,6 +4403,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_new_client"
@@ -4600,6 +4661,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_object_keys"
@@ -4965,6 +5027,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_object_new"
@@ -5088,6 +5151,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_xml_parse"

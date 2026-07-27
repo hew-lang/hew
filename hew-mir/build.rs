@@ -149,10 +149,16 @@ fn generate_ffi_ownership_table(contracts: &BTreeMap<String, ContractRow>) {
             "none" => "ReleaseDischargeDepth::None",
             other => panic!("unmapped discharge depth: {other}"),
         };
+        let retention = match row.result_retention.as_str() {
+            "transferred" => "ExternResultRetention::Transferred",
+            "" => "ExternResultRetention::Unspecified",
+            other => panic!("unmapped result retention: {other}"),
+        };
         writeln!(
             generated,
             "    (\"{symbol}\", ExternOwnershipContract {{ params: &[{params}], \
-             result: {result}, release_symbol: \"{}\", discharge_depth: {depth} }}),",
+             result: {result}, release_symbol: \"{}\", discharge_depth: {depth}, \
+             result_retention: {retention} }}),",
             row.release_symbol
         )
         .expect("write generated contract row");

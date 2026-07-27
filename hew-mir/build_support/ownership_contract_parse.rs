@@ -11,6 +11,13 @@ struct ContractRow {
     params: Vec<String>,
     release_symbol: String,
     discharge_depth: String,
+    /// The RETENTION answer for an owned result: `"transferred"` when the
+    /// callee provably keeps no pointer into the returned allocation, empty
+    /// when the question has not been answered for this symbol. Empty is the
+    /// fail-closed default and is what every row carries unless an executable
+    /// oracle established otherwise — see the `result-retention` section of
+    /// `scripts/jit-symbol-classification.toml`.
+    result_retention: String,
 }
 
 fn quoted_value(line: &str) -> Option<&str> {
@@ -42,6 +49,55 @@ fn quoted_list(body: &str) -> Vec<String> {
         .collect()
 }
 
+/// Fail-closed schema check for one accumulated row.
+///
+/// Every axis is validated against a closed vocabulary — an unknown spelling
+/// aborts the build rather than degrading to a default — and the
+/// owned-result couplings from `verify-ffi-symbols.py` are re-checked here so
+/// the generated compiler table can never carry a row the out-of-band
+/// validator would reject.
+fn validate_contract_row(symbol: &str, row: &ContractRow) {
+    assert!(
+        ["fresh", "retained", "borrowed", "none"].contains(&row.result.as_str()),
+        "unknown ownership result for {symbol}: {}",
+        row.result
+    );
+    for param in &row.params {
+        assert!(
+            ["borrow", "consume", "retain"].contains(&param.as_str()),
+            "unknown param ownership for {symbol}: {param}"
+        );
+    }
+    assert!(
+        ["shallow", "deep", "none"].contains(&row.discharge_depth.as_str()),
+        "unknown discharge depth for {symbol}: {}",
+        row.discharge_depth
+    );
+    if matches!(row.result.as_str(), "fresh" | "retained") {
+        assert!(
+            !row.release_symbol.is_empty() && row.discharge_depth != "none",
+            "owned result for {symbol} requires release-symbol and discharge depth"
+        );
+    } else {
+        assert!(
+            row.release_symbol.is_empty() && row.discharge_depth == "none",
+            "borrowed/none result for {symbol} must carry no release axis"
+        );
+    }
+    // The RETENTION axis. Absence is the fail-closed answer "not established",
+    // so the only spelling is the positive one, and it is only meaningful about
+    // an allocation the caller was actually given.
+    assert!(
+        ["", "transferred"].contains(&row.result_retention.as_str()),
+        "unknown result-retention for {symbol}: {}",
+        row.result_retention
+    );
+    assert!(
+        row.result_retention.is_empty() || matches!(row.result.as_str(), "fresh" | "retained"),
+        "result-retention for {symbol} is meaningless without an owned result"
+    );
+}
+
 /// Parse the full `[[ownership.contracts]]` table from TOML source. Every
 /// axis is validated against the closed schema vocabularies here
 /// (fail-closed: an unknown spelling aborts rather than degrading to a
@@ -63,33 +119,7 @@ fn parse_ownership_contracts(
                   contracts: &mut std::collections::BTreeMap<String, ContractRow>| {
         if let Some((symbol, row)) = entry {
             let symbol = symbol.expect("ownership contract missing `symbol`");
-            assert!(
-                ["fresh", "retained", "borrowed", "none"].contains(&row.result.as_str()),
-                "unknown ownership result for {symbol}: {}",
-                row.result
-            );
-            for param in &row.params {
-                assert!(
-                    ["borrow", "consume", "retain"].contains(&param.as_str()),
-                    "unknown param ownership for {symbol}: {param}"
-                );
-            }
-            assert!(
-                ["shallow", "deep", "none"].contains(&row.discharge_depth.as_str()),
-                "unknown discharge depth for {symbol}: {}",
-                row.discharge_depth
-            );
-            if matches!(row.result.as_str(), "fresh" | "retained") {
-                assert!(
-                    !row.release_symbol.is_empty() && row.discharge_depth != "none",
-                    "owned result for {symbol} requires release-symbol and discharge depth"
-                );
-            } else {
-                assert!(
-                    row.release_symbol.is_empty() && row.discharge_depth == "none",
-                    "borrowed/none result for {symbol} must carry no release axis"
-                );
-            }
+            validate_contract_row(&symbol, &row);
             assert!(
                 contracts.insert(symbol.clone(), row).is_none(),
                 "duplicate TOML ownership contract for {symbol}"
@@ -109,6 +139,7 @@ fn parse_ownership_contracts(
                     params: Vec::new(),
                     release_symbol: String::new(),
                     discharge_depth: String::new(),
+                    result_retention: String::new(),
                 },
             ));
             continue;
@@ -153,6 +184,10 @@ fn parse_ownership_contracts(
             quoted_value(line)
                 .expect("contract discharge-depth must be quoted")
                 .clone_into(&mut row.discharge_depth);
+        } else if line.starts_with("result-retention =") {
+            quoted_value(line)
+                .expect("contract result-retention must be quoted")
+                .clone_into(&mut row.result_retention);
         }
     }
     finish(current.take(), &mut contracts);

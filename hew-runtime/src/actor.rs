@@ -2097,20 +2097,17 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // decision uses the actual state at CAS time, so neither window can
         // finalize a re-enqueued actor.
         //
-        // A still-`Suspended` actor normally does NOT reach this decision on the
-        // native shutdown path: `retire_parked_activations` runs at the head of
-        // `hew_runtime_cleanup` and has already destroyed the parked frame and
-        // latched the actor to `Stopped`, so it arrives here quiescent and is
-        // reclaimed like any other. What still reaches the fail-closed branch is
-        // an actor whose frame could not be released (a concurrent resume held
-        // the handle), a sweep reached by some other route than
-        // `hew_runtime_cleanup`, or the WASM sweep, which has no abandonment
-        // path of its own yet.
-        // WASM-TODO(#2825): the WASM scheduler has no `retire_parked_activations`
-        // equivalent, so a WASM actor parked at a suspend point still takes the
-        // fail-closed leak below.
-        // Leaking those remains correct: the frame that
-        // survived still owns the actor.
+        // A still-`Suspended` actor normally does NOT reach this decision on a
+        // canonical shutdown path. Native `retire_parked_activations` runs at
+        // the head of `hew_runtime_cleanup`; WASM
+        // `retire_parked_activations_wasm` runs after the cooperative run queue
+        // is empty and before timer teardown in `hew_sched_shutdown`. Both have
+        // already destroyed the parked frame and latched the actor to `Stopped`,
+        // so it arrives here quiescent and is reclaimed like any other. What
+        // still reaches the fail-closed branch is an actor whose frame could
+        // not be released, or a sweep reached by some other route than the
+        // target's canonical shutdown chain. Leaking those remains correct:
+        // the frame that survived still owns the actor.
         let finalize_state = match decide_finalize_by_latch(a) {
             FinalizeDecision::Finalize(state) => Some(state),
             FinalizeDecision::Skip => {
@@ -2468,6 +2465,17 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     // with a live reply slot" is a property of this function rather than
     // something each caller has to remember.
     crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
+
+    // Same choke-point invariant for a receive-gen producer's separate sink on
+    // the native test build. The stream/sink runtime is intentionally absent
+    // from WASM, where the ABI slot therefore has no legal non-null producer.
+    #[cfg(not(target_arch = "wasm32"))]
+    fault_close_registered_gen_sink(a);
+    #[cfg(target_arch = "wasm32")]
+    debug_assert!(
+        a.gen_sink.load(Ordering::Acquire).is_null(),
+        "WASM actor carried a native-only registered generator sink"
+    );
 
     // C1 abandonment teardown (D-C1) — parity with the native
     // `free_actor_resources_with_options`. A never-woken `Suspended` actor freed
@@ -7303,12 +7311,64 @@ pub(crate) unsafe fn cancel_parked_activation_for_free_wasm(a: &HewActor) {
     if destroyed.is_ok() {
         clear_suspended_cancel_token(a);
         crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
+        // The parked activation may be a `receive gen fn` pump. Its frame
+        // destroy above releases the generator companion; this releases the
+        // separate registered sink so a consumer observes a fault rather than
+        // waiting on a producer that shutdown has made impossible to resume.
+        // The slot swap is idempotent across stop/free/shutdown overlap.
+        #[cfg(not(target_arch = "wasm32"))]
+        fault_close_registered_gen_sink(a);
+        // `receive gen fn` and its `HewSink` runtime are rejected from WASM;
+        // the ABI slot therefore has no legal non-null producer on this target.
+        #[cfg(target_arch = "wasm32")]
+        debug_assert!(
+            a.gen_sink.load(Ordering::Acquire).is_null(),
+            "WASM actor carried a native-only registered generator sink"
+        );
         let _ = a.actor_state.compare_exchange(
             HewActorState::Suspended as i32,
             HewActorState::Stopped as i32,
             Ordering::AcqRel,
             Ordering::Acquire,
         );
+    }
+}
+
+/// Abandon every WASM activation still parked after the cooperative run queue
+/// has drained, while the timer/cancel machinery its cleanup outline may enter
+/// is still alive.
+///
+/// This is the WASM ownership point corresponding to native
+/// [`retire_parked_activations`], but its proof is target-specific rather than
+/// cargo-culted from the native worker-join rule:
+///
+/// - `hew_sched_shutdown` is synchronous and single-threaded;
+/// - `drain_run_queue_for_shutdown` has returned, so no queued resume or
+///   activation remains and `ACTIVATING` is false;
+/// - the host cannot interleave a timer tick or `enqueue_resume` until shutdown
+///   returns;
+/// - the timer wheel and periodic registry are torn down only *after* this
+///   sweep, so a `coro.destroy` cleanup may still cancel its registration.
+///
+/// Iterating a snapshot without draining keeps actor-box ownership in
+/// [`cleanup_all_actors`]. This sweep owns only parked activations and the debts
+/// made terminal by winning their single destroy guard. A refused destroy
+/// leaves the actor `Suspended`; ordinary cleanup then leaks it fail-closed
+/// rather than guessing at ownership.
+///
+/// # Safety
+///
+/// Must be called from the post-run-queue-drain, pre-timer-teardown window in
+/// the single-threaded WASM scheduler, with no activation in progress.
+#[cfg(target_arch = "wasm32")]
+pub(crate) unsafe fn retire_parked_activations_wasm() {
+    for actor in crate::lifetime::live_actors::snapshot_live_actor_ptrs() {
+        if actor.is_null() {
+            continue;
+        }
+        // SAFETY: the pointer remains tracked for this whole non-draining pass;
+        // single-threaded post-drain shutdown prevents a concurrent free.
+        unsafe { cancel_parked_activation_for_free_wasm(&*actor) };
     }
 }
 
@@ -7338,6 +7398,15 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     // waits on a reply that is never coming.
     // SAFETY: `a` is the actor being freed; nothing else runs on this thread,
     // so no resume can be driving the frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    fault_close_registered_gen_sink(a);
+    #[cfg(target_arch = "wasm32")]
+    debug_assert!(
+        a.gen_sink.load(Ordering::Acquire).is_null(),
+        "WASM actor carried a native-only registered generator sink"
+    );
+    // SAFETY: `a` is the actor being freed; no dispatch is in progress on this
+    // single cooperative thread.
     unsafe { cancel_parked_activation_for_free_wasm(a) };
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

@@ -394,6 +394,10 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
 /// Slope oracle (statement position): `println(f"item-{i}")` releases both
 /// nested temps every iteration — flat leak slope. Pre-fix this leaked 2
 /// nodes/iteration (`hew_i64_to_string` + `hew_string_concat`).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_scalar_interp_statement_position_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fstring_scalar_stmt", fstring_scalar_interp_loop_source);
@@ -403,6 +407,10 @@ fn fstring_scalar_interp_statement_position_leak_slope_below_tolerance() {
 /// releases the conversion temp every iteration — flat leak slope. Pre-fix
 /// this leaked 1 node/iteration, reproducing with zero receive-gen/actor
 /// surface (the string-yield control shape).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_scalar_interp_gen_yield_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fstring_scalar_gen", fstring_gen_yield_interp_loop_source);
@@ -411,6 +419,10 @@ fn fstring_scalar_interp_gen_yield_leak_slope_below_tolerance() {
 /// No-double-free pin (statement position): both nested temps release
 /// EXACTLY once across 200 iterations. A second owner aborts under the
 /// poisoned allocator. Runs on any unix host.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_scalar_interp_statement_position_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -421,6 +433,10 @@ fn fstring_scalar_interp_statement_position_freed_exactly_once_under_malloc_scri
 
 /// No-double-free pin (gen-body): the conversion temp releases EXACTLY once
 /// per yield across 200 iterations. Runs on any unix host.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_scalar_interp_gen_yield_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -435,10 +451,18 @@ fn fstring_scalar_interp_gen_yield_freed_exactly_once_under_malloc_scribble() {
 /// concat chain in one block (no `to_string` split between an intermediate and
 /// its consuming concat), so they were always clean. Pin them flat so a future
 /// change to the admission cannot silently regress the already-correct cases.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_one_interp_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fstring_1interp", fstring_one_interp_loop_source);
 }
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_two_interp_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fstring_2interp", fstring_two_interp_loop_source);
@@ -450,14 +474,26 @@ fn fstring_two_interp_leak_slope_below_tolerance() {
 /// split per iteration pre-fix — a positive slope that scales with the
 /// interpolation count (3→~1, 4→~3, 5→~4 leaked nodes/iteration). With the
 /// cross-block domination admission the slope is flat.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_three_interp_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fstring_3interp", fstring_three_interp_loop_source);
 }
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_four_interp_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fstring_4interp", fstring_four_interp_loop_source);
 }
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_five_interp_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fstring_5interp", fstring_five_interp_loop_source);
@@ -467,14 +503,26 @@ fn fstring_five_interp_leak_slope_below_tolerance() {
 /// once across 200 iterations for 3-, 4-, and 5-interpolation f-strings. A
 /// second owner (an over-eager cross-block drop that double-frees) aborts under
 /// the poisoned-allocator triple; a scribbled read miscomputes the total.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_three_interp_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("fstring_3interp_df", &fstring_three_interp_loop_source(200));
 }
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_four_interp_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("fstring_4interp_df", &fstring_four_interp_loop_source(200));
 }
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_five_interp_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("fstring_5interp_df", &fstring_five_interp_loop_source(200));
@@ -486,6 +534,10 @@ fn fstring_five_interp_freed_exactly_once_under_malloc_scribble() {
 /// an f-string. Pre-fix the caller-side temp-arg mint recognised only runtime
 /// fresh-string producers, so the result leaked 1 node/iteration
 /// (`println(f"v={mk(i)}")` — 5 leaks / 160 bytes over 5 iterations).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_user_call_result_interp_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -496,6 +548,10 @@ fn fstring_user_call_result_interp_leak_slope_below_tolerance() {
 
 /// Control: binding the call result first was always clean. Pinned so the
 /// temp-arg mint cannot regress it into a second owner.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_user_call_bound_interp_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -507,6 +563,10 @@ fn fstring_user_call_bound_interp_leak_slope_below_tolerance() {
 /// Teeth: an `Option<string>` payload binder interpolated directly. Pre-fix
 /// the Hew-bodied `string::fmt` call read as an ownership escape and stripped
 /// the composite's `EnumInPlace` drop, leaking the payload every iteration.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_enum_payload_interp_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -517,6 +577,10 @@ fn fstring_enum_payload_interp_leak_slope_below_tolerance() {
 
 /// Teeth: the `Result<string, string>` sibling — both variants own a string,
 /// so the composite drop must dispose the active one tag-aware.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_result_payload_interp_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -528,6 +592,10 @@ fn fstring_result_payload_interp_leak_slope_below_tolerance() {
 /// No-double-free pin: the user-call result releases EXACTLY once across 200
 /// interpolations. A second owner aborts under the poisoned allocator; an
 /// over-drop scribbles the read and trips the fixture's own total check.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_user_call_result_interp_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -538,6 +606,10 @@ fn fstring_user_call_result_interp_freed_exactly_once_under_malloc_scribble() {
 
 /// No-double-free pin: the `Option<string>` payload releases EXACTLY once
 /// across 200 iterations, and stays readable after the interpolation.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_enum_payload_interp_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -548,6 +620,10 @@ fn fstring_enum_payload_interp_freed_exactly_once_under_malloc_scribble() {
 
 /// No-double-free pin: the `Result<string, string>` payload releases EXACTLY
 /// once across 200 iterations.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_result_payload_interp_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -561,6 +637,10 @@ fn fstring_result_payload_interp_freed_exactly_once_under_malloc_scribble() {
 /// The program is expected to leak; what is pinned is that the aliased buffer
 /// is never released twice — a double release scribbles `last`/`total` and
 /// trips the fixture's own post-loop checks, or aborts outright.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_enum_payload_escape_is_not_released_twice_under_malloc_scribble() {
     assert_no_double_free(
@@ -573,6 +653,10 @@ fn fstring_enum_payload_escape_is_not_released_twice_under_malloc_scribble() {
 /// temp aliased by the callee into a record the caller keeps must not be
 /// claimed by the temp-arg mint. Expected to leak; pinned to never release
 /// the record's field out from under the caller's read.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fstring_user_call_result_escape_is_not_released_twice_under_malloc_scribble() {
     assert_no_double_free(

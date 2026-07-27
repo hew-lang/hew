@@ -96,16 +96,28 @@ fn main() {
 }
 "#;
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn while_let_reassigned_fully_bound_payload_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("while_let_reassign_fully_bound", fully_bound_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn while_let_reassigned_moved_out_payload_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("while_let_reassign_moved_out", moved_out_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn while_let_reassigned_break_and_tag_false_release_exactly_once() {
     require_codegen();

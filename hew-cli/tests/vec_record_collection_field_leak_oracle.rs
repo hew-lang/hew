@@ -126,6 +126,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// poisoned allocator. Reverting the collection-field heap-leaf classification
 /// (so `Vec<Boxed>` is built plain) or the array-literal move-in (so the element
 /// temp double-frees / aliases) fails this.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_boxed_array_literal_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -141,6 +145,10 @@ fn vec_boxed_array_literal_exact_contents_under_malloc_scribble() {
 /// thunk, releasing each element's `payload` buffer. A regression that
 /// mis-classifies the record non-heap-owning (no drop at all) shows a per-frame
 /// slope this catches.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_boxed_outer_drop_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("vec_boxed_drop_loop", vec_boxed_drop_loop_source);

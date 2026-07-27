@@ -68,11 +68,19 @@ fn predicate_borrow_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_project_predicate_borrow_leak_slope_is_flat() {
     assert_frame_slope_below_tolerance("owned_project_predicate_borrow", predicate_borrow_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_project_predicate_borrow_releases_each_owner_once() {
     require_codegen();
@@ -154,11 +162,19 @@ fn predicate_consume_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_project_predicate_consume_leak_slope_is_flat() {
     assert_frame_slope_below_tolerance("owned_project_predicate_consume", predicate_consume_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_project_predicate_consume_releases_each_owner_once() {
     require_codegen();

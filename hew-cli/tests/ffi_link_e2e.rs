@@ -36,7 +36,9 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use support::leak_slope::{leaks_supported, measure_leaks_with_args, LOW_FRAMES, SLOPE_TOLERANCE};
+use support::leak_slope::{
+    measure_leaks_with_args, require_leaks_tool, LOW_FRAMES, SLOPE_TOLERANCE,
+};
 use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
 
 /// A one-node-per-frame leak grows by 12 nodes between the probes, more than
@@ -248,21 +250,35 @@ fn build_cabi_wrapper_staticlib(dir: &Path, name: &str, lib_rs: &str) -> Option<
 /// invariant the substrate fix enforces: a native package resolves runtime
 /// symbols against `libhew.a` at the final link instead of bundling its own
 /// `#[no_mangle]` copy (the bundled copy is exactly the duplicate that collided
-/// with `libhew.a` — the std/net/http acceptance criterion). Skips (does not
-/// fail) if `nm` is unavailable on the host.
+/// with `libhew.a` — the std/net/http acceptance criterion).
+///
+/// Fails closed when `nm` cannot be run: an absent binutils is a provisioning
+/// failure of the host, not evidence that the single-owner invariant holds. A
+/// symbol audit that audits nothing must never report success.
 fn assert_archive_symbol_is_undefined(archive: &Path, symbol: &str) {
-    let Ok(out) = Command::new("nm").arg(archive).output() else {
-        eprintln!("skip nm audit of `{symbol}`: nm not available");
-        return;
-    };
-    if !out.status.success() {
-        eprintln!(
-            "skip nm audit of `{symbol}`: nm failed on {}",
-            archive.display()
-        );
-        return;
-    }
+    let out = Command::new("nm")
+        .arg(archive)
+        .output()
+        .unwrap_or_else(|err| {
+            panic!(
+                "nm audit of `{symbol}` could not run `nm`: {err}. `nm` ships with the platform \
+             toolchain; a host without it cannot check the single-owner symbol invariant, and \
+             an unaudited archive is not a passing archive."
+            )
+        });
+    // `nm` exits non-zero on an archive whose members include object files with
+    // no symbol table, while still listing every symbol of the members that do
+    // have one — so the fail-closed check is that it produced a symbol table to
+    // audit, not that it exited 0.
     let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.lines()
+            .any(|line| line.split_whitespace().count() >= 2),
+        "nm audit of `{symbol}`: `nm` listed no symbols for {}, so the single-owner invariant \
+         was not checked. An unaudited archive is not a passing archive:\n{}",
+        archive.display(),
+        describe_output(&out)
+    );
     let mut saw_undefined = false;
     for line in text.lines() {
         // nm rows: defined `<addr> <type> <name>`, undefined `U <name>` (no addr).
@@ -726,6 +742,10 @@ fn ffi_borrow_boundary_links_and_prints_exact_values() {
 
 /// Repeated foreign-returned views neither acquire ownership nor trigger a
 /// release under the poisoned allocator and leak-slope oracles.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn ffi_borrow_boundary_has_no_drop_or_leak_slope() {
     require_codegen();
@@ -760,15 +780,9 @@ fn ffi_borrow_boundary_has_no_drop_or_leak_slope() {
         describe_output(&scribble),
     );
 
-    if !leaks_supported("ffi_borrow_boundary") {
-        return;
-    }
-    let Some(low_leaks) = measure_leaks_with_args(&binary, &[]) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks_with_args(&binary, &["high"]) else {
-        return;
-    };
+    require_leaks_tool();
+    let low_leaks = measure_leaks_with_args(&binary, &[]);
+    let high_leaks = measure_leaks_with_args(&binary, &["high"]);
     assert!(
         high_leaks <= low_leaks + SLOPE_TOLERANCE,
         "foreign borrow leak slope exceeded tolerance: low_frames={LOW_FRAMES}, \

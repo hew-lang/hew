@@ -1152,6 +1152,24 @@ where
     unsafe { detached.retire(mailbox) };
 }
 
+/// Whether terminal serialization can be acquired at this instant.
+///
+/// Test-only lock-order oracle: a node retirement paused at the scheduler's
+/// Parker acquisition must report `true`.
+#[cfg(test)]
+pub(crate) unsafe fn terminal_reclaim_lock_is_available_for_test(mb: *mut HewMailbox) -> bool {
+    if mb.is_null() {
+        return true;
+    }
+    // SAFETY: caller keeps the mailbox live for this observation.
+    let mailbox = unsafe { &*mb };
+    match mailbox.terminal_reclaiming.try_lock() {
+        Ok(_guard) => true,
+        Err(std::sync::TryLockError::Poisoned(_)) => true,
+        Err(std::sync::TryLockError::WouldBlock) => false,
+    }
+}
+
 /// Free a [`HewMsgNode`] and its payload.
 ///
 /// # Safety

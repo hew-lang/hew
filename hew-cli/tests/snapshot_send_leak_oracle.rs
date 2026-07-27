@@ -5,8 +5,7 @@
 mod support;
 
 use support::leak_slope::{
-    assert_frame_slope_below_tolerance, compile_to_native, leaks_supported, measure_leaks,
-    run_under_malloc_scribble,
+    assert_frame_slope_below_tolerance, compile_to_native, measure_leaks, run_under_malloc_scribble,
 };
 use support::{describe_output, require_codegen};
 
@@ -236,21 +235,37 @@ fn main() -> i64 {{
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn snapshot_send_fanout_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("snapshot-send-fanout", fanout_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn snapshot_send_last_use_transfer_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("snapshot-send-last-use", last_use_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn snapshot_send_projection_source_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("snapshot-send-projection", projection_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn snapshot_send_projection_source_recover_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -259,11 +274,19 @@ fn snapshot_send_projection_source_recover_has_flat_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn snapshot_send_borrowed_resend_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("snapshot-send-borrowed-resend", borrowed_resend_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn snapshot_send_fanout_is_scribble_clean_with_exact_output() {
     require_codegen();
@@ -287,6 +310,10 @@ fn snapshot_send_fanout_is_scribble_clean_with_exact_output() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn snapshot_send_projection_source_is_scribble_clean_with_exact_output() {
     require_codegen();
@@ -314,6 +341,10 @@ fn snapshot_send_projection_source_is_scribble_clean_with_exact_output() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn snapshot_send_projection_source_recover_is_scribble_clean_with_exact_output() {
     require_codegen();
@@ -341,6 +372,10 @@ fn snapshot_send_projection_source_recover_is_scribble_clean_with_exact_output()
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn snapshot_send_borrowed_resend_is_owned_scribble_clean_and_leak_free() {
     require_codegen();
@@ -369,13 +404,10 @@ fn snapshot_send_borrowed_resend_is_owned_scribble_clean_and_leak_free() {
         describe_output(&output)
     );
 
-    if leaks_supported("snapshot-send-borrowed-resend-exact") {
-        if let Some(leaks) = measure_leaks(&bin) {
-            assert_eq!(
-                leaks, 0,
-                "the borrowed resend snapshot and retained source must both be dropped \
-                 exactly once; observed {leaks} leaked allocation(s)"
-            );
-        }
-    }
+    let leaks = measure_leaks(&bin);
+    assert_eq!(
+        leaks, 0,
+        "the borrowed resend snapshot and retained source must both be dropped \
+         exactly once; observed {leaks} leaked allocation(s)"
+    );
 }

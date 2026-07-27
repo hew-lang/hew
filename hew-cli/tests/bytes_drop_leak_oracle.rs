@@ -49,6 +49,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -422,60 +424,6 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and
-/// return `Some(leak_count)` when `leaks` produced a usable report.
-/// Parses the canonical `Process <pid>: N leak(s) for B total leaked
-/// bytes.` summary (both singular and plural forms).
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
 /// Build the shape at `low_frames` and `high_frames`, measure leak NODE
 /// counts, and assert the delta stays within `SLOPE_TOLERANCE`.
 fn assert_frame_slope_below_tolerance(
@@ -484,18 +432,7 @@ fn assert_frame_slope_below_tolerance(
     low_frames: usize,
     high_frames: usize,
 ) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -515,12 +452,8 @@ fn assert_frame_slope_below_tolerance(
         &format!("{shape_name}_high"),
     );
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "{shape_name}: low_frames={low_frames} low_leaks={low_leaks} \
@@ -554,6 +487,10 @@ fn assert_frame_slope_below_tolerance(
 /// post-fix the per-iteration buffer is released on every back-edge.
 /// Reverting either the `derive_local_bytes_drop_allowed` admission or
 /// the codegen `CowHeap`-Bytes intercept fails this by ~47 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_local_loop_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -571,6 +508,10 @@ fn bytes_local_loop_no_per_frame_leak_slope() {
 /// sender-side drop would be a use-after-free against the actor's
 /// mailbox copy, surfacing as a crash under the poisoned-allocator
 /// triple before any leak count is read).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_state_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -585,6 +526,10 @@ fn bytes_state_overwrite_no_per_frame_leak_slope() {
 /// overwrite shape at 100 re-stores. Pre-fix this leaks ~100 nodes;
 /// post-fix it holds at the LOW-probe count. This is the durable pin
 /// for the old-value release in `lower_actor_state_field_store`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_state_overwrite_long_run_holds_flat() {
     assert_frame_slope_below_tolerance(
@@ -595,6 +540,10 @@ fn bytes_state_overwrite_long_run_holds_flat() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_field_load_share_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -605,6 +554,10 @@ fn bytes_field_load_share_no_per_frame_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_container_element_read_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -615,6 +568,10 @@ fn bytes_container_element_read_no_per_frame_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_live_local_coown_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -625,6 +582,10 @@ fn bytes_live_local_coown_no_per_frame_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_duplicating_return_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -641,6 +602,10 @@ fn bytes_duplicating_return_no_per_frame_leak_slope() {
 /// exactly once by the caller); an OVER-retain would leak per frame and fail
 /// the slope. Pre-fix the double-free is a UAF/abort (macOS `leaks` is blind to
 /// the underflow; the Linux `ASan` fixture is the authoritative double-free gate).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_param_coown_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -655,6 +620,10 @@ fn bytes_param_coown_no_per_frame_leak_slope() {
 /// The surviving local co-owner must retain so its scope-exit drop does not
 /// double-free the returned buffer. Post-fix holds flat; same balance-vs-leak
 /// gate as fixture G.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_owned_partner_escape_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -670,6 +639,10 @@ fn bytes_owned_partner_escape_no_per_frame_leak_slope() {
 /// temp had no drop on any edge); post-fix the nested-fresh-bytes-temp splice
 /// releases it once after the borrow. Reverting either the collector's
 /// admission or the apply splice fails this by ~47 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_usercall_transient_receiver_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -683,6 +656,10 @@ fn bytes_usercall_transient_receiver_no_per_frame_leak_slope() {
 /// Fixture I2: an unnamed user-call `bytes` result borrowed by a
 /// `Terminator::Call` method (`mk().get(0)`). Pre-fix slope 1.0 leak/frame;
 /// post-fix the terminator-use splice releases it at the continuation.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_usercall_transient_terminator_use_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -696,6 +673,10 @@ fn bytes_usercall_transient_terminator_use_no_per_frame_leak_slope() {
 /// Fixture J: a discarded user-call `bytes` result (`mk();`). Pre-fix slope 1.0
 /// leak/frame; post-fix the discard splice drops it at the producer's
 /// continuation. Holds flat.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_usercall_discarded_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -712,6 +693,10 @@ fn bytes_usercall_discarded_no_per_frame_leak_slope() {
 /// post-fix the `FreshOwnedBytes` contract admits the transient and the splice
 /// releases it once after the borrow. Reverting the contract or the collector
 /// gate relaxation fails this by ~47 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_slice_transient_receiver_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -728,6 +713,10 @@ fn bytes_slice_transient_receiver_no_per_frame_leak_slope() {
 /// producer-side drop of any of those (mis-admitting a `Move`/return/record
 /// ingress as a borrowing use) would free a buffer the real owner also frees —
 /// a crash or scribbled value before the checksum prints.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_usercall_escape_shapes_run_clean_under_malloc_scribble() {
     require_codegen();

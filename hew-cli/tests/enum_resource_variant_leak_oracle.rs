@@ -4,9 +4,10 @@ mod support;
 
 use std::fmt::Write as _;
 use std::path::Path;
-use std::process::Command;
 
-use support::leak_slope::{compile_to_native, leaks_supported, run_under_malloc_scribble};
+use support::leak_slope::{
+    compile_to_native, measure_leaks_exact, require_leaks_tool, run_under_malloc_scribble,
+};
 use support::{describe_output, require_codegen};
 
 const RESOURCE_FRAMES: usize = 8;
@@ -58,55 +59,9 @@ fn main() {\n\
     }\n\
 }\n";
 
-fn measure_leaks_exact(bin: &Path) -> Option<(usize, usize)> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    for line in report.lines() {
-        let Some(rest) = line.strip_prefix("Process ") else {
-            continue;
-        };
-        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let Some(summary) = rest.split_once(": ").map(|(_, summary)| summary) else {
-            continue;
-        };
-        if !summary.contains(" leak") || !summary.contains(" for ") {
-            continue;
-        }
-        let mut words = summary.split_whitespace();
-        let count = words.next()?.parse().ok()?;
-        let _ = words.next();
-        let _ = words.next();
-        let bytes = words.next()?.parse().ok()?;
-        return Some((count, bytes));
-    }
-    None
-}
-
 fn assert_exact_zero_leaks(bin: &Path, shape: &str) {
-    if !leaks_supported(shape) {
-        return;
-    }
-    let Some((count, bytes)) = measure_leaks_exact(bin) else {
-        return;
-    };
+    require_leaks_tool();
+    let (count, bytes) = measure_leaks_exact(bin);
     assert_eq!(
         (count, bytes),
         (0, 0),
@@ -117,6 +72,10 @@ fn assert_exact_zero_leaks(bin: &Path, shape: &str) {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn resource_record_enum_payload_closes_exactly_once() {
     require_codegen();
@@ -176,6 +135,10 @@ fn resource_record_enum_payload_closes_exactly_once() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn xml_string_return_temporary_is_released() {
     require_codegen();

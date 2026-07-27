@@ -62,11 +62,19 @@ fn main() {{
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn weak_back_edge_replacement_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("rc-weak-cycle", cycle_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn weak_back_edge_replacement_is_scribble_clean_with_exact_output() {
     require_codegen();

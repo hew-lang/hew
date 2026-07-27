@@ -49,6 +49,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -225,81 +227,11 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
-/// macOS + `leaks(1)` availability guard shared by every leak probe.
-fn leaks_available(shape_name: &str) -> bool {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return false;
-    }
-    let avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-    }
-    avail
-}
-
 /// Compile + measure `fixture` against the no-index control and assert the
 /// fixture sits at the control's allocation floor (within `FLOOR_TOLERANCE`).
 /// A pre-fix index-temp leak puts the fixture `COMPARE_COUNT` nodes above.
 fn assert_no_constant_leak_over_control(shape_name: &str, fixture_source: &str) {
-    if !leaks_available(shape_name) {
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -310,12 +242,8 @@ fn assert_no_constant_leak_over_control(shape_name: &str, fixture_source: &str) 
     let control_bin = compile_to_native(&control_named_local_source(), dir.path(), "control");
     let fixture_bin = compile_to_native(fixture_source, dir.path(), shape_name);
 
-    let Some(control_leaks) = measure_leaks(&control_bin) else {
-        return;
-    };
-    let Some(fixture_leaks) = measure_leaks(&fixture_bin) else {
-        return;
-    };
+    let control_leaks = measure_leaks(&control_bin);
+    let fixture_leaks = measure_leaks(&fixture_bin);
 
     eprintln!(
         "{shape_name}: control_leaks={control_leaks} fixture_leaks={fixture_leaks} \
@@ -339,6 +267,10 @@ fn assert_no_constant_leak_over_control(shape_name: &str, fixture_source: &str) 
 /// `xs[0] == "needle"` -- the primary leaking shape. Pre-fix this stood
 /// `COMPARE_COUNT` nodes above the no-index control; post-fix it sits at the
 /// floor. Reverting the admission arm fails this by ~`COMPARE_COUNT` nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_string_index_eq_compare_no_constant_leak() {
     assert_no_constant_leak_over_control("index_eq_compare", &index_eq_compare_source());
@@ -347,6 +279,10 @@ fn vec_string_index_eq_compare_no_constant_leak() {
 /// `!=` and the `< <= > >=` ordering family flow through the same borrowing
 /// `IntCmp` codegen path; a fresh `xs[0]` temp into any of them must be
 /// released. Pins the admission covers the whole compare family.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_string_index_mixed_compare_no_constant_leak() {
     assert_no_constant_leak_over_control("index_mixed_compare", &index_mixed_compare_source());
@@ -355,6 +291,10 @@ fn vec_string_index_mixed_compare_no_constant_leak() {
 /// Owned array-repeat `["hello"; 8]` must release every cloned element at
 /// scope exit -- the leak-clean gate. Compared against the same
 /// no-index control floor.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn array_repeat_string_clone_no_leak() {
     assert_no_constant_leak_over_control("array_repeat_string", &array_repeat_string_source());
@@ -363,7 +303,12 @@ fn array_repeat_string_clone_no_leak() {
 /// No-double-free pin: the index-into-compare temp must be released EXACTLY
 /// once. A double-free of the retained temp (or a free of the Vec's own
 /// element) crashes under the poisoned-allocator triple; the `println(xs[i])`
-/// and scalar `[7;3]` paths must stay clean (no over-drop). Runs on any unix.
+/// and scalar `[7;3]` paths must stay clean (no over-drop). Runs on macOS,
+/// whose allocator honors this Darwin-specific poisoned-allocator triple.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn index_compare_release_is_exactly_once_under_malloc_scribble() {
     require_codegen();

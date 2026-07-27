@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 use support::leak_slope::{
-    compile_to_native, leaks_supported, measure_leaks, run_under_malloc_scribble,
+    compile_to_native, measure_leaks, require_leaks_tool, run_under_malloc_scribble,
 };
 use support::{describe_output, require_codegen};
 
@@ -380,15 +380,15 @@ fn run_exact(bin: &Path, expected: &str) {
 }
 
 fn assert_zero_leaks(bin: &Path, shape: &str) {
-    if !leaks_supported(shape) {
-        return;
-    }
-    let Some(leaks) = measure_leaks(bin) else {
-        return;
-    };
+    require_leaks_tool();
+    let leaks = measure_leaks(bin);
     assert_eq!(leaks, 0, "{shape} leaked {leaks} allocation(s)");
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generator_env_clone_direct_and_control_have_zero_leaks() {
     require_codegen();
@@ -412,6 +412,10 @@ fn generator_env_clone_direct_and_control_have_zero_leaks() {
     assert_zero_leaks(&control, "generator-env-clone-control");
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generator_closure_env_clone_has_zero_leaks() {
     require_codegen();
@@ -428,6 +432,10 @@ fn generator_closure_env_clone_has_zero_leaks() {
     assert_zero_leaks(&bin, "generator-closure-env-clone");
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generator_actor_state_env_clone_has_zero_leaks() {
     require_codegen();
@@ -444,6 +452,10 @@ fn generator_actor_state_env_clone_has_zero_leaks() {
     assert_zero_leaks(&bin, "generator-actor-state-env-clone");
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generator_and_closure_env_clone_are_malloc_scribble_clean() {
     require_codegen();

@@ -5034,7 +5034,7 @@ pub enum Instr {
     /// ## Why not `RecordFieldLoad` + `Drop`?
     ///
     /// Two reasons, both pointing at `RecordFieldDrop` as the canonical
-    /// in-place field destructor for single-pointer COW fields:
+    /// in-place field destructor for COW fields:
     ///
     /// 1. `RecordFieldLoad` retains `string` fields via `hew_string_clone` to
     ///    avoid aliasing the parent record's buffer. When the caller
@@ -5047,18 +5047,18 @@ pub enum Instr {
     ///    but that is an incidental consequence of the not-yet-landed
     ///    retain-on-share spine. When that spine lands and `RecordFieldLoad`
     ///    starts retaining those types too, a `load` + `Drop` here would silently
-    ///    regress to a leak. Routing every single-pointer COW field through
-    ///    `RecordFieldDrop` (raw load, never retained) is robust against that
-    ///    future change and additionally null-stores the freed slot.
+    ///    regress to a leak. Routing every COW field through `RecordFieldDrop`
+    ///    (raw owning-word load, never retained) is robust against that future
+    ///    change and additionally null-stores the freed slot.
     ///
     /// ## Scope
     ///
     /// Emitted only by functional-update lowering
     /// (`HirExprKind::StructInit { base: Some(_) }`) to release each overridden
     /// owned field of `base` before the new `RecordInit` is constructed.  The
-    /// field domain is every SINGLE-POINTER COW-heap type — `string`, `Vec<T>`,
+    /// field domain is every COW-heap leaf — `string`, `bytes`, `Vec<T>`,
     /// `HashMap`, `HashSet`, and the `Generator` / `AsyncGenerator` companion
-    /// handle (see `field_override_uses_record_field_drop` in `lower.rs`).  All
+    /// handle (see `field_override_uses_record_field_drop` in `lower.rs`). All
     /// three exit contexts (sync return, async cancel, actor shutdown) are
     /// covered: the instruction is positioned in the basic block that executes
     /// on the hot path, and any error path that bypasses the functional-update
@@ -5072,24 +5072,27 @@ pub enum Instr {
     /// `ty` and `drop_fn` must be mutually consistent: `ty == ResolvedTy::String`
     /// pairs with `DropFnSpec::Release("hew_string_drop")`, a
     /// `Vec`-typed field with `Release("hew_vec_free")` / `"hew_vec_free_owned"`,
-    /// etc.  Codegen validates congruence and fails closed on a mismatch.
+    /// etc. The MIR `project_field_inline_drop_symbol` decision is the symbol
+    /// authority. Codegen validates the closed symbol set and the narrow Bytes
+    /// ABI congruence in both directions; it does not rebuild a second
+    /// same-pointer release table.
     ///
     /// ## Bytes fields
     ///
-    /// `bytes` fields are **not** lowered via this instruction.  `bytes` is a fat
-    /// `{ ptr, len, cap }` triple, not a single pointer, so its destructor takes
-    /// the whole by-value value and cannot be expressed as a single-slot GEP +
-    /// pointer-load + release.  `bytes` overrides stay on the `RecordFieldLoad` +
-    /// `Instr::Drop` path (which materialises the fat value into a temp).  Codegen
-    /// fails closed if a non-pointer field slot ever reaches this instruction.
+    /// `bytes` fields are lowered via this instruction. `bytes` is a fat
+    /// `{ ptr, offset, len }` triple whose data pointer is the sole owning word;
+    /// codegen GEPs through the live record field to field 0, calls
+    /// `hew_bytes_drop(data_ptr)`, then null-stores that same live word. It
+    /// fails closed unless the carried type, symbol, and exact LLVM slot shape
+    /// all agree on this Bytes contract.
     RecordFieldDrop {
         /// The record value whose field is to be dropped.
         record: Place,
         /// 0-based index of the field within the record's declared field order.
         field_offset: FieldOffset,
         /// Hew type of the field being dropped.  Must match the field's declared
-        /// type in the record; used by codegen to resolve the LLVM slot type and
-        /// to validate `drop_fn` congruence.
+        /// type in the record; used by codegen to validate the Bytes
+        /// type/symbol/slot ABI congruence.
         ty: ResolvedTy,
         /// The release ritual to call.  Must be `DropFnSpec::Release` carrying
         /// a known COW-heap release symbol (e.g. `"hew_string_drop"`).
@@ -5155,8 +5158,8 @@ pub enum Instr {
     ///
     /// ## Scope
     ///
-    /// `RecordFieldDrop` is NOT widened by this op: its leaf-COW congruence
-    /// assert and functional-update contract stay narrow.  This op covers
+    /// `RecordFieldDrop` is NOT widened by this op: its literal-symbol
+    /// functional-update contract and exact Bytes ABI guard stay narrow. This op covers
     /// record AND tuple parents with one field-address selector and is the
     /// discharge primitive for partial ownership consumption (a pattern, an
     /// escape, or a lost delivery consuming part of an owned aggregate).

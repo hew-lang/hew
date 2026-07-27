@@ -26,6 +26,10 @@ fn explicit_close_loop_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn regex_pattern_explicit_close_has_no_per_iteration_leak() {
     assert_frame_slope_below_tolerance("regex_pattern_explicit_close", explicit_close_loop_source);
@@ -53,6 +57,10 @@ fn literal_close_loop_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn regex_pattern_literal_close_has_no_per_iteration_leak() {
     assert_frame_slope_below_tolerance("regex_pattern_literal_close", literal_close_loop_source);

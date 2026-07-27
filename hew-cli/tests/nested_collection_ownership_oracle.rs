@@ -180,6 +180,10 @@ fn actor_nested_hashmap_source(rows: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn local_indexed_inner_iteration_frees_each_vec_once() {
     require_codegen();
@@ -204,11 +208,19 @@ fn local_indexed_inner_iteration_frees_each_vec_once() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_nested_vec_teardown_has_no_per_row_leak_slope() {
     assert_frame_slope_below_tolerance("actor_nested_vec_teardown", actor_nested_vec_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn local_outer_iteration_borrows_each_inner_vec() {
     require_codegen();
@@ -229,6 +241,10 @@ fn local_outer_iteration_borrows_each_inner_vec() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_single_inner_vec_teardown_runs_clean() {
     require_codegen();
@@ -249,6 +265,10 @@ fn actor_single_inner_vec_teardown_runs_clean() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_state_outer_iteration_has_no_per_row_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -257,6 +277,10 @@ fn actor_state_outer_iteration_has_no_per_row_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_nested_hashmap_teardown_has_no_per_row_leak_slope() {
     assert_frame_slope_below_tolerance(

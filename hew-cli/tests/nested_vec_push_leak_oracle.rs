@@ -183,6 +183,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// of the five congruent classifiers (so the push falls back to
 /// `hew_vec_push_ptr`) fails this — pre-fix the binary aborts on the
 /// double-free or prints empty/scribbled cells.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_vec_string_reuse_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -195,6 +199,10 @@ fn vec_vec_string_reuse_exact_contents_under_malloc_scribble() {
 /// `Vec<HashMap<..>>` breadth pin: each stored map must round-trip its own
 /// entry value under the poisoned allocator. Guards the `HashMap` arm of the
 /// collection clone/drop thunk selection.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_hashmap_reuse_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -208,6 +216,10 @@ fn vec_hashmap_reuse_exact_contents_under_malloc_scribble() {
 /// must not grow the leak-node count with the frame count. Post-fix the outer
 /// drop runs the synthesized element drop thunk, releasing each inner handle,
 /// buffer, and element string. A no-op drop thunk would show a per-frame slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_vec_string_outer_drop_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("vec_vec_string_drop_loop", vec_vec_string_drop_loop_source);

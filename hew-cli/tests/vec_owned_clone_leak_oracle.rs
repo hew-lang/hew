@@ -145,6 +145,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// per-frame leak slope is flat. Reverting the `hew_vec_clone_owned` classifier
 /// entry re-excludes the receiver and grows the leak ~6 nodes/frame, ~282 NODES
 /// over the 47-frame delta — far above the +5 tolerance.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_vec_clone_receiver_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -155,6 +159,10 @@ fn owned_vec_clone_receiver_no_per_frame_leak_slope() {
 
 /// Deep-clone independence + no-double-free: mutating the clone leaves the
 /// original intact and both handles release once under the poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_vec_clone_independent_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(

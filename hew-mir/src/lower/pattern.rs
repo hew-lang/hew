@@ -1006,10 +1006,11 @@ impl Builder {
                 // cannot drift. The dispatch checks the closure-pair bucket
                 // FIRST, mirroring codegen's `resolved_ty_cow_heap_release` (see
                 // `classify_vec_element_release`'s order doc; both
-                // authorities are documented to agree —
-                // `dedup-semantic-boundary`, `is_known_cow_heap_drop_symbol`
-                // / the RecordFieldDrop congruence assert reject a
-                // mis-picked symbol fail-closed). The classification runs on
+                // authorities are documented to agree. RecordFieldDrop
+                // validates the closed symbol set plus the one distinct slot
+                // ABI (`Bytes` iff `hew_bytes_drop` over the exact triple),
+                // rather than rebuilding this same-pointer table in codegen
+                // (`dedup-semantic-boundary`). The classification runs on
                 // the SUBSTITUTED element (this match substitutes before
                 // dispatching; the generator-yield picker classifies the raw
                 // type — the asymmetry is pinned by

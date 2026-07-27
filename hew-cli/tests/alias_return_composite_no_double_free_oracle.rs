@@ -165,31 +165,55 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn passthrough_alias_return_does_not_double_free() {
     assert_no_double_free("passthrough", &passthrough_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn conditional_alias_return_does_not_double_free() {
     assert_no_double_free("conditional", &conditional_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn getfield_alias_return_does_not_double_free() {
     assert_no_double_free("getfield", &getfield_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn reassign_alias_return_does_not_double_free() {
     assert_no_double_free("reassign", &reassign_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn letparam_alias_return_does_not_double_free() {
     assert_no_double_free("letparam", &letparam_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn array_of_param_does_not_double_free() {
     assert_no_double_free("array_of_param", &array_of_param_source(50));

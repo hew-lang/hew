@@ -41,7 +41,7 @@ use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox::{self, hew_mailbox_has_messages, hew_msg_node_free, HewMailbox};
 use crate::mailbox_header::{HewSysMsg, Origin};
 use crate::set_last_error;
-use crate::util::MutexExt;
+use crate::util::{CondvarExt, MutexExt};
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -228,6 +228,61 @@ impl ActivationPreTerminalLockHookGuard {
 impl Drop for ActivationPreTerminalLockHookGuard {
     fn drop(&mut self) {
         ACTIVATION_PRE_TERMINAL_LOCK_HOOK.access(|hook| *hook = None);
+    }
+}
+
+/// Fires after a worker's last ordinary queue probe and before it acquires its
+/// parker mutex. Tests enqueue and wake in this exact gap to pin the scheduler
+/// lost-wakeup interleaving deterministically.
+#[cfg(test)]
+static WORKER_PRE_PARK_HOOK: PoisonSafe<Option<fn()>> = PoisonSafe::new(None);
+
+/// Rendezvous after a wake selected a published parker but before it acquires
+/// the parker mutex. Used to prove terminal node retirement holds no mailbox
+/// serialization while entering the scheduler wake protocol.
+#[cfg(test)]
+type ParkerPreNotifyLockHook = (
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(test)]
+static PARKER_PRE_NOTIFY_LOCK_HOOK: PoisonSafe<Option<ParkerPreNotifyLockHook>> =
+    PoisonSafe::new(None);
+
+#[cfg(test)]
+pub(crate) struct ParkerPreNotifyLockHookGuard;
+
+#[cfg(test)]
+impl ParkerPreNotifyLockHookGuard {
+    pub(crate) fn install() -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        PARKER_PRE_NOTIFY_LOCK_HOOK.access(|hook| {
+            assert!(hook.is_none(), "Parker pre-notify hook already installed");
+            *hook = Some((entered.clone(), release.clone()));
+        });
+        (Self, entered, release)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ParkerPreNotifyLockHookGuard {
+    fn drop(&mut self) {
+        PARKER_PRE_NOTIFY_LOCK_HOOK.access(|hook| *hook = None);
+    }
+}
+
+#[cfg(test)]
+fn run_parker_pre_notify_lock_hook() {
+    let rendezvous = PARKER_PRE_NOTIFY_LOCK_HOOK.access(|hook| hook.clone());
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
     }
 }
 
@@ -490,6 +545,10 @@ pub(crate) struct Scheduler {
     global_queue: GlobalQueue,
     stealers: Vec<WorkStealer>,
     shutdown: AtomicBool,
+    /// Number of workers that published their parker state before the final
+    /// under-lock queue probe. Keeps the busy enqueue path from scanning every
+    /// parker when no worker can be waiting.
+    parked_workers: AtomicU64,
     /// Per-worker parking primitives. Each worker parks on its own
     /// `Mutex/Condvar` to avoid contention on a single global lock.
     parkers: Vec<Parker>,
@@ -512,6 +571,52 @@ impl Scheduler {
 struct Parker {
     mutex: Mutex<()>,
     cond: Condvar,
+    /// Published under `mutex` before the final queue probe and cleared under
+    /// the same mutex after wake/timeout or a refused park.
+    parked: AtomicBool,
+    /// Number of work-path notifications issued to this parker. Tests use this
+    /// to distinguish a real notification from a permitted spurious wake.
+    #[cfg(test)]
+    work_notifications: AtomicU64,
+}
+
+impl Parker {
+    /// Notify one waiter while participating in the waiter's mutex protocol.
+    ///
+    /// The worker probes queues again while holding this mutex. A notifier that
+    /// wins the mutex first publishes its queue write before that probe; a
+    /// notifier that arrives second cannot notify until `Condvar::wait_timeout`
+    /// has atomically registered the waiter and released the mutex.
+    fn notify_one(&self) {
+        let _guard = self.mutex.lock_or_recover();
+        self.cond.notify_one();
+    }
+
+    /// Notify this parker only if its worker is still registered as parked.
+    ///
+    /// The optimistic atomic read avoids taking unrelated parker mutexes while
+    /// scanning. The under-lock recheck closes the timeout/return race.
+    fn notify_one_if_parked(&self) -> bool {
+        if !self.parked.load(Ordering::SeqCst) {
+            return false;
+        }
+        #[cfg(test)]
+        run_parker_pre_notify_lock_hook();
+        let _guard = self.mutex.lock_or_recover();
+        if !self.parked.load(Ordering::SeqCst) {
+            return false;
+        }
+        #[cfg(test)]
+        self.work_notifications.fetch_add(1, Ordering::Relaxed);
+        self.cond.notify_one();
+        true
+    }
+
+    #[cfg(test)]
+    fn notify_all(&self) {
+        let _guard = self.mutex.lock_or_recover();
+        self.cond.notify_all();
+    }
 }
 
 // SAFETY: All fields are either `Sync` (`AtomicBool`, `Mutex`, `Condvar`,
@@ -608,6 +713,9 @@ pub extern "C" fn hew_sched_init() -> c_int {
         .map(|_| Parker {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
+            parked: AtomicBool::new(false),
+            #[cfg(test)]
+            work_notifications: AtomicU64::new(0),
         })
         .collect();
 
@@ -616,6 +724,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         global_queue,
         stealers,
         shutdown: AtomicBool::new(false),
+        parked_workers: AtomicU64::new(0),
         parkers,
         worker_count,
     });
@@ -745,7 +854,7 @@ fn teardown_workers(
         let sched = unsafe { &*sched_ptr };
         sched.shutdown.store(true, Ordering::Release);
         for parker in &sched.parkers {
-            parker.cond.notify_one();
+            parker.notify_one();
         }
     }
 
@@ -1282,11 +1391,41 @@ pub fn sched_try_wake() {
             clippy::cast_possible_truncation,
             reason = "modulo by worker_count keeps result within usize range"
         )]
-        let idx =
+        let start =
             (WAKE_COUNTER.fetch_add(1, Ordering::Relaxed) % sched.worker_count as u64) as usize;
         crate::observe::record_scheduler_unpark();
-        sched.parkers[idx].cond.notify_one();
+        let _ = notify_parked_worker(sched, start);
     }
+}
+
+/// Notify exactly one published parker, scanning from `start`.
+///
+/// Returns the selected worker id for deterministic scheduler tests.
+fn notify_parked_worker(sched: &Scheduler, start: usize) -> Option<usize> {
+    // With no published waiter, a worker racing toward park will observe the
+    // completed queue push in its final under-lock probe. The SeqCst hint
+    // participates in the same total order as the queue position publication
+    // and final `is_empty` probe, so the notifier and worker cannot both miss
+    // each other's publication. Avoid a mutex acquisition (and an
+    // O(worker_count) scan) on that busy path.
+    if sched.parked_workers.load(Ordering::SeqCst) == 0 {
+        return None;
+    }
+
+    // Round-robin supplies the scan origin, not an unchecked wake target: a
+    // busy worker has no waiter, so keep looking for an actually parked worker
+    // instead of dropping the notification on the busy parker.
+    for offset in 0..sched.worker_count {
+        let idx = (start + offset) % sched.worker_count;
+        if sched.parkers[idx].notify_one_if_parked() {
+            return Some(idx);
+        }
+    }
+
+    // Every waiter counted by the initial hint returned or timed out during the
+    // scan. Those workers are already re-probing queues, so no notification is
+    // required.
+    None
 }
 
 // ── Worker loop ─────────────────────────────────────────────────────────
@@ -1321,6 +1460,20 @@ impl Drop for LocalQueueRefDrain<'_> {
             // SAFETY: popping transfers the entry's queue reference.
             unsafe { release_scheduler_queue_ref(ptr.cast::<HewActor>()) };
         }
+    }
+}
+
+#[cfg(test)]
+struct PublishedParker<'a> {
+    sched: &'a Scheduler,
+    parker: &'a Parker,
+}
+
+#[cfg(test)]
+impl Drop for PublishedParker<'_> {
+    fn drop(&mut self) {
+        self.parker.parked.store(false, Ordering::SeqCst);
+        self.sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -1439,14 +1592,66 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
         // 4. Check if a signal-initiated shutdown needs to be started.
         crate::shutdown::check_signal_shutdown();
 
-        // 5. Park on per-worker condvar until notified or timeout.
-        let parker = &sched.parkers[id];
-        let guard = parker.mutex.lock_or_recover();
-        if sched.shutdown.load(Ordering::Acquire) {
+        // 5. Park on the per-worker condvar until notified or timeout. Queue
+        // state is probed once more under the same mutex wake notifiers acquire,
+        // closing the final-probe -> wait-registration lost-wakeup window.
+        if park_worker(sched, id, local, true) == WorkerParkOutcome::Shutdown {
             break;
         }
-        crate::observe::record_scheduler_park();
-        let _ = parker.cond.wait_timeout(guard, PARK_TIMEOUT);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerParkOutcome {
+    Shutdown,
+    WorkAvailable,
+    Notified,
+    TimedOut,
+}
+
+/// Park worker `id`, synchronizing queue publication with wait registration.
+///
+/// `probe_queues` exists solely for the deterministic counterfactual test. The
+/// production caller always passes `true`, which constant-folds the branch.
+fn park_worker(
+    sched: &Scheduler,
+    id: usize,
+    local: &WorkDeque,
+    probe_queues: bool,
+) -> WorkerParkOutcome {
+    #[cfg(test)]
+    if let Some(hook) = WORKER_PRE_PARK_HOOK.access(|hook| *hook) {
+        hook();
+    }
+
+    let parker = &sched.parkers[id];
+    let guard = parker.mutex.lock_or_recover();
+    parker.parked.store(true, Ordering::SeqCst);
+    sched.parked_workers.fetch_add(1, Ordering::SeqCst);
+
+    if sched.shutdown.load(Ordering::Acquire) {
+        parker.parked.store(false, Ordering::SeqCst);
+        sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
+        return WorkerParkOutcome::Shutdown;
+    }
+    if probe_queues
+        && (!local.is_empty()
+            || !sched.global_queue.is_empty()
+            || sched.stealers.iter().any(|stealer| !stealer.is_empty()))
+    {
+        parker.parked.store(false, Ordering::SeqCst);
+        sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
+        return WorkerParkOutcome::WorkAvailable;
+    }
+
+    crate::observe::record_scheduler_park();
+    let (_guard, result) = parker.cond.wait_timeout_or_recover(guard, PARK_TIMEOUT);
+    parker.parked.store(false, Ordering::SeqCst);
+    sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
+    if result.timed_out() {
+        WorkerParkOutcome::TimedOut
+    } else {
+        WorkerParkOutcome::Notified
     }
 }
 
@@ -3536,12 +3741,15 @@ pub(crate) fn worker_less_scheduler() -> Scheduler {
         parkers: vec![Parker {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
+            parked: AtomicBool::new(false),
+            work_notifications: AtomicU64::new(0),
         }],
         stealers: Vec::new(),
         worker_handles: PoisonSafe::new(Vec::new()),
         // SAFETY: single-threaded test setup with scheduler-owned queue state.
         global_queue: unsafe { crate::deque::GlobalQueue::new() },
         shutdown: AtomicBool::new(false),
+        parked_workers: AtomicU64::new(0),
     }
 }
 
@@ -3724,6 +3932,23 @@ impl NoWorkerSchedulerForTest {
         activate_queued_actor(actor);
         true
     }
+
+    /// Run `f` while worker zero is published as parked and its Parker mutex is
+    /// held, matching the lock side of #2847's wake protocol.
+    #[allow(
+        clippy::unused_self,
+        reason = "receiver ties Parker publication to the installed scheduler guard lifetime"
+    )]
+    pub(crate) fn with_first_parker_published<R>(&self, f: impl FnOnce() -> R) -> R {
+        let sched = get_scheduler().expect("test scheduler installed");
+        let parker = &sched.parkers[0];
+        let _guard = parker.mutex.lock_or_recover();
+        parker.parked.store(true, Ordering::SeqCst);
+        sched.parked_workers.fetch_add(1, Ordering::SeqCst);
+
+        let _published = PublishedParker { sched, parker };
+        f()
+    }
 }
 
 #[cfg(test)]
@@ -3738,7 +3963,7 @@ impl Drop for NoWorkerSchedulerForTest {
             // ones so they re-check promptly rather than waiting out PARK_TIMEOUT.
             installed.scheduler.shutdown.store(true, Ordering::Release);
             for parker in &installed.scheduler.parkers {
-                parker.cond.notify_all();
+                parker.notify_all();
             }
             // Deterministic drain (replaces the old timing-based sleep): spin
             // until every worker that entered the loop body bound to this
@@ -4077,6 +4302,23 @@ mod tests {
         }
     }
 
+    struct WorkerPreParkHookGuard;
+
+    impl WorkerPreParkHookGuard {
+        fn install(hook: fn()) -> Self {
+            WORKER_PRE_PARK_HOOK.access(|h| {
+                assert!(h.replace(hook).is_none(), "test hook already installed");
+            });
+            Self
+        }
+    }
+
+    impl Drop for WorkerPreParkHookGuard {
+        fn drop(&mut self) {
+            WORKER_PRE_PARK_HOOK.access(|h| *h = None);
+        }
+    }
+
     /// Helper: build a minimal `HewActor` with sensible defaults.
     fn stub_actor() -> HewActor {
         HewActor {
@@ -4193,6 +4435,110 @@ mod tests {
         assert_eq!(
             actor.actor_state.load(Ordering::Acquire),
             HewActorState::Idle as i32
+        );
+    }
+
+    /// #2830: a queue publication and wake in the worker's final-probe ->
+    /// wait-registration gap must not be lost. The hook pins that exact gap:
+    /// it enqueues first, then `sched_try_wake` observes that no worker has
+    /// published a park yet. The fixed final probe sees the work and never
+    /// enters `wait_timeout`; omitting only that probe enters the wait with the
+    /// work still stranded. A condvar may wake spuriously, so the negative
+    /// control also records real work-path notifications rather than requiring
+    /// an exact timeout result.
+    #[test]
+    fn pre_park_enqueue_and_wake_cannot_be_lost() {
+        static PRE_PARK_ACTOR: AtomicPtr<HewActor> = AtomicPtr::new(ptr::null_mut());
+
+        fn enqueue_in_final_probe_gap() {
+            sched_enqueue(PRE_PARK_ACTOR.load(Ordering::Acquire));
+        }
+
+        let sched_guard = NoWorkerSchedulerForTest::install();
+        let actor = stub_actor();
+        let actor_ptr = (&raw const actor).cast_mut();
+        PRE_PARK_ACTOR.store(actor_ptr, Ordering::Release);
+        let _hook = WorkerPreParkHookGuard::install(enqueue_in_final_probe_gap);
+        // SAFETY: the local deque stores no pointers in this test.
+        let (local, _stealer) = unsafe { WorkDeque::new() };
+        let sched = get_scheduler().expect("test scheduler installed");
+
+        assert_eq!(
+            park_worker(sched, 0, &local, true),
+            WorkerParkOutcome::WorkAvailable,
+            "the mutex-synchronized final probe must observe runnable work without waiting"
+        );
+        assert_eq!(
+            sched_guard.pop_global(),
+            Some(actor_ptr),
+            "the fixed path must leave the exact enqueued work for the next worker-loop probe"
+        );
+
+        let notifications_before = sched.parkers[0].work_notifications.load(Ordering::Relaxed);
+        let counterfactual = park_worker(sched, 0, &local, false);
+        assert!(
+            matches!(
+                counterfactual,
+                WorkerParkOutcome::TimedOut | WorkerParkOutcome::Notified
+            ),
+            "counterfactual omission must enter the condvar wait instead of observing work; \
+             got {counterfactual:?}"
+        );
+        assert_eq!(
+            sched.parkers[0].work_notifications.load(Ordering::Relaxed),
+            notifications_before,
+            "the pre-publication wake must not issue a real parker notification; \
+             a Notified outcome here can only be a permitted spurious wake"
+        );
+        assert_eq!(
+            sched_guard.pop_global(),
+            Some(actor_ptr),
+            "the counterfactual wait must leave the runnable work stranded until the late probe"
+        );
+        PRE_PARK_ACTOR.store(ptr::null_mut(), Ordering::Release);
+    }
+
+    /// #2830 busy-target strand: round-robin may start at a worker that is
+    /// running user code while a peer is already parked. The old direct-index
+    /// notify had no waiter and left the peer asleep until `PARK_TIMEOUT`.
+    ///
+    /// Published parker state makes the selection deterministic: starting at
+    /// busy worker 1 skips it and notifies exactly parked worker 0. Returning
+    /// one id (rather than broadcasting) pins the no-thundering-herd contract.
+    #[test]
+    fn wake_scan_skips_busy_target_for_parked_peer() {
+        let sched = Scheduler {
+            worker_count: 2,
+            parkers: vec![
+                Parker {
+                    mutex: Mutex::new(()),
+                    cond: Condvar::new(),
+                    parked: AtomicBool::new(true),
+                    work_notifications: AtomicU64::new(0),
+                },
+                Parker {
+                    mutex: Mutex::new(()),
+                    cond: Condvar::new(),
+                    parked: AtomicBool::new(false),
+                    work_notifications: AtomicU64::new(0),
+                },
+            ],
+            stealers: Vec::new(),
+            worker_handles: PoisonSafe::new(Vec::new()),
+            // SAFETY: no values are stored in this local scheduler queue.
+            global_queue: unsafe { GlobalQueue::new() },
+            shutdown: AtomicBool::new(false),
+            parked_workers: AtomicU64::new(1),
+        };
+
+        assert!(
+            !sched.parkers[1].notify_one_if_parked(),
+            "counterfactual direct round-robin target has no waiter and drops the wake"
+        );
+        assert_eq!(
+            notify_parked_worker(&sched, 1),
+            Some(0),
+            "wake scan must skip the busy start worker and select exactly the parked peer"
         );
     }
 
@@ -6564,12 +6910,15 @@ mod tests {
             parkers: vec![Parker {
                 mutex: Mutex::new(()),
                 cond: Condvar::new(),
+                parked: AtomicBool::new(false),
+                work_notifications: AtomicU64::new(0),
             }],
             stealers: Vec::new(),
             worker_handles: PoisonSafe::new(Vec::new()),
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
+            parked_workers: AtomicU64::new(0),
         };
         let _rt_ptr = install_scheduler_for_test(sched);
 
@@ -6610,6 +6959,8 @@ mod tests {
         let parker = Parker {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
+            parked: AtomicBool::new(false),
+            work_notifications: AtomicU64::new(0),
         };
         let sched = Scheduler {
             worker_count: 1,
@@ -6619,6 +6970,7 @@ mod tests {
             // SAFETY: no preconditions for GlobalQueue::new().
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
+            parked_workers: AtomicU64::new(0),
         };
         let _rt_ptr = install_scheduler_for_test(sched);
 
@@ -6675,12 +7027,15 @@ mod tests {
             parkers: vec![Parker {
                 mutex: Mutex::new(()),
                 cond: Condvar::new(),
+                parked: AtomicBool::new(false),
+                work_notifications: AtomicU64::new(0),
             }],
             stealers: Vec::new(),
             worker_handles: PoisonSafe::new(Vec::new()),
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
+            parked_workers: AtomicU64::new(0),
         };
         let rt_ptr = install_scheduler_for_test(sched);
         // Stable borrow of the installed scheduler for this test's field reads;
@@ -7017,6 +7372,8 @@ mod tests {
         let parker = Parker {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
+            parked: AtomicBool::new(false),
+            work_notifications: AtomicU64::new(0),
         };
         // SAFETY: single-threaded test setup; the deque lives for the whole test.
         let (queued_work, queued_stealer) = unsafe { crate::deque::WorkDeque::new() };
@@ -7028,6 +7385,7 @@ mod tests {
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
+            parked_workers: AtomicU64::new(0),
         };
         let rt_ptr = install_scheduler_for_test(sched);
         // Stable borrow of the installed scheduler; valid until teardown below.
@@ -7114,6 +7472,8 @@ mod tests {
         let parker = Parker {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
+            parked: AtomicBool::new(false),
+            work_notifications: AtomicU64::new(0),
         };
         let sched = Scheduler {
             worker_count: 1,
@@ -7123,6 +7483,7 @@ mod tests {
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
+            parked_workers: AtomicU64::new(0),
         };
         let rt_ptr = install_scheduler_for_test(sched);
         // Stable borrow of the installed scheduler; valid until teardown below.

@@ -541,9 +541,10 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
 /// cleanup sweep. Used by `actor::retire_parked_activations`, which must run
 /// before the sweep but must not take the actors from it.
 ///
-/// Safe to call only once worker threads are joined: the returned pointers are
-/// unpinned, so a concurrent free would dangle them.
-#[cfg(not(target_arch = "wasm32"))]
+/// On native, safe to call only once worker threads are joined: the returned
+/// pointers are unpinned, so a concurrent free would dangle them. On WASM the
+/// caller must own the single cooperative thread with no activation in
+/// progress.
 pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
     with_live_actors_opt(|map| {
         map.as_ref()

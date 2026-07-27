@@ -108,7 +108,9 @@ pub fn leak_check_armed() -> bool {
 /// Counterfactual knob: should the shutdown sweep omit one actor's free?
 ///
 /// Only honoured when the check is armed, so it cannot change the behaviour of
-/// a program that is not running the oracle against itself.
+/// a program that is not running the oracle against itself. The wasm32 unit
+/// test below has a separate one-shot in-process override because its target
+/// cannot set environment variables through the host runner.
 #[must_use]
 pub fn leak_selftest_skips_free() -> bool {
     #[cfg(all(test, target_arch = "wasm32"))]

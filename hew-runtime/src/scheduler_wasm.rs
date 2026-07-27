@@ -1534,6 +1534,10 @@ pub unsafe extern "C" fn hew_actor_park_lifecycle_cont(
 /// # Safety
 ///
 /// `actor` is owned by the calling activation (Running on this single thread).
+#[expect(
+    clippy::needless_return,
+    reason = "keep the #[must_use] stop-cancellation refusal visibly fail-closed at its call site"
+)]
 unsafe fn resume_suspended_activation_wasm(actor: *mut HewActor) {
     let a = as_native_actor(actor);
 
@@ -1650,6 +1654,7 @@ unsafe fn resume_suspended_activation_wasm(actor: *mut HewActor) {
                         HewActorState::Suspended as i32,
                         "refused stop cancellation must preserve Suspended ownership"
                     );
+                    return;
                 }
             }
         }

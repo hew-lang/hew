@@ -88,21 +88,76 @@ impl TableMethods for Table {
 
 // ── Module-level functions ────────────────────────────────────────────
 /// Parse CSV data from a string (first row is treated as headers).
-pub fn parse(data: string) -> Table {
-    parse_impl(data, true)
+///
+/// Returns `Err(string)` if the input is not well-formed CSV. A malformed
+/// quote state is a failure, not a repairable shape: an unterminated quoted
+/// field otherwise parses as a complete table, which is exactly what a
+/// truncated file must not look like.
+pub fn try_parse(data: string) -> Result<Table, string> {
+    let parsed = parse_impl(data, true);
+    parsed
 }
 
 /// Parse CSV data from a string without treating the first row as headers.
-pub fn parse_no_headers(data: string) -> Table {
-    parse_impl(data, false)
+///
+/// Returns `Err(string)` if the input is not well-formed CSV.
+pub fn try_parse_no_headers(data: string) -> Result<Table, string> {
+    let parsed = parse_impl(data, false);
+    parsed
 }
 
 /// Parse CSV data from a file path (first row is treated as headers).
 ///
-/// Panics if the file cannot be read.
+/// Returns `Err(string)` if the input is not well-formed CSV. Panics if the
+/// file cannot be read.
+pub fn try_parse_file(path: string) -> Result<Table, string> {
+    let content = fs.read(path);
+    let parsed = parse_impl(content, true);
+    parsed
+}
+
+/// Parse CSV data from a string (first row is treated as headers).
+///
+/// Panics if the input is not well-formed CSV. Use `try_parse` for a
+/// structured `Result<Table, string>` failure surface.
+pub fn parse(data: string) -> Table {
+    let parsed = parse_impl(data, true);
+    match parsed {
+        Ok(tbl) => tbl,
+        Err(reason) => {
+            panic(reason);
+            Table { hdrs: Vec::new(), data: Vec::new() }
+        },
+    }
+}
+
+/// Parse CSV data from a string without treating the first row as headers.
+///
+/// Panics if the input is not well-formed CSV.
+pub fn parse_no_headers(data: string) -> Table {
+    let parsed = parse_impl(data, false);
+    match parsed {
+        Ok(tbl) => tbl,
+        Err(reason) => {
+            panic(reason);
+            Table { hdrs: Vec::new(), data: Vec::new() }
+        },
+    }
+}
+
+/// Parse CSV data from a file path (first row is treated as headers).
+///
+/// Panics if the file cannot be read or the input is not well-formed CSV.
 pub fn parse_file(path: string) -> Table {
     let content = fs.read(path);
-    parse_impl(content, true)
+    let parsed = parse_impl(content, true);
+    match parsed {
+        Ok(tbl) => tbl,
+        Err(reason) => {
+            panic(reason);
+            Table { hdrs: Vec::new(), data: Vec::new() }
+        },
+    }
 }
 
 // ── Internal parsing ──────────────────────────────────────────────────
@@ -119,12 +174,12 @@ pub fn parse_file(path: string) -> Table {
 /// peeking at the character after '\r' inside the loop — both characters are
 /// consumed before advancing to the next field. Inside a quoted field
 /// (state 2), '\r\n' is preserved verbatim in the field value per RFC 4180 §2.6.
-fn parse_impl(data: string, has_headers: bool) -> Table {
+fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
     let headers: Vec<string> = Vec::new();
     let rows: Vec<Vec<string>> = Vec::new();
     let ilen = data.len();
     if ilen == 0 {
-        return Table { hdrs: headers, data: rows };
+        return Ok(Table { hdrs: headers, data: rows });
     }
     // Current row accumulator and field accumulator.
     let cur_row: Vec<string> = Vec::new();
@@ -155,6 +210,10 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
             // Opening quote — begin quoted field
             state = 2;
             pos = pos + 1;
+        } else if ch == "\"" && state == 1 {
+            // A quote may only open a field. Inside an unquoted field it is an
+            // unescaped delimiter, not data (RFC 4180 §2.5).
+            return Err("csv: unescaped quote inside an unquoted field");
         } else if ch == "," && (state == 0 || state == 1 || state == 3) {
             // Field separator — emit current field, reset for next
             cur_row.push(cur_field);
@@ -202,15 +261,21 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
             state = 0;
             pos = pos + 1;
         } else if state == 3 {
-            // After closing quote: only ',' or row terminator are valid (RFC 4180).
-            // Any other character is technically malformed; skip it gracefully.
-            pos = pos + 1;
+            // After a closing quote only ',' or a row terminator may follow
+            // (RFC 4180 §2.5). Skipping the character would silently discard
+            // input and hand back a table that does not describe the source.
+            return Err("csv: unexpected text after a closing quote");
         } else {
             // Regular character in Outside or InUnquoted state
             cur_field = cur_field + ch;
             state = 1;
             pos = pos + 1;
         }
+    }
+    if state == 2 {
+        // The input ended inside a quoted field. Flushing it would turn a
+        // truncated document into a complete-looking table.
+        return Err("csv: unterminated quoted field");
     }
     // EOF — flush any pending field/row (handles inputs without trailing newline).
     // A completely empty trailing line (state==0, cur_row empty, cur_field=="")
@@ -234,7 +299,7 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
             headers.push(f"col{i}");
         }
     }
-    Table { hdrs: headers, data: rows }
+    Ok(Table { hdrs: headers, data: rows })
 }
 
 /// Find the column index for a header name. Returns -1 if not found.

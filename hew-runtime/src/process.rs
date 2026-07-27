@@ -437,7 +437,9 @@ pub unsafe extern "C" fn hew_process_wait(proc: *mut HewProcess) -> i32 {
 /// and must not have been freed already. Null is accepted (no-op).
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_drop(p: *mut HewProcess) {
-    cabi_guard!(p.is_null());
+    if p.is_null() {
+        return;
+    }
     // SAFETY: p was allocated with Box::into_raw and has not been freed.
     let mut proc = unsafe { Box::from_raw(p) };
     reap_process_for_drop(&mut proc);
@@ -535,7 +537,9 @@ pub unsafe extern "C" fn hew_process_result_stderr(r: *const HewProcessResult) -
 /// and must not have been freed already. Null is accepted (no-op).
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_result_free(r: *mut HewProcessResult) {
-    cabi_guard!(r.is_null());
+    if r.is_null() {
+        return;
+    }
     // SAFETY: r was allocated with Box::into_raw and has not been freed.
     let result = unsafe { Box::from_raw(r) };
     if !result.stdout.is_null() {
@@ -831,5 +835,22 @@ mod tests {
             hew_process_result_free(std::ptr::null_mut());
             hew_process_free(std::ptr::null_mut());
         }
+    }
+
+    #[test]
+    fn null_release_is_a_side_effect_free_noop() {
+        crate::set_last_error("sentinel process error".to_owned());
+
+        // SAFETY: null is explicitly accepted by all process release functions.
+        unsafe {
+            hew_process_result_free(std::ptr::null_mut());
+            assert_eq!(read_last_error(), "sentinel process error");
+            hew_process_drop(std::ptr::null_mut());
+            assert_eq!(read_last_error(), "sentinel process error");
+            hew_process_free(std::ptr::null_mut());
+            assert_eq!(read_last_error(), "sentinel process error");
+        }
+
+        crate::hew_clear_error();
     }
 }

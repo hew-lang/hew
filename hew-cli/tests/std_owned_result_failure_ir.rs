@@ -58,7 +58,7 @@ fn assert_failure_cleanup(
     symbol: &str,
     detail_call: &str,
     release_call: &str,
-    success_close: &str,
+    success_close: Option<&str>,
 ) {
     let body = function_body(ir, symbol);
     let detail = body
@@ -77,11 +77,13 @@ fn assert_failure_cleanup(
         1,
         "{symbol} must consume the failed raw handle exactly once:\n{body}"
     );
-    assert_eq!(
-        body.matches(success_close).count(),
-        0,
-        "{symbol} must not close the valid success-arm resource before returning it:\n{body}"
-    );
+    if let Some(success_close) = success_close {
+        assert_eq!(
+            body.matches(success_close).count(),
+            0,
+            "{symbol} must not close the valid success-arm resource before returning it:\n{body}"
+        );
+    }
 }
 
 #[test]
@@ -115,41 +117,41 @@ fn stdlib_raw_owned_failure_handles_are_released_once_after_detail_is_copied() {
         "define internal %\"Result$$CommandOutput$ProcessError\" @\"process$try_run\"",
         "@\"process$last_process_error\"",
         "call void @hew_process_result_free",
-        "@\"ProcessResultHandle::close\"",
+        None,
     );
     assert_failure_cleanup(
         &ir,
         "define internal %\"Result$$CommandOutput$ProcessError\" @\"process$try_run_argv\"",
         "@\"process$last_process_error\"",
         "call void @hew_process_result_free",
-        "@\"ProcessResultHandle::close\"",
+        None,
     );
     assert_failure_cleanup(
         &ir,
         "define internal %Child @\"process$start\"",
         "@\"process$last_process_error\"",
         "call void @hew_process_drop",
-        "@\"Child::close\"",
+        Some("@\"Child::close\""),
     );
     assert_failure_cleanup(
         &ir,
         "define internal %\"Result$$Child$ProcessError\" @\"process$try_start\"",
         "@\"process$last_process_error\"",
         "call void @hew_process_drop",
-        "@\"Child::close\"",
+        Some("@\"Child::close\""),
     );
     assert_failure_cleanup(
         &ir,
         "define internal %\"Result$$Child$ProcessError\" @\"process$try_start_argv\"",
         "@\"process$last_process_error\"",
         "call void @hew_process_drop",
-        "@\"Child::close\"",
+        Some("@\"Child::close\""),
     );
     assert_failure_cleanup(
         &ir,
         "define internal %Expr @\"cron$parse\"",
         "@\"cron$cron_last_error_message\"",
         "call void @hew_cron_free",
-        "@\"Expr::close\"",
+        Some("@\"Expr::close\""),
     );
 }

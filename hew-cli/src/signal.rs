@@ -67,8 +67,27 @@ pub fn forward_signals_to_child(child_pid: u32) {
 }
 
 /// Restore SIGPIPE's DEFAULT disposition for the CLI process so a closed output
-/// pipe (`hew run foo | head`) terminates this process cleanly instead of
-/// surfacing as a Rust I/O panic. Returns `false` if the reset failed.
+/// pipe (`hew check foo.hew 2>&1 | head -3`) terminates this process cleanly
+/// instead of surfacing as a Rust I/O panic. Returns `false` if the reset
+/// failed.
+///
+/// # Why this belongs at process start, not at child spawn
+///
+/// Rust installs `SIG_IGN` for SIGPIPE before `main`, so a write to a closed
+/// pipe returns `EPIPE` and `println!`/`eprintln!` PANIC on it
+/// (`failed printing to stderr`). The workspace builds with `panic = "abort"`,
+/// so that panic is a SIGABRT — the compiler dies with exit 134 and a core
+/// dump, having emitted nothing, on a run whose only unusual property is that
+/// its consumer stopped reading.
+///
+/// That is exactly what `scripts/stdlib-ratchet.sh` does when it REPORTS an
+/// unexpected failure (`"$HEW_BIN" check "$path" 2>&1 | head -3`), and it is
+/// why a plain diagnosable rejection reached CI as `exit 134` while the same
+/// file run directly exited 1 with a full diagnostic. The reset used to be
+/// reachable only from [`forward_signals_to_child`] — i.e. only on the
+/// `hew run` child-spawn path — so every non-spawning subcommand (`check`,
+/// `compile`, `fmt`, `doc`, …) kept the inherited `SIG_IGN` and could abort
+/// this way.
 ///
 /// This is deliberately the OPPOSITE of the compiled-program runtime, which
 /// IGNORES SIGPIPE (`hew-runtime`'s `ignore_sigpipe`, installed in
@@ -76,7 +95,7 @@ pub fn forward_signals_to_child(child_pid: u32) {
 /// error instead of killing the program. The CLI and the emitted program are
 /// separate binaries/processes and the CLI never calls `hew_sched_init`, so the
 /// two dispositions never collide.
-fn reset_sigpipe_to_default() -> bool {
+pub fn reset_sigpipe_to_default() -> bool {
     // SAFETY: `signal(2)` with SIG_DFL for SIGPIPE is async-signal-safe and the
     // canonical "restore default disposition" call.
     let prev = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };

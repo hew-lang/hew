@@ -1006,7 +1006,8 @@ impl LeafPolicy for ProvenForeignPolicy<'_> {
             return CallClass::Fresh;
         };
         // Clause 2 — the sole injection point: a declared extern that is a
-        // FOREIGN host and carries no audited fresh-owner return.
+        // FOREIGN host, carries no audited fresh-owner return, and carries no
+        // audited owned-RESULT contract either.
         //
         // A `std.*` extern is this compiler's own runtime ABI, reached through
         // its own headers and covered by its own suites; the stdlib's
@@ -1015,8 +1016,21 @@ impl LeafPolicy for ProvenForeignPolicy<'_> {
         // would leak in every program that uses the standard library. It is
         // still not MINTABLE — the strict policy vetoes it exactly as before —
         // it merely is not PROOF of foreignness.
+        //
+        // The declaring module's identity is not the only evidence available,
+        // and on its own it is not stable under HOW a file is compiled: the
+        // same `std/process.hew` is `Module("std.process")` when imported and
+        // `Root` when handed to `hew check` directly. The audited
+        // `[[ownership.contracts]]` result axis is evidence about the CALLEE
+        // and is invariant under that, so it is conjoined here. An audited
+        // owned result is a value the caller owns; calling it proof of an
+        // un-releasable foreign handle is simply wrong, and it is what refused
+        // `std/process.hew` and `std/time/cron/cron.hew`.
         if self.extern_table.is_extern_name(name) || self.extern_table.is_extern_id(*item_id) {
             return if self.extern_table.extern_return_is_audited_fresh_owner(name)
+                || self
+                    .extern_table
+                    .extern_result_is_provably_not_a_foreign_handle(name)
                 || !self.extern_table.extern_is_foreign_host(name, *item_id)
             {
                 CallClass::Fresh
@@ -1564,6 +1578,33 @@ pub struct ExternContractTable {
     /// [`build_extern_contract_table`] for the two admission clauses and the
     /// argument that they are a proof rather than a fallback.
     borrowing_arg_names: HashSet<String>,
+    /// Declared externs whose RESULT is provably not an un-releasable foreign
+    /// handle — the set that answers "this call is not PROOF of foreignness".
+    ///
+    /// # Why the argument axis alone was not enough
+    ///
+    /// `borrowing_arg_names` reads the ARGUMENT axis of
+    /// [`crate::ffi_contracts::extern_ownership_contract`] and nothing read the
+    /// RESULT axis of those same rows. The gap only became visible when the
+    /// declaring module's identity stopped agreeing with itself: `std/process.hew`
+    /// reached through `import std::process` carries `Module("std.process")`
+    /// provenance, but the SAME file handed to `hew check` directly is the root
+    /// compilation unit and carries `Root`. Under the second reading
+    /// `hew_process_last_error` — `result = "fresh"`,
+    /// `release-symbol = "hew_string_drop"` — was classified a non-audited
+    /// foreign host and the standard library was refused by the compiler that
+    /// ships it.
+    ///
+    /// # Read ONLY by the suppression side
+    ///
+    /// [`ProvenForeignPolicy`] consults this; the strict
+    /// [`OpaqueExternTaintPolicy`] does not. So membership never LICENSES a
+    /// caller-side mint — an extern in this set is exactly as un-mintable as
+    /// before. Its only effect is to stop calling the value proof of
+    /// foreignness, which is what the two admission clauses actually establish.
+    ///
+    /// See [`build_extern_contract_table`] for the clauses.
+    audited_domestic_return_names: HashSet<String>,
     /// Every declared `extern "C"` fn DECLARATION id.
     ///
     /// The name set above is the primary key (an extern call site's
@@ -1634,6 +1675,23 @@ impl ExternContractTable {
         self.borrowing_arg_names.contains(name)
     }
 
+    /// True when `name` is a declared extern whose RESULT is provably not an
+    /// un-releasable foreign handle — either because an audited row says the
+    /// call transfers a newly owned allocation together with the release that
+    /// balances it, or because the declared return type provably contains no
+    /// pointer at all.
+    ///
+    /// This is a statement about what the result CANNOT be, so it is exactly as
+    /// strong as its two clauses and no stronger: it says the value is not
+    /// proof of foreignness. It does NOT say the caller may mint a release
+    /// wherever it likes — that remains
+    /// [`ExternContractTable::extern_return_is_audited_fresh_owner`]'s much
+    /// narrower claim, and the strict mint-side policy still reads only that.
+    #[must_use]
+    pub fn extern_result_is_provably_not_a_foreign_handle(&self, name: &str) -> bool {
+        self.audited_domestic_return_names.contains(name)
+    }
+
     /// Return-provenance of a resolved extern `ItemId`. An extern absent from the
     /// table (every heap-returning extern in the interim) is `{OPAQUE}` —
     /// fail-closed.
@@ -1697,6 +1755,48 @@ impl ExternContractTable {
 /// every argument of every admitted call. `hew_string_drop`
 /// (`params = [Consume]`) is refused by this clause, so the universal release
 /// can never be read as borrowing its argument.
+///
+/// # The RESULT axis — the two clauses that answer "not proof of foreignness"
+///
+/// `audited_domestic_return_names` admits a declared extern under EITHER of two
+/// independent clauses. Both are fail-closed: refusing a name restores the
+/// previous verdict (proven foreign ⇒ a release suppressed ⇒ a leak), never a
+/// double release. And neither licenses a mint — see the field docs.
+///
+/// **Clause A — the audited owned transfer.** All three parts required:
+///
+/// A1. the `[[ownership.contracts]]` row exists, its result is `Fresh` or
+///     `Retained`, and it names a non-empty release symbol. `Borrowed`
+///     (`hew_vec_get_owned`, an alias invalidated by mutation) is REFUSED:
+///     that result genuinely is not the caller's to release, and suppressing
+///     its releases is correct behaviour this set must not disturb;
+/// A2. [`hew_types::jit_symbols::is_classified_hew_ffi_symbol`] claims the
+///     name. The audited row is a fact about this compiler's own runtime
+///     symbol, so admitting it requires the same positive symbol identity
+///     [`crate::model::classify_extern_string_ownership`] already requires
+///     before it will call a root-provenance `-> string` return header-aware.
+///     That classifier decides the return's memory LAYOUT from this key today,
+///     a strictly more dangerous decision, so the key is trusted with nothing
+///     new here;
+/// A3. the declaration's arity equals the audited contract's parameter count. A
+///     declaration that disagrees with the audited signature is not a
+///     declaration of the audited callee, so the row says nothing about it.
+///
+/// **Clause B — the pointer-free result.** The declared return type provably
+/// contains no pointer: a scalar/unit leaf, or a record declared in THIS module
+/// all of whose fields are (transitively) such leaves. A value with no pointer
+/// in it cannot be a handle, foreign or otherwise, so no audit is needed and
+/// none is required. `hew_cron_next_hew -> CronNextResult { status: i32;
+/// timestamp: i64 }` is admitted here; it is the shape that refused
+/// `std/time/cron/cron.hew`.
+///
+/// Clause B deliberately does NOT consult the layout registry and deliberately
+/// does not admit an `#[opaque]` handle. `ty_owns_heap_mir` reads an absent or
+/// partial registry as non-heap — the permissive direction, the exact
+/// `Default`-shaped fail-open round 4 hardened against — and an `#[opaque]`
+/// declaration is a pointer-width slot that IS the foreign-handle shape this
+/// whole authority exists to refuse. The narrow structural predicate answers
+/// `false` for anything unresolved.
 #[must_use]
 pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContractTable {
     let mut rows: HashMap<hew_hir::ItemId, ReturnProvenance> = HashMap::new();
@@ -1706,6 +1806,8 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
     let mut foreign_decl_ids: HashSet<hew_hir::ItemId> = HashSet::new();
     let mut foreign_names: HashSet<String> = HashSet::new();
     let mut borrowing_arg_names: HashSet<String> = HashSet::new();
+    let mut audited_domestic_return_names: HashSet<String> = HashSet::new();
+    let pointer_free_records = PointerFreeRecords::from_module(module);
     for item in &module.items {
         if let hew_hir::HirItem::ExternFn(ef) = item {
             names.insert(ef.name.clone());
@@ -1718,7 +1820,27 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
                 foreign_decl_ids.insert(ef.id);
                 foreign_names.insert(ef.name.clone());
             }
-            if ty_is_scalar_non_heap(&ef.return_ty) {
+            if extern_result_is_audited_owned_transfer(&ef.name, ef.param_tys.len())
+                || pointer_free_records.ty_is_pointer_free(&ef.return_ty)
+            {
+                audited_domestic_return_names.insert(ef.name.clone());
+            }
+            // The MINT-side admission, and the only line here the strict
+            // policy reads. `ty_is_scalar_non_heap` is the degenerate case of
+            // `ty_is_pointer_free`: an `i64` return is admitted because it
+            // cannot carry a handle, and a record whose fields are
+            // transitively such leaves cannot either. Withholding the record
+            // case is not the conservative choice — a pointer-free value has
+            // nothing to release, so admitting it can never emit a release for
+            // a handle this program does not own, while REFUSING it taints
+            // every domestic value the callee derives from it. That is the
+            // `hew_cron_next_hew -> CronNextResult` leak: the POD is read as a
+            // foreign handle, the taint travels out through
+            // `cron_error_from_result`, and the ordinary `+1` string the error
+            // carrier holds gets no owner at all.
+            if ty_is_scalar_non_heap(&ef.return_ty)
+                || pointer_free_records.ty_is_pointer_free(&ef.return_ty)
+            {
                 rows.insert(ef.id, AliasBits::EMPTY);
                 fresh_return_names.insert(ef.name.clone());
             }
@@ -1731,8 +1853,107 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
         foreign_decl_ids,
         foreign_names,
         borrowing_arg_names,
+        audited_domestic_return_names,
         decl_ids,
     }
+}
+
+/// Clause A of the RESULT-axis admission — see [`build_extern_contract_table`]
+/// for why each part is required.
+fn extern_result_is_audited_owned_transfer(symbol: &str, declared_arity: usize) -> bool {
+    if !hew_types::jit_symbols::is_classified_hew_ffi_symbol(symbol) {
+        return false;
+    }
+    crate::ffi_contracts::extern_ownership_contract(symbol)
+        .contract()
+        .is_some_and(|contract| {
+            matches!(
+                contract.result,
+                crate::ffi_contracts::ExternResultOwnership::Fresh
+                    | crate::ffi_contracts::ExternResultOwnership::Retained
+            ) && !contract.release_symbol.is_empty()
+                && contract.params.len() == declared_arity
+        })
+}
+
+/// Clause B of the RESULT-axis admission: the module's records that provably
+/// contain no pointer, resolved from the module's own type declarations.
+///
+/// Same discipline as [`DeclaredReleaseTypes`]: structural, module-local, and
+/// `false` for anything it cannot resolve. It never consults a layout registry,
+/// because an absent or partial registry reads a composite as non-heap and that
+/// is the permissive direction.
+#[derive(Debug, Default)]
+struct PointerFreeRecords {
+    names: HashSet<String>,
+}
+
+impl PointerFreeRecords {
+    fn from_module(module: &hew_hir::HirModule) -> Self {
+        let decls: HashMap<&str, &hew_hir::HirTypeDecl> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+                _ => None,
+            })
+            .collect();
+        let mut names: HashSet<String> = HashSet::new();
+        // Monotone least fixpoint from the empty set: a record is admitted once
+        // every field is a scalar leaf or an already-admitted record. Growing
+        // only and over a finite item list, so it converges; a cyclic record
+        // (which cannot be pointer-free anyway) is never admitted.
+        loop {
+            let mut changed = false;
+            for (name, decl) in &decls {
+                if names.contains(*name) || decl.is_opaque || decl.fields.is_empty() {
+                    continue;
+                }
+                if decl
+                    .fields
+                    .iter()
+                    .all(|field| field_ty_is_pointer_free(&field.ty, &names))
+                {
+                    names.insert((*name).to_string());
+                    names.insert(hew_types::short_name(name).to_string());
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        Self { names }
+    }
+
+    fn ty_is_pointer_free(&self, ty: &ResolvedTy) -> bool {
+        field_ty_is_pointer_free(ty, &self.names)
+    }
+}
+
+/// True for a type that provably contains no pointer: a scalar/unit leaf, or a
+/// named non-generic record already admitted to `pointer_free`.
+///
+/// An `#[opaque]` declaration answers `false` — it is a pointer-width handle
+/// slot, and admitting it would exempt the exact shape this authority exists to
+/// refuse. So does anything unresolved.
+fn field_ty_is_pointer_free(ty: &ResolvedTy, pointer_free: &HashSet<String>) -> bool {
+    if ty_is_scalar_non_heap(ty) {
+        return true;
+    }
+    let ResolvedTy::Named {
+        name,
+        args,
+        is_opaque,
+        ..
+    } = ty
+    else {
+        return false;
+    };
+    if *is_opaque || !args.is_empty() {
+        return false;
+    }
+    pointer_free.contains(name.as_str()) || pointer_free.contains(hew_types::short_name(name))
 }
 
 /// Clause 2 of the declared-borrow admission: the audited contract exists and

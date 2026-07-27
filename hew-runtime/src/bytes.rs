@@ -170,6 +170,11 @@ unsafe fn alloc_buf(cap: u32) -> *mut u8 {
 ///
 /// If the buffer is uniquely owned (refcount == 1), returns `ptr` unchanged.
 ///
+/// The decrement on the fork path CONSUMES one owner of `ptr`: the caller is
+/// understood to be moving its own reference forward onto the returned buffer.
+/// A caller that keeps a separate live triple aimed at `ptr` must retain it
+/// again (hew-lang/hew#2833).
+///
 /// # Safety
 ///
 /// `ptr` must be a valid bytes data pointer (non-null).
@@ -327,6 +332,12 @@ pub unsafe extern "C" fn hew_bytes_drop(data_ptr: *mut u8) {
 }
 
 /// Push a single byte onto the buffer, using copy-on-write if shared.
+///
+/// On the copy-on-write path this CONSUMES `triple`'s reference to the old
+/// buffer and leaves `triple` owning the fork instead — the ordinary move
+/// semantics of a Hew `bytes` value. A caller holding a second triple that
+/// still points at the old buffer must retain it before pushing
+/// (hew-lang/hew#2833).
 ///
 /// # Safety
 ///
@@ -1388,6 +1399,48 @@ mod tests {
         unsafe {
             hew_bytes_drop(triple_a.ptr);
             hew_bytes_drop(triple_b.ptr);
+        }
+    }
+
+    /// A copy-on-write push CONSUMES the pusher's reference to the original.
+    ///
+    /// `ensure_unique` forks a private copy and then releases the shared
+    /// reference, because the triple it was handed now points at the fork and
+    /// has no further use for the old buffer. That is correct for the ordinary
+    /// caller — which is moving its value forward, as `cow_on_push` shows —
+    /// but it is a trap for a caller that keeps a *separate* triple aimed at
+    /// the original and expects `push` to have left the owner count alone.
+    ///
+    /// hew-lang/hew#2833: a sole-ownership probe in `hew-std` did exactly that
+    /// and lost a reference on every shared push, so the buffer reached zero
+    /// one release early and the next release wrote into freed memory. Pinned
+    /// here as an explicit fact about `hew_bytes_push`, not an inference from
+    /// its implementation.
+    #[test]
+    fn cow_push_consumes_the_pushers_reference_to_the_original() {
+        let data = b"original";
+        // SAFETY: data is valid for its length.
+        let base = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+        // SAFETY: base.ptr is valid; this is the second owner.
+        unsafe { hew_bytes_clone_ref(base.ptr) };
+        // SAFETY: base.ptr is a live buffer with two owners.
+        unsafe { assert_eq!(refcount(base.ptr).load(Ordering::Relaxed), 2) };
+
+        let mut pusher = base;
+        // SAFETY: pusher is a valid triple aimed at the shared buffer.
+        unsafe { hew_bytes_push(&mut pusher, b'!') };
+        assert_ne!(pusher.ptr, base.ptr, "a shared push must fork");
+
+        // The push released one owner of the ORIGINAL on the pusher's behalf.
+        // SAFETY: base.ptr is still live — one owner remains.
+        unsafe { assert_eq!(refcount(base.ptr).load(Ordering::Relaxed), 1) };
+        // SAFETY: the fork is uniquely owned by `pusher`.
+        unsafe { assert_eq!(refcount(pusher.ptr).load(Ordering::Relaxed), 1) };
+
+        // SAFETY: one balancing release each.
+        unsafe {
+            hew_bytes_drop(pusher.ptr);
+            hew_bytes_drop(base.ptr);
         }
     }
 

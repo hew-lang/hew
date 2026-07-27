@@ -1793,11 +1793,22 @@ mod tests {
     /// True when `triple` is the SOLE owner of its allocation: a push that
     /// cannot grow the buffer moves the data pointer only by forking a shared
     /// one. Mutates the copy it is given, never the caller's triple.
+    ///
+    /// The probe is OWNER-COUNT NEUTRAL, and has to be, because callers keep
+    /// using the buffer afterwards. That is not free: on the shared reading
+    /// `hew_bytes_push` reaches `ensure_unique`, which forks a private copy and
+    /// *releases one reference to the original on the pusher's behalf* — the
+    /// pusher's triple now points at the fork, so it has no use for the old
+    /// reference. The probe kept the caller's triple pointing at the original,
+    /// so it must put that reference back; otherwise the caller's later release
+    /// is one too many and drops the buffer to zero early, and every subsequent
+    /// release is a write into freed memory. See hew-lang/hew#2833.
     fn bytes_owner_is_sole(triple: BytesTriple) -> bool {
         assert!(
-            !triple.ptr.is_null() && triple.len < 16,
-            "the probe needs a non-empty buffer below MIN_CAPACITY so a push \
-             cannot grow it: len={}",
+            !triple.ptr.is_null() && triple.offset == 0 && triple.len < 16,
+            "the probe needs a non-empty unsliced buffer below MIN_CAPACITY so \
+             a push cannot grow it: offset={} len={}",
+            triple.offset,
             triple.len
         );
         let mut probe = triple;
@@ -1805,9 +1816,15 @@ mod tests {
         unsafe { hew_bytes_push(&mut probe, b'!') };
         let unmoved = probe.ptr == triple.ptr;
         if !unmoved {
-            // The fork produced a second allocation; release it.
-            // SAFETY: the forked buffer is ours and released exactly once.
-            unsafe { hew_bytes_drop(probe.ptr) };
+            // Shared: restore the reference `ensure_unique` consumed from the
+            // caller's buffer, then release the fork it handed back. Both
+            // allocations end this call with the owner count they arrived with.
+            // SAFETY: `triple.ptr` is still live — the caller holds a
+            // reference to it — and the forked buffer is ours to release once.
+            unsafe {
+                hew_bytes_clone_ref(triple.ptr);
+                hew_bytes_drop(probe.ptr);
+            }
         }
         unmoved
     }
@@ -1864,14 +1881,16 @@ mod tests {
 
         // R2's counterfactual: with a second reference outstanding the same
         // probe reports NOT sole, so it is reading the owner count rather than
-        // reporting a constant.
+        // reporting a constant. `bytes_owner_is_sole` is owner-count neutral,
+        // so this reference is still outstanding when the probe returns.
         // SAFETY: `a.data.ptr` is a live bytes allocation.
         unsafe { hew_bytes_clone_ref(a.data.ptr) };
         assert!(
             !bytes_owner_is_sole(a.data),
             "the sole-ownership probe must be able to say no, or it proves nothing"
         );
-        // SAFETY: releases the reference taken immediately above.
+        // SAFETY: releases the reference taken immediately above, leaving the
+        // caller's own reference from `hew_tls_read_result` for R3.
         unsafe { hew_bytes_drop(a.data.ptr) };
 
         // R3 — release both results; the stream keeps working, so it kept no

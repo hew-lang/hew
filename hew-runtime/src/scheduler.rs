@@ -96,6 +96,96 @@ static ACTIVATE_POST_CAS_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSaf
 #[cfg(test)]
 static ENQUEUE_RESUME_CAS_FAIL_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSafe::new(None);
 
+/// Rendezvous after a scheduler queue reference is retained but before the raw
+/// pointer is published to the global injector.
+#[cfg(test)]
+type SchedulerQueueHandoffHook = (
+    u64,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(test)]
+static SCHED_ENQUEUE_PRE_PUBLISH_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =
+    PoisonSafe::new(None);
+
+#[cfg(test)]
+static ACTIVATE_PRE_CLAIM_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =
+    PoisonSafe::new(None);
+
+#[cfg(test)]
+pub(crate) struct SchedulerQueueHandoffHookGuard {
+    hook: &'static PoisonSafe<Option<SchedulerQueueHandoffHook>>,
+}
+
+#[cfg(test)]
+impl SchedulerQueueHandoffHookGuard {
+    fn install_on(
+        hook: &'static PoisonSafe<Option<SchedulerQueueHandoffHook>>,
+        actor_id: u64,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        hook.access(|slot| {
+            assert!(
+                slot.is_none(),
+                "scheduler queue handoff hook already installed"
+            );
+            *slot = Some((actor_id, entered.clone(), release.clone()));
+        });
+        (Self { hook }, entered, release)
+    }
+
+    pub(crate) fn install_enqueue_pre_publish(
+        actor_id: u64,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        Self::install_on(&SCHED_ENQUEUE_PRE_PUBLISH_HOOK, actor_id)
+    }
+
+    pub(crate) fn install_activate_pre_claim(
+        actor_id: u64,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        Self::install_on(&ACTIVATE_PRE_CLAIM_HOOK, actor_id)
+    }
+}
+
+#[cfg(test)]
+impl Drop for SchedulerQueueHandoffHookGuard {
+    fn drop(&mut self) {
+        self.hook.access(|slot| *slot = None);
+    }
+}
+
+#[cfg(test)]
+fn run_scheduler_queue_handoff_hook(
+    hook: &PoisonSafe<Option<SchedulerQueueHandoffHook>>,
+    actor: *mut HewActor,
+) {
+    // SAFETY: both seams still hold the scheduler queue lifetime reference.
+    let actor_id = unsafe { (*actor).id };
+    let rendezvous = hook.access(|slot| {
+        slot.as_ref().and_then(|(target, entered, release)| {
+            (*target == actor_id).then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+
 /// Deterministic trap/activation-drop rendezvous immediately before the
 /// activation takes the terminal-reclaim lock.
 #[cfg(test)]
@@ -138,51 +228,6 @@ impl ActivationPreTerminalLockHookGuard {
 impl Drop for ActivationPreTerminalLockHookGuard {
     fn drop(&mut self) {
         ACTIVATION_PRE_TERMINAL_LOCK_HOOK.access(|hook| *hook = None);
-    }
-}
-
-/// Deterministic terminal-owner handoff rendezvous after the activation's
-/// final bounded mailbox drain and before its `dispatch_active` Release-clear.
-#[cfg(test)]
-type ActivationPostTerminalDrainHook = (
-    u64,
-    std::sync::Arc<std::sync::Barrier>,
-    std::sync::Arc<std::sync::Barrier>,
-);
-
-#[cfg(test)]
-static ACTIVATION_POST_TERMINAL_DRAIN_HOOK: PoisonSafe<Option<ActivationPostTerminalDrainHook>> =
-    PoisonSafe::new(None);
-
-#[cfg(test)]
-pub(crate) struct ActivationPostTerminalDrainHookGuard;
-
-#[cfg(test)]
-impl ActivationPostTerminalDrainHookGuard {
-    pub(crate) fn install(
-        actor_id: u64,
-    ) -> (
-        Self,
-        std::sync::Arc<std::sync::Barrier>,
-        std::sync::Arc<std::sync::Barrier>,
-    ) {
-        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
-        ACTIVATION_POST_TERMINAL_DRAIN_HOOK.access(|hook| {
-            assert!(
-                hook.is_none(),
-                "activation terminal-drain hook already installed"
-            );
-            *hook = Some((actor_id, entered.clone(), release.clone()));
-        });
-        (Self, entered, release)
-    }
-}
-
-#[cfg(test)]
-impl Drop for ActivationPostTerminalDrainHookGuard {
-    fn drop(&mut self) {
-        ACTIVATION_POST_TERMINAL_DRAIN_HOOK.access(|hook| *hook = None);
     }
 }
 
@@ -239,19 +284,6 @@ fn run_enqueue_resume_cas_fail_hook(actor: *mut HewActor) {
 #[cfg(test)]
 fn run_activation_pre_terminal_lock_hook(actor: &HewActor) {
     let rendezvous = ACTIVATION_PRE_TERMINAL_LOCK_HOOK.access(|hook| {
-        hook.as_ref().and_then(|(actor_id, entered, release)| {
-            (*actor_id == actor.id).then(|| (entered.clone(), release.clone()))
-        })
-    });
-    if let Some((entered, release)) = rendezvous {
-        entered.wait();
-        release.wait();
-    }
-}
-
-#[cfg(test)]
-fn run_activation_post_terminal_drain_hook(actor: &HewActor) {
-    let rendezvous = ACTIVATION_POST_TERMINAL_DRAIN_HOOK.access(|hook| {
         hook.as_ref().and_then(|(actor_id, entered, release)| {
             (*actor_id == actor.id).then(|| (entered.clone(), release.clone()))
         })
@@ -738,6 +770,14 @@ fn teardown_workers(
         }
     }
 
+    // No joined worker can consume the global injector now. Retire its
+    // allocation references before actor cleanup; otherwise a terminal actor
+    // abandoned at shutdown would correctly refuse to free forever.
+    if let Some(sched_ptr) = scheduler {
+        // SAFETY: caller guarantees the scheduler remains live for this call.
+        release_abandoned_global_queue_refs(unsafe { &*sched_ptr });
+    }
+
     if !take_scheduler {
         return None;
     }
@@ -928,10 +968,84 @@ pub extern "C" fn hew_runtime_cleanup_after_main() {
 ///
 /// Panics if the scheduler has not been initialized.
 pub fn sched_enqueue(actor: *mut HewActor) {
+    sched_enqueue_inner(actor, true);
+}
+
+fn sched_enqueue_inner(actor: *mut HewActor, retain_queue_ref: bool) {
     let sched = get_scheduler().expect("scheduler not initialized");
+    if actor.is_null() {
+        return;
+    }
+    // Every published scheduler pointer owns one allocation-lifetime
+    // reference. The worker transfers that ownership to `dispatch_active`
+    // before releasing it; shutdown drains entries that workers abandon.
+    // SAFETY: every caller holds a live actor through publication (a send pin,
+    // activation ownership, registry authority, or the public held-pointer
+    // contract).
+    if retain_queue_ref {
+        // SAFETY: every production caller holds a live actor through publish.
+        unsafe { retain_scheduler_queue_ref(actor) };
+    }
+    #[cfg(test)]
+    run_scheduler_queue_handoff_hook(&SCHED_ENQUEUE_PRE_PUBLISH_HOOK, actor);
     TASKS_SPAWNED.fetch_add(1, Ordering::Relaxed);
     sched.global_queue.push(actor.cast::<()>());
     sched_try_wake();
+}
+
+/// Exact counterfactual for the pre-publish queue-reference regression.
+#[cfg(test)]
+pub(crate) unsafe fn sched_enqueue_omitting_queue_ref_for_test(actor: *mut HewActor) {
+    sched_enqueue_inner(actor, false);
+}
+
+/// Retain the actor allocation for one scheduler queue entry.
+///
+/// Queue ownership shares the actor's general lifetime-pin counter with by-ID
+/// operations. This is intentional: after untracking, free waits for both
+/// admitted senders and every queued/dequeued-before-claim scheduler pointer.
+///
+/// # Safety
+///
+/// `actor` must be non-null and live while this reference is acquired.
+unsafe fn retain_scheduler_queue_ref(actor: *mut HewActor) {
+    // SAFETY: caller guarantees a live actor allocation.
+    let pins = unsafe { &(*actor).send_pin_count };
+    pins.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        current.checked_add(1)
+    })
+    .expect("scheduler queue reference count overflow");
+}
+
+/// Release one scheduler queue entry's allocation-lifetime reference.
+///
+/// # Safety
+///
+/// `actor` must still be protected by this queue reference (or by dispatch
+/// ownership published before this release), and exactly one matching retain
+/// must exist.
+unsafe fn release_scheduler_queue_ref(actor: *mut HewActor) {
+    // SAFETY: caller guarantees this queue entry keeps the allocation live.
+    let previous = unsafe { (*actor).send_pin_count.fetch_sub(1, Ordering::Release) };
+    assert!(previous > 0, "scheduler queue reference count underflow");
+}
+
+/// Release every scheduler reference still resident in the global injector.
+///
+/// Called only after worker joins. Batch-steal may move extra entries into the
+/// temporary local deque, so both the returned entry and the whole batch are
+/// consumed on every iteration.
+fn release_abandoned_global_queue_refs(sched: &Scheduler) {
+    // SAFETY: this temporary deque stores only scheduler-owned actor pointers.
+    let (local, _stealer) = unsafe { WorkDeque::new() };
+    while let Some(ptr) = sched.global_queue.steal_batch_and_pop(&local) {
+        // SAFETY: removing the entry transfers its one queue reference here.
+        unsafe { release_scheduler_queue_ref(ptr.cast::<HewActor>()) };
+        while let Some(extra) = local.pop() {
+            // SAFETY: as above, for an entry moved into the temporary deque.
+            unsafe { release_scheduler_queue_ref(extra.cast::<HewActor>()) };
+        }
+    }
 }
 
 /// Fail-closed wake-routing net (R4).
@@ -1197,6 +1311,19 @@ struct WorkerRuntimePtr(*const RuntimeInner);
 // the sole reason for this wrapper.
 unsafe impl Send for WorkerRuntimePtr {}
 
+/// Releases actor lifetime references left in a worker's owner deque when the
+/// loop exits for shutdown or unwinding.
+struct LocalQueueRefDrain<'a>(&'a WorkDeque);
+
+impl Drop for LocalQueueRefDrain<'_> {
+    fn drop(&mut self) {
+        while let Some(ptr) = self.0.pop() {
+            // SAFETY: popping transfers the entry's queue reference.
+            unsafe { release_scheduler_queue_ref(ptr.cast::<HewActor>()) };
+        }
+    }
+}
+
 /// Main loop executed by each worker thread.
 ///
 /// `rt` is the [`RuntimeInner`] that owns this worker. The worker `enter()`s it
@@ -1222,6 +1349,10 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
     // outlives this guard (held for the loop body) and every `rt_current()`
     // deref taken through it, satisfying `enter`'s lifetime obligation.
     let _rt_guard = unsafe { runtime::enter(&*rt.0) };
+    // Workers stop promptly when shutdown is published. Any pointers still in
+    // their owner deque retain actor allocations, so release those references
+    // when this loop exits (including unwinding).
+    let _local_queue_ref_drain = LocalQueueRefDrain(local);
     // In test builds, capture the raw default-runtime pointer this worker is
     // bound to. The NoWorkerSchedulerForTest harness can swap the runtime out
     // from under a late-starting worker; the per-iteration check below detects
@@ -1289,19 +1420,19 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
         }
         // 1. Pop from local deque (LIFO — cache-friendly).
         if let Some(ptr) = local.pop() {
-            activate_actor(ptr.cast::<HewActor>());
+            activate_queued_actor(ptr.cast::<HewActor>());
             continue;
         }
 
         // 2. Steal from a random peer.
         if let Some(actor) = try_steal_from_peers(sched, id, &mut rng) {
-            activate_actor(actor);
+            activate_queued_actor(actor);
             continue;
         }
 
         // 3. Try global queue (batch steal into local deque).
         if let Some(ptr) = sched.global_queue.steal_batch_and_pop(local) {
-            activate_actor(ptr.cast::<HewActor>());
+            activate_queued_actor(ptr.cast::<HewActor>());
             continue;
         }
 
@@ -2179,9 +2310,12 @@ struct ActivationOwnership<'a> {
 impl<'a> ActivationOwnership<'a> {
     /// Mark the activation owned. Call BEFORE the `Runnable -> Running` CAS so
     /// the flag is already published when the actor first becomes `Running`.
-    fn claim(actor: &'a HewActor) -> Self {
-        actor.dispatch_active.store(true, Ordering::Release);
-        Self { actor }
+    fn claim(actor: &'a HewActor) -> Option<Self> {
+        actor
+            .dispatch_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self { actor })
     }
 }
 
@@ -2212,9 +2346,6 @@ impl Drop for ActivationOwnership<'_> {
                     state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32
                 },
                 || {
-                    #[cfg(test)]
-                    run_activation_post_terminal_drain_hook(self.actor);
-
                     // Release so a free path that subsequently observes the
                     // cleared flag also observes every write and queued-node
                     // retirement this activation made to the actor box.
@@ -2236,7 +2367,13 @@ impl Drop for ActivationOwnership<'_> {
 pub(crate) unsafe fn release_terminal_activation_ownership_for_test(actor: *mut HewActor) {
     // SAFETY: caller supplies an exclusively test-owned live actor.
     let a = unsafe { &*actor };
-    let guard = ActivationOwnership::claim(a);
+    let guard = ActivationOwnership::claim(a).unwrap_or_else(|| {
+        assert!(
+            a.dispatch_active.load(Ordering::Acquire),
+            "test activation ownership is neither claimable nor already held"
+        );
+        ActivationOwnership { actor: a }
+    });
     drop(guard);
 }
 
@@ -2286,7 +2423,7 @@ enum DispatchTarget {
     clippy::too_many_lines,
     reason = "actor activation state machine with multiple CAS transitions"
 )]
-fn activate_actor(actor: *mut HewActor) {
+fn activate_queued_actor(actor: *mut HewActor) {
     if actor.is_null() {
         return;
     }
@@ -2302,13 +2439,25 @@ fn activate_actor(actor: *mut HewActor) {
     // to every activation. The producer-side latch is the cheaper, complete fix.)
     let a = unsafe { &*actor };
 
-    // Skip terminal states.
-    let state = a.actor_state.load(Ordering::Acquire);
-    if state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32 {
-        return;
-    }
+    #[cfg(test)]
+    run_scheduler_queue_handoff_hook(&ACTIVATE_PRE_CLAIM_HOOK, actor);
 
-    // Mark the activation owned BEFORE the CAS so `dispatch_active` is already
+    // Transfer the popped queue entry's lifetime reference to activation
+    // ownership before releasing it. A terminal trap/free can run at either
+    // side of this handoff: before the CAS the queue reference keeps the box
+    // live; afterward `dispatch_active` does. CAS rather than store also makes
+    // an accidental duplicate queue entry fail closed without clearing another
+    // worker's ownership.
+    let Some(activation_ownership) = ActivationOwnership::claim(a) else {
+        // SAFETY: this popped entry still owns exactly one queue reference.
+        unsafe { release_scheduler_queue_ref(actor) };
+        return;
+    };
+    // SAFETY: dispatch_active is now published and keeps free from finalizing.
+    unsafe { release_scheduler_queue_ref(actor) };
+
+    // Mark the activation owned BEFORE the state load/CAS so `dispatch_active`
+    // is already
     // published the instant this actor can become `Running` and thus
     // trap-stealable. A trap can only flip a `Running` actor terminal; if the
     // flag were claimed *after* a winning CAS, the actor would be `Running`
@@ -2319,7 +2468,11 @@ fn activate_actor(actor: *mut HewActor) {
     // below (settle / suspend-park / crash-break / fall-through) so the async
     // free path cannot reclaim the actor box while this worker is still reading
     // it. See `ActivationOwnership`.
-    let activation_ownership = ActivationOwnership::claim(a);
+    let state = a.actor_state.load(Ordering::Acquire);
+    if state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32 {
+        drop(activation_ownership);
+        return;
+    }
 
     // CAS: RUNNABLE → RUNNING.
     if a.actor_state
@@ -3280,7 +3433,25 @@ fn activate_actor(actor: *mut HewActor) {
 
 #[cfg(test)]
 pub(crate) fn activate_actor_for_test(actor: *mut HewActor) {
-    activate_actor(actor);
+    if actor.is_null() {
+        return;
+    }
+    // Direct unit tests do not arrive through a deque, so mint the same single
+    // queue reference the production entry consumes.
+    // SAFETY: test caller guarantees a live actor for the call.
+    unsafe { retain_scheduler_queue_ref(actor) };
+    activate_queued_actor(actor);
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn release_scheduler_queue_ref_for_test(actor: *mut HewActor) {
+    // SAFETY: caller guarantees one scheduler queue reference is owned.
+    unsafe { release_scheduler_queue_ref(actor) };
+}
+
+#[cfg(test)]
+fn activate_actor(actor: *mut HewActor) {
+    activate_actor_for_test(actor);
 }
 
 /// Serialises every test that reads or writes the module-level `SCHEDULER`
@@ -3501,7 +3672,7 @@ impl NoWorkerSchedulerForTest {
         clippy::unused_self,
         reason = "receiver ties the call to the installed-scheduler guard lifetime"
     )]
-    pub(crate) fn pop_global(&self) -> Option<*mut HewActor> {
+    fn take_global_queue_entry(&self) -> Option<*mut HewActor> {
         let sched = get_scheduler()?;
         // SAFETY: single-threaded test deque used only to receive the pop.
         let (local, _stealer) = unsafe { crate::deque::WorkDeque::new() };
@@ -3518,6 +3689,40 @@ impl NoWorkerSchedulerForTest {
             sched.global_queue.push(p);
         }
         first
+    }
+
+    pub(crate) fn pop_global(&self) -> Option<*mut HewActor> {
+        let first = self.take_global_queue_entry();
+        if let Some(actor) = first {
+            // Test callers receive a raw pointer they already keep live; the
+            // removed scheduler entry's ownership ends at this dequeue.
+            // SAFETY: `first` came from exactly one scheduler queue entry.
+            unsafe { release_scheduler_queue_ref(actor) };
+        }
+        first
+    }
+
+    /// Pop one queue entry and transfer its lifetime reference to the caller.
+    #[allow(
+        clippy::unused_self,
+        reason = "receiver ties the call to the installed-scheduler guard lifetime"
+    )]
+    pub(crate) fn take_global_with_queue_ref(&self) -> Option<*mut HewActor> {
+        self.take_global_queue_entry()
+    }
+
+    /// Pop an entry created by the explicit no-reference counterfactual.
+    pub(crate) fn pop_global_without_queue_ref(&self) -> Option<*mut HewActor> {
+        self.take_global_queue_entry()
+    }
+
+    /// Pop one queue entry and drive the real dequeue-before-claim activation.
+    pub(crate) fn activate_one_global(&self) -> bool {
+        let Some(actor) = self.take_global_queue_entry() else {
+            return false;
+        };
+        activate_queued_actor(actor);
+        true
     }
 }
 

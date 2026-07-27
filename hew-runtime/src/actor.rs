@@ -311,6 +311,26 @@ fn run_registration_retirement_hook(
     }
 }
 
+// ── Drain target pin rendezvous hook (test-only) ─────────────────────────
+//
+// `drain_actors` resolves actor IDs under `LIVE_ACTORS`, then calls the raw
+// pointer `hew_actor_stop` entry point after the registry lock is released.
+// The allocation must remain pinned across that gap. This hook pauses after
+// the pin is acquired and immediately before stop dereferences the pointer so
+// a test can drive a concurrent free through untracking and prove that final
+// reclamation remains blocked on this exact pin.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static DRAIN_POST_PIN_PRE_STOP_HOOK: Mutex<Option<RegistrationRetirementHook>> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn install_drain_post_pin_pre_stop_hook_for_test(
+    actor_id: u64,
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) -> RegistrationRetirementHookGuard {
+    install_registration_retirement_hook(&DRAIN_POST_PIN_PRE_STOP_HOOK, actor_id, entered, release)
+}
+
 // ── cleanup_all_actors post-prepare rendezvous hook (test-only) ───────────
 //
 // Fires inside `cleanup_all_actors` for each actor, AFTER
@@ -4583,8 +4603,8 @@ fn drain_outcome_from_lists(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn collect_pending_actor(id: ActorId) -> Option<(ActorId, *mut HewActor)> {
-    live_actors::get_actor_ptr_by_id(id).map(|actor| (id, actor))
+fn collect_pending_actor(id: ActorId) -> Option<(ActorId, live_actors::ActorPin)> {
+    live_actors::pin_actor_by_id(id).map(|pin| (id, pin))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4686,22 +4706,31 @@ unsafe fn drain_quiesced_actor(
 
 /// Cooperatively stop a set of native actors and wait for quiescence with a shared deadline.
 #[cfg(not(target_arch = "wasm32"))]
+#[must_use]
 pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutcome {
     if ids.is_empty() {
         return DrainOutcome::Drained;
     }
 
     let mut seen = HashSet::with_capacity(ids.len());
-    let mut pending: Vec<(ActorId, *mut HewActor)> = ids
-        .iter()
-        .copied()
-        .filter(|id| seen.insert(*id))
-        .filter_map(collect_pending_actor)
-        .collect();
+    let mut pending = Vec::with_capacity(ids.len());
+    for actor_id in ids.iter().copied().filter(|id| seen.insert(*id)) {
+        let Some((actor_id, pin)) = collect_pending_actor(actor_id) else {
+            continue;
+        };
+        let actor = pin.as_ptr();
+        // Deterministic proof hook: a concurrent free may retire this actor
+        // now, but cannot reclaim it while `pin` is held across stop.
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        run_registration_retirement_hook(&DRAIN_POST_PIN_PRE_STOP_HOOK, actor_id);
 
-    for &(_, actor) in &pending {
-        // SAFETY: actor came from LIVE_ACTORS and remains owned by the runtime.
+        // SAFETY: `pin` was acquired while actor_id was tracked and keeps the
+        // allocation live across this raw-pointer stop operation.
         unsafe { hew_actor_stop(actor) };
+        pending.push((actor_id, actor));
+        // Release exactly after the last unvalidated raw-pointer dereference.
+        // Later state reads revalidate actor_id + pointer under LIVE_ACTORS.
+        drop(pin);
     }
 
     let mut crashed = Vec::new();
@@ -4770,6 +4799,7 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
 
 /// WASM-TODO(#1451): drain_actors primitive pending WASM scheduler integration.
 #[cfg(target_arch = "wasm32")]
+#[must_use]
 pub fn drain_actors(ids: &[ActorId], _deadline: std::time::Instant) -> DrainOutcome {
     let mut still_live = ids.to_vec();
     still_live.sort_unstable();
@@ -8596,6 +8626,138 @@ mod tests {
         drop(pin);
         assert_eq!(free.join().expect("free thread"), 0);
         assert!(free_done.load(Ordering::Acquire));
+    }
+
+    /// `hew_actor_drain_set` resolves IDs before calling the raw-pointer stop
+    /// entry point. Prove that resolution takes an allocation pin under
+    /// `LIVE_ACTORS` and holds it until stop returns.
+    ///
+    /// The free thread is paused after it has untracked the actor but before
+    /// its pin-drain loop. At that point the old implementation's unpinned raw
+    /// lookup left `send_pin_count == 0`: releasing free would reclaim the
+    /// allocation before drain dereferenced it. The production path must
+    /// instead expose exactly one drain pin. The free hook is also a safety
+    /// harness for that executable counterfactual: all observations are saved,
+    /// both threads are released and joined, and assertions run afterward, so
+    /// reverting only the pin produces a deterministic failure without
+    /// intentionally executing a use-after-free.
+    #[test]
+    fn drain_set_pins_target_across_lookup_stop_and_final_free() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: null state and no-op dispatch form a valid actor spawn.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: the actor is live and remains allocated until both test
+        // rendezvous are released and the free thread is joined.
+        let actor_id = unsafe { (*actor).id };
+
+        let drain_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let drain_release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let _drain_hook = install_drain_post_pin_pre_stop_hook_for_test(
+            actor_id,
+            std::sync::Arc::clone(&drain_entered),
+            std::sync::Arc::clone(&drain_release),
+        );
+
+        let free_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let free_release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let _free_hook = install_free_post_retire_registration_hook_for_test(
+            actor_id,
+            std::sync::Arc::clone(&free_entered),
+            std::sync::Arc::clone(&free_release),
+        );
+
+        let (drain_done_tx, drain_done_rx) = std::sync::mpsc::channel();
+        let drain = std::thread::spawn(move || {
+            let ids = [actor_id];
+            let mut outcome = DrainOutcomeRepr::default();
+            // SAFETY: ids and outcome remain valid for this synchronous FFI
+            // call; the timeout comfortably exceeds the test rendezvous.
+            let status = unsafe {
+                hew_actor_drain_set(ids.as_ptr(), ids.len(), 5_000_000_000, &raw mut outcome)
+            };
+            let observed = (status, outcome.still_live_len, outcome.crashed_len);
+            // SAFETY: outcome was initialized by hew_actor_drain_set.
+            unsafe { hew_actor_drain_outcome_free(&raw mut outcome) };
+            drain_done_tx
+                .send(observed)
+                .expect("drain result receiver must remain live");
+        });
+
+        // Drain has resolved actor_id, incremented send_pin_count under
+        // LIVE_ACTORS, and is paused immediately before hew_actor_stop.
+        drain_entered.wait();
+
+        let actor_addr = actor as usize;
+        let (free_done_tx, free_done_rx) = std::sync::mpsc::channel();
+        let free = std::thread::spawn(move || {
+            // SAFETY: the drain pin keeps the allocation live until stop has
+            // returned; the free path then owns final reclamation.
+            let status = unsafe { hew_actor_free(actor_addr as *mut HewActor) };
+            free_done_tx
+                .send(status)
+                .expect("free result receiver must remain live");
+        });
+
+        // Free has latched the actor terminal and removed it from LIVE_ACTORS,
+        // but is paused before it can wait on or reclaim the drain pin.
+        free_entered.wait();
+        let retired_before_stop = !live_actors::is_actor_live_with_id(actor_id, actor);
+        // SAFETY: free is blocked at the post-retire hook, so the allocation is
+        // still live even in the counterfactual where the drain pin is absent.
+        let pin_while_retired = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+        let drain_blocked_before_release = matches!(
+            drain_done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        let free_blocked_before_release = matches!(
+            free_done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        // Let drain perform its sole raw-pointer dereference and release the
+        // pin. Free remains paused, making the post-stop count safe to inspect.
+        drain_release.wait();
+        let drain_result = drain_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("drain_set must finish after its stop pin is released");
+        drain.join().expect("drain thread");
+        // SAFETY: free is still blocked before its pin-drain/finalize sequence.
+        let pin_after_stop = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+
+        free_release.wait();
+        let free_result = free_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("free must finish after the drain pin reaches zero");
+        free.join().expect("free thread");
+
+        assert!(
+            retired_before_stop,
+            "free must reach the final untracked window while drain is paused"
+        );
+        assert_eq!(
+            pin_while_retired, 1,
+            "the drain target must own exactly one allocation pin across stop"
+        );
+        assert!(
+            drain_blocked_before_release,
+            "drain_set must remain paused before the raw-pointer stop"
+        );
+        assert!(
+            free_blocked_before_release,
+            "free must not complete while the drain pin is still owned"
+        );
+        assert_eq!(
+            drain_result,
+            (0, 0, 0),
+            "retired actor must resolve to a successful drained outcome"
+        );
+        assert_eq!(
+            pin_after_stop, 0,
+            "drain must release its allocation pin exactly once after stop"
+        );
+        assert_eq!(free_result, 0, "final actor free must succeed");
     }
 
     #[test]

@@ -33,6 +33,8 @@ pub enum CryptoError {
     InvalidUtf8;
     /// Native string allocation failed.
     AllocationFailure;
+    /// The system entropy source could not produce a nonce.
+    EntropyFailure;
 }
 
 fn crypto_error_from_i32(code: i32) -> CryptoError { // INTERNAL-ABI: C ABI error tag is i32 repr(C)
@@ -43,6 +45,7 @@ fn crypto_error_from_i32(code: i32) -> CryptoError { // INTERNAL-ABI: C ABI erro
         3 => CryptoError::AuthFailed,
         4 => CryptoError::InvalidUtf8,
         5 => CryptoError::AllocationFailure,
+        6 => CryptoError::EntropyFailure,
         _ => CryptoError::AuthFailed,
     }
 }
@@ -56,6 +59,7 @@ pub fn error_message(err: CryptoError) -> string {
         CryptoError::AuthFailed => "encrypt authentication failed",
         CryptoError::InvalidUtf8 => "encrypt plaintext was not valid UTF-8",
         CryptoError::AllocationFailure => "encrypt native allocation failed",
+        CryptoError::EntropyFailure => "encrypt system entropy source failed",
     }
 }
 
@@ -168,8 +172,8 @@ fn crypto_error_from_i32_poisoned_codes_never_decode_to_none() {
     assert(crypto_error_from_i32(99) == CryptoError::AuthFailed);
     assert(crypto_error_from_i32(-1) != CryptoError::None);
     assert(crypto_error_from_i32(-1) == CryptoError::AuthFailed);
-    assert(crypto_error_from_i32(6) != CryptoError::None);
-    assert(crypto_error_from_i32(6) == CryptoError::AuthFailed);
+    assert(crypto_error_from_i32(7) != CryptoError::None);
+    assert(crypto_error_from_i32(7) == CryptoError::AuthFailed);
     assert(crypto_error_from_i32(100) != CryptoError::None);
     assert(crypto_error_from_i32(100) == CryptoError::AuthFailed);
 

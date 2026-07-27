@@ -33,6 +33,7 @@ pub enum HewEncryptError {
     AuthFailed = 3,
     InvalidUtf8 = 4,
     AllocationFailure = 5,
+    EntropyFailure = 6,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,7 +50,8 @@ impl From<EncryptError> for HewEncryptError {
         match err {
             EncryptError::InvalidKeyLength => HewEncryptError::InvalidKey,
             EncryptError::ShortCiphertext => HewEncryptError::ShortCiphertext,
-            EncryptError::AuthFailed | EncryptError::RngFailure => HewEncryptError::AuthFailed,
+            EncryptError::AuthFailed => HewEncryptError::AuthFailed,
+            EncryptError::RngFailure => HewEncryptError::EntropyFailure,
             EncryptError::InvalidUtf8 => HewEncryptError::InvalidUtf8,
         }
     }
@@ -58,6 +60,19 @@ impl From<EncryptError> for HewEncryptError {
 thread_local! {
     static LAST_OPEN_ERROR: Cell<HewEncryptError> = const { Cell::new(HewEncryptError::None) };
     static LAST_SEAL_ERROR: Cell<HewEncryptError> = const { Cell::new(HewEncryptError::None) };
+    #[cfg(test)]
+    static FORCE_SEAL_RNG_FAILURE: Cell<bool> = const { Cell::new(false) };
+}
+
+fn take_forced_seal_rng_failure() -> bool {
+    #[cfg(test)]
+    {
+        FORCE_SEAL_RNG_FAILURE.with(|slot| slot.replace(false))
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 fn set_last_open_error(err: HewEncryptError) {
@@ -106,6 +121,9 @@ fn seal_impl(key_bytes: &[u8], plaintext: &str) -> Result<Vec<u8>, EncryptError>
     let key = make_key(key_bytes)?;
     let rng = SystemRandom::new();
     let mut nonce_bytes = [0u8; NONCE_LEN];
+    if take_forced_seal_rng_failure() {
+        return Err(EncryptError::RngFailure);
+    }
     rng.fill(&mut nonce_bytes)
         .map_err(|_| EncryptError::RngFailure)?;
 
@@ -466,6 +484,25 @@ mod tests {
             offset: 0,
             len: u32::try_from(data.len()).expect("test input fits in u32"),
         }
+    }
+
+    #[test]
+    fn seal_entropy_failure_is_distinct_from_authentication_failure() {
+        let _ = hew_encrypt_last_seal_error_code();
+        let mut key = TEST_KEY;
+        let triple = borrowed_triple(&mut key);
+        let plaintext = CString::new("hew").expect("no interior NUL");
+        FORCE_SEAL_RNG_FAILURE.with(|slot| slot.set(true));
+
+        // SAFETY: both arguments are valid for the duration of the call.
+        let out = unsafe { hew_encrypt_try_seal_base64_hew(&raw const triple, plaintext.as_ptr()) };
+
+        assert!(out.is_null());
+        assert_eq!(
+            hew_encrypt_last_seal_error_code(),
+            HewEncryptError::EntropyFailure as i32
+        );
+        assert_ne!(HewEncryptError::EntropyFailure, HewEncryptError::AuthFailed);
     }
 
     /// A key the cipher cannot use is reported through the status slot rather

@@ -23,6 +23,12 @@ pub const HEW_RANDOM_NEGATIVE_LEN: i32 = 1;
 pub const HEW_RANDOM_LEN_TOO_LARGE: i32 = 2;
 /// The system entropy source refused to fill the buffer.
 pub const HEW_RANDOM_RNG_FAILURE: i32 = 3;
+/// Largest random draw accepted by the public API (16 MiB).
+///
+/// This is deliberately below the representational `u32` ceiling so an
+/// attacker-controlled length cannot drive an infallible multi-gigabyte
+/// allocation before the entropy source is consulted.
+pub const HEW_RANDOM_MAX_LEN: usize = 16 * 1024 * 1024;
 
 thread_local! {
     static LAST_RANDOM_ERROR: Cell<i32> = const { Cell::new(HEW_RANDOM_OK) };
@@ -353,7 +359,7 @@ pub unsafe extern "C" fn hew_random_bytes_hew(len: i64) -> BytesTriple {
         set_last_random_error(HEW_RANDOM_LEN_TOO_LARGE);
         return empty;
     };
-    if u32::try_from(n).is_err() {
+    if n > HEW_RANDOM_MAX_LEN {
         set_last_random_error(HEW_RANDOM_LEN_TOO_LARGE);
         return empty;
     }
@@ -700,6 +706,24 @@ mod tests {
         let drawn = unsafe { hew_random_bytes_hew(4_294_967_296) };
 
         assert_eq!(drawn.len, 0);
+        assert_eq!(hew_random_last_error_code(), HEW_RANDOM_LEN_TOO_LARGE);
+    }
+
+    #[test]
+    fn random_bytes_public_limit_has_exact_accept_reject_boundary() {
+        let _ = hew_random_last_error_code();
+        let max = i64::try_from(HEW_RANDOM_MAX_LEN).unwrap();
+
+        // SAFETY: no pointer arguments; runtime owns the output allocation.
+        let drawn = unsafe { hew_random_bytes_hew(max) };
+        assert_eq!(drawn.len, u32::try_from(HEW_RANDOM_MAX_LEN).unwrap());
+        assert_eq!(hew_random_last_error_code(), HEW_RANDOM_OK);
+        // SAFETY: drawn.ptr is the owned bytes allocation returned above.
+        unsafe { hew_runtime::bytes::hew_bytes_drop(drawn.ptr) };
+
+        // SAFETY: no pointer arguments.
+        let refused = unsafe { hew_random_bytes_hew(max + 1) };
+        assert_eq!(refused.len, 0);
         assert_eq!(hew_random_last_error_code(), HEW_RANDOM_LEN_TOO_LARGE);
     }
 

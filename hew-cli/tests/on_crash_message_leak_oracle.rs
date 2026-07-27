@@ -62,7 +62,7 @@ use support::leak_slope::{parse_leaks_summary, require_leaks_tool};
 use std::path::PathBuf;
 use std::process::Command;
 
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, hew_binary, repo_root, require_codegen, run_bounded_command};
 
 /// Compile the named committed fixture to a native binary and return its path.
 fn compile_fixture(name: &str, dir: &std::path::Path) -> PathBuf {
@@ -71,16 +71,16 @@ fn compile_fixture(name: &str, dir: &std::path::Path) -> PathBuf {
         .join(format!("{name}.hew"));
     assert!(src.is_file(), "fixture not found: {}", src.display());
 
-    let output = Command::new(hew_binary())
+    let mut command = Command::new(hew_binary());
+    command
         .args([
             "compile",
             "--emit-dir",
             dir.to_str().expect("emit-dir utf-8"),
             src.to_str().expect("src utf-8"),
         ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
+        .current_dir(repo_root());
+    let output = run_bounded_command(command, format!("compile fixture {name}"));
 
     assert!(
         output.status.success(),
@@ -101,7 +101,8 @@ fn compile_fixture(name: &str, dir: &std::path::Path) -> PathBuf {
 /// `MallocStackLogging` so leak roots carry symbolised stacks. A declined
 /// attachment is a provisioning failure, never a successful measurement.
 fn leaks_report(bin: &std::path::Path) -> String {
-    let output = Command::new("leaks")
+    let mut command = Command::new("leaks");
+    command
         .arg("--atExit")
         .arg("--")
         .arg(bin)
@@ -109,9 +110,8 @@ fn leaks_report(bin: &std::path::Path) -> String {
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
         .env("MallocGuardEdges", "1")
-        .env("HEW_WORKERS", "2")
-        .output()
-        .unwrap_or_else(|error| panic!("invoke leaks for {}: {error}", bin.display()));
+        .env("HEW_WORKERS", "2");
+    let output = run_bounded_command(command, format!("inspect {} with leaks(1)", bin.display()));
     assert!(
         output.status.success() || !output.stdout.is_empty(),
         "leaks declined to attach to {}: {}. A leak oracle that cannot measure must not \
@@ -123,13 +123,13 @@ fn leaks_report(bin: &std::path::Path) -> String {
 }
 
 fn assert_plain_exit(bin: &std::path::Path, expected: i32, label: &str) {
-    let run = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
         .env("MallocGuardEdges", "1")
-        .env("HEW_WORKERS", "2")
-        .output()
-        .unwrap_or_else(|error| panic!("run {label} under guard malloc: {error}"));
+        .env("HEW_WORKERS", "2");
+    let run = run_bounded_command(command, format!("run {label} under guard malloc"));
     assert_eq!(
         run.status.code(),
         Some(expected),

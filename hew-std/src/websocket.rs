@@ -9,7 +9,7 @@ use crate::bind_addr::normalize_bind_addr;
 use hew_cabi::cabi::{alloc_cstring, free_cstring, malloc_bytes};
 use std::ffi::{c_void, CStr};
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -18,9 +18,11 @@ use parking_lot::Mutex as PlMutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use tungstenite::client::connect_with_config;
+use tungstenite::client::{client_with_config, uri_mode, IntoClientRequest};
 use tungstenite::protocol::{Role, WebSocketConfig};
-use tungstenite::stream::MaybeTlsStream;
+use tungstenite::stream::{MaybeTlsStream, Mode};
 use tungstenite::{Message, WebSocket};
 
 /// Test-only drop counter for the outer `HewWsConn` Box.
@@ -883,8 +885,8 @@ pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
         }
     };
 
-    match connect_with_config(url_str, Some(config), 3) {
-        Ok((ws, _response)) => {
+    match connect_preserving_errno(url_str, config, 3) {
+        Ok(ws) => {
             clear_ws_last_error();
             Box::into_raw(Box::new(HewWsConn::new(ws, Role::Client)))
         }
@@ -895,11 +897,95 @@ pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
     }
 }
 
+/// Connect once per resolved address while retaining the final socket errno.
+///
+/// `tungstenite::connect_with_config` discards every `TcpStream::connect`
+/// error and returns only `UrlError::UnableToConnect`. Reconnecting merely to
+/// recover an errno creates a TOCTOU race and can establish an unwanted second
+/// transport. This mirrors tungstenite's blocking client flow, but carries the
+/// actual error from the one authoritative connect attempt into Hew's typed
+/// error channel.
+fn connect_preserving_errno(
+    url_str: &str,
+    config: WebSocketConfig,
+    max_redirects: u8,
+) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, tungstenite::Error> {
+    let mut current = url_str.to_owned();
+
+    for attempt in 0..=max_redirects {
+        let request = current.as_str().into_client_request()?;
+        let uri = request.uri();
+        let mode = uri_mode(uri)?;
+        if matches!(mode, Mode::Tls) {
+            // hew-std currently builds tungstenite without a TLS connector,
+            // matching connect_with_config's existing fail-closed behaviour.
+            return Err(tungstenite::Error::Url(
+                tungstenite::error::UrlError::TlsFeatureNotEnabled,
+            ));
+        }
+        let host = uri
+            .host()
+            .ok_or(tungstenite::Error::Url(
+                tungstenite::error::UrlError::NoHostName,
+            ))?
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let port = uri.port_u16().unwrap_or(80);
+
+        let mut last_connect_error = None;
+        let mut connected = None;
+        for addr in (host, port).to_socket_addrs()? {
+            match TcpStream::connect(addr) {
+                Ok(stream) => {
+                    connected = Some(stream);
+                    break;
+                }
+                Err(err) => last_connect_error = Some(err),
+            }
+        }
+        let Some(stream) = connected else {
+            return Err(match last_connect_error {
+                Some(err) => tungstenite::Error::Io(err),
+                None => {
+                    tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(current))
+                }
+            });
+        };
+        stream.set_nodelay(true)?;
+
+        let handshake = client_with_config(request, MaybeTlsStream::Plain(stream), Some(config))
+            .map_err(|err| match err {
+                tungstenite::HandshakeError::Failure(failure) => failure,
+                tungstenite::HandshakeError::Interrupted(_) => {
+                    panic!("blocking WebSocket handshake unexpectedly interrupted")
+                }
+            });
+
+        match handshake {
+            Ok((ws, _response)) => return Ok(ws),
+            Err(tungstenite::Error::Http(response))
+                if response.status().is_redirection() && attempt < max_redirects =>
+            {
+                if let Some(location) = response.headers().get("Location") {
+                    location.to_str()?.clone_into(&mut current);
+                    continue;
+                }
+                return Err(tungstenite::Error::Http(response));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    unreachable!("WebSocket redirect loop always returns or continues")
+}
+
 /// Recover the OS errno a tungstenite error carries, or 0 when it is a
 /// protocol/handshake failure with no syscall behind it.
 fn ws_errno_of(err: &tungstenite::Error) -> i64 {
     match err {
         tungstenite::Error::Io(io_err) => io_err.raw_os_error().map_or(0, i64::from),
+        tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(_)) => 0,
+        tungstenite::Error::Url(_) | tungstenite::Error::HttpFormat(_) => -1,
         _ => 0,
     }
 }
@@ -2065,10 +2151,26 @@ mod tests {
 
     #[test]
     fn connect_returns_null_for_invalid_url() {
-        let url = c"ws://127.0.0.1:1";
-        // SAFETY: url is a valid C string literal.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("claim loopback port");
+        let port = listener.local_addr().expect("read loopback port").port();
+        drop(listener);
+        let url =
+            std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).expect("URL contains no NUL");
+        // SAFETY: url is a valid C string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "expected null for unreachable address");
+        assert!(
+            matches!(hew_ws_last_errno(), 61 | 111 | 10061),
+            "closed loopback port must retain ECONNREFUSED"
+        );
+        assert!(
+            ws_last_error_text().contains("Connection refused"),
+            "the precise transport failure must remain observable"
+        );
+        assert!(
+            matches!(hew_ws_last_errno(), 61 | 111 | 10061),
+            "reading detail must not consume errno"
+        );
     }
 
     #[test]
@@ -2311,6 +2413,26 @@ mod tests {
         // SAFETY: url is a valid C string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "non-WebSocket URL should fail");
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert!(
+            ws_last_error_text().contains("URL error: URL scheme not supported"),
+            "unsupported grammar detail must remain observable"
+        );
+        assert_eq!(hew_ws_last_errno(), -1);
+    }
+
+    #[test]
+    fn connect_malformed_url_is_invalid_argument_not_other_zero() {
+        let url = c"not a url";
+        // SAFETY: url is a valid C string.
+        let conn = unsafe { hew_ws_connect(url.as_ptr()) };
+        assert!(conn.is_null(), "malformed URL should fail");
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert_eq!(
+            ws_last_error_text(),
+            "websocket.connect: HTTP format error: invalid uri character"
+        );
+        assert_eq!(hew_ws_last_errno(), -1);
     }
 
     /// connect with an empty string returns null.
@@ -2320,6 +2442,8 @@ mod tests {
         // SAFETY: url is a valid C string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "empty URL should fail");
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert!(!ws_last_error_text().is_empty());
     }
 
     // ── Server tests ────────────────────────────────────────────────

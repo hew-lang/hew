@@ -155,6 +155,18 @@ pub fn try_duration_ms(context: string, ms: i64) -> Result<i64, NetError> {
     Ok(ms)
 }
 
+/// Validate a TCP connection timeout, preserving its negative "clear" sentinel.
+///
+/// The public API deliberately accepts any negative `i64` to clear an existing
+/// timeout. Normalize that whole domain to `-1` before narrowing to the runtime
+/// ABI, so values such as `i64::MIN` cannot wrap to a non-negative timeout.
+fn try_connection_timeout_ms(context: string, ms: i64) -> Result<i64, NetError> {
+    if ms < 0 {
+        return Ok(-1);
+    }
+    try_duration_ms(context, ms)
+}
+
 /// Validate a byte count that the C ABI carries as an `i32`.
 pub fn try_size_arg(context: string, size: i64) -> Result<i64, NetError> {
     if size < 0 {
@@ -670,14 +682,14 @@ impl ConnectionMethods for Connection {
     }
     /// Set the read timeout in milliseconds.
     fn set_read_timeout(conn: Connection, ms: i64) -> Result<(), NetError> {
-        let checked = try_duration_ms("net.Connection.set_read_timeout", ms)?;
+        let checked = try_connection_timeout_ms("net.Connection.set_read_timeout", ms)?;
         net_result_from_status(unsafe {
             hew_tcp_set_read_timeout(conn, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
     /// Set the write timeout in milliseconds.
     fn set_write_timeout(conn: Connection, ms: i64) -> Result<(), NetError> {
-        let checked = try_duration_ms("net.Connection.set_write_timeout", ms)?;
+        let checked = try_connection_timeout_ms("net.Connection.set_write_timeout", ms)?;
         net_result_from_status(unsafe {
             hew_tcp_set_write_timeout(conn, checked as i32) // INTERNAL-ABI: range-checked above
         })

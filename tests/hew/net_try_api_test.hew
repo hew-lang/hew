@@ -196,3 +196,34 @@ fn test_try_read_delivers_payload_bytes_unchanged() {
     server.close();
     listener.close();
 }
+
+#[test]
+fn test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowing() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let client = net.connect(f"127.0.0.1:{port as i64}");
+    let server = listener.accept();
+    match client.set_read_timeout(-9223372036854775807) {
+        Ok(()) => {},
+        Err(err) => panic(f"negative read-timeout clear failed: {net.net_error_message(err)}"),
+    }
+    match client.set_write_timeout(-4294967296) {
+        Ok(()) => {},
+        Err(err) => panic(f"negative write-timeout clear failed: {net.net_error_message(err)}"),
+    }
+    match client.set_read_timeout(2147483648) {
+        Ok(()) => panic("unrepresentable read timeout reached the i32 runtime ABI"),
+        Err(NetError::InvalidArgument(_)) => {},
+        Err(err) => panic(f"unexpected read-timeout error: {net.net_error_message(err)}"),
+    }
+    match client.set_write_timeout(4294967796) {
+        Ok(()) => panic("wrapped write timeout reached the i32 runtime ABI"),
+        Err(NetError::InvalidArgument(_)) => {},
+        Err(err) => panic(f"unexpected write-timeout error: {net.net_error_message(err)}"),
+    }
+    client.close();
+    server.close();
+    listener.close();
+}

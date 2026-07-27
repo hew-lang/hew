@@ -407,7 +407,19 @@ fn io_errno_of(err: &(dyn std::error::Error + 'static)) -> i64 {
     let mut current = Some(err);
     while let Some(e) = current {
         if let Some(io_err) = e.downcast_ref::<io::Error>() {
-            return io_err.raw_os_error().map_or(0, i64::from);
+            if let Some(errno) = io_err.raw_os_error() {
+                return i64::from(errno);
+            }
+            if matches!(
+                io_err.kind(),
+                io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+            ) {
+                // No syscall produced this error: the listener grammar was
+                // rejected before bind, so the Hew surface must classify the
+                // failure as InvalidArgument rather than Other(0).
+                return -1;
+            }
+            return 0;
         }
         current = e.source();
     }
@@ -1306,6 +1318,18 @@ mod tests {
         // SAFETY: addr is a valid C string literal.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(srv.is_null(), "invalid address should return null");
+        assert_eq!(hew_http_last_listen_errno(), -1);
+        assert_eq!(
+            http_last_error_text(),
+            "http.listen: cannot bind `not-a-valid-address`"
+        );
+        // Classification and detail are observational; neither read consumes
+        // the actor-local pair needed by the Hew surface.
+        assert_eq!(hew_http_last_listen_errno(), -1);
+        assert_eq!(
+            http_last_error_text(),
+            "http.listen: cannot bind `not-a-valid-address`"
+        );
     }
 
     // -- set_max_body -------------------------------------------------

@@ -85,8 +85,13 @@ fn test_http_listen_reports_an_unparsable_address_as_a_failure() {
             panic("expected an unparsable address to be rejected");
         },
         Err(err) => {
-            let reason = net.net_error_message(err);
-            testing.assert_true(reason.contains("cannot bind"));
+            match err {
+                NetError::InvalidArgument(detail) => {
+                    testing.assert_eq_str(detail, "http.listen: cannot bind `not an address`");
+                    testing.assert_eq_str(http.listen_error(), detail);
+                },
+                _ => panic(f"expected InvalidArgument, got {net.net_error_message(err)}"),
+            }
         },
     }
 }
@@ -179,8 +184,12 @@ fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
             panic("expected a connect to a closed port to fail");
         },
         Err(err) => {
-            let reason = net.net_error_message(err);
-            testing.assert_true(reason.contains("ConnectionRefused"));
+            match err {
+                NetError::ConnectionRefused(_) => {
+                    testing.assert_true(websocket.last_error().contains("Connection refused"));
+                },
+                _ => panic(f"expected ConnectionRefused, got {net.net_error_message(err)}"),
+            }
         },
     }
 }
@@ -193,8 +202,13 @@ fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
             panic("expected an unparsable url to be rejected");
         },
         Err(err) => {
-            let reason = net.net_error_message(err);
-            testing.assert_true(reason.contains("InvalidArgument"));
+            match err {
+                NetError::InvalidArgument(detail) => {
+                    testing.assert_eq_str(detail, "websocket.connect: HTTP format error: invalid uri character");
+                    testing.assert_eq_str(websocket.last_error(), detail);
+                },
+                _ => panic(f"expected InvalidArgument, got {net.net_error_message(err)}"),
+            }
         },
     }
 }

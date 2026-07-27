@@ -935,6 +935,7 @@ stable-stdlib = [
   "hew_http_server_close",
   "hew_http_server_new",
   "hew_http_server_is_valid",
+  "hew_http_server_port",
   "hew_http_server_recv",
   "hew_http_server_set_request_timeout_ms",
   "hew_http_set_timeout",
@@ -5505,6 +5506,13 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_http_server_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_server_port"
 result = "none"
 params = ["borrow"]
 release-symbol = ""

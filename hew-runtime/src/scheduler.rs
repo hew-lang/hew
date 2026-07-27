@@ -2032,17 +2032,25 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     let mailbox = a.mailbox.cast::<HewMailbox>();
 
     let cur_state = a.actor_state.load(Ordering::Acquire);
+    if cur_state == HewActorState::Stopped as i32 || cur_state == HewActorState::Crashed as i32 {
+        // An external trap can publish the terminal state while this scheduler
+        // frame still owns the mailbox consumer. The trap cannot drain safely
+        // in that case; do it here before `dispatch_active` is released.
+        // SAFETY: this activation remains the sole mailbox consumer.
+        unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
+        return;
+    }
     if cur_state == HewActorState::Stopping as i32 {
         // Reclaim anything still queued BEFORE the terminal state is published.
         // The shutdown sentinel outranks the user queue, so this activation can
         // reach `Stopping` with user messages — including asks whose callers are
         // blocked on their reply channels — still in the mailbox. See
-        // `mailbox_reclaim_queued_on_stop` for why draining here is the wake.
+        // `mailbox_reclaim_queued_terminal` for why draining here is the wake.
         //
         // SAFETY: this worker owns the activation and is the mailbox's sole
         // consumer; `Stopping` is not quiescent, so no concurrent
         // `hew_actor_free` can be freeing the mailbox underneath the drain.
-        unsafe { mailbox::mailbox_reclaim_queued_on_stop(mailbox) };
+        unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
         if a.actor_state
             .compare_exchange(
                 HewActorState::Stopping as i32,
@@ -2133,6 +2141,13 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
                 )
                 .is_ok()
         {
+            // A producer can have passed the mailbox's open check before close,
+            // then publish its node after our empty recheck but before its own
+            // wake CAS. Winning Idle -> Stopped makes that CAS fail, so this
+            // worker is the last consumer that can retire the node.
+            // SAFETY: this activation owns the mailbox consumer and the actor
+            // remains live until the activation returns.
+            unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
             crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
             // Terminal, same reasoning as the `Stopping -> Stopped` settle
             // above: a pump that stops here (mailbox closed while it sat idle
@@ -2182,23 +2197,39 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 /// time. A worker that loses the `Runnable -> Running` CAS therefore has no
 /// concurrent winner whose flag its clear could erase.
 struct ActivationOwnership<'a> {
-    flag: &'a std::sync::atomic::AtomicBool,
+    actor: &'a HewActor,
 }
 
 impl<'a> ActivationOwnership<'a> {
     /// Mark the activation owned. Call BEFORE the `Runnable -> Running` CAS so
     /// the flag is already published when the actor first becomes `Running`.
-    fn claim(flag: &'a std::sync::atomic::AtomicBool) -> Self {
-        flag.store(true, Ordering::Release);
-        Self { flag }
+    fn claim(actor: &'a HewActor) -> Self {
+        actor.dispatch_active.store(true, Ordering::Release);
+        Self { actor }
     }
 }
 
 impl Drop for ActivationOwnership<'_> {
     fn drop(&mut self) {
+        let terminal_state = self.actor.actor_state.load(Ordering::Acquire);
+        if terminal_state == HewActorState::Stopped as i32
+            || terminal_state == HewActorState::Crashed as i32
+        {
+            // This is the last edge before a trap-notified supervisor may
+            // observe `dispatch_active == false` and reclaim the actor/mailbox.
+            // It also closes the narrow race where an external trap publishes
+            // terminal after the activation's last explicit state check.
+            //
+            // SAFETY: this guard still publishes exclusive activation
+            // ownership, so no other mailbox consumer or actor free can run.
+            unsafe {
+                mailbox::mailbox_reclaim_queued_terminal(self.actor.mailbox.cast::<HewMailbox>());
+            }
+        }
         // Release so a free path that subsequently observes the cleared flag
-        // also observes every write this activation made to the actor box.
-        self.flag.store(false, Ordering::Release);
+        // also observes every write and queued-node retirement this activation
+        // made to the actor box.
+        self.actor.dispatch_active.store(false, Ordering::Release);
     }
 }
 
@@ -2254,7 +2285,7 @@ fn activate_actor(actor: *mut HewActor) {
     // below (settle / suspend-park / crash-break / fall-through) so the async
     // free path cannot reclaim the actor box while this worker is still reading
     // it. See `ActivationOwnership`.
-    let activation_ownership = ActivationOwnership::claim(&a.dispatch_active);
+    let activation_ownership = ActivationOwnership::claim(a);
 
     // CAS: RUNNABLE → RUNNING.
     if a.actor_state
@@ -2472,10 +2503,15 @@ fn activate_actor(actor: *mut HewActor) {
                         crate::signal::clear_dispatch_recovery();
                         crate::observe::observe_dispatch_abandon(observe_dispatch_ticket);
                         // SAFETY: `actor` is valid — we hold it via CAS.
-                        unsafe { crate::actor::hew_actor_trap(actor, -1) };
                         // SAFETY: `msg` is exclusively owned by this worker.
                         unsafe { hew_msg_node_free(msg) };
-                        crate::crash::record_injected_crash(a.id);
+                        let actor_id = a.id;
+                        // SAFETY: this frame owns the actor activation and has
+                        // already retired its in-flight message.
+                        unsafe { crate::actor::hew_actor_trap_from_activation(actor, -1) };
+                        // Do not read through `a` after trap notification can
+                        // transfer the crashed incarnation to a supervisor.
+                        crate::crash::record_injected_crash(actor_id);
                         crashed = true;
                         break;
                     }
@@ -2594,7 +2630,7 @@ fn activate_actor(actor: *mut HewActor) {
                         // SAFETY: `actor` is the actor currently owned by this
                         // scheduler frame.
                         unsafe {
-                            crate::actor::hew_actor_trap(
+                            crate::actor::hew_actor_trap_from_activation(
                                 actor,
                                 crate::actor::HEW_ACTOR_STATE_LOCK_ERR,
                             );
@@ -2697,7 +2733,7 @@ fn activate_actor(actor: *mut HewActor) {
                         // SAFETY: `actor` is the actor currently owned by this
                         // scheduler frame.
                         unsafe {
-                            crate::actor::hew_actor_trap(
+                            crate::actor::hew_actor_trap_from_activation(
                                 actor,
                                 crate::actor::HEW_ACTOR_STATE_LOCK_ERR,
                             );
@@ -3046,8 +3082,20 @@ fn activate_actor(actor: *mut HewActor) {
         unsafe { crate::arena::hew_arena_reset(actor_arena) };
     }
 
-    // After a crash, the actor may have been freed by a supervisor on
-    // another worker — do not access `a` or `mailbox` from here on.
+    // An external trap defers its mailbox drain while this frame owns the
+    // consumer. `dispatch_active` prevents a supervisor from freeing the actor
+    // until the activation-ownership guard drops, so retire any queued nodes
+    // before releasing that ownership. Owned crash publication already drained
+    // the queue; this second pass is harmless and keeps one exit invariant.
+    let terminal_state = a.actor_state.load(Ordering::Acquire);
+    if terminal_state == HewActorState::Stopped as i32
+        || terminal_state == HewActorState::Crashed as i32
+    {
+        // SAFETY: this frame still owns the activation/mailbox consumer.
+        unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
+    }
+
+    // After a crash, do not enter the normal Running-state settle.
     if crashed {
         return;
     }
@@ -3061,12 +3109,12 @@ fn activate_actor(actor: *mut HewActor) {
         // of user messages that were enqueued first — so the loop above breaks
         // on the sentinel with those messages still queued. A queued ask holds
         // the sender-side reply reference its caller is blocked on, and freeing
-        // the node is what retires it. See `mailbox_reclaim_queued_on_stop`.
+        // the node is what retires it. See `mailbox_reclaim_queued_terminal`.
         //
         // SAFETY: this worker owns the activation and is the mailbox's sole
         // consumer; `Stopping` is not quiescent, so no concurrent
         // `hew_actor_free` can be freeing the mailbox underneath the drain.
-        unsafe { mailbox::mailbox_reclaim_queued_on_stop(mailbox) };
+        unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
         // Finalize: Stopping → Stopped.
         if a.actor_state
             .compare_exchange(
@@ -3176,6 +3224,13 @@ fn activate_actor(actor: *mut HewActor) {
                     )
                     .is_ok()
                 {
+                    // Close can race a producer that already passed its open
+                    // check. If its enqueue lands after the empty recheck and
+                    // before its Idle -> Runnable CAS, this terminal CAS makes
+                    // the wake fail; retire that late node while this worker
+                    // still owns the live mailbox.
+                    // SAFETY: this activation is the mailbox's sole consumer.
+                    unsafe { mailbox::mailbox_reclaim_queued_terminal(mailbox) };
                     crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
                     // Terminal, same reasoning as the `Stopping -> Stopped`
                     // finalize above.
@@ -7055,6 +7110,147 @@ mod tests {
 
         take_default_runtime_for_test();
         ACTIVE_WORKERS.store(0, Ordering::Release);
+    }
+
+    /// Full production crash witness for #2831.
+    ///
+    /// Two retained ask nodes enter the real mailbox. `activate_actor` dequeues
+    /// the first (making it the frame-owned in-flight ask), then deterministic
+    /// crash injection drives the production trap publisher while the second
+    /// ask is still queued. The trap must reclaim the queued node BEFORE
+    /// notification can transfer the crashed incarnation, and the activation
+    /// must independently retire its in-flight node. Exact node identities,
+    /// channel refs, actor registry count, and coroutine-frame gauges all
+    /// balance.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::undocumented_unsafe_blocks,
+        reason = "the production-path FFI witness keeps exact ownership assertions in activation order"
+    )]
+    fn injected_crash_settles_inflight_and_queued_asks_before_activation_returns() {
+        let _rt = crate::runtime_test_guard();
+        let _sched = NoWorkerSchedulerForTest::install();
+
+        let actor_baseline = crate::lifetime::live_actors::actor_count_for_test();
+        let channel_baseline = crate::reply_channel::active_channel_count();
+        let node_baseline = mailbox::active_ask_node_count_for_test();
+        let frame_baseline = crate::observe::coroutine_snapshot();
+
+        // SAFETY: fresh mailbox, owned until the end of the test.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        let inflight_ch = crate::reply_channel::hew_reply_channel_new();
+        let queued_ch = crate::reply_channel::hew_reply_channel_new();
+        assert!(!inflight_ch.is_null() && !queued_ch.is_null());
+        // Mint the sender-side references transferred to the two ask nodes.
+        // SAFETY: both channels are fresh and creator-owned.
+        unsafe {
+            crate::reply_channel::hew_reply_channel_retain(inflight_ch);
+            crate::reply_channel::hew_reply_channel_retain(queued_ch);
+        }
+        // SAFETY: live mailbox, empty payloads, valid retained channels.
+        assert_eq!(
+            unsafe {
+                mailbox::hew_mailbox_send_with_reply(
+                    mailbox,
+                    1,
+                    ptr::null_mut(),
+                    0,
+                    inflight_ch.cast(),
+                )
+            },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                mailbox::hew_mailbox_send_with_reply(
+                    mailbox,
+                    2,
+                    ptr::null_mut(),
+                    0,
+                    queued_ch.cast(),
+                )
+            },
+            0
+        );
+        let inflight_node =
+            mailbox::ask_node_for_reply_channel_for_test(inflight_ch.cast::<c_void>());
+        let queued_node = mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast::<c_void>());
+        assert!(!inflight_node.is_null() && !queued_node.is_null());
+        assert_ne!(inflight_node, queued_node);
+        assert_eq!(mailbox::active_ask_node_count_for_test(), node_baseline + 2);
+
+        let mut stub = stub_actor();
+        stub.dispatch = Some(noop_dispatch);
+        stub.mailbox = mailbox.cast();
+        stub.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        let actor = TrackedTestActor::install(stub);
+        let actor_ptr = actor.ptr();
+        assert_eq!(
+            crate::lifetime::live_actors::actor_count_for_test(),
+            actor_baseline + 1
+        );
+
+        // Crash at the production seam after dequeue and before handler entry:
+        // one node is frame-owned and one is still mailbox-owned.
+        crate::deterministic::hew_fault_inject_crash(actor.id, 1);
+        activate_actor(actor_ptr);
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Crashed as i32
+        );
+        assert_eq!(
+            // SAFETY: mailbox remains live; activation has returned.
+            unsafe { mailbox::hew_mailbox_len(mailbox) },
+            0
+        );
+        assert!(
+            mailbox::ask_node_for_reply_channel_for_test(inflight_ch.cast()).is_null(),
+            "the exact in-flight node is retired by its activation owner"
+        );
+        assert!(
+            mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast()).is_null(),
+            "the exact queued node is retired by the last live mailbox owner"
+        );
+        assert_eq!(mailbox::active_ask_node_count_for_test(), node_baseline);
+        for ch in [inflight_ch, queued_ch] {
+            // SAFETY: the test still owns each creator reference.
+            assert!(unsafe { crate::reply_channel::hew_reply_channel_is_ready_for_test(ch) });
+            assert_eq!(
+                // SAFETY: creator reference keeps ch live.
+                unsafe { crate::reply_channel::ref_count_for_test(ch) },
+                1,
+                "each sender-side reference is consumed exactly once"
+            );
+        }
+        let frame_after = crate::observe::coroutine_snapshot();
+        assert_eq!(frame_after.live, frame_baseline.live);
+        assert_eq!(
+            frame_after.frame_bytes_live,
+            frame_baseline.frame_bytes_live
+        );
+
+        // SAFETY: release creator refs after all channel assertions.
+        unsafe {
+            crate::reply_channel::hew_reply_channel_free(inflight_ch);
+            crate::reply_channel::hew_reply_channel_free(queued_ch);
+        }
+        assert_eq!(
+            crate::reply_channel::active_channel_count(),
+            channel_baseline
+        );
+
+        drop(actor);
+        assert_eq!(
+            crate::lifetime::live_actors::actor_count_for_test(),
+            actor_baseline
+        );
+        // SAFETY: no actor or activation references the drained mailbox now.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
     }
 
     thread_local! {

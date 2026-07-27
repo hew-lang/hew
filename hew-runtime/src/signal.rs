@@ -355,7 +355,7 @@ mod shared {
         // NOW notify supervisor (may trigger actor free on another thread).
         if !actor.is_null() {
             // SAFETY: actor pointer is valid (checked above).
-            unsafe { crate::actor::hew_actor_trap(actor, signal) };
+            unsafe { crate::actor::hew_actor_trap_from_activation(actor, signal) };
         }
 
         // Push crash report to global log using cached data.

@@ -494,7 +494,13 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
           CARGO_INCREMENTAL: "0"
-        run: >-  # parity-cmd: make test
+        run: |
+          # `make test-rust` carries `$(LIBHEW_READY)` and asserts the archive
+          # exists before running. This step invokes nextest directly, so it
+          # must build the archive itself — the workspace build used to produce
+          # it as a side effect, which is not a guarantee.
+          cargo build -p hew-lib
+          # parity-cmd: make test
           cargo nextest run --workspace
           --exclude hew-wasm
           --exclude hew-cabi

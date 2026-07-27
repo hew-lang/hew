@@ -331,8 +331,11 @@ impl HewWsConn {
     }
 
     fn close_handle(&self) {
-        self.inner.closed.store(true, Ordering::Release);
+        let first_close = !self.inner.closed.swap(true, Ordering::AcqRel);
         signal_reader_cancel(&self.inner);
+        if first_close {
+            send_close_frame(&self.inner);
+        }
         shutdown_socket(self.inner.shutdown_stream.as_ref(), Shutdown::Both);
 
         let reader_exited = wait_for_reader_exit_flag(&self.inner, READER_JOIN_WAIT);
@@ -545,6 +548,28 @@ fn send_ws_with_operation_gate(
     with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.send(message))
 }
 
+/// Best-effort WebSocket close handshake before the transport is shut down.
+///
+/// A raw socket shutdown first makes tungstenite's subsequent `close(None)`
+/// incapable of writing the protocol close frame (Windows reports a reset to
+/// the peer particularly reliably). Attached plain connections use the
+/// independent write framer; TLS and unattached connections use the primary
+/// framer. Either path is serialized with all other frame writes.
+fn send_close_frame(inner: &Arc<HewWsConnInner>) {
+    if let Some(write_ws_mutex) = inner.write_ws.as_ref() {
+        let mut guard = pl_lock(write_ws_mutex);
+        if let Some(ws) = guard.as_mut() {
+            let _ =
+                with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.close(None));
+        }
+        return;
+    }
+    let mut guard = pl_lock(&inner.ws);
+    if let Some(ws) = guard.as_mut() {
+        let _ = with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.close(None));
+    }
+}
+
 fn signal_reader_cancel(inner: &Arc<HewWsConnInner>) {
     if let Some(reader) = lock_or_recover(&inner.reader).as_ref() {
         reader.cancel.store(true, Ordering::Release);
@@ -601,10 +626,9 @@ fn drop_ws(inner: &Arc<HewWsConnInner>) {
         drop(pl_lock(write_ws_mutex).take());
     }
     let mut ws = pl_lock(&inner.ws);
-    let Some(mut ws) = ws.take() else {
+    let Some(ws) = ws.take() else {
         return;
     };
-    let _ = ws.close(None);
     drop(ws);
 }
 
@@ -2146,6 +2170,24 @@ mod tests {
         unsafe { actor::hew_actor_stop(actor) };
         assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
         unregister_actor_events(test_id);
+        unsafe { hew_ws_server_close(server) };
+    }
+
+    #[test]
+    fn local_close_writes_protocol_frame_before_transport_shutdown() {
+        let (server, conn, mut peer) = attach_test_conn();
+        set_peer_read_timeout(&mut peer, Duration::from_secs(1));
+
+        // SAFETY: `conn` is the live server-side handle from `attach_test_conn`.
+        unsafe { hew_ws_close(conn) };
+
+        match peer.read() {
+            Ok(Message::Close(_)) => {}
+            Ok(other) => panic!("expected WebSocket close frame, got {other:?}"),
+            Err(err) => panic!("peer observed transport failure instead of close frame: {err}"),
+        }
+
+        // SAFETY: `server` remains live and has not been closed.
         unsafe { hew_ws_server_close(server) };
     }
 

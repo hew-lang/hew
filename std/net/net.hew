@@ -178,17 +178,6 @@ pub fn try_size_arg(context: string, size: i64) -> Result<i64, NetError> {
     Ok(size)
 }
 
-/// Validate an actor message-type index that the C ABI carries as an `i32`.
-pub fn try_msg_type_arg(context: string, index: i64) -> Result<i64, NetError> {
-    if index < 0 {
-        return Err(NetError::InvalidArgument(f"{context}: invalid message-type index {index} (must be >= 0)"));
-    }
-    if index > abi_i32_max() {
-        return Err(NetError::InvalidArgument(f"{context}: invalid message-type index {index} (must be <= {abi_i32_max()})"));
-    }
-    Ok(index)
-}
-
 /// Validate a TCP/UDP port number.
 pub fn try_port_arg(context: string, port: i64) -> Result<i64, NetError> {
     if port < 0 || port > 65535 {

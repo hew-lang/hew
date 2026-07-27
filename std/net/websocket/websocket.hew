@@ -47,10 +47,6 @@
 
 import std::net;
 
-fn checked_attach_msg_type(context: string, index: i64) -> Result<i64, net.NetError> {
-    net.try_msg_type_arg(context, index)
-}
-
 fn checked_recv_deadline(deadline_ms: i64) -> Result<i64, net.NetError> {
     if deadline_ms <= 0 {
         Ok(0)
@@ -110,10 +106,10 @@ trait ConnMethods {
     /// is consumed and must not be used for recv() after this call.
     /// The actor can still call conn.send_text() for outbound messages.
     ///
-    /// `handler` is the actor that will receive on_message and on_close.
-    /// `on_message_type` is the msg_type index for the on_message receive fn.
-    /// `on_close_type` is the msg_type index for the on_close receive fn.
-    fn attach(self, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64);
+    /// `handler` is the actor that will receive `on_message` and `on_close`.
+    /// The compiler synthesises both protocol message IDs from the concrete
+    /// actor type behind the `LocalPid`.
+    fn attach(self, handler: LocalPid<WebSocketHandler>);
 }
 
 impl ConnMethods for Conn {
@@ -162,48 +158,12 @@ impl ConnMethods for Conn {
             hew_ws_close(conn)
         };
     }
-    fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64) {
-        match try_attach(conn, handler, on_message_type, on_close_type) {
-            Ok(()) => {},
-            Err(err) => {
-                panic(f"websocket.Conn.attach failed: {net.net_error_message(err)}");
-            },
-        }
-    }
-}
-
-/// Attach a WebSocket connection to an actor, returning a typed error on
-/// refusal.
-///
-/// Message-type indices are validated at Hew's full `i64` width before the
-/// runtime FFI is entered, so an out-of-range value cannot wrap to a different
-/// actor message.
-pub fn try_attach(conn: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64) -> Result<(), net.NetError> {
-    let checked_message = checked_attach_msg_type("websocket.try_attach.on_message_type", on_message_type)?;
-    let checked_close = checked_attach_msg_type("websocket.try_attach.on_close_type", on_close_type)?;
-    let status = unsafe {
-        hew_ws_attach(conn, handler, checked_message, checked_close)
-    };
-    if status == 0 {
-        Ok(())
-    } else {
-        let errno = unsafe {
-            hew_ws_last_errno()
-        };
-        if errno == -1 {
-            return Err(net.NetError::InvalidArgument(unsafe {
-                hew_ws_last_error()
-            }));
-        }
-        Err(net.net_error_from_errno(errno))
-    }
-}
-
-#[test]
-fn websocket_attach_indices_are_rejected_before_ffi_narrowing() {
-    assert(checked_attach_msg_type("websocket.attach", -1).is_err());
-    assert(checked_attach_msg_type("websocket.attach", 2147483648).is_err());
-    assert(checked_attach_msg_type("websocket.attach", 2147483647).is_ok());
+    /// Compiler-lowered active-mode attach.
+    ///
+    /// Every call site is rewritten to `hew_ws_attach_local`; codegen resolves
+    /// the concrete actor's `on_message` / `on_close` protocol IDs and emits
+    /// the four-argument runtime ABI. This stub is never lowered.
+    fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>) {}
 }
 
 #[test]
@@ -415,5 +375,4 @@ extern "C" {
     fn hew_ws_server_port(server: Server) -> i32;
     fn hew_ws_server_accept(server: Server) -> Conn;
     fn hew_ws_server_close(server: Server);
-    fn hew_ws_attach(ws: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64) -> i32;
 }

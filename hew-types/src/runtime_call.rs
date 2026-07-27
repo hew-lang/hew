@@ -569,10 +569,12 @@ pub enum RuntimeCallFamily {
     /// thread until the child slot is Live or permanently Dead.
     SupervisorRestartAwaitBlocking,
 
-    // --- TCP attach (network actor binding) --------------------------------
-    // Pre-staged: `conn.attach(handler)` dispatches via the
-    // `hew_tcp_attach_local` callee-name intercept.
+    // --- Active transport attach (network actor binding) -------------------
+    // Pre-staged method calls dispatch via callee-name intercepts that
+    // synthesize concrete actor protocol IDs at codegen time.
     TcpAttachLocal,
+    TlsAttachLocal,
+    WebSocketAttachLocal,
 
     // --- Task ABI (scope{}/spawn/await) ------------------------------------
     TaskAwaitBlocking,
@@ -869,8 +871,10 @@ impl RuntimeCallFamily {
             Self::SupervisorPoolLen => "hew_supervisor_pool_len",
             Self::SupervisorStop => "hew_supervisor_stop",
             Self::SupervisorRestartAwaitBlocking => "hew_supervisor_restart_await_blocking",
-            // TCP attach (pre-staged)
+            // Active transport attach (pre-staged)
             Self::TcpAttachLocal => "hew_tcp_attach_local",
+            Self::TlsAttachLocal => "hew_tls_attach_local",
+            Self::WebSocketAttachLocal => "hew_ws_attach_local",
             // Task
             Self::TaskAwaitBlocking => "hew_task_await_blocking",
             Self::TaskCompleteThreaded => "hew_task_complete_threaded",
@@ -1174,8 +1178,10 @@ impl RuntimeCallFamily {
             "hew_supervisor_pool_len" => Self::SupervisorPoolLen,
             "hew_supervisor_stop" => Self::SupervisorStop,
             "hew_supervisor_restart_await_blocking" => Self::SupervisorRestartAwaitBlocking,
-            // TCP attach
+            // Active transport attach
             "hew_tcp_attach_local" => Self::TcpAttachLocal,
+            "hew_tls_attach_local" => Self::TlsAttachLocal,
+            "hew_ws_attach_local" => Self::WebSocketAttachLocal,
             // Task
             "hew_task_await_blocking" => Self::TaskAwaitBlocking,
             "hew_task_complete_threaded" => Self::TaskCompleteThreaded,
@@ -1790,6 +1796,8 @@ impl RuntimeCallFamily {
             | F::SupervisorStop
             | F::SupervisorRestartAwaitBlocking
             | F::TcpAttachLocal
+            | F::TlsAttachLocal
+            | F::WebSocketAttachLocal
             | F::TaskAwaitBlocking
             | F::TaskCompleteThreaded
             | F::TaskCompletionObserve
@@ -2262,6 +2270,8 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::StreamSendLayout
             | F::StreamTryNextLayout
             | F::TcpAttachLocal
+            | F::TlsAttachLocal
+            | F::WebSocketAttachLocal
             | F::VecCloneLayout
             | F::VecCloneOwned
             | F::VecContainsLayout

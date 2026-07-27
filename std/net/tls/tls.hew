@@ -27,10 +27,6 @@
 
 import std::net;
 
-fn checked_attach_msg_type(context: string, index: i64) -> Result<i64, net.NetError> {
-    net.try_msg_type_arg(context, index)
-}
-
 /// An established TLS connection to a remote host.
 ///
 /// Created by `tls.connect(host, port)`. Must be released with `close()`.
@@ -141,9 +137,9 @@ trait TlsStreamMethods {
     /// Outbound `write()` / `try_write()` remain valid.
     ///
     /// `handler` is the actor that will receive `on_data` and `on_close`.
-    /// `on_data_type` is the `msg_type` index for `on_data`.
-    /// `on_close_type` is the `msg_type` index for `on_close`.
-    fn attach(self, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64);
+    /// The compiler synthesises both protocol message IDs from the concrete
+    /// actor type behind the `LocalPid`.
+    fn attach(self, handler: LocalPid<TlsHandler>);
 
     /// Close the TLS connection and release resources.
     fn close(self);
@@ -171,45 +167,17 @@ impl TlsStreamMethods for TlsStream {
             hew_tls_read_result(stream, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
-    fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64) {
-        match try_attach(stream, handler, on_data_type, on_close_type) {
-            Ok(()) => {},
-            Err(err) => {
-                panic(f"tls.TlsStream.attach failed: {net.net_error_message(err)}");
-            },
-        }
+    /// Compiler-lowered active-mode attach.
+    ///
+    /// Every call site is rewritten to `hew_tls_attach_local`; codegen resolves
+    /// the concrete actor's `on_data` / `on_close` protocol IDs and emits the
+    /// four-argument runtime ABI. This stub is never lowered.
+    fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>) {
     }
     fn close(stream: TlsStream) {
         unsafe {
             hew_tls_close(stream)
         };
-    }
-}
-
-// ── Module-level functions ────────────────────────────────────────────
-/// Attach a TLS stream to an actor, returning a typed error on refusal.
-///
-/// Message-type indices are validated at Hew's full `i64` width before the
-/// runtime FFI is entered, so an out-of-range value cannot wrap to a different
-/// actor message.
-pub fn try_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64) -> Result<(), net.NetError> {
-    let checked_data = checked_attach_msg_type("tls.try_attach.on_data_type", on_data_type)?;
-    let checked_close = checked_attach_msg_type("tls.try_attach.on_close_type", on_close_type)?;
-    let status = unsafe {
-        hew_tls_attach(stream, handler, checked_data, checked_close)
-    };
-    if status == 0 {
-        Ok(())
-    } else {
-        let has_detail = unsafe {
-            hew_tls_last_error()
-        } != "";
-        if has_detail {
-            return Err(net.NetError::InvalidArgument(unsafe {
-                hew_tls_last_error()
-            }));
-        }
-        Err(net.net_error_from_errno(0))
     }
 }
 
@@ -280,7 +248,6 @@ extern "C" {
     fn hew_tls_last_error() -> string;
     fn hew_tls_write_result(stream: TlsStream, data: bytes) -> TlsWriteFfiResult;
     fn hew_tls_read_result(stream: TlsStream, size: i32) -> TlsReadFfiResult;
-    fn hew_tls_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64) -> i32;
     fn hew_tls_close(stream: TlsStream);
 }
 
@@ -318,11 +285,4 @@ fn tls_error_from_status_tls_error_and_io_error_currently_collapse() {
     assert(tls_error == NetError::Other(0));
     assert(io_error == NetError::Other(0));
     assert(tls_error == io_error);
-}
-
-#[test]
-fn tls_attach_indices_are_rejected_before_ffi_narrowing() {
-    assert(checked_attach_msg_type("tls.attach", -1).is_err());
-    assert(checked_attach_msg_type("tls.attach", 2147483648).is_err());
-    assert(checked_attach_msg_type("tls.attach", 2147483647).is_ok());
 }

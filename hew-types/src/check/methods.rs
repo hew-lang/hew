@@ -1720,17 +1720,24 @@ impl Checker {
         let Ty::Named { name, .. } = receiver_ty else {
             return;
         };
-        // Active-mode `conn.attach(handler)`: rewrite to `hew_tcp_attach_local`,
-        // a callee-name-dispatch symbol the LLVM backend intercepts. The backend
-        // resolves the concrete actor type from the `handler` arg's recorded
-        // `LocalPid<Actor>` (the `LocalPid<ConcreteActor>` → `LocalPid<Handler>`
-        // coercion deliberately does not erase that recorded type), synthesises
-        // the `on_data` / `on_close` `msg_id`s from the actor's protocol
-        // descriptor, and emits the runtime attach ABI. The `attach` impl body
-        // is a stub, so the handle-method auto-derivation below produces nothing;
-        // this explicit rewrite is the authority. Mirrors `RemotePid::send`.
+        // Active-mode transport `attach(handler)` methods rewrite to
+        // callee-name-dispatch symbols intercepted by the LLVM backend. The
+        // backend resolves the concrete actor type from the `handler` arg's
+        // recorded `LocalPid<Actor>` (the structural handler coercion
+        // deliberately does not erase that recorded type), synthesises each
+        // transport protocol's handler `msg_id`s, and emits the real four-arg
+        // runtime attach ABI. The source impl bodies are stubs, so these
+        // explicit rewrites are the authority. Mirrors `RemotePid::send`.
         if (name == "Connection" || name == "net.Connection") && method == "attach" {
             self.record_runtime_method_call_rewrite(span, "hew_tcp_attach_local");
+            return;
+        }
+        if (name == "Conn" || name == "websocket.Conn") && method == "attach" {
+            self.record_runtime_method_call_rewrite(span, "hew_ws_attach_local");
+            return;
+        }
+        if (name == "TlsStream" || name == "tls.TlsStream") && method == "attach" {
+            self.record_runtime_method_call_rewrite(span, "hew_tls_attach_local");
             return;
         }
         if let Some(c_symbol) = self.module_registry.resolve_handle_method(name, method) {

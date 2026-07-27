@@ -2594,6 +2594,20 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
+    direct(
+        "hew_tls_attach_local",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer, BuiltinTy::Pointer],
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "hew_ws_attach_local",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer, BuiltinTy::Pointer],
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
     // ── W5.005 (F1b): memory-intrinsic floor (`mem.*`) ────────────────────
     //
     // The general-purpose heap allocator + typed-pointer primitives that back

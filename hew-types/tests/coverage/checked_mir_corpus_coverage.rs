@@ -192,6 +192,8 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     // -- Pre-staged codegen intercept with no in-corpus producer
     //    (network actor attach requires a live net surface fixture).
     "hew_tcp_attach_local",
+    "hew_tls_attach_local",
+    "hew_ws_attach_local",
     // -- Cross-node monitor surface. `monitor(RemotePid<T>)` lowers to
     //    `hew_node_monitor_location`, but requires a two-process distributed
     //    program to exercise; it is

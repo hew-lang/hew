@@ -57,11 +57,9 @@ fn test_duration_within_abi_range_is_preserved() {
 }
 
 #[test]
-fn test_size_and_message_type_above_abi_range_are_rejected() {
+fn test_size_above_abi_range_is_rejected() {
     let size = expect_invalid("try_size_arg", net.try_size_arg("tls.TlsStream.read", 4294967296));
     testing.assert_eq_str(size, "InvalidArgument(tls.TlsStream.read: invalid size 4294967296 (must be <= 2147483647))");
-    let index = expect_invalid("try_msg_type_arg", net.try_msg_type_arg("websocket.Conn.attach on_message_type", 4294967297));
-    testing.assert_eq_str(index, "InvalidArgument(websocket.Conn.attach on_message_type: invalid message-type index 4294967297 (must be <= 2147483647))");
     match net.try_size_arg("tls.TlsStream.read", 4096) {
         Ok(size_ok) => testing.assert_eq(size_ok, 4096),
         Err(_) => panic("expected a 4096-byte read size to be accepted"),

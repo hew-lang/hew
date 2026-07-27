@@ -1,26 +1,16 @@
-//! Live witnesses for active-mode attach refusal.
+//! Live witness for compiler-typed active-mode WebSocket attach.
 //!
-//! These tests pin the public `NetError` variant and the runtime's exact,
-//! non-consuming detail. The WebSocket round-trip also proves that a rejected
-//! second attach leaves the original reader installed and able to observe the
-//! peer's close.
+//! The peer closes after the runtime reader is installed. Successful test
+//! completion proves codegen passed the concrete actor's `on_message` and
+//! `on_close` protocol IDs: a stale numeric index would hit the actor dispatch
+//! trap on the background reader thread.
 
 import std::net;
 
-import std::net::tls;
-
 import std::net::websocket;
-
-import std::testing;
 
 actor WebSocketHandlerProbe {
     receive fn on_message(text: string) {}
-
-    receive fn on_close() {}
-}
-
-actor TlsHandlerProbe {
-    receive fn on_data(data: bytes) {}
 
     receive fn on_close() {}
 }
@@ -42,49 +32,14 @@ actor WebSocketPeer {
 }
 
 #[test]
-fn test_tls_null_attach_preserves_exact_typed_detail() {
-    let stream = tls.connect("", 443);
-    let handler: LocalPid<tls.TlsHandler> = spawn TlsHandlerProbe;
-    match tls.try_attach(stream, handler, 0, 1) {
-        Err(NetError::InvalidArgument(detail)) => {
-            testing.assert_eq_str(detail, "tls.attach: null handle (stream=true, actor=false)");
-            testing.assert_eq_str(tls.last_error(), detail);
-        },
-        Err(err) => panic(f"expected InvalidArgument, got {net.net_error_message(err)}"),
-        Ok(()) => panic("expected a null TLS stream attach to fail"),
-    }
-    tls.close(stream);
-}
-
-#[test]
-fn test_websocket_attach_refusals_preserve_the_original_reader() {
+fn test_websocket_typed_attach_dispatches_protocol_ids() {
     match websocket.listen("127.0.0.1:0") {
         Ok(server) => {
             let peer = spawn WebSocketPeer(url: f"ws://127.0.0.1:{server.port()}/");
             peer.connect_and_hold();
             let conn = server.accept();
-            let handler: LocalPid<websocket.WebSocketHandler> = spawn WebSocketHandlerProbe;
-            match websocket.try_attach(conn, handler, 2147483648, 1) {
-                Err(NetError::InvalidArgument(detail)) => {
-                    testing.assert_eq_str(detail, "websocket.try_attach.on_message_type: invalid message-type index 2147483648 (must be <= 2147483647)");
-                },
-                Err(err) => panic(f"expected InvalidArgument, got {net.net_error_message(err)}"),
-                Ok(()) => panic("an out-of-range message type reached the runtime"),
-            }
-            match websocket.try_attach(conn, handler, 0, 1) {
-                Ok(()) => {},
-                Err(err) => {
-                    panic(f"first WebSocket attach failed: {net.net_error_message(err)}");
-                },
-            }
-            match websocket.try_attach(conn, handler, 0, 1) {
-                Err(NetError::InvalidArgument(detail)) => {
-                    testing.assert_eq_str(detail, "websocket.attach: reader already attached");
-                    testing.assert_eq_str(websocket.last_error(), detail);
-                },
-                Err(err) => panic(f"expected InvalidArgument, got {net.net_error_message(err)}"),
-                Ok(()) => panic("a second WebSocket reader was attached"),
-            }
+            let handler: LocalPid<WebSocketHandlerProbe> = spawn WebSocketHandlerProbe;
+            conn.attach(handler);
             sleep(750ms);
             conn.close();
             server.close();

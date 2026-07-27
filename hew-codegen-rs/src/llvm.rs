@@ -1305,6 +1305,8 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::StringIndex
         | F::StringSliceCodepoints
         | F::TcpAttachLocal
+        | F::TlsAttachLocal
+        | F::WebSocketAttachLocal
         | F::VecCloneLayout
         | F::VecCloneOwned
         | F::VecContainsLayout
@@ -23612,12 +23614,11 @@ fn emit_remote_pid_send_call<'ctx>(
     Ok(())
 }
 
-/// Emit the call sequence for active-mode `conn.attach(handler)`.
+/// Emit the call sequence for an active-mode transport `attach(handler)`.
 ///
-/// The checker rewrites `conn.attach(handler)` on a `net.Connection` receiver
-/// to a direct `hew_tcp_attach_local(conn, handler)` call (see
-/// hew-types::check::methods); this is the codegen interception, mirroring
-/// `emit_remote_pid_send_call`.
+/// The checker rewrites TCP, TLS, and WebSocket method calls to typed
+/// callee-name dispatch symbols (see `hew-types::check::methods`); this is the
+/// shared codegen interception, mirroring `emit_remote_pid_send_call`.
 ///
 /// Lowering:
 ///   * Resolve the concrete actor type `A` from `args[1]`'s recorded
@@ -23626,21 +23627,27 @@ fn emit_remote_pid_send_call<'ctx>(
 ///     expr type, so the concrete actor survives to codegen here (per
 ///     `checker-authority`: codegen consumes recorded types, never re-infers).
 ///   * Look up `A`'s `ActorLayout` and read the `msg_type` (the SipHash-1-3
-///     `msg_id`) of its `on_data` and `on_close` handlers. These are the same
-///     ids the dispatch trampoline switches on, so a reactor-delivered message
-///     routes to the right receive fn.
-///   * Load `conn` (an i32 handle) and `handler` (the `LocalPid<A>` actor
-///     pointer) and call the 4-arg runtime ABI
-///     `hew_tcp_attach_local(conn, actor_ptr, on_data_id, on_close_id) -> i32`.
+///     `msg_id`) of the transport's data/message and close handlers. These are
+///     the same IDs the dispatch trampoline switches on.
+///   * Load the opaque transport handle and `LocalPid<A>` actor pointer, then
+///     call the transport's real four-argument runtime ABI.
 ///   * `attach` returns Unit on the Hew surface; the runtime rc is discarded
 ///     (the runtime records the failure in last_error and the fail-closed
 ///     mailbox guard already rejected leak-prone mailboxes at type-check via
 ///     the runtime). Dispatch is by callee name (no new FnSymbol variant),
 ///     matching the `hew_remote_pid_send` precedent.
-fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) -> CodegenResult<()> {
+fn emit_transport_attach_local_call<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    args: &[Place],
+    pseudo_callee: &str,
+    runtime_callee: &str,
+    data_handler_name: &str,
+    close_handler_name: &str,
+    ids_are_i64: bool,
+) -> CodegenResult<()> {
     let [conn_arg, handler_arg] = args else {
         return Err(CodegenError::FailClosed(format!(
-            "hew_tcp_attach_local expects exactly 2 arguments (conn, handler), got {}",
+            "{pseudo_callee} expects exactly 2 arguments (transport, handler), got {}",
             args.len()
         )));
     };
@@ -23650,17 +23657,15 @@ fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) ->
     let actor_name = match handler_ty {
         ResolvedTy::Named { name, args, .. } if name == "LocalPid" => {
             let inner = args.first().ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_tcp_attach_local handler arg `LocalPid<A>` is missing its A type \
-                     parameter"
-                        .into(),
-                )
+                CodegenError::FailClosed(format!(
+                    "{pseudo_callee} handler arg `LocalPid<A>` is missing its A type parameter"
+                ))
             })?;
             match inner {
                 ResolvedTy::Named { name: a_name, .. } => a_name.clone(),
                 other => {
                     return Err(CodegenError::FailClosed(format!(
-                        "hew_tcp_attach_local: LocalPid<A> inner A must be a named actor type, \
+                        "{pseudo_callee}: LocalPid<A> inner A must be a named actor type, \
                          got {other:?}"
                     )));
                 }
@@ -23668,7 +23673,7 @@ fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) ->
         }
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_tcp_attach_local handler arg must have resolved type \
+                "{pseudo_callee} handler arg must have resolved type \
                  ResolvedTy::Named {{ name: \"LocalPid\", .. }}, got {other:?}"
             )));
         }
@@ -23680,9 +23685,9 @@ fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) ->
         .find(|layout| layout.name == actor_name)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
-                "hew_tcp_attach_local: no ActorLayout for `{actor_name}` (LocalPid<A> handler A); \
-                 the actor must declare `on_data` / `on_close` receive fns to satisfy \
-                 ConnectionHandler"
+                "{pseudo_callee}: no ActorLayout for `{actor_name}` (LocalPid<A> handler A); \
+                 the actor must declare `{data_handler_name}` / `{close_handler_name}` receive \
+                 fns to satisfy the transport handler trait"
             ))
         })?;
     let handler_msg_id = |handler_name: &str| -> CodegenResult<i32> {
@@ -23693,17 +23698,41 @@ fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) ->
             .map(|h| h.msg_type)
             .ok_or_else(|| {
                 CodegenError::FailClosed(format!(
-                    "hew_tcp_attach_local: actor `{actor_name}` has no `{handler_name}` receive fn; \
-                     a ConnectionHandler actor must declare both `on_data` and `on_close`"
+                    "{pseudo_callee}: actor `{actor_name}` has no `{handler_name}` receive fn; \
+                     the transport handler actor must declare both `{data_handler_name}` and \
+                     `{close_handler_name}`"
                 ))
             })
     };
-    let on_data_id = handler_msg_id("on_data")?;
-    let on_close_id = handler_msg_id("on_close")?;
+    let on_data_id = handler_msg_id(data_handler_name)?;
+    let on_close_id = handler_msg_id(close_handler_name)?;
 
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let on_data_const = i32_ty.const_int(on_data_id as u64, true);
-    let on_close_const = i32_ty.const_int(on_close_id as u64, true);
+    let on_data_const: BasicMetadataValueEnum<'ctx> = if ids_are_i64 {
+        fn_ctx
+            .ctx
+            .i64_type()
+            .const_int(i64::from(on_data_id) as u64, true)
+            .into()
+    } else {
+        fn_ctx
+            .ctx
+            .i32_type()
+            .const_int(on_data_id as u64, true)
+            .into()
+    };
+    let on_close_const: BasicMetadataValueEnum<'ctx> = if ids_are_i64 {
+        fn_ctx
+            .ctx
+            .i64_type()
+            .const_int(i64::from(on_close_id) as u64, true)
+            .into()
+    } else {
+        fn_ctx
+            .ctx
+            .i32_type()
+            .const_int(on_close_id as u64, true)
+            .into()
+    };
 
     // Load the conn handle (pointer-shaped opaque `Connection`) and the handler
     // actor pointer (ptr).
@@ -23719,18 +23748,18 @@ fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) ->
         .build_load(handler_slot_ty, handler_ptr, "attach_actor_ptr")
         .llvm_ctx("load attach handler LocalPid ptr")?;
 
-    // Call the 4-arg runtime ABI:
-    //   hew_tcp_attach_local(conn: i32, actor: *mut HewActor, on_data: i32, on_close: i32) -> i32
+    // Call the real four-argument runtime ABI. Its status is intentionally
+    // discarded, matching the established TCP `attach` Unit surface.
     fn_ctx.call_runtime_void(
-        "hew_tcp_attach_local",
+        runtime_callee,
         &[
             metadata_value_from_basic(conn_val),
             metadata_value_from_basic(actor_ptr),
-            on_data_const.into(),
-            on_close_const.into(),
+            on_data_const,
+            on_close_const,
         ],
         "attach_rc",
-        "hew_tcp_attach_local call",
+        "transport attach runtime call",
     )?;
     Ok(())
 }
@@ -25848,30 +25877,53 @@ fn lower_terminator<'ctx>(
                 identity::emit_identity_aggregate_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            // `hew_tcp_attach_local` is the checker's MethodCallRewrite target
-            // for `conn.attach(handler)` on a `net.Connection` receiver. Codegen
-            // resolves the concrete actor from the handler's `LocalPid<A>`,
-            // synthesises the `on_data` / `on_close` msg_ids, and emits the
-            // 4-arg runtime attach ABI. Dispatch is on the carried family,
-            // matching the `hew_remote_pid_send` precedent. `attach` returns
-            // Unit, so any `dest` would be a checker-boundary bug — fail
-            // closed.
-            if *builtin == Some(RtFamily::TcpAttachLocal) {
+            // Typed TCP/TLS/WebSocket attach calls carry distinct runtime-call
+            // families. Codegen resolves the concrete actor from the handler's
+            // `LocalPid<A>`, synthesises the transport handler msg_ids, and
+            // emits the real four-argument runtime ABI. `attach` returns Unit,
+            // so any `dest` is a checker-boundary bug.
+            if matches!(
+                builtin,
+                Some(
+                    RtFamily::TcpAttachLocal
+                        | RtFamily::TlsAttachLocal
+                        | RtFamily::WebSocketAttachLocal
+                )
+            ) {
                 if dest.is_some() {
-                    return Err(CodegenError::FailClosed(
-                        "hew_tcp_attach_local (conn.attach) returns Unit and must not carry a \
-                         Terminator::Call dest"
-                            .into(),
-                    ));
+                    return Err(CodegenError::FailClosed(format!(
+                        "{callee} (transport.attach) returns Unit and must not carry a \
+                             Terminator::Call dest"
+                    )));
                 }
-                emit_tcp_attach_local_call(fn_ctx, args)?;
+                let (runtime_callee, data_handler, close_handler, ids_are_i64) = match builtin {
+                    Some(RtFamily::TcpAttachLocal) => {
+                        ("hew_tcp_attach_local", "on_data", "on_close", false)
+                    }
+                    Some(RtFamily::TlsAttachLocal) => {
+                        ("hew_tls_attach", "on_data", "on_close", true)
+                    }
+                    Some(RtFamily::WebSocketAttachLocal) => {
+                        ("hew_ws_attach", "on_message", "on_close", true)
+                    }
+                    _ => unreachable!("guarded active transport attach family"),
+                };
+                emit_transport_attach_local_call(
+                    fn_ctx,
+                    args,
+                    callee,
+                    runtime_callee,
+                    data_handler,
+                    close_handler,
+                    ids_are_i64,
+                )?;
                 let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
-                    CodegenError::FailClosed(format!("hew_tcp_attach_local next bb{next} missing"))
+                    CodegenError::FailClosed(format!("{callee} next bb{next} missing"))
                 })?;
                 fn_ctx
                     .builder
                     .build_unconditional_branch(next_bb)
-                    .llvm_ctx("hew_tcp_attach_local br next")?;
+                    .llvm_ctx_with(|| format!("{callee} br next"))?;
                 return Ok(());
             }
             // `stream.recv()` / `stream.try_recv()` over a `Stream<T>` and
@@ -26011,6 +26063,8 @@ fn lower_terminator<'ctx>(
                         RtFamily::NodeLookup
                             | RtFamily::RemotePidSend
                             | RtFamily::TcpAttachLocal
+                            | RtFamily::TlsAttachLocal
+                            | RtFamily::WebSocketAttachLocal
                             | RtFamily::StreamNextLayout
                             | RtFamily::StreamTryNextLayout
                             | RtFamily::ChannelRecvLayout

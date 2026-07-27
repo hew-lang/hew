@@ -303,10 +303,10 @@ jobs:
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both link into a test binary.
         #
-        # Oracle integration binaries are intentionally outside ordinary
-        # hosted macOS jobs for runner cost/reliability. The macOS-only
-        # leaks(1) oracles cannot run on Linux; their project-facing authority
-        # is dedicated release-tip validation and the explicit local gate.
+        # Oracle integration binaries are intentionally excluded from ordinary
+        # hosted jobs, including release-gate, for runner cost/reliability.
+        # The macOS leak-oracle authority is explicit local macOS validation
+        # before release; Linux supplies structural/ASan coverage where applicable.
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm

@@ -117,11 +117,17 @@ impl GlobResult {
 /// ```
 pub fn glob(pattern: string) -> GlobResult {
     unsafe {
-        let res = GlobResult { handle: hew_glob(pattern) };
-        if !hew_glob_is_valid(res.handle) {
-            panic(f"path.glob: {hew_glob_error(res.handle)}");
+        let handle = hew_glob(pattern);
+        if !hew_glob_is_valid(handle) {
+            // `hew_glob` always transfers one heap-owned result handle, even
+            // when expansion fails.  Copy its error before releasing that
+            // handle: `hew_glob_error` borrows the result while constructing
+            // the Hew-owned string it returns.
+            let detail = hew_glob_error(handle);
+            hew_glob_free(handle);
+            panic(f"path.glob: {detail}");
         }
-        res
+        GlobResult { handle: handle }
     }
 }
 
@@ -138,11 +144,17 @@ pub fn glob(pattern: string) -> GlobResult {
 /// ```
 pub fn try_glob(pattern: string) -> Result<GlobResult, PathError> {
     unsafe {
-        let res = GlobResult { handle: hew_glob(pattern) };
-        if hew_glob_is_valid(res.handle) {
-            Ok(res)
+        let handle = hew_glob(pattern);
+        if hew_glob_is_valid(handle) {
+            Ok(GlobResult { handle: handle })
         } else {
-            Err(PathError::GlobFailed(hew_glob_error(res.handle)))
+            // Preserve the detail before releasing the invalid handle.  The
+            // success arm transfers that same single owner to `GlobResult`;
+            // the failure arm consumes it here, so neither arm can leak or
+            // double-free it.
+            let detail = hew_glob_error(handle);
+            hew_glob_free(handle);
+            Err(PathError::GlobFailed(detail))
         }
     }
 }

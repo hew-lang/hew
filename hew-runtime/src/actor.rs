@@ -1675,6 +1675,111 @@ unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
     let _ = actor;
 }
 
+/// Release the continuation frame of an actor that is being abandoned mid-suspend,
+/// and latch it out of the non-quiescent `Suspended` window.
+///
+/// C1 abandonment teardown (D-C1, R326/R327). A `Suspended` actor (`cont_tag`
+/// `Parked`) holds a live continuation frame in `suspended_cont`. That frame is
+/// a reference to the actor that outlives every ordinary teardown decision:
+/// `Suspended` is deliberately NOT quiescent
+/// (`actor_free_state_is_quiescent` excludes it), so a teardown path that only
+/// knows how to finalize quiescent actors cannot touch it and must leak both
+/// the frame and the actor box fail-closed.
+///
+/// Destroying the frame is what makes the actor reachable by that decision
+/// again: `destroy_parked` wins the single `… → Destroyed` CAS (FG1), runs the
+/// `coro.destroy` cleanup outline, and nulls the slot (FG4); the CAS serialises
+/// against any concurrent resume waking the actor at the same instant (FG2).
+/// Only the winner of that CAS reaches the `Suspended → Stopped` latch, so the
+/// state transition cannot race a resume — a resume would have refused the
+/// destroy.
+///
+/// Every teardown route that abandons an actor must call this, and for the same
+/// reason. `hew_actor_free_inner` calls it before its bounded quiescence wait,
+/// which would otherwise spin to the 2 s deadline and return `-2`.
+/// [`retire_parked_activations`] calls it for every still-parked actor at the
+/// head of runtime cleanup, so the shutdown sweep meets those actors quiescent
+/// instead of leaking them fail-closed.
+///
+/// ORDERING, and it is load-bearing: the `coro.destroy` cleanup outline this
+/// runs re-enters the runtime. A frame parked on `sleep` cancels its await
+/// registration, which cancels through the global periodic timer wheel. So this
+/// may only run while that machinery is still alive — before
+/// `hew_periodic_shutdown` frees the wheel and before `reactor_shutdown` joins
+/// the reactor. Running it later dereferences a freed wheel and crashes. It
+/// must equally run after the worker threads are joined, so no resume can be
+/// attempted concurrently. That leaves exactly one window during shutdown, and
+/// [`retire_parked_activations`] is called in it.
+///
+/// A no-op for the overwhelmingly common actor that never suspended.
+#[cfg(not(target_arch = "wasm32"))]
+fn abandon_parked_activation(a: &HewActor) {
+    if !crate::coro_exec::has_live_parked_cont(a) {
+        return;
+    }
+    // SAFETY: `a` is the actor being torn down; `destroy_parked`'s CAS guards
+    // serialise against any concurrent resume (FG1/FG2).
+    let destroyed = unsafe { crate::coro_exec::destroy_parked(a) };
+    if !destroyed.is_ok() {
+        // A concurrent resume holds the handle, or the frame was already
+        // reclaimed. Leave the state alone: latching a resuming actor to
+        // `Stopped` would strand its activation.
+        return;
+    }
+    clear_suspended_cancel_token(a);
+    // `destroy_parked` above just ran the pump frame's `coro.destroy` cleanup
+    // outline, which releases the generator companion (heap env + coro handle)
+    // living as a local INSIDE that frame via its normal scope-exit drop
+    // (`hew_gen_coro_destroy`) — exactly once, and NOT touched here. This call's
+    // sole job is the separate SINK: if this parked activation was a
+    // `receive gen fn` pump, fault-close its still-registered sink so the
+    // consumer awaiting the stream observes the fault instead of hanging on a
+    // stream whose producer will never resume. A no-op if nothing is registered
+    // (this was not a gen-stream pump).
+    fault_close_registered_gen_sink(a);
+    let _ = a.actor_state.compare_exchange(
+        HewActorState::Suspended as i32,
+        HewActorState::Stopped as i32,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
+/// Abandon every activation still parked at a suspend point, before the rest of
+/// runtime cleanup runs.
+///
+/// Called once from `hew_runtime_cleanup`, at the head, and only from there.
+/// Shutdown IS abandonment: no worker survives to resume a parked activation,
+/// so every live continuation frame at this point is a reference that would
+/// otherwise outlive teardown and pin its actor in the non-quiescent
+/// `Suspended` state — where `cleanup_all_actors` can only leak both, fail
+/// closed. Releasing the frames here hands that sweep ordinary quiescent actors
+/// it can reclaim.
+///
+/// This is deliberately NOT folded into `cleanup_all_actors`, and the position
+/// is the whole point: see the ORDERING note on [`abandon_parked_activation`].
+/// By the time the sweep runs, `hew_periodic_shutdown` has freed the global
+/// timer wheel, and a frame parked on `sleep` cancels through that wheel as it
+/// unwinds. Iterating without draining also matters — the actors stay tracked so
+/// `cleanup_all_actors` still owns reclamation, and this pass owns only the
+/// frames.
+///
+/// # Safety
+///
+/// All worker threads must be joined (the documented precondition of
+/// `hew_runtime_cleanup`), so no activation can be resumed concurrently.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn retire_parked_activations() {
+    for actor in crate::lifetime::live_actors::snapshot_live_actor_ptrs() {
+        if actor.is_null() {
+            continue;
+        }
+        // SAFETY: the pointer came from the live-actor registry and workers are
+        // joined, so nothing can free it underneath this call.
+        abandon_parked_activation(unsafe { &*actor });
+    }
+}
+
 /// Outcome of [`decide_finalize_by_latch`] — the canonical "is it safe to
 /// finalize this quiescent-but-possibly-re-enqueued actor?" decision.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -1873,13 +1978,20 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // decision uses the actual state at CAS time, so neither window can
         // finalize a re-enqueued actor.
         //
-        // The same quiescence gate routes a still-`Suspended` actor (one parked
-        // at a non-final `coro.suspend` with a live continuation frame) to the
-        // fail-closed leak: `actor_free_state_is_quiescent` excludes `Suspended`,
-        // so cleanup never finalizes a parked actor (which would free its box
-        // and leak the frame). Unlike `hew_actor_free_inner`, the shutdown sweep
-        // cannot block to destroy the parked frame (workers are joined), so it
-        // leaks-not-frees — the correct fail-closed shutdown behaviour.
+        // A still-`Suspended` actor normally does NOT reach this decision on the
+        // native shutdown path: `retire_parked_activations` runs at the head of
+        // `hew_runtime_cleanup` and has already destroyed the parked frame and
+        // latched the actor to `Stopped`, so it arrives here quiescent and is
+        // reclaimed like any other. What still reaches the fail-closed branch is
+        // an actor whose frame could not be released (a concurrent resume held
+        // the handle), a sweep reached by some other route than
+        // `hew_runtime_cleanup`, or the WASM sweep, which has no abandonment
+        // path of its own yet.
+        // WASM-TODO: the WASM scheduler has no `retire_parked_activations`
+        // equivalent, so a WASM actor parked at a suspend point still takes the
+        // fail-closed leak below.
+        // Leaking those remains correct: the frame that
+        // survived still owns the actor.
         let finalize_state = match decide_finalize_by_latch(a) {
             FinalizeDecision::Finalize(state) => Some(state),
             FinalizeDecision::Skip => {
@@ -3976,39 +4088,8 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     // This is the single-DESTROY plumbing only. The single-task cancellation
     // FLOW (unregister-readiness + resume-with-cancellation + the two-phase
     // park lost-wake-vs-cancel race) is NEW-6; this teardown is the minimum that
-    // makes the live suspend edge non-leaking. Dormant today (no actor reaches
-    // `Suspended` while the source surface stays thread-parked).
-    if crate::coro_exec::has_live_parked_cont(a) {
-        // SAFETY: `a` is the actor being freed; `destroy_parked`'s CAS guards
-        // serialise against any concurrent resume (FG1/FG2).
-        let destroyed = unsafe { crate::coro_exec::destroy_parked(a) };
-        // The parked frame is gone; latch the abandoned actor out of the
-        // non-quiescent `Suspended` window into `Stopped` so the quiescence wait
-        // below passes instead of spinning to the deadline. Only this teardown
-        // owns the slot (it won the `… → Destroyed` CAS), so the state CAS is
-        // race-free against a resume (which would have refused the destroy).
-        if destroyed.is_ok() {
-            clear_suspended_cancel_token(a);
-            // Risk 1: `destroy_parked` above just ran the pump frame's
-            // `coro.destroy` cleanup outline, which releases the generator
-            // companion (heap env + coro handle) living as a local INSIDE
-            // that frame via its normal scope-exit drop
-            // (`hew_gen_coro_destroy`) — exactly once, and NOT touched here.
-            // This call's sole job is the separate SINK: if this parked
-            // activation was a `receive gen fn` pump, fault-close its
-            // still-registered sink so the consumer awaiting the stream
-            // observes the fault instead of hanging on a stream whose
-            // producer will never resume. A no-op if nothing is registered
-            // (this was not a gen-stream pump).
-            fault_close_registered_gen_sink(a);
-            let _ = a.actor_state.compare_exchange(
-                HewActorState::Suspended as i32,
-                HewActorState::Stopped as i32,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-        }
-    }
+    // makes the live suspend edge non-leaking.
+    abandon_parked_activation(a);
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let state = loop {
@@ -7889,6 +7970,63 @@ mod tests {
                 spawn_serial: id,
             }));
             (actor, mailbox)
+        }
+    }
+
+    /// The shutdown-leak regression for the `ask`-race fixture (#2817).
+    ///
+    /// An actor parked at a suspend point is NOT quiescent, so the shutdown
+    /// sweep's finalize decision can only leak it — box and frame both. That is
+    /// correct as a last resort but wrong as the outcome of a normal exit, and
+    /// it is exactly what `actor_ask_race.hew` produced: the actor that lost the
+    /// race was still parked on `sleep` when `main` returned.
+    ///
+    /// This pins the two halves of the fix: the leak is real if nothing runs
+    /// abandonment first, and `abandon_parked_activation` — which
+    /// `retire_parked_activations` runs over every live actor at the head of
+    /// `hew_runtime_cleanup` — releases the frame and returns the actor to a
+    /// state the sweep reclaims.
+    #[test]
+    fn abandoning_a_parked_activation_makes_it_reclaimable() {
+        let (actor, mailbox) = make_stop_test_actor(HewActorState::Suspended);
+        // SAFETY: the helper hands over sole ownership; nothing else can see it.
+        let a = unsafe { &*actor };
+
+        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
+        let handle = (&raw mut *frame).cast::<std::ffi::c_void>();
+        assert!(crate::coro_exec::begin_park(a).is_ok());
+        // SAFETY: `frame` outlives this test body.
+        unsafe { crate::coro_exec::finish_park(a, handle) };
+        assert!(crate::coro_exec::has_live_parked_cont(a));
+
+        // Without abandonment the sweep has no choice but the fail-closed leak.
+        assert!(
+            matches!(decide_finalize_by_latch(a), FinalizeDecision::Skip),
+            "a parked actor must not be finalizable while its frame is live"
+        );
+
+        abandon_parked_activation(a);
+
+        assert_eq!(
+            frame.destroyed.load(Ordering::Acquire),
+            1,
+            "abandonment must run the parked frame's destroy outline exactly once"
+        );
+        assert!(!crate::coro_exec::has_live_parked_cont(a));
+        assert_eq!(
+            a.actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32,
+            "abandonment must latch the actor out of the non-quiescent Suspended window"
+        );
+        assert!(
+            matches!(decide_finalize_by_latch(a), FinalizeDecision::Finalize(_)),
+            "after abandonment the shutdown sweep must reclaim the actor, not leak it"
+        );
+
+        // SAFETY: sole owner; the parked frame is already destroyed.
+        unsafe {
+            drop(Box::from_raw(actor));
+            mailbox::hew_mailbox_free(mailbox);
         }
     }
 

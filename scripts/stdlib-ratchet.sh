@@ -12,8 +12,8 @@
 # are fixing.  Gating on zero failures would block integration; gating on nothing
 # would silently accept regressions.  This ratchet is the middle path.
 #
-# WHEN OBSOLETE: When the list is empty and all stdlib files pass, wire
-# make test-stdlib directly into gates without this wrapper.
+# WHEN OBSOLETE: When the list is empty and all stdlib files pass, drop the
+# ratchet wrapper and have the gate target type-check `std/` directly.
 #
 # REAL SOLUTION: Fix the underlying failures (tracked per entry in the list).
 #

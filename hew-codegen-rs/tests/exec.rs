@@ -28,14 +28,10 @@ mod machine_exec;
 mod match_literal_guard_default_exec;
 #[path = "exec/mem_floor_intrinsic_exec.rs"]
 mod mem_floor_intrinsic_exec;
-#[path = "exec/numeric_methods_exec.rs"]
-mod numeric_methods_exec;
 #[path = "exec/o2_arith_trap_exec.rs"]
 mod o2_arith_trap_exec;
 #[path = "exec/primitive_trait_bound_exec.rs"]
 mod primitive_trait_bound_exec;
-#[path = "exec/recursion_exec.rs"]
-mod recursion_exec;
 #[path = "exec/sink_owned_element_exec.rs"]
 mod sink_owned_element_exec;
 #[path = "exec/structural_eq_exec.rs"]

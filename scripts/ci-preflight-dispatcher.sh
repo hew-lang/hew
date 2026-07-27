@@ -108,6 +108,15 @@ CI_REQUIRED_CHECKS=(
     "Per-function .ll byte-identity corpus (ci.yml: make ll-diff)	make ll-diff"
     "Doc-fence typecheck ratchet (ci.yml: make test-doc-examples)	make test-doc-examples"
     "Repo-wide hew corpus sweep (ci.yml: make hew-check-all)	make hew-check-all"
+    "C-ABI crate tests (ci.yml: make test-cabi)	make test-cabi"
+    "Sanitizer gate wiring (ci.yml: make check-sanitizer-gate)	make check-sanitizer-gate"
+    "Gate reachability + documented targets (ci.yml: make check-gate-reachability)	make check-gate-reachability"
+    "UX + progressive tutorial oracle (ci.yml: make test-ux-examples)	make test-ux-examples"
+    "Surface-example ledger gate (ci.yml: make test-surface-examples)	make test-surface-examples"
+    "Package-install consumer oracle (ci.yml: make test-package-install)	make test-package-install"
+    "Runtime tests without QUIC/TLS/profiler (ci.yml: make test-runtime-unit)	make test-runtime-unit"
+    "Fuzz-oracle gate self-test (ci.yml: make fuzz-oracle-selftest)	make fuzz-oracle-selftest"
+    "libhew link-race gate (ci.yml: make libhew-link-race-test)	make libhew-link-race-test"
 )
 
 usage() {
@@ -846,6 +855,15 @@ case "$LANE" in
         add_command "make checked-mir-run"
         add_command "make ll-diff"
         add_command "make hew-check-all"
+        add_command "make test-cabi"
+        add_command "make check-sanitizer-gate"
+        add_command "make check-gate-reachability"
+        add_command "make test-ux-examples"
+        add_command "make test-surface-examples"
+        add_command "make test-package-install"
+        add_command "make test-runtime-unit"
+        add_command "make fuzz-oracle-selftest"
+        add_command "make libhew-link-race-test"
         ;;
     *)
         die "unhandled lane: $LANE"

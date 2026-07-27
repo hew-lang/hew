@@ -37,15 +37,19 @@ pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: $2" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# Shared crash fixture (the E4 Vec<record> slice repro from the plan).
-# This is a checker-valid program that aborts at runtime with a PANIC.
+# Shared crash fixture: a checker-valid program that aborts at runtime.
+#
+# This deliberately uses a trap the language GUARANTEES (integer division by
+# zero) rather than a reproducer for some specific open bug.  The previous
+# fixture was the Vec<record> slice repro; when that bug was fixed the program
+# stopped crashing, the oracle correctly reported it clean, and this self-test
+# went red -- a test that only passes while a bug remains unfixed.  A guaranteed
+# trap cannot rot that way.
 # ---------------------------------------------------------------------------
-CRASH_SOURCE='record Person { name: string }
-
-fn main() {
-  let v: Vec<Person> = [Person { name: "a" }];
-  let s = v[0..1];
-  println(s.len());
+CRASH_SOURCE='fn main() {
+  let a = 10;
+  let b = 0;
+  println(a / b);
 }
 '
 

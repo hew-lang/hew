@@ -323,11 +323,10 @@ These are only needed for specific workflows:
 
 | Dependency           | Install                                             | Purpose                                        |
 | -------------------- | --------------------------------------------------- | ---------------------------------------------- |
-| wasmtime             | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run WASM tests (`make test-wasm`)              |
+| wasmtime             | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run the WASI end-to-end tests (`make playground-wasi-check`, and the `wasi_run_e2e` / `eval_wasm_*` cases inside `make test-rust`) |
 | wasm32-wasip1 target | `rustup target add wasm32-wasip1`                   | Build WASM runtime (`make wasm-runtime`)       |
 | wasm-pack            | `cargo install wasm-pack`                           | Build browser analysis bindings (`make wasm`, `make playground-check`) |
 | Python 3             | system package manager                              | Playground manifest + other scripts (`scripts/`) |
-| Java 21 + ANTLR4     | system package manager                              | Grammar validation (`make grammar`)            |
 | cargo-fuzz           | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)            |
 
 ## License

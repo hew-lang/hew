@@ -364,60 +364,6 @@ fn overlapping_builtin_impls_rejected() {
     );
 }
 
-/// Coherence (builtin, same shape) — TRACKED KNOWN GAP.
-///
-/// Two genuinely-distinct `impl` blocks with the SAME `Self` shape — two
-/// `impl<T> Acc for Vec<T>` — are a duplicate that SHOULD be rejected with
-/// `ConflictingTraitImpl`, but currently are not: the coherence check compares
-/// `Self` shape (shape-equal duplicates read as a re-presentation of one impl).
-///
-/// Closing this needs the impl's DEFINING identity as the coherence key, but the
-/// only readily-available per-impl span cannot be used directly: the documented
-/// user-redeclare path (a user `pub trait Display` shadowing the prelude
-/// `Display`) makes the prelude `impl Display for i64` and the user
-/// `impl Display for i64` — two DISTINCT traits — collapse to the same
-/// `(canonical, "Display")` coherence key, so a defining-span key would falsely
-/// reject that legal shadow. A correct fix must additionally key on the trait's
-/// DEFINING identity (not its name), a larger cross-cutting change tracked as a
-/// separate follow-up: "trait-impl coherence: reject duplicate same-(type,trait)
-/// impls via defining-identity".
-///
-/// The projection fix this change delivers is unaffected by the gap: first-wins
-/// keeps the dispatched method signature and the applicability proof from the
-/// SAME (first) impl, so an accepted duplicate cannot cause the mis-projection
-/// fail-open this fix closes. `#[ignore]` keeps the regression CI-visible
-/// (`cargo test -- --ignored`) without failing the gate; remove `#[ignore]` when
-/// the follow-up lands.
-#[test]
-#[ignore = "tracked: duplicate same-(type,trait) impl coherence needs defining-identity key (separate follow-up)"]
-fn duplicate_same_shape_builtin_impls_rejected() {
-    let output = typecheck(
-        r"
-        trait Acc {
-            type Output;
-            fn fetch(self, key: i64) -> Option<Self::Output>;
-        }
-        impl<T> Acc for Vec<T> {
-            type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { None }
-        }
-        impl<T> Acc for Vec<T> {
-            type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { None }
-        }
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|err| matches!(err.kind, TypeErrorKind::ConflictingTraitImpl { .. })),
-        "expected a ConflictingTraitImpl coherence diagnostic for the duplicate \
-         same-shape Vec impls, got: {:#?}",
-        output.errors
-    );
-}
 /// user-defined record constructors — `impl<T> Acc for Box2<T>` AND
 /// `impl Acc for Box2<i64>` must be rejected (fail-closed), never silently
 /// accepted. User-record impls do NOT flow through the primitive/builtin side

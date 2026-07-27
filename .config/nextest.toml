@@ -25,7 +25,7 @@ process-timing = { max-threads = 4 }
 # and therefore cannot be made deterministic via the simulated-time seam (simtime is
 # in-process).  They run ONE-AT-A-TIME (max-threads = 1) so no concurrent test steals
 # the scheduler headroom their delivery windows need, and they are excluded from the
-# lane/smoke fast tiers (see those profiles' default-filter) so they never gate fast
+# smoke fast tier (see that profile's default-filter) so they never gate fast
 # iteration.  This is a quarantine, not a parking lot: a timing test that CAN be made
 # deterministic is fixed at the root by the de-flake initiative, never parked here.
 real-timing = { max-threads = 1 }
@@ -67,9 +67,10 @@ test-group = "subprocess-intensive"
 
 [profile.ci]
 # CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
-# Exclude test_runner_e2e tests — they are slower than the main nextest path,
-# and the same scenarios are covered by the ctest E2E suite that runs after the
-# codegen build step.
+# `test_runner_e2e` used to be excluded here against "the ctest E2E suite";
+# no such suite exists in this repository, so the exclusion covered nothing.
+# The binary now runs in CI, throttled into the subprocess-intensive group by
+# the override below because each of its tests spawns the full hew binary.
 # Exclude sandbox parity from generic nextest runs because it needs
 # `npm --prefix hew-sandbox-vm ci`; CI enforces it through the provisioned
 # `make sandbox-parity` step. Exclusion is whole-binary: see profile.default's
@@ -84,16 +85,23 @@ test-group = "subprocess-intensive"
 # sandbox-parity runs all four via plain `cargo test`, so every test in
 # every VM-dependent binary stays enforced where the npm deps are
 # provisioned.
-default-filter = "not package(hew-wasm) - binary(test_runner_e2e) - binary(parity) - binary(parity_ratchet) - binary(playground) - binary(ios_subset)"
+default-filter = "not package(hew-wasm) - binary(parity) - binary(parity_ratchet) - binary(playground) - binary(ios_subset)"
 # Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
 # tests after 3 × 100 s = 300 s without status updates/output.
 slow-timeout = { period = "100s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
+# Every test_runner_e2e case spawns the full hew binary to drive `hew test`.
+# Cap the concurrency the same way eval_e2e is capped so the suite does not
+# oversubscribe a 4-core hosted runner.
+filter = "binary(test_runner_e2e)"
+test-group = "subprocess-intensive"
+
+[[profile.ci.overrides]]
 # Codegen exec/e2e integration binaries spawn full compile+link+run child
 # processes; on 4-core hosted runners an unthrottled exec test starves under
-# workspace-wide parallelism and hits the 300s slow-timeout (coro_emission_exec
-# on macos-14). Same medicine as eval_e2e: cap concurrency, change no coverage.
+# workspace-wide parallelism. Same medicine as eval_e2e: cap concurrency,
+# change no coverage.
 filter = "binary(~exec)"
 test-group = "subprocess-intensive"
 # Hosted 4-core runners run throttled exec tests past the default 300s kill
@@ -341,61 +349,4 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # Route any eval_e2e tests that slip past the default-filter into the group cap.
 # This is a safety net; the default-filter above should exclude them entirely.
 filter = "binary(eval_e2e)"
-test-group = "subprocess-intensive"
-
-[profile.lane]
-# Lane-iteration tier: in-process unit and IR-shape tests only.
-#
-# Purpose: make per-crate gates fast during lane development so iteration does
-# not pay for the subprocess-spawning exec/e2e corpus on every run.
-# Typical wall-clock: < 2 min per crate on a warm build.
-#
-# Usage:
-#   make test-lane CRATE=hew-types    — single crate, fast tier
-#   make test-lane-all                — full workspace, fast tier
-#   make test-fast                    — affected crates only, via git-diff scope
-#   cargo nextest run -p <crate> --profile lane
-#
-# Coverage contract:
-#   - This tier is for ITERATION.  Acceptance requires the plan's named proving
-#     gates (e.g. make test-types, make test-compiler-pipeline).
-#   - Full exec/e2e corpus belongs to the integrated gate (profile.ci).
-#   - profile.ci and the preflight fallback are UNCHANGED by this profile.
-#
-# Binary-name survey (2026-06-10):
-#   Excluded by binary(~exec)   — all *_exec codegen/JIT tests
-#   Excluded by binary(~e2e)    — all *_e2e hew-cli/codegen/runtime tests
-#   Excluded by binary(~oracle) — leak-oracle hew-cli tests
-#   Excluded by binary(machine_lifecycle) — subprocess; name outside the patterns
-#   Excluded by binary(zeroarg_module_enum_emission) — subprocess; name outside patterns
-#   Excluded by binary(jit_trap_bridge)  — JIT-deferred; name outside the patterns
-#   Excluded by binary(playground), binary(ios_subset) — VM-dependent sandbox
-#     parity binaries, same reason as binary(parity) below
-#   Excluded by binary(parity_ratchet) — its live_gate test spawns the Node VM
-#     (whole binary excluded, not per-test — verified independently failing
-#     against an unprovisioned runner before this exclusion was added; see
-#     scripts/check-sandbox-parity-coverage.py and profile.default's comment)
-#   Already excluded from smoke base:    eval_e2e, test_runner_e2e, parity, hew-wasm
-#
-# Matcher semantics (nextest 0.9.132, verified empirically): a bare string in
-# binary(...) is an EXACT-equality match and nextest errors out when it matches
-# no binary name.  Substring exclusion therefore needs the contains matcher
-# `~`: binary(~exec).  The exact-name exclusions below are valid bare strings
-# because those binaries exist.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(parity_ratchet) - binary(playground) - binary(ios_subset) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
-test-threads = "num-cpus"
-slow-timeout = { period = "30s", terminate-after = 2 }
-# Suppress the 3800-line passing-test wall; show only failures during the run
-# and in the final summary.  Broken imports and IR mismatches are immediately
-# visible without scrolling past a sea of green lines.
-status-level = "fail"
-final-status-level = "fail"
-# Never stop at the first failure; one broken import should not mask the
-# cascade of downstream failures that tells you the actual blast radius.
-fail-fast = false
-
-[[profile.lane.overrides]]
-# Safety net: route any exec-named tests that slip past the default-filter into
-# the subprocess-intensive group.  The default-filter should exclude them entirely.
-filter = "binary(~exec)"
 test-group = "subprocess-intensive"

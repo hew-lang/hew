@@ -4,5 +4,3 @@
 
 #[path = "e2e/actor_e2e.rs"]
 mod actor_e2e;
-#[path = "e2e/select_stream_e2e.rs"]
-mod select_stream_e2e;

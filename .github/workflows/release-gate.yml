@@ -193,9 +193,6 @@ jobs:
       # check: manifest freshness, full hew-wasm test suite (lib + fixture-coverage
       # integration), and the wasm-pack release build.  Scoped to x86_64 to avoid
       # multiplying wasm-pack installs across aarch64/macOS/Windows lanes.
-      #
-      # TODO(playground-wasi-gate): add `make playground-wasi-check` here once the
-      # curated_playground_examples_run_under_wasi test is un-ignored by that lane.
       - name: Install wasm-pack v0.13.1 (browser-analysis gate)
         run: |
           set -euo pipefail
@@ -377,10 +374,7 @@ jobs:
         # need entitlements/wall-time hosted runners cannot give (300s
         # timeouts, no failure signal). They are local release evidence and
         # their memory coverage is the Linux ASan job; exclude them here.
-        # coro_emission_exec cannot finish inside hosted macos-14 budgets even
-        # running alone (480s, vs seconds on real macOS hardware — pinned green
-        # locally and on Linux); excluded here, tracked for runner investigation.
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not binary(~oracle) and not binary(coro_emission_exec)'
+        run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not binary(~oracle)'
 
   # ─────────────────────────────────────────────────────────────────────────
   # Windows x86_64 — Rust workspace tests
@@ -425,6 +419,10 @@ jobs:
           --exclude hew-cabi
           --profile ci
           --no-fail-fast
+
+      - name: Run C-ABI crate tests
+        # Standalone because the workspace run above must exclude hew-cabi.
+        run: make test-cabi
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD x86_64 — full build + workspace tests
@@ -504,6 +502,12 @@ jobs:
               --exclude hew-wasm --exclude hew-cabi \
               -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast
+
+            # hew-cabi is excluded from the workspace run above because its
+            # cfg(test) runtime stubs collide with hew-runtime's real symbols
+            # at link time. Run it on its own so the C-ABI ownership contract
+            # is actually proven on this platform rather than merely skipped.
+            cargo nextest run --profile ci -p hew-cabi
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD aarch64 — full build + workspace tests
@@ -588,3 +592,9 @@ jobs:
               --exclude hew-wasm --exclude hew-cabi \
               -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast
+
+            # hew-cabi is excluded from the workspace run above because its
+            # cfg(test) runtime stubs collide with hew-runtime's real symbols
+            # at link time. Run it on its own so the C-ABI ownership contract
+            # is actually proven on this platform rather than merely skipped.
+            cargo nextest run --profile ci -p hew-cabi

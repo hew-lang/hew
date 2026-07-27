@@ -91,6 +91,12 @@ jobs:
               -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast
 
+            # hew-cabi is excluded from the workspace run above because its
+            # cfg(test) runtime stubs collide with hew-runtime's real symbols
+            # at link time. Run it on its own so the C-ABI ownership contract
+            # is actually proven on this platform rather than merely skipped.
+            cargo nextest run --profile ci -p hew-cabi
+
             # The authenticated exact checkout must also prove compiled Hew,
             # including loopback network and resource surfaces. Workspace
             # nextest alone does not execute these language-level gates.

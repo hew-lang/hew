@@ -71,14 +71,14 @@ Always use `make` targets instead of running `cargo` directly. See the [Makefile
 | Suite | Command | Scope | Speed |
 |---|---|---|---|
 | Full (default) | `make test` | Rust workspace (via nextest) | medium |
-| Extended | `make test-all` | `make test` + stdlib type-check sweep + Hew test files | slow |
+| Stdlib type-check | `make test-stdlib-ratchet` | `std/` type-check sweep, ratcheted against `scripts/stdlib-expected-failures.txt` | medium |
 | Rust only | `make test-rust` | All Rust workspace crates | medium |
 | Parser / lexer | `make test-parser` | `hew-parser` + `hew-lexer` | fast |
 | Type checker | `make test-types` | `hew-types` + `hew-parser` + `hew-lexer` | fast |
 | CLI | `make test-cli` | `hew-cli` + `adze-cli` | fast |
 | Runtime / net | `make test-runtime-net` | `hew-runtime` + `hew-analysis` + `hew-lsp` + `hew-std-net-*` | fast |
 | Runtime (no-net) | `make test-runtime-unit` | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast |
-| Hew test files | `make test-hew` | `tests/hew/` via `hew test` | medium |
+| Hew test files | `make test-hew-ratchet` | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt` | medium |
 
 Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`, `test-runtime-net`, `test-runtime-unit`) during inner-loop iteration and `make test` before opening a PR.
 
@@ -91,7 +91,7 @@ Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`, `test-runti
 When adding new language features, add an end-to-end test:
 
 1. Create a `.hew` source file under `tests/hew/`.
-2. Run it via `make test-hew` (`hew test tests/hew/`).
+2. Run it via `make test-hew-ratchet` (`hew test tests/hew/`, compared against the tracked expected-failure set).
 3. **WASM parity** (see `native-wasm-parity` in LESSONS.md): if the feature is supported on WASM, exercise it via the `wasi_run_e2e` integration tests under `hew-cli/tests/`. If WASM support is deferred, add a `// WASM-TODO(#NNN): <reason>` comment at the registration site, where `#NNN` is a GitHub issue tracking the gap (use [#1451](https://github.com/hew-lang/hew/issues/1451) for general WASM parity work).
 4. Add type-checker tests in `hew-types/src/check/tests.rs` for any new type rules.
 

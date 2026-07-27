@@ -4084,7 +4084,8 @@ discharge-depth = "none"
 # WebSocket — hew-std/src/websocket.rs. connect/server_accept return Box'd
 # HewWsConn handles (Box::from_raw in hew_ws_close); recv(_timeout) return
 # Box'd HewWsMessage handles; message_text returns a fresh alloc_cstring
-# string. hew_ws_attach snapshots the actor ref by value (borrow).
+# string. hew_ws_attach wraps the borrowed local actor pointer in a by-value
+# actor-ref snapshot for its reader thread.
 [[ownership.contracts]]
 symbol = "hew_ws_attach"
 result = "none"
@@ -4193,8 +4194,8 @@ discharge-depth = "none"
 # TLS — hew-std/src/tls.rs. connect returns a Box'd HewTlsStream consumed by
 # hew_tls_close. hew_tls_read_result returns a repr(C) struct whose .data
 # field is a fresh owned BytesTriple (released via hew_bytes_drop); the write
-# bridge only reads its borrowed BytesTriple. hew_tls_attach snapshots the
-# actor ref by value (borrow).
+# bridge only reads its borrowed BytesTriple. hew_tls_attach wraps the borrowed
+# local actor pointer in a by-value actor-ref snapshot for its reader thread.
 [[ownership.contracts]]
 symbol = "hew_tls_attach"
 result = "none"

@@ -192,12 +192,7 @@ impl TlsStreamMethods for TlsStream {
 /// Message-type indices are validated at Hew's full `i64` width before the
 /// runtime FFI is entered, so an out-of-range value cannot wrap to a different
 /// actor message.
-pub fn try_attach(
-    stream: TlsStream,
-    handler: LocalPid<TlsHandler>,
-    on_data_type: i64,
-    on_close_type: i64,
-) -> Result<(), net.NetError> {
+pub fn try_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64) -> Result<(), net.NetError> {
     let checked_data = checked_attach_msg_type("tls.try_attach.on_data_type", on_data_type)?;
     let checked_close = checked_attach_msg_type("tls.try_attach.on_close_type", on_close_type)?;
     let status = unsafe {
@@ -206,6 +201,14 @@ pub fn try_attach(
     if status == 0 {
         Ok(())
     } else {
+        let has_detail = unsafe {
+            hew_tls_last_error()
+        } != "";
+        if has_detail {
+            return Err(net.NetError::InvalidArgument(unsafe {
+                hew_tls_last_error()
+            }));
+        }
         Err(net.net_error_from_errno(0))
     }
 }

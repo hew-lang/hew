@@ -688,29 +688,31 @@ fn spawn_attach_reader(
     on_message_type: i32,
     on_close_type: i32,
     ws_ptr: *mut HewWsConn,
-) {
-    {
-        let reader = lock_or_recover(&conn.inner.reader);
-        if reader.is_some() {
-            eprintln!("[attach] reader already attached for ws={ws_ptr:p}");
-            return;
-        }
+) -> Result<(), String> {
+    // Hold this guard through validation, spawn, and store. Two concurrent
+    // callers must not both observe an empty slot and start competing readers.
+    let mut reader = lock_or_recover(&conn.inner.reader);
+    if reader.is_some() {
+        return Err("websocket.attach: reader already attached".to_owned());
     }
     {
         let mut guard = pl_lock(&conn.inner.ws);
         let Some(ws) = guard.as_mut() else {
-            eprintln!("[attach] connection already closed for ws={ws_ptr:p}");
-            return;
+            return Err("websocket.attach: connection already closed".to_owned());
         };
         if let Err(err) = set_read_timeout(ws, Some(READER_READ_TIMEOUT)) {
-            eprintln!("[attach] failed to set read timeout for ws={ws_ptr:p}: {err}");
-            return;
+            return Err(format!(
+                "websocket.attach: failed to set read timeout for {ws_ptr:p}: {err}"
+            ));
         }
     }
 
-    // SAFETY: `actor` points to a valid ActorRef for the duration of this call;
-    // the reader owns a by-value snapshot after this copy.
-    let actor_ref = Box::new(unsafe { std::ptr::read(actor.cast::<HewActorRef>()) });
+    // Hew `LocalPid<T>` crosses an extern C call as the bare local actor
+    // pointer. Build the stable by-value actor-ref snapshot the reader owns.
+    let actor_ref = Box::new(HewActorRef {
+        kind: ACTOR_REF_LOCAL,
+        data: HewActorRefData { local: actor },
+    });
     let cancel = Arc::new(AtomicBool::new(false));
     let exited = Arc::new(AtomicBool::new(false));
     let inner = Arc::clone(&conn.inner);
@@ -790,12 +792,12 @@ fn spawn_attach_reader(
         reader_exited.store(true, Ordering::Release);
     });
 
-    let mut reader = lock_or_recover(&conn.inner.reader);
     *reader = Some(ReaderControl {
         cancel,
         exited,
         join: Some(join),
     });
+    Ok(())
 }
 
 /// Build a heap-allocated [`HewWsMessage`] from a type tag and byte slice.
@@ -1470,9 +1472,16 @@ pub unsafe extern "C" fn hew_ws_attach(
     };
     // SAFETY: nulls are rejected above and `ws` remains valid for this call.
     let conn = unsafe { &*ws };
-    spawn_attach_reader(conn, actor, on_message_type, on_close_type, ws);
-    clear_ws_last_error();
-    0
+    match spawn_attach_reader(conn, actor, on_message_type, on_close_type, ws) {
+        Ok(()) => {
+            clear_ws_last_error();
+            0
+        }
+        Err(detail) => {
+            set_ws_last_error(-1, detail);
+            -1
+        }
+    }
 }
 
 // Import the actor send function from the runtime.
@@ -2115,15 +2124,15 @@ mod tests {
             )
         };
         assert!(!actor.is_null(), "test actor should spawn");
-        let mut actor_ref = unsafe { transport::hew_actor_ref_local(actor) };
-        unsafe {
+        let attach_status = unsafe {
             hew_ws_attach(
                 conn,
-                (&raw mut actor_ref).cast(),
+                actor.cast(),
                 TEST_MSG_TYPE.into(),
                 TEST_CLOSE_TYPE.into(),
-            );
+            )
         };
+        assert_eq!(attach_status, 0, "first attach should succeed");
         (actor, test_id, rx)
     }
 
@@ -2152,7 +2161,12 @@ mod tests {
         let status = unsafe { hew_ws_attach(conn, actor_ptr, 4_294_967_297, 1) };
 
         assert_eq!(status, -1);
-        assert!(ws_last_error_text().contains("message-type index out of range"));
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert_eq!(
+            ws_last_error_text(),
+            "websocket.attach: message-type index out of range \
+             (on_message_type=4294967297, on_close_type=1)"
+        );
         // SAFETY: `conn` is live for the duration of this borrow.
         let attached = { lock_or_recover(&unsafe { &*conn }.inner.reader).is_some() };
         assert!(
@@ -2165,6 +2179,62 @@ mod tests {
         unsafe { hew_ws_close(conn) };
         // SAFETY: `server` is live and not yet closed.
         unsafe { hew_ws_server_close(server) };
+    }
+
+    #[test]
+    fn attach_null_handles_preserve_typed_error_authority() {
+        // SAFETY: null handles exercise the guarded error path.
+        let status = unsafe { hew_ws_attach(std::ptr::null_mut(), std::ptr::null_mut(), 0, 1) };
+
+        assert_eq!(status, -1);
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert_eq!(
+            ws_last_error_text(),
+            "websocket.attach: null handle (ws=true, actor=true)"
+        );
+        assert_eq!(
+            hew_ws_last_errno(),
+            -1,
+            "reading detail must not consume the typed error authority"
+        );
+    }
+
+    #[test]
+    fn second_attach_is_refused_without_replacing_the_live_reader() {
+        run_in_isolated_test_process(
+            "second_attach_is_refused_without_replacing_the_live_reader",
+            "HEW_WS_DOUBLE_ATTACH_ISOLATED",
+            || {
+                let _runtime = RuntimeGuard::new();
+                let (server, conn, client) = attach_test_conn();
+                let (actor, test_id, _rx) = spawn_attached_actor(conn);
+                // SAFETY: both handles are live, but the connection already
+                // owns a reader from `spawn_attached_actor`.
+                let status = unsafe {
+                    hew_ws_attach(
+                        conn,
+                        actor.cast(),
+                        TEST_MSG_TYPE.into(),
+                        TEST_CLOSE_TYPE.into(),
+                    )
+                };
+
+                assert_eq!(status, -1);
+                assert_eq!(hew_ws_last_errno(), -1);
+                assert_eq!(
+                    ws_last_error_text(),
+                    "websocket.attach: reader already attached"
+                );
+                // SAFETY: `conn` remains live until teardown below.
+                assert!(
+                    lock_or_recover(&unsafe { &*conn }.inner.reader).is_some(),
+                    "the rejected attach must preserve the original live reader"
+                );
+
+                drop(client);
+                teardown_attached_actor(actor, test_id, conn, server);
+            },
+        );
     }
 
     #[test]

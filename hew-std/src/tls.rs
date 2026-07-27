@@ -815,7 +815,7 @@ fn spawn_tls_attach_reader(
 /// `hew_tls_write` and `hew_tls_write_result` remain valid.
 ///
 /// - `stream`: the TLS connection. Must not be null.
-/// - `actor`: pointer to the target actor's `HewActorRef` (value-snapshot taken).
+/// - `actor`: pointer to the target local actor (an actor-ref snapshot is taken).
 /// - `on_data_type`: `msg_type` index for data delivery.
 /// - `on_close_type`: `msg_type` index for close/error notification.
 ///
@@ -827,7 +827,7 @@ fn spawn_tls_attach_reader(
 /// # Safety
 ///
 /// - `stream` must be a valid pointer returned by [`hew_tls_connect`].
-/// - `actor` must be a valid `HewActorRef` pointer that outlives the connection.
+/// - `actor` must be a valid local actor pointer that outlives the connection.
 #[no_mangle]
 pub unsafe extern "C" fn hew_tls_attach(
     stream: *mut HewTlsStream,
@@ -873,9 +873,12 @@ pub unsafe extern "C" fn hew_tls_attach(
         set_tls_last_error("tls.attach: reader already attached");
         return -1;
     }
-    // SAFETY: `actor` points to a valid HewActorRef for the duration of this
-    // call; we snapshot the ref by value so the reader owns its own copy.
-    let actor_ref = unsafe { std::ptr::read(actor.cast::<TlsActorRef>()) };
+    // Hew `LocalPid<T>` crosses an extern C call as the bare local actor
+    // pointer. Build the stable by-value actor-ref snapshot the reader owns.
+    let actor_ref = TlsActorRef {
+        kind: TLS_ACTOR_REF_LOCAL,
+        data: TlsActorRefData { local: actor },
+    };
     let join =
         spawn_tls_attach_reader(Arc::clone(&s.inner), actor_ref, on_data_type, on_close_type);
     *reader_guard = Some(join);
@@ -890,7 +893,7 @@ mod tests {
     use super::*;
     use hew_cabi::cabi::free_cstring;
     use hew_runtime::bytes::{hew_bytes_clone_ref, hew_bytes_drop, hew_bytes_push};
-    use hew_runtime::{actor, scheduler, transport};
+    use hew_runtime::{actor, scheduler};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use std::cell::Cell;
     use std::collections::HashMap;
@@ -1470,7 +1473,10 @@ mod tests {
         // irrelevant because the null-stream check fires first.
         let status = unsafe { hew_tls_attach(std::ptr::null_mut(), std::ptr::null_mut(), 0, 1) };
         assert_eq!(status, -1);
-        assert!(last_error_string().contains("null handle"));
+        assert_eq!(
+            last_error_string(),
+            "tls.attach: null handle (stream=true, actor=true)"
+        );
     }
 
     #[test]
@@ -1489,6 +1495,10 @@ mod tests {
         // SAFETY: null actor pointer exercises the null-actor guard.
         let status = unsafe { hew_tls_attach(stream_ptr, std::ptr::null_mut(), 0, 1) };
         assert_eq!(status, -1);
+        assert_eq!(
+            last_error_string(),
+            "tls.attach: null handle (stream=false, actor=true)"
+        );
         // SAFETY: we created `stream_ptr` and it was not consumed.
         unsafe { hew_tls_close(stream_ptr) };
     }
@@ -1514,7 +1524,11 @@ mod tests {
         let status = unsafe { hew_tls_attach(stream_ptr, actor_ptr, 4_294_967_297, 1) };
 
         assert_eq!(status, -1);
-        assert!(last_error_string().contains("message-type index out of range"));
+        assert_eq!(
+            last_error_string(),
+            "tls.attach: message-type index out of range \
+             (on_data_type=4294967297, on_close_type=1)"
+        );
         assert!(
             shared
                 .reader
@@ -1738,18 +1752,28 @@ mod tests {
             )
         };
         assert!(!actor.is_null(), "test actor should spawn");
-        // SAFETY: `actor` is a live actor we own.
-        let mut actor_ref = unsafe { transport::hew_actor_ref_local(actor) };
-
-        // SAFETY: `stream_ptr` is a live stream; `actor_ref` outlives the attach.
-        unsafe {
+        // SAFETY: `stream_ptr` and `actor` are live for the attach.
+        let attach_status = unsafe {
             hew_tls_attach(
                 stream_ptr,
-                (&raw mut actor_ref).cast(),
+                actor.cast(),
                 TLS_ON_DATA_TYPE.into(),
                 TLS_ON_CLOSE_TYPE.into(),
-            );
-        }
+            )
+        };
+        assert_eq!(attach_status, 0, "first attach should succeed");
+
+        // SAFETY: both handles are live, but the stream already owns a reader.
+        let second_status = unsafe {
+            hew_tls_attach(
+                stream_ptr,
+                actor.cast(),
+                TLS_ON_DATA_TYPE.into(),
+                TLS_ON_CLOSE_TYPE.into(),
+            )
+        };
+        assert_eq!(second_status, -1);
+        assert_eq!(last_error_string(), "tls.attach: reader already attached");
 
         // The decrypted payload must arrive via on_data (possibly across chunks).
         let mut received = Vec::new();
@@ -2013,18 +2037,16 @@ mod tests {
             )
         };
         assert!(!actor.is_null(), "test actor should spawn");
-        // SAFETY: `actor` is a live actor we own.
-        let mut actor_ref = unsafe { transport::hew_actor_ref_local(actor) };
-
-        // SAFETY: `stream_ptr` is a live stream; `actor_ref` outlives the attach.
-        unsafe {
+        // SAFETY: `stream_ptr` and `actor` are live for the attach.
+        let attach_status = unsafe {
             hew_tls_attach(
                 stream_ptr,
-                (&raw mut actor_ref).cast(),
+                actor.cast(),
                 TLS_ON_DATA_TYPE.into(),
                 TLS_ON_CLOSE_TYPE.into(),
-            );
-        }
+            )
+        };
+        assert_eq!(attach_status, 0, "attach should succeed");
 
         // Let the reader settle into its blocking read loop before closing.
         thread::sleep(Duration::from_millis(50));

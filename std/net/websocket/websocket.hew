@@ -178,12 +178,7 @@ impl ConnMethods for Conn {
 /// Message-type indices are validated at Hew's full `i64` width before the
 /// runtime FFI is entered, so an out-of-range value cannot wrap to a different
 /// actor message.
-pub fn try_attach(
-    conn: Conn,
-    handler: LocalPid<WebSocketHandler>,
-    on_message_type: i64,
-    on_close_type: i64,
-) -> Result<(), net.NetError> {
+pub fn try_attach(conn: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64) -> Result<(), net.NetError> {
     let checked_message = checked_attach_msg_type("websocket.try_attach.on_message_type", on_message_type)?;
     let checked_close = checked_attach_msg_type("websocket.try_attach.on_close_type", on_close_type)?;
     let status = unsafe {
@@ -192,7 +187,15 @@ pub fn try_attach(
     if status == 0 {
         Ok(())
     } else {
-        Err(net.net_error_from_errno(0))
+        let errno = unsafe {
+            hew_ws_last_errno()
+        };
+        if errno == -1 {
+            return Err(net.NetError::InvalidArgument(unsafe {
+                hew_ws_last_error()
+            }));
+        }
+        Err(net.net_error_from_errno(errno))
     }
 }
 
@@ -303,7 +306,7 @@ impl ServerMethods for Server {
 ///     }
 /// }
 /// ```
-trait WebSocketHandler {
+pub trait WebSocketHandler {
     /// Called when a text frame arrives from the client.
     fn on_message(text: string);
 

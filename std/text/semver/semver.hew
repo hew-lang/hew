@@ -325,11 +325,17 @@ fn compare_versions(a: Version, b: Version) -> i64 {
     let a_pat = a.pat;
     let b_pat = b.pat;
     let maj_cmp = compare_decimal_strings(a_maj, b_maj);
-    if maj_cmp != 0 { return maj_cmp; }
+    if maj_cmp != 0 {
+        return maj_cmp;
+    }
     let min_cmp = compare_decimal_strings(a_min, b_min);
-    if min_cmp != 0 { return min_cmp; }
+    if min_cmp != 0 {
+        return min_cmp;
+    }
     let pat_cmp = compare_decimal_strings(a_pat, b_pat);
-    if pat_cmp != 0 { return pat_cmp; }
+    if pat_cmp != 0 {
+        return pat_cmp;
+    }
     // Pre-release comparison per SemVer 2.0:
     // - Version without pre-release has higher precedence than one with
     // - If both have pre-release, compare dot-separated identifiers

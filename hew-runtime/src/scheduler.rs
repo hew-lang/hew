@@ -377,6 +377,10 @@ struct Parker {
     /// Published under `mutex` before the final queue probe and cleared under
     /// the same mutex after wake/timeout or a refused park.
     parked: AtomicBool,
+    /// Number of work-path notifications issued to this parker. Tests use this
+    /// to distinguish a real notification from a permitted spurious wake.
+    #[cfg(test)]
+    work_notifications: AtomicU64,
 }
 
 impl Parker {
@@ -403,6 +407,8 @@ impl Parker {
         if !self.parked.load(Ordering::SeqCst) {
             return false;
         }
+        #[cfg(test)]
+        self.work_notifications.fetch_add(1, Ordering::Relaxed);
         self.cond.notify_one();
         true
     }
@@ -509,6 +515,8 @@ pub extern "C" fn hew_sched_init() -> c_int {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
             parked: AtomicBool::new(false),
+            #[cfg(test)]
+            work_notifications: AtomicU64::new(0),
         })
         .collect();
 
@@ -3269,6 +3277,7 @@ pub(crate) fn worker_less_scheduler() -> Scheduler {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
             parked: AtomicBool::new(false),
+            work_notifications: AtomicU64::new(0),
         }],
         stealers: Vec::new(),
         worker_handles: PoisonSafe::new(Vec::new()),
@@ -3917,8 +3926,10 @@ mod tests {
     /// wait-registration gap must not be lost. The hook pins that exact gap:
     /// it enqueues first, then `sched_try_wake` observes that no worker has
     /// published a park yet. The fixed final probe sees the work and never
-    /// enters `wait_timeout`; omitting only that probe reproduces the old full
-    /// `PARK_TIMEOUT` delay.
+    /// enters `wait_timeout`; omitting only that probe enters the wait with the
+    /// work still stranded. A condvar may wake spuriously, so the negative
+    /// control also records real work-path notifications rather than requiring
+    /// an exact timeout result.
     #[test]
     fn pre_park_enqueue_and_wake_cannot_be_lost() {
         fn enqueue_in_final_probe_gap() {
@@ -3942,15 +3953,26 @@ mod tests {
             "the fixed path must leave the exact enqueued work for the next worker-loop probe"
         );
 
+        let notifications_before = sched.parkers[0].work_notifications.load(Ordering::Relaxed);
+        let counterfactual = park_worker(sched, 0, &local, false);
+        assert!(
+            matches!(
+                counterfactual,
+                WorkerParkOutcome::TimedOut | WorkerParkOutcome::Notified
+            ),
+            "counterfactual omission must enter the condvar wait instead of observing work; \
+             got {counterfactual:?}"
+        );
         assert_eq!(
-            park_worker(sched, 0, &local, false),
-            WorkerParkOutcome::TimedOut,
-            "counterfactual omission of the final queue probe must consume PARK_TIMEOUT"
+            sched.parkers[0].work_notifications.load(Ordering::Relaxed),
+            notifications_before,
+            "the pre-publication wake must not issue a real parker notification; \
+             a Notified outcome here can only be a permitted spurious wake"
         );
         assert_eq!(
             sched_guard.pop_global(),
             Some(ptr::dangling_mut::<HewActor>()),
-            "the counterfactual timeout must leave the runnable work stranded until the late probe"
+            "the counterfactual wait must leave the runnable work stranded until the late probe"
         );
     }
 
@@ -3970,11 +3992,13 @@ mod tests {
                     mutex: Mutex::new(()),
                     cond: Condvar::new(),
                     parked: AtomicBool::new(true),
+                    work_notifications: AtomicU64::new(0),
                 },
                 Parker {
                     mutex: Mutex::new(()),
                     cond: Condvar::new(),
                     parked: AtomicBool::new(false),
+                    work_notifications: AtomicU64::new(0),
                 },
             ],
             stealers: Vec::new(),
@@ -6365,6 +6389,7 @@ mod tests {
                 mutex: Mutex::new(()),
                 cond: Condvar::new(),
                 parked: AtomicBool::new(false),
+                work_notifications: AtomicU64::new(0),
             }],
             stealers: Vec::new(),
             worker_handles: PoisonSafe::new(Vec::new()),
@@ -6413,6 +6438,7 @@ mod tests {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
             parked: AtomicBool::new(false),
+            work_notifications: AtomicU64::new(0),
         };
         let sched = Scheduler {
             worker_count: 1,
@@ -6480,6 +6506,7 @@ mod tests {
                 mutex: Mutex::new(()),
                 cond: Condvar::new(),
                 parked: AtomicBool::new(false),
+                work_notifications: AtomicU64::new(0),
             }],
             stealers: Vec::new(),
             worker_handles: PoisonSafe::new(Vec::new()),
@@ -6824,6 +6851,7 @@ mod tests {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
             parked: AtomicBool::new(false),
+            work_notifications: AtomicU64::new(0),
         };
         // SAFETY: single-threaded test setup; the deque lives for the whole test.
         let (queued_work, queued_stealer) = unsafe { crate::deque::WorkDeque::new() };
@@ -6923,6 +6951,7 @@ mod tests {
             mutex: Mutex::new(()),
             cond: Condvar::new(),
             parked: AtomicBool::new(false),
+            work_notifications: AtomicU64::new(0),
         };
         let sched = Scheduler {
             worker_count: 1,

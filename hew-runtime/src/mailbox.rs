@@ -35,6 +35,51 @@ use crate::scheduler::{MESSAGES_RECEIVED, MESSAGES_SENT};
 use crate::set_last_error;
 use crate::tracing::HewTraceContext;
 
+// Exact ask-node identity ledger for ownership regressions. A queued ask moves
+// one retained reply-channel reference into its `HewMsgNode`; recording that
+// node-to-channel edge lets tests prove the SAME allocation stays live when a
+// terminal reclaim edge is omitted, rather than inferring a leak from time.
+// Test-only: no allocation, locking, or global state in production.
+#[cfg(test)]
+static ACTIVE_ASK_NODES: std::sync::LazyLock<
+    crate::lifetime::PoisonSafe<std::collections::HashMap<usize, usize>>,
+> = std::sync::LazyLock::new(|| crate::lifetime::PoisonSafe::new(std::collections::HashMap::new()));
+
+#[cfg(test)]
+fn track_ask_node_for_test(node: *mut HewMsgNode, reply_channel: *mut c_void) {
+    if reply_channel.is_null() {
+        return;
+    }
+    ACTIVE_ASK_NODES.access(|nodes| {
+        assert!(
+            nodes.insert(node.addr(), reply_channel.addr()).is_none(),
+            "new ask node address was already tracked"
+        );
+    });
+}
+
+#[cfg(test)]
+fn untrack_ask_node_for_test(node: *mut HewMsgNode) {
+    ACTIVE_ASK_NODES.access(|nodes| {
+        nodes.remove(&node.addr());
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn active_ask_node_count_for_test() -> usize {
+    ACTIVE_ASK_NODES.access(|nodes| nodes.len())
+}
+
+#[cfg(test)]
+pub(crate) fn ask_node_for_reply_channel_for_test(reply_channel: *mut c_void) -> *mut HewMsgNode {
+    ACTIVE_ASK_NODES.access(|nodes| {
+        nodes
+            .iter()
+            .find_map(|(&node, &channel)| (channel == reply_channel.addr()).then_some(node))
+            .map_or(ptr::null_mut(), ptr::without_provenance_mut)
+    })
+}
+
 pub use crate::mailbox_header::HewSysMsg;
 pub use crate::mailbox_header::{
     HEW_MSG_ENVELOPE_ALIAS_ACTIVE, HEW_MSG_ENVELOPE_ARENA_BACKED,
@@ -588,6 +633,8 @@ unsafe fn msg_node_alloc_with_trace(
         }
     }
 
+    #[cfg(test)]
+    track_ask_node_for_test(node, reply_channel);
     node
 }
 
@@ -640,6 +687,8 @@ unsafe fn msg_node_alloc_aliased(
         (*node).cancel_token_handle = 0;
     }
 
+    #[cfg(test)]
+    track_ask_node_for_test(node, reply_channel);
     node
 }
 
@@ -673,41 +722,74 @@ unsafe fn retire_msg_node_ask_sender_ref(node: *mut HewMsgNode) {
     unsafe { retire_orphaned_ask_sender_ref(reply_channel) };
 }
 
-/// Reclaim every message still queued on the mailbox of an actor that is
-/// completing its terminal stop transition.
+struct TerminalReclaimGuard<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for TerminalReclaimGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Reclaim every message still queued when an actor becomes terminal.
 ///
-/// The system queue has dequeue priority over the user queue
-/// ([`mailbox_try_recv_with_origin`]), so `hew_actor_stop`'s shutdown sentinel
-/// is handed to the worker ahead of user messages that were enqueued BEFORE
-/// it. The worker breaks its message loop on the sentinel and finalizes the
-/// actor, leaving those user messages queued. A queued **ask** node owns a
-/// sender-side reply-channel reference, and that reference is what its caller
-/// is blocked on: until the node is freed, nothing marks the channel orphaned
-/// and nothing publishes the null reply that wakes the waiter. Left to
-/// `hew_mailbox_free` (which only runs at `hew_actor_free`) the caller blocks
-/// for its entire ask timeout — a stop that races a queued ask silently
-/// converts "actor stopped" into "caller hangs".
+/// There are three ways a live node can remain behind a terminal transition:
+///
+/// - a stop finalizes while user work remains queued;
+/// - an idle sender enqueues, then loses its `Idle -> Runnable` wake CAS to the
+///   stopper's `Idle -> Stopped` CAS;
+/// - a crashing activation owns one dequeued message while later messages stay
+///   queued behind it.
+///
+/// In every case a queued **ask** node owns a sender-side reply-channel
+/// reference, and that reference is what its caller is blocked on. Until the
+/// node is freed, nothing marks the channel orphaned and nothing publishes the
+/// null reply that wakes the waiter. Leaving the node for `hew_mailbox_free`
+/// (which may be deferred indefinitely, especially for a supervised crash)
+/// converts the terminal event into a full ask-timeout stall.
 ///
 /// [`hew_msg_node_free`] retires each node's ask sender reference
 /// ([`retire_msg_node_ask_sender_ref`]), so draining here IS the wake: every
 /// stranded waiter is unblocked with the orphaned classification
-/// (`HEW_REPLY_FAIL_ACTOR_STOPPED`) it would have received had the mailbox been
-/// torn down. Any leftover system message (a second sentinel) is reclaimed on
-/// the same pass.
+/// (`HEW_REPLY_FAIL_ACTOR_STOPPED`) it would have received during mailbox
+/// teardown. Non-ask user nodes and leftover system nodes are reclaimed on the
+/// same pass.
 ///
 /// # Safety
 ///
-/// `mb` must be null or a valid mailbox pointer, and the caller must be its
-/// SOLE consumer for the duration of the drain — the worker that owns the
-/// terminating activation, before it publishes the terminal state. `Stopping`
-/// is not quiescent (`actor_free_state_is_quiescent`), so a concurrent
-/// `hew_actor_free` cannot reach `hew_mailbox_free` while this runs.
-pub(crate) unsafe fn mailbox_reclaim_queued_on_stop(mb: *mut HewMailbox) {
+/// `mb` must be null or a valid mailbox pointer. The caller must still own a
+/// live actor/mailbox allocation and prove that no non-terminal activation can
+/// consume concurrently. The mailbox's terminal-reclaim lock serialises these
+/// eligible terminal consumers:
+///
+/// - the worker finalizing `Stopping -> Stopped`;
+/// - the direct idle stopper immediately after winning `Idle -> Stopped`; or
+/// - the crash/trap authority before link/monitor/supervisor notification can
+///   transfer reclamation ownership;
+/// - a producer whose enqueue completed but whose wake CAS observed terminal,
+///   after proving `dispatch_active == false`.
+pub(crate) unsafe fn mailbox_reclaim_queued_terminal(mb: *mut HewMailbox) {
     if mb.is_null() {
         return;
     }
     // SAFETY: caller guarantees `mb` is valid.
-    let message_drop_fn = unsafe { (*mb).message_drop_fn };
+    let mailbox = unsafe { &*mb };
+
+    // A sender that passed the mailbox's open check before close can publish
+    // after the first terminal drain. Its failed wake CAS then helps with a
+    // second drain. Serialise those consumers so the lock-free MPSC queues
+    // retain their single-consumer contract; waiting (rather than try-locking)
+    // guarantees a producer whose enqueue already completed gets a pass after
+    // an earlier drainer that may just have observed the queue empty.
+    while mailbox
+        .terminal_reclaiming
+        .compare_exchange_weak(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        std::hint::spin_loop();
+    }
+    let _reclaim_guard = TerminalReclaimGuard(&mailbox.terminal_reclaiming);
+
+    let message_drop_fn = mailbox.message_drop_fn;
     loop {
         // SAFETY: caller guarantees `mb` is valid and the sole-consumer
         // invariant holds for this drain.
@@ -730,6 +812,8 @@ pub(crate) unsafe fn mailbox_reclaim_queued_on_stop(mb: *mut HewMailbox) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     cabi_guard!(node.is_null());
+    #[cfg(test)]
+    untrack_ask_node_for_test(node);
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
         // Explicit orphaned-ask teardown: queued ask nodes own a sender-side
@@ -1087,6 +1171,9 @@ pub struct HewMailbox {
     /// This flag IS the stop signal — there is no queued node. See
     /// [`mailbox_request_stop`].
     stop_requested: std::sync::atomic::AtomicBool,
+    /// Serialises terminal drains across the terminal publisher, an active
+    /// scheduler owner, and a producer helping after its wake CAS loses.
+    terminal_reclaiming: std::sync::atomic::AtomicBool,
     /// Condvar notified when a user message is consumed, waking blocked senders.
     not_full: Condvar,
     /// High-water mark: maximum `count` value observed.
@@ -1228,6 +1315,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminal_reclaiming: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: false,
@@ -1266,6 +1354,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminal_reclaiming: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1313,6 +1402,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminal_reclaiming: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1352,6 +1442,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminal_reclaiming: std::sync::atomic::AtomicBool::new(false),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: true,

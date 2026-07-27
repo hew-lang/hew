@@ -71,6 +71,39 @@ fn run_crash_teardown_order_hook(event: c_int) {
     }
 }
 
+// ── Send post-enqueue / pre-wake rendezvous hook (test-only) ─────────────
+//
+// An actor send transfers node ownership into the mailbox BEFORE attempting
+// `Idle -> Runnable`. This hook pauses at that exact ownership boundary so a
+// test can let stop/close win `Idle -> Stopped`, then verify the terminal path
+// retires the exact node and its retained reply-sender reference even though
+// the sender's wake CAS necessarily loses.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+type SendPostEnqueueHook = (
+    u64,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static SEND_POST_ENQUEUE_PRE_WAKE_HOOK: Mutex<Option<SendPostEnqueueHook>> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn run_send_post_enqueue_pre_wake_hook(a: &HewActor) {
+    let rendezvous = {
+        let guard = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.as_ref().and_then(|(actor_id, entered, release)| {
+            (*actor_id == a.id).then(|| (entered.clone(), release.clone()))
+        })
+    };
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+
 // ── Free-path pre-detach rendezvous hook (test-only) ─────────────────────
 //
 // Lets a test deterministically force the reactor-detach UAF window: the hook
@@ -3979,6 +4012,9 @@ pub unsafe extern "C" fn hew_actor_try_send(
         .is_ok()
     {
         scheduler::sched_enqueue(actor);
+    } else {
+        // SAFETY: this producer just completed an enqueue against `a`.
+        unsafe { reclaim_terminal_enqueue_if_unowned(a) };
     }
 
     0
@@ -4050,12 +4086,64 @@ pub(crate) unsafe fn hew_actor_send_guaranteed(
         .is_ok()
     {
         scheduler::sched_enqueue(actor);
+    } else {
+        // SAFETY: this producer just completed an enqueue against `a`.
+        unsafe { reclaim_terminal_enqueue_if_unowned(a) };
     }
 
     0
 }
 
 // ── Close / Stop / Free ─────────────────────────────────────────────────
+
+/// Try to terminalize an idle actor after its mailbox has been closed.
+///
+/// The winning `Idle -> Stopped` CAS is also the last point that still owns a
+/// live, non-dispatching actor and its mailbox. A sender can already have
+/// transferred an ask node into that mailbox while paused before its own
+/// `Idle -> Runnable` CAS. Once this CAS wins the sender's wake must fail, so
+/// this path must retire queued nodes before returning; no later activation can
+/// do it.
+///
+/// `reclaim_queued` exists solely to make the pre-fix omission executable in a
+/// unit counterfactual. Production callers always pass `true`; the false branch
+/// differs by exactly the missing reclaim edge.
+///
+/// # Safety
+///
+/// `actor`, `a`, and `mb` must name the same live actor/mailbox allocation, and
+/// the mailbox must already be closed.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn try_terminalize_idle_actor(
+    actor: *mut HewActor,
+    a: &HewActor,
+    mb: *mut HewMailbox,
+    reclaim_queued: bool,
+) -> bool {
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Stopped as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    if reclaim_queued {
+        // SAFETY: winning Idle -> Stopped proves no activation owns this
+        // mailbox's consumer side. The actor and mailbox remain live until this
+        // function returns, and the closed mailbox rejects later sends.
+        unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
+    }
+
+    crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+    // SAFETY: actor just transitioned to Stopped; it is not being dispatched.
+    unsafe { call_terminate_fn(actor) };
+    true
+}
 
 /// Close an actor, rejecting new messages.
 ///
@@ -4078,20 +4166,9 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
         unsafe { mailbox::mailbox_close(mb) };
     }
 
-    // If actor is IDLE, transition directly to STOPPED.
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Stopped as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-        // SAFETY: actor just transitioned to Stopped; not being dispatched.
-        unsafe { call_terminate_fn(actor) };
-    }
+    // SAFETY: actor/a/mb are the same live allocation and the mailbox was
+    // closed immediately above.
+    let _ = unsafe { try_terminalize_idle_actor(actor, a, mb, true) };
 }
 
 /// Stop an actor.
@@ -4124,18 +4201,9 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         unsafe { mailbox::mailbox_close(mb) };
     }
 
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Stopped as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-        // SAFETY: actor just transitioned to Stopped; not being dispatched.
-        unsafe { call_terminate_fn(actor) };
+    // SAFETY: actor/a/mb are the same live allocation and the mailbox was
+    // closed immediately above.
+    if unsafe { try_terminalize_idle_actor(actor, a, mb, true) } {
         return;
     }
 
@@ -5491,11 +5559,31 @@ unsafe fn actor_send_result_internal_reply(
     HewError::Ok as i32
 }
 
-/// Record the send in the trace log and, if the destination actor is
-/// idle, transition it `Idle → Runnable` and enqueue it on the
-/// scheduler. Shared by the copy-mode delivery path
-/// ([`actor_send_result_internal_reply`]) and the envelope-mode alias
-/// path ([`hew_actor_send_aliased`]) so both wake the actor identically.
+/// Retire an enqueue that completed after a terminal drain but before the
+/// producer attempted its wake CAS.
+///
+/// # Safety
+///
+/// `a` must remain live through the terminal-state and dispatch-owner probes.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn reclaim_terminal_enqueue_if_unowned(a: &HewActor) {
+    // A terminal publisher may have drained before this producer, which had
+    // already passed the mailbox-open check, completed its enqueue. Once the
+    // wake CAS loses to terminal and no activation owns the consumer, this
+    // producer is the only remaining site guaranteed to run. Help with a
+    // serialised terminal drain so the late node cannot remain stranded.
+    if actor_send_is_terminal(a) && !a.dispatch_active.load(Ordering::Acquire) {
+        // SAFETY: terminal state prevents a new activation from winning;
+        // dispatch_active=false proves no existing activation consumes the
+        // mailbox. The terminal-drain lock serialises other helpers.
+        unsafe {
+            mailbox::mailbox_reclaim_queued_terminal(a.mailbox.cast::<HewMailbox>());
+        }
+    }
+}
+
+/// Record the send and wake the actor, or retire a late enqueue if a terminal
+/// transition already won.
 ///
 /// # Safety
 ///
@@ -5511,6 +5599,12 @@ unsafe fn schedule_actor_after_enqueue(actor: *mut HewActor, a: &HewActor, msg_t
     };
     crate::tracing::record_send(trace_actor_id, msg_type);
 
+    // Deterministic ownership seam: the message (and an ask's retained sender
+    // reference) is already owned by the mailbox, but this sender has not yet
+    // attempted its wake CAS.
+    #[cfg(test)]
+    run_send_post_enqueue_pre_wake_hook(a);
+
     // CAS IDLE → RUNNABLE; on success, schedule the actor.
     if a.actor_state
         .compare_exchange(
@@ -5525,6 +5619,9 @@ unsafe fn schedule_actor_after_enqueue(actor: *mut HewActor, a: &HewActor, msg_t
         a.idle_count.store(0, Ordering::Relaxed);
         a.hibernating.store(0, Ordering::Relaxed);
         scheduler::sched_enqueue(actor);
+    } else {
+        // SAFETY: this producer just completed an enqueue against `a`.
+        unsafe { reclaim_terminal_enqueue_if_unowned(a) };
     }
 }
 
@@ -6151,6 +6248,53 @@ pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
+    // SAFETY: forwarded public contract. An external trap may race a live
+    // activation, so it drains only when no scheduler frame owns the mailbox
+    // consumer. Otherwise that frame observes the terminal state and performs
+    // the deferred drain before releasing `dispatch_active`.
+    unsafe { hew_actor_trap_inner(actor, error_code, TrapMailboxReclaim::IfQuiescent) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+enum TrapMailboxReclaim {
+    /// The caller is the scheduler frame that owns the mailbox consumer.
+    OwnedActivation,
+    /// Drain only if no scheduler frame owns the mailbox consumer.
+    IfQuiescent,
+    /// Exact pre-fix counterfactual used by the ownership witness.
+    #[cfg(test)]
+    OmitForTest,
+}
+
+/// Trap publication from the scheduler frame that owns this actor's active
+/// mailbox consumer.
+///
+/// # Safety
+///
+/// `actor` must be the live actor whose activation the calling scheduler frame
+/// owns.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn hew_actor_trap_from_activation(actor: *mut HewActor, error_code: i32) {
+    // SAFETY: forwarded contract; the caller supplies the sole-consumer proof.
+    unsafe { hew_actor_trap_inner(actor, error_code, TrapMailboxReclaim::OwnedActivation) };
+}
+
+/// Implementation seam for [`hew_actor_trap`].
+///
+/// Tests use `OmitForTest` to execute the precise pre-fix counterfactual: all
+/// crash publication remains intact, but the one queued-mailbox reclaim edge
+/// is omitted.
+///
+/// # Safety
+///
+/// Same contract as [`hew_actor_trap`].
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn hew_actor_trap_inner(
+    actor: *mut HewActor,
+    error_code: i32,
+    mailbox_reclaim: TrapMailboxReclaim,
+) {
     cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
@@ -6215,6 +6359,25 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     if !mb.is_null() {
         // SAFETY: mailbox is valid for actor's lifetime.
         unsafe { mailbox::mailbox_close(mb) };
+    }
+
+    let reclaim_queued = match mailbox_reclaim {
+        TrapMailboxReclaim::OwnedActivation => true,
+        TrapMailboxReclaim::IfQuiescent => !a.dispatch_active.load(Ordering::Acquire),
+        #[cfg(test)]
+        TrapMailboxReclaim::OmitForTest => false,
+    };
+    if reclaim_queued {
+        // This is the last crash site that still owns a live actor and mailbox.
+        // Drain BEFORE exit propagation or supervisor notification: either can
+        // hand the terminal incarnation to another thread for replacement/free.
+        // Returning to `scheduler::activate_actor` to reclaim would therefore
+        // read through ownership that this function has already transferred.
+        //
+        // SAFETY: either the calling activation owns the mailbox consumer, or
+        // the acquire-load above proved there is no active scheduler frame.
+        // The actor remains live through the notification tail below.
+        unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
     }
 
     // Store error code only after winning the CAS race.
@@ -7415,6 +7578,35 @@ mod tests {
     use super::*;
     use crate::execution_context::TestExecutionContext;
 
+    struct SendPostEnqueueHookGuard;
+
+    impl SendPostEnqueueHookGuard {
+        fn install(
+            actor_id: u64,
+        ) -> (
+            Self,
+            std::sync::Arc<std::sync::Barrier>,
+            std::sync::Arc<std::sync::Barrier>,
+        ) {
+            let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let mut hook = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            assert!(hook.is_none(), "send ownership hook already installed");
+            *hook = Some((actor_id, entered.clone(), release.clone()));
+            (Self, entered, release)
+        }
+    }
+
+    impl Drop for SendPostEnqueueHookGuard {
+        fn drop(&mut self) {
+            *SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = None;
+        }
+    }
+
     struct SpawnPublicationHookGuard;
 
     impl SpawnPublicationHookGuard {
@@ -8610,6 +8802,429 @@ mod tests {
                 sys_dispatch: None,
             }));
             (actor, mailbox)
+        }
+    }
+
+    /// Deterministic #2831 ownership witness for the idle-stop half.
+    ///
+    /// The send rendezvous fires AFTER the ask node (and its retained
+    /// sender-side channel reference) transfers into the mailbox, but BEFORE
+    /// the sender attempts `Idle -> Runnable`. The test then lets stop win
+    /// `Idle -> Stopped`.
+    ///
+    /// The first case is the exact pre-fix counterfactual: it executes the whole
+    /// direct-idle stop path while omitting only the new terminal mailbox
+    /// reclaim. The same node pointer remains registered, the same channel
+    /// remains not-ready with both refs, and a zero-deadline wait returns only as
+    /// a timeout. The second case executes production stop and proves that exact
+    /// node disappears, the queued sender ref is consumed, and the channel is
+    /// ready+orphaned before the paused sender even attempts its doomed wake CAS.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::undocumented_unsafe_blocks,
+        reason = "the deterministic FFI ownership witness keeps each unsafe assertion beside the exact lifecycle phase it proves"
+    )]
+    fn idle_stop_retires_ask_enqueued_before_sender_wake_cas() {
+        struct AskSubmission {
+            actor: *mut HewActor,
+            ch: *mut HewReplyChannel,
+        }
+        // SAFETY: each actor outlives its joined sender thread; the thread uses
+        // both pointers only through the held-pointer ask ABI, and the test
+        // retains the creator-side channel reference until after the join.
+        unsafe impl Send for AskSubmission {}
+        impl AskSubmission {
+            unsafe fn submit(self) -> i32 {
+                // SAFETY: upheld by the caller; this method exists so the
+                // closure captures the Send wrapper as a whole, rather than
+                // disjoint-capturing its raw-pointer fields.
+                unsafe {
+                    ask_with_channel_pinned(self.actor, 1, ptr::null_mut(), 0, self.ch.cast())
+                }
+            }
+        }
+
+        unsafe fn run_case(reclaim_queued: bool, close_instead_of_stop: bool) {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(28_310_000);
+
+            let actor_count_baseline = live_actors::actor_count_for_test();
+            let channel_count_baseline = reply_channel::active_channel_count();
+            let node_count_baseline = mailbox::active_ask_node_count_for_test();
+            let frame_baseline = crate::observe::coroutine_snapshot();
+
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let (actor, mb) = make_stop_test_actor_with_id(id, HewActorState::Idle);
+            // SAFETY: the helper returned a fully initialized actor with a
+            // unique id; tracking owns no allocation reference.
+            assert!(unsafe { live_actors::track_actor(actor) });
+            assert_eq!(
+                live_actors::actor_count_for_test(),
+                actor_count_baseline + 1,
+                "the fixture contributes exactly one live actor"
+            );
+
+            let ch = reply_channel::hew_reply_channel_new();
+            assert!(!ch.is_null());
+            let (hook, entered, release) = SendPostEnqueueHookGuard::install(id);
+            let submission = AskSubmission { actor, ch };
+            let sender = std::thread::spawn(move || {
+                // SAFETY: target stays live/tracked until this thread joins;
+                // null payload of size zero is valid and ch remains creator-owned
+                // by the test until after the join.
+                unsafe { submission.submit() }
+            });
+
+            // Sender is now paused after enqueue and before wake.
+            entered.wait();
+            // SAFETY: the creator reference keeps ch live.
+            assert_eq!(
+                unsafe { reply_channel::ref_count_for_test(ch) },
+                2,
+                "creator + exact queued-node sender reference"
+            );
+            let exact_node = mailbox::ask_node_for_reply_channel_for_test(ch.cast::<c_void>());
+            assert!(
+                !exact_node.is_null(),
+                "the queued ask node is identity-tracked"
+            );
+            assert_eq!(
+                mailbox::active_ask_node_count_for_test(),
+                node_count_baseline + 1
+            );
+            // SAFETY: mailbox is live and the no-worker scheduler gives this
+            // test exclusive consumer-side control.
+            assert_eq!(unsafe { mailbox::hew_mailbox_len(mb) }, 1);
+
+            if reclaim_queued {
+                // Production edge: closes, wins Idle -> Stopped, then retires
+                // the queued node before returning.
+                if close_instead_of_stop {
+                    unsafe { hew_actor_close(actor) };
+                } else {
+                    unsafe { hew_actor_stop(actor) };
+                }
+            } else {
+                // Exact counterfactual: same close + terminal CAS + lifecycle
+                // path, differing only by omission of the new reclaim call.
+                unsafe { mailbox::mailbox_close(mb) };
+                // SAFETY: actor/a/mb are the same live allocation; mailbox is closed.
+                assert!(unsafe { try_terminalize_idle_actor(actor, &*actor, mb, false) });
+            }
+            // SAFETY: actor stays live through this test.
+            assert_eq!(
+                unsafe { (*actor).actor_state.load(Ordering::Acquire) },
+                HewActorState::Stopped as i32
+            );
+
+            // A zero-deadline wait distinguishes "published" from "still
+            // waiting" without using an elapsed-time threshold.
+            // SAFETY: creator ref keeps ch live; one waiter, on this thread.
+            let waited = unsafe { reply_channel::hew_reply_wait_timeout(ch, 0) };
+            assert!(waited.is_null());
+
+            if reclaim_queued {
+                assert!(
+                    unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+                    "terminal reclaim publishes the null sentinel"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::hew_reply_channel_is_orphaned(ch) },
+                    1
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(ch) },
+                    1,
+                    "only the creator ref remains after exact-once node retirement"
+                );
+                assert!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null(),
+                    "the exact queued node was reclaimed before sender wake"
+                );
+                assert_eq!(
+                    mailbox::active_ask_node_count_for_test(),
+                    node_count_baseline
+                );
+                // SAFETY: mailbox remains live, now drained.
+                assert_eq!(unsafe { mailbox::hew_mailbox_len(mb) }, 0);
+            } else {
+                assert!(
+                    !unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+                    "without the reclaim edge the wait returns only because its deadline elapsed"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::hew_reply_channel_is_orphaned(ch) },
+                    0
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(ch) },
+                    2,
+                    "the same stranded node still owns the sender ref"
+                );
+                assert_eq!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()),
+                    exact_node,
+                    "the exact sender-carrying node survives the pre-fix omission"
+                );
+                // SAFETY: mailbox remains live and solely consumed here.
+                assert_eq!(unsafe { mailbox::hew_mailbox_len(mb) }, 1);
+            }
+
+            // Let the sender attempt Idle -> Runnable. It must lose to Stopped,
+            // while the send itself reports success because ownership already
+            // transferred into the mailbox before the rendezvous.
+            release.wait();
+            assert_eq!(sender.join().expect("sender thread panicked"), 0);
+            drop(hook);
+
+            if !reclaim_queued {
+                // The counterfactual omitted the terminal publisher's drain,
+                // so the sender-side helper must retire its own already-
+                // published enqueue after its wake CAS observes Stopped. This
+                // is the backstop for a producer that passed the open check but
+                // publishes after the terminal owner's first drain.
+                assert!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null(),
+                    "the losing sender helps retire a late terminal enqueue"
+                );
+            }
+            assert_eq!(
+                unsafe { reply_channel::ref_count_for_test(ch) },
+                1,
+                "terminal cleanup consumes the queued sender ref exactly once"
+            );
+            assert!(mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null());
+            assert_eq!(
+                mailbox::active_ask_node_count_for_test(),
+                node_count_baseline
+            );
+            // SAFETY: release the test's creator reference.
+            unsafe { reply_channel::hew_reply_channel_free(ch) };
+            assert_eq!(
+                reply_channel::active_channel_count(),
+                channel_count_baseline
+            );
+
+            assert!(live_actors::untrack_actor(actor));
+            assert_eq!(live_actors::actor_count_for_test(), actor_count_baseline);
+            // SAFETY: actor and mailbox came from the fixture, are untracked,
+            // stopped, empty, and unused after this point.
+            unsafe {
+                drop(Box::from_raw(actor));
+                mailbox::hew_mailbox_free(mb);
+            }
+            let frame_after = crate::observe::coroutine_snapshot();
+            assert_eq!(frame_after.live, frame_baseline.live);
+            assert_eq!(
+                frame_after.frame_bytes_live,
+                frame_baseline.frame_bytes_live
+            );
+        }
+
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        // Counterfactual first, then the production edge.
+        unsafe {
+            run_case(false, false);
+            run_case(true, false);
+            run_case(true, true);
+        }
+    }
+
+    /// Deterministic #2831 ownership witness for the crash half.
+    ///
+    /// Two real ask nodes are queued. The scheduler ownership transfer is then
+    /// modeled exactly: dequeue the first node (it is now in-flight and solely
+    /// scheduler-owned), publish its crash fallback, and free it before entering
+    /// the trap publisher. The second node remains queued behind it.
+    ///
+    /// The counterfactual executes all crash publication while omitting only the
+    /// new trap-side mailbox reclaim. It proves the in-flight ask is settled but
+    /// the exact queued node/ref remains unready through a zero-deadline wait.
+    /// Production settles both before notification can transfer the crashed
+    /// incarnation to a supervisor.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::undocumented_unsafe_blocks,
+        reason = "the deterministic FFI ownership witness keeps each unsafe assertion beside the exact lifecycle phase it proves"
+    )]
+    fn crash_trap_retires_asks_queued_behind_inflight_ask() {
+        unsafe fn run_case(reclaim_queued: bool) {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(28_311_000);
+
+            let actor_count_baseline = live_actors::actor_count_for_test();
+            let channel_count_baseline = reply_channel::active_channel_count();
+            let node_count_baseline = mailbox::active_ask_node_count_for_test();
+            let frame_baseline = crate::observe::coroutine_snapshot();
+
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let (actor, mb) = make_stop_test_actor_with_id(id, HewActorState::Crashing);
+            // SAFETY: fully initialized unique actor.
+            assert!(unsafe { live_actors::track_actor(actor) });
+
+            let inflight_ch = reply_channel::hew_reply_channel_new();
+            let queued_ch = reply_channel::hew_reply_channel_new();
+            assert!(!inflight_ch.is_null() && !queued_ch.is_null());
+            // The ask submission mints one sender-side reference for each node.
+            // SAFETY: both channels are fresh and creator-owned.
+            unsafe {
+                reply_channel::hew_reply_channel_retain(inflight_ch);
+                reply_channel::hew_reply_channel_retain(queued_ch);
+            }
+            // SAFETY: live mailbox, empty payload, valid retained channels.
+            assert_eq!(
+                unsafe {
+                    mailbox::hew_mailbox_send_with_reply(
+                        mb,
+                        1,
+                        ptr::null_mut(),
+                        0,
+                        inflight_ch.cast(),
+                    )
+                },
+                0
+            );
+            assert_eq!(
+                unsafe {
+                    mailbox::hew_mailbox_send_with_reply(
+                        mb,
+                        2,
+                        ptr::null_mut(),
+                        0,
+                        queued_ch.cast(),
+                    )
+                },
+                0
+            );
+            assert_eq!(
+                mailbox::active_ask_node_count_for_test(),
+                node_count_baseline + 2
+            );
+
+            // Scheduler dequeues one ask and now owns it in-flight; the next ask
+            // remains in the mailbox.
+            // SAFETY: test is the sole mailbox consumer.
+            let inflight_node = unsafe { mailbox::hew_mailbox_try_recv(mb) };
+            assert!(!inflight_node.is_null());
+            let exact_queued_node = mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast());
+            assert!(!exact_queued_node.is_null());
+            // SAFETY: mailbox remains live.
+            assert_eq!(unsafe { mailbox::hew_mailbox_len(mb) }, 1);
+
+            // Mirror activate_actor's pre-publication in-flight cleanup:
+            // publish crash failure, detach the consumed sender reference from
+            // the node, then free that exclusively-owned node.
+            // SAFETY: inflight_ch has a live sender ref and node is exclusive.
+            unsafe {
+                reply_channel::hew_reply_channel_publish_crash_fallback(inflight_ch);
+                (*inflight_node).reply_channel = ptr::null_mut();
+                mailbox::hew_msg_node_free(inflight_node);
+            }
+            assert!(
+                unsafe { reply_channel::hew_reply_channel_is_ready_for_test(inflight_ch) },
+                "in-flight crash fallback is published before terminal state"
+            );
+            assert_eq!(
+                unsafe { reply_channel::ref_count_for_test(inflight_ch) },
+                1,
+                "in-flight sender ref was consumed exactly once"
+            );
+            assert_eq!(
+                mailbox::active_ask_node_count_for_test(),
+                node_count_baseline + 1,
+                "only the queued-behind ask node remains at the trap seam"
+            );
+
+            // Exact production/counterfactual split.
+            // SAFETY: actor is in Crashing, live and tracked.
+            let mailbox_reclaim = if reclaim_queued {
+                TrapMailboxReclaim::OwnedActivation
+            } else {
+                TrapMailboxReclaim::OmitForTest
+            };
+            unsafe { hew_actor_trap_inner(actor, -1, mailbox_reclaim) };
+            assert_eq!(
+                unsafe { (*actor).actor_state.load(Ordering::Acquire) },
+                HewActorState::Crashed as i32
+            );
+
+            // SAFETY: creator refs keep both channels live.
+            assert!(unsafe { reply_channel::hew_reply_wait_timeout(inflight_ch, 0).is_null() });
+            assert!(unsafe { reply_channel::hew_reply_wait_timeout(queued_ch, 0).is_null() });
+
+            if reclaim_queued {
+                assert!(
+                    unsafe { reply_channel::hew_reply_channel_is_ready_for_test(queued_ch) },
+                    "queued crash ask is published before supervisor notification"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::hew_reply_channel_is_orphaned(queued_ch) },
+                    1
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(queued_ch) },
+                    1,
+                    "queued crash sender ref is consumed exactly once"
+                );
+                assert!(mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast()).is_null());
+                assert_eq!(
+                    mailbox::active_ask_node_count_for_test(),
+                    node_count_baseline
+                );
+            } else {
+                assert!(
+                    !unsafe { reply_channel::hew_reply_channel_is_ready_for_test(queued_ch) },
+                    "without the trap reclaim edge the wait only returns at its deadline"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(queued_ch) },
+                    2,
+                    "the exact queued node still owns its sender ref"
+                );
+                assert_eq!(
+                    mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast()),
+                    exact_queued_node
+                );
+                // SAFETY: crashed actor remains live and test is sole consumer.
+                unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
+            }
+
+            assert_eq!(unsafe { reply_channel::ref_count_for_test(queued_ch) }, 1);
+            assert_eq!(
+                mailbox::active_ask_node_count_for_test(),
+                node_count_baseline
+            );
+            // SAFETY: release both creator references.
+            unsafe {
+                reply_channel::hew_reply_channel_free(inflight_ch);
+                reply_channel::hew_reply_channel_free(queued_ch);
+            }
+            assert_eq!(
+                reply_channel::active_channel_count(),
+                channel_count_baseline
+            );
+
+            assert!(live_actors::untrack_actor(actor));
+            assert_eq!(live_actors::actor_count_for_test(), actor_count_baseline);
+            // SAFETY: untracked crashed actor and drained mailbox are unused.
+            unsafe {
+                drop(Box::from_raw(actor));
+                mailbox::hew_mailbox_free(mb);
+            }
+            let frame_after = crate::observe::coroutine_snapshot();
+            assert_eq!(frame_after.live, frame_baseline.live);
+            assert_eq!(
+                frame_after.frame_bytes_live,
+                frame_baseline.frame_bytes_live
+            );
+        }
+
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        unsafe {
+            run_case(false);
+            run_case(true);
         }
     }
 

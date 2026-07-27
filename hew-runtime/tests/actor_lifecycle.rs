@@ -487,6 +487,156 @@ fn ask_freed_queued_messages_unblock_caller() {
     unsafe { hew_runtime::reply_channel::hew_reply_channel_free(ch) };
 }
 
+/// Gate used by [`stop_during_dispatch_unblocks_queued_ask`] to hold an actor
+/// inside its dispatch function, so the test controls the interleaving instead
+/// of racing the scheduler for it.
+struct DispatchGate {
+    /// `(handler entered dispatch, test released the handler)`.
+    flags: Mutex<(bool, bool)>,
+    cond: Condvar,
+}
+
+impl DispatchGate {
+    const fn new() -> Self {
+        Self {
+            flags: Mutex::new((false, false)),
+            cond: Condvar::new(),
+        }
+    }
+
+    /// Called from the dispatch function: announce entry, then block until
+    /// released. The wait is bounded so a failed assertion in the test body
+    /// cannot wedge the actor's activation (and therefore `hew_actor_free`).
+    fn enter_and_block(&self) {
+        let mut flags = self.flags.lock().unwrap();
+        flags.0 = true;
+        self.cond.notify_all();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !flags.1 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            let (guard, _) = self.cond.wait_timeout(flags, remaining).unwrap();
+            flags = guard;
+        }
+    }
+
+    fn wait_entered(&self, timeout: Duration) -> bool {
+        let mut flags = self.flags.lock().unwrap();
+        let deadline = Instant::now() + timeout;
+        while !flags.0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (guard, _) = self.cond.wait_timeout(flags, remaining).unwrap();
+            flags = guard;
+        }
+        true
+    }
+
+    fn release(&self) {
+        let mut flags = self.flags.lock().unwrap();
+        flags.1 = true;
+        self.cond.notify_all();
+    }
+}
+
+static STOP_DURING_DISPATCH_GATE: DispatchGate = DispatchGate::new();
+
+unsafe extern "C-unwind" fn gated_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+    _borrow_mode: i32,
+) -> *mut c_void {
+    STOP_DURING_DISPATCH_GATE.enter_and_block();
+    std::ptr::null_mut()
+}
+
+/// Stopping a *Running* actor must not strand an ask queued behind the
+/// in-flight message.
+///
+/// `hew_actor_stop` on a Running actor enqueues its shutdown sentinel on the
+/// SYSTEM queue, and the mailbox gives the system queue dequeue priority — so
+/// the worker's next poll returns the sentinel ahead of a user message that was
+/// enqueued *first*, breaks the message loop, and finalizes the actor. Any
+/// queued ask left behind owns the sender-side reply reference its caller is
+/// blocked on, so unless the terminal transition reclaims the mailbox the
+/// caller blocks for its entire ask timeout.
+///
+/// [`ask_freed_queued_messages_unblock_caller`] covers the same invariant but
+/// has to win a race against the scheduler to reach this interleaving (it does
+/// so only under load — the Windows CI runner hit it, the developer machines
+/// did not). This test pins the interleaving with a gate: the handler is held
+/// inside dispatch while the ask is queued and the stop is issued, so the
+/// sentinel is *guaranteed* to be ahead of the ask. It asserts the reason, not
+/// just the timing: the waiter must be released with the orphaned
+/// classification that mailbox teardown would have given it.
+#[test]
+fn stop_during_dispatch_unblocks_queued_ask() {
+    ensure_scheduler();
+
+    let actor = TestActor::spawn(gated_dispatch);
+
+    // Occupy the handler so the actor is unambiguously Running when we stop it.
+    let mut warm: i32 = 1;
+    actor.send(0, &mut warm);
+    let entered = STOP_DURING_DISPATCH_GATE.wait_entered(Duration::from_secs(10));
+    if !entered {
+        STOP_DURING_DISPATCH_GATE.release();
+    }
+    assert!(entered, "dispatch must start before the stop is issued");
+
+    // Queue an ask behind the in-flight message.
+    let ch = hew_runtime::reply_channel::hew_reply_channel_new();
+    assert!(!ch.is_null());
+    let mut val: i32 = 99;
+    let send_rc = actor.ask_with_channel(1, &mut val, ch);
+    assert_eq!(send_rc, 0, "the ask must enqueue on a still-running actor");
+
+    assert_eq!(
+        actor.state_raw(),
+        HewActorState::Running as i32,
+        "precondition: the stop must be issued against a Running actor so it \
+         takes the shutdown-sentinel path"
+    );
+    actor.stop();
+
+    // Let the in-flight dispatch finish. The worker's next poll takes the
+    // sentinel, never the queued ask.
+    STOP_DURING_DISPATCH_GATE.release();
+
+    let start = Instant::now();
+    // SAFETY: ch is a valid reply channel we still hold a reference to.
+    let reply = unsafe { hew_runtime::reply_channel::hew_reply_wait_timeout(ch, 2_000) };
+    let elapsed = start.elapsed();
+    // SAFETY: read on the caller-side reference before it is released.
+    let orphaned = unsafe { hew_runtime::reply_channel::hew_reply_channel_is_orphaned(ch) };
+
+    assert!(
+        elapsed.as_millis() < 500,
+        "an ask queued behind the shutdown sentinel must be retired by the \
+         terminal stop, not left for hew_actor_free; took {}ms of a 2000ms wait",
+        elapsed.as_millis()
+    );
+    assert!(
+        reply.is_null(),
+        "the queued ask was never dispatched, so no value can have been replied"
+    );
+    assert_eq!(
+        orphaned, 1,
+        "the waiter must be released with the mailbox-teardown classification, \
+         not an unexplained null"
+    );
+
+    // SAFETY: Release our reference to the reply channel.
+    unsafe { hew_runtime::reply_channel::hew_reply_channel_free(ch) };
+}
+
 /// Dispatch function that sleeps for 500ms before replying.
 ///
 /// Used to test ask timeout behaviour — the caller should time out

@@ -203,6 +203,52 @@ CFG_FIELD_TOML = """
     internal = []
 """
 
+# Generic method names such as `drop` are too ambiguous to form call-graph
+# edges: `.drop()` may name any one of many unrelated implementations. That
+# does not make a body named `drop` invisible when the body ITSELF touches
+# system-lane state.
+DENYLISTED_ROOT_CRATE = """
+    struct LaneOwner {
+        sys_queue: Queue,
+    }
+
+    impl Drop for LaneOwner {
+        fn drop(&mut self) {
+            self.sys_queue.drain_and_free(None);
+        }
+    }
+"""
+
+DENYLISTED_ROOT_TOML = """
+    stable = ["drop"]
+    stable-stdlib = []
+    codegen-stable = []
+    internal = []
+"""
+
+DENYLISTED_EDGE_CRATE = """
+    pub unsafe extern "C" fn hew_toy_drop_wrapper(value: &mut Ordinary) {
+        value.drop();
+    }
+
+    struct LaneOwner {
+        sys_queue: Queue,
+    }
+
+    impl Drop for LaneOwner {
+        fn drop(&mut self) {
+            self.sys_queue.drain_and_free(None);
+        }
+    }
+"""
+
+DENYLISTED_EDGE_TOML = """
+    stable = ["hew_toy_drop_wrapper"]
+    stable-stdlib = []
+    codegen-stable = []
+    internal = []
+"""
+
 
 def check_parser_fails_closed(root: Path) -> None:
     """F1: an unparseable body is a hard error, never a skip."""
@@ -404,6 +450,36 @@ def main() -> int:
         # 10. The parser fails CLOSED: valid Rust it cannot balance is a hard
         #     error naming the symbol, and braces that are data are read as data.
         check_parser_fails_closed(root)
+
+        # 11. The generic-name denylist is ONLY a call-edge rule. A denylisted
+        #     body that directly names system-lane state is still a root and, if
+        #     stable, must fail with a direct witness.
+        tree = root / "denylisted-root" / "src"
+        write(tree, "lib.rs", DENYLISTED_ROOT_CRATE)
+        toml = root / "denylisted-root.toml"
+        toml.write_text(textwrap.dedent(DENYLISTED_ROOT_TOML), encoding="utf-8")
+        code, output = run_gate(tree, toml)
+        check(
+            "a denylisted body that touches lane state is still a root",
+            code == 1 and "drop: drop" in output and "[sys_queue at " in output,
+            output,
+        )
+
+        # The body above becoming visible must not reconnect every generic
+        # `.drop()` call to it. This stable wrapper calls an unrelated method;
+        # the gate sees the `drop` root but does not fuse the wrapper to it.
+        tree = root / "denylisted-edge" / "src"
+        write(tree, "lib.rs", DENYLISTED_EDGE_CRATE)
+        toml = root / "denylisted-edge.toml"
+        toml.write_text(textwrap.dedent(DENYLISTED_EDGE_TOML), encoding="utf-8")
+        code, output = run_gate(tree, toml)
+        check(
+            "generic method calls remain excluded from call-edge fusion",
+            code == 0
+            and "1 roots, 1 reaching functions" in output
+            and "0 stable violations" in output,
+            output,
+        )
 
     if FAILURES:
         print(f"\n{len(FAILURES)} check(s) failed", file=sys.stderr)

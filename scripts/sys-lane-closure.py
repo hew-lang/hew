@@ -96,10 +96,12 @@ SYSTEM_LANE_TOKENS = (
     "Origin::Sys",
 )
 
-# Names that are Rust/std/libc plumbing rather than runtime functions. Excluded
-# from the defined-function set so a method call like `.len()` cannot fuse two
-# unrelated types together through a shared method name.
-GRAPH_NAME_DENYLIST = {
+# Names that are Rust/std/libc plumbing rather than unambiguous runtime
+# functions. Exclude them ONLY as call targets so a method call like `.len()`
+# cannot fuse two unrelated types through a shared method name. Their own
+# bodies remain root candidates: a `drop` or `default` body that directly
+# touches system-lane state is a finding, not a graph edge.
+GRAPH_EDGE_NAME_DENYLIST = {
     "new",
     "default",
     "drop",
@@ -473,7 +475,7 @@ def build_graph(scan_dirs: list[Path] | None = None) -> Graph:
             "cannot report a verdict:\n  " + "\n  ".join(unparseable)
         )
 
-    defined = graph.defined() - GRAPH_NAME_DENYLIST
+    defined = graph.defined() - GRAPH_EDGE_NAME_DENYLIST
 
     # Pass 2: call edges. A callee is any defined name appearing in call
     # position (`name(`, `name::<T>(`, `.name(`, `Type::name(`) inside a body.
@@ -518,7 +520,7 @@ def find_roots(graph: Graph, non_roots: dict[str, str]) -> dict[str, list[str]]:
     """Functions whose OWN body touches the system-lane state set."""
     roots: dict[str, list[str]] = {}
     for name, bodies in graph.bodies.items():
-        if name in non_roots or name in GRAPH_NAME_DENYLIST:
+        if name in non_roots:
             continue
         hits: set[str] = set()
         for body in bodies:

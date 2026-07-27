@@ -1139,9 +1139,10 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 
 /// Wake a `Suspended` actor whose parked continuation became resumable (wasm
 /// cooperative half). The single resume edge every wasm readiness source feeds,
-/// mirroring the native `scheduler::enqueue_resume` over the same ABI. Stores
-/// `Suspended -> Runnable` and re-enqueues; records a pending wake when the
-/// park has not yet published a handle (FG3 window).
+/// mirroring the native `scheduler::enqueue_resume` over the same ABI. Publishes
+/// to the run queue before storing `Suspended -> Runnable`; if shutdown already
+/// took the queue, leaves the parked frame untouched for cleanup. Records a
+/// pending wake when the park has not yet published a handle (FG3 window).
 ///
 /// # Safety
 ///
@@ -1172,12 +1173,28 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
         crate::coro_exec::mark_pending_wake(a);
         return;
     }
-    // SAFETY: single-threaded; actor valid.
+    // Publish before committing the lifecycle transition. Shutdown takes
+    // RUN_QUEUE before the later runtime-cleanup sweep; that sweep may retire
+    // an orphaned ask, whose synchronous reply path reaches this wake after
+    // the scheduler no longer accepts work. In that case the reply is still
+    // resolved and its sender reference consumed, but the caller's parked
+    // frame remains owned by cleanup. Marking it Runnable without a queue
+    // entry would both lie about that ownership and strand the frame.
+    //
+    // Single-threaded WASM makes this ordering safe: no scheduler step can
+    // observe the queued actor between the push and the following state store.
+    // SAFETY: actor is valid and the cooperative scheduler is single-threaded.
     unsafe {
-        (*actor)
-            .actor_state
-            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
-        sched_enqueue(actor);
+        if try_sched_enqueue(actor).is_ok() {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        } else {
+            debug_assert!(
+                !std::ptr::addr_of!(INITIALIZED).read(),
+                "initialized WASM scheduler lost its run queue"
+            );
+        }
     }
 }
 
@@ -4496,6 +4513,147 @@ mod tests {
             replies_before
         );
         hew_sched_shutdown();
+    }
+
+    /// Actual-target witness for the second shutdown edge: after
+    /// `hew_sched_shutdown` has taken `RUN_QUEUE`, the later cleanup sweep can
+    /// still abandon a suspended ask handler. Retiring that handler's sender
+    /// reference publishes an orphaned reply synchronously, and a parked
+    /// caller makes the reply path attempt `enqueue_resume`.
+    ///
+    /// The scheduler must resolve/release the reply and destroy the abandoned
+    /// callee frame exactly once without changing or publishing the caller
+    /// frame. Omitting the fallible publish in `enqueue_resume` makes this test
+    /// panic at `sched_enqueue: scheduler not initialized`.
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn wasm_post_shutdown_orphan_reply_cannot_publish_resume() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        let replies_before = crate::reply_channel_wasm::active_channel_count();
+
+        // Build a real parked waiter frame. The reply channel below carries
+        // this actor pointer exactly as codegen's parked-ask setter does.
+        let waiter_actor = stub_actor();
+        let waiter_ptr: *mut HewActor = (&raw const waiter_actor).cast_mut();
+        let waiter_native = as_native_actor(waiter_ptr);
+        let mut waiter_frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
+        let waiter_handle = (&raw mut *waiter_frame).cast::<c_void>();
+        assert!(crate::coro_exec::begin_park(waiter_native).is_ok());
+        // SAFETY: waiter_frame is live and exclusively owned for the test.
+        unsafe { crate::coro_exec::finish_park(waiter_native, waiter_handle) };
+        waiter_actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+
+        // Drive the production ask/message-node/suspend path for the callee.
+        // The drained mailbox plus the slot/ref assertions below prove that
+        // the message node was consumed and moved its sender reference into
+        // the parked activation rather than leaking either authority.
+        let mut callee_actor = stub_actor();
+        // SAFETY: both stack actors and the channel they exchange outlive the
+        // complete test.
+        let (callee_ptr, reply) = unsafe {
+            park_wasm_ask(
+                std::ptr::from_mut(&mut callee_actor),
+                suspend_once_dispatch_wasm,
+            )
+        };
+        let callee_native = as_native_actor(callee_ptr);
+        let callee_handle = callee_native.suspended_cont.load(Ordering::Acquire);
+        assert!(!callee_handle.is_null());
+        let callee_frame = callee_handle.cast::<crate::coro_exec::test_support::ScratchFrame>();
+        assert_eq!(
+            // SAFETY: park_wasm_ask created this live mailbox.
+            unsafe { crate::mailbox_wasm::hew_mailbox_len(callee_actor.mailbox.cast()) },
+            0,
+            "dispatch must consume the ask message node before parking"
+        );
+        assert_eq!(
+            callee_native
+                .suspended_reply_channel
+                .load(Ordering::Acquire),
+            reply.cast()
+        );
+        // SAFETY: reply is live; the caller and callee slot own one ref each.
+        unsafe {
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(reply), 2);
+            crate::reply_channel_wasm::hew_reply_channel_set_parked_waiter(
+                reply,
+                waiter_ptr.cast(),
+            );
+        }
+
+        // This is the exact lifecycle seam from the blocker: shutdown has
+        // returned and taken the queue, while actor cleanup still owns the
+        // parked callee and its reply debt.
+        hew_sched_shutdown();
+        // SAFETY: waiter_ptr remains live. Refusal proves the queue is absent;
+        // unlike the public length metric, this cannot conflate None and empty.
+        assert!(unsafe { try_sched_enqueue(waiter_ptr).is_err() });
+        // SAFETY: the stack callee remains the test's exclusive parked actor.
+        unsafe { crate::actor::cancel_parked_activation_for_free_wasm(callee_native) };
+
+        // Callee abandonment owns and settles its frame + sender ref exactly
+        // once. The caller-side ref observes the terminal orphan result.
+        assert_eq!(
+            // SAFETY: callee_frame remains allocated until reclaimed below.
+            unsafe { (*callee_frame).destroyed.load(Ordering::Acquire) },
+            1
+        );
+        assert!(callee_native
+            .suspended_cont
+            .load(Ordering::Acquire)
+            .is_null());
+        assert!(callee_native
+            .suspended_reply_channel
+            .load(Ordering::Acquire)
+            .is_null());
+        assert_eq!(
+            callee_actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Stopped as i32
+        );
+        // SAFETY: the test still owns the caller-side reply reference.
+        unsafe {
+            assert!(crate::reply_channel_wasm::test_replied(reply));
+            assert!(crate::reply_channel_wasm::reply_is_orphaned(reply));
+            assert_eq!(crate::reply_channel_wasm::test_ref_count(reply), 1);
+        }
+
+        // Failed publication cannot claim the waiter activation. It remains a
+        // complete parked frame for its own cleanup authority, with no pending
+        // wake or ghost queue/metric entry.
+        assert_eq!(
+            waiter_actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32
+        );
+        assert_eq!(
+            waiter_native.suspended_cont.load(Ordering::Acquire),
+            waiter_handle
+        );
+        assert!(!waiter_native.pending_wake.load(Ordering::Acquire));
+        assert_eq!(waiter_frame.destroyed.load(Ordering::Acquire), 0);
+        assert_eq!(hew_sched_metrics_global_queue_len(), 0);
+        // SAFETY: shutdown reset the counter; the refused publish must not
+        // increment it.
+        assert_eq!(unsafe { read_tasks_spawned() }, 0);
+
+        // Reclaim the caller-side authorities and the two scratch-frame boxes
+        // under the test's sole ownership.
+        // SAFETY: every pointer remains live and exclusively test-owned.
+        unsafe {
+            crate::reply_channel_wasm::hew_reply_channel_free(reply);
+            crate::actor::cancel_parked_activation_for_free_wasm(waiter_native);
+            crate::mailbox_wasm::hew_mailbox_free(callee_actor.mailbox.cast());
+            drop(Box::from_raw(callee_frame));
+        }
+        assert_eq!(waiter_frame.destroyed.load(Ordering::Acquire), 1);
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            replies_before
+        );
     }
 
     #[test]
